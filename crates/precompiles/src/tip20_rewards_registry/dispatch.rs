@@ -33,7 +33,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20RewardsRegistry<'a, S
         };
 
         result.map(|mut res| {
-            res.gas_used = self.storage.gas_remaining();
+            res.gas_used = self.storage.gas_used();
             res
         })
     }

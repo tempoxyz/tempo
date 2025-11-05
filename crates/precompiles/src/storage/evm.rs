@@ -11,25 +11,23 @@ pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
     chain_id: u64,
     gas_remaining: u64,
+    gas_limit: u64,
 }
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
     /// Create a new storage provider with a specific gas limit.
-    pub fn new(internals: EvmInternals<'a>, gas_remaining: u64, chain_id: u64) -> Self {
+    pub fn new(internals: EvmInternals<'a>, gas_limit: u64, chain_id: u64) -> Self {
         Self {
             internals,
             chain_id,
-            gas_remaining,
+            gas_remaining: gas_limit,
+            gas_limit,
         }
     }
 
     /// Create a new storage provider with maximum gas limit.
     pub fn new_max_gas(internals: EvmInternals<'a>, chain_id: u64) -> Self {
-        Self {
-            internals,
-            chain_id,
-            gas_remaining: u64::MAX,
-        }
+        Self::new(internals, u64::MAX, chain_id)
     }
 
     pub fn ensure_loaded_account(&mut self, account: Address) -> Result<(), EvmInternalsError> {
@@ -121,8 +119,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
-    fn gas_remaining(&self) -> u64 {
-        self.gas_remaining
+    fn gas_used(&self) -> u64 {
+        self.gas_limit - self.gas_remaining
     }
 }
 

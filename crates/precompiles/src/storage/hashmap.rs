@@ -85,7 +85,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         Ok(())
     }
 
-    fn gas_remaining(&self) -> u64 {
+    fn gas_used(&self) -> u64 {
         0
     }
 }

@@ -24,8 +24,8 @@ pub trait PrecompileStorageProvider {
     /// Deducts gas from the remaining gas and return an error if the gas is insufficient.
     fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError>;
 
-    /// Returns the remaining gas.
-    fn gas_remaining(&self) -> u64;
+    /// Returns the gas used so far.
+    fn gas_used(&self) -> u64;
 }
 
 pub trait StorageOps {

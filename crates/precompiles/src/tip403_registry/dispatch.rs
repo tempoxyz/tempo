@@ -72,7 +72,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP403Registry<'a, S> {
         };
 
         result.map(|mut res| {
-            res.gas_used = self.storage.gas_remaining();
+            res.gas_used = self.storage.gas_used();
             res
         })
     }
