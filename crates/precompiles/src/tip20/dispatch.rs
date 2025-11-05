@@ -139,6 +139,11 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                     self.transfer_with_memo(s, call)
                 })
             }
+            ITIP20::transferFromWithMemoCall::SELECTOR => {
+                mutate::<ITIP20::transferFromWithMemoCall>(calldata, msg_sender, |sender, call| {
+                    self.transfer_from_with_memo(sender, call)
+                })
+            }
             ITIP20::startRewardCall::SELECTOR => {
                 mutate::<ITIP20::startRewardCall>(calldata, msg_sender, |s, call| {
                     self.start_reward(s, call)
