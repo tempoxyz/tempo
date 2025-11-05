@@ -103,7 +103,7 @@ pub fn validate_usd_currency<S: PrecompileStorageProvider>(
 ) -> Result<(), TempoPrecompileError> {
     let mut tip20_token = TIP20Token::from_address(token, storage);
     let currency = tip20_token.currency()?;
-    if keccak256(currency.as_bytes()) != keccak256(USD_CURRENCY.as_bytes()) {
+    if currency != USD_CURRENCY {
         return Err(TIP20Error::invalid_currency().into());
     }
     Ok(())
