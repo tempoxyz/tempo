@@ -24,7 +24,7 @@ use crate::{
         compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick,
     },
     storage::{PrecompileStorageProvider, StorageOps, slots::mapping_slot},
-    tip20::{ITIP20, TIP20Token},
+    tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
@@ -406,8 +406,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     pub fn create_pair(&mut self, base: Address) -> Result<B256, TempoPrecompileError> {
         let quote = TIP20Token::from_address(base, self.storage).quote_token()?;
-
-        // TODO: ensure that the base token and the quote token are USD
+        validate_usd_currency(base, self.storage)?;
+        validate_usd_currency(quote, self.storage)?;
 
         let book_key = compute_book_key(base, quote);
 
@@ -1460,6 +1460,8 @@ impl<'a, S: PrecompileStorageProvider> StorageOps for StablecoinExchange<'a, S> 
 
 #[cfg(test)]
 mod tests {
+    use tempo_contracts::precompiles::TIP20Error;
+
     use crate::{
         linking_usd::TRANSFER_ROLE, storage::hashmap::HashMapStorageProvider, tip20::ISSUER_ROLE,
     };
@@ -3451,6 +3453,47 @@ mod tests {
             bob_linking_usd_exchange, 0,
             "Bob should have ZERO LinkingUSD on exchange (transitory)"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_pair_invalid_currency() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        let admin = Address::random();
+        // Init Linking USD, user token and validator tokens
+        let mut linking_usd = TIP20Token::from_address(LINKING_USD_ADDRESS, &mut storage);
+        linking_usd
+            .initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+            .unwrap();
+
+        let mut token_0 = TIP20Token::new(1, linking_usd.storage);
+        token_0
+            .initialize("TestToken", "TEST", "EUR", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+        let token_0_address = token_0.token_address;
+
+        let mut token_1 = TIP20Token::new(2, token_0.storage);
+        token_1
+            .initialize("TestToken", "TEST", "USD", token_0_address, admin)
+            .unwrap();
+        let token_1_address = token_1.token_address;
+
+        let mut exchange = StablecoinExchange::new(token_1.storage);
+        exchange.initialize()?;
+
+        let result = exchange.create_pair(token_0_address);
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
+        ));
+
+        let result = exchange.create_pair(token_1_address);
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
+        ));
 
         Ok(())
     }
