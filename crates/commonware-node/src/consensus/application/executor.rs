@@ -207,8 +207,9 @@ where
         info!(
             finalized_consensus_height,
             %finalized_consensus_digest,
-            "consensus layer responded with the latest finalized height and \
-            digest it forwarded to the execution layer",
+            "consensus layer responded with what it thinks are the digest of \
+            the last finalized block that was forwarded to and acknowledged by \
+            the execution layer",
         );
 
         self.canonicalize(
@@ -543,6 +544,6 @@ struct Message {
 enum Command {
     /// Requests the agent to set the head of the canonical chain to `digest`.
     CanonicalizeHead { height: u64, digest: Digest },
-    /// Requests the agent to forward a finalizatoin event to the execution layer.
+    /// Requests the agent to forward a finalization event to the execution layer.
     Finalize(super::ingress::Finalized),
 }
