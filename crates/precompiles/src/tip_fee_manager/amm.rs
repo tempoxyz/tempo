@@ -391,6 +391,120 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         Ok(liquidity)
     }
 
+    /// Mint LP tokens using only validator tokens
+    pub fn mint_with_validator_token(
+        &mut self,
+        msg_sender: Address,
+        user_token: Address,
+        validator_token: Address,
+        amount_validator_token: U256,
+        to: Address,
+    ) -> Result<U256> {
+        if user_token == validator_token {
+            return Err(TIPFeeAMMError::identical_addresses().into());
+        }
+
+        // Validate both tokens are USD currency
+        validate_usd_currency(user_token, self.storage)?;
+        validate_usd_currency(validator_token, self.storage)?;
+
+        let pool_id = self.get_pool_id(user_token, validator_token);
+        let mut pool = self.get_pool(pool_id)?;
+        let total_supply = self.get_total_supply(pool_id)?;
+
+        let liquidity = if pool.reserve_user_token == 0 && pool.reserve_validator_token == 0 {
+            let half_amount = amount_validator_token
+                .checked_div(uint!(2_U256))
+                .ok_or(TIPFeeAMMError::division_by_zero())?;
+
+            if half_amount <= MIN_LIQUIDITY {
+                return Err(TIPFeeAMMError::insufficient_liquidity().into());
+            }
+
+            self.set_total_supply(pool_id, MIN_LIQUIDITY)?;
+            half_amount
+                .checked_sub(MIN_LIQUIDITY)
+                .ok_or(TIPFeeAMMError::insufficient_liquidity())?
+        } else {
+            // Subsequent deposits: mint as if user called rebalanceSwap then minted with both
+            // Formula: liquidity = amountValidatorToken * _totalSupply / (V + n * U), with n = N / SCALE
+            let n_times_u = N
+                .checked_mul(U256::from(pool.reserve_user_token))
+                .and_then(|product| product.checked_div(SCALE))
+                .ok_or(TIPFeeAMMError::invalid_swap_calculation())?;
+
+            let denom = U256::from(pool.reserve_validator_token)
+                .checked_add(n_times_u)
+                .ok_or(TIPFeeAMMError::invalid_amount())?;
+
+            if denom.is_zero() {
+                return Err(TIPFeeAMMError::division_by_zero().into());
+            }
+
+            amount_validator_token
+                .checked_mul(total_supply)
+                .and_then(|numerator| numerator.checked_div(denom))
+                .ok_or(TIPFeeAMMError::invalid_swap_calculation())?
+        };
+
+        if liquidity.is_zero() {
+            return Err(TIPFeeAMMError::insufficient_liquidity().into());
+        }
+
+        // Transfer validator tokens from user
+        let _ = TIP20Token::from_address(validator_token, self.storage).system_transfer_from(
+            msg_sender,
+            self.contract_address,
+            amount_validator_token,
+        )?;
+
+        // Update reserves
+        let validator_amount: u128 = amount_validator_token
+            .try_into()
+            .map_err(|_| TIPFeeAMMError::invalid_amount())?;
+
+        pool.reserve_validator_token = pool
+            .reserve_validator_token
+            .checked_add(validator_amount)
+            .ok_or(TIPFeeAMMError::invalid_amount())?;
+
+        self.set_pool(pool_id, &pool)?;
+
+        // Mint LP tokens
+        let current_total_supply = self.get_total_supply(pool_id)?;
+        self.set_total_supply(
+            pool_id,
+            current_total_supply
+                .checked_add(liquidity)
+                .ok_or(TempoPrecompileError::under_overflow())?,
+        )?;
+
+        let balance = self.get_balance_of(pool_id, to)?;
+        self.set_balance_of(
+            pool_id,
+            to,
+            balance
+                .checked_add(liquidity)
+                .ok_or(TempoPrecompileError::under_overflow())?,
+        )?;
+
+        // Emit Mint event
+        self.storage.emit_event(
+            self.contract_address,
+            TIPFeeAMMEvent::Mint(ITIPFeeAMM::Mint {
+                sender: msg_sender,
+                userToken: user_token,
+                validatorToken: validator_token,
+                amountUserToken: U256::ZERO,
+                amountValidatorToken: amount_validator_token,
+                liquidity,
+            })
+            .into_log_data(),
+        )?;
+
+        Ok(liquidity)
+    }
+
     /// Burn LP tokens for a given pool
     pub fn burn(
         &mut self,

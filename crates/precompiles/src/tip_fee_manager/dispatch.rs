@@ -75,6 +75,11 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
             ITIPFeeAMM::mintCall::SELECTOR => {
                 mutate::<ITIPFeeAMM::mintCall>(calldata, msg_sender, |s, call| self.mint(s, call))
             }
+            ITIPFeeAMM::mintWithValidatorTokenCall::SELECTOR => {
+                mutate::<ITIPFeeAMM::mintWithValidatorTokenCall>(calldata, msg_sender, |s, call| {
+                    self.mint_with_validator_token(s, call)
+                })
+            }
             ITIPFeeAMM::burnCall::SELECTOR => {
                 mutate::<ITIPFeeAMM::burnCall>(calldata, msg_sender, |s, call| self.burn(s, call))
             }
