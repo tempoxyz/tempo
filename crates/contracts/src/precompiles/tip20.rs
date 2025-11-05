@@ -62,6 +62,11 @@ sol! {
         function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
         function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external returns (bool);
 
+        function PAUSE_ROLE() external view returns (bytes32);
+        function UNPAUSE_ROLE() external view returns (bytes32);
+        function ISSUER_ROLE() external view returns (bytes32);
+        function BURN_BLOCKED_ROLE() external view returns (bytes32);
+
         // Admin Functions
         function changeTransferPolicyId(uint64 newPolicyId) external;
         function setSupplyCap(uint256 newSupplyCap) external;

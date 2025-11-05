@@ -2,7 +2,7 @@ use super::ITIP20;
 use crate::{
     Precompile, input_cost, metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
-    tip20::{IRolesAuth, TIP20Token},
+    tip20::{self, IRolesAuth, TIP20Token},
     view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
@@ -51,6 +51,20 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             }
             ITIP20::nextQuoteTokenCall::SELECTOR => {
                 view::<ITIP20::nextQuoteTokenCall>(calldata, |_| self.next_quote_token())
+            }
+
+            // Role constants
+            ITIP20::PAUSE_ROLECall::SELECTOR => {
+                metadata::<ITIP20::PAUSE_ROLECall>(|| Ok(*tip20::PAUSE_ROLE))
+            }
+            ITIP20::UNPAUSE_ROLECall::SELECTOR => {
+                metadata::<ITIP20::UNPAUSE_ROLECall>(|| Ok(*tip20::UNPAUSE_ROLE))
+            }
+            ITIP20::ISSUER_ROLECall::SELECTOR => {
+                metadata::<ITIP20::ISSUER_ROLECall>(|| Ok(*tip20::ISSUER_ROLE))
+            }
+            ITIP20::BURN_BLOCKED_ROLECall::SELECTOR => {
+                metadata::<ITIP20::BURN_BLOCKED_ROLECall>(|| Ok(*tip20::BURN_BLOCKED_ROLE))
             }
 
             // State changing functions
