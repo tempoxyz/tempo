@@ -677,7 +677,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.write_string(slots::SYMBOL, symbol.to_string())?;
         self.write_string(slots::CURRENCY, currency.to_string())?;
 
-        // Check if the currency is USD, if so then the quote token's currency MUST also be USD
+        // If the currency is USD, the quote token must also be USD
         if currency == USD_CURRENCY {
             let quote_token_currency =
                 TIP20Token::from_address(quote_token, self.storage).currency()?;
