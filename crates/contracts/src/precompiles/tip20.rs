@@ -106,7 +106,7 @@ sol! {
         event Mint(address indexed to, uint256 amount);
         event Burn(address indexed from, uint256 amount);
         event BurnBlocked(address indexed from, uint256 amount);
-        event TransferWithMemo(address indexed from, address indexed to, uint256 amount, bytes32 memo);
+        event TransferWithMemo(address indexed from, address indexed to, uint256 amount, bytes32 indexed memo);
         event TransferPolicyUpdate(address indexed updater, uint64 indexed newPolicyId);
         event SupplyCapUpdate(address indexed updater, uint256 indexed newSupplyCap);
         event PauseStateUpdate(address indexed updater, bool isPaused);
