@@ -947,6 +947,7 @@ mod tests {
         DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, storage::hashmap::HashMapStorageProvider,
         tip20_factory::ITIP20Factory,
     };
+    use rand::{Rng, distributions::Alphanumeric, thread_rng};
 
     /// Initialize a factory and create a single token
     fn setup_factory_with_token(
@@ -1721,6 +1722,57 @@ mod tests {
             ]
         );
         assert_eq!(&DEFAULT_FEE_TOKEN.as_slice()[..12], &TIP20_TOKEN_PREFIX);
+    }
+
+    #[test]
+    fn test_arbitrary_currency() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        // Generate random currency strings using FixedBytes up to the 31 character limit
+        for _ in 0..50 {
+            let mut token = TIP20Token::new(1, &mut storage);
+
+            let currency: String = thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(31)
+                .map(char::from)
+                .collect();
+
+            // Initialize token with the random currency
+            token.initialize("Test", "TST", &currency, LINKING_USD_ADDRESS, admin)?;
+
+            // Verify the currency was stored and can be retrieved correctly
+            let stored_currency = token.currency()?;
+            assert_eq!(stored_currency, currency,);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_invalid_currency_string() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        // Generate random currency strings longer than the 31 character limit
+        for _ in 0..10 {
+            let mut token = TIP20Token::new(1, &mut storage);
+
+            let currency: String = thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(32)
+                .map(char::from)
+                .collect();
+
+            let result = token.initialize("Test", "TST", &currency, LINKING_USD_ADDRESS, admin);
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::StringTooLong(_)))
+            ),);
+        }
+
+        Ok(())
     }
 
     #[test]
