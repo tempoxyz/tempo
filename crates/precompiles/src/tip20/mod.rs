@@ -956,7 +956,7 @@ mod tests {
         let mut factory = TIP20Factory::new(storage);
         factory.initialize().unwrap();
 
-        factory
+        let token_address = factory
             .create_token(
                 admin,
                 ITIP20Factory::createTokenCall {
@@ -967,8 +967,9 @@ mod tests {
                     admin,
                 },
             )
-            .unwrap()
-            .to::<u64>()
+            .unwrap();
+
+        address_to_token_id_unchecked(token_address)
     }
 
     /// Create a token via an already-initialized factory
@@ -979,7 +980,7 @@ mod tests {
         symbol: &str,
         quote_token: Address,
     ) -> u64 {
-        factory
+        let token_address = factory
             .create_token(
                 admin,
                 ITIP20Factory::createTokenCall {
@@ -990,8 +991,9 @@ mod tests {
                     admin,
                 },
             )
-            .unwrap()
-            .to::<u64>()
+            .unwrap();
+
+        address_to_token_id_unchecked(token_address)
     }
 
     /// Setup factory and create a token with a separate quote token (both linking to LINKING_USD)
