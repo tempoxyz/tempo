@@ -97,7 +97,11 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
         self.storage.sstore(
             TIP403_REGISTRY_ADDRESS,
             slots::POLICY_ID_COUNTER,
-            U256::from(new_policy_id.checked_add(1).ok_or(TempoPrecompileError::overflow_underflow())?),
+            U256::from(
+                new_policy_id
+                    .checked_add(1)
+                    .ok_or(TempoPrecompileError::overflow_underflow())?,
+            ),
         )?;
 
         // Store policy data
@@ -146,7 +150,11 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
         self.storage.sstore(
             TIP403_REGISTRY_ADDRESS,
             slots::POLICY_ID_COUNTER,
-            U256::from(new_policy_id.checked_add(1).ok_or(TempoPrecompileError::overflow_underflow())?),
+            U256::from(
+                new_policy_id
+                    .checked_add(1)
+                    .ok_or(TempoPrecompileError::overflow_underflow())?,
+            ),
         )?;
 
         // Store policy data

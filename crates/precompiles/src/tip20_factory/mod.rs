@@ -87,7 +87,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         self.storage.sstore(
             TIP20_FACTORY_ADDRESS,
             slots::TOKEN_ID_COUNTER,
-            token_id.checked_add(U256::ONE).ok_or(TempoPrecompileError::overflow_underflow())?,
+            token_id
+                .checked_add(U256::ONE)
+                .ok_or(TempoPrecompileError::overflow_underflow())?,
         )?;
 
         Ok(token_address)

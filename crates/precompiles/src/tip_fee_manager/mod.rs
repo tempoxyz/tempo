@@ -351,7 +351,12 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     fn increment_collected_fees(&mut self, amount: U256) -> Result<()> {
         let slot = collected_fees_slot();
         let current_fees = self.sload(slot)?;
-        self.sstore(slot, current_fees.checked_add(amount).ok_or(TempoPrecompileError::overflow_underflow())?)
+        self.sstore(
+            slot,
+            current_fees
+                .checked_add(amount)
+                .ok_or(TempoPrecompileError::overflow_underflow())?,
+        )
     }
 
     /// Get collected fees
