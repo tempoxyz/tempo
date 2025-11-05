@@ -239,7 +239,7 @@ where
             );
             self.backfill(
                 latest_execution_block_number.saturating_add(1),
-                latest_execution_block_number,
+                finalized_consensus_height,
             )
             .await
             .wrap_err(
