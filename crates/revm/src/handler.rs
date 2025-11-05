@@ -102,7 +102,9 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
         self.fee_token = get_fee_token(evm.ctx_mut())?;
-        validate_fee_token(evm.ctx_mut(), self.fee_token)?;
+        if !evm.ctx.tx.max_balance_spending()?.is_zero() {
+            validate_fee_token(evm.ctx_mut(), self.fee_token)?;
+        }
         self.fee_payer = evm.ctx().tx().fee_payer()?;
 
         Ok(())
