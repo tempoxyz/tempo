@@ -1397,7 +1397,8 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
     );
 
     // Check that the transaction in the block is our AA transaction
-    let block_tx = &batch_payload.block().body().transactions[0];
+    // Skip the rewards registry system tx at index 0
+    let block_tx = &batch_payload.block().body().transactions[1];
     if let TempoTxEnvelope::AA(aa_tx) = block_tx {
         assert_eq!(
             aa_tx.tx().calls.len(),
