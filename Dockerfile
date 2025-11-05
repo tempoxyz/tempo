@@ -1,6 +1,16 @@
-FROM rust:1.88-bookworm AS builder
+FROM rust:1.88-bookworm AS chef
 
-RUN cargo install cargo-chef sccache --locked
+RUN cargo install cargo-chef
+WORKDIR /app
+
+FROM chef AS planner
+
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
     pkg-config \
@@ -13,17 +23,12 @@ RUN apt-get update \
 ENV RUSTC_WRAPPER=sccache \
     SCCACHE_DIR=/sccache
 
-WORKDIR /app
-
 COPY Cargo.toml Cargo.lock ./
-
-RUN cargo chef prepare --recipe-path recipe.json
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
     cargo chef cook --release --recipe-path recipe.json
-
 
 # Copy workspace files
 COPY bin/ ./bin/
