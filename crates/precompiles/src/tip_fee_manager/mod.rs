@@ -8,7 +8,7 @@ pub use tempo_contracts::precompiles::{
 
 use crate::{
     DEFAULT_FEE_TOKEN,
-    error::{self, Result},
+    error::Result,
     storage::{PrecompileStorageProvider, StorageOps},
     tip_fee_manager::{
         amm::{PoolKey, TIPFeeAMM},
