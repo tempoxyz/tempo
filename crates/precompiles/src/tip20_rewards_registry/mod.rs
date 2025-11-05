@@ -76,6 +76,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         self.storage.sload(self.address, index_slot)
     }
 
+    fn set_stream_index(&mut self, stream_key: B256, index: U256) -> Result<()> {
+        let index_slot = mapping_slot(stream_key, slots::STREAM_INDEX);
+        self.storage.sstore(self.address, index_slot, index)
+    }
+
     fn remove_stream_index(&mut self, stream_key: B256) -> Result<()> {
         let index_slot = mapping_slot(stream_key, slots::STREAM_INDEX);
         self.storage.sstore(self.address, index_slot, U256::ZERO)
@@ -87,8 +92,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
 
         let array_slot = mapping_slot(end_time.to_be_bytes(), slots::STREAMS_ENDING_AT);
         let index = self.storage.sload(self.address, array_slot)?;
-        let index_slot = mapping_slot(stream_key, slots::STREAM_INDEX);
-        self.storage.sstore(self.address, index_slot, index)?;
+        self.set_stream_index(stream_key, index)?;
 
         self.push_stream_ending_at_timestamp(token, end_time)?;
 
@@ -119,8 +123,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
                 .sstore(self.address, current_element_slot, last_token.into_u256())?;
 
             let last_stream_key = keccak256((last_token, end_time).abi_encode());
-            let last_index_slot = mapping_slot(last_stream_key, slots::STREAM_INDEX);
-            self.storage.sstore(self.address, last_index_slot, index)?;
+            self.set_stream_index(last_stream_key, index)?;
         }
 
         // Update length of the array and remove the stream key from `streamIndex`
@@ -215,6 +218,95 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
 
         self.set_last_updated_timestamp(current_timestamp)?;
 
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
+        tip20::tests::initialize_linking_usd,
+    };
+
+    fn setup_registry(timestamp: u64) -> (HashMapStorageProvider, Address) {
+        let mut storage = HashMapStorageProvider::new(timestamp);
+        let admin = Address::random();
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        (storage, admin)
+    }
+
+    #[test]
+    fn test_get_set_last_updated_timestamp() -> eyre::Result<()> {
+        let (mut storage, _admin) = setup_registry(1000);
+        let mut registry = TIP20RewardsRegistry::new(&mut storage);
+        registry.initialize()?;
+
+        let initial_timestamp = registry.get_last_updated_timestamp()?;
+        assert_eq!(initial_timestamp, 0);
+
+        let new_timestamp = 5000u128;
+        registry.set_last_updated_timestamp(new_timestamp)?;
+
+        let updated_timestamp = registry.get_last_updated_timestamp()?;
+        assert_eq!(updated_timestamp, new_timestamp);
+
+        registry.set_last_updated_timestamp(u128::MAX)?;
+        let max_timestamp = registry.get_last_updated_timestamp()?;
+        assert_eq!(max_timestamp, u128::MAX);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_set_stream_index() -> eyre::Result<()> {
+        let (mut storage, _admin) = setup_registry(1000);
+        let mut registry = TIP20RewardsRegistry::new(&mut storage);
+        registry.initialize()?;
+
+        let token = Address::random();
+        let end_time = 2000u128;
+        let stream_key = keccak256((token, end_time).abi_encode());
+
+        let initial_index = registry.get_stream_index(stream_key)?;
+        assert_eq!(initial_index, U256::ZERO);
+
+        let test_index = U256::from(42);
+        registry.set_stream_index(stream_key, test_index)?;
+
+        let retrieved_index = registry.get_stream_index(stream_key)?;
+        assert_eq!(retrieved_index, test_index);
+
+        registry.remove_stream_index(stream_key)?;
+        let cleared_index = registry.get_stream_index(stream_key)?;
+        assert_eq!(cleared_index, U256::ZERO);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_add_stream() -> eyre::Result<()> {
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_stream() -> eyre::Result<()> {
+        Ok(())
+    }
+
+    #[test]
+    fn test_push_stream_ending_at_timestamp() -> eyre::Result<()> {
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_streams_ending_at_timestamp() -> eyre::Result<()> {
+        Ok(())
+    }
+
+    #[test]
+    fn test_finalize_streams() -> eyre::Result<()> {
         Ok(())
     }
 }
