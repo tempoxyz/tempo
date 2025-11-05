@@ -1,7 +1,7 @@
 //! Tempo-specific transaction validation errors.
 
 use alloy_evm::error::InvalidTxError;
-use alloy_primitives::U256;
+use alloy_primitives::{Address, U256};
 use revm::context::result::{EVMError, InvalidTransaction};
 
 /// Tempo-specific invalid transaction errors.
@@ -119,6 +119,10 @@ pub enum TempoInvalidTransaction {
     /// Subblock transaction must have zero fee.
     #[error("subblock transaction must have zero fee")]
     SubblockTransactionMustHaveZeroFee,
+
+    /// Invalid fee token.
+    #[error("invalid fee token: {0}")]
+    InvalidFeeToken(Address),
 }
 
 impl InvalidTxError for TempoInvalidTransaction {

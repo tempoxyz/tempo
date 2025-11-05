@@ -1,4 +1,4 @@
-use crate::{Precompile, input_cost, mutate, view};
+use crate::{Precompile, input_cost, mutate, tip20::is_tip20, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -29,6 +29,9 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Factory<'a, S> {
                 mutate::<ITIP20Factory::createTokenCall>(calldata, msg_sender, |s, call| {
                     self.create_token(s, call)
                 })
+            }
+            ITIP20Factory::isTIP20Call::SELECTOR => {
+                view::<ITIP20Factory::isTIP20Call>(calldata, |call| Ok(is_tip20(call.token)))
             }
             _ => Err(PrecompileError::Other(
                 "Unknown function selector".to_string(),

@@ -157,6 +157,7 @@ where
 mod tests {
     use super::*;
     use alloy_primitives::{Address, U256, bytes};
+    use reth_evm::EvmInternals;
     use revm::{
         ExecuteEvm,
         context::{ContextTr, TxEnv},
@@ -165,11 +166,28 @@ mod tests {
         state::{AccountInfo, Bytecode},
     };
     use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
+    use tempo_precompiles::{
+        LINKING_USD_ADDRESS, storage::evm::EvmPrecompileStorageProvider, tip20::TIP20Token,
+    };
 
     #[test]
     fn test_auto_7702_delegation() -> eyre::Result<()> {
         let db = CacheDB::new(EmptyDB::new());
-        let ctx = TempoContext::new(db, SpecId::default());
+        let mut ctx = TempoContext::new(db, SpecId::default());
+
+        // HACK: initialize default fee token and linkingUSD so that fee token validation passes
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
+            ctx.cfg.chain_id,
+        );
+        TIP20Token::new(0, &mut storage)
+            .initialize("USD", "USD", "USD", Address::ZERO, Address::ZERO)
+            .unwrap();
+        TIP20Token::new(1, &mut storage)
+            .initialize("USD", "USD", "USD", LINKING_USD_ADDRESS, Address::ZERO)
+            .unwrap();
+        drop(storage);
+
         let mut tempo_evm = TempoEvm::new(ctx, ());
 
         let caller_0 = Address::random();
@@ -199,6 +217,19 @@ mod tests {
             block.timestamp_millis_part = 100;
         });
         let contract = Address::random();
+
+        // HACK: initialize default fee token and linkingUSD so that fee token validation passes
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
+            ctx.cfg.chain_id,
+        );
+        TIP20Token::new(0, &mut storage)
+            .initialize("USD", "USD", "USD", Address::ZERO, Address::ZERO)
+            .unwrap();
+        TIP20Token::new(1, &mut storage)
+            .initialize("USD", "USD", "USD", LINKING_USD_ADDRESS, Address::ZERO)
+            .unwrap();
+        drop(storage);
 
         // Create a simple contract that returns output of the opcode.
         ctx.db_mut().insert_account_info(

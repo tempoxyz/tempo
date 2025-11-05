@@ -34,6 +34,7 @@ members = [
 # Resolver 3 is available with edition 2024
 resolver = "3"
 
+[workspace.lints]
 [workspace.lints.clippy]
 dbg-macro = "warn"
 manual-string-new = "warn"

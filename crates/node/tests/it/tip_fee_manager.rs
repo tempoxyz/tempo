@@ -10,9 +10,12 @@ use alloy::{
 use alloy_eips::{BlockId, Encodable2718};
 use alloy_network::{AnyReceiptEnvelope, EthereumWallet, TxSignerSync};
 use alloy_primitives::{Address, Signature, U256};
-use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
+use alloy_rpc_types_eth::TransactionTrait;
 use std::env;
-use tempo_contracts::precompiles::{IFeeManager, ITIP20, ITIPFeeAMM};
+use tempo_contracts::precompiles::{
+    IFeeManager, ITIP20,
+    ITIPFeeAMM::{self},
+};
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS};
 use tempo_primitives::{TxFeeToken, transaction::calc_gas_balance_spending};
 
@@ -34,6 +37,13 @@ async fn test_set_user_token() -> eyre::Result<()> {
     let user_token = setup_test_token(provider.clone(), user_address).await?;
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
+    user_token
+        .mint(user_address, U256::from(1e10))
+        .send()
+        .await?
+        .watch()
+        .await?;
+
     let initial_token = fee_manager.userTokens(user_address).call().await?;
     // Initial token should be predeployed token
     assert_eq!(initial_token, DEFAULT_FEE_TOKEN);
@@ -50,15 +60,21 @@ async fn test_set_user_token() -> eyre::Result<()> {
         .call()
         .await?;
 
-    let receipt = provider
-        .send_transaction(
-            TransactionRequest::default()
-                .to(Address::ZERO)
-                .input(Default::default()),
+    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+
+    let receipt = fee_amm
+        .mint(
+            *user_token.address(),
+            DEFAULT_FEE_TOKEN,
+            U256::from(1e8),
+            U256::from(1e8),
+            user_address,
         )
+        .send()
         .await?
         .get_receipt()
         .await?;
+    assert!(receipt.status());
 
     let expected_cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price);
 

@@ -1,10 +1,22 @@
-FROM rust:1.88-bookworm AS builder
+FROM rust:1.88-bookworm AS chef
+
+RUN cargo install cargo-chef sccache
+
+ENV RUSTC_WRAPPER=sccache \
+    SCCACHE_DIR=/sccache
 
 WORKDIR /app
 
-# Install system dependencies
+FROM chef AS planner
+
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+
 RUN apt-get update \
-    && apt-get install -y \
+    && apt-get install --no-install-recommends -y \
     pkg-config \
     libssl-dev \
     build-essential \
@@ -12,29 +24,34 @@ RUN apt-get update \
     libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy workspace files
+ENV RUSTC_WRAPPER=sccache \
+    SCCACHE_DIR=/sccache
+
 COPY Cargo.toml Cargo.lock ./
-COPY bin/ ./bin/
-COPY crates/ ./crates/
-COPY xtask/ ./xtask/
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
+    cargo chef cook --release --recipe-path recipe.json
+
+COPY . .
 
 ARG RUST_BINARY
 ARG RUST_PROFILE
 ARG RUST_FEATURES
-ARG VERGEN_GIT_SHA=""
-ARG VERGEN_GIT_SHA_SHORT=""
-
-ENV VERGEN_GIT_SHA=${VERGEN_GIT_SHA:-}
-ENV VERGEN_GIT_SHA_SHORT=${VERGEN_GIT_SHA_SHORT:-}
+ARG VERGEN_GIT_SHA
+ARG VERGEN_GIT_SHA_SHORT
 
 # Install nightly Rust and build the tempo binary
-RUN rustup toolchain install nightly && rustup default nightly
-RUN cargo build --bin ${RUST_BINARY} --profile ${RUST_PROFILE} --features "${RUST_FEATURES}"
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
+    cargo build --bin tempo --profile release
 
 FROM debian:bookworm-slim
 
 # Install runtime dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

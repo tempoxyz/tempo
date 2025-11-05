@@ -1,4 +1,6 @@
-use crate::transaction::TempoPooledTransaction;
+use crate::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
+use alloy_consensus::Transaction;
+use alloy_sol_types::SolCall;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
@@ -6,9 +8,12 @@ use reth_primitives_traits::{
 use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
-    TransactionValidator,
+    TransactionValidator, error::InvalidPoolTransactionError,
 };
-use tempo_precompiles::provider::TIPFeeStateProviderExt;
+use tempo_precompiles::{
+    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, provider::TIPFeeStateProviderExt,
+    tip_fee_manager::IFeeManager::setUserTokenCall, tip20::is_tip20,
+};
 use tempo_primitives::TempoTxEnvelope;
 
 /// Validator for Tempo transactions.
@@ -58,9 +63,50 @@ where
             }
         };
 
-        let balance = match state_provider
-            .get_fee_token_balance(fee_payer, transaction.inner().fee_token())
+        let tx_fee_token = if let Some(fee_token) = transaction.inner().fee_token() {
+            Some(fee_token)
+        } else if !transaction.inner().is_aa()
+            && fee_payer == transaction.sender()
+            && transaction.inner().kind().to() == Some(&TIP_FEE_MANAGER_ADDRESS)
+            && let Ok(call) = setUserTokenCall::abi_decode(transaction.inner().input())
         {
+            Some(call.token)
+        } else {
+            None
+        };
+
+        if let Some(fee_token) = tx_fee_token {
+            if !is_tip20(fee_token) || fee_token == LINKING_USD_ADDRESS {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(TempoPoolTransactionError::InvalidFeeToken(
+                        fee_token,
+                    )),
+                );
+            }
+
+            let account = match state_provider.basic_account(&fee_token) {
+                Ok(code) => code,
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                }
+            };
+
+            if account.is_none_or(|acc| !acc.has_bytecode()) {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(TempoPoolTransactionError::InvalidFeeToken(
+                        fee_token,
+                    )),
+                );
+            }
+        }
+
+        let balance = match state_provider.get_fee_token_balance(
+            fee_payer,
+            tx_fee_token,
+            transaction.inner().kind().to(),
+        ) {
             Ok(balance) => balance,
             Err(err) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));

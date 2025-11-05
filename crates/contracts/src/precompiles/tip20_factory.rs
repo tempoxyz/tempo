@@ -5,7 +5,7 @@ sol! {
   #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc, abi)]
     interface ITIP20Factory {
-        event TokenCreated(address indexed token, uint256 indexed tokenId, string name, string symbol, string currency, address admin);
+        event TokenCreated(address indexed token, uint256 indexed tokenId, string name, string symbol, string currency, address quoteToken, address admin);
 
         function createToken(
             string memory name,
@@ -16,5 +16,7 @@ sol! {
         ) external returns (address);
 
         function tokenIdCounter() external view returns (uint256);
+
+        function isTIP20(address token) public view returns (bool);
     }
 }

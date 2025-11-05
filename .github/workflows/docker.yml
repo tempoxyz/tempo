@@ -12,10 +12,14 @@ env:
   REGISTRY: ghcr.io/tempoxyz
   IMAGE_NAME: tempo
 
+concurrency:
+  group: docker-${{ github.head_ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-and-push:
     name: Build and Push Docker Image
-    runs-on: depot-ubuntu-latest
+    runs-on: depot-ubuntu-latest-16
     strategy:
       matrix:
         binary: [tempo, tempo-xtask, tempo-bench, tempo-sidecar]

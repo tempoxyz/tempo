@@ -1945,4 +1945,37 @@ pub(crate) mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_is_tip20() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let sender = Address::random();
+        initialize_linking_usd(&mut storage, sender).unwrap();
+
+        let mut factory = TIP20Factory::new(&mut storage);
+
+        factory
+            .initialize()
+            .expect("Factory initialization should succeed");
+
+        factory
+            .initialize()
+            .expect("Factory initialization should succeed");
+        let call = ITIP20Factory::createTokenCall {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            currency: "USD".to_string(),
+            quoteToken: crate::LINKING_USD_ADDRESS,
+            admin: sender,
+        };
+
+        let created_tip20 = factory
+            .create_token(sender, call)
+            .expect("Token creation should succeed");
+        let non_tip20 = Address::random();
+
+        assert!(is_tip20(LINKING_USD_ADDRESS));
+        assert!(is_tip20(created_tip20));
+        assert!(!is_tip20(non_tip20));
+    }
 }

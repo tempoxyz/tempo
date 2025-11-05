@@ -78,6 +78,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
                 name: call.name,
                 symbol: call.symbol,
                 currency: call.currency,
+                quoteToken: call.quoteToken,
                 admin: call.admin,
             })
             .into_log_data(),
@@ -153,6 +154,7 @@ mod tests {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
             currency: "USD".to_string(),
+            quoteToken: crate::LINKING_USD_ADDRESS,
             admin: sender,
         });
         assert_eq!(factory_events[0], expected_event_0.into_log_data());
@@ -164,6 +166,7 @@ mod tests {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
             currency: "USD".to_string(),
+            quoteToken: crate::LINKING_USD_ADDRESS,
             admin: sender,
         });
 

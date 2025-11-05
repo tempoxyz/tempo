@@ -37,8 +37,8 @@ async fn test_base_fee() -> eyre::Result<()> {
         .expect("Could not get basefee");
     assert_eq!(base_fee, TEMPO_BASE_FEE as u128 as u64);
 
-    // Use the pre-deployed token from genesis (token 0)
-    let token_addr = token_id_to_address(0);
+    // Use the pre-deployed token from genesis (token 1)
+    let token_addr = token_id_to_address(1);
     let token = ITIP20::new(token_addr, provider.clone());
 
     // Gas limit is set to 200k in test-genesis.json, send 500 txs to exceed limit over multiple
