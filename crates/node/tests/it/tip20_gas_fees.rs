@@ -76,7 +76,8 @@ async fn test_fee_transfer_logs() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Ensure the native account balance is 0
-    assert_eq!(provider.get_balance(caller).await?, U256::ZERO);
+    let balance = provider.get_account_info(caller).await?.balance;
+    assert_eq!(balance, U256::ZERO);
 
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
     let fee_token_address = fee_manager.userTokens(caller).call().await?;
