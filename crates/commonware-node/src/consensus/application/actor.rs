@@ -20,6 +20,7 @@ use commonware_consensus::{
     Block as _,
     marshal::SchemeProvider as _,
     types::{Epoch, Round, View},
+    utils,
 };
 use commonware_macros::select;
 use commonware_runtime::{
@@ -52,7 +53,7 @@ use super::{
 use crate::{
     consensus::{Digest, block::Block},
     dkg::PublicOutcome,
-    epoch::{self, SchemeProvider},
+    epoch::SchemeProvider,
     subblocks,
 };
 
@@ -253,7 +254,8 @@ impl Inner<Init> {
         let source = if genesis.epoch == 0 {
             self.genesis_block.digest()
         } else {
-            let height = epoch::parent_height(genesis.epoch, self.epoch_length);
+            let height =
+                utils::last_block_in_epoch(self.epoch_length, genesis.epoch.saturating_sub(1));
             let Some((_, digest)) = self.marshal.get_info(height).await else {
                 // XXX: the None case here should not be hit:
                 // 1. an epoch transition is triggered by the application
@@ -463,8 +465,10 @@ impl Inner<Init> {
         // XXX: Re-propose the parent if the parent is the last height of the
         // epoch. parent.height+1 should be proposed as the first block of the
         // next epoch.
-        if epoch::is_last_height_of_epoch(parent.height(), round.epoch(), self.epoch_length) {
-            info!("last height of epoch reached; re-proposing parent");
+        if utils::is_last_block_in_epoch(self.epoch_length, parent.height())
+            .is_some_and(|e| e == round.epoch())
+        {
+            info!("parent is last height of epoch; re-proposing parent");
             return Ok(parent);
         }
 
@@ -483,11 +487,9 @@ impl Inner<Init> {
 
         // Query DKG manager for ceremony data before building payload
         // This data will be passed to the payload builder via attributes
-        let extra_data = if epoch::is_last_height_of_epoch(
-            parent.height() + 1,
-            round.epoch(),
-            self.epoch_length,
-        ) {
+        let extra_data = if utils::is_last_block_in_epoch(self.epoch_length, parent.height() + 1)
+            .is_some_and(|e| e == round.epoch())
+        {
             // At epoch boundary: include public ceremony outcome
             let outcome = self
                 .state
@@ -615,14 +617,18 @@ impl Inner<Init> {
         // immediately, and happen very rarely. It's better to optimize for the
         // general case.
         if payload == parent_digest {
-            if epoch::is_last_height_of_epoch(block.height(), round.epoch(), self.epoch_length) {
+            if utils::is_last_block_in_epoch(self.epoch_length, block.height())
+                .is_some_and(|e| e == round.epoch())
+            {
                 return Ok((block, true));
             } else {
                 return Ok((block, false));
             }
         }
 
-        if epoch::is_last_height_of_epoch(block.height(), round.epoch(), self.epoch_length) {
+        if utils::is_last_block_in_epoch(self.epoch_length, block.height())
+            .is_some_and(|e| e == round.epoch())
+        {
             let our_outcome = self
                 .state
                 .dkg_manager
@@ -774,7 +780,7 @@ async fn verify_block<TContext: Pacer>(
     scheme_provider: &SchemeProvider,
 ) -> eyre::Result<bool> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
-    if !epoch::contains_height(block.height(), epoch, epoch_length) {
+    if utils::epoch(epoch_length, block.height()) != epoch {
         info!("block does not belong to this epoch");
         return Ok(false);
     }

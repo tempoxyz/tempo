@@ -1,7 +1,4 @@
-use crate::{
-    consensus::Digest,
-    epoch::{self, SchemeProvider},
-};
+use crate::{consensus::Digest, epoch::SchemeProvider};
 use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
 use alloy_primitives::{Address, B256, BlockHash, Bytes, TxHash};
 use alloy_rlp::Decodable;
@@ -18,6 +15,7 @@ use commonware_consensus::{
         types::Activity,
     },
     types::Round,
+    utils,
 };
 use commonware_cryptography::{
     Signer, Verifier,
@@ -243,8 +241,7 @@ impl<TContext: Spawner + Metrics> Actor<TContext> {
             return;
         };
 
-        let epoch_of_next_block = epoch::of_height(header.number() + 1, self.epoch_length)
-            .expect("non-zero heights are guaranteed to have an epoch");
+        let epoch_of_next_block = utils::epoch(self.epoch_length, header.number() + 1);
 
         // Can't proceed without knowing a validator set for the current epoch.
         let Some(scheme) = self.scheme_provider.scheme(epoch_of_next_block) else {
@@ -600,9 +597,7 @@ async fn validate_subblock(
 
     let mut evm = evm_at_block(&node, subblock.parent_hash)?;
 
-    let epoch = epoch::of_height(evm.block().number.to::<u64>() + 1, epoch_length)
-        .ok_or_eyre("failed to compute epoch from block number")?;
-
+    let epoch = utils::epoch(epoch_length, evm.block().number.to::<u64>() + 1);
     let scheme = scheme_provider
         .scheme(epoch)
         .ok_or_eyre("scheme not found")?;
