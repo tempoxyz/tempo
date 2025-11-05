@@ -84,7 +84,7 @@ impl From<Verify> for Message {
 /// executor actor.
 ///
 /// This enum unwraps `Update<Block>` into this `Finalized` enum so that
-/// a `reponse` channel is attached to a block-finalization.
+/// a `response` channel is attached to a block-finalization.
 ///
 /// The reason is that the marshal actor expects blocks finzalitions to be
 /// acknowledged by the application.
@@ -223,7 +223,7 @@ impl Reporter for Mailbox {
         // Response on this channel -> future returns -> marshaller gets an ack
         if let Some(rx) = rx {
             // TODO(janis): commonware does not distinguish between the channel
-            // getting dropped or receiving a response. But thsi is something
+            // getting dropped or receiving a response. But this is something
             // that needs be handled by them.
             let _ = rx.await;
         }
