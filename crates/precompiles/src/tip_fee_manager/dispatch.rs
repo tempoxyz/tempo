@@ -416,7 +416,7 @@ mod tests {
 
         // Should return liquidity amount
         let liquidity = U256::abi_decode(&result.bytes)?;
-        
+
         // For first mint with validator token only, liquidity should be (amount / 2) - MIN_LIQUIDITY
         // MIN_LIQUIDITY = 1000, so (10000 / 2) - 1000 = 4000
         assert_eq!(liquidity, U256::from(4000u64));
@@ -428,7 +428,7 @@ mod tests {
         };
         let pool_result = fee_manager.call(&Bytes::from(pool_call.abi_encode()), user)?;
         let pool = ITIPFeeAMM::Pool::abi_decode(&pool_result.bytes)?;
-        
+
         assert_eq!(pool.reserveUserToken, 0);
         assert_eq!(pool.reserveValidatorToken, 10000);
 
@@ -440,10 +440,13 @@ mod tests {
         let pool_id_result = fee_manager.call(&Bytes::from(pool_id_call.abi_encode()), user)?;
         let pool_id = B256::abi_decode(&pool_id_result.bytes)?;
 
-        let balance_call = ITIPFeeAMM::liquidityBalancesCall { poolId: pool_id, user: to };
+        let balance_call = ITIPFeeAMM::liquidityBalancesCall {
+            poolId: pool_id,
+            user: to,
+        };
         let balance_result = fee_manager.call(&Bytes::from(balance_call.abi_encode()), user)?;
         let balance = U256::abi_decode(&balance_result.bytes)?;
-        
+
         assert_eq!(balance, liquidity);
 
         Ok(())
