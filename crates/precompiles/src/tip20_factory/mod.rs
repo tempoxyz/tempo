@@ -252,11 +252,9 @@ mod tests {
             admin: sender,
         };
 
-        let token_addr_0 = factory
+        let created_tip20 = factory
             .create_token(sender, call)
             .expect("Token creation should succeed");
-
-        let created_tip20 = token_addr_0;
         let non_tip20 = Address::random();
 
         assert!(
