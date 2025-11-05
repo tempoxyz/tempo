@@ -91,6 +91,19 @@ pub struct TipFeeManager<'a, S: PrecompileStorageProvider> {
     storage: &'a mut S,
 }
 
+/// Validates that a token has USD currency
+pub fn validate_usd_currency<S: PrecompileStorageProvider>(
+    token: Address,
+    storage: &mut S,
+) -> Result<(), TempoPrecompileError> {
+    let mut tip20_token = TIP20Token::from_address(token, storage);
+    let currency = tip20_token.currency()?;
+    if keccak256(currency.as_bytes()) != keccak256(USD_CURRENCY.as_bytes()) {
+        return Err(FeeManagerError::invalid_token().into());
+    }
+    Ok(())
+}
+
 impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     // Constants
     pub const FEE_BPS: u64 = 25; // 0.25% fee
@@ -143,11 +156,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         }
 
         // Validate that the fee token is USD
-        let mut tip20_token = TIP20Token::from_address(call.token, self.storage);
-        let currency = tip20_token.currency()?;
-        if keccak256(currency.as_bytes()) != keccak256(USD_CURRENCY.as_bytes()) {
-            return Err(FeeManagerError::invalid_token().into());
-        }
+        validate_usd_currency(call.token, self.storage)?;
 
         let slot = validator_token_slot(sender);
         self.sstore(slot, call.token.into_u256())?;
@@ -172,12 +181,8 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             return Err(FeeManagerError::invalid_token().into());
         }
 
-        // Validate USD currency requirement
-        let mut tip20_token = TIP20Token::from_address(call.token, self.storage);
-        let currency = tip20_token.currency()?;
-        if keccak256(currency.as_bytes()) != keccak256(USD_CURRENCY.as_bytes()) {
-            return Err(FeeManagerError::invalid_token().into());
-        }
+        // Validate that the fee token is USD
+        validate_usd_currency(call.token, self.storage)?;
 
         let slot = user_token_slot(sender);
         self.sstore(slot, call.token.into_u256())?;
