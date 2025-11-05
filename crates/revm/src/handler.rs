@@ -35,12 +35,12 @@ use tempo_contracts::{
     precompiles::{FeeManagerError, IFeeManager},
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{evm::EvmPrecompileStorageProvider, slots::mapping_slot},
     tip_fee_manager::{self, TipFeeManager},
-    tip20::{self, is_tip20},
+    tip20::{self, TIP20Token, USD_CURRENCY, address_to_token_id_unchecked, is_tip20},
 };
 use tempo_primitives::transaction::{AASignature, calc_gas_balance_spending};
 
@@ -102,6 +102,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
         self.fee_token = get_fee_token(evm.ctx_mut())?;
+        validate_fee_token(evm.ctx_mut(), self.fee_token)?;
         self.fee_payer = evm.ctx().tx().fee_payer()?;
 
         Ok(())
@@ -900,6 +901,45 @@ where
     Ok(batch_gas)
 }
 
+/// Validates that token can be used for fee payments.
+pub fn validate_fee_token<DB>(
+    ctx: &mut TempoContext<DB>,
+    fee_token: Address,
+) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>>
+where
+    DB: alloy_evm::Database,
+{
+    if !is_tip20(fee_token) || fee_token == LINKING_USD_ADDRESS {
+        return Err(TempoInvalidTransaction::InvalidFeeToken(fee_token).into());
+    }
+
+    // Ensure that token is initialized
+    if !ctx
+        .journaled_state
+        .load_account(fee_token)?
+        .data
+        .info
+        .is_empty_code_hash()
+    {
+        return Err(TempoInvalidTransaction::InvalidFeeToken(fee_token).into());
+    }
+
+    let token_id = address_to_token_id_unchecked(fee_token);
+
+    let mut storage = EvmPrecompileStorageProvider::new_max_gas(
+        EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
+        ctx.cfg.chain_id,
+    );
+
+    let currency = TIP20Token::new(token_id, &mut storage)
+        .currency()
+        .map_err(|e| EVMError::Custom(e.to_string()))?;
+    if currency != USD_CURRENCY {
+        return Err(TempoInvalidTransaction::InvalidFeeToken(fee_token).into());
+    }
+    Ok(())
+}
+
 /// Looks up the user's fee token in the `TIPFeemanager` contract.
 ///
 /// If no fee token is set for the user, or the fee token is the zero address, the returned fee token will be the validator's fee token.
@@ -920,7 +960,6 @@ where
     if ctx.tx().fee_payer()? == ctx.tx().caller()
         && ctx.tx().kind().to() == Some(&TIP_FEE_MANAGER_ADDRESS)
         && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(ctx.tx().input())
-        && is_tip20(call.token)
     {
         return Ok(call.token);
     }
