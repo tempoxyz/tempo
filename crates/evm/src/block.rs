@@ -140,19 +140,14 @@ where
         let to = tx.to().unwrap_or_default();
 
         // Handle start-of-block system transaction (rewards registry)
+        // Only enforce this restriction when we haven't seen the rewards registry yet
         if let BlockSection::StartOfBlock {
-            seen_tip20_rewards_registry,
+            seen_tip20_rewards_registry: false,
         } = self.section
         {
             if to != TIP20_REWARDS_REGISTRY_ADDRESS {
                 return Err(BlockValidationError::msg(
                     "only rewards registry system transaction allowed at start of block",
-                ));
-            }
-
-            if seen_tip20_rewards_registry {
-                return Err(BlockValidationError::msg(
-                    "duplicate TIP20 rewards registry system transaction",
                 ));
             }
 
