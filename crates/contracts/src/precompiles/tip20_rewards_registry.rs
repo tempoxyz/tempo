@@ -3,6 +3,7 @@ use alloy::sol;
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
+    #[sol(rpc, abi)]
     interface ITIP20RewardsRegistry {
         /// Finalize streams for all tokens ending at the current timestamp
         function finalizeStreams() external;

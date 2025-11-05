@@ -9,7 +9,7 @@ sol! {
     /// Validators can update their own information, rotate their identity to a new address,
     /// and the owner can manage validator status.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc)]
+    #[sol(rpc, abi)]
     interface IValidatorConfig {
         /// Validator information
         struct Validator {
