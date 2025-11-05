@@ -12,7 +12,7 @@ use reth_transaction_pool::{
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, provider::TIPFeeStateProviderExt,
-    tip_fee_manager::IFeeManager::setUserTokenCall, tip20::is_tip20,
+    tip_fee_manager::IFeeManager::setUserTokenCall,
 };
 use tempo_primitives::TempoTxEnvelope;
 
@@ -68,14 +68,17 @@ where
         } else if fee_payer == transaction.sender()
             && transaction.inner().kind().to() == Some(&TIP_FEE_MANAGER_ADDRESS)
             && let Ok(call) = setUserTokenCall::abi_decode(transaction.inner().input())
-            && is_tip20(call.token)
         {
             Some(call.token)
         } else {
             None
         };
 
-        let balance = match state_provider.get_fee_token_balance(fee_payer, tx_fee_token) {
+        let balance = match state_provider.get_fee_token_balance(
+            fee_payer,
+            tx_fee_token,
+            transaction.inner().kind().to(),
+        ) {
             Ok(balance) => balance,
             Err(err) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
