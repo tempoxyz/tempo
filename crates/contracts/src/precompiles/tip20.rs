@@ -79,8 +79,23 @@ sol! {
             uint256 deadline;
         }
         function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
-        function DOMAIN_SEPARATOR() external view returns (bytes32);
 
+        function DOMAIN_SEPARATOR() external view returns (bytes32);
+        /// @notice Returns the role identifier for pausing the contract
+        /// @return The pause role identifier
+        function PAUSE_ROLE() external view returns (bytes32);
+
+        /// @notice Returns the role identifier for unpausing the contract
+        /// @return The unpause role identifier
+        function UNPAUSE_ROLE() external view returns (bytes32);
+
+        /// @notice Returns the role identifier for issuing tokens
+        /// @return The issuer role identifier
+        function ISSUER_ROLE() external view returns (bytes32);
+
+        /// @notice Returns the role identifier for burning tokens from blocked accounts
+        /// @return The burn blocked role identifier
+        function BURN_BLOCKED_ROLE() external view returns (bytes32);
 
 
         struct RewardStream {
