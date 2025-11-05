@@ -34,10 +34,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
     cargo chef cook --release --recipe-path recipe.json
 
-# Copy workspace files
-COPY bin/ ./bin/
-COPY crates/ ./crates/
-COPY xtask/ ./xtask/
+COPY . .
 
 ARG RUST_BINARY
 ARG RUST_PROFILE
