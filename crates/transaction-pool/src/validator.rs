@@ -65,7 +65,8 @@ where
 
         let tx_fee_token = if let Some(fee_token) = transaction.inner().fee_token() {
             Some(fee_token)
-        } else if fee_payer == transaction.sender()
+        } else if !transaction.inner().is_aa()
+            && fee_payer == transaction.sender()
             && transaction.inner().kind().to() == Some(&TIP_FEE_MANAGER_ADDRESS)
             && let Ok(call) = setUserTokenCall::abi_decode(transaction.inner().input())
         {

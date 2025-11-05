@@ -211,6 +211,11 @@ impl TempoTxEnvelope {
             _ => None,
         }
     }
+
+    /// Returns true if this is an AA transaction
+    pub fn is_aa(&self) -> bool {
+        matches!(self, Self::AA(_))
+    }
 }
 
 impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {

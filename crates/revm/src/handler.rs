@@ -957,7 +957,8 @@ where
     // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
     // new preference, the newly set preference should be used immediately instead of the
     // previously stored one
-    if ctx.tx().fee_payer()? == ctx.tx().caller()
+    if ctx.tx().aa_tx_env.is_none()
+        && ctx.tx().fee_payer()? == ctx.tx().caller()
         && ctx.tx().kind().to() == Some(&TIP_FEE_MANAGER_ADDRESS)
         && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(ctx.tx().input())
     {
@@ -978,7 +979,8 @@ where
     }
 
     // If tx.to() is a TIP-20 token, use that token as the fee token
-    if let Some(&to_addr) = ctx.tx().kind().to()
+    if ctx.tx().aa_tx_env.is_none()
+        && let Some(&to_addr) = ctx.tx().kind().to()
         && is_tip20(to_addr)
     {
         return Ok(to_addr);
