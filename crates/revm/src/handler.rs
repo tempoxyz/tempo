@@ -914,7 +914,7 @@ where
     }
 
     // Ensure that token is initialized
-    if !ctx
+    if ctx
         .journaled_state
         .load_account(fee_token)?
         .data

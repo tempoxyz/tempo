@@ -490,12 +490,14 @@ where
                 .unwrap_or_default();
 
             let execution_start = Instant::now();
+            println!("{tx:?}");
             let gas_used = match builder.execute_transaction(tx) {
                 Ok(gas_used) => gas_used,
                 Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                     error,
                     ..
                 })) => {
+                    println!("ERR {error:?}");
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
                         trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
