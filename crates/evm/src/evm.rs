@@ -78,12 +78,12 @@ impl<DB: Database> TempoEvm<DB> {
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Provides a reference to the EVM context.
     pub const fn ctx(&self) -> &TempoContext<DB> {
-        &self.inner.0.ctx
+        &self.inner.inner.ctx
     }
 
     /// Provides a mutable reference to the EVM context.
     pub fn ctx_mut(&mut self) -> &mut TempoContext<DB> {
-        &mut self.inner.0.ctx
+        &mut self.inner.inner.ctx
     }
 
     /// Sets the inspector for the EVM.
@@ -194,7 +194,7 @@ where
             cfg: cfg_env,
             journaled_state,
             ..
-        } = self.inner.0.ctx;
+        } = self.inner.inner.ctx;
 
         (journaled_state.database, EvmEnv { block_env, cfg_env })
     }
@@ -205,17 +205,17 @@ where
 
     fn components(&self) -> (&Self::DB, &Self::Inspector, &Self::Precompiles) {
         (
-            &self.inner.0.ctx.journaled_state.database,
-            &self.inner.0.inspector,
-            &self.inner.0.precompiles,
+            &self.inner.inner.ctx.journaled_state.database,
+            &self.inner.inner.inspector,
+            &self.inner.inner.precompiles,
         )
     }
 
     fn components_mut(&mut self) -> (&mut Self::DB, &mut Self::Inspector, &mut Self::Precompiles) {
         (
-            &mut self.inner.0.ctx.journaled_state.database,
-            &mut self.inner.0.inspector,
-            &mut self.inner.0.precompiles,
+            &mut self.inner.inner.ctx.journaled_state.database,
+            &mut self.inner.inner.inspector,
+            &mut self.inner.inner.precompiles,
         )
     }
 }

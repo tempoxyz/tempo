@@ -1,5 +1,6 @@
 use crate::{TempoBlockEnv, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
+use alloy_primitives::Log;
 use revm::{
     Context, Inspector,
     context::{CfgEnv, ContextError, Evm, FrameStack},
@@ -18,16 +19,20 @@ pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv, DB>;
 /// TempoEvm extends the Evm with Tempo specific types and logic.
 #[derive(Debug, derive_more::Deref, derive_more::DerefMut)]
 #[expect(clippy::type_complexity)]
-pub struct TempoEvm<DB: Database, I>(
+pub struct TempoEvm<DB: Database, I> {
     /// Inner EVM type.
-    pub  Evm<
+    #[deref]
+    #[deref_mut]
+    pub inner: Evm<
         TempoContext<DB>,
         I,
         EthInstructions<EthInterpreter, TempoContext<DB>>,
         PrecompilesMap,
         EthFrame<EthInterpreter>,
     >,
-);
+    /// Preserved logs from the last transaction
+    pub logs: Vec<Log>,
+}
 
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
@@ -35,7 +40,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::default().precompiles);
         extend_tempo_precompiles(&mut precompiles, ctx.cfg.chain_id);
 
-        Self(Evm {
+        Self::new_inner(Evm {
             ctx,
             inspector,
             instruction: instructions::tempo_instructions(),
@@ -43,22 +48,46 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             frame_stack: FrameStack::new(),
         })
     }
+
+    /// Inner helper function to create a new Tempo EVM with empty logs.
+    #[inline]
+    #[expect(clippy::type_complexity)]
+    fn new_inner(
+        inner: Evm<
+            TempoContext<DB>,
+            I,
+            EthInstructions<EthInterpreter, TempoContext<DB>>,
+            PrecompilesMap,
+            EthFrame<EthInterpreter>,
+        >,
+    ) -> Self {
+        Self {
+            inner,
+            logs: Vec::new(),
+        }
+    }
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Consumed self and returns a new Evm type with given Inspector.
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
-        TempoEvm(self.0.with_inspector(inspector))
+        TempoEvm::new_inner(self.inner.with_inspector(inspector))
     }
 
     /// Consumes self and returns a new Evm type with given Precompiles.
     pub fn with_precompiles(self, precompiles: PrecompilesMap) -> Self {
-        Self(self.0.with_precompiles(precompiles))
+        Self::new_inner(self.inner.with_precompiles(precompiles))
     }
 
     /// Consumes self and returns the inner Inspector.
     pub fn into_inspector(self) -> I {
-        self.0.into_inspector()
+        self.inner.into_inspector()
+    }
+
+    /// Take logs from the EVM.
+    #[inline]
+    pub fn take_logs(&mut self) -> Vec<Log> {
+        std::mem::take(&mut self.logs)
     }
 }
 
@@ -79,7 +108,7 @@ where
         &Self::Precompiles,
         &FrameStack<Self::Frame>,
     ) {
-        self.0.all()
+        self.inner.all()
     }
 
     fn all_mut(
@@ -90,11 +119,11 @@ where
         &mut Self::Precompiles,
         &mut FrameStack<Self::Frame>,
     ) {
-        self.0.all_mut()
+        self.inner.all_mut()
     }
 
     fn frame_stack(&mut self) -> &mut FrameStack<Self::Frame> {
-        &mut self.0.frame_stack
+        &mut self.inner.frame_stack
     }
 
     fn frame_init(
@@ -104,11 +133,11 @@ where
         ItemOrResult<&mut Self::Frame, <Self::Frame as FrameTr>::FrameResult>,
         ContextError<DB::Error>,
     > {
-        self.0.frame_init(frame_input)
+        self.inner.frame_init(frame_input)
     }
 
     fn frame_run(&mut self) -> Result<FrameInitOrResult<Self::Frame>, ContextError<DB::Error>> {
-        self.0.frame_run()
+        self.inner.frame_run()
     }
 
     #[doc = " Returns the result of the frame to the caller. Frame is popped from the frame stack."]
@@ -117,7 +146,7 @@ where
         &mut self,
         result: <Self::Frame as FrameTr>::FrameResult,
     ) -> Result<Option<<Self::Frame as FrameTr>::FrameResult>, ContextError<DB::Error>> {
-        self.0.frame_return_result(result)
+        self.inner.frame_return_result(result)
     }
 }
 
@@ -137,7 +166,7 @@ where
         &FrameStack<Self::Frame>,
         &Self::Inspector,
     ) {
-        self.0.all_inspector()
+        self.inner.all_inspector()
     }
 
     fn all_mut_inspector(
@@ -149,7 +178,7 @@ where
         &mut FrameStack<Self::Frame>,
         &mut Self::Inspector,
     ) {
-        self.0.all_mut_inspector()
+        self.inner.all_mut_inspector()
     }
 }
 
