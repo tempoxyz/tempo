@@ -187,16 +187,16 @@ alloy-signer = "1.0.41"
 alloy-signer-local = "1.0.41"
 arbitrary = { version = "1.3", features = ["derive"] }
 
-commonware-broadcast = "0.0.63"
-commonware-codec = "0.0.63"
-commonware-consensus = "0.0.63"
-commonware-cryptography = "0.0.63"
-commonware-macros = "0.0.63"
-commonware-p2p = "0.0.63"
-commonware-resolver = "0.0.63"
-commonware-runtime = "0.0.63"
-commonware-storage = "0.0.63"
-commonware-utils = "0.0.63"
+commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "6c33e7dcf30cdd8949edb1fc0d74997f427085d4" }
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "6c33e7dcf30cdd8949edb1fc0d74997f427085d4" }
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "6c33e7dcf30cdd8949edb1fc0d74997f427085d4" }
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "6c33e7dcf30cdd8949edb1fc0d74997f427085d4" }
+commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "6c33e7dcf30cdd8949edb1fc0d74997f427085d4" }
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "6c33e7dcf30cdd8949edb1fc0d74997f427085d4" }
+commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "6c33e7dcf30cdd8949edb1fc0d74997f427085d4" }
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "6c33e7dcf30cdd8949edb1fc0d74997f427085d4" }
+commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "6c33e7dcf30cdd8949edb1fc0d74997f427085d4" }
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "6c33e7dcf30cdd8949edb1fc0d74997f427085d4" }
 
 anyhow = "1.0.98"
 async-trait = "0.1"

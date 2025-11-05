@@ -83,7 +83,7 @@ pub async fn setup_validators(
 ) -> (Vec<ValidatorNode>, simulated::Oracle<PublicKey>) {
     let threshold = quorum(how_many);
 
-    let (network, oracle) = Network::new(
+    let (network, mut oracle) = Network::new(
         context.with_label("network"),
         simulated::Config {
             max_size: 1024 * 1024,
@@ -104,13 +104,6 @@ pub async fn setup_validators(
     let validators: Ordered<_> = validators.into();
     signers.sort_by_key(|s| s.public_key());
 
-    let (polynomial, shares) =
-        ops::generate_shares::<_, MinSig>(&mut context, None, how_many, threshold);
-
-    let mut public_keys = HashSet::new();
-    let mut nodes = Vec::new();
-    let mut execution_nodes: Vec<ExecutionNode> = Vec::with_capacity(how_many as usize);
-
     // XXX: The actual port here does not matter because in the simulated p2p
     // oracle it will be ignored.
     let unresolved_peers: OrderedAssociated<_, _> = validators
@@ -119,6 +112,14 @@ pub async fn setup_validators(
         .map(|validator| (validator, SocketAddr::from(([127, 0, 0, 1], 0)).to_string()))
         .collect::<Vec<_>>()
         .into();
+    link_validators(&mut oracle, unresolved_peers.keys().as_ref(), linkage, None).await;
+
+    let (polynomial, shares) =
+        ops::generate_shares::<_, MinSig>(&mut context, None, how_many, threshold);
+
+    let mut public_keys = HashSet::new();
+    let mut nodes = Vec::new();
+    let mut execution_nodes: Vec<ExecutionNode> = Vec::with_capacity(how_many as usize);
 
     for i in 0..how_many {
         let node = execution_runtime
@@ -147,7 +148,7 @@ pub async fn setup_validators(
             fee_recipient: alloy_primitives::Address::ZERO,
             execution_node: node.node.clone(),
             blocker: oracle.control(public_key.clone()),
-            peer_manager: Oracle::from_simulated(oracle.clone()).with_linkage(linkage.clone()),
+            peer_manager: oracle.socket_manager(),
             partition_prefix: uid.clone(),
             signer: signer.clone(),
             polynomial: polynomial.clone(),
@@ -331,81 +332,4 @@ pub fn get_pipeline_runs(recorder: &PrometheusRecorder) -> u64 {
         .find(|line| line.starts_with("reth_consensus_engine_beacon_pipeline_runs"))
         .and_then(|line| line.split_whitespace().nth(1)?.parse().ok())
         .unwrap_or(0)
-}
-
-/// A wrapper of a [`simulated::Oracle`] that can be used in lookup p2p environments.
-///
-/// It works by throwing away the socket addresses associated with the public
-/// keys and passing the keys on to the wrapped oracle.
-///
-/// This works because the simulated p2p environment is performing linkage
-/// for us.
-#[derive(Clone)]
-struct Oracle {
-    inner: simulated::Oracle<PublicKey>,
-    linkage: Option<Link>,
-}
-
-impl std::fmt::Debug for Oracle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Oracle")
-            .field("inner", &self.inner)
-            .field(
-                "linkage",
-                &self.linkage.as_ref().map_or("None", |_| "Some(<linkage>)"),
-            )
-            .finish()
-    }
-}
-
-impl Oracle {
-    fn from_simulated(inner: simulated::Oracle<PublicKey>) -> Self {
-        Self {
-            inner,
-            linkage: None,
-        }
-    }
-
-    fn with_linkage(self, linkage: Link) -> Self {
-        Self {
-            linkage: Some(linkage),
-            ..self
-        }
-    }
-}
-
-impl commonware_p2p::Manager for Oracle {
-    type PublicKey = PublicKey;
-
-    type Peers = OrderedAssociated<PublicKey, SocketAddr>;
-
-    fn update(&mut self, id: u64, peers: Self::Peers) -> impl Future<Output = ()> + Send {
-        let peers = peers.into_keys();
-        let mut this = self.clone();
-        async move {
-            this.inner.update(id, peers.clone()).await;
-            if let Some(linkage) = this.linkage.clone() {
-                link_validators(&mut this.inner, peers.as_ref(), linkage, None).await;
-            }
-        }
-    }
-
-    fn peer_set(
-        &mut self,
-        id: u64,
-    ) -> impl Future<Output = Option<commonware_utils::set::Ordered<Self::PublicKey>>> + Send {
-        self.inner.peer_set(id)
-    }
-
-    fn subscribe(
-        &mut self,
-    ) -> impl Future<
-        Output = futures::channel::mpsc::UnboundedReceiver<(
-            u64,
-            commonware_utils::set::Ordered<Self::PublicKey>,
-            commonware_utils::set::Ordered<Self::PublicKey>,
-        )>,
-    > + Send {
-        self.inner.subscribe()
-    }
 }
