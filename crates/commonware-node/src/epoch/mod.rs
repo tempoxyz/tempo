@@ -39,13 +39,7 @@ pub(crate) enum RelativePosition {
 pub(crate) fn relative_position(height: u64, epoch_length: u64) -> RelativePosition {
     let mid_point = epoch_length / 2;
 
-    // XXX: This is basically `(a+p)%p` like addition defined over a finite
-    // field (just that we usually don't have a finite field):
-    //
-    // + % epoch_length because we need to map 0 to the last height.
-    // + u64::rem_euclid because it's the same as `rem` or `%` for u64 but works
-    // in postfix notation without importing a trait.
-    let height_finite_field = height.saturating_add(epoch_length).rem_euclid(epoch_length);
+    let height_finite_field = height.rem_euclid(epoch_length);
 
     match height_finite_field.cmp(&mid_point) {
         std::cmp::Ordering::Less => RelativePosition::FirstHalf,
@@ -68,35 +62,41 @@ mod tests {
         use RelativePosition::*;
 
         assert_relative_position(FirstHalf, 0, 100);
-
         assert_relative_position(FirstHalf, 1, 100);
         assert_relative_position(Middle, 50, 100);
         assert_relative_position(SecondHalf, 51, 100);
-        assert_relative_position(SecondHalf, 52, 100);
-        assert_relative_position(FirstHalf, 100, 100);
+        assert_relative_position(SecondHalf, 99, 100);
 
+        assert_relative_position(FirstHalf, 100, 100);
         assert_relative_position(FirstHalf, 101, 100);
         assert_relative_position(Middle, 150, 100);
         assert_relative_position(SecondHalf, 151, 100);
-        assert_relative_position(SecondHalf, 152, 100);
+        assert_relative_position(SecondHalf, 199, 100);
+
         assert_relative_position(FirstHalf, 200, 100);
 
+        assert_relative_position(FirstHalf, 0, 99);
         assert_relative_position(FirstHalf, 1, 99);
         assert_relative_position(Middle, 49, 99);
         assert_relative_position(SecondHalf, 50, 99);
         assert_relative_position(SecondHalf, 51, 99);
-        assert_relative_position(FirstHalf, 99, 99);
+        assert_relative_position(SecondHalf, 98, 99);
 
+        assert_relative_position(FirstHalf, 99, 99);
         assert_relative_position(FirstHalf, 100, 99);
         assert_relative_position(Middle, 148, 99);
         assert_relative_position(SecondHalf, 149, 99);
-        assert_relative_position(SecondHalf, 150, 99);
+        assert_relative_position(SecondHalf, 197, 99);
+
         assert_relative_position(FirstHalf, 198, 99);
 
+        assert_relative_position(FirstHalf, 9, 199);
         assert_relative_position(FirstHalf, 1, 199);
         assert_relative_position(Middle, 99, 199);
         assert_relative_position(SecondHalf, 100, 199);
         assert_relative_position(SecondHalf, 101, 199);
+        assert_relative_position(SecondHalf, 198, 199);
+
         assert_relative_position(FirstHalf, 199, 199);
     }
 }
