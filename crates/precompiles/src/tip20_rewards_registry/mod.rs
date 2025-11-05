@@ -226,9 +226,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
 mod tests {
     use super::*;
     use crate::{
-        error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
-        tip20::tests::initialize_linking_usd,
+        LINKING_USD_ADDRESS,
+        error::TempoPrecompileError,
+        storage::hashmap::HashMapStorageProvider,
+        tip20::{ISSUER_ROLE, TIP20Token, tests::initialize_linking_usd},
+        tip20_rewards_registry::TIP20RewardsRegistry,
     };
+    use tempo_contracts::precompiles::ITIP20;
 
     fn setup_registry(timestamp: u64) -> (HashMapStorageProvider, Address) {
         let mut storage = HashMapStorageProvider::new(timestamp);
@@ -459,6 +463,72 @@ mod tests {
 
     #[test]
     fn test_finalize_streams() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_registry(1500);
+
+        // Create a TIP20 token and start a reward stream
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        // Mint tokens for the reward
+        let reward_amount = U256::from(100e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: admin,
+                amount: reward_amount,
+            },
+        )?;
+
+        // Start a reward stream that lasts 5 seconds from current time (1500)
+        let current_time = token.storage.timestamp().to::<u128>();
+        let stream_id = token.start_reward(
+            admin,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                secs: 5,
+            },
+        )?;
+        assert_eq!(stream_id, 1);
+
+        let end_time = current_time + 5;
+        let mut registry = TIP20RewardsRegistry::new(token.storage);
+        registry.initialize()?;
+
+        let token_addr = token.token_address;
+
+        // Test unauthorized caller
+        let unauthorized = Address::random();
+        let result = registry.finalize_streams(unauthorized);
+        assert!(matches!(
+            result.unwrap_err(),
+            TempoPrecompileError::TIP20RewardsRegistry(TIP20RewardsRegistryError::Unauthorized(_))
+        ));
+
+        let result = registry.finalize_streams(Address::ZERO);
+        assert!(result.is_ok());
+
+        // Verify the stream was added to registry at the correct end time
+        let streams_before = registry.get_streams_ending_at_timestamp(end_time)?;
+        assert_eq!(streams_before.len(), 1);
+        assert_eq!(streams_before[0], token_addr);
+
+        // Fast forward to the end time to simulate stream completion
+        registry.storage.set_timestamp(U256::from(end_time));
+        registry.finalize_streams(Address::ZERO)?;
+
+        let last_updated = registry.get_last_updated_timestamp()?;
+        assert_eq!(last_updated, end_time);
+
+        // Verify streams were cleared from the registry
+        let streams_after = registry.get_streams_ending_at_timestamp(end_time)?;
+        assert_eq!(streams_after.len(), 0);
+
+        let result = registry.finalize_streams(Address::ZERO);
+        assert!(result.is_ok());
+
         Ok(())
     }
 }
