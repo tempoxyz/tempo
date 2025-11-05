@@ -11,6 +11,8 @@ pub(crate) mod epoch;
 pub(crate) mod marshal_utils;
 pub mod metrics;
 
+pub mod subblocks;
+
 use std::net::SocketAddr;
 
 use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
@@ -25,7 +27,7 @@ use crate::config::{
     BOUNDARY_CERT_CHANNEL_IDENT, BOUNDARY_CERT_LIMIT, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
     DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, PENDING_CHANNEL_IDENT,
     PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT,
-    RESOLVER_LIMIT,
+    RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
 };
 
 pub async fn run_consensus_stack(
@@ -53,14 +55,13 @@ pub async fn run_consensus_stack(
         message_backlog,
     );
     let marshal = network.register(MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, message_backlog);
-
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT, message_backlog);
-
     let boundary_certificates = network.register(
         BOUNDARY_CERT_CHANNEL_IDENT,
         BOUNDARY_CERT_LIMIT,
         message_backlog,
     );
+    let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
     let consensus_engine = crate::consensus::engine::Builder {
         context: context.with_label("engine"),
@@ -88,6 +89,7 @@ pub async fn run_consensus_stack(
         views_to_track: config.timeouts.views_to_track,
         views_until_leader_skip: config.timeouts.views_until_leader_skip,
         new_payload_wait_time: config.timeouts.new_payload_wait_time,
+        time_to_build_subblock: config.timeouts.time_to_build_subblock,
     }
     .try_init()
     .await
@@ -103,6 +105,7 @@ pub async fn run_consensus_stack(
             marshal,
             dkg,
             boundary_certificates,
+            subblocks,
         ),
     );
 

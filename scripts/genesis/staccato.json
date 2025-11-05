@@ -102,5 +102,5 @@
       }
     }
   },
-  "baseFeePerGas": "0x2c"
+  "baseFeePerGas": "0x28048c5ec000"
 }

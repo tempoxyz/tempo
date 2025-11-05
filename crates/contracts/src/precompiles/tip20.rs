@@ -1,6 +1,9 @@
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
-use alloy::sol;
+use alloy::{
+    primitives::{Address, U256},
+    sol,
+};
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
@@ -34,8 +37,8 @@ sol! {
     #[allow(clippy::too_many_arguments)]
     interface ITIP20 {
         // Standard token functions
-        function name() external view returns (string);
-        function symbol() external view returns (string);
+        function name() external view returns (string memory);
+        function symbol() external view returns (string memory);
         function decimals() external view returns (uint8);
         function totalSupply() external view returns (uint256);
         function quoteToken() external view returns (address);
@@ -49,7 +52,7 @@ sol! {
         function burn(uint256 amount) external;
 
         // TIP20 Extension
-        function currency() external view returns (string);
+        function currency() external view returns (string memory);
         function supplyCap() external view returns (uint256);
         function paused() external view returns (bool);
         function transferPolicyId() external view returns (uint64);
@@ -89,11 +92,12 @@ sol! {
         }
 
         // Reward Functions
-        function startReward(uint256 amount, uint128 seconds) external returns (uint64);
+        function startReward(uint256 amount, uint32 secs) external returns (uint64);
         function setRewardRecipient(address recipient) external;
         function cancelReward(uint64 id) external returns (uint256);
+        function claimRewards() external returns (uint256);
         function finalizeStreams() external;
-        function getStream(uint64 id) external view returns (RewardStream);
+        function getStream(uint64 id) external view returns (RewardStream memory);
         function totalRewardPerSecond() external view returns (uint256);
 
         // Events
@@ -113,9 +117,10 @@ sol! {
         event RewardRecipientSet(address indexed holder, address indexed recipient);
 
         // Errors
-        error InsufficientBalance();
+        error InsufficientBalance(uint256 available, uint256 required, address token);
         error InsufficientAllowance();
         error SupplyCapExceeded();
+        error InvalidSupplyCap();
         error InvalidPayload();
         error StringTooLong();
         error PolicyForbids();
@@ -141,8 +146,12 @@ impl RolesAuthError {
 
 impl TIP20Error {
     /// Creates an error for insufficient token balance.
-    pub const fn insufficient_balance() -> Self {
-        Self::InsufficientBalance(ITIP20::InsufficientBalance {})
+    pub const fn insufficient_balance(available: U256, required: U256, token: Address) -> Self {
+        Self::InsufficientBalance(ITIP20::InsufficientBalance {
+            available,
+            required,
+            token,
+        })
     }
 
     /// Creates an error for insufficient spending allowance.
@@ -153,6 +162,11 @@ impl TIP20Error {
     /// Creates an error for unauthorized callers
     pub const fn unauthorized() -> Self {
         Self::Unauthorized(ITIP20::Unauthorized {})
+    }
+
+    /// Creates an error when minting would set a supply cap that is too large, or invalid.
+    pub const fn invalid_supply_cap() -> Self {
+        Self::InvalidSupplyCap(ITIP20::InvalidSupplyCap {})
     }
 
     /// Creates an error when minting would exceed supply cap.

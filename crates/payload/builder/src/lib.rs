@@ -6,8 +6,8 @@
 mod metrics;
 
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
-use alloy_primitives::U256;
-use alloy_rlp::Encodable;
+use alloy_primitives::{Address, U256};
+use alloy_rlp::{Decodable, Encodable};
 use alloy_sol_types::SolCall;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -34,9 +34,15 @@ use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Instant,
+};
 use tempo_chainspec::TempoChainSpec;
-use tempo_consensus::TEMPO_GENERAL_GAS_DIVISOR;
+use tempo_consensus::{TEMPO_GENERAL_GAS_DIVISOR, TEMPO_SHARED_GAS_DIVISOR};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_precompiles::{
@@ -45,14 +51,17 @@ use tempo_precompiles::{
     tip20_rewards_registry::ITIP20RewardsRegistry,
 };
 use tempo_primitives::{
-    TempoHeader, TempoPrimitives, TempoTxEnvelope,
-    transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
+    RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoTxEnvelope,
+    transaction::{
+        calc_gas_balance_spending,
+        envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
+    },
 };
 use tempo_transaction_pool::{
     TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
-use tracing::{Level, debug, info, instrument, trace, warn};
+use tracing::{Level, debug, error, info, instrument, trace, warn};
 
 use crate::metrics::TempoPayloadBuilderMetrics;
 
@@ -62,6 +71,16 @@ pub struct TempoPayloadBuilder<Provider> {
     provider: Provider,
     evm_config: TempoEvmConfig,
     metrics: TempoPayloadBuilderMetrics,
+    /// Height at which we've seen an invalid subblock.
+    ///
+    /// We pre-validate all of the subblock transactions when collecting subblocks, so this
+    /// should never be set because subblocks with invalid transactions should never make it to the payload builder.
+    ///
+    /// However, due to disruptive nature of subblock-related bugs (invalid subblock
+    /// we're continuously failing to apply halts block building), we protect against this by tracking
+    /// last height at which we've seen an invalid subblock, and not including any subblocks
+    /// at this height for any payloads.
+    highest_invalid_subblock: Arc<AtomicU64>,
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
@@ -75,6 +94,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             provider,
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
+            highest_invalid_subblock: Default::default(),
         }
     }
 }
@@ -85,7 +105,13 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
     /// Returns a vector of system transactions that must be executed at the end of each block:
     /// 1. Fee manager executeBlock - processes collected fees
     /// 2. Stablecoin exchange executeBlock - commits pending orders
-    fn build_seal_block_txs(&self, block_env: &BlockEnv) -> Vec<Recovered<TempoTxEnvelope>> {
+    /// 3. TIP20 rewards registry finalizeStreams - finalizes TIP20 rewards streams
+    /// 4. Subblocks signatures - includes subblock signatures for the block
+    fn build_seal_block_txs(
+        &self,
+        block_env: &BlockEnv,
+        subblocks: &[RecoveredSubBlock],
+    ) -> Vec<Recovered<TempoTxEnvelope>> {
         let chain_id = Some(self.provider.chain_spec().chain().id());
 
         // Build fee manager system transaction
@@ -134,7 +160,7 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
             TEMPO_SYSTEM_TX_SENDER,
         );
 
-        // Build stablecoin exchange system transaction
+        // Build rewards registry system transaction
         let rewards_registry_input = ITIP20RewardsRegistry::finalizeStreamsCall {}
             .abi_encode()
             .into_iter()
@@ -157,7 +183,37 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
             TEMPO_SYSTEM_TX_SENDER,
         );
 
-        vec![fee_manager_tx, stablecoin_exchange_tx, rewards_registry_tx]
+        let subblocks = subblocks
+            .iter()
+            .map(|s| s.metadata())
+            .collect::<Vec<SubBlockMetadata>>();
+        let subblocks_input = alloy_rlp::encode(&subblocks)
+            .into_iter()
+            .chain(block_env.number.to_be_bytes_vec())
+            .collect();
+
+        let subblocks_signatures_tx = Recovered::new_unchecked(
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                TxLegacy {
+                    chain_id,
+                    nonce: 0,
+                    gas_price: 0,
+                    gas_limit: 0,
+                    to: Address::ZERO.into(),
+                    value: U256::ZERO,
+                    input: subblocks_input,
+                },
+                TEMPO_SYSTEM_TX_SIGNATURE,
+            )),
+            TEMPO_SYSTEM_TX_SENDER,
+        );
+
+        vec![
+            fee_manager_tx,
+            stablecoin_exchange_tx,
+            rewards_registry_tx,
+            subblocks_signatures_tx,
+        ]
     }
 }
 
@@ -173,9 +229,11 @@ where
         &self,
         args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
-        self.build_payload(args, |attributes| {
-            self.pool.best_transactions_with_attributes(attributes)
-        })
+        self.build_payload(
+            args,
+            |attributes| self.pool.best_transactions_with_attributes(attributes),
+            false,
+        )
     }
 
     fn on_missing_payload(
@@ -197,6 +255,7 @@ where
                 Default::default(),
             ),
             |_| core::iter::empty(),
+            true,
         )?
         .into_payload()
         .ok_or_else(|| PayloadBuilderError::MissingPayload)
@@ -220,6 +279,7 @@ where
         &self,
         args: BuildArguments<TempoPayloadBuilderAttributes, EthBuiltPayload<TempoPrimitives>>,
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
+        empty: bool,
     ) -> Result<BuildOutcome<EthBuiltPayload<TempoPrimitives>>, PayloadBuilderError>
     where
         Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
@@ -244,7 +304,24 @@ where
             .with_bundle_update()
             .build();
 
-        let general_gas_limit = parent_header.gas_limit() / TEMPO_GENERAL_GAS_DIVISOR;
+        let chain_spec = self.provider.chain_spec();
+        let is_osaka = self
+            .provider
+            .chain_spec()
+            .is_osaka_active_at_timestamp(attributes.timestamp());
+
+        let block_gas_limit: u64 = parent_header.gas_limit();
+        let shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR;
+        let non_shared_gas_limit = block_gas_limit - shared_gas_limit;
+        let general_gas_limit =
+            (parent_header.gas_limit() - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR;
+
+        let mut cumulative_gas_used = 0;
+        let mut non_payment_gas_used = 0;
+        // initial block size usage - size of withdrawals plus 1Kb of overhead for the block header
+        let mut block_size_used = attributes.withdrawals().length() + 1024;
+        let mut payment_transactions = 0;
+        let mut total_fees = U256::ZERO;
 
         let mut builder = self
             .evm_config
@@ -256,23 +333,66 @@ where
                         timestamp: attributes.timestamp(),
                         suggested_fee_recipient: attributes.suggested_fee_recipient(),
                         prev_randao: attributes.prev_randao(),
-                        gas_limit: parent_header.gas_limit(),
+                        gas_limit: block_gas_limit,
                         parent_beacon_block_root: attributes.parent_beacon_block_root(),
                         withdrawals: Some(attributes.withdrawals().clone()),
                     },
                     general_gas_limit,
+                    shared_gas_limit,
                     timestamp_millis_part: attributes.timestamp_millis_part(),
+                    extra_data: attributes.extra_data().clone(),
                 },
             )
             .map_err(PayloadBuilderError::other)?;
 
-        let chain_spec = self.provider.chain_spec();
+        builder.apply_pre_execution_changes().map_err(|err| {
+            warn!(%err, "failed to apply pre-execution changes");
+            PayloadBuilderError::Internal(err.into())
+        })?;
 
         debug!("building new payload");
-        let mut cumulative_gas_used = 0;
-        let block_gas_limit: u64 = builder.evm_mut().block().gas_limit;
-        let base_fee = builder.evm_mut().block().basefee;
 
+        // If building an empty payload, don't include any subblocks
+        //
+        // Also don't include any subblocks if we've seen an invalid subblock
+        // at this height or above.
+        let mut subblocks = if empty
+            || self.highest_invalid_subblock.load(Ordering::Relaxed) > parent_header.number()
+        {
+            vec![]
+        } else {
+            attributes.subblocks()
+        };
+
+        subblocks.retain(|subblock| {
+            // Edge case: remove subblocks with expired transactions
+            //
+            // We pre-validate all of the subblocks on top of parent state in subblocks service
+            // which leaves the only reason for transactions to get invalidated by expiry of
+            // `valid_before` field.
+            if subblock.transactions.iter().any(|tx| {
+                tx.as_aa().is_some_and(|tx| {
+                    tx.tx()
+                        .valid_before
+                        .is_some_and(|valid| valid < attributes.timestamp())
+                })
+            }) {
+                return false;
+            }
+
+            // Account for the subblock's size
+            block_size_used += subblock.total_tx_size();
+
+            true
+        });
+
+        // Prepare system transactions before actual block building and account for their size.
+        let system_txs = self.build_seal_block_txs(builder.evm().block(), &subblocks);
+        for tx in &system_txs {
+            block_size_used += tx.inner().length();
+        }
+
+        let base_fee = builder.evm_mut().block().basefee;
         let mut best_txs = best_txs(BestTransactionsAttributes::new(
             base_fee,
             builder
@@ -281,28 +401,18 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
-        let mut total_fees = U256::ZERO;
-
-        builder.apply_pre_execution_changes().map_err(|err| {
-            warn!(%err, "failed to apply pre-execution changes");
-            PayloadBuilderError::Internal(err.into())
-        })?;
-
-        let mut block_transactions_rlp_length = 0;
-        let is_osaka = chain_spec.is_osaka_active_at_timestamp(attributes.timestamp());
 
         let execution_start = Instant::now();
-        let mut payment_transactions = 0;
         while let Some(pool_tx) = best_txs.next() {
             // ensure we still have capacity for this transaction
-            if cumulative_gas_used + pool_tx.gas_limit() > block_gas_limit {
+            if cumulative_gas_used + pool_tx.gas_limit() > non_shared_gas_limit {
                 // Mark this transaction as invalid since it doesn't fit
                 // The iterator will handle lane switching internally when appropriate
                 best_txs.mark_invalid(
                     &pool_tx,
                     InvalidPoolTransactionError::ExceedsGasLimit(
                         pool_tx.gas_limit(),
-                        block_gas_limit - cumulative_gas_used,
+                        non_shared_gas_limit - cumulative_gas_used,
                     ),
                 );
                 continue;
@@ -311,7 +421,7 @@ where
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
             if !pool_tx.transaction.is_payment()
-                && cumulative_gas_used + pool_tx.gas_limit() > general_gas_limit
+                && non_payment_gas_used + pool_tx.gas_limit() > general_gas_limit
             {
                 best_txs.mark_invalid(
                     &pool_tx,
@@ -334,15 +444,14 @@ where
 
             // convert tx to a signed transaction
             let tx = pool_tx.to_consensus();
+            let is_payment = tx.is_payment();
 
-            if tx.is_payment() {
+            if is_payment {
                 payment_transactions += 1;
             }
 
-            let estimated_block_size_with_tx = block_transactions_rlp_length
-                + tx.inner().length()
-                + attributes.withdrawals().length()
-                + 1024; // 1Kb of overhead for the block header
+            let tx_rlp_length = tx.inner().length();
+            let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
                 best_txs.mark_invalid(
@@ -356,7 +465,7 @@ where
             }
 
             let tx_rlp_length = tx.inner().length();
-            let effective_tip_per_gas = tx.effective_tip_per_gas(base_fee);
+            let effective_gas_price = tx.effective_gas_price(Some(base_fee));
 
             let tx_debug_repr = tracing::enabled!(Level::TRACE)
                 .then(|| format!("{tx:?}"))
@@ -394,13 +503,49 @@ where
                 .record(elapsed);
             trace!(?elapsed, "Transaction executed");
 
-            block_transactions_rlp_length += tx_rlp_length;
-
             // update and add to total fees
-            let miner_fee =
-                effective_tip_per_gas.expect("fee is always valid; execution succeeded");
-            total_fees += U256::from(miner_fee) * U256::from(gas_used);
+            total_fees += calc_gas_balance_spending(gas_used, effective_gas_price);
             cumulative_gas_used += gas_used;
+            if !is_payment {
+                non_payment_gas_used += gas_used;
+            }
+            block_size_used += tx_rlp_length;
+        }
+
+        // check if we have a better block or received more subblocks
+        if !is_better_payload(best_payload.as_ref(), total_fees)
+            && !is_more_subblocks(best_payload.as_ref(), &subblocks)
+        {
+            // Release db
+            drop(builder);
+            // can skip building the block
+            return Ok(BuildOutcome::Aborted {
+                fees: total_fees,
+                cached_reads,
+            });
+        }
+
+        // Apply subblock transactions
+        for subblock in &subblocks {
+            for tx in subblock.transactions_recovered() {
+                if let Err(err) = builder.execute_transaction(tx.cloned()) {
+                    if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                        ..
+                    }) = &err
+                    {
+                        error!(
+                            ?err,
+                            "subblock transaction failed execution, aborting payload building"
+                        );
+                        self.highest_invalid_subblock
+                            .store(builder.evm().block().number.to(), Ordering::Relaxed);
+
+                        return Err(PayloadBuilderError::evm(err));
+                    } else {
+                        return Err(PayloadBuilderError::evm(err));
+                    }
+                }
+            }
         }
 
         let execution_elapsed = execution_start.elapsed();
@@ -411,19 +556,8 @@ where
             .payment_transactions
             .record(payment_transactions);
 
-        // check if we have a better block
-        if !is_better_payload(best_payload.as_ref(), total_fees) {
-            // Release db
-            drop(builder);
-            // can skip building the block
-            return Ok(BuildOutcome::Aborted {
-                fees: total_fees,
-                cached_reads,
-            });
-        }
-
-        // Include system transactions in the block
-        for system_tx in self.build_seal_block_txs(builder.evm().block()) {
+        // Apply system transactions
+        for system_tx in system_txs {
             builder
                 .execute_transaction(system_tx)
                 .map_err(PayloadBuilderError::evm)?;
@@ -476,5 +610,55 @@ where
             payload,
             cached_reads,
         })
+    }
+}
+
+pub fn is_more_subblocks(
+    best_payload: Option<&EthBuiltPayload<TempoPrimitives>>,
+    subblocks: &[RecoveredSubBlock],
+) -> bool {
+    let Some(best_payload) = best_payload else {
+        return false;
+    };
+    let Some(best_metadata) = best_payload
+        .block()
+        .body()
+        .transactions
+        .iter()
+        .rev()
+        .find_map(|tx| Vec::<SubBlockMetadata>::decode(&mut tx.input().as_ref()).ok())
+    else {
+        return false;
+    };
+
+    subblocks.len() > best_metadata.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::{Address, B256, Bytes};
+    use reth_payload_builder::PayloadId;
+
+    #[test]
+    fn test_extra_data_flow_in_attributes() {
+        // Test that extra_data in attributes can be accessed correctly
+        let extra_data = Bytes::from(vec![42, 43, 44, 45, 46]);
+
+        let attrs = TempoPayloadBuilderAttributes::new(
+            PayloadId::default(),
+            B256::default(),
+            Address::default(),
+            1000,
+            extra_data.clone(),
+            Vec::new,
+        );
+
+        assert_eq!(attrs.extra_data(), &extra_data);
+
+        // Verify the data is as expected
+        let injected_data = attrs.extra_data().clone();
+
+        assert_eq!(injected_data, extra_data);
     }
 }

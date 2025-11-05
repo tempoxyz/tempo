@@ -8,6 +8,7 @@ use commonware_cryptography::{
     bls12381::primitives::{group, poly::Public, variant::MinSig},
     ed25519::PublicKey,
 };
+use commonware_utils::quorum;
 
 use super::IntermediateOutcome;
 
@@ -58,12 +59,12 @@ impl Read for State {
         let num_players = UInt::read_cfg(buf, &())?.into();
         Ok(Self {
             num_players,
-            dealing: Option::<Dealing>::read_cfg(buf, &(num_players as usize))?,
+            dealing: Option::<Dealing>::read_cfg(buf, &(quorum(num_players as u32) as usize))?,
             received_shares: Vec::<(PublicKey, Public<MinSig>, group::Share)>::read_cfg(
                 buf,
                 &(
                     RangeCfg::from(0..usize::MAX),
-                    ((), num_players as usize, ()),
+                    ((), quorum(num_players as u32) as usize, ()),
                 ),
             )?,
             dealing_outcome: Option::<IntermediateOutcome>::read_cfg(buf, &())?,
@@ -131,23 +132,25 @@ mod tests {
         bls12381::{dkg, primitives::variant::MinSig},
         ed25519::{PrivateKey, PublicKey},
     };
-    use commonware_utils::{set::Ordered, union};
+    use commonware_utils::{quorum, set::Ordered, union};
     use rand::{SeedableRng as _, rngs::StdRng};
 
-    fn three_private_keys() -> Ordered<PrivateKey> {
+    fn four_private_keys() -> Ordered<PrivateKey> {
         vec![
             PrivateKey::from_seed(0),
             PrivateKey::from_seed(1),
             PrivateKey::from_seed(2),
+            PrivateKey::from_seed(3),
         ]
         .into()
     }
 
-    fn three_public_keys() -> Ordered<PublicKey> {
+    fn four_public_keys() -> Ordered<PublicKey> {
         vec![
             PrivateKey::from_seed(0).public_key(),
             PrivateKey::from_seed(1).public_key(),
             PrivateKey::from_seed(2).public_key(),
+            PrivateKey::from_seed(3).public_key(),
         ]
         .into()
     }
@@ -156,41 +159,52 @@ mod tests {
         let (_, commitment, shares) = dkg::Dealer::<_, MinSig>::new(
             &mut StdRng::from_seed([dealer_index as u8; 32]),
             None,
-            three_public_keys(),
+            four_public_keys(),
         );
-        let shares = three_public_keys().iter().cloned().zip(shares).collect();
+        let shares = four_public_keys().iter().cloned().zip(shares).collect();
 
         let mut acks = BTreeMap::new();
         acks.insert(
-            three_public_keys()[0].clone(),
+            four_public_keys()[0].clone(),
             Ack::new(
                 &union(b"test", ACK_NAMESPACE),
-                three_private_keys()[0].clone(),
-                three_public_keys()[0].clone(),
+                four_private_keys()[0].clone(),
+                four_public_keys()[0].clone(),
                 42,
-                &three_public_keys()[dealer_index],
+                &four_public_keys()[dealer_index],
                 &commitment,
             ),
         );
         acks.insert(
-            three_public_keys()[1].clone(),
+            four_public_keys()[1].clone(),
             Ack::new(
                 &union(b"test", ACK_NAMESPACE),
-                three_private_keys()[1].clone(),
-                three_public_keys()[1].clone(),
+                four_private_keys()[1].clone(),
+                four_public_keys()[1].clone(),
                 42,
-                &three_public_keys()[dealer_index],
+                &four_public_keys()[dealer_index],
                 &commitment,
             ),
         );
         acks.insert(
-            three_public_keys()[2].clone(),
+            four_public_keys()[2].clone(),
             Ack::new(
                 &union(b"test", ACK_NAMESPACE),
-                three_private_keys()[2].clone(),
-                three_public_keys()[2].clone(),
+                four_private_keys()[2].clone(),
+                four_public_keys()[2].clone(),
                 42,
-                &three_public_keys()[dealer_index],
+                &four_public_keys()[dealer_index],
+                &commitment,
+            ),
+        );
+        acks.insert(
+            four_public_keys()[3].clone(),
+            Ack::new(
+                &union(b"test", ACK_NAMESPACE),
+                four_private_keys()[3].clone(),
+                four_public_keys()[3].clone(),
+                42,
+                &four_public_keys()[dealer_index],
                 &commitment,
             ),
         );
@@ -205,8 +219,8 @@ mod tests {
         let mut dealing = dealing(dealer_index);
 
         IntermediateOutcome::new(
-            3,
-            &three_private_keys()[0],
+            4,
+            &four_private_keys()[0],
             &union(b"test", OUTCOME_NAMESPACE),
             42,
             dealing.commitment,
@@ -220,7 +234,7 @@ mod tests {
         let bytes = dealing(0).encode();
 
         assert_eq!(
-            Dealing::read_cfg(&mut bytes.as_ref(), &3).unwrap(),
+            Dealing::read_cfg(&mut bytes.as_ref(), &(quorum(4) as usize)).unwrap(),
             dealing(0),
         )
     }
@@ -228,18 +242,18 @@ mod tests {
     #[test]
     fn roundtrip_state() {
         let state = State {
-            num_players: 3,
+            num_players: 4,
             dealing: Some(dealing(0)),
             received_shares: vec![
                 (
-                    three_public_keys()[1].clone(),
+                    four_public_keys()[1].clone(),
                     dealing(1).commitment,
-                    dealing(1).shares[&three_public_keys()[0]].clone(),
+                    dealing(1).shares[&four_public_keys()[0]].clone(),
                 ),
                 (
-                    three_public_keys()[2].clone(),
+                    four_public_keys()[2].clone(),
                     dealing(2).commitment,
-                    dealing(2).shares[&three_public_keys()[0]].clone(),
+                    dealing(2).shares[&four_public_keys()[0]].clone(),
                 ),
             ],
             dealing_outcome: Some(dealing_outcome(0)),

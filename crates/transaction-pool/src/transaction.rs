@@ -13,7 +13,7 @@ use reth_transaction_pool::{
     error::PoolTransactionError,
 };
 use std::{convert::Infallible, fmt::Debug, sync::Arc};
-use tempo_primitives::TempoTxEnvelope;
+use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use thiserror::Error;
 
 /// Tempo pooled transaction representation.
@@ -28,18 +28,19 @@ pub struct TempoPooledTransaction {
 
 impl TempoPooledTransaction {
     /// Create new instance of [Self] from the given consensus transactions and the encoded size.
-    pub fn new(transaction: Recovered<TempoTxEnvelope>, encoded_length: usize) -> Self {
+    pub fn new(transaction: Recovered<TempoTxEnvelope>) -> Self {
         let is_payment = transaction.is_payment();
         Self {
-            inner: EthPooledTransaction::new(transaction, encoded_length),
-            is_payment,
-        }
-    }
-
-    pub fn from_eth(eth_pooled: EthPooledTransaction<TempoTxEnvelope>) -> Self {
-        let is_payment = eth_pooled.transaction.is_payment();
-        Self {
-            inner: eth_pooled,
+            inner: EthPooledTransaction {
+                cost: calc_gas_balance_spending(
+                    transaction.gas_limit(),
+                    transaction.max_fee_per_gas(),
+                )
+                .saturating_add(transaction.value()),
+                encoded_length: transaction.encode_2718_len(),
+                blob_sidecar: EthBlobTransactionSidecar::None,
+                transaction,
+            },
             is_payment,
         }
     }
@@ -120,8 +121,7 @@ impl PoolTransaction for TempoPooledTransaction {
     }
 
     fn from_pooled(tx: Recovered<Self::Pooled>) -> Self {
-        let len = tx.encode_2718_len();
-        Self::from_eth(EthPooledTransaction::new(tx, len))
+        Self::new(tx)
     }
 
     fn hash(&self) -> &TxHash {
@@ -273,12 +273,7 @@ mod tests {
         );
 
         // Create via new() and verify caching
-        let pooled_tx = TempoPooledTransaction::new(recovered.clone(), 100);
+        let pooled_tx = TempoPooledTransaction::new(recovered);
         assert!(pooled_tx.is_payment());
-
-        // Create via from_eth() and verify caching
-        let eth_pooled = EthPooledTransaction::new(recovered, 100);
-        let pooled_tx_from_eth = TempoPooledTransaction::from_eth(eth_pooled);
-        assert!(pooled_tx_from_eth.is_payment());
     }
 }

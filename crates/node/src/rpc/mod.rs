@@ -1,13 +1,21 @@
+pub mod amm;
 pub mod dex;
+pub mod eth_ext;
+pub mod policy;
+pub mod token;
 
-mod request;
+mod pagination;
 
-pub use dex::TempoDexApiServer;
-pub use request::TempoTransactionRequest;
+pub use amm::{TempoAmm, TempoAmmApiServer};
+pub use dex::{TempoDex, api::TempoDexApiServer};
+pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
+pub use pagination::{FilterRange, PaginationParams};
+pub use policy::{TempoPolicy, TempoPolicyApiServer};
+pub use tempo_alloy::rpc::TempoTransactionRequest;
+pub use token::{TempoToken, TempoTokenApiServer};
 
-use crate::{TempoNetwork, node::TempoNode};
+use crate::node::TempoNode;
 use alloy::{consensus::TxReceipt, primitives::U256};
-use alloy_primitives::Address;
 use reth_ethereum::tasks::{
     TaskSpawner,
     pool::{BlockingTaskGuard, BlockingTaskPool},
@@ -21,7 +29,7 @@ use reth_node_builder::{
     NodeAdapter,
     rpc::{EthApiBuilder, EthApiCtx},
 };
-use reth_provider::ChainSpecProvider;
+use reth_provider::{ChainSpecProvider, ProviderError};
 use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
     EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
@@ -35,10 +43,10 @@ use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
     builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
+use tempo_alloy::TempoNetwork;
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::provider::TIPFeeDatabaseExt;
-use tempo_primitives::TempoReceipt;
-use tempo_revm::TempoTxEnv;
+use tempo_primitives::{TEMPO_GAS_PRICE_SCALING_FACTOR, TempoReceipt};
 use tokio::sync::Mutex;
 
 /// Tempo `Eth` API implementation.
@@ -63,24 +71,6 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
         eth_api: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
     ) -> Self {
         Self { inner: eth_api }
-    }
-
-    /// Returns the feeToken balance of the tx caller in the token's native decimals
-    pub fn caller_fee_token_allowance<DB>(
-        &self,
-        db: &mut DB,
-        env: &TempoTxEnv,
-        validator: Address,
-    ) -> Result<U256, EthApiError>
-    where
-        DB: Database<Error: Into<EthApiError>>,
-    {
-        db.get_fee_token_balance(
-            env.fee_payer().map_err(EVMError::<DB::Error>::from)?,
-            validator,
-            env.fee_token,
-        )
-        .map_err(Into::into)
     }
 }
 
@@ -208,6 +198,11 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         self.inner.max_simulate_blocks()
     }
 
+    #[inline]
+    fn evm_memory_limit(&self) -> u64 {
+        self.inner.evm_memory_limit()
+    }
+
     /// Returns the max gas limit that the caller can afford given a transaction environment.
     fn caller_gas_allowance(
         &self,
@@ -215,10 +210,19 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         evm_env: &EvmEnvFor<Self::Evm>,
         tx_env: &TxEnvFor<Self::Evm>,
     ) -> Result<u64, Self::Error> {
-        let fee_token_balance =
-            self.caller_fee_token_allowance(&mut db, tx_env, evm_env.block_env.beneficiary)?;
+        let fee_token_balance = db
+            .get_fee_token_balance(
+                tx_env
+                    .fee_payer()
+                    .map_err(EVMError::<ProviderError, _>::from)?,
+                evm_env.block_env.beneficiary,
+                tx_env.fee_token,
+            )
+            .map_err(Into::into)?;
 
         Ok(fee_token_balance
+            // multiply by the scaling factor
+            .saturating_mul(TEMPO_GAS_PRICE_SCALING_FACTOR)
             // Calculate the amount of gas the caller can afford with the specified gas price.
             .checked_div(U256::from(tx_env.inner.gas_price))
             // This will be 0 if gas price is 0. It is fine, because we check it before.

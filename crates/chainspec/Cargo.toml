@@ -12,7 +12,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-primitives.workspace = true
+tempo-primitives = { workspace = true, features = ["default"] }
 tempo-contracts.workspace = true
 
 reth-cli.workspace = true
@@ -35,4 +35,5 @@ serde = [
     "alloy-eips/serde",
     "alloy-hardforks/serde",
     "alloy-primitives/serde",
+    "tempo-primitives/serde"
 ]

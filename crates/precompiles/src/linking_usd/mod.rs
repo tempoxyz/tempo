@@ -193,6 +193,7 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 #[cfg(test)]
 mod tests {
 
+    use alloy_primitives::uint;
     use tempo_contracts::precompiles::RolesAuthError;
 
     use super::*;
@@ -1019,6 +1020,71 @@ mod tests {
         assert_eq!(
             result.unwrap_err(),
             TempoPrecompileError::TIP20(TIP20Error::supply_cap_exceeded())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_invalid_supply_caps() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let admin = Address::random();
+        let recipient = Address::random();
+        let supply_cap = U256::from(1000);
+        let bad_supply_cap = uint!(0x100000000000000000000000000000000_U256);
+
+        linking_usd.initialize(admin).unwrap();
+
+        let mut roles = linking_usd.get_roles_contract();
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        // Set supply cap to u128 max plus one
+        let result = linking_usd.token.set_supply_cap(
+            admin,
+            ITIP20::setSupplyCapCall {
+                newSupplyCap: bad_supply_cap,
+            },
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            TempoPrecompileError::TIP20(TIP20Error::supply_cap_exceeded())
+        );
+
+        // Set supply cap
+        linking_usd
+            .token
+            .set_supply_cap(
+                admin,
+                ITIP20::setSupplyCapCall {
+                    newSupplyCap: supply_cap,
+                },
+            )
+            .unwrap();
+
+        // Try to mint the exact supply cap
+        linking_usd
+            .mint(
+                admin,
+                ITIP20::mintCall {
+                    to: recipient,
+                    amount: U256::from(1000),
+                },
+            )
+            .unwrap();
+
+        // Try to set the supply cap to something lower than the total supply
+        let smaller_supply_cap = U256::from(999);
+        let result = linking_usd.token.set_supply_cap(
+            admin,
+            ITIP20::setSupplyCapCall {
+                newSupplyCap: smaller_supply_cap,
+            },
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            TempoPrecompileError::TIP20(TIP20Error::invalid_supply_cap())
         );
         Ok(())
     }

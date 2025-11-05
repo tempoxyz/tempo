@@ -26,7 +26,7 @@ use revm::{
         instructions::utility::IntoAddress,
         interpreter::EthInterpreter,
     },
-    primitives::{KECCAK_EMPTY, eip7702, hardfork::SpecId as RevmSpecId},
+    primitives::{eip7702, hardfork::SpecId as RevmSpecId},
     state::Bytecode,
 };
 use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, precompiles::FeeManagerError};
@@ -38,7 +38,7 @@ use tempo_precompiles::{
     tip_fee_manager::{self, TipFeeManager},
     tip20,
 };
-use tempo_primitives::transaction::AASignature;
+use tempo_primitives::transaction::{AASignature, calc_gas_balance_spending};
 
 use crate::{TempoEvm, TempoInvalidTransaction, evm::TempoContext};
 
@@ -418,7 +418,7 @@ where
                 };
 
                 // 4. Add `authority` to `accessed_addresses` (warm the account)
-                let mut authority_acc = journal.load_account_code(authority)?;
+                let mut authority_acc = journal.load_account_with_code_mut(authority)?;
 
                 // 5. Verify the code of `authority` is either empty or already delegated.
                 if let Some(bytecode) = &authority_acc.info.code {
@@ -440,23 +440,11 @@ where
                     refunded_accounts += 1;
                 }
 
-                // 8. Set the code of `authority` to be `0xef0100 || address`
+                // 8. Set the code of `authority` to be `0xef0100 || address`. This is a delegation designation.
                 //  * As a special case, if `address` is `0x0000000000000000000000000000000000000000` do not write the designation.
                 //    Clear the accounts code and reset the account's code hash to the empty hash `0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470`.
-                let address = authorization.address;
-                let (bytecode, hash) = if address.is_zero() {
-                    (Bytecode::default(), KECCAK_EMPTY)
-                } else {
-                    let bytecode = Bytecode::new_eip7702(address);
-                    let hash = bytecode.hash_slow();
-                    (bytecode, hash)
-                };
-                authority_acc.info.code_hash = hash;
-                authority_acc.info.code = Some(bytecode);
-
                 // 9. Increase the nonce of `authority` by one.
-                authority_acc.info.nonce = authority_acc.info.nonce.saturating_add(1);
-                authority_acc.mark_touch();
+                authority_acc.delegate(*authorization.address());
             }
 
             let refunded_gas =
@@ -479,13 +467,12 @@ where
         let account_balance = get_token_balance(journal, self.fee_token, self.fee_payer)?;
 
         // Load caller's account
-        let caller_account = journal.load_account_code(tx.caller())?.data;
+        let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
 
-        let account_info = &mut caller_account.info;
-        if account_info.has_no_code_and_nonce() {
-            account_info.set_code_and_hash(
-                Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS),
+        if caller_account.info.has_no_code_and_nonce() {
+            caller_account.set_code(
                 DEFAULT_7702_DELEGATE_CODE_HASH,
+                Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS),
             );
         }
 
@@ -497,7 +484,7 @@ where
 
         // Validate account nonce and code (EIP-3607) using upstream helper
         pre_execution::validate_account_nonce_and_code(
-            &mut caller_account.info,
+            &caller_account.info,
             tx.nonce(),
             cfg.is_eip3607_disabled(),
             // skip nonce check if 2D nonce is used
@@ -505,7 +492,7 @@ where
         )?;
 
         // modify account nonce and touch the account.
-        caller_account.mark_touch();
+        caller_account.touch();
 
         if !nonce_key.is_zero() {
             let internals = EvmInternals::new(journal, block);
@@ -559,7 +546,7 @@ where
             //
             // Always bump nonce for AA transactions.
             if tx.aa_tx_env.is_some() || tx.kind().is_call() {
-                caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
+                caller_account.bump_nonce();
             }
         }
 
@@ -641,11 +628,12 @@ where
         let chain_id = context.cfg().chain_id;
 
         // Calculate actual used and refund amounts
-        let gas_used = gas.used();
-        let actual_used = U256::from(gas_used).saturating_mul(U256::from(effective_gas_price));
-        let refund_amount = U256::from(
-            effective_gas_price.saturating_mul((gas.remaining() + gas.refunded() as u64) as u128),
-        );
+        let actual_spending = calc_gas_balance_spending(gas.used(), effective_gas_price);
+        let refund_amount = tx.effective_balance_spending(
+            context.block.basefee.into(),
+            context.block.blob_gasprice().unwrap_or_default(),
+        )? - tx.value
+            - actual_spending;
 
         // Create storage provider and fee manager
         let (journal, block) = (&mut context.journaled_state, &context.block);
@@ -657,10 +645,15 @@ where
             &mut storage_provider,
         );
 
-        if !actual_used.is_zero() || !refund_amount.is_zero() {
+        if !actual_spending.is_zero() || !refund_amount.is_zero() {
             // Call collectFeePostTx (handles both refund and fee queuing)
             fee_manager
-                .collect_fee_post_tx(self.fee_payer, actual_used, refund_amount, self.fee_token)
+                .collect_fee_post_tx(
+                    self.fee_payer,
+                    actual_spending,
+                    refund_amount,
+                    self.fee_token,
+                )
                 .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
         }
         Ok(())
@@ -693,8 +686,14 @@ where
         let tx = evm.ctx_ref().tx();
 
         if let Some(aa_env) = tx.aa_tx_env.as_ref() {
+            if aa_env.subblock_transaction && tx.max_fee_per_gas() > 0 {
+                return Err(TempoInvalidTransaction::SubblockTransactionMustHaveZeroFee.into());
+            }
+
             // Validate priority fee for AA transactions using revm's validate_priority_fee_tx
-            let base_fee = if cfg.is_base_fee_check_disabled() {
+            //
+            // Skip basefee check for subblock transactions.
+            let base_fee = if cfg.is_base_fee_check_disabled() || aa_env.subblock_transaction {
                 None
             } else {
                 Some(evm.ctx_ref().block().basefee() as u128)
@@ -1097,7 +1096,7 @@ mod tests {
 
         // Set up initial balance
         let balance_slot = mapping_slot(account, tip20::slots::BALANCES);
-        journal.warm_account(token)?;
+        journal.load_account(token)?;
         journal
             .sstore(token, balance_slot, expected_balance)
             .unwrap();
@@ -1117,7 +1116,7 @@ mod tests {
         let initial_balance = U256::random();
 
         let sender_slot = mapping_slot(sender, tip20::slots::BALANCES);
-        journal.warm_account(token)?;
+        journal.load_account(token)?;
         journal.sstore(token, sender_slot, initial_balance).unwrap();
         let sender_balance = get_token_balance(&mut journal, token, sender).unwrap();
         assert_eq!(sender_balance, initial_balance);
@@ -1149,7 +1148,7 @@ mod tests {
 
         // Set validator token
         let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
-        ctx.journaled_state.warm_account(TIP_FEE_MANAGER_ADDRESS)?;
+        ctx.journaled_state.load_account(TIP_FEE_MANAGER_ADDRESS)?;
         ctx.journaled_state
             .sstore(
                 TIP_FEE_MANAGER_ADDRESS,

@@ -187,7 +187,7 @@ impl Read for IntermediateOutcome {
             dealer: PublicKey::read(buf)?,
             dealer_signature: Signature::read(buf)?,
             epoch: UInt::read(buf)?.into(),
-            commitment: Public::<MinSig>::read_cfg(buf, &(n_players as usize))?,
+            commitment: Public::<MinSig>::read_cfg(buf, &(quorum(n_players as u32) as usize))?,
             acks: Vec::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), ()))?,
             reveals: Vec::<group::Share>::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), ()))?,
         })
@@ -212,20 +212,22 @@ mod tests {
 
     use super::IntermediateOutcome;
 
-    fn three_private_keys() -> Ordered<PrivateKey> {
+    fn four_private_keys() -> Ordered<PrivateKey> {
         vec![
             PrivateKey::from_seed(0),
             PrivateKey::from_seed(1),
             PrivateKey::from_seed(2),
+            PrivateKey::from_seed(3),
         ]
         .into()
     }
 
-    fn three_public_keys() -> Ordered<PublicKey> {
+    fn four_public_keys() -> Ordered<PublicKey> {
         vec![
             PrivateKey::from_seed(0).public_key(),
             PrivateKey::from_seed(1).public_key(),
             PrivateKey::from_seed(2).public_key(),
+            PrivateKey::from_seed(3).public_key(),
         ]
         .into()
     }
@@ -235,31 +237,39 @@ mod tests {
         let (_, commitment, shares) = dkg::Dealer::<_, MinSig>::new(
             &mut StdRng::from_seed([0; 32]),
             None,
-            three_public_keys(),
+            four_public_keys(),
         );
 
         let acks = vec![
             Ack::new(
                 &union(b"test", ACK_NAMESPACE),
-                three_private_keys()[0].clone(),
-                three_public_keys()[0].clone(),
+                four_private_keys()[0].clone(),
+                four_public_keys()[0].clone(),
                 42,
-                &three_public_keys()[0],
+                &four_public_keys()[0],
                 &commitment,
             ),
             Ack::new(
                 &union(b"test", ACK_NAMESPACE),
-                three_private_keys()[1].clone(),
-                three_public_keys()[1].clone(),
+                four_private_keys()[1].clone(),
+                four_public_keys()[1].clone(),
                 42,
-                &three_public_keys()[0],
+                &four_public_keys()[0],
+                &commitment,
+            ),
+            Ack::new(
+                &union(b"test", ACK_NAMESPACE),
+                four_private_keys()[2].clone(),
+                four_public_keys()[2].clone(),
+                42,
+                &four_public_keys()[0],
                 &commitment,
             ),
         ];
-        let reveals = vec![shares[2].clone()];
+        let reveals = vec![shares[3].clone()];
         let dealing_outcome = IntermediateOutcome::new(
-            3,
-            &three_private_keys()[0],
+            4,
+            &four_private_keys()[0],
             &union(b"test", OUTCOME_NAMESPACE),
             42,
             commitment,
@@ -279,11 +289,11 @@ mod tests {
         let (_, commitment, _) = dkg::Dealer::<_, MinSig>::new(
             &mut StdRng::from_seed([0; 32]),
             None,
-            three_public_keys(),
+            four_public_keys(),
         );
         let public_outcome = PublicOutcome {
             epoch: 42,
-            participants: three_public_keys(),
+            participants: four_public_keys(),
             public: commitment,
         };
         let bytes = public_outcome.encode();

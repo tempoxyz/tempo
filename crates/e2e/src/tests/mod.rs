@@ -6,6 +6,7 @@ use crate::ExecutionRuntime;
 mod backfill;
 mod dkg;
 mod linkage;
+mod subblocks;
 
 #[test_traced]
 fn spawning_execution_node_works() {

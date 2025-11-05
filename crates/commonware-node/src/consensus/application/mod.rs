@@ -16,6 +16,8 @@ mod ingress;
 pub(super) use actor::Actor;
 pub(crate) use ingress::Mailbox;
 
+use crate::{epoch::SchemeProvider, subblocks};
+
 pub(super) async fn init<TContext>(
     config: Config<TContext>,
 ) -> eyre::Result<(Actor<TContext>, Mailbox)>
@@ -46,6 +48,9 @@ pub(super) struct Config<TContext> {
     /// A handle to the execution node to verify and create new payloads.
     pub(super) execution_node: TempoFullNode,
 
+    /// A handle to the subblocks service to get subblocks for proposals.
+    pub(crate) subblocks: subblocks::Mailbox,
+
     /// The minimum amount of time to wait before resolving a new payload from the builder
     pub(super) new_payload_wait_time: Duration,
 
@@ -53,4 +58,7 @@ pub(super) struct Config<TContext> {
     /// `E*H+1` to and including `(E+1)*H` make up the epoch. The block at
     /// `E*H` is said to be the genesis (or parent) of the epoch.
     pub(super) epoch_length: u64,
+
+    /// The scheme provider to use for the application.
+    pub(crate) scheme_provider: SchemeProvider,
 }

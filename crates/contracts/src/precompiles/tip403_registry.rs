@@ -21,7 +21,7 @@ sol! {
 
         // State-Changing Functions
         function createPolicy(address admin, PolicyType policyType) external returns (uint64);
-        function createPolicyWithAccounts(address admin, PolicyType policyType, address[] accounts) external returns (uint64);
+        function createPolicyWithAccounts(address admin, PolicyType policyType, address[] calldata accounts) external returns (uint64);
         function setPolicyAdmin(uint64 policyId, address admin) external;
         function modifyPolicyWhitelist(uint64 policyId, address account, bool allowed) external;
         function modifyPolicyBlacklist(uint64 policyId, address account, bool restricted) external;

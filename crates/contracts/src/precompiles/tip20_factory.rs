@@ -13,7 +13,7 @@ sol! {
             string memory currency,
             address quoteToken,
             address admin
-        ) external returns (uint256);
+        ) external returns (address);
 
         function tokenIdCounter() external view returns (uint256);
     }

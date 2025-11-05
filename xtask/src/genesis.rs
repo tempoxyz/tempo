@@ -32,7 +32,7 @@ use tempo_precompiles::{
     stablecoin_exchange::StablecoinExchange,
     storage::evm::EvmPrecompileStorageProvider,
     tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager},
-    tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
+    tip20::{ISSUER_ROLE, ITIP20, TIP20Token, address_to_token_id_unchecked},
     tip20_factory::{ITIP20Factory, TIP20Factory},
     tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
@@ -161,7 +161,7 @@ impl GenesisArgs {
         )?;
 
         println!("Initializing LinkingUSD");
-        initialize_linking_usd(admin, &mut evm)?;
+        initialize_linking_usd(admin, &addresses, &mut evm)?;
 
         println!("Initializing TIP20RewardsRegistry");
         initialize_tip20_rewards_registry(&mut evm)?;
@@ -342,7 +342,7 @@ fn create_and_mint_token(
         factory
             .initialize()
             .expect("Could not initialize tip20 factory");
-        factory
+        let token_address = factory
             .create_token(
                 admin,
                 ITIP20Factory::createTokenCall {
@@ -353,8 +353,9 @@ fn create_and_mint_token(
                     admin,
                 },
             )
-            .expect("Could not create token")
-            .to::<u64>()
+            .expect("Could not create token");
+
+        address_to_token_id_unchecked(token_address)
     };
 
     let mut token = TIP20Token::new(token_id, &mut provider);
@@ -397,6 +398,7 @@ fn create_and_mint_token(
 
 fn initialize_linking_usd(
     admin: Address,
+    recipients: &[Address],
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<()> {
     let block = evm.block.clone();
@@ -407,9 +409,25 @@ fn initialize_linking_usd(
     linking_usd
         .initialize(admin)
         .expect("LinkingUSD initialization should succeed");
+
     let mut roles = linking_usd.get_roles_contract();
     roles.grant_role_internal(admin, *ISSUER_ROLE)?;
     roles.grant_role_internal(admin, *TRANSFER_ROLE)?;
+    for recipient in recipients.iter().tqdm() {
+        roles.grant_role_internal(*recipient, *TRANSFER_ROLE)?;
+    }
+
+    for recipient in recipients.iter().tqdm() {
+        linking_usd
+            .mint(
+                admin,
+                ITIP20::mintCall {
+                    to: *recipient,
+                    amount: U256::from(u64::MAX),
+                },
+            )
+            .expect("Could not mint linkingUSD");
+    }
 
     Ok(())
 }
