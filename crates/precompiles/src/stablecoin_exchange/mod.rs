@@ -407,6 +407,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     pub fn create_pair(&mut self, base: Address) -> Result<B256, TempoPrecompileError> {
         let quote = TIP20Token::from_address(base, self.storage).quote_token()?;
 
+        // TODO: ensure that the base token and the quote token are USD
+
         let book_key = compute_book_key(base, quote);
 
         if Orderbook::exists(book_key, self.storage, self.address)? {

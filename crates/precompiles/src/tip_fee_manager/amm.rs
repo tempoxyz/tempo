@@ -1,8 +1,8 @@
 use crate::{
     error::TempoPrecompileError,
     storage::{PrecompileStorageProvider, StorageOps},
-    tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, validate_usd_currency},
-    tip20::{ITIP20, TIP20Token},
+    tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent},
+    tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
 use alloy::{
     primitives::{Address, B256, IntoLogData, U256, keccak256, uint},
@@ -619,7 +619,7 @@ mod tests {
     use super::*;
     use crate::{storage::hashmap::HashMapStorageProvider, tip20::token_id_to_address};
     use alloy::primitives::{Address, uint};
-    use tempo_contracts::precompiles::{FeeManagerError, LINKING_USD_ADDRESS};
+    use tempo_contracts::precompiles::{FeeManagerError, LINKING_USD_ADDRESS, TIP20Error};
 
     #[test]
     fn test_mint_identical_addresses() {
@@ -1046,11 +1046,10 @@ mod tests {
             amount,
             to,
         );
+
         assert!(matches!(
             result,
-            Err(TempoPrecompileError::FeeManagerError(
-                FeeManagerError::InvalidToken(_)
-            ))
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
         ));
 
         // Test the inverse tokens
@@ -1064,9 +1063,7 @@ mod tests {
         );
         assert!(matches!(
             result,
-            Err(TempoPrecompileError::FeeManagerError(
-                FeeManagerError::InvalidToken(_)
-            ))
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
         ));
     }
 
@@ -1109,9 +1106,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(TempoPrecompileError::FeeManagerError(
-                FeeManagerError::InvalidToken(_)
-            ))
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
         ));
 
         // Test the inverse tokens
@@ -1125,9 +1120,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(TempoPrecompileError::FeeManagerError(
-                FeeManagerError::InvalidToken(_)
-            ))
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
         ));
     }
     #[test]

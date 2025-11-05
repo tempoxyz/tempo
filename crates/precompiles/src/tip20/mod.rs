@@ -96,6 +96,19 @@ pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_R
 pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
 pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
 
+/// Validates that a token has USD currency
+pub fn validate_usd_currency<S: PrecompileStorageProvider>(
+    token: Address,
+    storage: &mut S,
+) -> Result<(), TempoPrecompileError> {
+    let mut tip20_token = TIP20Token::from_address(token, storage);
+    let currency = tip20_token.currency()?;
+    if keccak256(currency.as_bytes()) != keccak256(USD_CURRENCY.as_bytes()) {
+        return Err(TIP20Error::invalid_currency().into());
+    }
+    Ok(())
+}
+
 impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     pub fn name(&mut self) -> Result<String, TempoPrecompileError> {
         self.read_string(slots::NAME)
