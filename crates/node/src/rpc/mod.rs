@@ -176,6 +176,15 @@ impl<N: FullNodeTypes<Types = TempoNode>> LoadState for TempoEthApi<N> {}
 
 impl<N: FullNodeTypes<Types = TempoNode>> EthState for TempoEthApi<N> {
     #[inline]
+    async fn balance(
+        &self,
+        _address: alloy_primitives::Address,
+        _block_id: Option<alloy_eips::BlockId>,
+    ) -> Result<U256, Self::Error> {
+        Ok(U256::MAX)
+    }
+
+    #[inline]
     fn max_proof_window(&self) -> u64 {
         self.inner.eth_proof_window()
     }
