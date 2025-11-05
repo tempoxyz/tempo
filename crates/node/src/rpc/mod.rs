@@ -54,7 +54,7 @@ use tokio::sync::Mutex;
 
 /// Placeholder constant for `eth_getBalance` calls because the native token balance is N/A on
 /// Tempo.
-const NATIVE_BALANCE_PLACEHOLDER: U256 =
+pub const NATIVE_BALANCE_PLACEHOLDER: U256 =
     uint!(4242424242424242424242424242424242424242424242424242424242424242424242424242_U256);
 
 /// Tempo `Eth` API implementation.

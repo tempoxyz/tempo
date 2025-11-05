@@ -9,6 +9,7 @@ use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::TxKind;
 use p256::ecdsa::signature::hazmat::PrehashSigner;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_node::rpc::NATIVE_BALANCE_PLACEHOLDER;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN,
     tip20::{ITIP20, ITIP20::transferCall},
@@ -502,12 +503,11 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
 
     let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
 
-    // Verify alice has ZERO native ETH (this is expected - gas paid via fee tokens)
+    // Verify alice has the placeholder amount of native ETH (this is expected - gas paid via fee tokens)
     let alice_eth_balance = provider.get_balance(alice_addr).await?;
     assert_eq!(
-        alice_eth_balance,
-        U256::ZERO,
-        "Test accounts should have zero ETH balance"
+        alice_eth_balance, NATIVE_BALANCE_PLACEHOLDER,
+        "Test accounts should have placeholder ETH balance"
     );
 
     println!("Alice address: {alice_addr}");
@@ -2021,12 +2021,11 @@ async fn test_aa_bump_nonce_on_failure() -> eyre::Result<()> {
 
     let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
 
-    // Verify alice has ZERO native ETH (this is expected - gas paid via fee tokens)
+    // Verify alice has the placeholder amount of native ETH (this is expected - gas paid via fee tokens)
     let alice_eth_balance = provider.get_balance(alice_addr).await?;
     assert_eq!(
-        alice_eth_balance,
-        U256::ZERO,
-        "Test accounts should have zero ETH balance"
+        alice_eth_balance, NATIVE_BALANCE_PLACEHOLDER,
+        "Test accounts should have placeholder ETH balance"
     );
 
     println!("Alice address: {alice_addr}");
