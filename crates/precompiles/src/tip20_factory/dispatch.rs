@@ -1,4 +1,4 @@
-use crate::{Precompile, input_cost, mutate, view};
+use crate::{Precompile, input_cost, mutate, tip20::is_tip20, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -30,6 +30,9 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Factory<'a, S> {
                     self.create_token(s, call)
                 })
             }
+            ITIP20Factory::isTIP20Call::SELECTOR => {
+                view::<ITIP20Factory::isTIP20Call>(calldata, |call| Ok(is_tip20(call.token)))
+            }
             _ => Err(PrecompileError::Other(
                 "Unknown function selector".to_string(),
             )),
@@ -39,5 +42,47 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Factory<'a, S> {
             res.gas_used = self.storage.gas_used();
             res
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        LINKING_USD_ADDRESS, storage::hashmap::HashMapStorageProvider,
+        tip20::tests::initialize_linking_usd,
+    };
+
+    #[test]
+    fn test_is_tip20() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let sender = Address::random();
+        initialize_linking_usd(&mut storage, sender).unwrap();
+
+        let mut factory = TIP20Factory::new(&mut storage);
+
+        factory
+            .initialize()
+            .expect("Factory initialization should succeed");
+
+        factory
+            .initialize()
+            .expect("Factory initialization should succeed");
+        let call = ITIP20Factory::createTokenCall {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            currency: "USD".to_string(),
+            quoteToken: crate::LINKING_USD_ADDRESS,
+            admin: sender,
+        };
+
+        let created_tip20 = factory
+            .create_token(sender, call)
+            .expect("Token creation should succeed");
+        let non_tip20 = Address::random();
+
+        assert!(is_tip20(LINKING_USD_ADDRESS));
+        assert!(is_tip20(created_tip20));
+        assert!(!is_tip20(non_tip20));
     }
 }

@@ -107,17 +107,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
             Ok(counter)
         }
     }
-
-    pub fn is_tip20(&mut self, token: Address) -> Result<bool> {
-        Ok(is_tip20(token))
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        LINKING_USD_ADDRESS, error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
+        error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
         tip20::tests::initialize_linking_usd,
     };
 
@@ -226,51 +222,6 @@ mod tests {
         assert_eq!(
             result.unwrap_err(),
             TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
-        );
-    }
-
-    #[test]
-    fn test_is_tip20() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let sender = Address::random();
-        initialize_linking_usd(&mut storage, sender).unwrap();
-
-        let mut factory = TIP20Factory::new(&mut storage);
-
-        factory
-            .initialize()
-            .expect("Factory initialization should succeed");
-
-        factory
-            .initialize()
-            .expect("Factory initialization should succeed");
-        let call = ITIP20Factory::createTokenCall {
-            name: "Test Token".to_string(),
-            symbol: "TEST".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: crate::LINKING_USD_ADDRESS,
-            admin: sender,
-        };
-
-        let created_tip20 = factory
-            .create_token(sender, call)
-            .expect("Token creation should succeed");
-        let non_tip20 = Address::random();
-
-        assert!(
-            factory
-                .is_tip20(LINKING_USD_ADDRESS)
-                .expect("isTIP20 call should succeed")
-        );
-        assert!(
-            factory
-                .is_tip20(created_tip20)
-                .expect("isTIP20 call should succeed")
-        );
-        assert!(
-            !factory
-                .is_tip20(non_tip20)
-                .expect("isTIP20 call should succeed")
         );
     }
 }
