@@ -166,17 +166,17 @@ impl GenesisArgs {
         println!("Initializing TIP20RewardsRegistry");
         initialize_tip20_rewards_registry(&mut evm)?;
 
+        println!("Initializing validator config");
+        let validators = initialize_validator_config(admin, self.validators_config, &mut evm)?;
+
         println!("Initializing fee manager");
-        initialize_fee_manager(alpha_token_address, addresses, &mut evm);
+        initialize_fee_manager(alpha_token_address, addresses, validators, &mut evm);
 
         println!("Initializing stablecoin exchange");
         initialize_stablecoin_exchange(&mut evm)?;
 
         println!("Initializing nonce manager");
         initialize_nonce_manager(&mut evm)?;
-
-        println!("Initializing validator config");
-        initialize_validator_config(admin, self.validators_config, &mut evm)?;
 
         println!("Minting pairwise FeeAMM liquidity");
         mint_pairwise_liquidity(
@@ -444,6 +444,7 @@ fn initialize_tip20_rewards_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> ey
 fn initialize_fee_manager(
     default_fee_address: Address,
     initial_accounts: Vec<Address>,
+    validators: Vec<Address>,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) {
     // Update the beneficiary since the validator cant set the validator fee token for themselves
@@ -468,14 +469,17 @@ fn initialize_fee_manager(
             .expect("Could not set fee token");
     }
 
-    fee_manager
-        .set_validator_token(
-            Address::ZERO,
-            IFeeManager::setValidatorTokenCall {
-                token: default_fee_address,
-            },
-        )
-        .expect("Could not 0x00 validator fee token");
+    // Set validator fee tokens to linking USD
+    for validator in validators {
+        fee_manager
+            .set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: LINKING_USD_ADDRESS,
+                },
+            )
+            .expect("Could not 0x00 validator fee token");
+    }
 }
 
 /// Initializes the [`TIP403Registry`] contract.
@@ -507,11 +511,13 @@ fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
     Ok(())
 }
 
+/// Initializes the initial set of validators with the spcified validator config.
+/// Returns a vec of the validator public keys
 fn initialize_validator_config(
     owner: Address,
     validators_config: Option<PathBuf>,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
-) -> eyre::Result<()> {
+) -> eyre::Result<Vec<Address>> {
     let block = evm.block.clone();
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
     let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
@@ -533,6 +539,7 @@ fn initialize_validator_config(
     };
 
     // Add initial validators
+    let mut validator_addresses = Vec::new();
     for validator in initial_validators.iter().tqdm() {
         validator_config
             .add_validator(
@@ -546,9 +553,11 @@ fn initialize_validator_config(
                 },
             )
             .wrap_err("Failed to add validator")?;
+
+        validator_addresses.push(validator.address);
     }
 
-    Ok(())
+    Ok(validator_addresses)
 }
 
 fn mint_pairwise_liquidity(
