@@ -333,7 +333,6 @@ where
             return ceremony;
         };
 
-        // Special case height == 0
         if block.height() == 0 {
             return ceremony;
         }
@@ -375,6 +374,8 @@ where
 
         // Notify the epoch manager that the first height of the new epoch
         // was entered and the previous epoch can be exited.
+        //
+        // Recall, for an epoch length E the first heights are 0E, 1E, 2E, ...
         if block.height().is_multiple_of(self.config.epoch_length) {
             // Special case epoch == 0
             if let Some(previous_epoch) = ceremony.epoch().checked_sub(1) {

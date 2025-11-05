@@ -254,8 +254,11 @@ impl Inner<Init> {
         let source = if genesis.epoch == 0 {
             self.genesis_block.digest()
         } else {
+            // The last block of the *previous* genesis provides the "genesis"
+            // of the *current* epoch. Only epoch 0 is special cased above.
             let height =
                 utils::last_block_in_epoch(self.epoch_length, genesis.epoch.saturating_sub(1));
+
             let Some((_, digest)) = self.marshal.get_info(height).await else {
                 // XXX: the None case here should not be hit:
                 // 1. an epoch transition is triggered by the application
@@ -780,6 +783,7 @@ async fn verify_block<TContext: Pacer>(
     scheme_provider: &SchemeProvider,
 ) -> eyre::Result<bool> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
+
     if utils::epoch(epoch_length, block.height()) != epoch {
         info!("block does not belong to this epoch");
         return Ok(false);
