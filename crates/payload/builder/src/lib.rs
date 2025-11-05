@@ -412,13 +412,11 @@ where
         ));
 
         // Execute start-of-block system transactions (rewards registry finalize)
-        let start_block_txs = self.build_start_block_txs(builder.evm().block());
-        for tx in &start_block_txs {
+        for tx in self.build_start_block_txs(builder.evm().block()) {
             block_size_used += tx.inner().length();
-        }
-        for system_tx in start_block_txs {
+
             builder
-                .execute_transaction(system_tx)
+                .execute_transaction(tx)
                 .map_err(PayloadBuilderError::evm)?;
         }
 

@@ -6,16 +6,13 @@ use alloy::{
 };
 use alloy_eips::{BlockNumberOrTag, Encodable2718};
 use alloy_network::TxSignerSync;
-use alloy_primitives::{Address, Sealable};
+use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
-use futures::StreamExt;
 use reth_e2e_test_utils::wallet::Wallet;
 use reth_node_api::EngineApiMessageVersion;
 use reth_node_metrics::recorder::install_prometheus_recorder;
-use reth_primitives_traits::{AlloyBlockHeader as _, Block as _, transaction::TxHashRef};
-use reth_provider::BlockReaderIdExt;
+use reth_primitives_traits::{AlloyBlockHeader as _, transaction::TxHashRef};
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_primitives::{TempoTxEnvelope, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE};
 
 /// Test that verifies backfill sync works correctly.
 ///
@@ -94,39 +91,14 @@ async fn test_backfill_sync() -> eyre::Result<()> {
         let payload = node1.advance_block().await?;
 
         // Verify the transaction was included
-        let block_hash = payload.block().hash();
         let block_number = payload.block().number();
 
-        // Get head block from notifications stream and verify the tx is present
-        let head = node1.canonical_stream.next().await.unwrap();
-
-        // Find the first non-system transaction
-        let user_tx = head
-            .tip()
-            .body()
-            .transactions()
-            .find(|tx| {
-                !matches!(tx, TempoTxEnvelope::Legacy(signed) if signed.signature() == &TEMPO_SYSTEM_TX_SIGNATURE)
-            })
-            .expect("Should have at least one user transaction");
-
-        assert_eq!(user_tx.tx_hash().as_slice(), tx_hash.as_slice());
-
-        loop {
-            // wait for the block to commit
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            let latest_block = node1
-                .inner
-                .provider
-                .block_by_number_or_tag(BlockNumberOrTag::Latest)?;
-            if let Some(latest_block) = latest_block
-                && latest_block.header().number() == block_number
-            {
-                // make sure the block hash we submitted via FCU engine api is the new latest block
-                assert_eq!(latest_block.header().hash_slow(), block_hash);
-                break;
-            }
-        }
+        let block = provider1
+            .get_block(block_number.into())
+            .full()
+            .await?
+            .unwrap();
+        assert!(block.into_transactions_vec()[1].inner.tx_hash() == &tx_hash);
 
         if block_number % 10 == 0 {
             println!("Advanced to block {block_number}");

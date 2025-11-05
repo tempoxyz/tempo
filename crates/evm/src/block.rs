@@ -355,13 +355,18 @@ where
             self.validate_system_tx(tx)
         } else if let Some(tx_proposer) = tx.subblock_proposer() {
             match self.section {
+                BlockSection::StartOfBlock {
+                    seen_tip20_rewards_registry,
+                } if !seen_tip20_rewards_registry => Err(BlockValidationError::msg(
+                    "TIP20 rewards registry system transaction was not seen",
+                )),
+                BlockSection::GasIncentive | BlockSection::System { .. } => {
+                    Err(BlockValidationError::msg("subblock section already passed"))
+                }
                 BlockSection::StartOfBlock { .. } | BlockSection::NonShared => {
                     Ok(BlockSection::SubBlock {
                         proposer: tx_proposer,
                     })
-                }
-                BlockSection::GasIncentive | BlockSection::System { .. } => {
-                    Err(BlockValidationError::msg("subblock section already passed"))
                 }
                 BlockSection::SubBlock { proposer } => {
                     if proposer == tx_proposer
@@ -379,6 +384,11 @@ where
             }
         } else {
             match self.section {
+                BlockSection::StartOfBlock {
+                    seen_tip20_rewards_registry,
+                } if !seen_tip20_rewards_registry => Err(BlockValidationError::msg(
+                    "TIP20 rewards registry system transaction was not seen",
+                )),
                 BlockSection::StartOfBlock { .. } | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
                         || (!tx.is_payment() && gas_used > self.non_payment_gas_left)
