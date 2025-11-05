@@ -619,6 +619,7 @@ mod tests {
     use super::*;
     use crate::{storage::hashmap::HashMapStorageProvider, tip20::token_id_to_address};
     use alloy::primitives::{Address, uint};
+    use tempo_contracts::precompiles::LINKING_USD_ADDRESS;
 
     #[test]
     fn test_mint_identical_addresses() {
@@ -1006,5 +1007,143 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_mint_rejects_non_usd_user_token() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let contract_address = Address::random();
+
+        let msg_sender = Address::random();
+        let amount = U256::from(1000);
+        let to = Address::random();
+        let admin = Address::random();
+        let user_token = token_id_to_address(1);
+        let validator_token = token_id_to_address(2);
+
+        let mut amm = TIPFeeAMM::new(contract_address, &mut storage);
+
+        TIP20Token::from_address(user_token, amm.storage)
+            .initialize("TestToken", "TEST", "EUR", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+        TIP20Token::from_address(validator_token, amm.storage)
+            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
+        let result = amm.mint(msg_sender, user_token, validator_token, amount, amount, to);
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIPFeeAMMError(
+                TIPFeeAMMError::InvalidToken(_)
+            ))
+        ));
+
+        TIP20Token::from_address(user_token, amm.storage)
+            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+        TIP20Token::from_address(validator_token, amm.storage)
+            .initialize("TestToken", "TEST", "EUR", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
+        let result = amm.mint(msg_sender, user_token, validator_token, amount, amount, to);
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIPFeeAMMError(
+                TIPFeeAMMError::InvalidToken(_)
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_burn_rejects_non_usd_tokens() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let contract_address = Address::random();
+
+        let admin = Address::random();
+        let user_token = token_id_to_address(1);
+        let validator_token = token_id_to_address(2);
+        let msg_sender = Address::random();
+        let to = Address::random();
+        let liquidity = U256::from(1000);
+
+        let mut amm = TIPFeeAMM::new(contract_address, &mut storage);
+
+        TIP20Token::from_address(user_token, amm.storage)
+            .initialize("TestToken", "TEST", "EUR", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+        TIP20Token::from_address(validator_token, amm.storage)
+            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
+        let result = amm.burn(msg_sender, user_token, validator_token, liquidity, to);
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIPFeeAMMError(
+                TIPFeeAMMError::InvalidToken(_)
+            ))
+        ));
+
+        TIP20Token::from_address(user_token, amm.storage)
+            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+        TIP20Token::from_address(validator_token, amm.storage)
+            .initialize("TestToken", "TEST", "EUR", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
+        let result = amm.burn(msg_sender, user_token, validator_token, liquidity, to);
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIPFeeAMMError(
+                TIPFeeAMMError::InvalidToken(_)
+            ))
+        ));
+    }
+    #[test]
+    fn test_rebalance_swap_rejects_non_usd_tokens() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let contract_address = Address::random();
+
+        let admin = Address::random();
+        let user_token = token_id_to_address(1);
+        let validator_token = token_id_to_address(2);
+        let msg_sender = Address::random();
+        let amount_out = U256::from(1000);
+        let to = Address::random();
+
+        let mut amm = TIPFeeAMM::new(contract_address, &mut storage);
+
+        TIP20Token::from_address(user_token, amm.storage)
+            .initialize("TestToken", "TEST", "EUR", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+        TIP20Token::from_address(validator_token, amm.storage)
+            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
+        let result = amm.rebalance_swap(msg_sender, user_token, validator_token, amount_out, to);
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIPFeeAMMError(
+                TIPFeeAMMError::InvalidToken(_)
+            ))
+        ));
+
+        TIP20Token::from_address(user_token, amm.storage)
+            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+        TIP20Token::from_address(validator_token, amm.storage)
+            .initialize("TestToken", "TEST", "EUR", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
+        let result = amm.rebalance_swap(msg_sender, user_token, validator_token, amount_out, to);
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIPFeeAMMError(
+                TIPFeeAMMError::InvalidToken(_)
+            ))
+        ));
     }
 }
