@@ -421,7 +421,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         let first_chunk_len = len.min(30);
         all_bytes.extend_from_slice(&first_bytes[2..2 + first_chunk_len]);
 
-        let mut remaining = len - first_chunk_len;
+        let mut remaining = len.checked_sub(first_chunk_len).ok_or(TempoPrecompileError::overflow_underflow())?;
         let mut slot_offset = 1;
         while remaining > 0 {
             let slot_value = self
@@ -430,8 +430,8 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
             let slot_bytes = slot_value.to_be_bytes::<32>();
             let to_read = remaining.min(32);
             all_bytes.extend_from_slice(&slot_bytes[..to_read]);
-            remaining -= to_read;
-            slot_offset += 1;
+            remaining = remaining.checked_sub(to_read).ok_or(TempoPrecompileError::overflow_underflow())?;
+            slot_offset = slot_offset.checked_add(1).ok_or(TempoPrecompileError::overflow_underflow())?;
         }
 
         Ok(String::from_utf8_lossy(&all_bytes).to_string())
