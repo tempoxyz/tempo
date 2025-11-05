@@ -263,7 +263,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         self.storage.sstore(
             self.precompile_address,
             slots::VALIDATOR_COUNT,
-            U256::from(count + 1),
+            U256::from(count.checked_add(1).ok_or(TempoPrecompileError::overflow_underflow())?),
         )?;
 
         Ok(())
