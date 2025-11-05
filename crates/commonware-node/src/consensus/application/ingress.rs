@@ -80,10 +80,26 @@ impl From<Verify> for Message {
     }
 }
 
+/// A finalization forwarded from the marshal actor to the application's
+/// executor actor.
+///
+/// This enum unwraps `Update<Block>` into this `Finalized` enum so that
+/// a `reponse` channel is attached to a block-finalization.
+///
+/// The reason is that the marshal actor expects blocks finzalitions to be
+/// acknowledged by the application.
+///
+/// Updated tips on the other hand are fire-and-forget.
 #[derive(Debug)]
-pub(super) struct Finalized {
-    pub(super) update: Update<Block>,
-    pub(super) response: oneshot::Sender<()>,
+pub(super) enum Finalized {
+    Block {
+        block: Box<Block>,
+        response: oneshot::Sender<()>,
+    },
+    Tip {
+        digest: Digest,
+        height: u64,
+    },
 }
 
 impl From<Finalized> for Message {
@@ -181,18 +197,35 @@ impl Reporter for Mailbox {
     type Activity = Update<Block>;
 
     async fn report(&mut self, update: Self::Activity) {
-        let (response, rx) = oneshot::channel();
+        let (msg, rx) = match update {
+            Update::Tip(height, digest) => {
+                let msg = Finalized::Tip { digest, height }.into();
+                (msg, None)
+            }
+            Update::Block(block) => {
+                let (response, rx) = oneshot::channel();
+                let msg = Finalized::Block {
+                    block: Box::new(block),
+                    response,
+                }
+                .into();
+                (msg, Some(rx))
+            }
+        };
         // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
         self.inner
-            .send(Finalized { update, response }.into())
+            .send(msg)
             .await
             .expect("application is present and ready to receive broadcasts");
 
         // XXX: This is used as an acknowledgement that the application
         // finalized the block:
         // Response on this channel -> future returns -> marshaller gets an ack
-        //
-        // TODO(janis): report if this channel gets dropped?
-        let _ = rx.await;
+        if let Some(rx) = rx {
+            // TODO(janis): commonware does not distinguish between the channel
+            // getting dropped or receiving a response. But thsi is something
+            // that needs be handled by them.
+            let _ = rx.await;
+        }
     }
 }

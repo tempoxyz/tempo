@@ -40,7 +40,7 @@ use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 
 use reth_provider::BlockReader as _;
 use tokio::sync::RwLock;
-use tracing::{Level, debug, error, error_span, field, info, instrument, warn};
+use tracing::{Level, debug, error, error_span, info, instrument, warn};
 
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 
@@ -53,7 +53,6 @@ use crate::{
     consensus::{Digest, block::Block},
     dkg::PublicOutcome,
     epoch::{self, SchemeProvider},
-    marshal_utils::UpdateExt as _,
     subblocks,
 };
 
@@ -236,14 +235,7 @@ impl Inner<Init> {
         Ok(())
     }
 
-    #[instrument(
-        skip_all,
-        fields(
-            block.digest = finalized.update.as_block().map(|b| field::display(b.digest())),
-            block.height = finalized.update.as_block().map(|b| b.height()),
-            derived_epoch = finalized.update.as_block().and_then(|b| epoch::of_height(b.height(), self.epoch_length)),
-        ),
-    )]
+    #[instrument(skip_all)]
     /// Pushes a `finalized` request to the back of the finalization queue.
     fn handle_finalized(&self, finalized: Finalized) -> eyre::Result<()> {
         self.state.executor_mailbox.forward_finalized(finalized)

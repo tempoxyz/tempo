@@ -11,10 +11,7 @@ use std::{sync::Arc, time::Duration};
 
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::ForkchoiceState;
-use commonware_consensus::{
-    Block as _,
-    marshal::{Update, ingress::mailbox::Identifier},
-};
+use commonware_consensus::{Block as _, marshal::ingress::mailbox::Identifier};
 
 use commonware_macros::select;
 use commonware_runtime::{ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell};
@@ -27,7 +24,7 @@ use reth_provider::BlockNumReader as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tracing::{Level, Span, debug, info, instrument, warn};
 
-use crate::consensus::{Digest, block::Block};
+use crate::consensus::{Digest, application::ingress::Finalized, block::Block};
 
 pub(super) struct Builder {
     /// A handle to the execution node layer. Used to forward finalized blocks
@@ -207,6 +204,13 @@ where
                 (0, self.genesis_block.digest())
             });
 
+        info!(
+            finalized_consensus_height,
+            %finalized_consensus_digest,
+            "consensus layer responded with the latest finalized height and \
+            digest it forwarded to the execution layer",
+        );
+
         self.canonicalize(
             Span::current(),
             HeadOrFinalized::Finalized,
@@ -265,9 +269,9 @@ where
                     .canonicalize(cause, HeadOrFinalized::Head, height, digest)
                     .await;
             }
-            Command::Finalize { update, response } => {
+            Command::Finalize(finalized) => {
                 // let _ = self.forward_finalized(*update, response, cause).await;
-                let _ = self.finalize(cause, *update, response).await;
+                let _ = self.finalize(cause, finalized).await;
             }
         }
     }
@@ -339,26 +343,16 @@ where
 
     #[instrument(parent = &cause, skip_all)]
     /// Handles finalization events.
-    async fn finalize(
-        &mut self,
-        cause: Span,
-        update: Update<Block>,
-        response: oneshot::Sender<()>,
-    ) {
-        match update {
-            Update::Tip(height, digest) => {
+    async fn finalize(&mut self, cause: Span, finalized: super::ingress::Finalized) {
+        match finalized {
+            Finalized::Tip { height, digest } => {
                 let _: Result<_, _> = self
                     .canonicalize(Span::current(), HeadOrFinalized::Finalized, height, digest)
                     .await;
-                if response.send(()).is_err() {
-                    info!(
-                        "attempted to acknowledge canonicalizing finalized tip, but sender already went way"
-                    );
-                }
             }
-            Update::Block(block) => {
+            Finalized::Block { block, response } => {
                 let _: Result<_, _> = self
-                    .forward_finalized(Span::current(), block, response)
+                    .forward_finalized(Span::current(), *block, response)
                     .await;
             }
         }
@@ -533,10 +527,7 @@ impl ExecutorMailbox {
         self.inner
             .unbounded_send(Message {
                 cause: Span::current(),
-                command: Command::Finalize {
-                    update: Box::new(finalized.update),
-                    response: finalized.response,
-                },
+                command: Command::Finalize(finalized),
             })
             .wrap_err("failed sending finalization request to agent, this means it exited")
     }
@@ -552,17 +543,6 @@ struct Message {
 enum Command {
     /// Requests the agent to set the head of the canonical chain to `digest`.
     CanonicalizeHead { height: u64, digest: Digest },
-    /// Requests the agent to forward a block to the execution layer.
-    ///
-    /// This variant is used for both ExecutorMailbox::forward_block and
-    /// ExecutorBlock::forward_finalized.
-    ///
-    /// The response channel is expected to be set if a finalized block is
-    /// sent, i.e. a block tip of the finalized chain. This is the case when a
-    /// finalized block is received from the commonware marshaller, which
-    /// expects an acknowledgmenet of finalization.
-    Finalize {
-        update: Box<Update<Block>>,
-        response: oneshot::Sender<()>,
-    },
+    /// Requests the agent to forward a finalizatoin event to the execution layer.
+    Finalize(super::ingress::Finalized),
 }

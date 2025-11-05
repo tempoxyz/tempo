@@ -20,7 +20,8 @@ use commonware_cryptography::{
 };
 use commonware_p2p::{Blocker, Receiver, Sender};
 use commonware_runtime::{
-    Clock, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::PoolRef,
+    Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::PoolRef,
+    spawn_cell,
 };
 use commonware_utils::set::Ordered;
 use eyre::WrapErr as _;
@@ -238,7 +239,7 @@ where
         .await;
 
         Ok(Engine {
-            context: self.context,
+            context: ContextCell::new(self.context),
 
             broadcast,
             broadcast_mailbox,
@@ -276,7 +277,7 @@ where
     // not define it for now.
     // TIndexer,
 {
-    context: TContext,
+    context: ContextCell<TContext>,
 
     /// broadcasts messages to and caches messages from untrusted peers.
     // XXX: alto calls this `buffered`. That's confusing. We call it `broadcast`.
@@ -321,7 +322,7 @@ where
         reason = "following commonware's style of writing"
     )]
     pub fn start(
-        self,
+        mut self,
         pending_network: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
@@ -355,7 +356,8 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) -> Handle<eyre::Result<()>> {
-        self.context.clone().spawn(|_| {
+        spawn_cell!(
+            self.context,
             self.run(
                 pending_network,
                 recovered_network,
@@ -366,7 +368,8 @@ where
                 boundary_certificates_channel,
                 subblocks_channel,
             )
-        })
+            .await
+        )
     }
 
     #[expect(
@@ -409,16 +412,16 @@ where
         ),
     ) -> eyre::Result<()> {
         let broadcast = self.broadcast.start(broadcast_channel);
-        let application = self.application.start(self.dkg_manager_mailbox.clone());
-
         let resolver =
             marshal::resolver::p2p::init(&self.context, self.resolver_config, marshal_channel);
 
         let marshal = self.marshal.start(
-            Reporters::from((self.application_mailbox, self.dkg_manager_mailbox)),
+            Reporters::from((self.application_mailbox, self.dkg_manager_mailbox.clone())),
             self.broadcast_mailbox,
             resolver,
         );
+
+        let application = self.application.start(self.dkg_manager_mailbox.clone());
 
         let epoch_manager = self.epoch_manager.start(
             pending_channel,
