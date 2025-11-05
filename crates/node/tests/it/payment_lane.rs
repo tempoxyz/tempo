@@ -37,8 +37,10 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
         .connect_http(http_url.clone());
 
     // Ensure the native account balance is 0
-    assert_eq!(provider.get_balance(caller).await?, U256::ZERO);
-    assert_eq!(provider2.get_balance(caller2).await?, U256::ZERO);
+    let balance1 = provider.get_account_info(caller).await?.balance;
+    let balance2 = provider.get_account_info(caller).await?.balance;
+    assert_eq!(balance1, U256::ZERO);
+    assert_eq!(balance2, U256::ZERO);
 
     // Get fee tokens for both accounts
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
