@@ -18,7 +18,7 @@ pub use orderbook::{
 
 use crate::{
     LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
-    error::Result,
+    error::{Result, TempoPrecompileError},
     linking_usd::LinkingUSD,
     stablecoin_exchange::orderbook::{
         compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick,
@@ -137,7 +137,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// Add to user's balance
     fn increment_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
         let current = self.balance_of(user, token)?;
-        self.set_balance(user, token, current + amount)
+        self.set_balance(user, token, current.checked_add(amount).ok_or(TempoPrecompileError::overflow_underflow())?)
     }
 
     /// Subtract from user's balance
@@ -204,7 +204,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             self.sub_balance(user, token, amount)
         } else {
             self.set_balance(user, token, 0)?;
-            let remaining = amount - user_balance;
+            let remaining = amount.checked_sub(user_balance).ok_or(TempoPrecompileError::overflow_underflow())?;
             self.transfer_from(token, user, remaining)
         }
     }
@@ -356,7 +356,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             book_key.into(),
         )?;
         self.storage
-            .sstore(self.address, slots::BOOK_KEYS_LENGTH, length + U256::ONE)?;
+            .sstore(self.address, slots::BOOK_KEYS_LENGTH, length.checked_add(U256::ONE).ok_or(TempoPrecompileError::overflow_underflow())?)?;
         Ok(())
     }
 
@@ -370,7 +370,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 .storage
                 .sload(self.address, slots::BOOK_KEYS_BASE + i)?;
             book_keys.push(B256::from(book_key));
-            i += U256::ONE;
+            i = i.checked_add(U256::ONE).ok_or(TempoPrecompileError::overflow_underflow())?;
         }
         Ok(book_keys)
     }
@@ -581,10 +581,10 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         let pending_order_id = self.get_pending_order_id()?;
 
-        let mut current_order_id = next_order_id + 1;
+        let mut current_order_id = next_order_id.checked_add(1).ok_or(TempoPrecompileError::overflow_underflow())?;
         while current_order_id <= pending_order_id {
             self.process_pending_order(current_order_id)?;
-            current_order_id += 1;
+            current_order_id = current_order_id.checked_add(1).ok_or(TempoPrecompileError::overflow_underflow())?;
         }
 
         self.set_active_order_id(pending_order_id)?;
@@ -644,7 +644,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             level.tail = order_id;
         }
 
-        level.total_liquidity += order.remaining();
+        level.total_liquidity = level.total_liquidity.checked_add(order.remaining()).ok_or(TempoPrecompileError::overflow_underflow())?;
         level.store(
             self.storage,
             self.address,
@@ -672,7 +672,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         if order.is_bid() {
             self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
         } else {
-            let quote_amount = (fill_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let quote_amount = fill_amount.checked_mul(price as u128)
+                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                .ok_or(TempoPrecompileError::overflow_underflow())?;
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
         }
 
@@ -692,7 +694,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             order.book_key(),
             order.tick(),
             order.is_bid(),
-            level.total_liquidity - fill_amount,
+            level.total_liquidity.checked_sub(fill_amount).ok_or(TempoPrecompileError::overflow_underflow())?,
         )?;
 
         // Emit OrderFilled event for partial fill
