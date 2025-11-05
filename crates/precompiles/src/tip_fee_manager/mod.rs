@@ -744,4 +744,46 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_rejects_non_usd() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        let admin = Address::random();
+        let token = token_id_to_address(rand::random::<u64>());
+        let mut tip20_token = TIP20Token::from_address(token, &mut storage);
+        tip20_token
+            .initialize("NonUSD", "NonUSD", "NonUSD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
+        let validator = Address::random();
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, validator, &mut storage);
+
+        let user = Address::random();
+
+        let call = IFeeManager::setUserTokenCall { token };
+        let result = fee_manager.set_user_token(user, call);
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::FeeManagerError(
+                FeeManagerError::InvalidToken(_)
+            ))
+        ));
+
+        // Set beneficiary to a random address to avoid `CannotChangeWithinBlock` error
+        fee_manager.beneficiary = Address::random();
+
+        let call = IFeeManager::setValidatorTokenCall { token };
+        let result = fee_manager.set_validator_token(validator, call);
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::FeeManagerError(
+                FeeManagerError::InvalidToken(_)
+            ))
+        ));
+
+        Ok(())
+    }
 }
