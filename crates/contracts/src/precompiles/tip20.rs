@@ -120,6 +120,7 @@ sol! {
         error InsufficientBalance(uint256 available, uint256 required, address token);
         error InsufficientAllowance();
         error SupplyCapExceeded();
+        error InvalidSupplyCap();
         error InvalidPayload();
         error StringTooLong();
         error PolicyForbids();
@@ -161,6 +162,11 @@ impl TIP20Error {
     /// Creates an error for unauthorized callers
     pub const fn unauthorized() -> Self {
         Self::Unauthorized(ITIP20::Unauthorized {})
+    }
+
+    /// Creates an error when minting would set a supply cap that is too large, or invalid.
+    pub const fn invalid_supply_cap() -> Self {
+        Self::InvalidSupplyCap(ITIP20::InvalidSupplyCap {})
     }
 
     /// Creates an error when minting would exceed supply cap.

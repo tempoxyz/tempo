@@ -184,9 +184,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         call: ITIP20::setSupplyCapCall,
     ) -> Result<(), TempoPrecompileError> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
-        if call.newSupplyCap < self.total_supply()? || call.newSupplyCap > U128_MAX {
+        if call.newSupplyCap < self.total_supply()? {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
+
+        if call.newSupplyCap > U128_MAX {
+            return Err(TIP20Error::invalid_supply_cap().into());
+        }
+
         self.storage
             .sstore(self.token_address, slots::SUPPLY_CAP, call.newSupplyCap)?;
 
