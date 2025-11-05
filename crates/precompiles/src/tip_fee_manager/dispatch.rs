@@ -391,14 +391,14 @@ mod tests {
             &mut fee_manager,
             IFeeManagerCalls::SELECTORS,
             "IFeeManager",
-            |s| IFeeManagerCalls::name_by_selector(s),
+            IFeeManagerCalls::name_by_selector,
         );
 
         let amm_unsupported = check_selector_coverage(
             &mut fee_manager,
             ITIPFeeAMMCalls::SELECTORS,
             "ITIPFeeAMM",
-            |s| ITIPFeeAMMCalls::name_by_selector(s),
+            ITIPFeeAMMCalls::name_by_selector,
         );
 
         assert_full_coverage([fee_manager_unsupported, amm_unsupported]);

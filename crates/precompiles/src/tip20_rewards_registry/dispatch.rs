@@ -57,7 +57,7 @@ mod tests {
             &mut registry,
             ITIP20RewardsRegistryCalls::SELECTORS,
             "ITIP20RewardsRegistry",
-            |s| ITIP20RewardsRegistryCalls::name_by_selector(s),
+            ITIP20RewardsRegistryCalls::name_by_selector,
         );
 
         assert_full_coverage([unsupported]);

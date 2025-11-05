@@ -513,7 +513,7 @@ mod tests {
             &mut exchange,
             IStablecoinExchangeCalls::SELECTORS,
             "IStablecoinExchange",
-            |s| IStablecoinExchangeCalls::name_by_selector(s),
+            IStablecoinExchangeCalls::name_by_selector,
         );
 
         assert_full_coverage([unsupported]);

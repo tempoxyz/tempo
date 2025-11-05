@@ -56,7 +56,7 @@ mod tests {
             &mut registrar,
             ITipAccountRegistrarCalls::SELECTORS,
             "ITipAccountRegistrar",
-            |s| ITipAccountRegistrarCalls::name_by_selector(s),
+            ITipAccountRegistrarCalls::name_by_selector,
         );
 
         assert_full_coverage([unsupported]);

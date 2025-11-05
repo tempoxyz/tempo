@@ -16,7 +16,7 @@ pub fn check_selector_coverage<P: Precompile>(
 ) -> Vec<([u8; 4], &'static str)> {
     let mut unsupported_selectors = Vec::new();
 
-    for selector in selectors.into_iter() {
+    for selector in selectors.iter() {
         let mut calldata = selector.to_vec();
         // Add some dummy data for functions that require parameters
         calldata.extend_from_slice(&[0u8; 32]);
@@ -24,20 +24,19 @@ pub fn check_selector_coverage<P: Precompile>(
         let result = precompile.call(&Bytes::from(calldata), Address::ZERO);
 
         // Check if we got "Unknown function selector" error
-        if let Err(PrecompileError::Other(msg)) = result {
-            if msg.contains("Unknown function selector") {
-                if let Some(name) = name_lookup(*selector) {
-                    unsupported_selectors.push((*selector, name));
-                }
-            }
+        if let Err(PrecompileError::Other(msg)) = result
+            && msg.contains("Unknown function selector")
+            && let Some(name) = name_lookup(*selector)
+        {
+            unsupported_selectors.push((*selector, name));
         }
     }
 
     // Print unsupported selectors for visibility
     if !unsupported_selectors.is_empty() {
-        eprintln!("Unsupported {} selectors:", interface_name);
+        eprintln!("Unsupported {interface_name} selectors:");
         for (selector, name) in &unsupported_selectors {
-            eprintln!("  - {} ({:?})", name, selector);
+            eprintln!("  - {name} ({selector:?})");
         }
     }
 

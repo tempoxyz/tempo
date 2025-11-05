@@ -63,7 +63,7 @@ mod tests {
             &mut factory,
             ITIP20FactoryCalls::SELECTORS,
             "ITIP20Factory",
-            |s| ITIP20FactoryCalls::name_by_selector(s),
+            ITIP20FactoryCalls::name_by_selector,
         );
 
         assert_full_coverage([unsupported]);

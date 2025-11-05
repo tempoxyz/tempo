@@ -206,7 +206,7 @@ mod tests {
             &mut validator_config,
             IValidatorConfigCalls::SELECTORS,
             "IValidatorConfig",
-            |s| IValidatorConfigCalls::name_by_selector(s),
+            IValidatorConfigCalls::name_by_selector,
         );
 
         assert_full_coverage([unsupported]);

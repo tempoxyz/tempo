@@ -206,7 +206,7 @@ mod tests {
             &mut linking_usd,
             IRolesAuthCalls::SELECTORS,
             "IRolesAuth",
-            |s| IRolesAuthCalls::name_by_selector(s),
+            IRolesAuthCalls::name_by_selector,
         );
 
         assert_full_coverage([itip20_unsupported, roles_unsupported]);

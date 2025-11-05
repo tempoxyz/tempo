@@ -487,7 +487,7 @@ mod tests {
             &mut registry,
             ITIP403RegistryCalls::SELECTORS,
             "ITIP403Registry",
-            |s| ITIP403RegistryCalls::name_by_selector(s),
+            ITIP403RegistryCalls::name_by_selector,
         );
 
         assert_full_coverage([unsupported]);
