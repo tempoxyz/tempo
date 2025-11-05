@@ -136,7 +136,7 @@ impl GenesisArgs {
             "USD",
             admin,
             &addresses,
-            U256::from(u128::MAX),
+            U256::from(u64::MAX),
             &mut evm,
         )?;
 
@@ -146,7 +146,7 @@ impl GenesisArgs {
             "USD",
             admin,
             &addresses,
-            U256::from(u128::MAX),
+            U256::from(u64::MAX),
             &mut evm,
         )?;
 
@@ -156,7 +156,7 @@ impl GenesisArgs {
             "USD",
             admin,
             &addresses,
-            U256::from(u128::MAX),
+            U256::from(u64::MAX),
             &mut evm,
         )?;
 
@@ -366,7 +366,7 @@ fn create_and_mint_token(
     let result = token.set_supply_cap(
         admin,
         ITIP20::setSupplyCapCall {
-            newSupplyCap: U256::MAX,
+            newSupplyCap: U256::from(u128::MAX),
         },
     );
     assert!(result.is_ok());
