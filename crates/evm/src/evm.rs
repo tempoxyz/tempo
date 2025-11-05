@@ -98,6 +98,10 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     ///
     /// This is used as a work around to allow logs to be
     /// included for reverting transactions.
+    ///
+    /// TODO: remove once revm supports emitting logs for reverted transactions
+    ///
+    /// <https://github.com/tempoxyz/tempo/pull/729>
     pub fn take_revert_logs(&mut self) -> Vec<Log> {
         std::mem::take(&mut self.inner.logs)
     }
