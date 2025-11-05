@@ -32,7 +32,7 @@ use tempo_precompiles::{
     stablecoin_exchange::StablecoinExchange,
     storage::evm::EvmPrecompileStorageProvider,
     tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager},
-    tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
+    tip20::{ISSUER_ROLE, ITIP20, TIP20Token, address_to_token_id_unchecked},
     tip20_factory::{ITIP20Factory, TIP20Factory},
     tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
@@ -342,7 +342,7 @@ fn create_and_mint_token(
         factory
             .initialize()
             .expect("Could not initialize tip20 factory");
-        factory
+        let token_address = factory
             .create_token(
                 admin,
                 ITIP20Factory::createTokenCall {
@@ -353,8 +353,9 @@ fn create_and_mint_token(
                     admin,
                 },
             )
-            .expect("Could not create token")
-            .to::<u64>()
+            .expect("Could not create token");
+
+        address_to_token_id_unchecked(token_address)
     };
 
     let mut token = TIP20Token::new(token_id, &mut provider);
