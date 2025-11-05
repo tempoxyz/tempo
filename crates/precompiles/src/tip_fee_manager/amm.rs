@@ -619,7 +619,6 @@ mod tests {
     use super::*;
     use crate::{storage::hashmap::HashMapStorageProvider, tip20::token_id_to_address};
     use alloy::primitives::{Address, uint};
-    use reth_storage_api::errors::db;
     use tempo_contracts::precompiles::{FeeManagerError, LINKING_USD_ADDRESS};
 
     #[test]
