@@ -104,7 +104,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         let length = self.storage.sload(self.address, array_slot)?;
         let last_index = length
             .checked_sub(U256::ONE)
-            .ok_or(TempoPrecompileError::overflow_underflow())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
         if index != last_index {
             // Elements are stored at array_slot + 1 + index
@@ -149,7 +149,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
             array_slot,
             length
                 .checked_add(U256::ONE)
-                .ok_or(TempoPrecompileError::overflow_underflow())?,
+                .ok_or(TempoPrecompileError::under_overflow())?,
         )
     }
 
@@ -191,7 +191,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
 
         let mut next_timestamp = last_updated
             .checked_add(1)
-            .ok_or(TempoPrecompileError::overflow_underflow())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
         while current_timestamp >= next_timestamp {
             let tokens = self.get_streams_ending_at_timestamp(next_timestamp)?;
@@ -210,7 +210,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
 
             next_timestamp = next_timestamp
                 .checked_add(1)
-                .ok_or(TempoPrecompileError::overflow_underflow())?;
+                .ok_or(TempoPrecompileError::under_overflow())?;
         }
 
         self.set_last_updated_timestamp(current_timestamp)?;

@@ -142,7 +142,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             token,
             current
                 .checked_add(amount)
-                .ok_or(TempoPrecompileError::overflow_underflow())?,
+                .ok_or(TempoPrecompileError::under_overflow())?,
         )
     }
 
@@ -212,7 +212,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             self.set_balance(user, token, 0)?;
             let remaining = amount
                 .checked_sub(user_balance)
-                .ok_or(TempoPrecompileError::overflow_underflow())?;
+                .ok_or(TempoPrecompileError::under_overflow())?;
             self.transfer_from(token, user, remaining)
         }
     }
@@ -368,7 +368,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             slots::BOOK_KEYS_LENGTH,
             length
                 .checked_add(U256::ONE)
-                .ok_or(TempoPrecompileError::overflow_underflow())?,
+                .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
         Ok(())
     }
@@ -385,7 +385,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             book_keys.push(B256::from(book_key));
             i = i
                 .checked_add(U256::ONE)
-                .ok_or(TempoPrecompileError::overflow_underflow())?;
+                .ok_or(TempoPrecompileError::under_overflow())?;
         }
         Ok(book_keys)
     }
@@ -598,12 +598,12 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         let mut current_order_id = next_order_id
             .checked_add(1)
-            .ok_or(TempoPrecompileError::overflow_underflow())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
         while current_order_id <= pending_order_id {
             self.process_pending_order(current_order_id)?;
             current_order_id = current_order_id
                 .checked_add(1)
-                .ok_or(TempoPrecompileError::overflow_underflow())?;
+                .ok_or(TempoPrecompileError::under_overflow())?;
         }
 
         self.set_active_order_id(pending_order_id)?;
@@ -666,7 +666,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         level.total_liquidity = level
             .total_liquidity
             .checked_add(order.remaining())
-            .ok_or(TempoPrecompileError::overflow_underflow())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
         level.store(
             self.storage,
             self.address,
@@ -697,7 +697,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             let quote_amount = fill_amount
                 .checked_mul(price as u128)
                 .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                .ok_or(TempoPrecompileError::overflow_underflow())?;
+                .ok_or(TempoPrecompileError::under_overflow())?;
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
         }
 
@@ -720,7 +720,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             level
                 .total_liquidity
                 .checked_sub(fill_amount)
-                .ok_or(TempoPrecompileError::overflow_underflow())?,
+                .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
         // Emit OrderFilled event for partial fill

@@ -100,7 +100,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
             U256::from(
                 new_policy_id
                     .checked_add(1)
-                    .ok_or(TempoPrecompileError::overflow_underflow())?,
+                    .ok_or(TempoPrecompileError::under_overflow())?,
             ),
         )?;
 
@@ -153,7 +153,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
             U256::from(
                 new_policy_id
                     .checked_add(1)
-                    .ok_or(TempoPrecompileError::overflow_underflow())?,
+                    .ok_or(TempoPrecompileError::under_overflow())?,
             ),
         )?;
 

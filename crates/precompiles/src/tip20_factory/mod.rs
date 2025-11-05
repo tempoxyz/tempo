@@ -89,7 +89,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
             slots::TOKEN_ID_COUNTER,
             token_id
                 .checked_add(U256::ONE)
-                .ok_or(TempoPrecompileError::overflow_underflow())?,
+                .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
         Ok(token_address)

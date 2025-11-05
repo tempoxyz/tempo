@@ -1,5 +1,5 @@
 use crate::{
-    error::Result,
+    error::{Result, TempoPrecompileError},
     storage::{PrecompileStorageProvider, StorageOps},
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
@@ -134,7 +134,7 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         let amount_out = amount_in
             .checked_mul(M)
             .and_then(|product| product.checked_div(SCALE))
-            .ok_or(TempoPrecompileError::overflow_underflow())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
         let available_validator_token = self.get_effective_validator_reserve(pool_id)?;
 
         Ok(amount_out <= available_validator_token)
@@ -147,11 +147,11 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         let pending_out = pending_fee_swap_in
             .checked_mul(M)
             .and_then(|product| product.checked_div(SCALE))
-            .ok_or(TempoPrecompileError::overflow_underflow())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
         Ok(U256::from(pool.reserve_validator_token)
             .checked_sub(pending_out)
-            .ok_or(TempoPrecompileError::overflow_underflow())?)
+            .ok_or(TempoPrecompileError::under_overflow())?)
     }
 
     /// Calculate user token reserve plus pending swaps
@@ -161,7 +161,7 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
 
         Ok(U256::from(pool.reserve_user_token)
             .checked_add(pending_fee_swap_in)
-            .ok_or(TempoPrecompileError::overflow_underflow())?)
+            .ok_or(TempoPrecompileError::under_overflow())?)
     }
 
     /// Execute a swap from one fee token to another
@@ -181,7 +181,7 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
             pool_id,
             current_pending
                 .checked_add(amount_in)
-                .ok_or(TempoPrecompileError::overflow_underflow())?,
+                .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
         Ok(())
@@ -209,7 +209,7 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
             .checked_mul(N)
             .and_then(|product| product.checked_div(SCALE))
             .and_then(|result| result.checked_add(U256::ONE))
-            .ok_or(TempoPrecompileError::overflow_underflow())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
         let amount_in: u128 = amount_in
             .try_into()
@@ -363,7 +363,7 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
             pool_id,
             current_total_supply
                 .checked_add(liquidity)
-                .ok_or(TempoPrecompileError::overflow_underflow())?,
+                .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
         let balance = self.get_balance_of(pool_id, to)?;
         self.set_balance_of(
@@ -371,7 +371,7 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
             to,
             balance
                 .checked_add(liquidity)
-                .ok_or(TempoPrecompileError::overflow_underflow())?,
+                .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
         // Emit Mint event
@@ -426,14 +426,14 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
             msg_sender,
             balance
                 .checked_sub(liquidity)
-                .ok_or(TempoPrecompileError::overflow_underflow())?,
+                .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
         let total_supply = self.get_total_supply(pool_id)?;
         self.set_total_supply(
             pool_id,
             total_supply
                 .checked_sub(liquidity)
-                .ok_or(TempoPrecompileError::overflow_underflow())?,
+                .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
         // Update reserves with underflow checks
@@ -500,11 +500,11 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         let amount_user_token = liquidity
             .checked_mul(U256::from(pool.reserve_user_token))
             .and_then(|product| product.checked_div(total_supply))
-            .ok_or(TempoPrecompileError::overflow_underflow())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
         let amount_validator_token = liquidity
             .checked_mul(U256::from(pool.reserve_validator_token))
             .and_then(|product| product.checked_div(total_supply))
-            .ok_or(TempoPrecompileError::overflow_underflow())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
         if amount_user_token.is_zero() || amount_validator_token.is_zero() {
             return Err(TIPFeeAMMError::insufficient_liquidity().into());
@@ -538,15 +538,15 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         let pending_out = amount_in
             .checked_mul(M)
             .and_then(|product| product.checked_div(SCALE))
-            .ok_or(TempoPrecompileError::overflow_underflow())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
         // Use checked math for these operations
         let new_user_reserve = U256::from(pool.reserve_user_token)
             .checked_add(amount_in)
-            .ok_or(TempoPrecompileError::overflow_underflow())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
         let new_validator_reserve = U256::from(pool.reserve_validator_token)
             .checked_sub(pending_out)
-            .ok_or(TempoPrecompileError::overflow_underflow())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
         pool.reserve_user_token = new_user_reserve
             .try_into()

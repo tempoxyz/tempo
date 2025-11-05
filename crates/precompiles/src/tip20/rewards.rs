@@ -144,7 +144,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     pub fn accrue(&mut self, accrue_to_timestamp: U256) -> Result<()> {
         let elapsed = accrue_to_timestamp
             .checked_sub(U256::from(self.get_last_update_time()?))
-            .ok_or(TempoPrecompileError::overflow_underflow())?;
+            .ok_or(TempoPrecompileError::under_overflow())?;
         if elapsed.is_zero() {
             return Ok(());
         }
@@ -298,7 +298,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let elapsed = if current_time > U256::from(stream.start_time) {
             current_time
                 .checked_sub(U256::from(stream.start_time))
-                .ok_or(TempoPrecompileError::overflow_underflow())?
+                .ok_or(TempoPrecompileError::under_overflow())?
         } else {
             U256::ZERO
         };
