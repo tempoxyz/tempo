@@ -67,12 +67,16 @@ impl TempoPooledTransaction {
 pub enum TempoPoolTransactionError {
     #[error("Transaction exceeds non payment gas limit")]
     ExceedsNonPaymentLimit,
+
+    #[error("Invalid fee token: {0}")]
+    InvalidFeeToken(Address),
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
     fn is_bad_transaction(&self) -> bool {
         match self {
             Self::ExceedsNonPaymentLimit => false,
+            Self::InvalidFeeToken(_) => false,
         }
     }
 
