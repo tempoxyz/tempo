@@ -5,7 +5,7 @@ pub use tempo_contracts::precompiles::{ITIP403Registry, TIP403RegistryError, TIP
 
 use crate::{
     TIP403_REGISTRY_ADDRESS,
-    error::Result,
+    error::{Result, TempoPrecompileError},
     storage::{
         PrecompileStorageProvider,
         slots::{double_mapping_slot, mapping_slot},
@@ -97,7 +97,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
         self.storage.sstore(
             TIP403_REGISTRY_ADDRESS,
             slots::POLICY_ID_COUNTER,
-            U256::from(new_policy_id + 1),
+            U256::from(new_policy_id.checked_add(1).ok_or(TempoPrecompileError::overflow_underflow())?),
         )?;
 
         // Store policy data
@@ -146,7 +146,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
         self.storage.sstore(
             TIP403_REGISTRY_ADDRESS,
             slots::POLICY_ID_COUNTER,
-            U256::from(new_policy_id + 1),
+            U256::from(new_policy_id.checked_add(1).ok_or(TempoPrecompileError::overflow_underflow())?),
         )?;
 
         // Store policy data
