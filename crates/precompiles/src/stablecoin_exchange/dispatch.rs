@@ -270,7 +270,8 @@ mod tests {
 
         // Should dispatch to place function (may fail due to business logic, but dispatch works)
         let result = exchange.call(&Bytes::from(calldata), sender);
-        assert!(result.is_ok() || result.is_err()); // Just verify it dispatches
+        // Ok indicates successful dispatch (either success or TempoPrecompileError)
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -293,7 +294,8 @@ mod tests {
 
         // Should dispatch to place_flip function
         let result = exchange.call(&Bytes::from(calldata), sender);
-        assert!(result.is_ok() || result.is_err()); // Just verify it dispatches
+        // Ok indicates successful dispatch (either success or TempoPrecompileError)
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -328,7 +330,8 @@ mod tests {
 
         // Should dispatch to create_pair function
         let result = exchange.call(&Bytes::from(calldata), sender);
-        assert!(result.is_ok() || result.is_err()); // Just verify it dispatches
+        // Ok indicates successful dispatch (either success or TempoPrecompileError)
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -348,7 +351,8 @@ mod tests {
 
         // Should dispatch to withdraw function
         let result = exchange.call(&Bytes::from(calldata), sender);
-        assert!(result.is_ok() || result.is_err()); // Just verify it dispatches
+        // Ok indicates successful dispatch (either success or TempoPrecompileError)
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -364,7 +368,8 @@ mod tests {
 
         // Should dispatch to cancel function
         let result = exchange.call(&Bytes::from(calldata), sender);
-        assert!(result.is_ok() || result.is_err()); // Just verify it dispatches
+        // Ok indicates successful dispatch (either success or TempoPrecompileError)
+        assert!(result.is_ok());
     }
 
     #[test]
