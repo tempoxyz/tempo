@@ -4,6 +4,7 @@ mod base_fee;
 mod block_building;
 mod eip7702_delegation;
 mod eth_call;
+mod eth_transactions;
 mod liquidity;
 mod payment_lane;
 mod pool;
