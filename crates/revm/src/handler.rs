@@ -4,6 +4,7 @@ use std::{cmp::Ordering, fmt::Debug};
 
 use alloy_evm::EvmInternals;
 use alloy_primitives::{Address, B256, U256, b256};
+use alloy_sol_types::SolCall;
 use revm::{
     Database,
     context::{
@@ -29,14 +30,17 @@ use revm::{
     primitives::{eip7702, hardfork::SpecId as RevmSpecId},
     state::Bytecode,
 };
-use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, precompiles::FeeManagerError};
+use tempo_contracts::{
+    DEFAULT_7702_DELEGATE_ADDRESS,
+    precompiles::{FeeManagerError, IFeeManager},
+};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{evm::EvmPrecompileStorageProvider, slots::mapping_slot},
     tip_fee_manager::{self, TipFeeManager},
-    tip20,
+    tip20::{self, is_tip20},
 };
 use tempo_primitives::transaction::{AASignature, calc_gas_balance_spending};
 
@@ -905,6 +909,7 @@ pub fn get_fee_token<DB>(
 where
     DB: Database,
 {
+    // If there is a fee token explicitly set on the tx type, use that.
     if let Some(fee_token) = ctx.tx().fee_token {
         return Ok(fee_token);
     }
@@ -912,25 +917,49 @@ where
     let user_slot = mapping_slot(ctx.tx().fee_payer()?, tip_fee_manager::slots::USER_TOKENS);
     // ensure TIP_FEE_MANAGER_ADDRESS is loaded
     ctx.journal_mut().load_account(TIP_FEE_MANAGER_ADDRESS)?;
-    let user_fee_token = ctx
+    let stored_user_token = ctx
         .journal_mut()
         .sload(TIP_FEE_MANAGER_ADDRESS, user_slot)?
         .data
         .into_address();
 
-    if user_fee_token.is_zero() {
-        let validator_slot =
-            mapping_slot(ctx.beneficiary(), tip_fee_manager::slots::VALIDATOR_TOKENS);
-        let validator_fee_token = ctx
-            .journal_mut()
-            .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
-            .data
-            .into_address();
-
-        Ok(validator_fee_token)
+    // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
+    // new preference, the newly set preference should be used immediately instead of the
+    // previously stored one
+    let effective_user_token = if ctx.tx().kind().to() == Some(&TIP_FEE_MANAGER_ADDRESS)
+        && ctx.tx().caller() == ctx.tx().fee_payer()?
+    {
+        // Try to decode setUserToken call
+        if let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(ctx.tx().input()) {
+            call.token
+        } else {
+            stored_user_token
+        }
     } else {
-        Ok(user_fee_token)
+        stored_user_token
+    };
+
+    // If we have already determined a fee token, return
+    if !effective_user_token.is_zero() {
+        return Ok(effective_user_token);
     }
+
+    // If tx.to() is a TIP-20 token, use that token as the fee token
+    if let Some(&to_addr) = ctx.tx().kind().to()
+        && is_tip20(to_addr)
+    {
+        return Ok(to_addr);
+    }
+
+    // Otherwise fall back to the validator fee token preference
+    let validator_slot = mapping_slot(ctx.beneficiary(), tip_fee_manager::slots::VALIDATOR_TOKENS);
+    let validator_fee_token = ctx
+        .journal_mut()
+        .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
+        .data
+        .into_address();
+
+    Ok(validator_fee_token)
 }
 
 pub fn get_token_balance<JOURNAL>(
