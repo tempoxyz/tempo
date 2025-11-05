@@ -914,6 +914,16 @@ where
         return Ok(fee_token);
     }
 
+    // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
+    // new preference, the newly set preference should be used immediately instead of the
+    // previously stored one
+    if ctx.tx().fee_payer()? == ctx.tx().caller()
+        && ctx.tx().kind().to() == Some(&TIP_FEE_MANAGER_ADDRESS)
+        && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(ctx.tx().input())
+    {
+        return Ok(call.token);
+    }
+
     let user_slot = mapping_slot(ctx.tx().fee_payer()?, tip_fee_manager::slots::USER_TOKENS);
     // ensure TIP_FEE_MANAGER_ADDRESS is loaded
     ctx.journal_mut().load_account(TIP_FEE_MANAGER_ADDRESS)?;
@@ -923,25 +933,8 @@ where
         .data
         .into_address();
 
-    // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
-    // new preference, the newly set preference should be used immediately instead of the
-    // previously stored one
-    let effective_user_token = if ctx.tx().kind().to() == Some(&TIP_FEE_MANAGER_ADDRESS)
-        && ctx.tx().caller() == ctx.tx().fee_payer()?
-    {
-        // Try to decode setUserToken call
-        if let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(ctx.tx().input()) {
-            call.token
-        } else {
-            stored_user_token
-        }
-    } else {
-        stored_user_token
-    };
-
-    // If we have already determined a fee token, return
-    if !effective_user_token.is_zero() {
-        return Ok(effective_user_token);
+    if !stored_user_token.is_zero() {
+        return Ok(stored_user_token);
     }
 
     // If tx.to() is a TIP-20 token, use that token as the fee token
