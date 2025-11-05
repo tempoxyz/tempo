@@ -50,7 +50,7 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
         }
 
         // EIP-7702 gas cost
-        // can be discussed to lower this down as this cost i think encompases the bytes of authorization in EIP-7702 tx.
+        // can be discussed to lower this down as this cost i think encompasses the bytes of authorization in EIP-7702 tx.
         let cost = if account_info.is_empty() {
             revm::primitives::eip7702::PER_EMPTY_ACCOUNT_COST
         } else {
