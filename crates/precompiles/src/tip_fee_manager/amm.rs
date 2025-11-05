@@ -598,8 +598,9 @@ impl<'a, S: PrecompileStorageProvider> StorageOps for TIPFeeAMM<'a, S> {
 mod tests {
     use super::*;
     use crate::{
-        error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
         LINKING_USD_ADDRESS,
+        error::TempoPrecompileError,
+        storage::hashmap::HashMapStorageProvider,
         tip20::{TIP20Token, tests::initialize_linking_usd, token_id_to_address},
     };
     use alloy::primitives::{Address, uint};

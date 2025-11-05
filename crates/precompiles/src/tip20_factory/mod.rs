@@ -109,7 +109,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider, tip20::tests::initialize_linking_usd};
+    use crate::{
+        error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
+        tip20::tests::initialize_linking_usd,
+    };
 
     #[test]
     fn test_create_token() {
