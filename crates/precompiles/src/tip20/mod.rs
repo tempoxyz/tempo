@@ -35,7 +35,7 @@ const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
 const TIP20_DECIMALS: u8 = 6;
 
 /// USD currency string constant
-const USD_CURRENCY: &str = "USD";
+pub const USD_CURRENCY: &str = "USD";
 
 /// TIP20 token address prefix (12 bytes for token ID encoding)
 const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");

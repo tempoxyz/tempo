@@ -14,11 +14,11 @@ use crate::{
         amm::{PoolKey, TIPFeeAMM},
         slots::{collected_fees_slot, user_token_slot, validator_token_slot},
     },
-    tip20::{ITIP20, TIP20Token, is_tip20},
+    tip20::{ITIP20, TIP20Token, USD_CURRENCY, is_tip20},
 };
 
 // Re-export PoolKey for backward compatibility with tests
-use alloy::primitives::{Address, Bytes, IntoLogData, U256, uint};
+use alloy::primitives::{Address, Bytes, IntoLogData, U256, keccak256, uint};
 use revm::{
     interpreter::instructions::utility::{IntoAddress, IntoU256},
     state::Bytecode,
@@ -142,8 +142,12 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             return Err(FeeManagerError::cannot_change_within_block().into());
         }
 
-        // TODO: validate USD currency requirement
-        // require(keccak256(bytes(ITIP20(token).currency())) == keccak256(bytes("USD")), "INVALID_TOKEN");
+        // Validate that the fee token is USD
+        let mut tip20_token = TIP20Token::from_address(call.token, self.storage);
+        let currency = tip20_token.currency()?;
+        if keccak256(currency.as_bytes()) != keccak256(USD_CURRENCY.as_bytes()) {
+            return Err(FeeManagerError::invalid_token().into());
+        }
 
         let slot = validator_token_slot(sender);
         self.sstore(slot, call.token.into_u256())?;
@@ -168,8 +172,12 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             return Err(FeeManagerError::invalid_token().into());
         }
 
-        // TODO: validate USD currency requirement
-        // require(keccak256(bytes(ITIP20(token).currency())) == keccak256(bytes("USD")), "INVALID_TOKEN");
+        // Validate USD currency requirement
+        let mut tip20_token = TIP20Token::from_address(call.token, self.storage);
+        let currency = tip20_token.currency()?;
+        if keccak256(currency.as_bytes()) != keccak256(USD_CURRENCY.as_bytes()) {
+            return Err(FeeManagerError::invalid_token().into());
+        }
 
         let slot = user_token_slot(sender);
         self.sstore(slot, call.token.into_u256())?;
