@@ -149,9 +149,9 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
             .and_then(|product| product.checked_div(SCALE))
             .ok_or(TempoPrecompileError::under_overflow())?;
 
-        Ok(U256::from(pool.reserve_validator_token)
+        U256::from(pool.reserve_validator_token)
             .checked_sub(pending_out)
-            .ok_or(TempoPrecompileError::under_overflow())?)
+            .ok_or(TempoPrecompileError::under_overflow())
     }
 
     /// Calculate user token reserve plus pending swaps
@@ -159,9 +159,9 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         let pool = self.get_pool(pool_id)?;
         let pending_fee_swap_in = self.get_pending_fee_swap_in(pool_id)?;
 
-        Ok(U256::from(pool.reserve_user_token)
+        U256::from(pool.reserve_user_token)
             .checked_add(pending_fee_swap_in)
-            .ok_or(TempoPrecompileError::under_overflow())?)
+            .ok_or(TempoPrecompileError::under_overflow())
     }
 
     /// Execute a swap from one fee token to another

@@ -428,7 +428,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         let mut remaining = len
             .checked_sub(first_chunk_len)
             .ok_or(TempoPrecompileError::under_overflow())?;
-        let mut slot_offset = 1;
+        let mut slot_offset: usize = 1;
         while remaining > 0 {
             let slot_value = self
                 .storage
