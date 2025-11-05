@@ -35,7 +35,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo chef cook --release --recipe-path recipe.json
 
 # Copy workspace files
-COPY Cargo.lock Cargo.toml .
 COPY bin/ ./bin/
 COPY crates/ ./crates/
 COPY xtask/ ./xtask/
