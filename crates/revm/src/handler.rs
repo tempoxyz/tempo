@@ -102,7 +102,9 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
         self.fee_token = get_fee_token(evm.ctx_mut())?;
-        if !evm.ctx.tx.max_balance_spending()?.is_zero() {
+
+        // Skip fee token validity check for cases when the transaction is free and is not a part of subblock.
+        if !evm.ctx.tx.max_balance_spending()?.is_zero() || evm.ctx.tx.is_subblock_transaction() {
             validate_fee_token(evm.ctx_mut(), self.fee_token)?;
         }
         self.fee_payer = evm.ctx().tx().fee_payer()?;
