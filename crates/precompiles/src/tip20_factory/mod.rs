@@ -108,18 +108,19 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::hashmap::HashMapStorageProvider;
+    use crate::{storage::hashmap::HashMapStorageProvider, tip20::tests::initialize_linking_usd};
 
     #[test]
     fn test_create_token() {
         let mut storage = HashMapStorageProvider::new(1);
+        let sender = Address::random();
+        initialize_linking_usd(&mut storage, sender).unwrap();
+
         let mut factory = TIP20Factory::new(&mut storage);
 
         factory
             .initialize()
             .expect("Factory initialization should succeed");
-
-        let sender = Address::random();
         let call = ITIP20Factory::createTokenCall {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),

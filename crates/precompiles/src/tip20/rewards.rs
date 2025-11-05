@@ -844,7 +844,9 @@ impl From<RewardStream> for ITIP20::RewardStream {
 mod tests {
     use super::*;
     use crate::{
-        LINKING_USD_ADDRESS, storage::hashmap::HashMapStorageProvider, tip20::ISSUER_ROLE,
+        LINKING_USD_ADDRESS,
+        storage::hashmap::HashMapStorageProvider,
+        tip20::{ISSUER_ROLE, tests::initialize_linking_usd},
     };
     use alloy::primitives::{Address, U256};
 
@@ -854,6 +856,7 @@ mod tests {
         let current_time = storage.timestamp().to::<u64>();
         let admin = Address::random();
 
+        initialize_linking_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
         token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
 
@@ -904,6 +907,7 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
+        initialize_linking_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
         token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
 
@@ -940,6 +944,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
+        initialize_linking_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
         token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
 
@@ -991,6 +996,7 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
+        initialize_linking_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
         token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
 
@@ -1041,6 +1047,7 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
+        initialize_linking_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
         token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
 
@@ -1104,6 +1111,7 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
+        initialize_linking_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
         token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
 
@@ -1169,6 +1177,7 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
+        initialize_linking_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
         token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
 
@@ -1220,6 +1229,7 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
+        initialize_linking_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
         token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
 

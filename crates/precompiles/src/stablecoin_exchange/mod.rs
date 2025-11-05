@@ -3462,34 +3462,24 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
 
         let admin = Address::random();
-        // Init Linking USD, user token and validator tokens
+        // Init Linking USD
         let mut linking_usd = TIP20Token::from_address(LINKING_USD_ADDRESS, &mut storage);
         linking_usd
             .initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
             .unwrap();
 
+        // Create EUR token with LINKING_USD as quote (valid non-USD token)
         let mut token_0 = TIP20Token::new(1, linking_usd.storage);
         token_0
-            .initialize("TestToken", "TEST", "EUR", LINKING_USD_ADDRESS, admin)
+            .initialize("EuroToken", "EURO", "EUR", LINKING_USD_ADDRESS, admin)
             .unwrap();
         let token_0_address = token_0.token_address;
 
-        let mut token_1 = TIP20Token::new(2, token_0.storage);
-        token_1
-            .initialize("TestToken", "TEST", "USD", token_0_address, admin)
-            .unwrap();
-        let token_1_address = token_1.token_address;
-
-        let mut exchange = StablecoinExchange::new(token_1.storage);
+        let mut exchange = StablecoinExchange::new(token_0.storage);
         exchange.initialize()?;
 
+        // Test: create_pair should reject non-USD token (EUR token has EUR currency)
         let result = exchange.create_pair(token_0_address);
-        assert!(matches!(
-            result,
-            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
-        ));
-
-        let result = exchange.create_pair(token_1_address);
         assert!(matches!(
             result,
             Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))

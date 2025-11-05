@@ -975,7 +975,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, U256};
 
     use super::*;
@@ -985,6 +985,15 @@ mod tests {
     };
     use rand::{Rng, distributions::Alphanumeric, thread_rng};
 
+    /// Initialize LinkingUSD token (required before creating other USD tokens)
+    pub(crate) fn initialize_linking_usd(
+        storage: &mut HashMapStorageProvider,
+        admin: Address,
+    ) -> Result<(), TempoPrecompileError> {
+        let mut linking_usd = TIP20Token::from_address(LINKING_USD_ADDRESS, storage);
+        linking_usd.initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+    }
+
     /// Initialize a factory and create a single token
     fn setup_factory_with_token(
         storage: &mut HashMapStorageProvider,
@@ -992,6 +1001,7 @@ mod tests {
         name: &str,
         symbol: &str,
     ) -> u64 {
+        initialize_linking_usd(storage, admin).unwrap();
         let mut factory = TIP20Factory::new(storage);
         factory.initialize().unwrap();
 
@@ -1038,6 +1048,7 @@ mod tests {
         storage: &mut HashMapStorageProvider,
         admin: Address,
     ) -> (u64, u64) {
+        initialize_linking_usd(storage, admin).unwrap();
         let mut factory = TIP20Factory::new(storage);
         factory.initialize().unwrap();
 
@@ -1057,6 +1068,7 @@ mod tests {
         let amount = U256::from(100);
         let token_id = 1;
         {
+            initialize_linking_usd(&mut storage, admin).unwrap();
             let mut token = TIP20Token::new(token_id, &mut storage);
             // Initialize with admin
             token
@@ -1101,6 +1113,7 @@ mod tests {
         let amount = U256::from(100);
         let token_id = 1;
         {
+            initialize_linking_usd(&mut storage, admin).unwrap();
             let mut token = TIP20Token::new(token_id, &mut storage);
             token
                 .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1145,6 +1158,7 @@ mod tests {
     fn test_transfer_insufficient_balance_fails() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::from([0u8; 20]);
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1169,6 +1183,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1221,6 +1236,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1280,6 +1296,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1348,6 +1365,7 @@ mod tests {
         let admin = Address::random();
         let user = Address::random();
         let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1378,6 +1396,7 @@ mod tests {
         let admin = Address::random();
         let user = Address::random();
         let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1399,6 +1418,7 @@ mod tests {
         let admin = Address::random();
         let user = Address::random();
         let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1439,6 +1459,7 @@ mod tests {
         let to = Address::random();
         let amount = U256::from(100);
         let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1470,6 +1491,7 @@ mod tests {
         let to = Address::random();
         let amount = U256::from(100);
         let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1551,6 +1573,7 @@ mod tests {
         let admin = Address::random();
         let non_admin = Address::random();
         let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
             .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
@@ -1678,6 +1701,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
+        initialize_linking_usd(&mut storage, admin)?;
         let mut factory = TIP20Factory::new(&mut storage);
         factory.initialize().unwrap();
 
@@ -1886,6 +1910,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
+        initialize_linking_usd(&mut storage, admin)?;
         let mut usd_token1 = TIP20Token::new(1, &mut storage);
         usd_token1.initialize(
             "USD Token",
@@ -1936,6 +1961,8 @@ mod tests {
     fn test_update_quote_token_invalid_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
+
+        initialize_linking_usd(&mut storage, admin)?;
 
         let currency: String = thread_rng()
             .sample_iter(&Alphanumeric)

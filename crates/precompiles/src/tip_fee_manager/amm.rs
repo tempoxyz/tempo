@@ -617,9 +617,13 @@ impl<'a, S: PrecompileStorageProvider> StorageOps for TIPFeeAMM<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{storage::hashmap::HashMapStorageProvider, tip20::token_id_to_address};
+    use crate::{
+        LINKING_USD_ADDRESS,
+        storage::hashmap::HashMapStorageProvider,
+        tip20::{TIP20Token, tests::initialize_linking_usd, token_id_to_address},
+    };
     use alloy::primitives::{Address, uint};
-    use tempo_contracts::precompiles::{LINKING_USD_ADDRESS, TIP20Error};
+    use tempo_contracts::precompiles::TIP20Error;
 
     #[test]
     fn test_mint_identical_addresses() {
@@ -670,8 +674,24 @@ mod tests {
         Address,
     ) {
         let storage = Box::leak(Box::new(HashMapStorageProvider::new(1)));
+        let admin = Address::random();
+
+        // Initialize LinkingUSD first
+        initialize_linking_usd(storage, admin).unwrap();
+
+        // Create USD tokens for user and validator
         let user_token = token_id_to_address(1);
+        let mut user_tip20 = TIP20Token::from_address(user_token, storage);
+        user_tip20
+            .initialize("UserToken", "UTK", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
         let validator_token = token_id_to_address(2);
+        let mut validator_tip20 = TIP20Token::from_address(validator_token, storage);
+        validator_tip20
+            .initialize("ValidatorToken", "VTK", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
         let amm = TIPFeeAMM::new(Address::ZERO, storage);
         (amm, Address::ZERO, user_token, validator_token)
     }
