@@ -107,7 +107,11 @@ impl LastCanonicalized {
             this.forkchoice.safe_block_hash = hash;
             this.forkchoice.finalized_block_hash = hash;
         }
-        this.update_head(height, hash)
+        if height >= this.head_height {
+            this.head_height = height;
+            this.forkchoice.head_block_hash = hash;
+        }
+        this
     }
 
     /// Updates the head height and head block hash to `height` and `hash`.
