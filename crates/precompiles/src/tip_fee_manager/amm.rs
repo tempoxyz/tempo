@@ -271,6 +271,10 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         amount_validator_token: U256,
         to: Address,
     ) -> Result<U256> {
+        if user_token == validator_token {
+            return Err(TIPFeeAMMError::identical_addresses().into());
+        }
+
         // Validate both tokens are USD currency
         validate_usd_currency(user_token, self.storage)?;
         validate_usd_currency(validator_token, self.storage)?;
