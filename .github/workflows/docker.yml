@@ -46,12 +46,16 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - id: shortsha
+        run: echo "::set-output name=shortsha::$(echo ${{ github.sha }} | cut -c1-7)"
       - name: Build and push Docker image
         uses: depot/build-push-action@v1
         with:
           build-args: |
             RUST_BINARY=${{ matrix.binary }}
             RUST_PROFILE=release
+            VERGEN_GIT_SHA=${{ github.sha }}
+            VERGEN_GIT_SHA_SHORT=${{ steps.shortsha.outputs.shortsha }}
           project: 0c6tg19qsp
           context: .
           tags: ${{ steps.meta.outputs.tags }}

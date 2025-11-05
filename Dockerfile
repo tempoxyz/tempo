@@ -21,6 +21,11 @@ COPY xtask/ ./xtask/
 ARG RUST_BINARY
 ARG RUST_PROFILE
 ARG RUST_FEATURES
+ARG VERGEN_GIT_SHA=""
+ARG VERGEN_GIT_SHA_SHORT=""
+
+ENV VERGEN_GIT_SHA=$VERGEN_GIT_SHA
+ENV VERGEN_GIT_SHA_SHORT=$VERGEN_GIT_SHA_SHORT
 
 # Install nightly Rust and build the tempo binary
 RUN rustup toolchain install nightly && rustup default nightly
