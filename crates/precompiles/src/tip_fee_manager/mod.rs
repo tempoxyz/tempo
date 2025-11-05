@@ -439,6 +439,24 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         Ok(amount)
     }
 
+    /// Mint liquidity tokens using only validator tokens
+    pub fn mint_with_validator_token(
+        &mut self,
+        msg_sender: Address,
+        call: ITIPFeeAMM::mintWithValidatorTokenCall,
+    ) -> Result<U256> {
+        let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
+        let amount = amm.mint_with_validator_token(
+            msg_sender,
+            call.userToken,
+            call.validatorToken,
+            call.amountValidatorToken,
+            call.to,
+        )?;
+
+        Ok(amount)
+    }
+
     /// Burn liquidity tokens
     pub fn burn(
         &mut self,
