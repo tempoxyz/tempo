@@ -179,6 +179,10 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                 self.get_stream(call.id).map(|stream| stream.into())
             }),
 
+            ITIP20::nextStreamIdCall::SELECTOR => {
+                view::<ITIP20::nextStreamIdCall>(calldata, |_call| self.get_next_stream_id())
+            }
+
             // RolesAuth functions
             IRolesAuth::hasRoleCall::SELECTOR => {
                 view::<IRolesAuth::hasRoleCall>(calldata, |call| {

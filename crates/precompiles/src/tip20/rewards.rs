@@ -461,7 +461,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 
     /// Gets the next available stream ID (minimum 1).
-    fn get_next_stream_id(&mut self) -> Result<u64> {
+    pub fn get_next_stream_id(&mut self) -> Result<u64> {
         let id = self
             .storage
             .sload(self.token_address, slots::NEXT_STREAM_ID)?
