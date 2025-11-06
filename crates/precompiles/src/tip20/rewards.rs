@@ -585,6 +585,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     pub fn get_stream(&mut self, stream_id: u64) -> Result<RewardStream> {
         RewardStream::from_storage(stream_id, self.storage, self.token_address)
     }
+
+    /// Retrieves user reward information for a given account.
+    pub fn get_user_reward_info(&mut self, account: Address) -> Result<UserRewardInfo> {
+        UserRewardInfo::from_storage(account, self.storage, self.token_address)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -820,6 +825,16 @@ impl From<RewardStream> for ITIP20::RewardStream {
             endTime: value.end_time,
             ratePerSecondScaled: value.rate_per_second_scaled,
             amountTotal: value.amount_total,
+        }
+    }
+}
+
+impl From<UserRewardInfo> for ITIP20::UserRewardInfo {
+    fn from(value: UserRewardInfo) -> Self {
+        Self {
+            delegatedRecipient: value.delegated_recipient,
+            rewardPerToken: value.reward_per_token,
+            rewardBalance: value.reward_balance,
         }
     }
 }

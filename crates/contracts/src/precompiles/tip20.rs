@@ -94,6 +94,12 @@ sol! {
             uint256 amountTotal;
         }
 
+        struct UserRewardInfo {
+            address delegatedRecipient;
+            uint256 rewardPerToken;
+            uint256 rewardBalance;
+        }
+
         // Reward Functions
         function startReward(uint256 amount, uint32 secs) external returns (uint64);
         function setRewardRecipient(address recipient) external;
@@ -103,6 +109,7 @@ sol! {
         function getStream(uint64 id) external view returns (RewardStream memory);
         function totalRewardPerSecond() external view returns (uint256);
         function optedInSupply() external view returns (uint128);
+        function userRewardInfo(address account) external view returns (UserRewardInfo memory);
 
         // Events
         event Transfer(address indexed from, address indexed to, uint256 amount);
