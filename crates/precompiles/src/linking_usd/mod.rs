@@ -11,7 +11,8 @@ use std::sync::LazyLock;
 use tempo_contracts::precompiles::TIP20Error;
 
 pub static TRANSFER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"TRANSFER_ROLE"));
-pub static RECEIVE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"RECEIVE_ROLE"));
+pub static RECEIVE_WITH_MEMO_ROLE: LazyLock<B256> =
+    LazyLock::new(|| keccak256(b"RECEIVE_WITH_MEMO_ROLE"));
 
 const NAME: &str = "linkingUSD";
 const SYMBOL: &str = "linkingUSD";
@@ -36,7 +37,7 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
     fn is_transfer_authorized(&mut self, sender: Address, recipient: Address) -> Result<bool> {
         let authorized = sender == STABLECOIN_EXCHANGE_ADDRESS
             || self.token.has_role(sender, *TRANSFER_ROLE)?
-            || self.token.has_role(recipient, *RECEIVE_ROLE)?;
+            || self.token.has_role(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
 
         Ok(authorized)
     }
@@ -49,7 +50,7 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
     ) -> Result<bool> {
         let authorized = sender == STABLECOIN_EXCHANGE_ADDRESS
             || self.token.has_role(from, *TRANSFER_ROLE)?
-            || self.token.has_role(recipient, *RECEIVE_ROLE)?;
+            || self.token.has_role(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
 
         Ok(authorized)
     }
@@ -198,12 +199,12 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         *TRANSFER_ROLE
     }
 
-    /// Returns the RECEIVE_ROLE constant
+    /// Returns the RECEIVE_WITH_MEMO_ROLE constant
     ///
     /// This role identifier grants permission to receive linkingUSD tokens.
-    /// The role is computed as `keccak256("RECEIVE_ROLE")`.
-    pub fn receive_role() -> B256 {
-        *RECEIVE_ROLE
+    /// The role is computed as `keccak256("RECEIVE_WITH_MEMO_ROLE")`.
+    pub fn receive_with_memo_role() -> B256 {
+        *RECEIVE_WITH_MEMO_ROLE
     }
 }
 
@@ -546,7 +547,7 @@ mod tests {
         linking_usd.initialize(admin)?;
         let mut roles = linking_usd.token.get_roles_contract();
         roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(recipient, *RECEIVE_ROLE)?;
+        roles.grant_role_internal(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
 
         linking_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
@@ -636,7 +637,7 @@ mod tests {
         linking_usd.initialize(admin)?;
         let mut roles = linking_usd.token.get_roles_contract();
         roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(to, *RECEIVE_ROLE)?;
+        roles.grant_role_internal(to, *RECEIVE_WITH_MEMO_ROLE)?;
 
         linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
@@ -725,7 +726,7 @@ mod tests {
         linking_usd.initialize(admin)?;
         let mut roles = linking_usd.token.get_roles_contract();
         roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(recipient, *RECEIVE_ROLE)?;
+        roles.grant_role_internal(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
 
         linking_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
@@ -877,7 +878,7 @@ mod tests {
         linking_usd.initialize(admin)?;
         let mut roles = linking_usd.token.get_roles_contract();
         roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(to, *RECEIVE_ROLE)?;
+        roles.grant_role_internal(to, *RECEIVE_WITH_MEMO_ROLE)?;
 
         linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
