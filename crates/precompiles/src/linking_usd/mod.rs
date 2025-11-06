@@ -49,7 +49,7 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         self.token
             .initialize(NAME, SYMBOL, CURRENCY, Address::ZERO, admin)
     }
-  
+
     fn is_transfer_authorized(&mut self, sender: Address) -> Result<bool> {
         let authorized =
             sender == STABLECOIN_EXCHANGE_ADDRESS || self.token.has_role(sender, *TRANSFER_ROLE)?;
