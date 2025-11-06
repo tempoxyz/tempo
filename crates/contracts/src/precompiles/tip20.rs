@@ -67,8 +67,8 @@ sol! {
         function setSupplyCap(uint256 newSupplyCap) external;
         function pause() external;
         function unpause() external;
-        function updateQuoteToken(address newQuoteToken) external;
-        function finalizeQuoteTokenUpdate() external;
+        function setNextQuoteToken(address newQuoteToken) external;
+        function completeQuoteTokenUpdate() external;
 
         /// @notice Returns the role identifier for pausing the contract
         /// @return The pause role identifier
@@ -94,6 +94,12 @@ sol! {
             uint256 amountTotal;
         }
 
+        struct UserRewardInfo {
+            address delegatedRecipient;
+            uint256 rewardPerToken;
+            uint256 rewardBalance;
+        }
+
         // Reward Functions
         function startReward(uint256 amount, uint32 secs) external returns (uint64);
         function setRewardRecipient(address recipient) external;
@@ -104,6 +110,7 @@ sol! {
         function totalRewardPerSecond() external view returns (uint256);
         function optedInSupply() external view returns (uint128);
         function nextStreamId() external view returns (uint64);
+        function userRewardInfo(address account) external view returns (UserRewardInfo memory);
 
         // Events
         event Transfer(address indexed from, address indexed to, uint256 amount);
@@ -115,8 +122,8 @@ sol! {
         event TransferPolicyUpdate(address indexed updater, uint64 indexed newPolicyId);
         event SupplyCapUpdate(address indexed updater, uint256 indexed newSupplyCap);
         event PauseStateUpdate(address indexed updater, bool isPaused);
-        event UpdateQuoteToken(address indexed updater, address indexed newQuoteToken);
-        event QuoteTokenUpdateFinalized(address indexed updater, address indexed newQuoteToken);
+        event NextQuoteTokenSet(address indexed updater, address indexed nextQuoteToken);
+        event QuoteTokenUpdate(address indexed updater, address indexed newQuoteToken);
         event RewardScheduled(address indexed funder, uint64 indexed id, uint256 amount, uint32 durationSeconds);
         event RewardCanceled(address indexed funder, uint64 indexed id, uint256 refund);
         event RewardRecipientSet(address indexed holder, address indexed recipient);
