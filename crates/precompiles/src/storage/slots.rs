@@ -1,14 +1,8 @@
 use alloy::primitives::{U256, keccak256};
 
-pub const fn pad_to_32(x: &[u8]) -> [u8; 32] {
+pub fn pad_to_32(data: &[u8]) -> [u8; 32] {
     let mut buf = [0u8; 32];
-    let mut i = 0;
-    // Note: This is not idiomatic but it's the cleanest
-    // way to make this function const as far as I can tell.
-    while i < x.len() && i < 32 {
-        buf[i] = x[i];
-        i += 1;
-    }
+    buf[32 - data.len()..].copy_from_slice(data);
     buf
 }
 
@@ -17,7 +11,7 @@ pub const fn pad_to_32(x: &[u8]) -> [u8; 32] {
 pub fn mapping_slot<T: AsRef<[u8]>>(key: T, mapping_slot: U256) -> U256 {
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(&pad_to_32(key.as_ref()));
-    buf[32..].copy_from_slice(&mapping_slot.to_le_bytes::<32>());
+    buf[32..].copy_from_slice(&mapping_slot.to_be_bytes::<32>());
     U256::from_be_bytes(keccak256(buf).0)
 }
 
