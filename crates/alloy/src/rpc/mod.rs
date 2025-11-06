@@ -1,3 +1,6 @@
+mod header;
+pub use header::TempoHeaderResponse;
+
 mod request;
 pub use request::{FeeToken, TempoTransactionRequest};
 
