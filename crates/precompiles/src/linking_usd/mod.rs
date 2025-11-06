@@ -34,7 +34,24 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
             .initialize(NAME, SYMBOL, CURRENCY, Address::ZERO, admin)
     }
 
-    fn is_transfer_authorized(&mut self, sender: Address, recipient: Address) -> Result<bool> {
+    fn is_transfer_authorized(&mut self, sender: Address) -> Result<bool> {
+        let authorized =
+            sender == STABLECOIN_EXCHANGE_ADDRESS || self.token.has_role(sender, *TRANSFER_ROLE)?;
+
+        Ok(authorized)
+    }
+
+    fn is_transfer_from_authorized(&mut self, sender: Address, from: Address) -> Result<bool> {
+        let authorized =
+            sender == STABLECOIN_EXCHANGE_ADDRESS || self.token.has_role(from, *TRANSFER_ROLE)?;
+        Ok(authorized)
+    }
+
+    fn is_transfer_with_memo_authorized(
+        &mut self,
+        sender: Address,
+        recipient: Address,
+    ) -> Result<bool> {
         let authorized = sender == STABLECOIN_EXCHANGE_ADDRESS
             || self.token.has_role(sender, *TRANSFER_ROLE)?
             || self.token.has_role(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
@@ -42,7 +59,7 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         Ok(authorized)
     }
 
-    fn is_transfer_from_authorized(
+    fn is_transfer_from_with_memo_authorized(
         &mut self,
         sender: Address,
         from: Address,
@@ -56,7 +73,7 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
     }
 
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
-        if self.is_transfer_authorized(msg_sender, call.to)? {
+        if self.is_transfer_authorized(msg_sender)? {
             self.token.transfer(msg_sender, call)
         } else {
             Err(TIP20Error::transfers_disabled().into())
@@ -68,7 +85,7 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         msg_sender: Address,
         call: ITIP20::transferFromCall,
     ) -> Result<bool> {
-        if self.is_transfer_from_authorized(msg_sender, call.from, call.to)?
+        if self.is_transfer_from_authorized(msg_sender, call.from)?
             || msg_sender == STABLECOIN_EXCHANGE_ADDRESS
         {
             self.token.transfer_from(msg_sender, call)
@@ -82,7 +99,7 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         msg_sender: Address,
         call: ITIP20::transferWithMemoCall,
     ) -> Result<()> {
-        if self.is_transfer_authorized(msg_sender, call.to)? {
+        if self.is_transfer_with_memo_authorized(msg_sender, call.to)? {
             self.token.transfer_with_memo(msg_sender, call)
         } else {
             Err(TIP20Error::transfers_disabled().into())
@@ -94,7 +111,7 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         msg_sender: Address,
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool> {
-        if self.is_transfer_from_authorized(msg_sender, call.from, call.to)?
+        if self.is_transfer_from_with_memo_authorized(msg_sender, call.from, call.to)?
             || msg_sender == STABLECOIN_EXCHANGE_ADDRESS
         {
             self.token.transfer_from_with_memo(msg_sender, call)
