@@ -25,6 +25,7 @@ alloy-rpc-types-eth.workspace = true
 reth-evm = { workspace = true, optional = true }
 reth-rpc-convert = { workspace = true, optional = true }
 
+derive_more.workspace = true
 serde.workspace = true
 
 [dev-dependencies]

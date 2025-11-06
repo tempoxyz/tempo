@@ -11431,6 +11431,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-provider",
  "alloy-rpc-types-eth",
+ "derive_more",
  "reth-evm",
  "reth-rpc-convert",
  "serde",

@@ -1,5 +1,5 @@
-use crate::rpc::TempoTransactionRequest;
-use alloy_consensus::{ReceiptWithBloom, TxType, error::UnsupportedTransactionType};
+use crate::rpc::{TempoTransactionReceipt, TempoTransactionRequest};
+use alloy_consensus::{TxType, error::UnsupportedTransactionType};
 
 use alloy_network::{
     BuildResult, Network, NetworkWallet, TransactionBuilder, TransactionBuilderError,
@@ -27,9 +27,7 @@ impl Network for TempoNetwork {
     type Header = TempoHeader;
     type TransactionRequest = TempoTransactionRequest;
     type TransactionResponse = alloy_rpc_types_eth::Transaction<TempoTxEnvelope>;
-    type ReceiptResponse = alloy_rpc_types_eth::TransactionReceipt<
-        ReceiptWithBloom<TempoReceipt<alloy_rpc_types_eth::Log>>,
-    >;
+    type ReceiptResponse = TempoTransactionReceipt;
     type HeaderResponse = alloy_rpc_types_eth::Header<TempoHeader>;
     type BlockResponse = alloy_rpc_types_eth::Block<
         alloy_rpc_types_eth::Transaction<TempoTxEnvelope>,
