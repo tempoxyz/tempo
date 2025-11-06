@@ -8,7 +8,7 @@ use crate::{
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
-use tempo_contracts::precompiles::ILinkingUSD;
+use tempo_contracts::precompiles::{ILinkingUSD, TIP20Error};
 
 impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -146,6 +146,27 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
             ITIP20::transferFromWithMemoCall::SELECTOR => {
                 mutate::<ITIP20::transferFromWithMemoCall>(calldata, msg_sender, |sender, call| {
                     self.transfer_from_with_memo(sender, call)
+                })
+            }
+
+            ITIP20::startRewardCall::SELECTOR => {
+                mutate::<ITIP20::startRewardCall>(calldata, msg_sender, |s, call| {
+                    Err(TIP20Error::rewards_disabled().into())
+                })
+            }
+            ITIP20::setRewardRecipientCall::SELECTOR => {
+                mutate_void::<ITIP20::setRewardRecipientCall>(calldata, msg_sender, |s, call| {
+                    Err(TIP20Error::rewards_disabled().into())
+                })
+            }
+            ITIP20::cancelRewardCall::SELECTOR => {
+                mutate::<ITIP20::cancelRewardCall>(calldata, msg_sender, |s, call| {
+                    Err(TIP20Error::rewards_disabled().into())
+                })
+            }
+            ITIP20::claimRewardsCall::SELECTOR => {
+                mutate::<ITIP20::claimRewardsCall>(calldata, msg_sender, |_, _| {
+                    Err(TIP20Error::rewards_disabled().into())
                 })
             }
 

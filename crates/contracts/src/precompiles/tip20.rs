@@ -146,6 +146,7 @@ sol! {
         error StreamInactive();
         error NoOptedInSupply();
         error Unauthorized();
+        error RewardsDisabled();
     }
 }
 
@@ -244,5 +245,10 @@ impl TIP20Error {
     /// Error for when opted in supply is 0
     pub const fn no_opted_in_supply() -> Self {
         Self::NoOptedInSupply(ITIP20::NoOptedInSupply {})
+    }
+
+    /// Error for when rewards are disabled
+    pub const fn rewards_disabled() -> Self {
+        Self::RewardsDisabled(ITIP20::RewardsDisabled {})
     }
 }
