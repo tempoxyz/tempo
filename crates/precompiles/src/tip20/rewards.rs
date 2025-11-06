@@ -196,16 +196,24 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                     .and_then(|v| v.checked_div(ACC_PRECISION))
                     .ok_or(TempoPrecompileError::under_overflow())?;
 
-                let mut delegate_info = UserRewardInfo::from_storage(
-                    cached_delegate,
-                    self.storage,
-                    self.token_address,
-                )?;
-                delegate_info.reward_balance = delegate_info
-                    .reward_balance
-                    .checked_add(reward)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-                delegate_info.store(cached_delegate, self.storage, self.token_address)?;
+                // Add reward to delegate's balance (or holder's own balance if self-delegated)
+                if cached_delegate == holder {
+                    info.reward_balance = info
+                        .reward_balance
+                        .checked_add(reward)
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                } else {
+                    let mut delegate_info = UserRewardInfo::from_storage(
+                        cached_delegate,
+                        self.storage,
+                        self.token_address,
+                    )?;
+                    delegate_info.reward_balance = delegate_info
+                        .reward_balance
+                        .checked_add(reward)
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                    delegate_info.store(cached_delegate, self.storage, self.token_address)?;
+                }
             }
             info.reward_per_token = global_reward_per_token;
             info.store(holder, self.storage, self.token_address)?;
@@ -1275,6 +1283,55 @@ mod tests {
 
         let total_reward_per_second = token.get_total_reward_per_second()?;
         assert_eq!(total_reward_per_second, U256::ZERO);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_claim_rewards() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let alice = Address::random();
+        let funder = Address::random();
+
+        initialize_linking_usd(&mut storage, admin)?;
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let alice_balance = U256::from(1000e18);
+        token.mint(admin, ITIP20::mintCall { to: alice, amount: alice_balance })?;
+
+        token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+        assert_eq!(token.get_opted_in_supply()?, alice_balance.to::<u128>());
+
+        let reward_amount = U256::from(100e18);
+        token.mint(admin, ITIP20::mintCall { to: funder, amount: reward_amount })?;
+
+        token.start_reward(
+            funder,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                secs: 100,
+            },
+        )?;
+
+        let current_time = token.storage.timestamp();
+        token.storage.set_timestamp(current_time + U256::from(50));
+
+        let alice_balance_before_claim = token.get_balance(alice)?;
+        let claimed_amount = token.claim_rewards(alice)?;
+
+        assert!(claimed_amount > U256::ZERO);
+        assert_eq!(
+            token.get_balance(alice)?,
+            alice_balance_before_claim + claimed_amount
+        );
+
+        let alice_info = UserRewardInfo::from_storage(alice, token.storage, token.token_address)?;
+        assert_eq!(alice_info.reward_balance, U256::ZERO);
 
         Ok(())
     }
