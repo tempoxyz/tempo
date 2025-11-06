@@ -1239,7 +1239,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
 
     reth_tracing::init_test_tracing();
 
-    let initial_funding_amount = U256::from(100u64) * U256::from(10).pow(U256::from(18)); // 100 tokens with 18 decimals
+    let initial_funding_amount = U256::from(20u64) * U256::from(10).pow(U256::from(18)); // 20 tokens with 18 decimals
     let (
         mut setup,
         provider,
