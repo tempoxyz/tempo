@@ -150,17 +150,17 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
             }
 
             ITIP20::startRewardCall::SELECTOR => {
-                mutate::<ITIP20::startRewardCall>(calldata, msg_sender, |s, call| {
+                mutate::<ITIP20::startRewardCall>(calldata, msg_sender, |_s, _call| {
                     Err(TIP20Error::rewards_disabled().into())
                 })
             }
             ITIP20::setRewardRecipientCall::SELECTOR => {
-                mutate_void::<ITIP20::setRewardRecipientCall>(calldata, msg_sender, |s, call| {
+                mutate_void::<ITIP20::setRewardRecipientCall>(calldata, msg_sender, |_s, _call| {
                     Err(TIP20Error::rewards_disabled().into())
                 })
             }
             ITIP20::cancelRewardCall::SELECTOR => {
-                mutate::<ITIP20::cancelRewardCall>(calldata, msg_sender, |s, call| {
+                mutate::<ITIP20::cancelRewardCall>(calldata, msg_sender, |_s, _call| {
                     Err(TIP20Error::rewards_disabled().into())
                 })
             }
