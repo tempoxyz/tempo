@@ -1,4 +1,4 @@
-use crate::rpc::{TempoTransactionReceipt, TempoTransactionRequest};
+use crate::rpc::{TempoHeaderResponse, TempoTransactionReceipt, TempoTransactionRequest};
 use alloy_consensus::{TxType, error::UnsupportedTransactionType};
 
 use alloy_network::{
@@ -28,7 +28,7 @@ impl Network for TempoNetwork {
     type TransactionRequest = TempoTransactionRequest;
     type TransactionResponse = alloy_rpc_types_eth::Transaction<TempoTxEnvelope>;
     type ReceiptResponse = TempoTransactionReceipt;
-    type HeaderResponse = alloy_rpc_types_eth::Header<TempoHeader>;
+    type HeaderResponse = TempoHeaderResponse;
     type BlockResponse = alloy_rpc_types_eth::Block<
         alloy_rpc_types_eth::Transaction<TempoTxEnvelope>,
         Self::HeaderResponse,
