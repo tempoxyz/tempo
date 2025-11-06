@@ -56,8 +56,8 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                 })
             }
 
-            IStablecoinExchange::getPriceLevelCall::SELECTOR => {
-                view::<IStablecoinExchange::getPriceLevelCall>(calldata, |call| {
+            IStablecoinExchange::getTickLevelCall::SELECTOR => {
+                view::<IStablecoinExchange::getTickLevelCall>(calldata, |call| {
                     self.get_price_level(call.base, call.tick, call.isBid)
                         .map(Into::into)
                 })

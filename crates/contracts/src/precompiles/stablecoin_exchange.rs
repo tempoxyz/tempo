@@ -66,7 +66,8 @@ sol! {
 
         // View Functions
         function getOrder(uint128 orderId) external view returns (Order memory);
-        function getPriceLevel(address base, int16 tick, bool isBid) external view returns (PriceLevel memory);
+
+        function getTickLevel(address base, int16 tick, bool isBid) external view returns (PriceLevel memory);
         function pairKey(address tokenA, address tokenB) external view returns (bytes32);
         function activeOrderId() external view returns (uint128);
         function pendingOrderId() external view returns (uint128);
