@@ -1502,7 +1502,7 @@ mod tests {
         let call = Call {
             to: TxKind::Call(Address::random()),
             value: U256::from(1000), // Non-zero value
-            input: calldata.clone(),
+            input: calldata,
         };
 
         let aa_env = AATxEnv {
