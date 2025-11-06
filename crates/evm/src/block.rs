@@ -447,6 +447,19 @@ where
 
         let gas_used = self.inner.commit_transaction(output, &tx)?;
 
+        // TODO: remove once revm supports emitting logs for reverted transactions
+        //
+        // <https://github.com/tempoxyz/tempo/pull/729>
+        let logs = self.inner.evm.take_revert_logs();
+        if !logs.is_empty() {
+            self.inner
+                .receipts
+                .last_mut()
+                .expect("receipt was just pushed")
+                .logs
+                .extend(logs);
+        }
+
         self.section = next_section;
 
         match self.section {

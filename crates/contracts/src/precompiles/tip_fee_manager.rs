@@ -25,10 +25,6 @@ sol! {
             bool hasBeenSet;
         }
 
-        // Constants
-        function BASIS_POINTS() external pure returns (uint256);
-        function FEE_BPS() external pure returns (uint256);
-
         // User preferences
         function userTokens(address user) external view returns (address);
         function validatorTokens(address validator) external view returns (address);

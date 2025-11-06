@@ -75,6 +75,17 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                 })
             }
 
+            IStablecoinExchange::activeOrderIdCall::SELECTOR => {
+                view::<IStablecoinExchange::activeOrderIdCall>(calldata, |_call| {
+                    self.active_order_id()
+                })
+            }
+            IStablecoinExchange::pendingOrderIdCall::SELECTOR => {
+                view::<IStablecoinExchange::pendingOrderIdCall>(calldata, |_call| {
+                    self.pending_order_id()
+                })
+            }
+
             IStablecoinExchange::createPairCall::SELECTOR => {
                 mutate::<IStablecoinExchange::createPairCall>(calldata, msg_sender, |_s, call| {
                     self.create_pair(call.base)
@@ -162,7 +173,7 @@ mod tests {
     };
     use alloy::{
         primitives::{Address, Bytes, U256},
-        sol_types::SolCall,
+        sol_types::{SolCall, SolValue},
     };
 
     /// Setup a basic exchange with tokens and liquidity for swap tests
@@ -470,6 +481,44 @@ mod tests {
         // Should dispatch to quote_swap_exact_amount_out function and succeed
         let result = exchange.call(&Bytes::from(calldata), sender);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_active_order_id_call() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize().unwrap();
+
+        let sender = Address::random();
+
+        let call = IStablecoinExchange::activeOrderIdCall {};
+        let calldata = call.abi_encode();
+
+        let result = exchange.call(&Bytes::from(calldata), sender);
+        assert!(result.is_ok());
+
+        let output = result.unwrap();
+        let active_order_id = u128::abi_decode(&output.bytes).unwrap();
+        assert_eq!(active_order_id, 0); // Should be 0 initially
+    }
+
+    #[test]
+    fn test_pending_order_id_call() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize().unwrap();
+
+        let sender = Address::random();
+
+        let call = IStablecoinExchange::pendingOrderIdCall {};
+        let calldata = call.abi_encode();
+
+        let result = exchange.call(&Bytes::from(calldata), sender);
+        assert!(result.is_ok());
+
+        let output = result.unwrap();
+        let pending_order_id = u128::abi_decode(&output.bytes).unwrap();
+        assert_eq!(pending_order_id, 0); // Should be 0 initially
     }
 
     #[test]

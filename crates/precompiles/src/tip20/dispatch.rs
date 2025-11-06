@@ -52,6 +52,18 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::nextQuoteTokenCall::SELECTOR => {
                 view::<ITIP20::nextQuoteTokenCall>(calldata, |_| self.next_quote_token())
             }
+            ITIP20::PAUSE_ROLECall::SELECTOR => {
+                view::<ITIP20::PAUSE_ROLECall>(calldata, |_| Ok(Self::pause_role()))
+            }
+            ITIP20::UNPAUSE_ROLECall::SELECTOR => {
+                view::<ITIP20::UNPAUSE_ROLECall>(calldata, |_| Ok(Self::unpause_role()))
+            }
+            ITIP20::ISSUER_ROLECall::SELECTOR => {
+                view::<ITIP20::ISSUER_ROLECall>(calldata, |_| Ok(Self::issuer_role()))
+            }
+            ITIP20::BURN_BLOCKED_ROLECall::SELECTOR => {
+                view::<ITIP20::BURN_BLOCKED_ROLECall>(calldata, |_| Ok(Self::burn_blocked_role()))
+            }
 
             // State changing functions
             ITIP20::transferFromCall::SELECTOR => {
@@ -125,6 +137,11 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::transferWithMemoCall::SELECTOR => {
                 mutate_void::<ITIP20::transferWithMemoCall>(calldata, msg_sender, |s, call| {
                     self.transfer_with_memo(s, call)
+                })
+            }
+            ITIP20::transferFromWithMemoCall::SELECTOR => {
+                mutate::<ITIP20::transferFromWithMemoCall>(calldata, msg_sender, |sender, call| {
+                    self.transfer_from_with_memo(sender, call)
                 })
             }
             ITIP20::startRewardCall::SELECTOR => {
