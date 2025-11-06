@@ -415,7 +415,7 @@ impl<'a, S: PrecompileStorageProvider> TIPFeeAMM<'a, S> {
         let liquidity = if pool.reserve_user_token == 0 && pool.reserve_validator_token == 0 {
             let half_amount = amount_validator_token
                 .checked_div(uint!(2_U256))
-                .ok_or(TIPFeeAMMError::division_by_zero())?;
+                .ok_or(TempoPrecompileError::under_overflow())?;
 
             if half_amount <= MIN_LIQUIDITY {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
