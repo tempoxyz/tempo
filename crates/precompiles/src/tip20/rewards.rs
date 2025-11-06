@@ -47,7 +47,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self._transfer(msg_sender, token_address, call.amount)?;
 
         if call.secs == 0 {
-            let opted_in_supply = self.get_opted_in_supply()?;
+            let opted_in_supply = U256::from(self.get_opted_in_supply()?);
             if opted_in_supply.is_zero() {
                 return Err(TIP20Error::no_opted_in_supply().into());
             }
@@ -151,7 +151,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         self.set_last_update_time(accrue_to_timestamp)?;
 
-        let opted_in_supply = self.get_opted_in_supply()?;
+        let opted_in_supply = U256::from(self.get_opted_in_supply()?);
         if opted_in_supply == U256::ZERO {
             return Ok(());
         }
@@ -196,16 +196,24 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                     .and_then(|v| v.checked_div(ACC_PRECISION))
                     .ok_or(TempoPrecompileError::under_overflow())?;
 
-                let mut delegate_info = UserRewardInfo::from_storage(
-                    cached_delegate,
-                    self.storage,
-                    self.token_address,
-                )?;
-                delegate_info.reward_balance = delegate_info
-                    .reward_balance
-                    .checked_add(reward)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-                delegate_info.store(cached_delegate, self.storage, self.token_address)?;
+                // Add reward to delegate's balance (or holder's own balance if self-delegated)
+                if cached_delegate == holder {
+                    info.reward_balance = info
+                        .reward_balance
+                        .checked_add(reward)
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                } else {
+                    let mut delegate_info = UserRewardInfo::from_storage(
+                        cached_delegate,
+                        self.storage,
+                        self.token_address,
+                    )?;
+                    delegate_info.reward_balance = delegate_info
+                        .reward_balance
+                        .checked_add(reward)
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                    delegate_info.store(cached_delegate, self.storage, self.token_address)?;
+                }
             }
             info.reward_per_token = global_reward_per_token;
             info.store(holder, self.storage, self.token_address)?;
@@ -237,15 +245,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         if from_delegate != Address::ZERO {
             if call.recipient == Address::ZERO {
-                let opted_in_supply = self
-                    .get_opted_in_supply()?
+                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                     .checked_sub(holder_balance)
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 self.set_opted_in_supply(opted_in_supply)?;
             }
         } else if call.recipient != Address::ZERO {
-            let opted_in_supply = self
-                .get_opted_in_supply()?
+            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                 .checked_add(holder_balance)
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_opted_in_supply(opted_in_supply)?;
@@ -333,8 +339,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         if refund > U256::ZERO && self.is_transfer_authorized(stream.funder, stream.funder)? {
             let funder_delegate = self.update_rewards(stream.funder)?;
             if funder_delegate != Address::ZERO {
-                let opted_in_supply = self
-                    .get_opted_in_supply()?
+                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                     .checked_add(refund)
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 self.set_opted_in_supply(opted_in_supply)?;
@@ -443,8 +448,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             self.set_balance(msg_sender, recipient_balance)?;
 
             if info.delegated_recipient != Address::ZERO {
-                let opted_in_supply = self
-                    .get_opted_in_supply()?
+                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                     .checked_add(max_amount)
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 self.set_opted_in_supply(opted_in_supply)?;
@@ -465,7 +469,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 
     /// Gets the next available stream ID (minimum 1).
-    fn get_next_stream_id(&mut self) -> Result<u64> {
+    pub fn get_next_stream_id(&mut self) -> Result<u64> {
         let id = self
             .storage
             .sload(self.token_address, slots::NEXT_STREAM_ID)?
@@ -507,9 +511,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 
     /// Gets the total supply of tokens opted into rewards from storage.
-    pub fn get_opted_in_supply(&mut self) -> Result<U256> {
-        self.storage
-            .sload(self.token_address, slots::OPTED_IN_SUPPLY)
+    pub fn get_opted_in_supply(&mut self) -> Result<u128> {
+        Ok(self
+            .storage
+            .sload(self.token_address, slots::OPTED_IN_SUPPLY)?
+            .to::<u128>())
     }
 
     /// Sets the total supply of tokens opted into rewards in storage.
@@ -554,15 +560,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         if !from_delegate.is_zero() {
             if to_delegate.is_zero() {
-                let opted_in_supply = self
-                    .get_opted_in_supply()?
+                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                     .checked_sub(amount)
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 self.set_opted_in_supply(opted_in_supply)?;
             }
         } else if !to_delegate.is_zero() {
-            let opted_in_supply = self
-                .get_opted_in_supply()?
+            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                 .checked_add(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_opted_in_supply(opted_in_supply)?;
@@ -576,8 +580,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let to_delegate = self.update_rewards(to)?;
 
         if !to_delegate.is_zero() {
-            let opted_in_supply = self
-                .get_opted_in_supply()?
+            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                 .checked_add(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_opted_in_supply(opted_in_supply)?;
@@ -589,6 +592,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     /// Retrieves a reward stream by its ID.
     pub fn get_stream(&mut self, stream_id: u64) -> Result<RewardStream> {
         RewardStream::from_storage(stream_id, self.storage, self.token_address)
+    }
+
+    /// Retrieves user reward information for a given account.
+    pub fn get_user_reward_info(&mut self, account: Address) -> Result<UserRewardInfo> {
+        UserRewardInfo::from_storage(account, self.storage, self.token_address)
     }
 }
 
@@ -829,6 +837,16 @@ impl From<RewardStream> for ITIP20::RewardStream {
     }
 }
 
+impl From<UserRewardInfo> for ITIP20::UserRewardInfo {
+    fn from(value: UserRewardInfo) -> Self {
+        Self {
+            delegatedRecipient: value.delegated_recipient,
+            rewardPerToken: value.reward_per_token,
+            rewardBalance: value.reward_balance,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -910,7 +928,7 @@ mod tests {
 
         let info = UserRewardInfo::from_storage(alice, token.storage, token.token_address)?;
         assert_eq!(info.delegated_recipient, alice);
-        assert_eq!(token.get_opted_in_supply()?, amount);
+        assert_eq!(token.get_opted_in_supply()?, amount.to::<u128>());
         assert_eq!(info.reward_per_token, U256::ZERO);
 
         token.set_reward_recipient(
@@ -922,7 +940,7 @@ mod tests {
 
         let info = UserRewardInfo::from_storage(alice, token.storage, token.token_address)?;
         assert_eq!(info.delegated_recipient, Address::ZERO);
-        assert_eq!(token.get_opted_in_supply()?, U256::ZERO);
+        assert_eq!(token.get_opted_in_supply()?, 0u128);
         assert_eq!(info.reward_per_token, U256::ZERO);
 
         Ok(())
@@ -974,7 +992,7 @@ mod tests {
         assert_eq!(global_reward_per_token, U256::ZERO);
 
         let opted_in_supply = token.get_opted_in_supply()?;
-        assert_eq!(opted_in_supply, U256::ZERO);
+        assert_eq!(opted_in_supply, 0u128);
 
         Ok(())
     }
@@ -1087,7 +1105,7 @@ mod tests {
         let expected_rate = (reward_amount * ACC_PRECISION) / U256::from(100);
         assert_eq!(total_reward_per_second, expected_rate);
 
-        assert_eq!(token.get_opted_in_supply()?, mint_amount);
+        assert_eq!(token.get_opted_in_supply()?, mint_amount.to::<u128>());
         let info = UserRewardInfo::from_storage(alice, token.storage, token.token_address)?;
         assert_eq!(info.reward_per_token, U256::ZERO);
         Ok(())
@@ -1280,6 +1298,67 @@ mod tests {
 
         let total_reward_per_second = token.get_total_reward_per_second()?;
         assert_eq!(total_reward_per_second, U256::ZERO);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_claim_rewards() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let alice = Address::random();
+        let funder = Address::random();
+
+        initialize_linking_usd(&mut storage, admin)?;
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+
+        let mut roles = token.get_roles_contract();
+        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let alice_balance = U256::from(1000e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: alice,
+                amount: alice_balance,
+            },
+        )?;
+
+        token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+        assert_eq!(token.get_opted_in_supply()?, alice_balance.to::<u128>());
+
+        let reward_amount = U256::from(100e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: funder,
+                amount: reward_amount,
+            },
+        )?;
+
+        token.start_reward(
+            funder,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                secs: 100,
+            },
+        )?;
+
+        let current_time = token.storage.timestamp();
+        token.storage.set_timestamp(current_time + U256::from(50));
+
+        let alice_balance_before_claim = token.get_balance(alice)?;
+        let claimed_amount = token.claim_rewards(alice)?;
+
+        assert!(claimed_amount > U256::ZERO);
+        assert_eq!(
+            token.get_balance(alice)?,
+            alice_balance_before_claim + claimed_amount
+        );
+
+        let alice_info = UserRewardInfo::from_storage(alice, token.storage, token.token_address)?;
+        assert_eq!(alice_info.reward_balance, U256::ZERO);
 
         Ok(())
     }

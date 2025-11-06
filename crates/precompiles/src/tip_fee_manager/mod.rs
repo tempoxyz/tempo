@@ -226,10 +226,8 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         fee_token: Address,
     ) -> Result<()> {
         // Refund unused tokens to user
-        if !refund_amount.is_zero() {
-            let mut tip20_token = TIP20Token::from_address(fee_token, self.storage);
-            tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
-        }
+        let mut tip20_token = TIP20Token::from_address(fee_token, self.storage);
+        tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
 
         // Execute fee swap and track collected fees
         if !actual_spending.is_zero() {
@@ -439,6 +437,24 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         Ok(amount)
     }
 
+    /// Mint liquidity tokens using only validator tokens
+    pub fn mint_with_validator_token(
+        &mut self,
+        msg_sender: Address,
+        call: ITIPFeeAMM::mintWithValidatorTokenCall,
+    ) -> Result<U256> {
+        let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
+        let amount = amm.mint_with_validator_token(
+            msg_sender,
+            call.userToken,
+            call.validatorToken,
+            call.amountValidatorToken,
+            call.to,
+        )?;
+
+        Ok(amount)
+    }
+
     /// Burn liquidity tokens
     pub fn burn(
         &mut self,
@@ -468,7 +484,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     /// Get liquidity balance of a user for a pool (inherited from TIPFeeAMM)
     pub fn liquidity_balances(&mut self, call: ITIPFeeAMM::liquidityBalancesCall) -> Result<U256> {
         let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-        amm.get_balance_of(call.poolId, call.user)
+        amm.get_liquidity_balances(call.poolId, call.user)
     }
 
     pub fn get_pool_id(&mut self, call: ITIPFeeAMM::getPoolIdCall) -> B256 {

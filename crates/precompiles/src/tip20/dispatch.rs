@@ -101,16 +101,16 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                     self.unpause(s, call)
                 })
             }
-            ITIP20::updateQuoteTokenCall::SELECTOR => {
-                mutate_void::<ITIP20::updateQuoteTokenCall>(calldata, msg_sender, |s, call| {
-                    self.update_quote_token(s, call)
+            ITIP20::setNextQuoteTokenCall::SELECTOR => {
+                mutate_void::<ITIP20::setNextQuoteTokenCall>(calldata, msg_sender, |s, call| {
+                    self.set_next_quote_token(s, call)
                 })
             }
-            ITIP20::finalizeQuoteTokenUpdateCall::SELECTOR => {
-                mutate_void::<ITIP20::finalizeQuoteTokenUpdateCall>(
+            ITIP20::completeQuoteTokenUpdateCall::SELECTOR => {
+                mutate_void::<ITIP20::completeQuoteTokenUpdateCall>(
                     calldata,
                     msg_sender,
-                    |s, call| self.finalize_quote_token_update(s, call),
+                    |s, call| self.complete_quote_token_update(s, call),
                 )
             }
             ITIP20::mintCall::SELECTOR => {
@@ -165,15 +165,36 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                 })
             }
 
+            ITIP20::finalizeStreamsCall::SELECTOR => {
+                mutate_void::<ITIP20::finalizeStreamsCall>(calldata, msg_sender, |sender, call| {
+                    self.finalize_streams(sender, call.timestamp as u128)
+                })
+            }
+
             ITIP20::totalRewardPerSecondCall::SELECTOR => {
                 view::<ITIP20::totalRewardPerSecondCall>(calldata, |_call| {
                     self.get_total_reward_per_second()
                 })
             }
 
+            ITIP20::optedInSupplyCall::SELECTOR => {
+                view::<ITIP20::optedInSupplyCall>(calldata, |_call| self.get_opted_in_supply())
+            }
+
             ITIP20::getStreamCall::SELECTOR => view::<ITIP20::getStreamCall>(calldata, |call| {
                 self.get_stream(call.id).map(|stream| stream.into())
             }),
+
+            ITIP20::nextStreamIdCall::SELECTOR => {
+                view::<ITIP20::nextStreamIdCall>(calldata, |_call| self.get_next_stream_id())
+            }
+
+            ITIP20::userRewardInfoCall::SELECTOR => {
+                view::<ITIP20::userRewardInfoCall>(calldata, |call| {
+                    self.get_user_reward_info(call.account)
+                        .map(|info| info.into())
+                })
+            }
 
             // RolesAuth functions
             IRolesAuth::hasRoleCall::SELECTOR => {

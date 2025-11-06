@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use commonware_consensus::{Block as _, Reporter};
+use commonware_consensus::{Block as _, Reporter, utils};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::{
     Receiver, Sender,
@@ -313,7 +313,7 @@ where
         fields(
             block.derived_epoch = update
                 .as_block()
-                .and_then(|b| epoch::of_height(b.height(), self.config.epoch_length)),
+                .map(|b| utils::epoch(self.config.epoch_length, b.height())),
             block.height = update.as_block().map(|b| b.height()),
             ceremony.epoch = ceremony.epoch(),
         ),
@@ -333,16 +333,18 @@ where
             return ceremony;
         };
 
-        // Special case height == 0
-        let Some(block_epoch) = epoch::of_height(block.height(), self.config.epoch_length) else {
+        if block.height() == 0 {
             return ceremony;
-        };
+        }
+
+        let block_epoch = utils::epoch(self.config.epoch_length, block.height());
 
         // Special case the last height of the previous epoch: remember that we
         // can only enter the a new epoch once the last height of outgoing was
         // reached, because that's what provides the genesis.
         if ceremony.epoch().saturating_sub(1) == block_epoch
-            && epoch::is_last_height(block.height(), self.config.epoch_length)
+            && utils::is_last_block_in_epoch(self.config.epoch_length, block.height())
+                .is_some_and(|e| e == block_epoch)
         {
             debug!(
                 "reached last height of outgoing epoch; reporting that a \
@@ -372,7 +374,9 @@ where
 
         // Notify the epoch manager that the first height of the new epoch
         // was entered and the previous epoch can be exited.
-        if epoch::is_first_height(block.height(), self.config.epoch_length) {
+        //
+        // Recall, for an epoch length E the first heights are 0E, 1E, 2E, ...
+        if block.height().is_multiple_of(self.config.epoch_length) {
             // Special case epoch == 0
             if let Some(previous_epoch) = ceremony.epoch().checked_sub(1) {
                 self.config
@@ -406,7 +410,9 @@ where
         // stored on chain.
         //
         // This starts a new ceremony.
-        if epoch::is_last_height(block.height().saturating_add(1), self.config.epoch_length) {
+        if utils::is_last_block_in_epoch(self.config.epoch_length, block.height().saturating_add(1))
+            .is_some_and(|e| e == block_epoch)
+        {
             info!("on pre-to-last height of epoch; finalizing ceremony");
 
             let next_epoch = ceremony.epoch().saturating_add(1);

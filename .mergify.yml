@@ -1,0 +1,16 @@
+pull_request_rules:
+  - name: add "S-breaking-stf" label when the title contains "!"
+    conditions:
+      - title ~= ^.*!(.*).*
+    actions:
+      label:
+        toggle:
+          - S-breaking-stf
+  - name: backport merged PRs to release/andantino unless labeled
+    conditions:
+      - merged
+      - -label=S-breaking-stf  # change this label name if needed
+    actions:
+      backport:
+        branches:
+          - release/andantino

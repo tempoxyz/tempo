@@ -55,8 +55,8 @@ pub(super) struct Config<TContext> {
     pub(super) new_payload_wait_time: Duration,
 
     /// The number of heights H in an epoch. For a given epoch E, all heights
-    /// `E*H+1` to and including `(E+1)*H` make up the epoch. The block at
-    /// `E*H` is said to be the genesis (or parent) of the epoch.
+    /// `E*H` to and including `(E+1)*H-1` make up the epoch. The block at
+    /// `E*H-1` (saturating) is said to be the genesis (or parent) of the epoch.
     pub(super) epoch_length: u64,
 
     /// The scheme provider to use for the application.

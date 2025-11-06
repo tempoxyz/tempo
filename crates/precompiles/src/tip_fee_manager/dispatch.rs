@@ -75,6 +75,11 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
             ITIPFeeAMM::mintCall::SELECTOR => {
                 mutate::<ITIPFeeAMM::mintCall>(calldata, msg_sender, |s, call| self.mint(s, call))
             }
+            ITIPFeeAMM::mintWithValidatorTokenCall::SELECTOR => {
+                mutate::<ITIPFeeAMM::mintWithValidatorTokenCall>(calldata, msg_sender, |s, call| {
+                    self.mint_with_validator_token(s, call)
+                })
+            }
             ITIPFeeAMM::burnCall::SELECTOR => {
                 mutate::<ITIPFeeAMM::burnCall>(calldata, msg_sender, |s, call| self.burn(s, call))
             }
@@ -102,7 +107,10 @@ mod tests {
     use crate::{
         LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, expect_precompile_revert,
         storage::hashmap::HashMapStorageProvider,
-        tip_fee_manager::{TIPFeeAMMError, TipFeeManager, amm::PoolKey},
+        tip_fee_manager::{
+            TIPFeeAMMError, TipFeeManager,
+            amm::{MIN_LIQUIDITY, PoolKey},
+        },
         tip20::{
             ISSUER_ROLE, ITIP20, TIP20Token, tests::initialize_linking_usd, token_id_to_address,
         },
@@ -371,6 +379,99 @@ mod tests {
         let result = fee_manager.call(&Bytes::from(call.abi_encode()), Address::ZERO)?;
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_mint_with_validator_token() -> Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let user = Address::random();
+        let validator = Address::random();
+        let admin = Address::random();
+
+        // Initialize LinkingUSD first
+        initialize_linking_usd(&mut storage, admin)?;
+
+        // Create two USD tokens
+        let user_token = token_id_to_address(1);
+        let validator_token = token_id_to_address(2);
+
+        // Setup both tokens
+        setup_token_with_balance(&mut storage, user_token, user, U256::from(1000000u64));
+        setup_token_with_balance(&mut storage, validator_token, user, U256::from(1000000u64));
+
+        let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, validator, &mut storage);
+
+        // Get pool ID first
+        let pool_id_call = ITIPFeeAMM::getPoolIdCall {
+            userToken: user_token,
+            validatorToken: validator_token,
+        };
+        let pool_id_result = fee_manager.call(&Bytes::from(pool_id_call.abi_encode()), user)?;
+        let pool_id = B256::abi_decode(&pool_id_result.bytes)?;
+
+        // Check initial total supply
+        let initial_total_supply_call = ITIPFeeAMM::totalSupplyCall { poolId: pool_id };
+        let initial_total_supply_result =
+            fee_manager.call(&Bytes::from(initial_total_supply_call.abi_encode()), user)?;
+        let initial_total_supply = U256::abi_decode(&initial_total_supply_result.bytes)?;
+        assert_eq!(initial_total_supply, U256::ZERO);
+
+        // Test minting with validator token only
+        let amount_validator_token = U256::from(10000u64);
+        let to = user;
+
+        let call = ITIPFeeAMM::mintWithValidatorTokenCall {
+            userToken: user_token,
+            validatorToken: validator_token,
+            amountValidatorToken: amount_validator_token,
+            to,
+        };
+
+        let calldata = call.abi_encode();
+        let result = fee_manager.call(&Bytes::from(calldata), user)?;
+
+        // Should return liquidity amount
+        let liquidity = U256::abi_decode(&result.bytes)?;
+
+        // For first mint with validator token only, liquidity should be (amount / 2) - MIN_LIQUIDITY
+        // MIN_LIQUIDITY = 1000, so (10000 / 2) - 1000 = 4000
+        assert_eq!(liquidity, U256::from(4000u64));
+
+        // Check total supply after mint should equal liquidity + MIN_LIQUIDITY
+        let final_total_supply_call = ITIPFeeAMM::totalSupplyCall { poolId: pool_id };
+        let final_total_supply_result =
+            fee_manager.call(&Bytes::from(final_total_supply_call.abi_encode()), user)?;
+        let final_total_supply = U256::abi_decode(&final_total_supply_result.bytes)?;
+
+        let expected_total_supply = liquidity + MIN_LIQUIDITY;
+        assert_eq!(final_total_supply, expected_total_supply);
+
+        // Verify total supply increased by the expected amount
+        let total_supply_increase = final_total_supply - initial_total_supply;
+        assert_eq!(total_supply_increase, expected_total_supply);
+
+        // Verify pool state
+        let pool_call = ITIPFeeAMM::getPoolCall {
+            userToken: user_token,
+            validatorToken: validator_token,
+        };
+        let pool_result = fee_manager.call(&Bytes::from(pool_call.abi_encode()), user)?;
+        let pool = ITIPFeeAMM::Pool::abi_decode(&pool_result.bytes)?;
+
+        assert_eq!(pool.reserveUserToken, 0);
+        assert_eq!(pool.reserveValidatorToken, 10000);
+
+        // Verify LP token balance
+        let balance_call = ITIPFeeAMM::liquidityBalancesCall {
+            poolId: pool_id,
+            user: to,
+        };
+        let balance_result = fee_manager.call(&Bytes::from(balance_call.abi_encode()), user)?;
+        let balance = U256::abi_decode(&balance_result.bytes)?;
+
+        assert_eq!(balance, liquidity);
 
         Ok(())
     }
