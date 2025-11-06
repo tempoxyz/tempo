@@ -18,4 +18,3 @@ sol! {
         function systemTxInitialize(address admin) external;
     }
 }
-
