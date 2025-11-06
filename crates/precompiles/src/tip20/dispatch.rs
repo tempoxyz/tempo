@@ -101,16 +101,16 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                     self.unpause(s, call)
                 })
             }
-            ITIP20::updateQuoteTokenCall::SELECTOR => {
-                mutate_void::<ITIP20::updateQuoteTokenCall>(calldata, msg_sender, |s, call| {
-                    self.update_quote_token(s, call)
+            ITIP20::setNextQuoteTokenCall::SELECTOR => {
+                mutate_void::<ITIP20::setNextQuoteTokenCall>(calldata, msg_sender, |s, call| {
+                    self.set_next_quote_token(s, call)
                 })
             }
-            ITIP20::finalizeQuoteTokenUpdateCall::SELECTOR => {
-                mutate_void::<ITIP20::finalizeQuoteTokenUpdateCall>(
+            ITIP20::completeQuoteTokenUpdateCall::SELECTOR => {
+                mutate_void::<ITIP20::completeQuoteTokenUpdateCall>(
                     calldata,
                     msg_sender,
-                    |s, call| self.finalize_quote_token_update(s, call),
+                    |s, call| self.complete_quote_token_update(s, call),
                 )
             }
             ITIP20::mintCall::SELECTOR => {

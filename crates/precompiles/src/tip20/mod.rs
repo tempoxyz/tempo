@@ -280,10 +280,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         )
     }
 
-    pub fn update_quote_token(
+    pub fn set_next_quote_token(
         &mut self,
         msg_sender: Address,
-        call: ITIP20::updateQuoteTokenCall,
+        call: ITIP20::setNextQuoteTokenCall,
     ) -> Result<()> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
@@ -328,10 +328,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         )
     }
 
-    pub fn finalize_quote_token_update(
+    pub fn complete_quote_token_update(
         &mut self,
         msg_sender: Address,
-        _call: ITIP20::finalizeQuoteTokenUpdateCall,
+        _call: ITIP20::completeQuoteTokenUpdateCall,
     ) -> Result<()> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
@@ -1523,9 +1523,9 @@ pub(crate) mod tests {
 
         // Set next quote token
         token
-            .update_quote_token(
+            .set_next_quote_token(
                 admin,
-                ITIP20::updateQuoteTokenCall {
+                ITIP20::setNextQuoteTokenCall {
                     newQuoteToken: quote_token_address,
                 },
             )
@@ -1563,9 +1563,9 @@ pub(crate) mod tests {
         let quote_token_address = token_id_to_address(2);
 
         // Try to set next quote token as non-admin
-        let result = token.update_quote_token(
+        let result = token.set_next_quote_token(
             non_admin,
-            ITIP20::updateQuoteTokenCall {
+            ITIP20::setNextQuoteTokenCall {
                 newQuoteToken: quote_token_address,
             },
         );
@@ -1590,9 +1590,9 @@ pub(crate) mod tests {
 
         // Try to set a non-TIP20 address (random address that doesn't match TIP20 pattern)
         let non_tip20_address = Address::random();
-        let result = token.update_quote_token(
+        let result = token.set_next_quote_token(
             admin,
-            ITIP20::updateQuoteTokenCall {
+            ITIP20::setNextQuoteTokenCall {
                 newQuoteToken: non_tip20_address,
             },
         );
@@ -1618,9 +1618,9 @@ pub(crate) mod tests {
         // Try to set a TIP20 address that hasn't been deployed yet (token_id = 999)
         // This has the correct TIP20 address pattern but hasn't been created
         let undeployed_token_address = token_id_to_address(999);
-        let result = token.update_quote_token(
+        let result = token.set_next_quote_token(
             admin,
-            ITIP20::updateQuoteTokenCall {
+            ITIP20::setNextQuoteTokenCall {
                 newQuoteToken: undeployed_token_address,
             },
         );
