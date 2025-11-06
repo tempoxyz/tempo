@@ -1302,13 +1302,25 @@ mod tests {
         roles.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         let alice_balance = U256::from(1000e18);
-        token.mint(admin, ITIP20::mintCall { to: alice, amount: alice_balance })?;
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: alice,
+                amount: alice_balance,
+            },
+        )?;
 
         token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
         assert_eq!(token.get_opted_in_supply()?, alice_balance.to::<u128>());
 
         let reward_amount = U256::from(100e18);
-        token.mint(admin, ITIP20::mintCall { to: funder, amount: reward_amount })?;
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: funder,
+                amount: reward_amount,
+            },
+        )?;
 
         token.start_reward(
             funder,
