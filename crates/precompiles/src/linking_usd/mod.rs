@@ -8,6 +8,7 @@ use crate::{
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use std::sync::LazyLock;
+pub use tempo_contracts::precompiles::ILinkingUSD;
 use tempo_contracts::precompiles::TIP20Error;
 
 pub static TRANSFER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"TRANSFER_ROLE"));

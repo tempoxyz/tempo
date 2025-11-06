@@ -1,3 +1,4 @@
+pub mod linking_usd;
 pub mod nonce;
 pub mod stablecoin_exchange;
 pub mod tip20;
@@ -9,6 +10,7 @@ pub mod tip_fee_manager;
 pub mod validator_config;
 
 use alloy::primitives::{Address, address};
+pub use linking_usd::*;
 pub use nonce::*;
 pub use stablecoin_exchange::*;
 pub use tip_account_registrar::*;
