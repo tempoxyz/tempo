@@ -2,14 +2,16 @@ use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError};
 use alloy_network::TxSigner;
 use alloy_primitives::{Bytes, Signature};
 use reth_evm::revm::context::CfgEnv;
+use reth_primitives_traits::SealedHeader;
 use reth_rpc_convert::{
-    EthTxEnvError, SignTxRequestError, SignableTxRequest, TryIntoSimTx, transaction::TryIntoTxEnv,
+    EthTxEnvError, SignTxRequestError, SignableTxRequest, TryIntoSimTx,
+    transaction::{FromConsensusHeader, TryIntoTxEnv},
 };
 use tempo_evm::TempoBlockEnv;
-use tempo_primitives::{AASignature, SignatureType, TempoTxEnvelope};
+use tempo_primitives::{AASignature, SignatureType, TempoHeader, TempoTxEnvelope};
 use tempo_revm::{AATxEnv, TempoTxEnv};
 
-use crate::rpc::TempoTransactionRequest;
+use crate::rpc::{TempoHeaderResponse, TempoTransactionRequest};
 
 impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
@@ -196,5 +198,14 @@ impl SignableTxRequest<TempoTxEnvelope> for TempoTransactionRequest {
         signer: impl TxSigner<Signature> + Send,
     ) -> Result<TempoTxEnvelope, SignTxRequestError> {
         SignableTxRequest::<TempoTxEnvelope>::try_build_and_sign(self.inner, signer).await
+    }
+}
+
+impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
+    fn from_consensus_header(header: SealedHeader<TempoHeader>, block_size: usize) -> Self {
+        Self {
+            timestamp_millis: header.timestamp_millis(),
+            inner: FromConsensusHeader::from_consensus_header(header, block_size),
+        }
     }
 }

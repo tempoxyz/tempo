@@ -54,8 +54,12 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         Ok(())
     }
 
-    fn get_account_info(&mut self, address: Address) -> Result<AccountInfo, TempoPrecompileError> {
-        Ok(self.accounts.get(&address).cloned().unwrap_or_default())
+    fn get_account_info(
+        &mut self,
+        address: Address,
+    ) -> Result<&'_ AccountInfo, TempoPrecompileError> {
+        let account = self.accounts.entry(address).or_default();
+        Ok(&*account)
     }
 
     fn sstore(

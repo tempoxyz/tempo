@@ -9,6 +9,7 @@ use alloy_network::TransactionBuilder;
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
 use std::env;
+use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{IFeeManager, ITIP20};
 use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
 use tempo_primitives::transaction::calc_gas_balance_spending;
@@ -42,7 +43,10 @@ async fn test_fee_in_stable() -> eyre::Result<()> {
     let tx = TransactionRequest::default().from(caller).to(caller);
 
     let pending_tx = provider.send_transaction(tx).await?;
-    let receipt = pending_tx.get_receipt().await?;
+    let tx_hash = pending_tx.watch().await?;
+    let receipt = provider
+        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
+        .await?;
 
     // Assert that the fee token balance has decreased by gas spent
     let balance_after = fee_token.balanceOf(caller).call().await?;
@@ -56,6 +60,7 @@ async fn test_fee_in_stable() -> eyre::Result<()> {
     assert_eq!(transfer.from, caller);
     assert_eq!(transfer.to, TIP_FEE_MANAGER_ADDRESS);
     assert_eq!(transfer.amount, U256::from(cost));
+    assert_eq!(receipt.fee_token, Some(fee_token_address));
 
     Ok(())
 }
@@ -91,7 +96,10 @@ async fn test_fee_transfer_logs() -> eyre::Result<()> {
         .input(Bytes::from_static(&[0xef]).into())
         .gas_limit(100000);
     let pending_tx = provider.send_transaction(tx).await?;
-    let receipt = pending_tx.get_receipt().await?;
+    let tx_hash = pending_tx.watch().await?;
+    let receipt = provider
+        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
+        .await?;
 
     // Assert that the fee token balance has decreased by gas spent
     let balance_after = fee_token.balanceOf(caller).call().await?;
@@ -105,6 +113,7 @@ async fn test_fee_transfer_logs() -> eyre::Result<()> {
     assert_eq!(transfer.from, caller);
     assert_eq!(transfer.to, TIP_FEE_MANAGER_ADDRESS);
     assert_eq!(transfer.amount, U256::from(cost));
+    assert_eq!(receipt.fee_token, Some(fee_token_address));
 
     Ok(())
 }

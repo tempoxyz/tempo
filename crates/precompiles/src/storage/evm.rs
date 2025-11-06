@@ -46,6 +46,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.internals.block_timestamp()
     }
 
+    #[inline]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
         self.ensure_loaded_account(address)?;
         self.deduct_gas(code.len() as u64 * revm::interpreter::gas::CODEDEPOSIT)?;
@@ -55,16 +56,25 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         Ok(())
     }
 
-    fn get_account_info(&mut self, address: Address) -> Result<AccountInfo, TempoPrecompileError> {
+    #[inline]
+    fn get_account_info(
+        &mut self,
+        address: Address,
+    ) -> Result<&'_ AccountInfo, TempoPrecompileError> {
         self.ensure_loaded_account(address)?;
-        let account = self.internals.load_account_code(address)?;
-        let info = account.info.clone();
+        let account = self.internals.load_account_code(address)?.map(|a| &a.info);
         let is_cold = account.is_cold;
-        self.deduct_gas(revm::interpreter::gas::warm_cold_cost(is_cold))?;
 
-        Ok(info)
+        // deduct gas
+        self.gas_remaining = self
+            .gas_remaining
+            .checked_sub(revm::interpreter::gas::warm_cold_cost(is_cold))
+            .ok_or(TempoPrecompileError::OutOfGas)?;
+
+        Ok(account.data)
     }
 
+    #[inline]
     fn sstore(
         &mut self,
         address: Address,
@@ -83,6 +93,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         Ok(())
     }
 
+    #[inline]
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
         self.deduct_gas(
             revm::interpreter::gas::log_cost(event.topics().len() as u8, event.data.len() as u64)
@@ -97,6 +108,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         Ok(())
     }
 
+    #[inline]
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
         self.ensure_loaded_account(address)?;
         let val = self.internals.sload(address, key)?;

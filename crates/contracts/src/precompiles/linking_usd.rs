@@ -16,5 +16,8 @@ sol! {
         /// @param admin The address to set as the admin
         /// @return True if initialization was successful
         function systemTxInitialize(address admin) external;
+
+        function TRANSFER_ROLE() external view returns (bytes32);
+        function RECEIVE_WITH_MEMO_ROLE() external view returns (bytes32);
     }
 }

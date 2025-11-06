@@ -8,6 +8,7 @@ use crate::{
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
+use tempo_contracts::precompiles::ILinkingUSD;
 
 impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -70,6 +71,14 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
             }
             ITIP20::BURN_BLOCKED_ROLECall::SELECTOR => {
                 view::<ITIP20::BURN_BLOCKED_ROLECall>(calldata, |_| Ok(Self::burn_blocked_role()))
+            }
+            ILinkingUSD::TRANSFER_ROLECall::SELECTOR => {
+                view::<ILinkingUSD::TRANSFER_ROLECall>(calldata, |_| Ok(Self::transfer_role()))
+            }
+            ILinkingUSD::RECEIVE_WITH_MEMO_ROLECall::SELECTOR => {
+                view::<ILinkingUSD::RECEIVE_WITH_MEMO_ROLECall>(calldata, |_| {
+                    Ok(Self::receive_with_memo_role())
+                })
             }
 
             // Mutating functions that work normally

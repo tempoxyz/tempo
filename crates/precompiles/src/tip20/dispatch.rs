@@ -166,9 +166,8 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             }
 
             ITIP20::finalizeStreamsCall::SELECTOR => {
-                mutate_void::<ITIP20::finalizeStreamsCall>(calldata, msg_sender, |sender, _call| {
-                    let current_time = self.storage.timestamp().to::<u128>();
-                    self.finalize_streams(sender, current_time)
+                mutate_void::<ITIP20::finalizeStreamsCall>(calldata, msg_sender, |sender, call| {
+                    self.finalize_streams(sender, call.timestamp as u128)
                 })
             }
 

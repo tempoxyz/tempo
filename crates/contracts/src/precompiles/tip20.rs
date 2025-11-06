@@ -105,7 +105,7 @@ sol! {
         function setRewardRecipient(address recipient) external;
         function cancelReward(uint64 id) external returns (uint256);
         function claimRewards() external returns (uint256);
-        function finalizeStreams() external;
+        function finalizeStreams(uint64 timestamp) external;
         function getStream(uint64 id) external view returns (RewardStream memory);
         function totalRewardPerSecond() external view returns (uint256);
         function optedInSupply() external view returns (uint128);

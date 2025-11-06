@@ -11,7 +11,10 @@ pub trait PrecompileStorageProvider {
     fn chain_id(&self) -> u64;
     fn timestamp(&self) -> U256;
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError>;
-    fn get_account_info(&mut self, address: Address) -> Result<AccountInfo, TempoPrecompileError>;
+    fn get_account_info(
+        &mut self,
+        address: Address,
+    ) -> Result<&'_ AccountInfo, TempoPrecompileError>;
     fn sstore(
         &mut self,
         address: Address,

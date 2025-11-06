@@ -43,7 +43,7 @@ impl TempoGenesisInfo {
 pub struct TempoChainSpecParser;
 
 /// Chains supported by Tempo. First value should be used as the default.
-pub const SUPPORTED_CHAINS: &[&str] = &["adagio"];
+pub const SUPPORTED_CHAINS: &[&str] = &["testnet"];
 
 /// Clap value parser for [`ChainSpec`]s.
 ///
@@ -51,7 +51,7 @@ pub const SUPPORTED_CHAINS: &[&str] = &["adagio"];
 /// to a json file, or a json formatted string in-memory. The json needs to be a Genesis struct.
 pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<TempoChainSpec>> {
     Ok(match s {
-        "adagio" => ADAGIO.clone(),
+        "testnet" => ANDANTINO.clone(),
         "dev" => DEV.clone(),
         _ => TempoChainSpec::from_genesis(parse_genesis(s)?).into(),
     })
@@ -67,17 +67,17 @@ impl ChainSpecParser for TempoChainSpecParser {
     }
 }
 
-pub static ADAGIO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
-    let genesis: Genesis = serde_json::from_str(include_str!("./genesis/adagio.json"))
-        .expect("`./genesis/adagio.json` must be present and deserializable");
+pub static ANDANTINO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
+    let genesis: Genesis = serde_json::from_str(include_str!("./genesis/andantino.json"))
+        .expect("`./genesis/andantino.json` must be present and deserializable");
     TempoChainSpec::from_genesis(genesis).into()
 });
 
 pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let mut spec = (**reth_chainspec::DEV).clone();
-    let adagio = ADAGIO.clone();
+    let andantino = ANDANTINO.clone();
 
-    let default_7702_alloc = adagio
+    let default_7702_alloc = andantino
         .genesis()
         .alloc
         .get(&DEFAULT_7702_DELEGATE_ADDRESS)
@@ -253,9 +253,9 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn can_load_adagio() {
-        let _ = super::TempoChainSpecParser::parse("adagio")
-            .expect("the adagio chainspec must always be well formed");
+    fn can_load_testnet() {
+        let _ = super::TempoChainSpecParser::parse("testnet")
+            .expect("the testnet chainspec must always be well formed");
     }
 
     #[test]
@@ -266,8 +266,8 @@ mod tests {
 
     #[test]
     fn test_tempo_chainspec_has_tempo_hardforks() {
-        let chainspec = super::TempoChainSpecParser::parse("adagio")
-            .expect("the adagio chainspec must always be well formed");
+        let chainspec = super::TempoChainSpecParser::parse("testnet")
+            .expect("the testnet chainspec must always be well formed");
 
         // Adagio should be active at genesis (timestamp 0)
         assert!(chainspec.is_adagio_active_at_timestamp(0));
@@ -275,8 +275,8 @@ mod tests {
 
     #[test]
     fn test_tempo_chainspec_implements_tempo_hardforks_trait() {
-        let chainspec = super::TempoChainSpecParser::parse("adagio")
-            .expect("the adagio chainspec must always be well formed");
+        let chainspec = super::TempoChainSpecParser::parse("testnet")
+            .expect("the testnet chainspec must always be well formed");
 
         // Should be able to query Tempo hardfork activation through trait
         let activation = chainspec.tempo_fork_activation(TempoHardfork::Adagio);
@@ -289,8 +289,8 @@ mod tests {
 
     #[test]
     fn test_tempo_hardforks_in_inner_hardforks() {
-        let chainspec = super::TempoChainSpecParser::parse("adagio")
-            .expect("the adagio chainspec must always be well formed");
+        let chainspec = super::TempoChainSpecParser::parse("testnet")
+            .expect("the testnet chainspec must always be well formed");
 
         // Tempo hardforks should be queryable from inner.hardforks via Hardforks trait
         let activation = chainspec.fork(TempoHardfork::Adagio);
