@@ -11,16 +11,15 @@ use std::{sync::Arc, time::Duration};
 
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::ForkchoiceState;
-use commonware_consensus::{Block as _, marshal::ingress::mailbox::Identifier};
+use commonware_consensus::{Block as _};
 
 use commonware_macros::select;
 use commonware_runtime::{ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell};
-use eyre::{WrapErr as _, bail, ensure, eyre};
+use eyre::{WrapErr as _, ensure};
 use futures::{
     StreamExt as _,
     channel::{mpsc, oneshot},
 };
-use reth_provider::BlockNumReader as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tracing::{Level, Span, debug, info, instrument, warn};
 
@@ -35,9 +34,6 @@ pub(super) struct Builder {
     /// backfilling: since marshal does not know about genesis, subscribing to
     /// it with a round and the genesis digest will cause it to never resolve.
     pub(super) genesis_block: Arc<Block>,
-
-    /// The mailbox of the marshal actor. Used to backfill blocks.
-    pub(super) marshal: crate::alias::marshal::Mailbox,
 }
 
 impl Builder {
@@ -49,7 +45,6 @@ impl Builder {
         let Self {
             execution_node,
             genesis_block,
-            marshal,
         } = self;
 
         let (to_me, from_app) = mpsc::unbounded();
@@ -60,9 +55,7 @@ impl Builder {
         Executor {
             context: ContextCell::new(context),
             execution_node,
-            genesis_block,
             mailbox: from_app,
-            marshal,
             my_mailbox,
             last_canonicalized: LastCanonicalized {
                 forkchoice: ForkchoiceState {
@@ -139,17 +132,9 @@ pub(super) struct Executor<TContext> {
     /// and to update the canonical chain by sending forkchoice updates.
     execution_node: TempoFullNode,
 
-    /// The genesis block of the network. This is critically important when
-    /// backfilling: since marshal does not know about genesis, subscribing to
-    /// it with a round and the genesis digest will cause it to never resolve.
-    genesis_block: Arc<Block>,
-
     /// The channel over which the agent will receive new commands from the
     /// application actor.
     mailbox: mpsc::UnboundedReceiver<Message>,
-
-    /// The mailbox of the marshal actor. Used to backfill blocks.
-    marshal: crate::alias::marshal::Mailbox,
 
     /// The mailbox passed to other parts of the system to forward messages to
     /// the agent.
@@ -171,11 +156,6 @@ where
     }
 
     async fn run(mut self) {
-        // XXX: `run_pre_event_loop_init` is emitting an error event on failure.
-        if self.run_pre_event_loop_init().await.is_err() {
-            return;
-        };
-
         loop {
             select! {
                 msg = self.mailbox.next() => {
@@ -190,80 +170,6 @@ where
                 },
             }
         }
-    }
-
-    #[instrument(skip_all, err)]
-    async fn run_pre_event_loop_init(&mut self) -> eyre::Result<()> {
-        let (finalized_consensus_height, finalized_consensus_digest) = self
-            .marshal
-            .get_info(Identifier::Latest)
-            .await
-            .unwrap_or_else(|| {
-                info!(
-                    "marshal actor returned nothing for the latest block; \
-                    cannot distinguish between the actor failing or us still \
-                    being at genesis; using height 0 and genesis digest; \
-                    consider looking at logs"
-                );
-                (0, self.genesis_block.digest())
-            });
-
-        info!(
-            finalized_consensus_height,
-            %finalized_consensus_digest,
-            "consensus layer responded with what it thinks are the digest of \
-            the last finalized block that was forwarded to and acknowledged by \
-            the execution layer",
-        );
-
-        self.canonicalize(
-            Span::current(),
-            HeadOrFinalized::Finalized,
-            finalized_consensus_height,
-            finalized_consensus_digest,
-        )
-        .await
-        .wrap_err("failed setting initial canonical state; can't go on like this")?;
-
-        let latest_execution_block_number =
-            self.execution_node.provider.last_block_number().wrap_err(
-                "failed getting last block number from execution layer; cannot \
-                continue without it",
-            )?;
-
-        if latest_execution_block_number == finalized_consensus_height {
-            info!(
-                finalized_consensus_height,
-                %finalized_consensus_digest,
-                "consensus and execution layers are at the same height; can \
-                enter event loop now",
-            );
-        } else if finalized_consensus_height > latest_execution_block_number {
-            info!(
-                latest_execution_block_number,
-                finalized_consensus_height,
-                %finalized_consensus_digest,
-                "consensus and execution layers reported different heights; \
-                catching up the execution layer",
-            );
-            self.backfill(
-                latest_execution_block_number.saturating_add(1),
-                finalized_consensus_height,
-            )
-            .await
-            .wrap_err(
-                "backfilling from consensus layer to execution layer \
-                failed; cannot recover from that",
-            )?;
-        } else {
-            bail!(
-                "execution layer is ahead of consensus layer; cannot deal \
-                with that; \
-                execution_height: `{latest_execution_block_number}`, \
-                consensus_height: `{finalized_consensus_height}`"
-            );
-        }
-        Ok(())
     }
 
     async fn handle_message(&mut self, message: Message) {
@@ -441,52 +347,6 @@ where
             warn!("tried acknowledging finalization but channel was already closed");
         }
 
-        Ok(())
-    }
-
-    /// Reads all blocks heights `from..=to` and forwards them to the execution layer.
-    #[instrument(
-        skip_all,
-        fields(from, to),
-        err(level = Level::WARN),
-    )]
-    async fn backfill(&mut self, from: u64, to: u64) -> eyre::Result<()> {
-        ensure!(from <= to, "backfill range is negative");
-
-        for height in from..=to {
-            let block = self.marshal.get_block(height).await.ok_or_else(|| {
-                eyre!(
-                    "marshal actor does not know about block `{height}`, but \
-                    this function expects that it has all blocks in the provided \
-                    range",
-                )
-            })?;
-
-            let digest = block.digest();
-
-            let payload_status = self
-                .execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .new_payload(TempoExecutionData {
-                    block: block.into_inner(),
-                    // can be omitted for finalized blocks
-                    validator_set: None,
-                })
-                .pace(&self.context, Duration::from_millis(20))
-                .await
-                .wrap_err(
-                    "failed sending new-payload request to execution engine to \
-                    query payload status of finalized block",
-                )?;
-
-            ensure!(
-                payload_status.is_valid() || payload_status.is_syncing(),
-                "this is a problem: payload status of block `{digest}` we are \
-                trying to backfill is neither valid nor syncing: \
-                `{payload_status}`"
-            );
-        }
         Ok(())
     }
 }

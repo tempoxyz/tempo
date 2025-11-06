@@ -714,7 +714,6 @@ impl Inner<Uninit> {
         let executor = executor::Builder {
             execution_node: self.execution_node.clone(),
             genesis_block: self.genesis_block.clone(),
-            marshal: self.marshal.clone(),
         }
         .build(context.with_label("executor"));
 
