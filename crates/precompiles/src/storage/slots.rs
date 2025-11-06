@@ -39,7 +39,24 @@ pub fn double_mapping_slot<T: AsRef<[u8]>, U: AsRef<[u8]>>(
 mod tests {
     use super::*;
     use alloy::primitives::Address;
+    use alloy_primitives::{address, b256};
     use std::str::FromStr;
+
+    #[test]
+    fn test_double_mapping_account_role() {
+        let account = address!("0x7fa9385be102ac3eac297483dd6233d62b3e1496");
+        let role = U256::ZERO;
+        let roles_slot = U256::ZERO;
+
+        let slot = double_mapping_slot(account, role.to_be_bytes::<32>(), roles_slot);
+
+        assert_eq!(
+            slot,
+            U256::from_be_bytes(
+                b256!("863fcb99fb78098ba65a07c5dcf7196ac60e997b3f3793ab79b7db9297b2b1c6").0
+            )
+        );
+    }
 
     #[test]
     fn test_mapping_slot_deterministic() {
