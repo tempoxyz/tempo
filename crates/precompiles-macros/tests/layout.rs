@@ -741,3 +741,115 @@ fn test_slot_id_naming_matches_actual_slots() {
     assert_eq!(<Slot201 as SlotId>::SLOT, U256::from(201));
     assert_eq!(<Slot16 as SlotId>::SLOT, U256::from(16));
 }
+
+#[test]
+fn test_array_storage() {
+    use alloy::primitives::address;
+
+    #[contract]
+    pub struct Layout {
+        pub field_a: U256, // Auto: slot 0
+        #[slot(10)]
+        pub small_array: [u8; 32], // Explicit: slot 10 (single-slot, packed)
+        pub field_b: U256, // Auto: slot 1
+        #[slot(20)]
+        pub large_array: [U256; 5], // Explicit: slots 20-24 (multi-slot)
+        pub field_c: U256, // Auto: slot 2
+        pub auto_array: [Address; 3], // Auto: slots 3-5 (multi-slot)
+        pub field_d: U256, // Auto: slot 6 (after multi-slot array)
+    }
+
+    let mut storage = HashMapStorageProvider::new(1);
+    let addr = test_address(1);
+
+    let small_array = [42u8; 32];
+    let large_array = [
+        U256::from(100),
+        U256::from(200),
+        U256::from(300),
+        U256::from(400),
+        U256::from(500),
+    ];
+    let auto_array = [
+        address!("0x0000000000000000000000000000000000000011"),
+        address!("0x0000000000000000000000000000000000000022"),
+        address!("0x0000000000000000000000000000000000000033"),
+    ];
+
+    // Store data
+    {
+        let mut layout = Layout::_new(addr, &mut storage);
+        layout.sstore_field_a(U256::from(1)).unwrap();
+        layout.sstore_small_array(small_array).unwrap();
+        layout.sstore_field_b(U256::from(2)).unwrap();
+        layout.sstore_large_array(large_array).unwrap();
+        layout.sstore_field_c(U256::from(3)).unwrap();
+        layout.sstore_auto_array(auto_array).unwrap();
+        layout.sstore_field_d(U256::from(4)).unwrap();
+
+        // Verify getters
+        assert_eq!(layout.sload_field_a().unwrap(), U256::from(1));
+        assert_eq!(layout.sload_small_array().unwrap(), small_array);
+        assert_eq!(layout.sload_field_b().unwrap(), U256::from(2));
+        assert_eq!(layout.sload_large_array().unwrap(), large_array);
+        assert_eq!(layout.sload_field_c().unwrap(), U256::from(3));
+        assert_eq!(layout.sload_auto_array().unwrap(), auto_array);
+        assert_eq!(layout.sload_field_d().unwrap(), U256::from(4));
+    }
+
+    // Verify actual slot assignments
+    assert_eq!(storage.sload(addr, U256::from(0)), Ok(U256::from(1))); // field_a
+
+    // small_array is packed into slot 10
+    let expected_small = U256::from_be_bytes(small_array);
+    assert_eq!(storage.sload(addr, U256::from(10)), Ok(expected_small));
+
+    assert_eq!(storage.sload(addr, U256::from(1)), Ok(U256::from(2))); // field_b
+
+    // large_array occupies slots 20-24
+    assert_eq!(storage.sload(addr, U256::from(20)), Ok(U256::from(100)));
+    assert_eq!(storage.sload(addr, U256::from(21)), Ok(U256::from(200)));
+    assert_eq!(storage.sload(addr, U256::from(22)), Ok(U256::from(300)));
+    assert_eq!(storage.sload(addr, U256::from(23)), Ok(U256::from(400)));
+    assert_eq!(storage.sload(addr, U256::from(24)), Ok(U256::from(500)));
+
+    assert_eq!(storage.sload(addr, U256::from(2)), Ok(U256::from(3))); // field_c
+
+    // auto_array occupies slots 3-5
+    assert_eq!(storage.sload(addr, U256::from(3)), Ok(U256::from(0x11)));
+    assert_eq!(storage.sload(addr, U256::from(4)), Ok(U256::from(0x22)));
+    assert_eq!(storage.sload(addr, U256::from(5)), Ok(U256::from(0x33)));
+
+    assert_eq!(storage.sload(addr, U256::from(6)), Ok(U256::from(4))); // field_d
+
+    // Verify slots module
+    assert_eq!(slots::FIELD_A, U256::from(0));
+    assert_eq!(slots::SMALL_ARRAY, U256::from(10));
+    assert_eq!(slots::FIELD_B, U256::from(1));
+    assert_eq!(slots::LARGE_ARRAY, U256::from(20));
+    assert_eq!(slots::FIELD_C, U256::from(2));
+    assert_eq!(slots::AUTO_ARRAY, U256::from(3));
+    assert_eq!(slots::FIELD_D, U256::from(6));
+
+    // Test delete
+    {
+        let mut layout = Layout::_new(addr, &mut storage);
+        layout.clear_large_array().unwrap();
+        layout.clear_auto_array().unwrap();
+    }
+
+    // Verify array slots are zeroed
+    for slot in 20..=24 {
+        assert_eq!(storage.sload(addr, U256::from(slot)), Ok(U256::ZERO));
+    }
+    for slot in 3..=5 {
+        assert_eq!(storage.sload(addr, U256::from(slot)), Ok(U256::ZERO));
+    }
+
+    // Verify other fields unchanged
+    assert_eq!(storage.sload(addr, U256::from(0)), Ok(U256::from(1))); // field_a
+    assert_eq!(storage.sload(addr, U256::from(10)), Ok(expected_small)); // small_array
+    assert_eq!(storage.sload(addr, U256::from(1)), Ok(U256::from(2))); // field_b
+    assert_eq!(storage.sload(addr, U256::from(2)), Ok(U256::from(3))); // field_c
+    assert_eq!(storage.sload(addr, U256::from(6)), Ok(U256::from(4))); // field_d
+}

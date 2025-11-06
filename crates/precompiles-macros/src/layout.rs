@@ -1,6 +1,6 @@
 use crate::{
     FieldInfo, FieldKind,
-    utils::{extract_mapping_types, is_custom_struct},
+    utils::{extract_mapping_types, is_array_type, is_custom_struct},
 };
 use alloy::primitives::U256;
 use quote::{format_ident, quote};
@@ -31,7 +31,6 @@ pub(crate) enum SlotAssignment {
 /// Get the `SlotId` name for a given field
 fn get_field_slot_id_name(
     assigned_slot: &SlotAssignment,
-    _current_kind: &FieldKind<'_>,
     allocated_fields: &[AllocatedField<'_>],
 ) -> String {
     match assigned_slot {
@@ -81,7 +80,7 @@ pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<AllocatedF
             slot
         };
 
-        let slot_id_name = get_field_slot_id_name(&assigned_slot, &kind, &allocated_fields);
+        let slot_id_name = get_field_slot_id_name(&assigned_slot, &allocated_fields);
         allocated_fields.push(AllocatedField {
             info: field,
             assigned_slot,
@@ -111,8 +110,8 @@ fn classify_field(ty: &Type) -> syn::Result<FieldKind<'_>> {
         }
     }
 
-    // If not a mapping, check if it's a multi-slot `Storable` type
-    if is_custom_struct(ty) {
+    // If not a mapping, check if it's a multi-slot `Storable` type (custom struct or array)
+    if is_custom_struct(ty) || is_array_type(ty) {
         Ok(FieldKind::StorageBlock(ty))
     } else {
         Ok(FieldKind::Direct)
