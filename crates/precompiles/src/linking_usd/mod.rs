@@ -233,7 +233,7 @@ mod tests {
     use crate::{
         error::TempoPrecompileError,
         storage::hashmap::HashMapStorageProvider,
-        tip20::{IRolesAuth, ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
+        tip20::{IRolesAuth, ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE, roles::DEFAULT_ADMIN_ROLE},
     };
 
     fn transfer_test_setup(
@@ -1163,5 +1163,43 @@ mod tests {
             TempoPrecompileError::RolesAuthError(RolesAuthError::unauthorized())
         );
         Ok(())
+    }
+
+    #[test]
+    fn test_system_tx_initialize() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let admin = Address::random();
+
+        // Test successful initialization from zero address
+        linking_usd.system_tx_initialize(Address::ZERO, admin)?;
+        assert_eq!(linking_usd.name()?, NAME);
+        assert_eq!(linking_usd.symbol()?, SYMBOL);
+        assert_eq!(linking_usd.currency()?, CURRENCY);
+
+        // Verify admin has the default admin role
+        let mut roles = linking_usd.get_roles_contract();
+        assert!(roles.has_role(IRolesAuth::hasRoleCall {
+            role: DEFAULT_ADMIN_ROLE,
+            account: admin,
+        })?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_system_tx_initialize_unauthorized() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let admin = Address::random();
+        let non_zero_sender = Address::random();
+
+        // Test that non-zero address cannot call system_tx_initialize
+        let result = linking_usd.system_tx_initialize(non_zero_sender, admin);
+
+        assert_eq!(
+            result.unwrap_err(),
+            TempoPrecompileError::TIP20(TIP20Error::unauthorized())
+        );
     }
 }
