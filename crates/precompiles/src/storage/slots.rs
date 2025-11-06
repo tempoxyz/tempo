@@ -1,6 +1,6 @@
 use alloy::primitives::{U256, keccak256};
 
-fn right_pad_to_32(data: &[u8]) -> [u8; 32] {
+fn left_pad_to_32(data: &[u8]) -> [u8; 32] {
     let mut buf = [0u8; 32];
     buf[32 - data.len()..].copy_from_slice(data);
     buf
@@ -10,7 +10,7 @@ fn right_pad_to_32(data: &[u8]) -> [u8; 32] {
 #[inline]
 pub fn mapping_slot<T: AsRef<[u8]>>(key: T, mapping_slot: U256) -> U256 {
     let mut buf = [0u8; 64];
-    buf[..32].copy_from_slice(&right_pad_to_32(key.as_ref()));
+    buf[..32].copy_from_slice(&left_pad_to_32(key.as_ref()));
     buf[32..].copy_from_slice(&mapping_slot.to_be_bytes::<32>());
     U256::from_be_bytes(keccak256(buf).0)
 }
@@ -24,7 +24,7 @@ pub fn double_mapping_slot<T: AsRef<[u8]>, U: AsRef<[u8]>>(
 ) -> U256 {
     let intermediate_slot = mapping_slot(key1, base_slot);
     let mut buf = [0u8; 64];
-    buf[..32].copy_from_slice(&right_pad_to_32(key2.as_ref()));
+    buf[..32].copy_from_slice(&left_pad_to_32(key2.as_ref()));
     buf[32..].copy_from_slice(&intermediate_slot.to_be_bytes::<32>());
     U256::from_be_bytes(keccak256(buf).0)
 }
