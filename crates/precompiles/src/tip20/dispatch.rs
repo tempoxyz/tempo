@@ -171,6 +171,10 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                 })
             }
 
+            ITIP20::optedInSupplyCall::SELECTOR => {
+                view::<ITIP20::optedInSupplyCall>(calldata, |_call| self.get_opted_in_supply())
+            }
+
             ITIP20::getStreamCall::SELECTOR => view::<ITIP20::getStreamCall>(calldata, |call| {
                 self.get_stream(call.id).map(|stream| stream.into())
             }),

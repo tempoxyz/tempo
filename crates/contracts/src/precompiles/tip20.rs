@@ -102,6 +102,7 @@ sol! {
         function finalizeStreams() external;
         function getStream(uint64 id) external view returns (RewardStream memory);
         function totalRewardPerSecond() external view returns (uint256);
+        function optedInSupply() external view returns (uint128);
 
         // Events
         event Transfer(address indexed from, address indexed to, uint256 amount);
