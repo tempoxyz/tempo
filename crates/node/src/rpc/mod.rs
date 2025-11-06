@@ -6,12 +6,16 @@ pub mod token;
 
 mod pagination;
 
+use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use amm::{TempoAmm, TempoAmmApiServer};
 pub use dex::{TempoDex, api::TempoDexApiServer};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 pub use pagination::{FilterRange, PaginationParams};
 pub use policy::{TempoPolicy, TempoPolicyApiServer};
+use reth_primitives_traits::TransactionMeta;
+use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
+use tempo_chainspec::TempoChainSpec;
 pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::node::TempoNode;
@@ -41,15 +45,16 @@ use reth_rpc_eth_api::{
         LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction, SpawnBlocking, Trace,
         estimate::EstimateCall, pending_block::PendingEnvBuilder, spec::SignersForRpc,
     },
+    transaction::{ConvertReceiptInput, ReceiptConverter},
 };
 use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
     builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::provider::TIPFeeDatabaseExt;
-use tempo_primitives::{TEMPO_GAS_PRICE_SCALING_FACTOR, TempoReceipt};
+use tempo_primitives::{TEMPO_GAS_PRICE_SCALING_FACTOR, TempoPrimitives, TempoReceipt};
 use tokio::sync::Mutex;
 
 /// Placeholder constant for `eth_getBalance` calls because the native token balance is N/A on
@@ -272,6 +277,59 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
     }
 }
 
+/// Converter for Tempo receipts.
+#[derive(Debug, Clone)]
+#[expect(clippy::type_complexity)]
+pub struct TempoReceiptConverter {
+    inner: EthReceiptConverter<
+        TempoChainSpec,
+        fn(TempoReceipt, usize, TransactionMeta) -> ReceiptWithBloom<TempoReceipt<Log>>,
+    >,
+}
+
+impl TempoReceiptConverter {
+    pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
+        Self {
+            inner: EthReceiptConverter::new(chain_spec).with_builder(
+                |receipt: TempoReceipt, next_log_index, meta| {
+                    receipt.into_rpc(next_log_index, meta).into_with_bloom()
+                },
+            ),
+        }
+    }
+}
+
+impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
+    type RpcReceipt = TempoTransactionReceipt;
+    type Error = EthApiError;
+
+    fn convert_receipts(
+        &self,
+        receipts: Vec<ConvertReceiptInput<'_, TempoPrimitives>>,
+    ) -> Result<Vec<Self::RpcReceipt>, Self::Error> {
+        let receipts = self.inner.convert_receipts(receipts)?;
+        Ok(receipts
+            .into_iter()
+            .map(|inner| {
+                let mut receipt = TempoTransactionReceipt {
+                    inner,
+                    fee_token: None,
+                };
+                if receipt.effective_gas_price == 0 || receipt.gas_used == 0 {
+                    return receipt;
+                }
+
+                // Set fee token to the address that emitted the last log.
+                //
+                // Assumption is that every non-free transaction will end with a
+                // fee token transfer to TIPFeeManager.
+                receipt.fee_token = receipt.logs().last().map(|log| log.address());
+                receipt
+            })
+            .collect())
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct TempoEthApiBuilder;
 
@@ -286,16 +344,7 @@ where
         let eth_api = ctx
             .eth_api_builder()
             .modify_gas_oracle_config(|config| config.default_suggested_fee = Some(U256::ZERO))
-            .map_converter(|_| {
-                RpcConverter::<TempoNetwork, TempoEvmConfig, _>::new(
-                    EthReceiptConverter::new(chain_spec).with_builder(
-                        |receipt: TempoReceipt, next_log_index, meta| {
-                            receipt.into_rpc(next_log_index, meta).into_with_bloom()
-                        },
-                    ),
-                )
-                .erased()
-            })
+            .map_converter(|_| RpcConverter::new(TempoReceiptConverter::new(chain_spec)).erased())
             .build();
 
         Ok(TempoEthApi::new(eth_api))

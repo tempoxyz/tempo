@@ -21,10 +21,13 @@ alloy-network.workspace = true
 alloy-primitives.workspace = true
 alloy-provider.workspace = true
 alloy-rpc-types-eth.workspace = true
+alloy-serde.workspace = true
 
 reth-evm = { workspace = true, optional = true }
+reth-primitives-traits = { workspace = true, optional = true }
 reth-rpc-convert = { workspace = true, optional = true }
 
+derive_more.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
@@ -38,6 +41,7 @@ asm-keccak = [
 tempo-compat = [
     "dep:reth-evm",
     "dep:reth-rpc-convert",
+    "dep:reth-primitives-traits",
     "dep:tempo-evm",
     "dep:tempo-revm"
 ]
