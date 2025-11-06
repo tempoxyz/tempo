@@ -1,6 +1,6 @@
 use crate::{
     Precompile, input_cost,
-    linking_usd::LinkingUSD,
+    linking_usd::{ILinkingUSD, LinkingUSD},
     metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
     tip20::{IRolesAuth, ITIP20},
@@ -25,6 +25,14 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
             .unwrap();
 
         let result = match selector {
+            // LinkingUSD system level initialization
+            ILinkingUSD::systemTxInitializeCall::SELECTOR => {
+                mutate_void::<ILinkingUSD::systemTxInitializeCall>(
+                    calldata,
+                    msg_sender,
+                    |sender, call| self.system_tx_initialize(sender, call.admin),
+                )
+            }
             // Metadata
             ITIP20::nameCall::SELECTOR => metadata::<ITIP20::nameCall>(|| self.name()),
             ITIP20::symbolCall::SELECTOR => metadata::<ITIP20::symbolCall>(|| self.symbol()),

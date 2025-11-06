@@ -8,6 +8,7 @@ use crate::{
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use std::sync::LazyLock;
+pub use tempo_contracts::precompiles::ILinkingUSD;
 use tempo_contracts::precompiles::TIP20Error;
 
 pub static TRANSFER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"TRANSFER_ROLE"));
@@ -29,6 +30,21 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
     }
 
     pub fn initialize(&mut self, admin: Address) -> Result<()> {
+        self.token
+            .initialize(NAME, SYMBOL, CURRENCY, Address::ZERO, admin)
+    }
+
+    /// This is a special-case initializer that sets the admin directly and is only
+    /// permitted to be called by the zero address. This exists purely for testing /
+    /// genesis style flows where the admin must be seeded before normal flows are
+    /// possible.
+    ///
+    /// Returns an error if called by any non-zero address.
+    pub fn system_tx_initialize(&mut self, msg_sender: Address, admin: Address) -> Result<()> {
+        if msg_sender != Address::ZERO {
+            return Err(TIP20Error::unauthorized().into());
+        }
+
         self.token
             .initialize(NAME, SYMBOL, CURRENCY, Address::ZERO, admin)
     }
