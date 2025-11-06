@@ -553,7 +553,7 @@ mod tests {
     }
 
     #[test]
-    fn test_transfer_with_receive_role() -> eyre::Result<()> {
+    fn test_transfer_with_receive_role_reverts() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut linking_usd = LinkingUSD::new(&mut storage);
         let admin = Address::random();
@@ -568,28 +568,18 @@ mod tests {
 
         linking_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
-        let sender_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
-
-        let recipient_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
-
         let result = linking_usd.transfer(
             sender,
             ITIP20::transferCall {
                 to: recipient,
                 amount,
             },
-        )?;
-        assert!(result);
+        );
 
-        let sender_balance_after =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
-        let recipient_balance_after =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
-
-        assert_eq!(sender_balance_after, sender_balance_before - amount);
-        assert_eq!(recipient_balance_after, recipient_balance_before + amount);
+        assert_eq!(
+            result.unwrap_err(),
+            TempoPrecompileError::TIP20(TIP20Error::transfers_disabled())
+        );
 
         Ok(())
     }
@@ -642,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn test_transfer_from_with_receive_role() -> eyre::Result<()> {
+    fn test_transfer_from_with_receive_role_reverts() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut linking_usd = LinkingUSD::new(&mut storage);
         let admin = Address::random();
@@ -660,31 +650,14 @@ mod tests {
 
         linking_usd.approve(from, ITIP20::approveCall { spender, amount })?;
 
-        let from_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
-
-        let to_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
-
-        let allowance_before = linking_usd.allowance(ITIP20::allowanceCall {
-            owner: from,
-            spender,
-        })?;
-
         let result =
-            linking_usd.transfer_from(spender, ITIP20::transferFromCall { from, to, amount })?;
+            linking_usd.transfer_from(spender, ITIP20::transferFromCall { from, to, amount });
 
-        assert!(result);
+        assert_eq!(
+            result.unwrap_err(),
+            TempoPrecompileError::TIP20(TIP20Error::transfers_disabled())
+        );
 
-        let from_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
-        let to_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
-        let allowance_after = linking_usd.allowance(ITIP20::allowanceCall {
-            owner: from,
-            spender,
-        })?;
-
-        assert_eq!(from_balance_after, from_balance_before - amount);
-        assert_eq!(to_balance_after, to_balance_before + amount);
-        assert_eq!(allowance_after, allowance_before - amount);
         Ok(())
     }
 
