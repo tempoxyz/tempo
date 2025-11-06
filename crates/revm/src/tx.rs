@@ -81,6 +81,26 @@ impl TempoTxEnv {
             .as_ref()
             .is_some_and(|aa| aa.subblock_transaction)
     }
+
+    /// Returns the first top-level call in the transaction.
+    pub fn first_call(&self) -> (&TxKind, &[u8]) {
+        if let Some(aa) = self.aa_tx_env.as_ref() {
+            let call = aa.aa_calls.first().unwrap();
+            (&call.to, &call.input)
+        } else {
+            (&self.inner.kind, &self.inner.data)
+        }
+    }
+
+    /// Invokes the given closure for each top-level call in the transaction and
+    /// returns true if all calls returned true.
+    pub fn for_all_calls(&self, mut f: impl FnMut(&TxKind, &[u8]) -> bool) -> bool {
+        if let Some(aa) = self.aa_tx_env.as_ref() {
+            aa.aa_calls.iter().all(|call| f(&call.to, &call.input))
+        } else {
+            f(&self.inner.kind(), self.inner.input())
+        }
+    }
 }
 
 impl From<TxEnv> for TempoTxEnv {
