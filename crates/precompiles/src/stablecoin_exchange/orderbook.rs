@@ -14,6 +14,8 @@ use tempo_contracts::precompiles::StablecoinExchangeError;
 pub const MIN_TICK: i16 = -2000;
 pub const MAX_TICK: i16 = 2000;
 pub const PRICE_SCALE: u32 = 100_000;
+pub const MIN_PRICE: u32 = 67_232;
+pub const MAX_PRICE: u32 = 132_767;
 
 /// Represents a price level in the orderbook with a doubly-linked list of orders
 /// Orders are maintained in FIFO order at each tick level

@@ -66,11 +66,23 @@ sol! {
 
         // View Functions
         function getOrder(uint128 orderId) external view returns (Order memory);
-        function getPriceLevel(address base, int16 tick, bool isBid) external view returns (PriceLevel memory);
+
+        function getTickLevel(address base, int16 tick, bool isBid) external view returns (uint128 head, uint128 tail, uint128 totalLiquidity);
         function pairKey(address tokenA, address tokenB) external view returns (bytes32);
         function activeOrderId() external view returns (uint128);
         function pendingOrderId() external view returns (uint128);
         function books(bytes32 pairKey) external view returns (Orderbook memory);
+
+        // Constants (exposed as view functions)
+        function MIN_TICK() external pure returns (int16);
+        function MAX_TICK() external pure returns (int16);
+        function PRICE_SCALE() external pure returns (uint32);
+        function MIN_PRICE() external pure returns (uint32);
+        function MAX_PRICE() external pure returns (uint32);
+
+        // Price conversion functions
+        function tickToPrice(int16 tick) external pure returns (uint32 price);
+        function priceToTick(uint32 price) external pure returns (int16 tick);
 
         // Events
         event PairCreated(bytes32 indexed key, address indexed base, address indexed quote);

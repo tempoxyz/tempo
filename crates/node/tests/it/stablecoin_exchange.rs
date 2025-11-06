@@ -146,7 +146,7 @@ async fn test_bids() -> eyre::Result<()> {
 
     // Assert the last order is partially filled
     let level = exchange
-        .getPriceLevel(*base.address(), tick, true)
+        .getTickLevel(*base.address(), tick, true)
         .call()
         .await?;
 
@@ -303,7 +303,7 @@ async fn test_asks() -> eyre::Result<()> {
 
     // Assert the last order is partially filled
     let level = exchange
-        .getPriceLevel(*base.address(), tick, false)
+        .getTickLevel(*base.address(), tick, false)
         .call()
         .await?;
 
