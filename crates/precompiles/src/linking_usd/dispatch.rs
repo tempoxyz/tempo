@@ -211,3 +211,99 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::hashmap::HashMapStorageProvider;
+    use alloy::{
+        primitives::{Bytes, U256},
+        sol_types::SolInterface,
+    };
+    use tempo_contracts::precompiles::TIP20Error;
+
+    #[test]
+    fn test_start_reward_disabled() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut token = LinkingUSD::new(&mut storage);
+        let sender = Address::from([1u8; 20]);
+
+        token
+            .initialize(sender)
+            .expect("Failed to initialize token");
+
+        let calldata = ITIP20::startRewardCall {
+            amount: U256::from(1000),
+            secs: 100,
+        }
+        .abi_encode();
+
+        let output = token.call(&Bytes::from(calldata), sender)?;
+        assert!(output.reverted);
+        let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
+        assert_eq!(output.bytes, expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_reward_recipient_disabled() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut token = LinkingUSD::new(&mut storage);
+        let sender = Address::from([1u8; 20]);
+        let recipient = Address::from([2u8; 20]);
+
+        token
+            .initialize(sender)
+            .expect("Failed to initialize token");
+
+        let calldata = ITIP20::setRewardRecipientCall { recipient }.abi_encode();
+
+        let output = token.call(&Bytes::from(calldata), sender)?;
+        assert!(output.reverted);
+        let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
+        assert_eq!(output.bytes, expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cancel_reward_disabled() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut token = LinkingUSD::new(&mut storage);
+        let sender = Address::from([1u8; 20]);
+
+        token
+            .initialize(sender)
+            .expect("Failed to initialize token");
+
+        let calldata = ITIP20::cancelRewardCall { id: 1 }.abi_encode();
+
+        let output = token.call(&Bytes::from(calldata), sender)?;
+        assert!(output.reverted);
+        let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
+        assert_eq!(output.bytes, expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_claim_rewards_disabled() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut token = LinkingUSD::new(&mut storage);
+        let sender = Address::from([1u8; 20]);
+
+        token
+            .initialize(sender)
+            .expect("Failed to initialize token");
+
+        let calldata = ITIP20::claimRewardsCall {}.abi_encode();
+
+        let output = token.call(&Bytes::from(calldata), sender)?;
+        assert!(output.reverted);
+        let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
+        assert_eq!(output.bytes, expected);
+
+        Ok(())
+    }
+}
