@@ -12,8 +12,8 @@ pub use tempo_contracts::precompiles::{
 
 pub use order::Order;
 pub use orderbook::{
-    MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, PriceLevel, TickBitmap, price_to_tick,
-    tick_to_price,
+    MAX_PRICE, MAX_TICK, MIN_PRICE, MIN_TICK, Orderbook, PRICE_SCALE, PriceLevel, TickBitmap,
+    price_to_tick, tick_to_price,
 };
 
 use crate::{
