@@ -1,7 +1,7 @@
 use crate::{
     Precompile, input_cost, mutate, mutate_void,
     storage::PrecompileStorageProvider,
-    tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager},
+    tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager, amm::MIN_LIQUIDITY},
     view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
@@ -52,6 +52,9 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
                 view::<ITIPFeeAMM::liquidityBalancesCall>(calldata, |call| {
                     self.liquidity_balances(call)
                 })
+            }
+            ITIPFeeAMM::MIN_LIQUIDITYCall::SELECTOR => {
+                view::<ITIPFeeAMM::MIN_LIQUIDITYCall>(calldata, |_call| Ok(MIN_LIQUIDITY))
             }
 
             // State changing functions
