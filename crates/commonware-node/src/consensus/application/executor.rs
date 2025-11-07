@@ -305,7 +305,6 @@ where
             .wrap_err("failed setting initial canonical state; can't go on like this")?;
         }
 
-
         Ok(())
     }
 
