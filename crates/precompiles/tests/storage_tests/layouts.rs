@@ -78,7 +78,7 @@ fn test_slots_module_generation() {
         pub field_b: U256, // Explicit: slot 5
         pub field_c: U256, // Auto: slot 1
         #[slot(10)]
-        pub mapping_field: crate::storage::Mapping<Address, U256>, // Explicit: slot 10
+        pub mapping_field: Mapping<Address, U256>, // Explicit: slot 10
     }
 
     // Verify the slots module was generated with correct values
@@ -94,13 +94,13 @@ fn test_base_slots() {
     pub struct Layout {
         pub field_a: U256, // Auto: slot 0
         #[base_slot(100)]
-        pub field_b: U256, // base_slot: slot 100, counter -> 101
+        pub field_b: U256, // base_slot: slot 100
         pub field_c: U256, // Auto: slot 101
         #[base_slot(200)]
-        pub field_d: U256, // base_slot: slot 200, counter -> 201
+        pub field_d: U256, // base_slot: slot 200
         pub field_e: U256, // Auto: slot 201
         #[base_slot(50)]
-        pub field_f: U256, // base_slot: slot 50, counter -> 51 (goes backwards)
+        pub field_f: U256, // base_slot: slot 50
         pub field_g: U256, // Auto: slot 51
     }
 
@@ -159,10 +159,10 @@ fn test_base_slot_with_regular_slot() {
     pub struct Layout {
         pub field_a: U256, // Auto: slot 0
         #[base_slot(100)]
-        pub field_b: U256, // base_slot: slot 100, counter -> 101
+        pub field_b: U256, // base_slot: slot 100
         pub field_c: U256, // Auto: slot 101
         #[slot(50)]
-        pub field_d: U256, // Explicit: slot 50, counter stays at 102
+        pub field_d: U256, // Explicit: slot 50
         pub field_e: U256, // Auto: slot 102
     }
 
@@ -256,10 +256,6 @@ fn test_slot_id_naming_matches_actual_slots() {
     assert_eq!(<Field4Slot as SlotId>::SLOT, U256::from(201)); // field_e (auto)
     assert_eq!(<Field5Slot as SlotId>::SLOT, U256::from(16)); // field_f (manual)
 }
-
-// ============================================================================
-// Property Tests
-// ============================================================================
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(500))]

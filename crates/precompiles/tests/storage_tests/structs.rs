@@ -301,10 +301,6 @@ fn test_user_profile_struct_in_contract() {
     }
 }
 
-// ============================================================================
-// Property Tests
-// ============================================================================
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(500))]
 

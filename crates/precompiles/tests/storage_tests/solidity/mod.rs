@@ -94,8 +94,8 @@ fn test_mappings_layout() {
     #[contract]
     struct Mappings {
         field_a: U256,
-        address_mapping: crate::storage::Mapping<Address, U256>,
-        uint_mapping: crate::storage::Mapping<u64, U256>,
+        address_mapping: Mapping<Address, U256>,
+        uint_mapping: Mapping<u64, U256>,
     }
 
     let rust_layout = layout_fields!(field_a, address_mapping, uint_mapping);

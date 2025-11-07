@@ -10,7 +10,6 @@
 //!
 //! - Only supports `Storable<1>` element types (single-slot types)
 //! - Multi-slot structs are not currently supported in Vec
-//!
 
 use alloy::primitives::U256;
 

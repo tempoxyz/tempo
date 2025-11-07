@@ -92,10 +92,6 @@ fn test_round_trip_operations_in_contract() {
     }
 }
 
-// ============================================================================
-// Property Tests
-// ============================================================================
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(500))]
 
