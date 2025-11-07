@@ -25,7 +25,7 @@ use commonware_cryptography::{
 use commonware_p2p::{Receiver, Recipients, Sender};
 use commonware_runtime::{Handle, Metrics, Spawner};
 use eyre::{Context, OptionExt};
-use futures::{StreamExt, channel::mpsc};
+use futures::{FutureExt, StreamExt, channel::mpsc};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
@@ -42,6 +42,7 @@ use tempo_node::{TempoFullNode, consensus::TEMPO_SHARED_GAS_DIVISOR, evm::evm::T
 use tempo_primitives::{
     RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion, TempoTxEnvelope,
 };
+use tokio::sync::broadcast;
 use tracing::{Instrument, Level, Span, debug, instrument, warn};
 
 pub(crate) struct Config<TContext> {
@@ -69,6 +70,8 @@ pub struct Actor<TContext> {
     actions_tx: mpsc::UnboundedSender<Message>,
     /// Receiver of events to the service.
     actions_rx: mpsc::UnboundedReceiver<Message>,
+    /// Stream of subblock transactions from RPC.
+    subblock_transactions_rx: broadcast::Receiver<Recovered<TempoTxEnvelope>>,
     /// Handle to a task building a new subblock.
     subblock_builder_handle: Option<BuildSubblockTask>,
 
@@ -111,6 +114,7 @@ impl<TContext: Spawner + Metrics> Actor<TContext> {
         let (actions_tx, actions_rx) = mpsc::unbounded();
         Self {
             subblock_builder_handle: None,
+            subblock_transactions_rx: node.add_ons_handle.eth_api().subblock_transactions_rx(),
             scheme_provider,
             actions_tx,
             actions_rx,
@@ -141,15 +145,19 @@ impl<TContext: Spawner + Metrics> Actor<TContext> {
         ),
     ) {
         loop {
-            commonware_macros::select! {
+            tokio::select! {
+                biased;
+
                 // Handle messages from consensus engine and service handle.
-                action = self.actions_rx.next() => {
-                    let Some(action) = action else { break; };
+                Some(action) = self.actions_rx.next() => {
                     self.on_new_message(action);
                 },
+                // Handle new subblock transactions.
+                Ok(transaction) = self.subblock_transactions_rx.recv() => {
+                    self.on_new_subblock_transaction(transaction);
+                },
                 // Handle messages from the network.
-                message = network_rx.recv() => {
-                    let Ok((sender, message)) = message else { continue; };
+                Ok((sender, message)) = network_rx.recv() => {
                     let _ = self.on_network_message(sender, message);
                 },
                 // Handle built subblocks.
@@ -182,20 +190,21 @@ impl<TContext: Spawner + Metrics> Actor<TContext> {
                 let subblocks = self.subblocks.values().cloned().collect();
                 let _ = response.send(subblocks);
             }
-            Message::AddTransaction(transaction) => {
-                if !transaction
-                    .subblock_proposer()
-                    .is_some_and(|k| k.matches(self.signer.public_key()))
-                {
-                    return;
-                }
-                self.subblock_transactions
-                    .lock()
-                    .insert(*transaction.tx_hash(), Arc::new(*transaction));
-            }
             Message::Consensus(activity) => self.on_consensus_event(*activity),
             Message::ValidatedSubblock(subblock) => self.on_validated_subblock(subblock),
         }
+    }
+
+    fn on_new_subblock_transaction(&self, transaction: Recovered<TempoTxEnvelope>) {
+        if !transaction
+            .subblock_proposer()
+            .is_some_and(|k| k.matches(self.signer.public_key()))
+        {
+            return;
+        }
+        self.subblock_transactions
+            .lock()
+            .insert(*transaction.tx_hash(), Arc::new(transaction));
     }
 
     /// Tracking of the current sconsensus state by listening to notarizations and nullifications.
@@ -419,9 +428,6 @@ enum Message {
         response: std::sync::mpsc::SyncSender<Vec<RecoveredSubBlock>>,
     },
 
-    /// Sends a new transaction to the subblocks service.
-    AddTransaction(Box<Recovered<TempoTxEnvelope>>),
-
     /// Reports a new consensus event.
     Consensus(Box<Activity<Scheme<PublicKey, MinSig>, Digest>>),
 
@@ -453,10 +459,6 @@ impl Mailbox {
             response: tx,
         });
         rx.recv()
-    }
-
-    pub fn add_transaction(&self, tx: Recovered<TempoTxEnvelope>) {
-        let _ = self.tx.unbounded_send(Message::AddTransaction(tx.into()));
     }
 }
 

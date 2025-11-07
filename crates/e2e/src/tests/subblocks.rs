@@ -9,13 +9,14 @@ use commonware_runtime::{
     Runner as _,
     deterministic::{self, Runner},
 };
+use alloy_network::eip2718::Encodable2718;
 use futures::{StreamExt, future::join_all};
 use reth_ethereum::{
     chainspec::{ChainSpecProvider, EthChainSpec},
     primitives::AlloyBlockHeader,
-    provider::{CanonStateNotification, CanonStateSubscriptions},
+    provider::{CanonStateNotification, CanonStateSubscriptions}, rpc::eth::EthApiServer,
 };
-use reth_node_core::primitives::{SignerRecoverable, transaction::TxHashRef};
+use reth_node_core::primitives::{transaction::TxHashRef};
 use tempo_node::primitives::{
     TempoTxEnvelope, TxAA, subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX, transaction::Call,
 };
@@ -76,14 +77,14 @@ fn subblocks_are_included() {
             // Send subblock transactions to all nodes.
             for node in nodes.iter() {
                 for _ in 0..5 {
-                    expected_transactions.push(submit_subblock_tx(node));
+                    expected_transactions.push(submit_subblock_tx(node).await);
                 }
             }
         }
     });
 }
 
-fn submit_subblock_tx(node: &ValidatorNode) -> TxHash {
+async fn submit_subblock_tx(node: &ValidatorNode) -> TxHash {
     let wallet = PrivateKeySigner::random();
 
     let mut nonce_bytes = [0; 32];
@@ -106,8 +107,7 @@ fn submit_subblock_tx(node: &ValidatorNode) -> TxHash {
 
     let tx = TempoTxEnvelope::AA(tx.into_signed(signature.into()));
     let tx_hash = *tx.tx_hash();
-    node.subblocks
-        .add_transaction(tx.try_into_recovered().unwrap());
+    node.node.node.eth_api().send_raw_transaction(tx.encoded_2718().into()).await.unwrap();
 
     tx_hash
 }
