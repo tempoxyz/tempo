@@ -23,7 +23,7 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey, Signature},
 };
 use commonware_p2p::{Receiver, Recipients, Sender};
-use commonware_runtime::{FutureExt, Handle, Metrics, Pacer, Spawner};
+use commonware_runtime::{Handle, Metrics, Pacer, Spawner};
 use eyre::{Context, OptionExt};
 use futures::{FutureExt as _, StreamExt, channel::mpsc};
 use indexmap::IndexMap;
