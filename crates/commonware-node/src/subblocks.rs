@@ -153,7 +153,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
                     self.on_new_message(action);
                 },
                 // Handle new subblock transactions.
-                Ok(transaction) = self.subblock_transactions_rx.recv().pace(&self.context, Duration::from_millis(20)) => {
+                Ok(transaction) = self.subblock_transactions_rx.recv() => {
                     self.on_new_subblock_transaction(transaction);
                 },
                 // Handle messages from the network.
