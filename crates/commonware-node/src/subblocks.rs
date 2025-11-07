@@ -23,9 +23,9 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey, Signature},
 };
 use commonware_p2p::{Receiver, Recipients, Sender};
-use commonware_runtime::{Handle, Metrics, Spawner};
+use commonware_runtime::{FutureExt, Handle, Metrics, Pacer, Spawner};
 use eyre::{Context, OptionExt};
-use futures::{FutureExt, StreamExt, channel::mpsc};
+use futures::{FutureExt as _, StreamExt, channel::mpsc};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
@@ -65,7 +65,7 @@ pub(crate) struct Config<TContext> {
 ///
 /// Upon receiving a subblock from the network, we ensure that we are
 /// the proposer and verify the block on top of latest state.
-pub struct Actor<TContext> {
+pub(crate) struct Actor<TContext> {
     /// Sender of messages to the service.
     actions_tx: mpsc::UnboundedSender<Message>,
     /// Receiver of events to the service.
@@ -99,7 +99,7 @@ pub struct Actor<TContext> {
     subblock_transactions: Arc<Mutex<IndexMap<TxHash, Arc<Recovered<TempoTxEnvelope>>>>>,
 }
 
-impl<TContext: Spawner + Metrics> Actor<TContext> {
+impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
     pub(crate) fn new(
         Config {
             context,
@@ -131,13 +131,13 @@ impl<TContext: Spawner + Metrics> Actor<TContext> {
     }
 
     /// Returns a handle to the subblocks service.
-    pub fn mailbox(&self) -> Mailbox {
+    pub(crate) fn mailbox(&self) -> Mailbox {
         Mailbox {
             tx: self.actions_tx.clone(),
         }
     }
 
-    pub async fn run(
+    pub(crate) async fn run(
         mut self,
         (mut network_tx, mut network_rx): (
             impl Sender<PublicKey = PublicKey>,
@@ -153,7 +153,7 @@ impl<TContext: Spawner + Metrics> Actor<TContext> {
                     self.on_new_message(action);
                 },
                 // Handle new subblock transactions.
-                Ok(transaction) = self.subblock_transactions_rx.recv() => {
+                Ok(transaction) = self.subblock_transactions_rx.recv().pace(&self.context, Duration::from_millis(20)) => {
                     self.on_new_subblock_transaction(transaction);
                 },
                 // Handle messages from the network.
@@ -447,12 +447,15 @@ struct BuildSubblockTask {
 
 /// Handle to the spawned subblocks service.
 #[derive(Clone)]
-pub struct Mailbox {
+pub(crate) struct Mailbox {
     tx: mpsc::UnboundedSender<Message>,
 }
 
 impl Mailbox {
-    pub fn get_subblocks(&self, parent: BlockHash) -> Result<Vec<RecoveredSubBlock>, RecvError> {
+    pub(crate) fn get_subblocks(
+        &self,
+        parent: BlockHash,
+    ) -> Result<Vec<RecoveredSubBlock>, RecvError> {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let _ = self.tx.unbounded_send(Message::GetSubBlocks {
             parent,
