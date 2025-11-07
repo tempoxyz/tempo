@@ -587,8 +587,8 @@ fn mint_pairwise_liquidity(
             .mint(
                 admin,
                 ITIPFeeAMM::mintCall {
-                    validatorToken: a_token,
-                    userToken: b_token_address,
+                    userToken: a_token,
+                    validatorToken: b_token_address,
                     amountUserToken: amount,
                     amountValidatorToken: amount,
                     to: admin,
