@@ -8,9 +8,22 @@ use crate::{
 use alloy::primitives::{Address, IntoLogData, U256, uint};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
-use tempo_precompiles_macros::Storable;
 
 pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
+
+pub mod slots {
+    use alloy::primitives::{U256, uint};
+
+    // Rewards related slots
+    pub const GLOBAL_REWARD_PER_TOKEN: U256 = uint!(16_U256);
+    pub const LAST_UPDATE_TIME: U256 = uint!(17_U256);
+    pub const TOTAL_REWARD_PER_SECOND: U256 = uint!(18_U256);
+    pub const OPTED_IN_SUPPLY: U256 = uint!(19_U256);
+    pub const NEXT_STREAM_ID: U256 = uint!(20_U256);
+    pub const STREAMS: U256 = uint!(21_U256);
+    pub const SCHEDULED_RATE_DECREASE: U256 = uint!(22_U256);
+    pub const USER_REWARD_INFO: U256 = uint!(23_U256);
+}
 
 impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     /// Starts a new reward stream for the token contract.
@@ -587,7 +600,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 }
 
-#[derive(Debug, Clone, Storable)]
+#[derive(Debug, Clone)]
 pub struct UserRewardInfo {
     pub delegated_recipient: Address,
     pub reward_per_token: U256,
@@ -655,7 +668,7 @@ impl UserRewardInfo {
     }
 }
 
-#[derive(Debug, Clone, Storable)]
+#[derive(Debug, Clone)]
 pub struct RewardStream {
     stream_id: u64,
     pub funder: Address,
