@@ -83,12 +83,13 @@ impl TempoTxEnv {
     }
 
     /// Returns the first top-level call in the transaction.
-    pub fn first_call(&self) -> (&TxKind, &[u8]) {
+    pub fn first_call(&self) -> Option<(&TxKind, &[u8])> {
         if let Some(aa) = self.aa_tx_env.as_ref() {
-            let call = aa.aa_calls.first().unwrap();
-            (&call.to, &call.input)
+            aa.aa_calls
+                .first()
+                .map(|call| (&call.to, call.input.as_ref()))
         } else {
-            (&self.inner.kind, &self.inner.data)
+            Some((&self.inner.kind, &self.inner.data))
         }
     }
 
