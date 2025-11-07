@@ -94,11 +94,18 @@ impl TempoTxEnv {
 
     /// Invokes the given closure for each top-level call in the transaction and
     /// returns true if all calls returned true.
-    pub fn for_all_calls(&self, mut f: impl FnMut(&TxKind, &[u8]) -> bool) -> bool {
+    pub fn calls(&self) -> impl Iterator<Item = (&TxKind, &[u8])> {
         if let Some(aa) = self.aa_tx_env.as_ref() {
-            aa.aa_calls.iter().all(|call| f(&call.to, &call.input))
+            Either::Left(
+                aa.aa_calls
+                    .iter()
+                    .map(|call| (&call.to, call.input.as_ref())),
+            )
         } else {
-            f(&self.inner.kind(), self.inner.input())
+            Either::Right(core::iter::once((
+                &self.inner.kind,
+                self.inner.input().as_ref(),
+            )))
         }
     }
 }

@@ -1002,7 +1002,7 @@ where
 
     // If tx.to() is a TIP-20 token, use that token as the fee token
     if let Some(to) = ctx.tx.first_call().0.to().copied()
-        && ctx.tx().for_all_calls(|kind, _| kind.to() == Some(&to))
+        && ctx.tx().calls().all(|(kind, _)| kind.to() == Some(&to))
         && is_valid_fee_token(ctx, to)?
     {
         return Ok(to);
