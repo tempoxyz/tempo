@@ -22,14 +22,6 @@ use crate::{
     },
 };
 
-/// Calculate the starting slot for dynamic array data.
-///
-/// For Solidity compatibility, dynamic array data is stored at `keccak256(base_slot)`.
-#[inline]
-fn calc_data_slot(base_slot: U256) -> U256 {
-    U256::from_be_bytes(alloy::primitives::keccak256(base_slot.to_be_bytes::<32>()).0)
-}
-
 impl<T: StorableType> StorableType for Vec<T> {
     /// Vec base slot is always 32 bytes (stores length).
     const BYTE_COUNT: usize = 32;
@@ -119,6 +111,14 @@ where
                 .into(),
         ))
     }
+}
+
+/// Calculate the starting slot for dynamic array data.
+///
+/// For Solidity compatibility, dynamic array data is stored at `keccak256(base_slot)`.
+#[inline]
+fn calc_data_slot(base_slot: U256) -> U256 {
+    U256::from_be_bytes(alloy::primitives::keccak256(base_slot.to_be_bytes::<32>()).0)
 }
 
 /// Load packed elements from storage.

@@ -26,7 +26,6 @@ members = [
   "crates/precompiles-macros",
   "crates/primitives",
   "crates/contracts",
-  "crates/storage-layout-tests",
   "crates/telemetry-util",
   "crates/transaction-pool",
   "crates/revm",

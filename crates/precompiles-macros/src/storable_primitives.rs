@@ -334,7 +334,7 @@ fn gen_fixed_bytes(sizes: &[usize]) -> Vec<TokenStream> {
     impls
 }
 
-/// Generate `StorableType` and `Storable<1>` implementations for FixedBytes<N> types.
+/// Generate `StorableType` and `Storable<1>` implementations for `FixedBytes<N>` types.
 pub(crate) fn gen_storable_alloy_bytes() -> TokenStream {
     let sizes: Vec<usize> = (1..=32).collect();
     let impls = gen_fixed_bytes(&sizes);
