@@ -450,9 +450,4 @@ where
         // component failed.
         .wrap_err("one of the consensus engine's actors failed")
     }
-
-    /// Returns a handle to the subblocks service.
-    pub fn subblocks_mailbox(&self) -> subblocks::Mailbox {
-        self.subblocks.mailbox()
-    }
 }

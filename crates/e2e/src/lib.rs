@@ -26,7 +26,6 @@ use commonware_runtime::{
 use commonware_utils::quorum;
 use futures::future::join_all;
 use reth_node_metrics::recorder::PrometheusRecorder;
-use tempo_commonware_node::subblocks;
 use tracing::debug;
 
 pub mod execution_runtime;
@@ -41,9 +40,6 @@ mod tests;
 pub struct ValidatorNode {
     /// Execution-layer node. Spawned in the background but won't progress unless consensus engine is started.
     pub node: ExecutionNode,
-
-    /// Handle to the subblocks service.
-    pub subblocks: subblocks::Mailbox,
 
     /// Public key of the validator.
     pub public_key: PublicKey,
@@ -163,7 +159,6 @@ pub async fn setup_validators(
         let link = linkage.clone();
         nodes.push(ValidatorNode {
             node,
-            subblocks: engine.subblocks_mailbox(),
             public_key: signer.public_key(),
             start_engine: Some(Box::pin(async move {
                 let pending = oracle
