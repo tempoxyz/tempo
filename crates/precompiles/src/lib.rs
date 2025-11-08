@@ -113,7 +113,11 @@ macro_rules! tempo_precompile {
                     DelegateCallNotAllowed {}.abi_encode().into(),
                 ));
             }
-            $impl.call($input.data, $input.caller)
+            $impl.call(
+                $input.data,
+                $input.caller,
+                $input.internals.block_env().beneficiary(),
+            )
         })
     };
 }
