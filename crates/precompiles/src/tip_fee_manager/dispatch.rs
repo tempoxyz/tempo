@@ -8,7 +8,12 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+    fn call(
+        &mut self,
+        calldata: &[u8],
+        msg_sender: Address,
+        beneficiary: Address,
+    ) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;

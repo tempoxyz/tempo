@@ -2,6 +2,7 @@ pub mod amm;
 pub mod dispatch;
 
 use alloy::primitives::B256;
+use tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS;
 pub use tempo_contracts::precompiles::{
     FeeManagerError, FeeManagerEvent, IFeeManager, ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent,
 };
@@ -9,86 +10,30 @@ pub use tempo_contracts::precompiles::{
 use crate::{
     DEFAULT_FEE_TOKEN,
     error::{Result, TempoPrecompileError},
-    storage::{PrecompileStorageProvider, StorageOps},
-    tip_fee_manager::{
-        amm::{PoolKey, TIPFeeAMM},
-        slots::{collected_fees_slot, user_token_slot, validator_token_slot},
-    },
+    storage::{Mapping, PrecompileStorageProvider},
+    tip_fee_manager::amm::{Pool, PoolKey},
     tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
 };
 
 // Re-export PoolKey for backward compatibility with tests
-use alloy::primitives::{Address, Bytes, IntoLogData, U256, uint};
-use revm::{
-    interpreter::instructions::utility::{IntoAddress, IntoU256},
-    state::Bytecode,
-};
+use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256, uint};
+use revm::state::Bytecode;
+use tempo_precompiles_macros::contract;
 
-/// Storage slots for FeeManager-specific data.
-///
-/// IMPORTANT: FeeManager inherits from TIPFeeAMM and shares storage slots.
-/// - Slots 0-3: Reserved for TIPFeeAMM data (pools, pool_exists, liquidity)
-/// - Slots 4+: FeeManager-specific data starts here
-///
-/// This shared storage layout means that FeeManager can directly access and modify
-/// AMM pool data using the same storage slots that TIPFeeAMM would use.
-pub mod slots {
-    use alloy::primitives::{Address, U256, uint};
+#[contract]
+pub struct TipFeeManager {
+    validator_tokens: Mapping<Address, Address>,
+    user_tokens: Mapping<Address, Address>,
+    collected_fees: U256,
+    tokens_with_fees: Vec<Address>,
+    token_in_fees_array: Mapping<Address, bool>,
+    pools: Mapping<B256, Pool>,
+    pending_fee_swap_in: Mapping<B256, u128>,
+    total_supply: Mapping<B256, U256>,
+    liquidity_balances: Mapping<B256, Mapping<Address, U256>>,
 
-    use crate::storage::slots::mapping_slot;
-
-    // FeeManager-specific slots start at slot 4 to avoid collision with TIPFeeAMM slots (0-3)
-    pub const VALIDATOR_TOKENS: U256 = uint!(4_U256);
-    pub const USER_TOKENS: U256 = uint!(5_U256);
-    pub const COLLECTED_FEES: U256 = uint!(6_U256);
-    pub const TOKENS_WITH_FEES_LENGTH: U256 = uint!(7_U256);
-    pub const TOKENS_WITH_FEES_BASE: U256 = uint!(8_U256);
-    pub const TOKEN_IN_FEES_ARRAY: U256 = uint!(9_U256);
-
-    pub fn validator_token_slot(validator: Address) -> U256 {
-        mapping_slot(validator, VALIDATOR_TOKENS)
-    }
-
-    pub fn user_token_slot(user: Address) -> U256 {
-        mapping_slot(user, USER_TOKENS)
-    }
-
-    pub fn collected_fees_slot() -> U256 {
-        COLLECTED_FEES
-    }
-
-    /// Get slot for the length of tokens with fees array
-    pub fn tokens_with_fees_length_slot() -> U256 {
-        TOKENS_WITH_FEES_LENGTH
-    }
-
-    /// Get slot for specific index in tokens with fees array
-    pub fn tokens_with_fees_slot(index: U256) -> U256 {
-        TOKENS_WITH_FEES_BASE + index
-    }
-
-    /// Get slot for token in fees array mapping
-    pub fn token_in_fees_array_slot(token: Address) -> U256 {
-        mapping_slot(token, TOKEN_IN_FEES_ARRAY)
-    }
-}
-
-/// TipFeeManager implements the FeeManager contract which inherits from TIPFeeAMM.
-///
-/// INHERITANCE MODEL:
-/// - FeeManager "is-a" TIPFeeAMM, inheriting all AMM functionality
-/// - They share the same contract address and storage space
-/// - FeeManager delegates AMM operations to TIPFeeAMM using the same storage
-///
-/// STORAGE SHARING:
-/// - Both contracts operate on the same storage at the same contract address
-/// - TIPFeeAMM uses slots 0-3 for pool data
-/// - FeeManager uses slots 4+ for fee-specific data
-/// - When FeeManager creates a TIPFeeAMM instance, it passes the same address and storage
-pub struct TipFeeManager<'a, S: PrecompileStorageProvider> {
-    contract_address: Address,
+    // Runtime variable
     beneficiary: Address,
-    storage: &'a mut S,
 }
 
 impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
@@ -97,12 +42,11 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     pub const BASIS_POINTS: u64 = 10000;
     pub const MINIMUM_BALANCE: U256 = uint!(1_000_000_000_U256); // 1e9
 
-    pub fn new(contract_address: Address, beneficiary: Address, storage: &'a mut S) -> Self {
-        Self {
-            contract_address,
-            beneficiary,
-            storage,
-        }
+    /// Creates an instance of the precompile.
+    ///
+    /// Caution: This does not initialize the account, see [`Self::initialize`].
+    pub fn new(storage: &'a mut S, beneficiary: Address) -> Self {
+        Self::_new(TIP_FEE_MANAGER_ADDRESS, storage)
     }
 
     /// Initializes the contract
@@ -111,43 +55,45 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     pub fn initialize(&mut self) -> Result<()> {
         // must ensure the account is not empty, by setting some code
         self.storage.set_code(
-            self.contract_address,
+            self.address,
             Bytecode::new_legacy(Bytes::from_static(&[0xef])),
         )
     }
 
     pub fn get_validator_token(&mut self) -> Result<Address> {
-        let validator_slot = validator_token_slot(self.beneficiary);
-        let token = self.sload(validator_slot)?.into_address();
-        if token.is_zero() {
-            Ok(DEFAULT_FEE_TOKEN)
-        } else {
-            Ok(token)
-        }
+        todo!()
+        // let validator_slot = validator_token_slot(self.beneficiary);
+        // let token = self.sload(validator_slot)?.into_address();
+        //
+        // if token.is_zero() {
+        //     Ok(DEFAULT_FEE_TOKEN)
+        // } else {
+        //     Ok(token)
+        // }
     }
 
     pub fn set_validator_token(
         &mut self,
         sender: Address,
         call: IFeeManager::setValidatorTokenCall,
+        beneficiary: Address,
     ) -> Result<()> {
         if !is_tip20(call.token) {
             return Err(FeeManagerError::invalid_token().into());
         }
 
-        if sender == self.beneficiary {
+        if sender == beneficiary {
             return Err(FeeManagerError::cannot_change_within_block().into());
         }
 
         // Validate that the fee token is USD
         validate_usd_currency(call.token, self.storage)?;
 
-        let slot = validator_token_slot(sender);
-        self.sstore(slot, call.token.into_u256())?;
+        self.sstore_validator_tokens(sender, call.token)?;
 
         // Emit ValidatorTokenSet event
         self.storage.emit_event(
-            self.contract_address,
+            self.address,
             FeeManagerEvent::ValidatorTokenSet(IFeeManager::ValidatorTokenSet {
                 validator: sender,
                 token: call.token,
@@ -168,12 +114,11 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         // Validate that the fee token is USD
         validate_usd_currency(call.token, self.storage)?;
 
-        let slot = user_token_slot(sender);
-        self.sstore(slot, call.token.into_u256())?;
+        self.sstore_user_tokens(sender, call.token)?;
 
         // Emit UserTokenSet event
         self.storage.emit_event(
-            self.contract_address,
+            self.address,
             FeeManagerEvent::UserTokenSet(IFeeManager::UserTokenSet {
                 user: sender,
                 token: call.token,
@@ -207,7 +152,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         let mut tip20_token = TIP20Token::from_address(user_token, self.storage);
 
         // Ensure that user and FeeManager are authorized to interact with the token
-        tip20_token.ensure_transfer_authorized(fee_payer, self.contract_address)?;
+        tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
         // Return the user's token preference
@@ -251,7 +196,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         Ok(())
     }
 
-    pub fn execute_block(&mut self, sender: Address) -> Result<()> {
+    pub fn execute_block(&mut self, sender: Address, beneficiary: Address) -> Result<()> {
         // Only protocol can call this
         if sender != Address::ZERO {
             return Err(FeeManagerError::only_system_contract().into());
@@ -284,12 +229,12 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             let mut token = TIP20Token::from_address(validator_token, self.storage);
 
             // If FeeManager or validator are blacklisted, we are not transferring any fees
-            if token.is_transfer_authorized(self.contract_address, self.beneficiary)? {
+            if token.is_transfer_authorized(self.address, beneficiary)? {
                 token
                     .transfer(
-                        self.contract_address,
+                        self.address,
                         ITIP20::transferCall {
-                            to: self.beneficiary,
+                            to: beneficiary,
                             amount: collected_fees,
                         },
                     )
