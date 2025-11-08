@@ -36,7 +36,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         self.storage.set_code(
             TIP20_FACTORY_ADDRESS,
             Bytecode::new_legacy(Bytes::from_static(&[0xef])),
-        );
+        )?;
 
         self.sstore_token_id_counter(U256::ONE)
     }
@@ -94,6 +94,18 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         )?;
 
         Ok(token_address)
+    }
+
+    pub fn token_id_counter(&mut self) -> Result<U256> {
+        let counter = self.sload_token_id_counter()?;
+
+        // NOTE: this should always be >= 1 since we set token_id_counter in the initialization
+        // function. Keeping for now until we have better abstractions for the constructor
+        if counter.is_zero() {
+            Ok(U256::ONE)
+        } else {
+            Ok(counter)
+        }
     }
 }
 
