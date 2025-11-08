@@ -299,7 +299,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Err(TIP20Error::invalid_quote_token().into());
         }
 
-        println!("STORING NEXT TOKEN: {}", call.newQuoteToken);
         self.sstore_next_quote_token(call.newQuoteToken)?;
 
         self.storage.emit_event(
