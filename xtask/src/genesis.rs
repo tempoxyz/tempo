@@ -276,7 +276,7 @@ impl GenesisArgs {
             if index >= 10 {
                 genesis_alloc
                     .entry(*address)
-                    .or_insert_with(|| GenesisAccount::default())
+                    .or_default()
                     .balance = self.balance;
             }
         }
