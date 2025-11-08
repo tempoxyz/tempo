@@ -70,7 +70,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         self.sload_pools(pool_id)
     }
 
-    /// Ensures that pool has enough liquidity for a fee swap
+    /// Ensures that pool has enough liquidity for a fee swap and reserve that liquidity in `pending_fee_swap_in`.
     pub fn reserve_liquidity(
         &mut self,
         user_token: Address,
@@ -80,7 +80,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         let pool_id = PoolKey::new(user_token, validator_token).get_id();
         let amount_out = max_amount
             .checked_mul(M)
-            .and_then(|product| product.checked_div(SCALE))
+            .map(|product| product / SCALE)
             .ok_or(TempoPrecompileError::under_overflow())?;
         let available_validator_token = self.get_effective_validator_reserve(pool_id)?;
 
