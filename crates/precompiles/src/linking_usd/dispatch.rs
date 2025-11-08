@@ -12,7 +12,12 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::{ILinkingUSD, TIP20Error};
 
 impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+    fn call(
+        &mut self,
+        calldata: &[u8],
+        msg_sender: Address,
+        _beneficiary: Address,
+    ) -> PrecompileResult {
         self.token
             .storage()
             .deduct_gas(input_cost(calldata.len()))
@@ -237,7 +242,7 @@ mod tests {
         }
         .abi_encode();
 
-        let output = token.call(&Bytes::from(calldata), sender)?;
+        let output = token.call(&Bytes::from(calldata), sender, Address::default())?;
         assert!(output.reverted);
         let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
         assert_eq!(output.bytes, expected);
@@ -258,7 +263,7 @@ mod tests {
 
         let calldata = ITIP20::setRewardRecipientCall { recipient }.abi_encode();
 
-        let output = token.call(&Bytes::from(calldata), sender)?;
+        let output = token.call(&Bytes::from(calldata), sender, Address::default())?;
         assert!(output.reverted);
         let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
         assert_eq!(output.bytes, expected);
@@ -278,7 +283,7 @@ mod tests {
 
         let calldata = ITIP20::cancelRewardCall { id: 1 }.abi_encode();
 
-        let output = token.call(&Bytes::from(calldata), sender)?;
+        let output = token.call(&Bytes::from(calldata), sender, Address::default())?;
         assert!(output.reverted);
         let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
         assert_eq!(output.bytes, expected);
@@ -298,7 +303,7 @@ mod tests {
 
         let calldata = ITIP20::claimRewardsCall {}.abi_encode();
 
-        let output = token.call(&Bytes::from(calldata), sender)?;
+        let output = token.call(&Bytes::from(calldata), sender, Address::default())?;
         assert!(output.reverted);
         let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
         assert_eq!(output.bytes, expected);
