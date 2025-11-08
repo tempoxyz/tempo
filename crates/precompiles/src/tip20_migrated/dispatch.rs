@@ -2,7 +2,7 @@ use super::ITIP20;
 use crate::{
     Precompile, input_cost, metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
-    tip20::{IRolesAuth, TIP20Token},
+    tip20_migrated::{IRolesAuth, TIP20Token},
     view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
@@ -198,33 +198,29 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
 
             // RolesAuth functions
             IRolesAuth::hasRoleCall::SELECTOR => {
-                view::<IRolesAuth::hasRoleCall>(calldata, |call| {
-                    self.get_roles_contract().has_role(call)
-                })
+                view::<IRolesAuth::hasRoleCall>(calldata, |call| self.has_role(call))
             }
             IRolesAuth::getRoleAdminCall::SELECTOR => {
-                view::<IRolesAuth::getRoleAdminCall>(calldata, |call| {
-                    self.get_roles_contract().get_role_admin(call)
-                })
+                view::<IRolesAuth::getRoleAdminCall>(calldata, |call| self.get_role_admin(call))
             }
             IRolesAuth::grantRoleCall::SELECTOR => {
                 mutate_void::<IRolesAuth::grantRoleCall>(calldata, msg_sender, |s, call| {
-                    self.get_roles_contract().grant_role(s, call)
+                    self.grant_role(s, call)
                 })
             }
             IRolesAuth::revokeRoleCall::SELECTOR => {
                 mutate_void::<IRolesAuth::revokeRoleCall>(calldata, msg_sender, |s, call| {
-                    self.get_roles_contract().revoke_role(s, call)
+                    self.revoke_role(s, call)
                 })
             }
             IRolesAuth::renounceRoleCall::SELECTOR => {
                 mutate_void::<IRolesAuth::renounceRoleCall>(calldata, msg_sender, |s, call| {
-                    self.get_roles_contract().renounce_role(s, call)
+                    self.renounce_role(s, call)
                 })
             }
             IRolesAuth::setRoleAdminCall::SELECTOR => {
                 mutate_void::<IRolesAuth::setRoleAdminCall>(calldata, msg_sender, |s, call| {
-                    self.get_roles_contract().set_role_admin(s, call)
+                    self.set_role_admin(s, call)
                 })
             }
 

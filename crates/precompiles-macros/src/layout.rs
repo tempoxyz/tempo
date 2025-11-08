@@ -410,7 +410,7 @@ pub(crate) fn gen_slots_module_with_types(
             let slot_id = format_ident!("{}", allocated.slot_id_name());
 
             quote! {
-                pub const #const_name: ::alloy::primitives::U256 = <#slot_id as tempo_precompiles::storage::SlotId>::SLOT;
+                pub const #const_name: ::alloy::primitives::U256 = <#slot_id as crate::storage::SlotId>::SLOT;
             }
         })
         .collect();
