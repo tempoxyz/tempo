@@ -23,9 +23,6 @@ use tempo_precompiles_macros::contract;
 /// Maps timestamp -> Vec of token addresses with streams ending at that time
 #[contract]
 pub struct TIP20RewardsRegistry {
-    // uint128 public lastUpdatedTimestamp;
-    // mapping(uint128 => address[]) public streamsEndingAt;
-    // mapping(bytes32 => uint256) public streamIndex; // streamKey => index in streamsEndingAt array
     last_updated_timestamp: u128,
     streams_ending_at: Mapping<u128, Vec<Address>>,
     stream_index: Mapping<B256, U256>,
@@ -56,7 +53,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         let array_slot = mapping_slot(end_time.to_be_bytes(), slots::STREAMS_ENDING_AT);
         let index = self.storage.sload(self.address, array_slot)?;
         self.sstore_stream_index(stream_key, index)?;
-
         self.push_stream_ending_at_timestamp(token, end_time)?;
 
         Ok(())
@@ -102,6 +98,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         address: Address,
         timestamp: u128,
     ) -> Result<()> {
+        // TODO: add helper functions to get length, push value to array
         let array_slot = mapping_slot(timestamp.to_be_bytes(), slots::STREAMS_ENDING_AT);
         let length = self.storage.sload(self.address, array_slot)?;
 
@@ -172,7 +169,7 @@ mod tests {
     use crate::{
         LINKING_USD_ADDRESS,
         error::TempoPrecompileError,
-        storage::{StorageOps, hashmap::HashMapStorageProvider},
+        storage::hashmap::HashMapStorageProvider,
         tip20::{ISSUER_ROLE, TIP20Token, tests::initialize_linking_usd},
         tip20_rewards_registry::TIP20RewardsRegistry,
     };
