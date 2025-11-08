@@ -274,10 +274,7 @@ impl GenesisArgs {
         // which expect zero ETH balance
         for (index, address) in addresses.iter().enumerate() {
             if index >= 10 {
-                genesis_alloc
-                    .entry(*address)
-                    .or_default()
-                    .balance = self.balance;
+                genesis_alloc.entry(*address).or_default().balance = self.balance;
             }
         }
 
