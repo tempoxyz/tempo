@@ -269,9 +269,9 @@ impl GenesisArgs {
             },
         );
 
-        // Fund the user accounts with ETH balance
+        // Fund the user accounts with native token balance
         // Skip the first 10 accounts as they're used for account abstraction tests
-        // which expect zero ETH balance
+        // which expect zero native token balance
         for (index, address) in addresses.iter().enumerate() {
             if index >= 10 {
                 genesis_alloc.entry(*address).or_default().balance = self.balance;
