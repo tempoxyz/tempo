@@ -9,6 +9,9 @@ pub mod packing;
 // TODO(rusowsky): remove once precompiles don't rely it (directly) anymore
 pub use types::mapping as slots;
 
+// Re-export `VecSlotExt` for convenience
+pub use types::vec::VecSlotExt;
+
 use alloy::primitives::{Address, LogData, U256};
 use revm::state::{AccountInfo, Bytecode};
 
