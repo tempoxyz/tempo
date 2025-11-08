@@ -6,13 +6,17 @@ pub mod token;
 
 mod pagination;
 
+use alloy_primitives::B256;
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use amm::{TempoAmm, TempoAmmApiServer};
 pub use dex::{TempoDex, api::TempoDexApiServer};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
+use futures::future::Either;
 pub use pagination::{FilterRange, PaginationParams};
 pub use policy::{TempoPolicy, TempoPolicyApiServer};
-use reth_primitives_traits::TransactionMeta;
+use reth_errors::RethError;
+use reth_primitives_traits::{Recovered, TransactionMeta, WithEncoded, transaction::TxHashRef};
+use reth_transaction_pool::PoolPooledTx;
 use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::TempoChainSpec;
@@ -54,8 +58,10 @@ use reth_rpc_eth_types::{
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::provider::TIPFeeDatabaseExt;
-use tempo_primitives::{TEMPO_GAS_PRICE_SCALING_FACTOR, TempoPrimitives, TempoReceipt};
-use tokio::sync::Mutex;
+use tempo_primitives::{
+    TEMPO_GAS_PRICE_SCALING_FACTOR, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
+};
+use tokio::sync::{Mutex, broadcast};
 
 /// Placeholder constant for `eth_getBalance` calls because the native token balance is N/A on
 /// Tempo.
@@ -76,6 +82,9 @@ pub const NATIVE_BALANCE_PLACEHOLDER: U256 =
 pub struct TempoEthApi<N: FullNodeTypes<Types = TempoNode>> {
     /// Gateway to node's core components.
     inner: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
+
+    /// Channel for sending subblock transactions to the subblocks service.
+    subblock_transactions_tx: broadcast::Sender<Recovered<TempoTxEnvelope>>,
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
@@ -83,7 +92,15 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
     pub fn new(
         eth_api: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
     ) -> Self {
-        Self { inner: eth_api }
+        Self {
+            inner: eth_api,
+            subblock_transactions_tx: broadcast::channel(100).0,
+        }
+    }
+
+    /// Returns a [`broadcast::Receiver`] for subblock transactions.
+    pub fn subblock_transactions_rx(&self) -> broadcast::Receiver<Recovered<TempoTxEnvelope>> {
+        self.subblock_transactions_tx.subscribe()
     }
 }
 
@@ -269,11 +286,25 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
         self.inner.send_raw_transaction_sync_timeout()
     }
 
-    fn send_raw_transaction(
+    fn send_transaction(
         &self,
-        tx: alloy::primitives::Bytes,
-    ) -> impl Future<Output = Result<alloy::primitives::B256, Self::Error>> + Send {
-        self.inner.send_raw_transaction(tx)
+        tx: WithEncoded<Recovered<PoolPooledTx<Self::Pool>>>,
+    ) -> impl Future<Output = Result<B256, Self::Error>> + Send {
+        if tx.value().inner().subblock_proposer().is_some() {
+            // Send subblock transactions to the subblocks service.
+            Either::Left(async move {
+                let tx_hash = *tx.value().tx_hash();
+
+                self.subblock_transactions_tx
+                    .send(tx.into_value())
+                    .map_err(|_| RethError::msg("subblocks service channel closed"))?;
+
+                Ok(tx_hash)
+            })
+        } else {
+            // Send regular transactions to the transaction pool.
+            Either::Right(self.inner.send_transaction(tx))
+        }
     }
 }
 
