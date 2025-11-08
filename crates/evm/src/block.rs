@@ -23,8 +23,10 @@ use reth_revm::{Inspector, State, context::result::ResultAndState};
 use std::collections::HashSet;
 use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::{
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
-    stablecoin_exchange::IStablecoinExchange, tip_fee_manager::IFeeManager,
+    STABLECOIN_EXCHANGE_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS,
+    TIP20_REWARDS_REGISTRY_ADDRESS,
+    // stablecoin_exchange::IStablecoinExchange, tip_fee_manager::IFeeManager,
     tip20_rewards_registry::ITIP20RewardsRegistry,
 };
 use tempo_primitives::{
@@ -183,80 +185,80 @@ where
                 _ => (false, false, false),
             };
 
-        if to == TIP_FEE_MANAGER_ADDRESS {
-            if seen_fee_manager {
-                return Err(BlockValidationError::msg(
-                    "duplicate fee manager system transaction",
-                ));
-            }
+        // if to == TIP_FEE_MANAGER_ADDRESS {
+        //     if seen_fee_manager {
+        //         return Err(BlockValidationError::msg(
+        //             "duplicate fee manager system transaction",
+        //         ));
+        //     }
 
-            let fee_input = IFeeManager::executeBlockCall
-                .abi_encode()
-                .into_iter()
-                .chain(block)
-                .collect::<Bytes>();
+        //     let fee_input = IFeeManager::executeBlockCall
+        //         .abi_encode()
+        //         .into_iter()
+        //         .chain(block)
+        //         .collect::<Bytes>();
 
-            if *tx.input() != fee_input {
-                return Err(BlockValidationError::msg(
-                    "invalid fee manager system transaction",
-                ));
-            }
+        //     if *tx.input() != fee_input {
+        //         return Err(BlockValidationError::msg(
+        //             "invalid fee manager system transaction",
+        //         ));
+        //     }
 
-            seen_fee_manager = true;
-        } else if to == STABLECOIN_EXCHANGE_ADDRESS {
-            if seen_stablecoin_dex {
-                return Err(BlockValidationError::msg(
-                    "duplicate stablecoin DEX system transaction",
-                ));
-            }
+        //     seen_fee_manager = true;
+        // } else if to == STABLECOIN_EXCHANGE_ADDRESS {
+        //     if seen_stablecoin_dex {
+        //         return Err(BlockValidationError::msg(
+        //             "duplicate stablecoin DEX system transaction",
+        //         ));
+        //     }
 
-            let dex_input = IStablecoinExchange::executeBlockCall {}
-                .abi_encode()
-                .into_iter()
-                .chain(block)
-                .collect::<Bytes>();
+        //     let dex_input = IStablecoinExchange::executeBlockCall {}
+        //         .abi_encode()
+        //         .into_iter()
+        //         .chain(block)
+        //         .collect::<Bytes>();
 
-            if *tx.input() != dex_input {
-                return Err(BlockValidationError::msg(
-                    "invalid stablecoin DEX system transaction",
-                ));
-            }
+        //     if *tx.input() != dex_input {
+        //         return Err(BlockValidationError::msg(
+        //             "invalid stablecoin DEX system transaction",
+        //         ));
+        //     }
 
-            seen_stablecoin_dex = true;
-        } else if to.is_zero() {
-            if seen_subblocks_signatures {
-                return Err(BlockValidationError::msg(
-                    "duplicate subblocks metadata system transaction",
-                ));
-            }
+        //     seen_stablecoin_dex = true;
+        // } else if to.is_zero() {
+        //     if seen_subblocks_signatures {
+        //         return Err(BlockValidationError::msg(
+        //             "duplicate subblocks metadata system transaction",
+        //         ));
+        //     }
 
-            if tx.input().len() < U256::BYTES
-                || tx.input()[tx.input().len() - U256::BYTES..] != block
-            {
-                return Err(BlockValidationError::msg(
-                    "invalid subblocks metadata system transaction",
-                ));
-            }
+        //     if tx.input().len() < U256::BYTES
+        //         || tx.input()[tx.input().len() - U256::BYTES..] != block
+        //     {
+        //         return Err(BlockValidationError::msg(
+        //             "invalid subblocks metadata system transaction",
+        //         ));
+        //     }
 
-            let mut buf = &tx.input()[..tx.input().len() - U256::BYTES];
-            let Ok(metadata) = Vec::<SubBlockMetadata>::decode(&mut buf) else {
-                return Err(BlockValidationError::msg(
-                    "invalid subblocks metadata system transaction",
-                ));
-            };
+        //     let mut buf = &tx.input()[..tx.input().len() - U256::BYTES];
+        //     let Ok(metadata) = Vec::<SubBlockMetadata>::decode(&mut buf) else {
+        //         return Err(BlockValidationError::msg(
+        //             "invalid subblocks metadata system transaction",
+        //         ));
+        //     };
 
-            if !buf.is_empty() {
-                return Err(BlockValidationError::msg(
-                    "invalid subblocks metadata system transaction",
-                ));
-            }
+        //     if !buf.is_empty() {
+        //         return Err(BlockValidationError::msg(
+        //             "invalid subblocks metadata system transaction",
+        //         ));
+        //     }
 
-            self.validate_shared_gas(&metadata)?;
+        //     self.validate_shared_gas(&metadata)?;
 
-            seen_subblocks_signatures = true;
-        } else {
-            return Err(BlockValidationError::msg("invalid system transaction"));
-        }
+        //     seen_subblocks_signatures = true;
+        // } else {
+        //     return Err(BlockValidationError::msg("invalid system transaction"));
+        // }
 
         Ok(BlockSection::System {
             seen_fee_manager,

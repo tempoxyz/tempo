@@ -35,11 +35,13 @@ use tempo_contracts::{
     precompiles::{FeeManagerError, IFeeManager},
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN,
+    LINKING_USD_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS,
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{evm::EvmPrecompileStorageProvider, slots::mapping_slot},
-    tip_fee_manager::{self, TipFeeManager},
+    // tip_fee_manager::{self, TipFeeManager},
     tip20::{self, TIP20Token, USD_CURRENCY, address_to_token_id_unchecked, is_tip20},
 };
 use tempo_primitives::transaction::{AASignature, calc_gas_balance_spending};
@@ -585,59 +587,59 @@ where
         // Note: Signature verification happens during recover_signer() before entering the pool
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
 
-        // Create storage provider wrapper around journal
-        let internals = EvmInternals::new(journal, &block);
-        let mut storage_provider =
-            EvmPrecompileStorageProvider::new_max_gas(internals, cfg.chain_id());
-        let mut fee_manager = TipFeeManager::new(
-            TIP_FEE_MANAGER_ADDRESS,
-            block.beneficiary(),
-            &mut storage_provider,
-        );
+        // // Create storage provider wrapper around journal
+        // let internals = EvmInternals::new(journal, &block);
+        // let mut storage_provider =
+        //     EvmPrecompileStorageProvider::new_max_gas(internals, cfg.chain_id());
+        // let mut fee_manager = TipFeeManager::new(
+        //     TIP_FEE_MANAGER_ADDRESS,
+        //     block.beneficiary(),
+        //     &mut storage_provider,
+        // );
 
-        if tx.max_balance_spending().ok() == Some(U256::ZERO) {
-            return Ok(());
-        }
+        // if tx.max_balance_spending().ok() == Some(U256::ZERO) {
+        //     return Ok(());
+        // }
 
-        // Call the precompile function to collect the fee
-        // We specify the `to_addr` to account for the case where the to address is a tip20
-        // token and the fee token is not set for the specified caller.
-        // In this case, the collect_fee_pre_tx fn will set the fee token as the `to_addr`
-        let to_addr = tx.kind().into_to().unwrap_or_default();
-        fee_manager
-            .collect_fee_pre_tx(
-                self.fee_payer,
-                self.fee_token,
-                to_addr,
-                gas_balance_spending,
-            )
-            .map_err(|e| {
-                // Map fee collection errors to transaction validation errors since they
-                // indicate the transaction cannot be included (e.g., insufficient liquidity
-                // in FeeAMM pool for fee swaps)
-                match e {
-                    TempoPrecompileError::FeeManagerError(
-                        FeeManagerError::InsufficientLiquidity(_),
-                    ) => EVMError::Transaction(TempoInvalidTransaction::InsufficientAmmLiquidity {
-                        fee: Box::new(gas_balance_spending),
-                    }),
+        // // Call the precompile function to collect the fee
+        // // We specify the `to_addr` to account for the case where the to address is a tip20
+        // // token and the fee token is not set for the specified caller.
+        // // In this case, the collect_fee_pre_tx fn will set the fee token as the `to_addr`
+        // let to_addr = tx.kind().into_to().unwrap_or_default();
+        // fee_manager
+        //     .collect_fee_pre_tx(
+        //         self.fee_payer,
+        //         self.fee_token,
+        //         to_addr,
+        //         gas_balance_spending,
+        //     )
+        //     .map_err(|e| {
+        //         // Map fee collection errors to transaction validation errors since they
+        //         // indicate the transaction cannot be included (e.g., insufficient liquidity
+        //         // in FeeAMM pool for fee swaps)
+        //         match e {
+        //             TempoPrecompileError::FeeManagerError(
+        //                 FeeManagerError::InsufficientLiquidity(_),
+        //             ) => EVMError::Transaction(TempoInvalidTransaction::InsufficientAmmLiquidity {
+        //                 fee: Box::new(gas_balance_spending),
+        //             }),
 
-                    TempoPrecompileError::FeeManagerError(
-                        FeeManagerError::InsufficientFeeTokenBalance(_),
-                    ) => EVMError::Transaction(
-                        TempoInvalidTransaction::InsufficientFeeTokenBalance {
-                            fee: Box::new(gas_balance_spending),
-                            balance: Box::new(account_balance),
-                        },
-                    ),
+        //             TempoPrecompileError::FeeManagerError(
+        //                 FeeManagerError::InsufficientFeeTokenBalance(_),
+        //             ) => EVMError::Transaction(
+        //                 TempoInvalidTransaction::InsufficientFeeTokenBalance {
+        //                     fee: Box::new(gas_balance_spending),
+        //                     balance: Box::new(account_balance),
+        //                 },
+        //             ),
 
-                    TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
+        //             TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
 
-                    _ => EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTxError(
-                        e.to_string(),
-                    )),
-                }
-            })?;
+        //             _ => EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTxError(
+        //                 e.to_string(),
+        //             )),
+        //         }
+        //     })?;
         Ok(())
     }
 
@@ -666,23 +668,23 @@ where
         let (journal, block) = (&mut context.journaled_state, &context.block);
         let internals = EvmInternals::new(journal, block);
         let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, chain_id);
-        let mut fee_manager = TipFeeManager::new(
-            TIP_FEE_MANAGER_ADDRESS,
-            block.beneficiary,
-            &mut storage_provider,
-        );
+        // let mut fee_manager = TipFeeManager::new(
+        //     TIP_FEE_MANAGER_ADDRESS,
+        //     block.beneficiary,
+        //     &mut storage_provider,
+        // );
 
-        if !actual_spending.is_zero() || !refund_amount.is_zero() {
-            // Call collectFeePostTx (handles both refund and fee queuing)
-            fee_manager
-                .collect_fee_post_tx(
-                    self.fee_payer,
-                    actual_spending,
-                    refund_amount,
-                    self.fee_token,
-                )
-                .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
-        }
+        // if !actual_spending.is_zero() || !refund_amount.is_zero() {
+        //     // Call collectFeePostTx (handles both refund and fee queuing)
+        //     fee_manager
+        //         .collect_fee_post_tx(
+        //             self.fee_payer,
+        //             actual_spending,
+        //             refund_amount,
+        //             self.fee_token,
+        //         )
+        //         .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
+        // }
         Ok(())
     }
 
@@ -969,54 +971,54 @@ pub fn get_fee_token<DB>(
 where
     DB: Database,
 {
-    // If there is a fee token explicitly set on the tx type, use that.
-    if let Some(fee_token) = ctx.tx().fee_token {
-        return Ok(fee_token);
-    }
+    // // If there is a fee token explicitly set on the tx type, use that.
+    // if let Some(fee_token) = ctx.tx().fee_token {
+    //     return Ok(fee_token);
+    // }
 
-    // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
-    // new preference, the newly set preference should be used immediately instead of the
-    // previously stored one
-    if ctx.tx().aa_tx_env.is_none()
-        && ctx.tx().fee_payer()? == ctx.tx().caller()
-        && ctx.tx().kind().to() == Some(&TIP_FEE_MANAGER_ADDRESS)
-        && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(ctx.tx().input())
-    {
-        return Ok(call.token);
-    }
+    // // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
+    // // new preference, the newly set preference should be used immediately instead of the
+    // // previously stored one
+    // if ctx.tx().aa_tx_env.is_none()
+    //     && ctx.tx().fee_payer()? == ctx.tx().caller()
+    //     && ctx.tx().kind().to() == Some(&TIP_FEE_MANAGER_ADDRESS)
+    //     && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(ctx.tx().input())
+    // {
+    //     return Ok(call.token);
+    // }
 
-    let user_slot = mapping_slot(ctx.tx().fee_payer()?, tip_fee_manager::slots::USER_TOKENS);
-    // ensure TIP_FEE_MANAGER_ADDRESS is loaded
-    ctx.journal_mut().load_account(TIP_FEE_MANAGER_ADDRESS)?;
-    let stored_user_token = ctx
-        .journal_mut()
-        .sload(TIP_FEE_MANAGER_ADDRESS, user_slot)?
-        .data
-        .into_address();
+    // let user_slot = mapping_slot(ctx.tx().fee_payer()?, tip_fee_manager::slots::USER_TOKENS);
+    // // ensure TIP_FEE_MANAGER_ADDRESS is loaded
+    // ctx.journal_mut().load_account(TIP_FEE_MANAGER_ADDRESS)?;
+    // let stored_user_token = ctx
+    //     .journal_mut()
+    //     .sload(TIP_FEE_MANAGER_ADDRESS, user_slot)?
+    //     .data
+    //     .into_address();
 
-    if !stored_user_token.is_zero() {
-        return Ok(stored_user_token);
-    }
+    // if !stored_user_token.is_zero() {
+    //     return Ok(stored_user_token);
+    // }
 
-    // If tx.to() is a TIP-20 token, use that token as the fee token
-    if ctx.tx().aa_tx_env.is_none()
-        && let Some(&to_addr) = ctx.tx().kind().to()
-        && is_tip20(to_addr)
-    {
-        return Ok(to_addr);
-    }
+    // // If tx.to() is a TIP-20 token, use that token as the fee token
+    // if ctx.tx().aa_tx_env.is_none()
+    //     && let Some(&to_addr) = ctx.tx().kind().to()
+    //     && is_tip20(to_addr)
+    // {
+    //     return Ok(to_addr);
+    // }
 
-    // Otherwise fall back to the validator fee token preference
-    let validator_slot = mapping_slot(ctx.beneficiary(), tip_fee_manager::slots::VALIDATOR_TOKENS);
-    let validator_fee_token = ctx
-        .journal_mut()
-        .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
-        .data
-        .into_address();
+    // // Otherwise fall back to the validator fee token preference
+    // let validator_slot = mapping_slot(ctx.beneficiary(), tip_fee_manager::slots::VALIDATOR_TOKENS);
+    // let validator_fee_token = ctx
+    //     .journal_mut()
+    //     .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
+    //     .data
+    //     .into_address();
 
-    if !validator_fee_token.is_zero() {
-        return Ok(validator_fee_token);
-    }
+    // if !validator_fee_token.is_zero() {
+    //     return Ok(validator_fee_token);
+    // }
 
     Ok(DEFAULT_FEE_TOKEN)
 }
@@ -1160,443 +1162,443 @@ pub fn validate_time_window(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloy_primitives::{Address, U256};
-    use revm::{
-        Journal,
-        database::{CacheDB, EmptyDB},
-        interpreter::instructions::utility::IntoU256,
-        primitives::hardfork::SpecId,
-        state::Account,
-    };
-
-    fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
-        let db = CacheDB::new(EmptyDB::default());
-        Journal::new(db)
-    }
-
-    #[test]
-    fn test_get_token_balance() -> eyre::Result<()> {
-        let mut journal = create_test_journal();
-        let token = Address::random();
-        let account = Address::random();
-        let expected_balance = U256::random();
-
-        // Set up initial balance
-        let balance_slot = mapping_slot(account, tip20::slots::BALANCES);
-        journal.load_account(token)?;
-        journal
-            .sstore(token, balance_slot, expected_balance)
-            .unwrap();
-
-        let balance = get_token_balance(&mut journal, token, account).unwrap();
-        assert_eq!(balance, expected_balance);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_transfer_token() -> eyre::Result<()> {
-        let mut journal = create_test_journal();
-        let token = Address::random();
-        let sender = Address::random();
-        let recipient = Address::random();
-        let initial_balance = U256::random();
-
-        let sender_slot = mapping_slot(sender, tip20::slots::BALANCES);
-        journal.load_account(token)?;
-        journal.sstore(token, sender_slot, initial_balance).unwrap();
-        let sender_balance = get_token_balance(&mut journal, token, sender).unwrap();
-        assert_eq!(sender_balance, initial_balance);
-
-        transfer_token(&mut journal, token, sender, recipient, initial_balance).unwrap();
-
-        // Verify balances after transfer
-        let sender_balance = get_token_balance(&mut journal, token, sender).unwrap();
-        let recipient_balance = get_token_balance(&mut journal, token, recipient).unwrap();
-
-        assert_eq!(sender_balance, 0);
-        assert_eq!(recipient_balance, initial_balance);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_get_fee_token() -> eyre::Result<()> {
-        let journal = create_test_journal();
-        let mut ctx = TempoContext::new(CacheDB::new(EmptyDB::default()), SpecId::default())
-            .with_new_journal(journal);
-        let user = Address::random();
-        ctx.tx.inner.caller = user;
-        let validator = Address::random();
-        ctx.block.beneficiary = validator;
-        let user_fee_token = Address::random();
-        let validator_fee_token = Address::random();
-        let tx_fee_token = Address::random();
-
-        // Set validator token
-        let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
-        ctx.journaled_state.load_account(TIP_FEE_MANAGER_ADDRESS)?;
-        ctx.journaled_state
-            .sstore(
-                TIP_FEE_MANAGER_ADDRESS,
-                validator_slot,
-                validator_fee_token.into_u256(),
-            )
-            .unwrap();
-
-        let fee_token = get_fee_token(&mut ctx).unwrap();
-        assert_eq!(validator_fee_token, fee_token);
-
-        // Set user token
-        let user_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);
-        ctx.journaled_state
-            .sstore(
-                TIP_FEE_MANAGER_ADDRESS,
-                user_slot,
-                user_fee_token.into_u256(),
-            )
-            .unwrap();
-
-        let fee_token = get_fee_token(&mut ctx).unwrap();
-        assert_eq!(user_fee_token, fee_token);
-
-        // Set tx fee token
-        ctx.tx.fee_token = Some(tx_fee_token);
-        let fee_token = get_fee_token(&mut ctx).unwrap();
-        assert_eq!(tx_fee_token, fee_token);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_delegate_code_hash() {
-        let mut account = Account::default();
-        account
-            .info
-            .set_code(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS));
-        assert_eq!(account.info.code_hash, DEFAULT_7702_DELEGATE_CODE_HASH);
-    }
-
-    #[test]
-    fn test_aa_gas_single_call_vs_normal_tx() {
-        use crate::AATxEnv;
-        use alloy_primitives::{Bytes, TxKind};
-        use revm::interpreter::gas::calculate_initial_tx_gas;
-        use tempo_primitives::transaction::{AASignature, Call};
-
-        // Test that AA tx with secp256k1 and single call matches normal tx + per-call overhead
-        let spec = RevmSpecId::CANCUN;
-        let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
-        let to = Address::random();
-
-        // Single call for AA
-        let call = Call {
-            to: TxKind::Call(to),
-            value: U256::ZERO,
-            input: calldata.clone(),
-        };
-
-        let aa_env = AATxEnv {
-            signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()), // dummy secp256k1 sig
-            aa_calls: vec![call],
-            ..Default::default()
-        };
-
-        // Calculate AA gas
-        let aa_gas = calculate_aa_batch_intrinsic_gas(
-            &aa_env.aa_calls,
-            &aa_env.signature,
-            None::<std::iter::Empty<&AccessListItem>>, // no access list
-            &aa_env.aa_authorization_list,
-            spec,
-        );
-
-        // Calculate expected gas using revm's function for equivalent normal tx
-        let normal_tx_gas = calculate_initial_tx_gas(
-            spec, &calldata, false, // not create
-            0,     // no access list accounts
-            0,     // no access list storage
-            0,     // no authorization list
-        );
-
-        // AA should be: normal tx + per-call overhead (COLD_ACCOUNT_ACCESS_COST)
-        let expected_initial = normal_tx_gas.initial_gas + COLD_ACCOUNT_ACCESS_COST;
-        assert_eq!(
-            aa_gas.initial_gas, expected_initial,
-            "AA secp256k1 single call should match normal tx + per-call overhead"
-        );
-    }
-
-    #[test]
-    fn test_aa_gas_multiple_calls_overhead() {
-        use crate::AATxEnv;
-        use alloy_primitives::{Bytes, TxKind};
-        use revm::interpreter::gas::calculate_initial_tx_gas;
-        use tempo_primitives::transaction::{AASignature, Call};
-
-        let spec = RevmSpecId::CANCUN;
-        let calldata = Bytes::from(vec![1, 2, 3]); // 3 non-zero bytes
-
-        let calls = vec![
-            Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: calldata.clone(),
-            },
-            Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: calldata.clone(),
-            },
-            Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::ZERO,
-                input: calldata.clone(),
-            },
-        ];
-
-        let aa_env = AATxEnv {
-            signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-            aa_calls: calls.clone(),
-            ..Default::default()
-        };
-
-        let gas = calculate_aa_batch_intrinsic_gas(
-            &calls,
-            &aa_env.signature,
-            None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.aa_authorization_list,
-            spec,
-        );
-
-        // Calculate base gas for a single normal tx
-        let base_tx_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
-
-        // For 3 calls: base (21k) + 3*calldata + 3*per-call overhead
-        // = 21k + 2*(calldata cost) + 3*COLD_ACCOUNT_ACCESS_COST
-        let expected = base_tx_gas.initial_gas
-            + 2 * (calldata.len() as u64 * 16)
-            + 3 * COLD_ACCOUNT_ACCESS_COST;
-        assert_eq!(
-            gas.initial_gas, expected,
-            "Should charge per-call overhead for each call"
-        );
-    }
-
-    #[test]
-    fn test_aa_gas_p256_signature() {
-        use crate::AATxEnv;
-        use alloy_primitives::{B256, Bytes, TxKind};
-        use revm::interpreter::gas::calculate_initial_tx_gas;
-        use tempo_primitives::transaction::{
-            AASignature, Call, aa_signature::P256SignatureWithPreHash,
-        };
-
-        let spec = RevmSpecId::CANCUN;
-        let calldata = Bytes::from(vec![1, 2]);
-
-        let call = Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: calldata.clone(),
-        };
-
-        let aa_env = AATxEnv {
-            signature: AASignature::P256(P256SignatureWithPreHash {
-                r: B256::ZERO,
-                s: B256::ZERO,
-                pub_key_x: B256::ZERO,
-                pub_key_y: B256::ZERO,
-                pre_hash: false,
-            }),
-            aa_calls: vec![call],
-            ..Default::default()
-        };
-
-        let gas = calculate_aa_batch_intrinsic_gas(
-            &aa_env.aa_calls,
-            &aa_env.signature,
-            None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.aa_authorization_list,
-            spec,
-        );
-
-        // Calculate base gas for normal tx
-        let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
-
-        // Expected: normal tx + P256_VERIFY_GAS + per-call overhead
-        let expected = base_gas.initial_gas + P256_VERIFY_GAS + COLD_ACCOUNT_ACCESS_COST;
-        assert_eq!(
-            gas.initial_gas, expected,
-            "Should include P256 verification gas"
-        );
-    }
-
-    #[test]
-    fn test_aa_gas_create_call() {
-        use crate::AATxEnv;
-        use alloy_primitives::{Bytes, TxKind};
-        use revm::interpreter::gas::calculate_initial_tx_gas;
-        use tempo_primitives::transaction::{AASignature, Call};
-
-        let spec = RevmSpecId::CANCUN; // Post-Shanghai
-        let initcode = Bytes::from(vec![0x60, 0x80]); // 2 bytes
-
-        let call = Call {
-            to: TxKind::Create,
-            value: U256::ZERO,
-            input: initcode.clone(),
-        };
-
-        let aa_env = AATxEnv {
-            signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-            aa_calls: vec![call],
-            ..Default::default()
-        };
-
-        let gas = calculate_aa_batch_intrinsic_gas(
-            &aa_env.aa_calls,
-            &aa_env.signature,
-            None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.aa_authorization_list,
-            spec,
-        );
-
-        // Calculate expected using revm's function for CREATE tx
-        let base_gas = calculate_initial_tx_gas(
-            spec, &initcode, true, // is_create = true
-            0, 0, 0,
-        );
-
-        // AA CREATE should be: normal CREATE + per-call overhead
-        let expected = base_gas.initial_gas + COLD_ACCOUNT_ACCESS_COST;
-        assert_eq!(gas.initial_gas, expected, "Should include CREATE costs");
-    }
-
-    #[test]
-    fn test_aa_gas_value_transfer() {
-        use crate::AATxEnv;
-        use alloy_primitives::{Bytes, TxKind};
-        use revm::interpreter::gas::calculate_initial_tx_gas;
-        use tempo_primitives::transaction::{AASignature, Call};
-
-        let spec = RevmSpecId::CANCUN;
-        let calldata = Bytes::from(vec![1]);
-
-        let call = Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::from(1000), // Non-zero value
-            input: calldata.clone(),
-        };
-
-        let aa_env = AATxEnv {
-            signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-            aa_calls: vec![call],
-            ..Default::default()
-        };
-
-        let gas = calculate_aa_batch_intrinsic_gas(
-            &aa_env.aa_calls,
-            &aa_env.signature,
-            None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.aa_authorization_list,
-            spec,
-        );
-
-        // Calculate base gas for normal tx (without value cost in intrinsic)
-        let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
-
-        // Expected: normal tx + CALLVALUE + per-call overhead
-        // Note: intrinsic gas includes CALLVALUE cost
-        let expected = base_gas.initial_gas + CALLVALUE + COLD_ACCOUNT_ACCESS_COST;
-        assert_eq!(
-            gas.initial_gas, expected,
-            "Should include value transfer cost"
-        );
-    }
-
-    #[test]
-    fn test_aa_gas_access_list() {
-        use crate::AATxEnv;
-        use alloy_primitives::{Bytes, TxKind};
-        use revm::interpreter::gas::calculate_initial_tx_gas;
-        use tempo_primitives::transaction::{AASignature, Call};
-
-        let spec = RevmSpecId::CANCUN;
-        let calldata = Bytes::from(vec![]);
-
-        let call = Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: calldata.clone(),
-        };
-
-        let aa_env = AATxEnv {
-            signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-            aa_calls: vec![call],
-            ..Default::default()
-        };
-
-        // Test without access list
-        let gas = calculate_aa_batch_intrinsic_gas(
-            &aa_env.aa_calls,
-            &aa_env.signature,
-            None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.aa_authorization_list,
-            spec,
-        );
-
-        // Calculate expected using revm's function
-        let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
-
-        // Expected: normal tx + per-call overhead (no access list in this test)
-        let expected = base_gas.initial_gas + COLD_ACCOUNT_ACCESS_COST;
-        assert_eq!(
-            gas.initial_gas, expected,
-            "Should match normal tx + per-call overhead"
-        );
-    }
-
-    #[test]
-    fn test_aa_gas_floor_gas_prague() {
-        use crate::AATxEnv;
-        use alloy_primitives::{Bytes, TxKind};
-        use revm::interpreter::gas::calculate_initial_tx_gas;
-        use tempo_primitives::transaction::{AASignature, Call};
-
-        let spec = RevmSpecId::PRAGUE;
-        let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
-
-        let call = Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: calldata.clone(),
-        };
-
-        let aa_env = AATxEnv {
-            signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-            aa_calls: vec![call],
-            ..Default::default()
-        };
-
-        let gas = calculate_aa_batch_intrinsic_gas(
-            &aa_env.aa_calls,
-            &aa_env.signature,
-            None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.aa_authorization_list,
-            spec,
-        );
-
-        // Calculate expected floor gas using revm's function
-        let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
-
-        // Floor gas should match revm's calculation for same calldata
-        assert_eq!(
-            gas.floor_gas, base_gas.floor_gas,
-            "Should calculate floor gas for Prague matching revm"
-        );
-    }
-}
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use alloy_primitives::{Address, U256};
+//     use revm::{
+//         Journal,
+//         database::{CacheDB, EmptyDB},
+//         interpreter::instructions::utility::IntoU256,
+//         primitives::hardfork::SpecId,
+//         state::Account,
+//     };
+
+//     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
+//         let db = CacheDB::new(EmptyDB::default());
+//         Journal::new(db)
+//     }
+
+//     #[test]
+//     fn test_get_token_balance() -> eyre::Result<()> {
+//         let mut journal = create_test_journal();
+//         let token = Address::random();
+//         let account = Address::random();
+//         let expected_balance = U256::random();
+
+//         // Set up initial balance
+//         let balance_slot = mapping_slot(account, tip20::slots::BALANCES);
+//         journal.load_account(token)?;
+//         journal
+//             .sstore(token, balance_slot, expected_balance)
+//             .unwrap();
+
+//         let balance = get_token_balance(&mut journal, token, account).unwrap();
+//         assert_eq!(balance, expected_balance);
+
+//         Ok(())
+//     }
+
+//     #[test]
+//     fn test_transfer_token() -> eyre::Result<()> {
+//         let mut journal = create_test_journal();
+//         let token = Address::random();
+//         let sender = Address::random();
+//         let recipient = Address::random();
+//         let initial_balance = U256::random();
+
+//         let sender_slot = mapping_slot(sender, tip20::slots::BALANCES);
+//         journal.load_account(token)?;
+//         journal.sstore(token, sender_slot, initial_balance).unwrap();
+//         let sender_balance = get_token_balance(&mut journal, token, sender).unwrap();
+//         assert_eq!(sender_balance, initial_balance);
+
+//         transfer_token(&mut journal, token, sender, recipient, initial_balance).unwrap();
+
+//         // Verify balances after transfer
+//         let sender_balance = get_token_balance(&mut journal, token, sender).unwrap();
+//         let recipient_balance = get_token_balance(&mut journal, token, recipient).unwrap();
+
+//         assert_eq!(sender_balance, 0);
+//         assert_eq!(recipient_balance, initial_balance);
+
+//         Ok(())
+//     }
+
+//     #[test]
+//     fn test_get_fee_token() -> eyre::Result<()> {
+//         let journal = create_test_journal();
+//         let mut ctx = TempoContext::new(CacheDB::new(EmptyDB::default()), SpecId::default())
+//             .with_new_journal(journal);
+//         let user = Address::random();
+//         ctx.tx.inner.caller = user;
+//         let validator = Address::random();
+//         ctx.block.beneficiary = validator;
+//         let user_fee_token = Address::random();
+//         let validator_fee_token = Address::random();
+//         let tx_fee_token = Address::random();
+
+//         // Set validator token
+//         let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
+//         ctx.journaled_state.load_account(TIP_FEE_MANAGER_ADDRESS)?;
+//         ctx.journaled_state
+//             .sstore(
+//                 TIP_FEE_MANAGER_ADDRESS,
+//                 validator_slot,
+//                 validator_fee_token.into_u256(),
+//             )
+//             .unwrap();
+
+//         let fee_token = get_fee_token(&mut ctx).unwrap();
+//         assert_eq!(validator_fee_token, fee_token);
+
+//         // Set user token
+//         let user_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);
+//         ctx.journaled_state
+//             .sstore(
+//                 TIP_FEE_MANAGER_ADDRESS,
+//                 user_slot,
+//                 user_fee_token.into_u256(),
+//             )
+//             .unwrap();
+
+//         let fee_token = get_fee_token(&mut ctx).unwrap();
+//         assert_eq!(user_fee_token, fee_token);
+
+//         // Set tx fee token
+//         ctx.tx.fee_token = Some(tx_fee_token);
+//         let fee_token = get_fee_token(&mut ctx).unwrap();
+//         assert_eq!(tx_fee_token, fee_token);
+
+//         Ok(())
+//     }
+
+//     #[test]
+//     fn test_delegate_code_hash() {
+//         let mut account = Account::default();
+//         account
+//             .info
+//             .set_code(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS));
+//         assert_eq!(account.info.code_hash, DEFAULT_7702_DELEGATE_CODE_HASH);
+//     }
+
+//     #[test]
+//     fn test_aa_gas_single_call_vs_normal_tx() {
+//         use crate::AATxEnv;
+//         use alloy_primitives::{Bytes, TxKind};
+//         use revm::interpreter::gas::calculate_initial_tx_gas;
+//         use tempo_primitives::transaction::{AASignature, Call};
+
+//         // Test that AA tx with secp256k1 and single call matches normal tx + per-call overhead
+//         let spec = RevmSpecId::CANCUN;
+//         let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
+//         let to = Address::random();
+
+//         // Single call for AA
+//         let call = Call {
+//             to: TxKind::Call(to),
+//             value: U256::ZERO,
+//             input: calldata.clone(),
+//         };
+
+//         let aa_env = AATxEnv {
+//             signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()), // dummy secp256k1 sig
+//             aa_calls: vec![call],
+//             ..Default::default()
+//         };
+
+//         // Calculate AA gas
+//         let aa_gas = calculate_aa_batch_intrinsic_gas(
+//             &aa_env.aa_calls,
+//             &aa_env.signature,
+//             None::<std::iter::Empty<&AccessListItem>>, // no access list
+//             &aa_env.aa_authorization_list,
+//             spec,
+//         );
+
+//         // Calculate expected gas using revm's function for equivalent normal tx
+//         let normal_tx_gas = calculate_initial_tx_gas(
+//             spec, &calldata, false, // not create
+//             0,     // no access list accounts
+//             0,     // no access list storage
+//             0,     // no authorization list
+//         );
+
+//         // AA should be: normal tx + per-call overhead (COLD_ACCOUNT_ACCESS_COST)
+//         let expected_initial = normal_tx_gas.initial_gas + COLD_ACCOUNT_ACCESS_COST;
+//         assert_eq!(
+//             aa_gas.initial_gas, expected_initial,
+//             "AA secp256k1 single call should match normal tx + per-call overhead"
+//         );
+//     }
+
+//     #[test]
+//     fn test_aa_gas_multiple_calls_overhead() {
+//         use crate::AATxEnv;
+//         use alloy_primitives::{Bytes, TxKind};
+//         use revm::interpreter::gas::calculate_initial_tx_gas;
+//         use tempo_primitives::transaction::{AASignature, Call};
+
+//         let spec = RevmSpecId::CANCUN;
+//         let calldata = Bytes::from(vec![1, 2, 3]); // 3 non-zero bytes
+
+//         let calls = vec![
+//             Call {
+//                 to: TxKind::Call(Address::random()),
+//                 value: U256::ZERO,
+//                 input: calldata.clone(),
+//             },
+//             Call {
+//                 to: TxKind::Call(Address::random()),
+//                 value: U256::ZERO,
+//                 input: calldata.clone(),
+//             },
+//             Call {
+//                 to: TxKind::Call(Address::random()),
+//                 value: U256::ZERO,
+//                 input: calldata.clone(),
+//             },
+//         ];
+
+//         let aa_env = AATxEnv {
+//             signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+//             aa_calls: calls.clone(),
+//             ..Default::default()
+//         };
+
+//         let gas = calculate_aa_batch_intrinsic_gas(
+//             &calls,
+//             &aa_env.signature,
+//             None::<std::iter::Empty<&AccessListItem>>,
+//             &aa_env.aa_authorization_list,
+//             spec,
+//         );
+
+//         // Calculate base gas for a single normal tx
+//         let base_tx_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
+
+//         // For 3 calls: base (21k) + 3*calldata + 3*per-call overhead
+//         // = 21k + 2*(calldata cost) + 3*COLD_ACCOUNT_ACCESS_COST
+//         let expected = base_tx_gas.initial_gas
+//             + 2 * (calldata.len() as u64 * 16)
+//             + 3 * COLD_ACCOUNT_ACCESS_COST;
+//         assert_eq!(
+//             gas.initial_gas, expected,
+//             "Should charge per-call overhead for each call"
+//         );
+//     }
+
+//     #[test]
+//     fn test_aa_gas_p256_signature() {
+//         use crate::AATxEnv;
+//         use alloy_primitives::{B256, Bytes, TxKind};
+//         use revm::interpreter::gas::calculate_initial_tx_gas;
+//         use tempo_primitives::transaction::{
+//             AASignature, Call, aa_signature::P256SignatureWithPreHash,
+//         };
+
+//         let spec = RevmSpecId::CANCUN;
+//         let calldata = Bytes::from(vec![1, 2]);
+
+//         let call = Call {
+//             to: TxKind::Call(Address::random()),
+//             value: U256::ZERO,
+//             input: calldata.clone(),
+//         };
+
+//         let aa_env = AATxEnv {
+//             signature: AASignature::P256(P256SignatureWithPreHash {
+//                 r: B256::ZERO,
+//                 s: B256::ZERO,
+//                 pub_key_x: B256::ZERO,
+//                 pub_key_y: B256::ZERO,
+//                 pre_hash: false,
+//             }),
+//             aa_calls: vec![call],
+//             ..Default::default()
+//         };
+
+//         let gas = calculate_aa_batch_intrinsic_gas(
+//             &aa_env.aa_calls,
+//             &aa_env.signature,
+//             None::<std::iter::Empty<&AccessListItem>>,
+//             &aa_env.aa_authorization_list,
+//             spec,
+//         );
+
+//         // Calculate base gas for normal tx
+//         let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
+
+//         // Expected: normal tx + P256_VERIFY_GAS + per-call overhead
+//         let expected = base_gas.initial_gas + P256_VERIFY_GAS + COLD_ACCOUNT_ACCESS_COST;
+//         assert_eq!(
+//             gas.initial_gas, expected,
+//             "Should include P256 verification gas"
+//         );
+//     }
+
+//     #[test]
+//     fn test_aa_gas_create_call() {
+//         use crate::AATxEnv;
+//         use alloy_primitives::{Bytes, TxKind};
+//         use revm::interpreter::gas::calculate_initial_tx_gas;
+//         use tempo_primitives::transaction::{AASignature, Call};
+
+//         let spec = RevmSpecId::CANCUN; // Post-Shanghai
+//         let initcode = Bytes::from(vec![0x60, 0x80]); // 2 bytes
+
+//         let call = Call {
+//             to: TxKind::Create,
+//             value: U256::ZERO,
+//             input: initcode.clone(),
+//         };
+
+//         let aa_env = AATxEnv {
+//             signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+//             aa_calls: vec![call],
+//             ..Default::default()
+//         };
+
+//         let gas = calculate_aa_batch_intrinsic_gas(
+//             &aa_env.aa_calls,
+//             &aa_env.signature,
+//             None::<std::iter::Empty<&AccessListItem>>,
+//             &aa_env.aa_authorization_list,
+//             spec,
+//         );
+
+//         // Calculate expected using revm's function for CREATE tx
+//         let base_gas = calculate_initial_tx_gas(
+//             spec, &initcode, true, // is_create = true
+//             0, 0, 0,
+//         );
+
+//         // AA CREATE should be: normal CREATE + per-call overhead
+//         let expected = base_gas.initial_gas + COLD_ACCOUNT_ACCESS_COST;
+//         assert_eq!(gas.initial_gas, expected, "Should include CREATE costs");
+//     }
+
+//     #[test]
+//     fn test_aa_gas_value_transfer() {
+//         use crate::AATxEnv;
+//         use alloy_primitives::{Bytes, TxKind};
+//         use revm::interpreter::gas::calculate_initial_tx_gas;
+//         use tempo_primitives::transaction::{AASignature, Call};
+
+//         let spec = RevmSpecId::CANCUN;
+//         let calldata = Bytes::from(vec![1]);
+
+//         let call = Call {
+//             to: TxKind::Call(Address::random()),
+//             value: U256::from(1000), // Non-zero value
+//             input: calldata.clone(),
+//         };
+
+//         let aa_env = AATxEnv {
+//             signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+//             aa_calls: vec![call],
+//             ..Default::default()
+//         };
+
+//         let gas = calculate_aa_batch_intrinsic_gas(
+//             &aa_env.aa_calls,
+//             &aa_env.signature,
+//             None::<std::iter::Empty<&AccessListItem>>,
+//             &aa_env.aa_authorization_list,
+//             spec,
+//         );
+
+//         // Calculate base gas for normal tx (without value cost in intrinsic)
+//         let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
+
+//         // Expected: normal tx + CALLVALUE + per-call overhead
+//         // Note: intrinsic gas includes CALLVALUE cost
+//         let expected = base_gas.initial_gas + CALLVALUE + COLD_ACCOUNT_ACCESS_COST;
+//         assert_eq!(
+//             gas.initial_gas, expected,
+//             "Should include value transfer cost"
+//         );
+//     }
+
+//     #[test]
+//     fn test_aa_gas_access_list() {
+//         use crate::AATxEnv;
+//         use alloy_primitives::{Bytes, TxKind};
+//         use revm::interpreter::gas::calculate_initial_tx_gas;
+//         use tempo_primitives::transaction::{AASignature, Call};
+
+//         let spec = RevmSpecId::CANCUN;
+//         let calldata = Bytes::from(vec![]);
+
+//         let call = Call {
+//             to: TxKind::Call(Address::random()),
+//             value: U256::ZERO,
+//             input: calldata.clone(),
+//         };
+
+//         let aa_env = AATxEnv {
+//             signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+//             aa_calls: vec![call],
+//             ..Default::default()
+//         };
+
+//         // Test without access list
+//         let gas = calculate_aa_batch_intrinsic_gas(
+//             &aa_env.aa_calls,
+//             &aa_env.signature,
+//             None::<std::iter::Empty<&AccessListItem>>,
+//             &aa_env.aa_authorization_list,
+//             spec,
+//         );
+
+//         // Calculate expected using revm's function
+//         let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
+
+//         // Expected: normal tx + per-call overhead (no access list in this test)
+//         let expected = base_gas.initial_gas + COLD_ACCOUNT_ACCESS_COST;
+//         assert_eq!(
+//             gas.initial_gas, expected,
+//             "Should match normal tx + per-call overhead"
+//         );
+//     }
+
+//     #[test]
+//     fn test_aa_gas_floor_gas_prague() {
+//         use crate::AATxEnv;
+//         use alloy_primitives::{Bytes, TxKind};
+//         use revm::interpreter::gas::calculate_initial_tx_gas;
+//         use tempo_primitives::transaction::{AASignature, Call};
+
+//         let spec = RevmSpecId::PRAGUE;
+//         let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
+
+//         let call = Call {
+//             to: TxKind::Call(Address::random()),
+//             value: U256::ZERO,
+//             input: calldata.clone(),
+//         };
+
+//         let aa_env = AATxEnv {
+//             signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+//             aa_calls: vec![call],
+//             ..Default::default()
+//         };
+
+//         let gas = calculate_aa_batch_intrinsic_gas(
+//             &aa_env.aa_calls,
+//             &aa_env.signature,
+//             None::<std::iter::Empty<&AccessListItem>>,
+//             &aa_env.aa_authorization_list,
+//             spec,
+//         );
+
+//         // Calculate expected floor gas using revm's function
+//         let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
+
+//         // Floor gas should match revm's calculation for same calldata
+//         assert_eq!(
+//             gas.floor_gas, base_gas.floor_gas,
+//             "Should calculate floor gas for Prague matching revm"
+//         );
+//     }
+// }

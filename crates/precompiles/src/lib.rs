@@ -4,26 +4,26 @@
 
 pub mod error;
 pub use error::Result;
-pub mod linking_usd;
+// pub mod linking_usd;
 pub mod nonce;
-pub mod provider;
-pub mod stablecoin_exchange;
+// pub mod provider;
+// pub mod stablecoin_exchange;
 pub mod storage;
 pub mod tip20;
 pub mod tip20_factory;
 pub mod tip20_rewards_registry;
 pub mod tip403_registry;
 pub mod tip_account_registrar;
-pub mod tip_fee_manager;
+// pub mod tip_fee_manager;
 pub mod validator_config;
 
 use crate::{
-    linking_usd::LinkingUSD,
+    // linking_usd::LinkingUSD,
     nonce::NonceManager,
-    stablecoin_exchange::StablecoinExchange,
+    // stablecoin_exchange::StablecoinExchange,
     storage::evm::EvmPrecompileStorageProvider,
     tip_account_registrar::TipAccountRegistrar,
-    tip_fee_manager::TipFeeManager,
+    // tip_fee_manager::TipFeeManager,
     tip20::{TIP20Token, address_to_token_id_unchecked, is_tip20},
     tip20_factory::TIP20Factory,
     tip20_rewards_registry::TIP20RewardsRegistry,
@@ -117,11 +117,12 @@ macro_rules! tempo_precompile {
 pub struct TipFeeManagerPrecompile;
 impl TipFeeManagerPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
-        tempo_precompile!("TipFeeManager", |input| TipFeeManager::new(
-            TIP_FEE_MANAGER_ADDRESS,
-            input.internals.block_env().beneficiary(),
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id)
-        ))
+        todo!();
+        // tempo_precompile!("TipFeeManager", |input| TipFeeManager::new(
+        //     TIP_FEE_MANAGER_ADDRESS,
+        //     input.internals.block_env().beneficiary(),
+        //     &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id)
+        // ))
     }
 }
 
@@ -183,9 +184,10 @@ impl TIP20Precompile {
 pub struct StablecoinExchangePrecompile;
 impl StablecoinExchangePrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
-        tempo_precompile!("StablecoinExchange", |input| StablecoinExchange::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id)
-        ))
+        todo!();
+        // tempo_precompile!("StablecoinExchange", |input| StablecoinExchange::new(
+        //     &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id)
+        // ))
     }
 }
 
@@ -201,9 +203,10 @@ impl NoncePrecompile {
 pub struct LinkingUSDPrecompile;
 impl LinkingUSDPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
-        tempo_precompile!("LinkingUSD", |input| LinkingUSD::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id),
-        ))
+        todo!();
+        // tempo_precompile!("LinkingUSD", |input| LinkingUSD::new(
+        //     &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id),
+        // ))
     }
 }
 
