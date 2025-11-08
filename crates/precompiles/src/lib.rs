@@ -4,7 +4,7 @@
 
 pub mod error;
 pub use error::Result;
-// pub mod linking_usd;
+pub mod linking_usd;
 pub mod nonce;
 // pub mod provider;
 // pub mod stablecoin_exchange;
