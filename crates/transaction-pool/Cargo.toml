@@ -13,7 +13,7 @@ workspace = true
 
 [dependencies]
 tempo-precompiles = { workspace = true, features = ["reth"] }
-tempo-primitives.workspace = true
+tempo-primitives = { workspace = true, features = ["serde", "reth-codec"] }
 
 reth-transaction-pool.workspace = true
 reth-chainspec.workspace = true
