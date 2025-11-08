@@ -2,6 +2,7 @@
 pub mod dispatch;
 
 pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryEvent};
+use tempo_precompiles_macros::contract;
 
 use crate::{
     TIP20_FACTORY_ADDRESS,
@@ -13,24 +14,17 @@ use alloy::primitives::{Address, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
 use tracing::trace;
 
-mod slots {
-    use alloy::primitives::U256;
-
-    pub(super) const TOKEN_ID_COUNTER: U256 = U256::ZERO;
-}
-
-#[derive(Debug)]
-pub struct TIP20Factory<'a, S: PrecompileStorageProvider> {
-    pub storage: &'a mut S,
+#[contract]
+pub struct TIP20Factory {
+    // TODO: It would be nice to have a `#[initial_value=`n`]` macro
+    // to mimic setting an initial value in solidity
+    token_id_counter: U256,
 }
 
 // Precompile functions
 impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
-    /// Creates an instance of the factory account.
-    ///
-    /// Caution: This does not initialize the account, see [`Self::initialize`].
     pub fn new(storage: &'a mut S) -> Self {
-        Self { storage }
+        Self::_new(TIP20_FACTORY_ADDRESS, storage)
     }
 
     /// Initializes the TIP20 factory contract.
@@ -42,7 +36,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         self.storage.set_code(
             TIP20_FACTORY_ADDRESS,
             Bytecode::new_legacy(Bytes::from_static(&[0xef])),
-        )
+        );
+
+        self.sstore_token_id_counter(U256::ONE)
     }
 
     pub fn create_token(
@@ -50,7 +46,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         sender: Address,
         call: ITIP20Factory::createTokenCall,
     ) -> Result<Address> {
-        let token_id = self.token_id_counter()?.to::<u64>();
+        // TODO: We should update `token_id_counter` to be u64 in storage if we assume we can cast
+        // to u64 here. Or we should update `token_id_to_address` to take a larger value
+        let token_id = self
+            .sload_token_id_counter()?
+            .try_into()
+            .map_err(|_| TempoPrecompileError::under_overflow())?;
+
         trace!(%sender, %token_id, ?call, "Create token");
 
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
@@ -85,27 +87,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         )?;
 
         // increase the token counter
-        self.storage.sstore(
-            TIP20_FACTORY_ADDRESS,
-            slots::TOKEN_ID_COUNTER,
+        self.sstore_token_id_counter(
             token_id
                 .checked_add(U256::ONE)
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
         Ok(token_address)
-    }
-
-    pub fn token_id_counter(&mut self) -> Result<U256> {
-        let counter = self
-            .storage
-            .sload(TIP20_FACTORY_ADDRESS, slots::TOKEN_ID_COUNTER)?;
-
-        if counter.is_zero() {
-            Ok(U256::ONE)
-        } else {
-            Ok(counter)
-        }
     }
 }
 
