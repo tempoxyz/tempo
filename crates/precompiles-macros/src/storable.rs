@@ -20,13 +20,14 @@ use crate::{
 ///
 /// For enums: Requires unit variants only. Stores as a single u8.
 pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
-    // Dispatch to the appropriate implementation based on input type
-    if is_enum_input(&input.data) {
-        // TODO(rusowsky): enable once finished
-        // derive_enum_impl(input)
-    } else {
-        derive_struct_impl(input)
-    }
+    // TODO(rusowsky): enable once finished
+    // // Dispatch to the appropriate implementation based on input type
+    // if is_enum_input(&input.data) {
+    // derive_enum_impl(input)
+    // } else {
+    // derive_struct_impl(input)
+    // }
+    derive_struct_impl(input)
 }
 
 /// Implements the `Storable` derive macro for a struct with slot packing.

@@ -16,12 +16,12 @@ use alloy::primitives::U256;
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::{
-        Storable, StorableType, StorageOps,
+        Storable, StorableType, StorageKey, StorageOps,
         packing::{
             calc_element_offset, calc_element_slot, calc_packed_slot_count, extract_packed_value,
             insert_packed_value, is_packable, zero_packed_value,
         },
-        types::{Slot, SlotId},
+        types::{Slot, SlotId, mapping::mapping_slot},
     },
 };
 
@@ -125,6 +125,9 @@ where
     T: Storable<1> + StorableType,
     Id: SlotId,
 {
+    /// Returns the length of the vector.
+    fn len<S: StorageOps>(storage: &mut S) -> Result<usize>;
+
     /// Reads a single element at the specified index.
     fn read_at<S: StorageOps>(storage: &mut S, index: usize) -> Result<T>;
 
@@ -151,87 +154,100 @@ where
     T: Storable<1> + StorableType,
     Id: SlotId,
 {
-    fn read_at<S: StorageOps>(storage: &mut S, index: usize) -> Result<T> {
-        let base_slot = Id::SLOT;
-        let byte_count = T::BYTE_COUNT;
-        let data_start = calc_data_slot(base_slot);
+    fn len<S: StorageOps>(storage: &mut S) -> Result<usize> {
+        read_length(storage, Id::SLOT)
+    }
 
-        // Read at the given index
-        if is_packable(byte_count) {
-            read_single_packed_element(storage, data_start, index, byte_count)
-        } else {
-            read_single_unpacked_element(storage, data_start, index)
-        }
+    fn read_at<S: StorageOps>(storage: &mut S, index: usize) -> Result<T> {
+        vec_read_at(storage, Id::SLOT, index)
     }
 
     fn write_at<S: StorageOps>(storage: &mut S, index: usize, value: T) -> Result<()> {
-        let base_slot = Id::SLOT;
-        let byte_count = T::BYTE_COUNT;
-        let data_start = calc_data_slot(base_slot);
-        let length = read_length(storage, base_slot)?;
-
-        // Write at the given index
-        if is_packable(byte_count) {
-            write_single_packed_element(storage, data_start, index, byte_count, value)?;
-        } else {
-            write_single_unpacked_element(storage, data_start, index, value)?;
-        }
-
-        // If writing past the end, update length
-        if index >= length {
-            let new_length = index + 1;
-            storage.sstore(base_slot, U256::from(new_length))?;
-        }
-        Ok(())
+        vec_write_at(storage, Id::SLOT, index, value)
     }
 
     fn push<S: StorageOps>(storage: &mut S, value: T) -> Result<()> {
-        let base_slot = Id::SLOT;
-        let byte_count = T::BYTE_COUNT;
-        let data_start = calc_data_slot(base_slot);
-        let length = read_length(storage, base_slot)?;
-
-        // Write at the end
-        if is_packable(byte_count) {
-            write_single_packed_element(storage, data_start, length, byte_count, value)?;
-        } else {
-            write_single_unpacked_element(storage, data_start, length, value)?;
-        }
-
-        // Increment length
-        storage.sstore(base_slot, U256::from(length + 1))
+        vec_push(storage, Id::SLOT, value)
     }
 
     fn pop<S: StorageOps>(storage: &mut S) -> Result<Option<T>> {
-        let base_slot = Id::SLOT;
-        let byte_count = T::BYTE_COUNT;
-        let data_start = calc_data_slot(base_slot);
+        vec_pop(storage, Id::SLOT)
+    }
+}
 
-        // Read current length
-        let length = read_length(storage, base_slot)?;
-        if length == 0 {
-            return Ok(None);
-        }
-        let last_index = length - 1;
+// -- VEC MAPPING EXTENSION ----------------------------------------------------
 
-        // Read the last element
-        let element = if is_packable(byte_count) {
-            read_single_packed_element(storage, data_start, last_index, byte_count)?
-        } else {
-            read_single_unpacked_element(storage, data_start, last_index)?
-        };
+/// Extension trait for efficient vector operations on `Mapping<K, Vec<V>, Id>`.
+///
+/// This trait adds methods for reading, writing, pushing, and popping individual
+/// elements in a storage-backed vector without requiring a full vector load/store cycle.
+pub trait VecMappingExt<K, V, Id>
+where
+    K: StorageKey,
+    V: Storable<1> + StorableType,
+    Id: SlotId,
+{
+    /// Returns the length of the vector for the given key.
+    fn len<S: StorageOps>(storage: &mut S, key: K) -> Result<usize>;
 
-        // Zero out the element's storage
-        if is_packable(byte_count) {
-            zero_single_packed_element(storage, data_start, last_index, byte_count)?;
-        } else {
-            zero_single_unpacked_element(storage, data_start, last_index)?;
-        }
+    /// Reads a single element at the specified index for the given key.
+    fn read_at<S: StorageOps>(storage: &mut S, key: K, index: usize) -> Result<V>;
 
-        // Decrement length
-        storage.sstore(base_slot, U256::from(last_index))?;
+    /// Writes a single element at the specified index for the given key.
+    ///
+    /// If the index is >= the current length, the vector is automatically expanded
+    /// and the length is updated. Intermediate elements remain zero.
+    fn write_at<S: StorageOps>(storage: &mut S, key: K, index: usize, value: V) -> Result<()>;
 
-        Ok(Some(element))
+    /// Pushes a new element to the end of the vector for the given key.
+    ///
+    /// Automatically increments the length and handles packing for small types.
+    fn push<S: StorageOps>(storage: &mut S, key: K, value: V) -> Result<()>;
+
+    /// Pops the last element from the vector for the given key.
+    ///
+    /// Returns `None` if the vector is empty. Automatically decrements the length
+    /// and zeros out the popped element's storage slot.
+    fn pop<S: StorageOps>(storage: &mut S, key: K) -> Result<Option<V>>;
+}
+
+impl<K, V, Id> VecMappingExt<K, V, Id> for crate::storage::types::mapping::Mapping<K, Vec<V>, Id>
+where
+    K: StorageKey,
+    V: Storable<1> + StorableType,
+    Id: SlotId,
+{
+    fn len<S: StorageOps>(storage: &mut S, key: K) -> Result<usize> {
+        read_length(storage, mapping_slot(key.as_storage_bytes(), Id::SLOT))
+    }
+
+    fn read_at<S: StorageOps>(storage: &mut S, key: K, index: usize) -> Result<V> {
+        vec_read_at(
+            storage,
+            mapping_slot(key.as_storage_bytes(), Id::SLOT),
+            index,
+        )
+    }
+
+    fn write_at<S: StorageOps>(storage: &mut S, key: K, index: usize, value: V) -> Result<()> {
+        vec_write_at(
+            storage,
+            mapping_slot(key.as_storage_bytes(), Id::SLOT),
+            index,
+            value,
+        )
+    }
+
+    fn push<S: StorageOps>(storage: &mut S, key: K, value: V) -> Result<()> {
+        vec_push(
+            storage,
+            mapping_slot(key.as_storage_bytes(), Id::SLOT),
+            value,
+        )
+    }
+
+    fn pop<S: StorageOps>(storage: &mut S, key: K) -> Result<Option<V>> {
+        vec_pop(storage, mapping_slot(key.as_storage_bytes(), Id::SLOT))
     }
 }
 
@@ -239,7 +255,7 @@ where
 ///
 /// For Solidity compatibility, dynamic array data is stored at `keccak256(base_slot)`.
 #[inline]
-fn calc_data_slot(base_slot: U256) -> U256 {
+pub(crate) fn calc_data_slot(base_slot: U256) -> U256 {
     U256::from_be_bytes(alloy::primitives::keccak256(base_slot.to_be_bytes::<32>()).0)
 }
 
@@ -376,13 +392,13 @@ where
 
 /// Read the length of a vector from its base slot.
 #[inline]
-fn read_length<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<usize> {
+pub(crate) fn read_length<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<usize> {
     let length_value = storage.sload(base_slot)?;
     Ok(length_value.to::<usize>())
 }
 
 /// Read a single packed element from storage.
-fn read_single_packed_element<T, S>(
+pub(crate) fn read_single_packed_element<T, S>(
     storage: &mut S,
     data_start: U256,
     index: usize,
@@ -402,7 +418,7 @@ where
 }
 
 /// Write a single packed element to storage.
-fn write_single_packed_element<T, S>(
+pub(crate) fn write_single_packed_element<T, S>(
     storage: &mut S,
     data_start: U256,
     index: usize,
@@ -453,7 +469,11 @@ where
 }
 
 /// Read a single unpacked element from storage.
-fn read_single_unpacked_element<T, S>(storage: &mut S, data_start: U256, index: usize) -> Result<T>
+pub(crate) fn read_single_unpacked_element<T, S>(
+    storage: &mut S,
+    data_start: U256,
+    index: usize,
+) -> Result<T>
 where
     T: Storable<1>,
     S: StorageOps,
@@ -463,7 +483,7 @@ where
 }
 
 /// Write a single unpacked element to storage.
-fn write_single_unpacked_element<T, S>(
+pub(crate) fn write_single_unpacked_element<T, S>(
     storage: &mut S,
     data_start: U256,
     index: usize,
@@ -485,6 +505,114 @@ fn zero_single_unpacked_element<S: StorageOps>(
 ) -> Result<()> {
     let elem_slot = data_start + U256::from(index);
     storage.sstore(elem_slot, U256::ZERO)
+}
+
+// -- VEC OPERATION HELPERS ----------------------------------------------------
+
+/// Generic helper to read a single element at the specified index from a vec.
+fn vec_read_at<S, T>(storage: &mut S, base_slot: U256, index: usize) -> Result<T>
+where
+    S: StorageOps,
+    T: Storable<1> + StorableType,
+{
+    let byte_count = T::BYTE_COUNT;
+    let data_start = calc_data_slot(base_slot);
+
+    if is_packable(byte_count) {
+        read_single_packed_element(storage, data_start, index, byte_count)
+    } else {
+        read_single_unpacked_element(storage, data_start, index)
+    }
+}
+
+/// Generic helper to write a single element at the specified index in a vec.
+///
+/// If the index is >= the current length, the vector is automatically expanded
+/// and the length is updated.
+fn vec_write_at<S, T>(storage: &mut S, base_slot: U256, index: usize, value: T) -> Result<()>
+where
+    S: StorageOps,
+    T: Storable<1> + StorableType,
+{
+    let byte_count = T::BYTE_COUNT;
+    let data_start = calc_data_slot(base_slot);
+    let length = read_length(storage, base_slot)?;
+
+    // Write the element
+    if is_packable(byte_count) {
+        write_single_packed_element(storage, data_start, index, byte_count, value)?;
+    } else {
+        write_single_unpacked_element(storage, data_start, index, value)?;
+    }
+
+    // Update length if necessary
+    if index >= length {
+        storage.sstore(base_slot, U256::from(index + 1))?;
+    }
+
+    Ok(())
+}
+
+/// Generic helper to push a new element to the end of a vec.
+///
+/// Automatically increments the length.
+fn vec_push<S, T>(storage: &mut S, base_slot: U256, value: T) -> Result<()>
+where
+    S: StorageOps,
+    T: Storable<1> + StorableType,
+{
+    let byte_count = T::BYTE_COUNT;
+    let data_start = calc_data_slot(base_slot);
+    let length = read_length(storage, base_slot)?;
+
+    // Write at the end
+    if is_packable(byte_count) {
+        write_single_packed_element(storage, data_start, length, byte_count, value)?;
+    } else {
+        write_single_unpacked_element(storage, data_start, length, value)?;
+    }
+
+    // Increment length
+    storage.sstore(base_slot, U256::from(length + 1))
+}
+
+/// Generic helper to pop the last element from a vec.
+///
+/// Returns `None` if the vector is empty. Automatically decrements the length
+/// and zeros out the popped element's storage.
+fn vec_pop<S, T>(storage: &mut S, base_slot: U256) -> Result<Option<T>>
+where
+    S: StorageOps,
+    T: Storable<1> + StorableType,
+{
+    let byte_count = T::BYTE_COUNT;
+    let data_start = calc_data_slot(base_slot);
+
+    // Read current length
+    let length = read_length(storage, base_slot)?;
+    if length == 0 {
+        return Ok(None);
+    }
+    let last_index = length - 1;
+
+    // Read the last element
+    let element = if is_packable(byte_count) {
+        read_single_packed_element(storage, data_start, last_index, byte_count)?
+    } else {
+        read_single_unpacked_element(storage, data_start, last_index)?
+    };
+
+    // Zero out the element's storage
+    if is_packable(byte_count) {
+        zero_single_packed_element(storage, data_start, last_index, byte_count)?;
+    } else {
+        zero_single_unpacked_element(storage, data_start, last_index)?;
+    }
+
+    // Decrement length
+    storage.sstore(base_slot, U256::from(last_index))?;
+
+    Ok(Some(element))
 }
 
 #[cfg(test)]
@@ -1619,6 +1747,35 @@ mod tests {
         // Length should be 0
         let length = read_length(&mut contract, TestVecSlot2::SLOT).unwrap();
         assert_eq!(length, 0);
+    }
+
+    #[test]
+    fn test_vecext_len() {
+        let mut contract = setup_test_contract();
+        type VecSlot = Slot<Vec<u8>, TestVecSlot2>;
+
+        // Initial length should be 0
+        assert_eq!(VecSlot::len(&mut contract).unwrap(), 0);
+
+        // Push 3 elements
+        VecSlot::push(&mut contract, 10).unwrap();
+        assert_eq!(VecSlot::len(&mut contract).unwrap(), 1);
+
+        VecSlot::push(&mut contract, 20).unwrap();
+        assert_eq!(VecSlot::len(&mut contract).unwrap(), 2);
+
+        VecSlot::push(&mut contract, 30).unwrap();
+        assert_eq!(VecSlot::len(&mut contract).unwrap(), 3);
+
+        // Pop and verify length decreases
+        VecSlot::pop(&mut contract).unwrap();
+        assert_eq!(VecSlot::len(&mut contract).unwrap(), 2);
+
+        VecSlot::pop(&mut contract).unwrap();
+        assert_eq!(VecSlot::len(&mut contract).unwrap(), 1);
+
+        VecSlot::pop(&mut contract).unwrap();
+        assert_eq!(VecSlot::len(&mut contract).unwrap(), 0);
     }
 
     #[test]
