@@ -10,6 +10,7 @@ use tempo_precompiles::error;
 use tempo_precompiles_macros::{Storable, contract};
 
 mod arrays;
+mod enums;
 mod layouts;
 mod mappings;
 mod packing;

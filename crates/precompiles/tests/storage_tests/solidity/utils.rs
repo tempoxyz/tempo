@@ -86,8 +86,12 @@ pub(super) fn load_solc_layout(sol_file: &Path) -> StorageLayout {
             panic!("solc failed: {}", String::from_utf8_lossy(&output.stderr));
         }
 
-        let content = String::from_utf8_lossy(&output.stdout).to_string();
+        // (De)serialize the value back to a pretty-printed string, and save it
+        let json_value: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("failed to parse solc JSON output");
+        let content = serde_json::to_string_pretty(&json_value).expect("failed to format JSON");
         std::fs::write(&json_path, &content).expect("failed to write JSON file");
+
         content
     });
 

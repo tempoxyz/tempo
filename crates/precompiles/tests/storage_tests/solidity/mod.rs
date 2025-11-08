@@ -135,6 +135,36 @@ fn test_structs_layout() {
     }
 }
 
+// Test struct storage layout including individual struct member verification
+#[test]
+fn test_enums_layout() {
+    use crate::storage_tests::solidity::__packing_test_block_inner::*;
+
+    #[contract]
+    struct Structs {
+        field_a: U256,
+        block_data: TestBlockInner,
+        field_b: U256,
+    }
+
+    let solc_layout = load_solc_layout(&testdata("enum.sol"));
+
+    // Verify top-level fields
+    let rust_layout = layout_fields!(field_a, block_data, field_b);
+
+    if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
+        panic!("Layout mismatch:\n{}", errors.join("\n"));
+    }
+
+    // Verify struct member slots
+    let base_slot = slots::BLOCK_DATA;
+    let rust_struct = struct_fields!(base_slot, field1, field2, field3);
+
+    if let Err(errors) = compare_struct_members(&solc_layout, "block_data", &rust_struct) {
+        panic!("Struct member layout mismatch:\n{}", errors.join("\n"));
+    }
+}
+
 #[test]
 fn test_double_mappings_layout() {
     use alloy::primitives::FixedBytes;

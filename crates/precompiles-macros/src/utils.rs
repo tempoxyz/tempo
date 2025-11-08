@@ -296,6 +296,26 @@ pub(crate) fn is_array_type(ty: &Type) -> bool {
     matches!(ty, Type::Array(_))
 }
 
+/// Checks if the input data is an enum type.
+pub(crate) fn is_enum_input(data: &syn::Data) -> bool {
+    matches!(data, syn::Data::Enum(_))
+}
+
+/// Validates that all enum variants are unit variants with no data.
+pub(crate) fn validate_enum(
+    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
+) -> syn::Result<()> {
+    for variant in variants {
+        if !matches!(&variant.fields, syn::Fields::Unit) {
+            return Err(syn::Error::new_spanned(
+                variant,
+                "`Storable` only supports enums with unit variants",
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,5 +398,23 @@ mod tests {
         assert!(!is_dynamic_type(&parse_quote!(U256)));
         assert!(!is_dynamic_type(&parse_quote!(Address)));
         assert!(!is_dynamic_type(&parse_quote!(MyCustomStruct)));
+    }
+
+    #[test]
+    fn test_validate_enum() {
+        // Valid unit enum
+        let variants: syn::punctuated::Punctuated<syn::Variant, syn::token::Comma> =
+            parse_quote! { Variant1, Variant2, Variant3 };
+        assert!(validate_enum(&variants).is_ok());
+
+        // Enum with tuple variant
+        let variants: syn::punctuated::Punctuated<syn::Variant, syn::token::Comma> =
+            parse_quote! { Variant1, Variant2(u8) };
+        assert!(validate_enum(&variants).is_err());
+
+        // Enum with struct variant
+        let variants: syn::punctuated::Punctuated<syn::Variant, syn::token::Comma> =
+            parse_quote! { Variant1, Variant2 { field: u8 } };
+        assert!(validate_enum(&variants).is_err());
     }
 }
