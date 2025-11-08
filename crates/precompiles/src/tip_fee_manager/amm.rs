@@ -70,21 +70,33 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         self.sload_pools(pool_id)
     }
 
-    /// Checks if pool has enough liquidity for a fee swap
-    pub fn has_liquidity(
+    /// Ensures that pool has enough liquidity for a fee swap
+    pub fn reserve_liquidity(
         &mut self,
         user_token: Address,
         validator_token: Address,
-        amount_in: U256,
-    ) -> Result<bool> {
+        max_amount: U256,
+    ) -> Result<()> {
         let pool_id = PoolKey::new(user_token, validator_token).get_id();
-        let amount_out = amount_in
+        let amount_out = max_amount
             .checked_mul(M)
             .and_then(|product| product.checked_div(SCALE))
             .ok_or(TempoPrecompileError::under_overflow())?;
         let available_validator_token = self.get_effective_validator_reserve(pool_id)?;
 
-        Ok(amount_out <= available_validator_token)
+        if amount_out > available_validator_token {
+            return Err(TIPFeeAMMError::insufficient_liquidity().into());
+        }
+
+        let current_pending_fee_swap_in = self.get_pending_fee_swap_in(pool_id)?;
+        self.set_pending_fee_swap_in(
+            pool_id,
+            current_pending_fee_swap_in
+                .checked_add(max_amount)
+                .ok_or(TempoPrecompileError::under_overflow())?,
+        )?;
+
+        Ok(())
     }
 
     /// Calculate validator token reserve minus pending swaps
@@ -112,28 +124,19 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     }
 
     /// Execute a swap from one fee token to another
-    pub fn fee_swap(
+    pub fn release_liquidity(
         &mut self,
         user_token: Address,
         validator_token: Address,
-        amount_in: U256,
+        refund_amount: U256,
     ) -> Result<()> {
-        if !self.has_liquidity(user_token, validator_token, amount_in)? {
-            return Err(TIPFeeAMMError::insufficient_liquidity().into());
-        }
-
-        let pool_id = self.pool_id(user_token, validator_token);
-        let current_pending = U256::from(self.get_pending_fee_swap_in(pool_id)?);
-
-        let amount = current_pending
-            .checked_add(amount_in)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-
+        let pool_id = self.get_pool_id(user_token, validator_token);
+        let current_pending = self.get_pending_fee_swap_in(pool_id)?;
         self.set_pending_fee_swap_in(
             pool_id,
-            amount
-                .try_into()
-                .map_err(|_| TempoPrecompileError::under_overflow())?,
+            current_pending
+                .checked_sub(refund_amount)
+                .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
         Ok(())
@@ -580,12 +583,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         }
 
         // Check that withdrawal does not violate pending swaps
-        let available_user_token = self.get_effective_user_reserve(pool_id)?;
         let available_validator_token = self.get_effective_validator_reserve(pool_id)?;
-
-        if amount_user_token > available_user_token {
-            return Err(TIPFeeAMMError::insufficient_reserves().into());
-        }
 
         if amount_validator_token > available_validator_token {
             return Err(TIPFeeAMMError::insufficient_reserves().into());
@@ -822,7 +820,7 @@ mod tests {
         let expected_out = (amount_in * M) / SCALE;
 
         // Execute fee swap
-        amm.fee_swap(user_token, validator_token, amount_in)?;
+        amm.reserve_liquidity(user_token, validator_token, amount_in)?;
 
         // Check pending swaps updated
         let pending_in = amm.get_pending_fee_swap_in(pool_id)?;
@@ -859,7 +857,7 @@ mod tests {
         let too_large_amount = uint!(201_U256) * uint!(10_U256).pow(U256::from(6));
 
         // Execute fee swap - should fail
-        let result = amm.fee_swap(user_token, validator_token, too_large_amount);
+        let result = amm.reserve_liquidity(user_token, validator_token, too_large_amount);
 
         assert!(matches!(
             result,
@@ -889,7 +887,7 @@ mod tests {
         let amount_in = uint!(10000_U256) * uint!(10_U256).pow(U256::from(6));
 
         // Execute fee swap
-        amm.fee_swap(user_token, validator_token, amount_in)?;
+        amm.reserve_liquidity(user_token, validator_token, amount_in)?;
 
         // Calculate expected output using integer division (rounds down)
         let expected_out = (amount_in * M) / SCALE;
@@ -934,9 +932,9 @@ mod tests {
         let swap2 = uint!(2000_U256) * uint!(10_U256).pow(U256::from(6));
         let swap3 = uint!(3000_U256) * uint!(10_U256).pow(U256::from(6));
 
-        amm.fee_swap(user_token, validator_token, swap1)?;
-        amm.fee_swap(user_token, validator_token, swap2)?;
-        amm.fee_swap(user_token, validator_token, swap3)?;
+        amm.reserve_liquidity(user_token, validator_token, swap1)?;
+        amm.reserve_liquidity(user_token, validator_token, swap2)?;
+        amm.reserve_liquidity(user_token, validator_token, swap3)?;
 
         // Check total pending
         let total_pending = swap1 + swap2 + swap3;
@@ -991,7 +989,7 @@ mod tests {
 
         // Make the pool imbalanced by executing a fee swap
         let user_token_in = uint!(20000_U256) * uint!(10_U256).pow(U256::from(6)); // 20000 * 1e6
-        amm.fee_swap(user_token, validator_token, user_token_in)?;
+        amm.reserve_liquidity(user_token, validator_token, user_token_in)?;
         amm.execute_pending_fee_swaps(user_token, validator_token)?;
 
         let pool_before = amm.sload_pools(pool_id)?;
@@ -1091,14 +1089,16 @@ mod tests {
         // Test with amount that would work
         let ok_amount = uint!(100_U256) * uint!(10_U256).pow(U256::from(6));
         assert!(
-            amm.has_liquidity(user_token, validator_token, ok_amount)?,
+            amm.reserve_liquidity(user_token, validator_token, ok_amount)
+                .is_ok(),
             "Should have liquidity for 100 tokens"
         );
 
         // Test with amount that would fail
         let too_much = uint!(101_U256) * uint!(10_U256).pow(U256::from(6));
         assert!(
-            !amm.has_liquidity(user_token, validator_token, too_much)?,
+            amm.reserve_liquidity(user_token, validator_token, too_much)
+                .is_err(),
             "Should not have liquidity for 101 tokens"
         );
 

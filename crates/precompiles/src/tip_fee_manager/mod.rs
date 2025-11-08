@@ -141,10 +141,9 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         let validator_token = self.get_validator_token(beneficiary)?;
 
         // Verify pool liquidity if user token differs from validator token
-        if user_token != validator_token
-            && !self.has_liquidity(user_token, validator_token, max_amount)?
-        {
-            return Err(FeeManagerError::insufficient_liquidity().into());
+        if user_token != validator_token {
+            let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
+            amm.reserve_liquidity(user_token, validator_token, max_amount)?;
         }
 
         let mut tip20_token = TIP20Token::from_address(user_token, self.storage);
@@ -174,19 +173,17 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
 
         // Execute fee swap and track collected fees
-        if !actual_spending.is_zero() {
-            let validator_token = self.get_validator_token(beneficiary)?;
+        let validator_token = self.get_validator_token(beneficiary)?;
 
-            if fee_token == validator_token {
-                self.increment_collected_fees(actual_spending)?;
-            } else {
-                self.fee_swap(fee_token, validator_token, actual_spending)?;
+        if fee_token == validator_token {
+            self.increment_collected_fees(actual_spending)?;
+        } else {
+            self.release_liquidity(fee_token, validator_token, refund_amount)?;
 
-                // Track the token to be swapped
-                if !self.sload_token_in_fees_array(fee_token)? {
-                    self.add_token_to_fees_array(fee_token)?;
-                    self.sstore_token_in_fees_array(fee_token, true)?;
-                }
+            // Track the token to be swapped
+            if !self.sload_token_in_fees_array(fee_token)? {
+                self.add_token_to_fees_array(fee_token)?;
+                self.sstore_token_in_fees_array(fee_token, true)?;
             }
         }
 
