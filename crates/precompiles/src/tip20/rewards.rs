@@ -139,7 +139,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         // NOTE(rusowsky): first limb = u64, so it should be fine.
         // however, it would be easier to always work with U256, since
         // there is no possible slot packing in this slot (surrounded by U256)
-        self.set_last_update_time(accrue_to_timestamp.as_limbs()[0])?;
+        self.set_last_update_time(accrue_to_timestamp.to::<u64>())?;
 
         let opted_in_supply = U256::from(self.get_opted_in_supply()?);
         if opted_in_supply == U256::ZERO {
