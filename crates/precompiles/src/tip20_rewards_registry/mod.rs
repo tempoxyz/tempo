@@ -4,7 +4,7 @@ pub mod dispatch;
 use crate::{
     TIP20_REWARDS_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::{PrecompileStorageProvider, slots::mapping_slot},
+    storage::{ContractStorage, PrecompileStorageProvider, slots::mapping_slot},
     tip20::{TIP20Token, address_to_token_id_unchecked},
 };
 use alloy::{
@@ -468,9 +468,9 @@ mod tests {
         // Create a TIP20 token and start a reward stream
         let mut token = TIP20Token::new(1, &mut storage);
         token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        let token_addr = token.address();
 
-        let mut roles = token.get_roles_contract();
-        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+        token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         // Mint tokens for the reward
         let reward_amount = U256::from(100e18);
@@ -483,7 +483,7 @@ mod tests {
         )?;
 
         // Start a reward stream that lasts 5 seconds from current time (1500)
-        let current_time = token.storage.timestamp().to::<u128>();
+        let current_time = token.storage().timestamp().to::<u128>();
         let stream_id = token.start_reward(
             admin,
             ITIP20::startRewardCall {
@@ -494,10 +494,8 @@ mod tests {
         assert_eq!(stream_id, 1);
 
         let end_time = current_time + 5;
-        let mut registry = TIP20RewardsRegistry::new(token.storage);
+        let mut registry = TIP20RewardsRegistry::new(token.storage());
         registry.initialize()?;
-
-        let token_addr = token.token_address;
 
         // Test unauthorized caller
         let unauthorized = Address::random();
