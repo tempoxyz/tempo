@@ -17,31 +17,26 @@ use revm::{
 };
 
 pub use tempo_contracts::precompiles::{ITIP20RewardsRegistry, TIP20RewardsRegistryError};
-
-pub mod slots {
-    use alloy::primitives::{U256, uint};
-
-    pub const LAST_UPDATED_TIMESTAMP: U256 = uint!(0_U256);
-    // Mapping of (uint128 => []address) to indicate all tip20 tokens with reward streams
-    // ending at the specified timestamp
-    pub const STREAMS_ENDING_AT: U256 = uint!(1_U256);
-    // Mapping of (bytes32 => U256) mapping `streamKey` to `index` in `streamsEndingAt` array
-    pub const STREAM_INDEX: U256 = uint!(2_U256);
-}
+use tempo_precompiles_macros::contract;
 
 /// TIPRewardsRegistry precompile that tracks stream end times
 /// Maps timestamp -> Vec of token addresses with streams ending at that time
-pub struct TIP20RewardsRegistry<'a, S: PrecompileStorageProvider> {
-    storage: &'a mut S,
-    address: Address,
+#[contract]
+pub struct TIP20RewardsRegistry {
+    // uint128 public lastUpdatedTimestamp;
+    // mapping(uint128 => address[]) public streamsEndingAt;
+    // mapping(bytes32 => uint256) public streamIndex; // streamKey => index in streamsEndingAt array
+    last_updated_timestamp: u128,
+    streams_ending_at: Mapping<u128, Vec<Address>>,
+    stream_index: Mapping<B256, U256>,
 }
 
 impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
+    /// Creates an instance of the precompile.
+    ///
+    /// Caution: This does not initialize the account, see [`Self::initialize`].
     pub fn new(storage: &'a mut S) -> Self {
-        Self {
-            storage,
-            address: TIP20_REWARDS_REGISTRY_ADDRESS,
-        }
+        Self::_new(TIP20_REWARDS_REGISTRY_ADDRESS, storage)
     }
 
     /// Initializes the TIP20 rewards registry contract.
@@ -51,23 +46,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         self.storage.set_code(
             TIP20_REWARDS_REGISTRY_ADDRESS,
             Bytecode::new_legacy(Bytes::from_static(&[0xef])),
-        )
-    }
-
-    /// Get the last updated timestamp
-    fn get_last_updated_timestamp(&mut self) -> Result<u128> {
-        let val = self
-            .storage
-            .sload(self.address, slots::LAST_UPDATED_TIMESTAMP)?;
-        Ok(val.to::<u128>())
-    }
-
-    /// Set the last updated timestamp
-    fn set_last_updated_timestamp(&mut self, timestamp: u128) -> Result<()> {
-        self.storage.sstore(
-            self.address,
-            slots::LAST_UPDATED_TIMESTAMP,
-            U256::from(timestamp),
         )
     }
 
@@ -182,7 +160,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         }
 
         let current_timestamp = self.storage.timestamp().to::<u128>();
-        let mut last_updated = self.get_last_updated_timestamp()?;
+        let mut last_updated = self.sload_last_updated_timestamp()?;
 
         if last_updated == 0 {
             last_updated = current_timestamp.saturating_sub(1);
@@ -216,7 +194,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
                 .ok_or(TempoPrecompileError::under_overflow())?;
         }
 
-        self.set_last_updated_timestamp(current_timestamp)?;
+        self.sstore_last_updated_timestamp(current_timestamp)?;
 
         Ok(())
     }
@@ -228,7 +206,7 @@ mod tests {
     use crate::{
         LINKING_USD_ADDRESS,
         error::TempoPrecompileError,
-        storage::hashmap::HashMapStorageProvider,
+        storage::{StorageOps, hashmap::HashMapStorageProvider},
         tip20::{ISSUER_ROLE, TIP20Token, tests::initialize_linking_usd},
         tip20_rewards_registry::TIP20RewardsRegistry,
     };
@@ -239,28 +217,6 @@ mod tests {
         let admin = Address::random();
         initialize_linking_usd(&mut storage, admin).unwrap();
         (storage, admin)
-    }
-
-    #[test]
-    fn test_get_set_last_updated_timestamp() -> eyre::Result<()> {
-        let (mut storage, _admin) = setup_registry(1000);
-        let mut registry = TIP20RewardsRegistry::new(&mut storage);
-        registry.initialize()?;
-
-        let initial_timestamp = registry.get_last_updated_timestamp()?;
-        assert_eq!(initial_timestamp, 0);
-
-        let new_timestamp = 5000u128;
-        registry.set_last_updated_timestamp(new_timestamp)?;
-
-        let updated_timestamp = registry.get_last_updated_timestamp()?;
-        assert_eq!(updated_timestamp, new_timestamp);
-
-        registry.set_last_updated_timestamp(u128::MAX)?;
-        let max_timestamp = registry.get_last_updated_timestamp()?;
-        assert_eq!(max_timestamp, u128::MAX);
-
-        Ok(())
     }
 
     #[test]
@@ -517,7 +473,7 @@ mod tests {
         registry.storage.set_timestamp(U256::from(end_time));
         registry.finalize_streams(Address::ZERO)?;
 
-        let last_updated = registry.get_last_updated_timestamp()?;
+        let last_updated = registry.sload_last_updated_timestamp()?;
         assert_eq!(last_updated, end_time);
 
         // Verify streams were cleared from the registry
