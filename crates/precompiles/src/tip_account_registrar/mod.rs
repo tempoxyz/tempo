@@ -1,6 +1,7 @@
 pub mod dispatch;
 
 pub use tempo_contracts::precompiles::ITipAccountRegistrar;
+use tempo_precompiles_macros::contract;
 
 use crate::{error::Result, storage::PrecompileStorageProvider};
 use alloy::{
@@ -8,15 +9,20 @@ use alloy::{
     primitives::{Address, B512, U256},
 };
 use revm::{precompile::secp256k1::ecrecover, state::Bytecode};
-use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, precompiles::TIPAccountRegistrarError};
+use tempo_contracts::{
+    DEFAULT_7702_DELEGATE_ADDRESS,
+    precompiles::{TIP_ACCOUNT_REGISTRAR, TIPAccountRegistrarError},
+};
 
-pub struct TipAccountRegistrar<'a, S: PrecompileStorageProvider> {
-    storage: &'a mut S,
-}
+#[contract]
+pub struct TipAccountRegistrar {}
 
 impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
+    /// Creates an instance of the precompile.
+    ///
+    /// Caution: This does not initialize the account, see [`Self::initialize`].
     pub fn new(storage: &'a mut S) -> Self {
-        Self { storage }
+        Self::_new(TIP_ACCOUNT_REGISTRAR, storage)
     }
 
     /// Validates an ECDSA signature, and deploys the default 7702 delegate code
