@@ -119,25 +119,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         )
     }
 
-    /// Gets all TIP20 token addresses with streams ending at `timestamp` from storage
-    pub fn get_streams_ending_at_timestamp(&mut self, timestamp: u128) -> Result<Vec<Address>> {
-        let array_slot = mapping_slot(timestamp.to_be_bytes(), slots::STREAMS_ENDING_AT);
-        let length = self.storage.sload(self.address, array_slot)?;
-
-        let mut tokens = Vec::new();
-        for i in 0..length.to::<u64>() {
-            // Elements are stored at array_slot + 1 + index
-            let element_slot = array_slot + U256::ONE + U256::from(i);
-            let token_addr = self
-                .storage
-                .sload(self.address, element_slot)?
-                .into_address();
-            tokens.push(token_addr);
-        }
-
-        Ok(tokens)
-    }
-
     /// Finalize streams for all tokens ending at the current timestamp
     pub fn finalize_streams(&mut self, sender: Address) -> Result<()> {
         if sender != Address::ZERO {
@@ -160,7 +141,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
             .ok_or(TempoPrecompileError::under_overflow())?;
 
         while current_timestamp >= next_timestamp {
-            let tokens = self.get_streams_ending_at_timestamp(next_timestamp)?;
+            let tokens = self.sload_streams_ending_at(next_timestamp)?;
 
             for token in tokens {
                 let token_id = address_to_token_id_unchecked(token);
@@ -215,7 +196,7 @@ mod tests {
 
         registry.add_stream(token_addr, end_time)?;
 
-        let streams = registry.get_streams_ending_at_timestamp(end_time)?;
+        let streams = registry.sload_streams_ending_at(end_time)?;
         assert_eq!(streams.len(), 1);
         assert_eq!(streams[0], token_addr);
 
@@ -226,7 +207,7 @@ mod tests {
         let token_addr2 = Address::random();
         registry.add_stream(token_addr2, end_time)?;
 
-        let streams = registry.get_streams_ending_at_timestamp(end_time)?;
+        let streams = registry.sload_streams_ending_at(end_time)?;
         assert_eq!(streams.len(), 2);
         assert!(streams.contains(&token_addr));
         assert!(streams.contains(&token_addr2));
@@ -254,7 +235,7 @@ mod tests {
         registry.add_stream(token2, end_time)?;
         registry.add_stream(token3, end_time)?;
 
-        let streams = registry.get_streams_ending_at_timestamp(end_time)?;
+        let streams = registry.sload_streams_ending_at(end_time)?;
         assert_eq!(streams.len(), 3);
         assert_eq!(streams[0], token1);
         assert_eq!(streams[1], token2);
@@ -262,7 +243,7 @@ mod tests {
 
         registry.remove_stream(token2, end_time)?;
 
-        let streams = registry.get_streams_ending_at_timestamp(end_time)?;
+        let streams = registry.sload_streams_ending_at(end_time)?;
         assert_eq!(streams.len(), 2);
         assert_eq!(streams[0], token1);
         assert_eq!(streams[1], token3);
@@ -281,13 +262,13 @@ mod tests {
         assert_eq!(index3, U256::ONE);
 
         registry.remove_stream(token3, end_time)?;
-        let streams = registry.get_streams_ending_at_timestamp(end_time)?;
+        let streams = registry.sload_streams_ending_at(end_time)?;
         assert_eq!(streams.len(), 1);
         assert_eq!(streams[0], token1);
 
         registry.remove_stream(token1, end_time)?;
 
-        let streams = registry.get_streams_ending_at_timestamp(end_time)?;
+        let streams = registry.sload_streams_ending_at(end_time)?;
         assert_eq!(streams.len(), 0);
 
         // Test removing non-existent stream
@@ -310,13 +291,13 @@ mod tests {
 
         registry.push_stream_ending_at_timestamp(token1, timestamp)?;
 
-        let streams = registry.get_streams_ending_at_timestamp(timestamp)?;
+        let streams = registry.sload_streams_ending_at(timestamp)?;
         assert_eq!(streams.len(), 1);
         assert_eq!(streams[0], token1);
 
         registry.push_stream_ending_at_timestamp(token2, timestamp)?;
 
-        let streams = registry.get_streams_ending_at_timestamp(timestamp)?;
+        let streams = registry.sload_streams_ending_at(timestamp)?;
         assert_eq!(streams.len(), 2);
         assert_eq!(streams[0], token1);
         assert_eq!(streams[1], token2);
@@ -325,8 +306,8 @@ mod tests {
         let token3 = Address::random();
         registry.push_stream_ending_at_timestamp(token3, timestamp2)?;
 
-        let streams1 = registry.get_streams_ending_at_timestamp(timestamp)?;
-        let streams2 = registry.get_streams_ending_at_timestamp(timestamp2)?;
+        let streams1 = registry.sload_streams_ending_at(timestamp)?;
+        let streams2 = registry.sload_streams_ending_at(timestamp2)?;
         assert_eq!(streams1.len(), 2);
         assert_eq!(streams2.len(), 1);
         assert_eq!(streams2[0], token3);
@@ -335,14 +316,14 @@ mod tests {
     }
 
     #[test]
-    fn test_get_streams_ending_at_timestamp() -> eyre::Result<()> {
+    fn test_sload_streams_ending_at() -> eyre::Result<()> {
         let (mut storage, _admin) = setup_registry(1000);
         let mut registry = TIP20RewardsRegistry::new(&mut storage);
         registry.initialize()?;
 
         let timestamp = 2000u128;
 
-        let empty_streams = registry.get_streams_ending_at_timestamp(timestamp)?;
+        let empty_streams = registry.sload_streams_ending_at(timestamp)?;
         assert_eq!(empty_streams.len(), 0);
 
         let token1 = Address::random();
@@ -353,21 +334,21 @@ mod tests {
         registry.push_stream_ending_at_timestamp(token2, timestamp)?;
         registry.push_stream_ending_at_timestamp(token3, timestamp)?;
 
-        let streams = registry.get_streams_ending_at_timestamp(timestamp)?;
+        let streams = registry.sload_streams_ending_at(timestamp)?;
         assert_eq!(streams.len(), 3);
         assert_eq!(streams[0], token1);
         assert_eq!(streams[1], token2);
         assert_eq!(streams[2], token3);
 
         let other_timestamp = 3000u128;
-        let other_streams = registry.get_streams_ending_at_timestamp(other_timestamp)?;
+        let other_streams = registry.sload_streams_ending_at(other_timestamp)?;
         assert_eq!(other_streams.len(), 0);
 
         let token4 = Address::random();
         registry.push_stream_ending_at_timestamp(token4, other_timestamp)?;
 
-        let streams1 = registry.get_streams_ending_at_timestamp(timestamp)?;
-        let streams2 = registry.get_streams_ending_at_timestamp(other_timestamp)?;
+        let streams1 = registry.sload_streams_ending_at(timestamp)?;
+        let streams2 = registry.sload_streams_ending_at(other_timestamp)?;
 
         assert_eq!(streams1.len(), 3);
         assert_eq!(streams2.len(), 1);
@@ -424,7 +405,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify the stream was added to registry at the correct end time
-        let streams_before = registry.get_streams_ending_at_timestamp(end_time)?;
+        let streams_before = registry.sload_streams_ending_at(end_time)?;
         assert_eq!(streams_before.len(), 1);
         assert_eq!(streams_before[0], token_addr);
 
@@ -436,7 +417,7 @@ mod tests {
         assert_eq!(last_updated, end_time);
 
         // Verify streams were cleared from the registry
-        let streams_after = registry.get_streams_ending_at_timestamp(end_time)?;
+        let streams_after = registry.sload_streams_ending_at(end_time)?;
         assert_eq!(streams_after.len(), 0);
 
         let result = registry.finalize_streams(Address::ZERO);
