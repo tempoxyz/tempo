@@ -49,28 +49,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         )
     }
 
-    fn get_stream_index(&mut self, stream_key: B256) -> Result<U256> {
-        let index_slot = mapping_slot(stream_key, slots::STREAM_INDEX);
-        self.storage.sload(self.address, index_slot)
-    }
-
-    fn set_stream_index(&mut self, stream_key: B256, index: U256) -> Result<()> {
-        let index_slot = mapping_slot(stream_key, slots::STREAM_INDEX);
-        self.storage.sstore(self.address, index_slot, index)
-    }
-
-    fn remove_stream_index(&mut self, stream_key: B256) -> Result<()> {
-        let index_slot = mapping_slot(stream_key, slots::STREAM_INDEX);
-        self.storage.sstore(self.address, index_slot, U256::ZERO)
-    }
-
     /// Add a token to the registry for a given stream end time
     pub fn add_stream(&mut self, token: Address, end_time: u128) -> Result<()> {
         let stream_key = keccak256((token, end_time).abi_encode());
 
         let array_slot = mapping_slot(end_time.to_be_bytes(), slots::STREAMS_ENDING_AT);
         let index = self.storage.sload(self.address, array_slot)?;
-        self.set_stream_index(stream_key, index)?;
+        self.sstore_stream_index(stream_key, index)?;
 
         self.push_stream_ending_at_timestamp(token, end_time)?;
 
@@ -80,7 +65,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     /// Remove stream before it is finalized
     pub fn remove_stream(&mut self, token: Address, end_time: u128) -> Result<()> {
         let stream_key = keccak256((token, end_time).abi_encode());
-        let index = self.get_stream_index(stream_key)?;
+        let index = self.sload_stream_index(stream_key)?;
 
         let array_slot = mapping_slot(end_time.to_be_bytes(), slots::STREAMS_ENDING_AT);
         let length = self.storage.sload(self.address, array_slot)?;
@@ -101,12 +86,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
                 .sstore(self.address, current_element_slot, last_token.into_u256())?;
 
             let last_stream_key = keccak256((last_token, end_time).abi_encode());
-            self.set_stream_index(last_stream_key, index)?;
+            self.sstore_stream_index(last_stream_key, index)?;
         }
 
         // Update length of the array and remove the stream key from `streamIndex`
         self.storage.sstore(self.address, array_slot, last_index)?;
-        self.remove_stream_index(stream_key)?;
+        self.clear_stream_index(stream_key)?;
 
         Ok(())
     }
@@ -183,7 +168,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
                 tip20_token.finalize_streams(self.address, next_timestamp)?;
 
                 let stream_key = keccak256((token, next_timestamp).abi_encode());
-                self.remove_stream_index(stream_key)?;
+                self.clear_stream_index(stream_key)?;
             }
 
             let array_slot = mapping_slot(next_timestamp.to_be_bytes(), slots::STREAMS_ENDING_AT);
@@ -220,32 +205,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_set_stream_index() -> eyre::Result<()> {
-        let (mut storage, _admin) = setup_registry(1000);
-        let mut registry = TIP20RewardsRegistry::new(&mut storage);
-        registry.initialize()?;
-
-        let token = Address::random();
-        let end_time = 2000u128;
-        let stream_key = keccak256((token, end_time).abi_encode());
-
-        let initial_index = registry.get_stream_index(stream_key)?;
-        assert_eq!(initial_index, U256::ZERO);
-
-        let test_index = U256::from(42);
-        registry.set_stream_index(stream_key, test_index)?;
-
-        let retrieved_index = registry.get_stream_index(stream_key)?;
-        assert_eq!(retrieved_index, test_index);
-
-        registry.remove_stream_index(stream_key)?;
-        let cleared_index = registry.get_stream_index(stream_key)?;
-        assert_eq!(cleared_index, U256::ZERO);
-
-        Ok(())
-    }
-
-    #[test]
     fn test_add_stream() -> eyre::Result<()> {
         let (mut storage, _admin) = setup_registry(1000);
         let mut registry = TIP20RewardsRegistry::new(&mut storage);
@@ -261,7 +220,7 @@ mod tests {
         assert_eq!(streams[0], token_addr);
 
         let stream_key = keccak256((token_addr, end_time).abi_encode());
-        let index = registry.get_stream_index(stream_key)?;
+        let index = registry.sload_stream_index(stream_key)?;
         assert_eq!(index, U256::ZERO);
 
         let token_addr2 = Address::random();
@@ -273,7 +232,7 @@ mod tests {
         assert!(streams.contains(&token_addr2));
 
         let stream_key2 = keccak256((token_addr2, end_time).abi_encode());
-        let index2 = registry.get_stream_index(stream_key2)?;
+        let index2 = registry.sload_stream_index(stream_key2)?;
         assert_eq!(index2, U256::ONE);
 
         Ok(())
@@ -313,9 +272,9 @@ mod tests {
         let stream_key2 = keccak256((token2, end_time).abi_encode());
         let stream_key3 = keccak256((token3, end_time).abi_encode());
 
-        let index1 = registry.get_stream_index(stream_key1)?;
-        let index2 = registry.get_stream_index(stream_key2)?;
-        let index3 = registry.get_stream_index(stream_key3)?;
+        let index1 = registry.sload_stream_index(stream_key1)?;
+        let index2 = registry.sload_stream_index(stream_key2)?;
+        let index3 = registry.sload_stream_index(stream_key3)?;
 
         assert_eq!(index1, U256::ZERO);
         assert_eq!(index2, U256::ZERO);
