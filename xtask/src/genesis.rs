@@ -170,7 +170,7 @@ impl GenesisArgs {
         let validators = initialize_validator_config(admin, self.validators_config, &mut evm)?;
 
         println!("Initializing fee manager");
-        initialize_fee_manager(alpha_token_address, addresses, validators, &mut evm);
+        initialize_fee_manager(alpha_token_address, addresses.clone(), validators, &mut evm);
 
         println!("Initializing stablecoin exchange");
         initialize_stablecoin_exchange(&mut evm)?;
@@ -268,6 +268,18 @@ impl GenesisArgs {
                 ..Default::default()
             },
         );
+
+        // Fund the user accounts with ETH balance
+        // Skip the first 10 accounts as they're used for account abstraction tests
+        // which expect zero ETH balance
+        for (index, address) in addresses.iter().enumerate() {
+            if index >= 10 {
+                genesis_alloc
+                    .entry(*address)
+                    .or_insert_with(|| GenesisAccount::default())
+                    .balance = self.balance;
+            }
+        }
 
         let mut chain_config = ChainConfig {
             chain_id: self.chain_id,
