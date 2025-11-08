@@ -319,7 +319,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
         let next_quote_token = self.next_quote_token()?;
-        println!("LOADED NEXT TOKEN: {}", next_quote_token);
 
         // Check that this does not create a loop
         // Loop through quote tokens until we reach the root (LinkingUSD)
