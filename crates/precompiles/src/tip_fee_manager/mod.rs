@@ -10,7 +10,9 @@ pub use tempo_contracts::precompiles::{
 use crate::{
     DEFAULT_FEE_TOKEN,
     error::{Result, TempoPrecompileError},
-    storage::{PrecompileStorageProvider, StorageOps, VecSlotExt},
+    storage::{
+        PrecompileStorageProvider, Slot, Storable, StorageOps, VecSlotExt, slots::mapping_slot,
+    },
     tip_fee_manager::amm::{Pool, PoolKey},
     tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
 };
@@ -19,6 +21,9 @@ use crate::{
 use alloy::primitives::{Address, Bytes, IntoLogData, U256, uint};
 use revm::state::Bytecode;
 use tempo_precompiles_macros::contract;
+
+/// Helper type to easily interact with the `tokens_with_fees` array
+type TokensWithFees = Slot<Vec<Address>, Field4Slot>;
 
 #[contract]
 pub struct TipFeeManager {
@@ -246,40 +251,19 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
 
     /// Add a token to the tokens with fees array
     fn add_token_to_fees_array(&mut self, token: Address) -> Result<()> {
-        todo!()
-        // let length_slot = slots::tokens_with_fees_length_slot();
-        // let length = self.sload(length_slot)?;
-        // let token_slot = slots::tokens_with_fees_slot(length);
-        // self.sstore(token_slot, token.into_u256())?;
-        // self.sstore(length_slot, length + U256::ONE)
+        TokensWithFees::push(self, token)
     }
 
     /// Drain all tokens with fees by popping from the back until empty
     /// Returns a `Vec<Address>` with all the tokens that were in storage
     /// Also sets token_in_fees_array to false for each token
     fn drain_tokens_with_fees(&mut self) -> Result<Vec<Address>> {
-        todo!()
-        // let mut tokens = Vec::new();
-        // let length_slot = slots::tokens_with_fees_length_slot();
-        // let mut length = self.sload(length_slot)?;
-        //
-        // while !length.is_zero() {
-        //     let last_index = length - U256::ONE;
-        //     let slot = slots::tokens_with_fees_slot(last_index);
-        //     let token = self.sload(slot)?.into_address();
-        //     tokens.push(token);
-        //
-        //     // Set token in fees array to false
-        //     let in_fees_slot = slots::token_in_fees_array_slot(token);
-        //     self.sstore(in_fees_slot, U256::ZERO)?;
-        //
-        //     length = last_index;
-        // }
-        //
-        // // Update storage with final length
-        // self.sstore(length_slot, U256::ZERO)?;
-        //
-        // Ok(tokens)
+        let mut tokens = Vec::new();
+        while let Some(token) = TokensWithFees::pop(self)? {
+            tokens.push(token);
+        }
+
+        Ok(tokens)
     }
 
     /// Increment collected fees for the validator token
