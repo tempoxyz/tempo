@@ -56,10 +56,10 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                 })
             }
 
-            IStablecoinExchange::getPriceLevelCall::SELECTOR => {
-                view::<IStablecoinExchange::getPriceLevelCall>(calldata, |call| {
-                    self.get_price_level(call.base, call.tick, call.isBid)
-                        .map(Into::into)
+            IStablecoinExchange::getTickLevelCall::SELECTOR => {
+                view::<IStablecoinExchange::getTickLevelCall>(calldata, |call| {
+                    let level = self.get_price_level(call.base, call.tick, call.isBid)?;
+                    Ok((level.head, level.tail, level.total_liquidity).into())
                 })
             }
 
@@ -147,6 +147,41 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                     msg_sender,
                     |_s, _call| self.execute_block(msg_sender),
                 )
+            }
+            IStablecoinExchange::MIN_TICKCall::SELECTOR => {
+                view::<IStablecoinExchange::MIN_TICKCall>(calldata, |_call| {
+                    Ok(crate::stablecoin_exchange::MIN_TICK)
+                })
+            }
+            IStablecoinExchange::MAX_TICKCall::SELECTOR => {
+                view::<IStablecoinExchange::MAX_TICKCall>(calldata, |_call| {
+                    Ok(crate::stablecoin_exchange::MAX_TICK)
+                })
+            }
+            IStablecoinExchange::PRICE_SCALECall::SELECTOR => {
+                view::<IStablecoinExchange::PRICE_SCALECall>(calldata, |_call| {
+                    Ok(crate::stablecoin_exchange::PRICE_SCALE)
+                })
+            }
+            IStablecoinExchange::MIN_PRICECall::SELECTOR => {
+                view::<IStablecoinExchange::MIN_PRICECall>(calldata, |_call| {
+                    Ok(crate::stablecoin_exchange::MIN_PRICE)
+                })
+            }
+            IStablecoinExchange::MAX_PRICECall::SELECTOR => {
+                view::<IStablecoinExchange::MAX_PRICECall>(calldata, |_call| {
+                    Ok(crate::stablecoin_exchange::MAX_PRICE)
+                })
+            }
+            IStablecoinExchange::tickToPriceCall::SELECTOR => {
+                view::<IStablecoinExchange::tickToPriceCall>(calldata, |call| {
+                    Ok(crate::stablecoin_exchange::tick_to_price(call.tick))
+                })
+            }
+            IStablecoinExchange::priceToTickCall::SELECTOR => {
+                view::<IStablecoinExchange::priceToTickCall>(calldata, |call| {
+                    Ok(crate::stablecoin_exchange::price_to_tick(call.price))
+                })
             }
 
             _ => Err(PrecompileError::Other(

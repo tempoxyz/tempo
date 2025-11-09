@@ -72,6 +72,10 @@ sol! {
             address token1;
         }
 
+
+        // Constants
+        function MIN_LIQUIDITY() external view returns (uint256);
+
         // Pool Management
         function getPoolId(address userToken, address validatorToken) external pure returns (bytes32);
         function getPool(address userToken, address validatorToken) external view returns (Pool memory);

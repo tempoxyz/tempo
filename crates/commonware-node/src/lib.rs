@@ -11,7 +11,7 @@ pub(crate) mod epoch;
 pub(crate) mod marshal_utils;
 pub mod metrics;
 
-pub mod subblocks;
+pub(crate) mod subblocks;
 
 use std::net::SocketAddr;
 
