@@ -239,82 +239,32 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
     /// Update validator information (and optionally rotate to new address)
     pub fn update_validator(
         &mut self,
-        sender: &Address,
+        sender: Address,
         call: IValidatorConfig::updateValidatorCall,
     ) -> Result<(), TempoPrecompileError> {
         // Validator can update their own info
         if !self.validator_exists(sender)? {
             return Err(ValidatorConfigError::validator_not_found())?;
         }
-
-        let new_slot = slots::validator_base_slot(&call.newValidatorAddress);
-        let mut active: bool = false;
-        let mut index: u64 = 0;
+        let validator = self.sload_validators(call.newValidatorAddress)?;
 
         // Check if rotating to a new address
         // If so, we only need to delete storage at the old slot, since we would update the values at the new slot after
-        if call.newValidatorAddress != *sender {
-            if self.validator_exists(&call.newValidatorAddress)? {
+        if call.newValidatorAddress != sender {
+            if self.validator_exists(call.newValidatorAddress)? {
                 return Err(ValidatorConfigError::validator_already_exists())?;
             }
 
-            // Get old validator's slot
-            let old_slot = slots::validator_base_slot(sender);
-
-            // Clear old validator's publicKey
-            self.storage.sstore(
-                self.precompile_address,
-                old_slot + slots::VALIDATOR_KEY_OFFSET,
-                U256::ZERO,
+            let old_validator = self.sload_validators(sender)?;
+            // Update the validators array to point at the new validator address
+            ValidatorsArray::write_at(
+                self,
+                old_validator.index as usize,
+                call.newValidatorAddress,
             )?;
 
-            // Unpack active and index
-            (active, index) = slots::unpack_active_index(self.storage.sload(
-                self.precompile_address,
-                old_slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
-            )?);
-
-            // Clear old validator's active/index
-            self.storage.sstore(
-                self.precompile_address,
-                old_slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
-                U256::ZERO,
-            )?;
-
-            // Clear old validator's inboundAddress
-            self.delete_string(old_slot + slots::VALIDATOR_INBOUND_ADDRESS_OFFSET)?;
-
-            // Clear old validator's outboundAddress
-            self.delete_string(old_slot + slots::VALIDATOR_OUTBOUND_ADDRESS_OFFSET)?;
-
-            // Update the validators array to point to new address
-            let array_slot = slots::validator_at_index_slot(index);
-            self.storage.sstore(
-                self.precompile_address,
-                array_slot,
-                call.newValidatorAddress.into_word().into(),
-            )?;
-        }
-
-        let public_key = self.storage.sload(
-            self.precompile_address,
-            new_slot + slots::VALIDATOR_KEY_OFFSET,
-        )?;
-
-        if public_key != U256::from_be_bytes(call.publicKey.0) {
-            self.storage.sstore(
-                self.precompile_address,
-                new_slot + slots::VALIDATOR_KEY_OFFSET,
-                U256::from_be_bytes(call.publicKey.0),
-            )?;
-        }
-
-        if active || index != 0 {
-            self.storage.sstore(
-                self.precompile_address,
-                new_slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
-                slots::pack_active_index(active, index),
-            )?;
+            // Clear the old validator
+            self.clear_validators(sender)?;
         }
 
         ensure_is_host_port(&call.inboundAddress).map_err(|err| {
@@ -324,10 +274,6 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
                 format!("{err:?}"),
             )
         })?;
-        self.update_string(
-            new_slot + slots::VALIDATOR_INBOUND_ADDRESS_OFFSET,
-            call.inboundAddress,
-        )?;
 
         ensure_is_ip_port(&call.outboundAddress).map_err(|err| {
             ValidatorConfigError::not_ip_port(
@@ -336,189 +282,36 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
                 format!("{err:?}"),
             )
         })?;
-        self.update_string(
-            new_slot + slots::VALIDATOR_OUTBOUND_ADDRESS_OFFSET,
-            call.outboundAddress,
-        )?;
+
+        let validator = Validator {
+            public_key: call.publicKey,
+            active: true,
+            index: validator.index,
+            validator_address: call.newValidatorAddress,
+            inbound_address: call.inboundAddress,
+            outbound_address: call.outboundAddress,
+        };
+
+        self.sstore_validators(call.newValidatorAddress, validator)?;
+
         Ok(())
     }
 
     /// Change validator active status (owner only)
     pub fn change_validator_status(
         &mut self,
-        sender: &Address,
+        sender: Address,
         call: IValidatorConfig::changeValidatorStatusCall,
     ) -> Result<(), TempoPrecompileError> {
         self.check_owner(sender)?;
 
-        if !self.validator_exists(&call.validator)? {
+        if !self.validator_exists(call.validator)? {
             return Err(ValidatorConfigError::validator_not_found())?;
         }
 
-        // Read current packed value to get the index
-        let slot = slots::validator_base_slot(&call.validator);
-        let current_value = self.storage.sload(
-            self.precompile_address,
-            slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
-        )?;
-        let (_, index) = slots::unpack_active_index(current_value);
-
-        // Write new packed value with updated active status
-        let new_packed_value = slots::pack_active_index(call.active, index);
-        self.storage.sstore(
-            self.precompile_address,
-            slot + slots::VALIDATOR_ACTIVE_INDEX_OFFSET,
-            new_packed_value,
-        )?;
-
-        Ok(())
-    }
-
-    // Helper methods for string storage
-    fn read_string(&mut self, slot: U256) -> Result<String, TempoPrecompileError> {
-        let first_value = self.storage.sload(self.precompile_address, slot)?;
-        let first_bytes = first_value.to_be_bytes::<32>();
-        let len = u16::from_be_bytes([first_bytes[0], first_bytes[1]]) as usize;
-
-        if len == 0 {
-            return Ok(String::new());
-        }
-
-        let mut all_bytes = Vec::with_capacity(len);
-        let first_chunk_len = len.min(30);
-        all_bytes.extend_from_slice(&first_bytes[2..2 + first_chunk_len]);
-
-        let mut remaining = len
-            .checked_sub(first_chunk_len)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        let mut slot_offset: usize = 1;
-        while remaining > 0 {
-            let slot_value = self
-                .storage
-                .sload(self.precompile_address, slot + U256::from(slot_offset))?;
-            let slot_bytes = slot_value.to_be_bytes::<32>();
-            let to_read = remaining.min(32);
-            all_bytes.extend_from_slice(&slot_bytes[..to_read]);
-            remaining = remaining
-                .checked_sub(to_read)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            slot_offset = slot_offset
-                .checked_add(1)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-        }
-
-        Ok(String::from_utf8_lossy(&all_bytes).to_string())
-    }
-
-    fn write_string(&mut self, slot: U256, value: String) -> Result<(), TempoPrecompileError> {
-        let bytes = value.as_bytes();
-        let len = bytes.len();
-
-        let mut first_slot = [0u8; 32];
-        let len_bytes = (len as u16).to_be_bytes();
-        first_slot[0] = len_bytes[0];
-        first_slot[1] = len_bytes[1];
-        let first_chunk_len = len.min(30);
-        first_slot[2..2 + first_chunk_len].copy_from_slice(&bytes[..first_chunk_len]);
-        self.storage.sstore(
-            self.precompile_address,
-            slot,
-            U256::from_be_bytes(first_slot),
-        )?;
-
-        if len > 30 {
-            for (i, chunk) in bytes[30..].chunks(32).enumerate() {
-                let mut slot_bytes = [0u8; 32];
-                slot_bytes[..chunk.len()].copy_from_slice(chunk);
-                self.storage.sstore(
-                    self.precompile_address,
-                    slot + U256::from(i + 1),
-                    U256::from_be_bytes(slot_bytes),
-                )?;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn update_string(&mut self, slot: U256, value: String) -> Result<(), TempoPrecompileError> {
-        let bytes = value.as_bytes();
-        let new_len = bytes.len();
-
-        // Read old length
-        let old_first_value = self.storage.sload(self.precompile_address, slot)?;
-        let old_first_bytes = old_first_value.to_be_bytes::<32>();
-        let old_len = u16::from_be_bytes([old_first_bytes[0], old_first_bytes[1]]) as usize;
-
-        // Prepare new first slot
-        let mut slot_to_store = [0u8; 32];
-        let len_bytes = (new_len as u16).to_be_bytes();
-        slot_to_store[0] = len_bytes[0];
-        slot_to_store[1] = len_bytes[1];
-        let first_chunk_len = new_len.min(30);
-        slot_to_store[2..2 + first_chunk_len].copy_from_slice(&bytes[..first_chunk_len]);
-
-        // Update first slot if changed
-        if old_first_bytes != slot_to_store {
-            self.storage.sstore(
-                self.precompile_address,
-                slot,
-                U256::from_be_bytes(slot_to_store),
-            )?;
-        }
-
-        // Update additional slots if needed
-        if new_len > 30 {
-            for (i, chunk) in bytes[30..].chunks(32).enumerate() {
-                let mut new_slot_bytes = [0u8; 32];
-                new_slot_bytes[..chunk.len()].copy_from_slice(chunk);
-
-                // Only write if different from current value
-                let current_value = self
-                    .storage
-                    .sload(self.precompile_address, slot + U256::from(i + 1))?;
-                if current_value.to_be_bytes::<32>() != new_slot_bytes {
-                    self.storage.sstore(
-                        self.precompile_address,
-                        slot + U256::from(i + 1),
-                        U256::from_be_bytes(new_slot_bytes),
-                    )?;
-                }
-            }
-        }
-
-        // Clear any extra slots if new string is shorter
-        if old_len > new_len {
-            // ceil division but take into account the 2-byte length header
-            let old_total_slots = (old_len + 2).div_ceil(32);
-            let new_total_slots = (new_len + 2).div_ceil(32);
-            for i in new_total_slots..old_total_slots {
-                self.storage
-                    .sstore(self.precompile_address, slot + U256::from(i), U256::ZERO)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn delete_string(&mut self, slot: U256) -> Result<(), TempoPrecompileError> {
-        let first_value = self.storage.sload(self.precompile_address, slot)?;
-        let first_bytes = first_value.to_be_bytes::<32>();
-        let len = u16::from_be_bytes([first_bytes[0], first_bytes[1]]) as usize;
-
-        self.storage
-            .sstore(self.precompile_address, slot, U256::ZERO)?;
-
-        if len > 30 {
-            let num_slots = (len - 30).div_ceil(32);
-            for i in 0..num_slots {
-                self.storage.sstore(
-                    self.precompile_address,
-                    slot + U256::from(i + 1),
-                    U256::ZERO,
-                )?;
-            }
-        }
+        let mut validator = self.sload_validators(call.validator)?;
+        validator.active = call.active;
+        self.sstore_validators(call.validator, validator)?;
 
         Ok(())
     }
