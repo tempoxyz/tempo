@@ -577,11 +577,9 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify user got the refund
-        {
-            let mut tip20_token = TIP20Token::from_address(token, &mut storage);
-            let balance = tip20_token.balance_of(ITIP20::balanceOfCall { account: user })?;
-            assert_eq!(balance, refund_amount);
-        }
+        let mut tip20_token = TIP20Token::from_address(token, &mut storage);
+        let balance = tip20_token.balance_of(ITIP20::balanceOfCall { account: user })?;
+        assert_eq!(balance, refund_amount);
 
         // Verify fees were tracked
         let tracked_amount = fee_manager.sload_collected_fees()?;
