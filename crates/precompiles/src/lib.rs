@@ -20,6 +20,7 @@ pub mod validator_config;
 use crate::{
     linking_usd::LinkingUSD,
     nonce::NonceManager,
+    stablecoin_exchange::StablecoinExchange,
     storage::evm::EvmPrecompileStorageProvider,
     tip_account_registrar::TipAccountRegistrar,
     tip_fee_manager::TipFeeManager,
@@ -186,10 +187,9 @@ impl TIP20Precompile {
 pub struct StablecoinExchangePrecompile;
 impl StablecoinExchangePrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
-        todo!();
-        // tempo_precompile!("StablecoinExchange", |input| StablecoinExchange::new(
-        //     &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id)
-        // ))
+        tempo_precompile!("StablecoinExchange", |input| StablecoinExchange::new(
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id)
+        ))
     }
 }
 
