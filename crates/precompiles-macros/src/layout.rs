@@ -48,7 +48,7 @@ pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<AllocatedF
     let mut last_auto_slot = U256::ZERO;
     let classified_fields: Vec<FieldKind<'_>> = fields
         .iter()
-        .map(|field| classify_field(&field.ty))
+        .map(|field| classify_field(field))
         .collect::<syn::Result<_>>()?;
 
     for (idx, (field, kind)) in fields.iter().zip(classified_fields.into_iter()).enumerate() {
@@ -109,8 +109,10 @@ pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<AllocatedF
     Ok(allocated_fields)
 }
 
-/// Classify a field based on its type
-fn classify_field(ty: &Type) -> syn::Result<FieldKind<'_>> {
+/// Classify a field based on its type and attributes
+fn classify_field(field: &FieldInfo) -> syn::Result<FieldKind<'_>> {
+    let ty = &field.ty;
+
     // Check if it's a mapping
     if let Some((key_ty, value_ty)) = extract_mapping_types(ty) {
         if let Some((key2_ty, value2_ty)) = extract_mapping_types(value_ty) {
@@ -125,6 +127,11 @@ fn classify_field(ty: &Type) -> syn::Result<FieldKind<'_>> {
                 value: value_ty,
             });
         }
+    }
+
+    // Check if marked as struct with mappings
+    if field.struct_with_mappings {
+        return Ok(FieldKind::StructWithMappings(ty));
     }
 
     // If not a mapping, check if it's a multi-slot field type (structs and fixed-size arrays)
@@ -385,6 +392,11 @@ pub(crate) fn gen_getters_and_setters(
                     }
                 }
             }
+        }
+        FieldKind::StructWithMappings(_ty) => {
+            // Structs with mapping fields cannot be loaded/stored as a whole
+            // Individual field access must be done manually using the packing module constants
+            quote! {}
         }
     }
 }

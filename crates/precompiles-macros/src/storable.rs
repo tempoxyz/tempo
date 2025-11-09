@@ -7,8 +7,8 @@ use syn::{Data, DeriveInput, Fields, Ident, Type};
 use crate::{
     storable_primitives::gen_struct_arrays,
     utils::{
-        extract_storable_array_sizes, is_array_type, is_custom_struct, is_dynamic_type,
-        normalize_to_snake_case,
+        extract_mapping_types, extract_storable_array_sizes, is_array_type, is_custom_struct,
+        is_dynamic_type, is_mapping_type, normalize_to_snake_case,
     },
 };
 
@@ -62,37 +62,72 @@ fn derive_struct_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         .map(|f| (f.ident.as_ref().unwrap(), &f.ty))
         .collect();
 
+    // Check if any field is a Mapping type
+    let has_mapping_fields = field_infos
+        .iter()
+        .any(|(_, ty)| extract_mapping_types(ty).is_some());
+
     // Generate unique module name based on struct name
     let mod_ident = format_ident!("__packing_{}", normalize_to_snake_case(&strukt.to_string()));
 
     // Generate helper module with packing layout calculations
     let packing_module = gen_packing_module(&field_infos, &mod_ident);
 
-    // Generate load and store implementations
-    let load_impl = gen_load_impl(&field_infos, &mod_ident);
-    let store_impl = gen_store_impl(&field_infos, &mod_ident);
-    let to_evm_words_impl = gen_to_evm_words_impl(&field_infos, &mod_ident);
-    let from_evm_words_impl = gen_from_evm_words_impl(&field_infos, &mod_ident);
-
     let field_names: Vec<_> = field_infos.iter().map(|(name, _)| name).collect();
 
-    // Generate the trait implementations
-    let expanded = quote! {
-        #packing_module
+    // Conditionally generate trait implementations based on whether struct has mapping fields
+    let expanded = if has_mapping_fields {
+        // Structs with mapping fields: generate partial Storable implementation
+        // that loads/stores only scalar fields, skipping mapping fields
 
-        // impl `StorableType` for byte count access
-        impl #impl_generics crate::storage::StorableType for #strukt #ty_generics #where_clause {
-            // Enforce BYTE_COUNT = SLOT_COUNT * 32 for derived structs (required for packing logic)
-            const BYTE_COUNT: usize = #mod_ident::SLOT_COUNT * 32;
-        }
+        // Create indexed field info: (original_index, name, type)
+        let indexed_field_infos: Vec<(usize, &Ident, &Type)> = field_infos
+            .iter()
+            .enumerate()
+            .map(|(idx, (name, ty))| (idx, *name, *ty))
+            .collect();
 
-        // Add SLOT_COUNT as an inherent const for use in const generic contexts
-        impl #impl_generics #strukt #ty_generics #where_clause {
-            pub const SLOT_COUNT: usize = #mod_ident::SLOT_COUNT;
-        }
+        // Filter to only scalar (non-mapping) fields for load/store operations
+        let scalar_indexed_fields: Vec<(usize, &Ident, &Type)> = indexed_field_infos
+            .iter()
+            .copied()
+            .filter(|(_, _, ty)| extract_mapping_types(ty).is_none())
+            .collect();
 
-        // impl `Storable` with const generic for slot count
-        impl #impl_generics crate::storage::Storable<{ #mod_ident::SLOT_COUNT }> for #strukt #ty_generics #where_clause {
+        // Separate field names for struct construction
+        let scalar_field_names: Vec<_> = scalar_indexed_fields
+            .iter()
+            .map(|(_, name, _)| name)
+            .collect();
+
+        let mapping_field_names: Vec<_> = indexed_field_infos
+            .iter()
+            .filter(|(_, _, ty)| extract_mapping_types(ty).is_some())
+            .map(|(_, name, _)| name)
+            .collect();
+
+        // Generate load/store implementations for scalar fields only
+        let load_impl = gen_load_impl(&scalar_indexed_fields, &mod_ident);
+        let store_impl = gen_store_impl(&scalar_indexed_fields, &mod_ident);
+        let to_evm_words_impl = gen_to_evm_words_impl(&scalar_indexed_fields, &mod_ident);
+        let from_evm_words_impl = gen_from_evm_words_impl(&scalar_indexed_fields, &mod_ident);
+
+        quote! {
+            #packing_module
+
+            // impl `StorableType` for byte count access
+            impl #impl_generics crate::storage::StorableType for #strukt #ty_generics #where_clause {
+                // Enforce BYTE_COUNT = SLOT_COUNT * 32 for derived structs (required for packing logic)
+                const BYTE_COUNT: usize = #mod_ident::SLOT_COUNT * 32;
+            }
+
+            // Add SLOT_COUNT as an inherent const for use in const generic contexts
+            impl #impl_generics #strukt #ty_generics #where_clause {
+                pub const SLOT_COUNT: usize = #mod_ident::SLOT_COUNT;
+            }
+
+            // Partial Storable implementation: loads/stores only scalar fields, skips mappings
+            impl #impl_generics crate::storage::Storable<{ #mod_ident::SLOT_COUNT }> for #strukt #ty_generics #where_clause {
                 const SLOT_COUNT: usize = #mod_ident::SLOT_COUNT;
 
                 fn load<S>(
@@ -107,7 +142,9 @@ fn derive_struct_impl(input: DeriveInput) -> syn::Result<TokenStream> {
                     #load_impl
 
                     Ok(Self {
-                        #(#field_names),*
+                        #(#scalar_field_names),*,
+                        // Initialize mapping fields with default (zero-sized)
+                        #(#mapping_field_names: Default::default()),*
                     })
                 }
 
@@ -138,10 +175,93 @@ fn derive_struct_impl(input: DeriveInput) -> syn::Result<TokenStream> {
                     #from_evm_words_impl
 
                     Ok(Self {
-                        #(#field_names),*
+                        #(#scalar_field_names),*,
+                        // Initialize mapping fields with default (zero-sized)
+                        #(#mapping_field_names: Default::default()),*
                     })
                 }
             }
+        }
+    } else {
+        // Structs without mapping fields: generate full Storable implementation
+        let indexed_fields: Vec<(usize, &Ident, &Type)> = field_infos
+            .iter()
+            .enumerate()
+            .map(|(idx, (name, ty))| (idx, *name, *ty))
+            .collect();
+
+        // Generate load and store implementations
+        let load_impl = gen_load_impl(&indexed_fields, &mod_ident);
+        let store_impl = gen_store_impl(&indexed_fields, &mod_ident);
+        let to_evm_words_impl = gen_to_evm_words_impl(&indexed_fields, &mod_ident);
+        let from_evm_words_impl = gen_from_evm_words_impl(&indexed_fields, &mod_ident);
+
+        quote! {
+            #packing_module
+
+            // impl `StorableType` for byte count access
+            impl #impl_generics crate::storage::StorableType for #strukt #ty_generics #where_clause {
+                // Enforce BYTE_COUNT = SLOT_COUNT * 32 for derived structs (required for packing logic)
+                const BYTE_COUNT: usize = #mod_ident::SLOT_COUNT * 32;
+            }
+
+            // Add SLOT_COUNT as an inherent const for use in const generic contexts
+            impl #impl_generics #strukt #ty_generics #where_clause {
+                pub const SLOT_COUNT: usize = #mod_ident::SLOT_COUNT;
+            }
+
+            // impl `Storable` with const generic for slot count
+            impl #impl_generics crate::storage::Storable<{ #mod_ident::SLOT_COUNT }> for #strukt #ty_generics #where_clause {
+                    const SLOT_COUNT: usize = #mod_ident::SLOT_COUNT;
+
+                    fn load<S>(
+                        storage: &mut S,
+                        base_slot: ::alloy::primitives::U256,
+                    ) -> crate::error::Result<Self>
+                    where
+                        S: crate::storage::StorageOps,
+                    {
+                        use crate::storage::Storable;
+
+                        #load_impl
+
+                        Ok(Self {
+                            #(#field_names),*
+                        })
+                    }
+
+                    fn store<S>(
+                        &self,
+                        storage: &mut S,
+                        base_slot: ::alloy::primitives::U256,
+                    ) -> crate::error::Result<()>
+                    where
+                        S: crate::storage::StorageOps,
+                    {
+                        use crate::storage::Storable;
+
+                        #store_impl
+
+                        Ok(())
+                    }
+
+                    fn to_evm_words(&self) -> crate::error::Result<[::alloy::primitives::U256; { #mod_ident::SLOT_COUNT }]> {
+                        use crate::storage::Storable;
+
+                        #to_evm_words_impl
+                    }
+
+                    fn from_evm_words(words: [::alloy::primitives::U256; { #mod_ident::SLOT_COUNT }]) -> crate::error::Result<Self> {
+                        use crate::storage::Storable;
+
+                        #from_evm_words_impl
+
+                        Ok(Self {
+                            #(#field_names),*
+                        })
+                    }
+                }
+        }
     };
 
     // Generate array implementations if requested
@@ -193,9 +313,10 @@ fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStr
         } else {
             let prev_idx = idx - 1;
             let (_, prev_ty) = &fields[prev_idx];
-            let prev_is_struct = is_custom_struct(prev_ty);
+            let prev_is_struct = is_custom_struct(prev_ty) && !is_mapping_type(prev_ty);
             let prev_is_dynamic = is_dynamic_type(prev_ty);
             let prev_is_array = is_array_type(prev_ty);
+            let prev_is_mapping = is_mapping_type(prev_ty);
 
             let prev_slot = Ident::new(
                 &format!("FIELD_{prev_idx}_SLOT"),
@@ -214,6 +335,13 @@ fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStr
                 // Previous field was a struct - advance by its SLOT_COUNT and reset offset
                 quote! {
                     const PREV_SLOT: usize = #prev_slot + <#prev_ty>::SLOT_COUNT;
+                    const PREV_OFFSET: usize = 0;
+                }
+            } else if prev_is_mapping {
+                // Previous field was a mapping - advance by 1 slot and reset offset
+                // Mappings occupy exactly 1 slot (used as base for hashing)
+                quote! {
+                    const PREV_SLOT: usize = #prev_slot + 1;
                     const PREV_OFFSET: usize = 0;
                 }
             } else if prev_is_dynamic {
@@ -238,8 +366,8 @@ fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStr
             }
         };
 
-        if is_array_type(ty) || is_dynamic_type(ty) || is_custom_struct(ty) {
-            // Structs, dynamic types, and arrays must start on a new slot if PREV_OFFSET != 0
+        if is_array_type(ty) || is_dynamic_type(ty) || is_mapping_type(ty) || is_custom_struct(ty) {
+            // Structs, dynamic types, mappings, and arrays must start on a new slot if PREV_OFFSET != 0
             quote! {
                 pub const #slot_const: usize = {
                     #prev_calculations
@@ -283,7 +411,7 @@ fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStr
     );
 
     quote! {
-        mod #mod_ident {
+        pub mod #mod_ident {
             use super::*;
 
             #(#field_byte_sizes)*
@@ -295,11 +423,12 @@ fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStr
 }
 
 /// Generate the `fn load()` implementation with unpacking logic.
-fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
-    let load_fields = fields.iter().enumerate().map(|(idx, (name, ty))| {
-        let slot_const = Ident::new(&format!("FIELD_{idx}_SLOT"), proc_macro2::Span::call_site());
-        let offset_const = Ident::new(&format!("FIELD_{idx}_OFFSET"), proc_macro2::Span::call_site());
-        let bytes_const = Ident::new(&format!("FIELD_{idx}_BYTES"), proc_macro2::Span::call_site());
+/// Accepts indexed fields where the usize is the original field index in the struct.
+fn gen_load_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> TokenStream {
+    let load_fields = indexed_fields.iter().enumerate().map(|(list_idx, (orig_idx, name, ty))| {
+        let slot_const = Ident::new(&format!("FIELD_{orig_idx}_SLOT"), proc_macro2::Span::call_site());
+        let offset_const = Ident::new(&format!("FIELD_{orig_idx}_OFFSET"), proc_macro2::Span::call_site());
+        let bytes_const = Ident::new(&format!("FIELD_{orig_idx}_BYTES"), proc_macro2::Span::call_site());
 
         // Struct, dynamic type, and array fields always use `load()` directly (never packed)
         if is_array_type(ty) || is_dynamic_type(ty) || is_custom_struct(ty) {
@@ -312,12 +441,21 @@ fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
         }
 
         // For primitives, check if this field shares the slot with any other field
-        let next_idx = idx + 1;
-        let prev_idx = if idx > 0 { Some(idx - 1) } else { None };
+        // by checking adjacent fields in the input list (using their original indices)
+        let prev_field = if list_idx > 0 {
+            Some(indexed_fields[list_idx - 1].0)
+        } else {
+            None
+        };
+        let next_field = if list_idx + 1 < indexed_fields.len() {
+            Some(indexed_fields[list_idx + 1].0)
+        } else {
+            None
+        };
 
-        let shares_slot_check = if let Some(prev) = prev_idx {
-            let prev_slot = Ident::new(&format!("FIELD_{prev}_SLOT"), proc_macro2::Span::call_site());
-            if next_idx < fields.len() {
+        let shares_slot_check = if let Some(prev_idx) = prev_field {
+            let prev_slot = Ident::new(&format!("FIELD_{prev_idx}_SLOT"), proc_macro2::Span::call_site());
+            if let Some(next_idx) = next_field {
                 let next_slot = Ident::new(&format!("FIELD_{next_idx}_SLOT"), proc_macro2::Span::call_site());
                 quote! {
                     #packing::#prev_slot == #packing::#slot_const || #packing::#next_slot == #packing::#slot_const
@@ -327,7 +465,7 @@ fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                     #packing::#prev_slot == #packing::#slot_const
                 }
             }
-        } else if next_idx < fields.len() {
+        } else if let Some(next_idx) = next_field {
             let next_slot = Ident::new(&format!("FIELD_{next_idx}_SLOT"), proc_macro2::Span::call_site());
             quote! {
                 #packing::#next_slot == #packing::#slot_const
@@ -369,11 +507,12 @@ fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
 }
 
 /// Generate the `fn store()` implementation with packing logic.
-fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
-    let store_fields = fields.iter().enumerate().map(|(idx, (name, ty))| {
-        let slot_const = Ident::new(&format!("FIELD_{idx}_SLOT"), proc_macro2::Span::call_site());
-        let offset_const = Ident::new(&format!("FIELD_{idx}_OFFSET"), proc_macro2::Span::call_site());
-        let bytes_const = Ident::new(&format!("FIELD_{idx}_BYTES"), proc_macro2::Span::call_site());
+/// Accepts indexed fields where the usize is the original field index in the struct.
+fn gen_store_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> TokenStream {
+    let store_fields = indexed_fields.iter().enumerate().map(|(list_idx, (orig_idx, name, ty))| {
+        let slot_const = Ident::new(&format!("FIELD_{orig_idx}_SLOT"), proc_macro2::Span::call_site());
+        let offset_const = Ident::new(&format!("FIELD_{orig_idx}_OFFSET"), proc_macro2::Span::call_site());
+        let bytes_const = Ident::new(&format!("FIELD_{orig_idx}_BYTES"), proc_macro2::Span::call_site());
 
         // Struct, dynamic type, and array fields always use store() directly (never packed)
         if is_array_type(ty) || is_dynamic_type(ty) || is_custom_struct(ty) {
@@ -386,12 +525,21 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
         }
 
         // For primitives, check if this field shares the slot with any other field
-        let next_idx = idx + 1;
-        let prev_idx = if idx > 0 { Some(idx - 1) } else { None };
+        // by checking adjacent fields in the input list (using their original indices)
+        let prev_field = if list_idx > 0 {
+            Some(indexed_fields[list_idx - 1].0)
+        } else {
+            None
+        };
+        let next_field = if list_idx + 1 < indexed_fields.len() {
+            Some(indexed_fields[list_idx + 1].0)
+        } else {
+            None
+        };
 
-        let shares_slot_check = if let Some(prev) = prev_idx {
-            let prev_slot = Ident::new(&format!("FIELD_{prev}_SLOT"), proc_macro2::Span::call_site());
-            if next_idx < fields.len() {
+        let shares_slot_check = if let Some(prev_idx) = prev_field {
+            let prev_slot = Ident::new(&format!("FIELD_{prev_idx}_SLOT"), proc_macro2::Span::call_site());
+            if let Some(next_idx) = next_field {
                 let next_slot = Ident::new(&format!("FIELD_{next_idx}_SLOT"), proc_macro2::Span::call_site());
                 quote! {
                     #packing::#prev_slot == #packing::#slot_const || #packing::#next_slot == #packing::#slot_const
@@ -401,7 +549,7 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                     #packing::#prev_slot == #packing::#slot_const
                 }
             }
-        } else if next_idx < fields.len() {
+        } else if let Some(next_idx) = next_field {
             let next_slot = Ident::new(&format!("FIELD_{next_idx}_SLOT"), proc_macro2::Span::call_site());
             quote! {
                 #packing::#next_slot == #packing::#slot_const
@@ -441,15 +589,22 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
 }
 
 /// Generate the `fn to_evm_words()` implementation that packs fields into an array of words.
-fn gen_to_evm_words_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
-    let pack_fields = fields.iter().enumerate().map(|(idx, (name, ty))| {
-        let slot_const = Ident::new(&format!("FIELD_{idx}_SLOT"), proc_macro2::Span::call_site());
+/// Accepts indexed fields where the usize is the original field index in the struct.
+fn gen_to_evm_words_impl(
+    indexed_fields: &[(usize, &Ident, &Type)],
+    packing: &Ident,
+) -> TokenStream {
+    let pack_fields = indexed_fields.iter().map(|(orig_idx, name, ty)| {
+        let slot_const = Ident::new(
+            &format!("FIELD_{orig_idx}_SLOT"),
+            proc_macro2::Span::call_site(),
+        );
         let offset_const = Ident::new(
-            &format!("FIELD_{idx}_OFFSET"),
+            &format!("FIELD_{orig_idx}_OFFSET"),
             proc_macro2::Span::call_site(),
         );
         let bytes_const = Ident::new(
-            &format!("FIELD_{idx}_BYTES"),
+            &format!("FIELD_{orig_idx}_BYTES"),
             proc_macro2::Span::call_site(),
         );
 
@@ -509,15 +664,22 @@ fn gen_to_evm_words_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenSt
 }
 
 /// Generate the `fn from_evm_words()` implementation that unpacks fields from an array of words.
-fn gen_from_evm_words_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
-    let decode_fields = fields.iter().enumerate().map(|(idx, (name, ty))| {
-        let slot_const = Ident::new(&format!("FIELD_{idx}_SLOT"), proc_macro2::Span::call_site());
+/// Accepts indexed fields where the usize is the original field index in the struct.
+fn gen_from_evm_words_impl(
+    indexed_fields: &[(usize, &Ident, &Type)],
+    packing: &Ident,
+) -> TokenStream {
+    let decode_fields = indexed_fields.iter().map(|(orig_idx, name, ty)| {
+        let slot_const = Ident::new(
+            &format!("FIELD_{orig_idx}_SLOT"),
+            proc_macro2::Span::call_site(),
+        );
         let offset_const = Ident::new(
-            &format!("FIELD_{idx}_OFFSET"),
+            &format!("FIELD_{orig_idx}_OFFSET"),
             proc_macro2::Span::call_site(),
         );
         let bytes_const = Ident::new(
-            &format!("FIELD_{idx}_BYTES"),
+            &format!("FIELD_{orig_idx}_BYTES"),
             proc_macro2::Span::call_site(),
         );
 

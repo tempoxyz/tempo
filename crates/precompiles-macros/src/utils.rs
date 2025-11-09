@@ -3,8 +3,8 @@
 use alloy::primitives::{U256, keccak256};
 use syn::{Attribute, Lit, Type};
 
-/// Return type for [`extract_attributes`]: (slot, base_slot)
-type ExtractedAttributes = (Option<U256>, Option<U256>);
+/// Return type for [`extract_attributes`]: (slot, base_slot, struct_with_mappings)
+type ExtractedAttributes = (Option<U256>, Option<U256>, bool);
 
 /// Parses a slot value from a literal.
 ///
@@ -76,6 +76,7 @@ pub(crate) fn normalize_to_snake_case(s: &str) -> String {
 pub(crate) fn extract_attributes(attrs: &[Attribute]) -> syn::Result<ExtractedAttributes> {
     let mut slot_attr: Option<U256> = None;
     let mut base_slot_attr: Option<U256> = None;
+    let mut struct_with_mappings = false;
 
     for attr in attrs {
         // Extract `#[slot(N)]` attribute
@@ -111,9 +112,13 @@ pub(crate) fn extract_attributes(attrs: &[Attribute]) -> syn::Result<ExtractedAt
             let value: Lit = attr.parse_args()?;
             base_slot_attr = Some(parse_slot_value(&value)?);
         }
+        // Extract `#[struct_with_mappings]` attribute (marker, no args)
+        else if attr.path().is_ident("struct_with_mappings") {
+            struct_with_mappings = true;
+        }
     }
 
-    Ok((slot_attr, base_slot_attr))
+    Ok((slot_attr, base_slot_attr, struct_with_mappings))
 }
 
 /// Extracts array sizes from the `#[storable_arrays(...)]` attribute.
@@ -296,24 +301,16 @@ pub(crate) fn is_array_type(ty: &Type) -> bool {
     matches!(ty, Type::Array(_))
 }
 
-/// Checks if the input data is an enum type.
-pub(crate) fn is_enum_input(data: &syn::Data) -> bool {
-    matches!(data, syn::Data::Enum(_))
-}
-
-/// Validates that all enum variants are unit variants with no data.
-pub(crate) fn validate_enum(
-    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
-) -> syn::Result<()> {
-    for variant in variants {
-        if !matches!(&variant.fields, syn::Fields::Unit) {
-            return Err(syn::Error::new_spanned(
-                variant,
-                "`Storable` only supports enums with unit variants",
-            ));
-        }
-    }
-    Ok(())
+/// Checks if a type is a `Mapping` type.
+///
+/// Mappings, like structs and dynamic types, force slot boundaries:
+/// - Start at offset 0 of a new slot
+/// - Force the next field to start at a new slot
+/// - Cannot be packed with other fields
+///
+/// Unlike custom structs, mappings do NOT have a SLOT_COUNT constant.
+pub(crate) fn is_mapping_type(ty: &Type) -> bool {
+    extract_mapping_types(ty).is_some()
 }
 
 #[cfg(test)]
@@ -398,23 +395,5 @@ mod tests {
         assert!(!is_dynamic_type(&parse_quote!(U256)));
         assert!(!is_dynamic_type(&parse_quote!(Address)));
         assert!(!is_dynamic_type(&parse_quote!(MyCustomStruct)));
-    }
-
-    #[test]
-    fn test_validate_enum() {
-        // Valid unit enum
-        let variants: syn::punctuated::Punctuated<syn::Variant, syn::token::Comma> =
-            parse_quote! { Variant1, Variant2, Variant3 };
-        assert!(validate_enum(&variants).is_ok());
-
-        // Enum with tuple variant
-        let variants: syn::punctuated::Punctuated<syn::Variant, syn::token::Comma> =
-            parse_quote! { Variant1, Variant2(u8) };
-        assert!(validate_enum(&variants).is_err());
-
-        // Enum with struct variant
-        let variants: syn::punctuated::Punctuated<syn::Variant, syn::token::Comma> =
-            parse_quote! { Variant1, Variant2 { field: u8 } };
-        assert!(validate_enum(&variants).is_err());
     }
 }

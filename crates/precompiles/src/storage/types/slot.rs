@@ -128,6 +128,163 @@ impl<T, Id: SlotId> Slot<T, Id> {
     {
         T::delete(storage, Id::SLOT)
     }
+
+    /// Reads a value from a field within a struct at a runtime base slot.
+    ///
+    /// This enables accessing non-packed fields within structs when you have
+    /// the struct's base slot at runtime and know the field's offset.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // For: mapping(bytes32 => Orderbook) books, where Orderbook.base is at field offset 0
+    /// let orderbook_base = mapping_slot(pair_key, BooksSlot::SLOT);
+    /// let base_address = Slot::<Address, DummySlot>::read_at_offset(
+    ///     &mut storage,
+    ///     orderbook_base,
+    ///     0  // field offset
+    /// )?;
+    /// ```
+    #[inline]
+    pub fn read_at_offset<S: StorageOps, const N: usize>(
+        storage: &mut S,
+        struct_base_slot: U256,
+        field_offset_slots: usize,
+    ) -> Result<T>
+    where
+        T: Storable<N>,
+    {
+        let slot = struct_base_slot + U256::from(field_offset_slots);
+        T::load(storage, slot)
+    }
+
+    /// Writes a value to a field within a struct at a runtime base slot.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let orderbook_base = mapping_slot(pair_key, BooksSlot::SLOT);
+    /// Slot::<Address, DummySlot>::write_at_offset(
+    ///     &mut storage,
+    ///     orderbook_base,
+    ///     0,  // field offset
+    ///     base_address
+    /// )?;
+    /// ```
+    #[inline]
+    pub fn write_at_offset<S: StorageOps, const N: usize>(
+        storage: &mut S,
+        struct_base_slot: U256,
+        field_offset_slots: usize,
+        value: T,
+    ) -> Result<()>
+    where
+        T: Storable<N>,
+    {
+        let slot = struct_base_slot + U256::from(field_offset_slots);
+        value.store(storage, slot)
+    }
+
+    /// Deletes a field within a struct at a runtime base slot (sets slots to zero).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let orderbook_base = mapping_slot(pair_key, BooksSlot::SLOT);
+    /// Slot::<Address, DummySlot>::delete_at_offset(
+    ///     &mut storage,
+    ///     orderbook_base,
+    ///     0  // field offset
+    /// )?;
+    /// ```
+    #[inline]
+    pub fn delete_at_offset<S: StorageOps, const N: usize>(
+        storage: &mut S,
+        struct_base_slot: U256,
+        field_offset_slots: usize,
+    ) -> Result<()>
+    where
+        T: Storable<N>,
+    {
+        let slot = struct_base_slot + U256::from(field_offset_slots);
+        T::delete(storage, slot)
+    }
+
+    /// Reads a packed field from storage at a given base slot.
+    ///
+    /// Use this method when the field shares a storage slot with other fields (i.e., is packed).
+    /// For fields that occupy their own slot(s), use `read_at_offset` instead.
+    #[inline]
+    pub fn read_at_offset_packed<S: StorageOps>(
+        storage: &mut S,
+        struct_base_slot: U256,
+        field_offset_slots: usize,
+        field_offset_bytes: usize,
+        field_size_bytes: usize,
+    ) -> Result<T>
+    where
+        T: Storable<1>,
+    {
+        crate::storage::packing::read_packed_at(
+            storage,
+            struct_base_slot,
+            field_offset_slots,
+            field_offset_bytes,
+            field_size_bytes,
+        )
+    }
+
+    /// Writes a packed field to storage at a given base slot.
+    ///
+    /// Use this method when the field shares a storage slot with other fields (i.e., is packed).
+    /// This correctly preserves other fields in the same slot.
+    /// For fields that occupy their own slot(s), use `write_at_offset` instead.
+    #[inline]
+    pub fn write_at_offset_packed<S: StorageOps>(
+        storage: &mut S,
+        struct_base_slot: U256,
+        field_offset_slots: usize,
+        field_offset_bytes: usize,
+        field_size_bytes: usize,
+        value: T,
+    ) -> Result<()>
+    where
+        T: Storable<1>,
+    {
+        crate::storage::packing::write_packed_at(
+            storage,
+            struct_base_slot,
+            field_offset_slots,
+            field_offset_bytes,
+            field_size_bytes,
+            &value,
+        )
+    }
+
+    /// Deletes a packed field in storage at a given base slot (sets bytes to zero).
+    ///
+    /// Use this method when the field shares a storage slot with other fields (i.e., is packed).
+    /// This correctly preserves other fields in the same slot.
+    /// For fields that occupy their own slot(s), use `delete_at_offset` instead.
+    #[inline]
+    pub fn delete_at_offset_packed<S: StorageOps>(
+        storage: &mut S,
+        struct_base_slot: U256,
+        field_offset_slots: usize,
+        field_offset_bytes: usize,
+        field_size_bytes: usize,
+    ) -> Result<()>
+    where
+        T: Storable<1>,
+    {
+        crate::storage::packing::clear_packed_at(
+            storage,
+            struct_base_slot,
+            field_offset_slots,
+            field_offset_bytes,
+            field_size_bytes,
+        )
+    }
 }
 
 impl<T, Id: SlotId> Default for Slot<T, Id> {
@@ -139,8 +296,10 @@ impl<T, Id: SlotId> Default for Slot<T, Id> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{PrecompileStorageProvider, hashmap::HashMapStorageProvider};
-    use alloy::primitives::Address;
+    use crate::storage::{
+        DummySlot, PrecompileStorageProvider, hashmap::HashMapStorageProvider, mapping_slot,
+    };
+    use alloy::primitives::{Address, B256};
     use proptest::prelude::*;
 
     // Test helper that implements StorageOps
@@ -395,5 +554,96 @@ mod tests {
             prop_assert_eq!(after_delete1, U256::ZERO, "slot 1 not deleted");
             prop_assert_eq!(after_delete2, value2, "slot 2 affected by slot 1 delete");
         }
+    }
+
+    // -- RUNTIME SLOT OFFSET TESTS --------------------------------------------
+
+    #[test]
+    fn test_slot_at_offset() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut contract = setup_test_contract(&mut storage);
+
+        let pair_key: B256 = U256::from(0xabcd).into();
+        let orderbook_base_slot = mapping_slot(pair_key, DummySlot::SLOT);
+
+        let base_address = Address::random();
+
+        // Write to orderbook.base using runtime offset
+        Slot::<Address, DummySlot>::write_at_offset(
+            &mut contract,
+            orderbook_base_slot,
+            0, // base field at offset 0
+            base_address,
+        )?;
+
+        // Read back
+        let read_address =
+            Slot::<Address, DummySlot>::read_at_offset(&mut contract, orderbook_base_slot, 0)?;
+
+        assert_eq!(read_address, base_address);
+
+        // Delete
+        Slot::<Address, DummySlot>::delete_at_offset(&mut contract, orderbook_base_slot, 0)?;
+
+        let deleted =
+            Slot::<Address, DummySlot>::read_at_offset(&mut contract, orderbook_base_slot, 0)?;
+
+        assert_eq!(deleted, Address::ZERO);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_slot_at_offset_multi_slot_value() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut contract = setup_test_contract(&mut storage);
+
+        let struct_key: B256 = U256::from(0xabcd).into();
+        let struct_base = mapping_slot(struct_key, DummySlot::SLOT);
+
+        // Test writing a multi-slot value like a String at offset 2
+        let test_string = "Hello, Orderbook!".to_string();
+
+        Slot::<String, DummySlot>::write_at_offset(
+            &mut contract,
+            struct_base,
+            2,
+            test_string.clone(),
+        )?;
+
+        let read_string = Slot::<String, DummySlot>::read_at_offset(&mut contract, struct_base, 2)?;
+
+        assert_eq!(read_string, test_string);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_multiple_primitive_fields() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut contract = setup_test_contract(&mut storage);
+
+        let key: B256 = U256::from(0x9999).into();
+        let base = mapping_slot(key, DummySlot::SLOT);
+
+        // Simulate different primitive fields at different offsets
+        let field_0 = Address::random();
+        let field_1: u64 = 12345;
+        let field_2 = U256::from(999999);
+
+        Slot::<Address, DummySlot>::write_at_offset(&mut contract, base, 0, field_0)?;
+        Slot::<u64, DummySlot>::write_at_offset(&mut contract, base, 1, field_1)?;
+        Slot::<U256, DummySlot>::write_at_offset(&mut contract, base, 2, field_2)?;
+
+        // Verify independence
+        let read_0 = Slot::<Address, DummySlot>::read_at_offset(&mut contract, base, 0)?;
+        let read_1 = Slot::<u64, DummySlot>::read_at_offset(&mut contract, base, 1)?;
+        let read_2 = Slot::<U256, DummySlot>::read_at_offset(&mut contract, base, 2)?;
+
+        assert_eq!(read_0, field_0);
+        assert_eq!(read_1, field_1);
+        assert_eq!(read_2, field_2);
+
+        Ok(())
     }
 }

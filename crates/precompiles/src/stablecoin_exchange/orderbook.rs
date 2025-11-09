@@ -1,14 +1,16 @@
 //! Orderbook and tick level management for the stablecoin DEX.
 
-use super::slots::{ASK_BITMAPS, ASK_TICK_LEVELS, BID_BITMAPS, BID_TICK_LEVELS, ORDERBOOKS};
 use crate::{
     error::TempoPrecompileError,
     stablecoin_exchange::IStablecoinExchange,
-    storage::{PrecompileStorageProvider, slots::mapping_slot},
+    storage::{
+        DummySlot, Mapping, PrecompileStorageProvider, Slot, SlotId, StorageOps,
+        slots::mapping_slot,
+    },
 };
-use alloy::primitives::{Address, B256, U256, keccak256, uint};
-use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
+use alloy::primitives::{Address, B256, U256, keccak256};
 use tempo_contracts::precompiles::StablecoinExchangeError;
+use tempo_precompiles_macros::Storable;
 
 /// Constants from Solidity implementation
 pub const MIN_TICK: i16 = -2000;
@@ -19,8 +21,8 @@ pub const MAX_PRICE: u32 = 132_767;
 
 /// Represents a price level in the orderbook with a doubly-linked list of orders
 /// Orders are maintained in FIFO order at each tick level
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PriceLevel {
+#[derive(Debug, Storable, Default, Clone, PartialEq, Eq)]
+pub struct TickLevel {
     /// Order ID of the first order at this tick (0 if empty)
     pub head: u128,
     /// Order ID of the last order at this tick (0 if empty)
@@ -29,22 +31,22 @@ pub struct PriceLevel {
     pub total_liquidity: u128,
 }
 
-impl PriceLevel {
-    // PriceLevel struct field offsets
-    // Matches Solidity PriceLevel struct layout
-    /// Head order ID field offset
-    pub const HEAD_OFFSET: U256 = uint!(0_U256);
-    /// Tail order ID field offset
-    pub const TAIL_OFFSET: U256 = uint!(1_U256);
-    /// Total liquidity field offset
-    pub const TOTAL_LIQUIDITY_OFFSET: U256 = uint!(2_U256);
-
+impl TickLevel {
     /// Creates a new empty tick level
     pub fn new() -> Self {
         Self {
             head: 0,
             tail: 0,
             total_liquidity: 0,
+        }
+    }
+
+    /// Creates a tick level with specific values
+    pub fn with_values(head: u128, tail: u128, total_liquidity: u128) -> Self {
+        Self {
+            head,
+            tail,
+            total_liquidity,
         }
     }
 
@@ -57,195 +59,10 @@ impl PriceLevel {
     pub fn has_liquidity(&self) -> bool {
         !self.is_empty()
     }
-
-    /// Load a PriceLevel from storage
-    pub fn from_storage<S: PrecompileStorageProvider>(
-        storage: &mut S,
-        address: Address,
-        book_key: B256,
-        tick: i16,
-        is_bid: bool,
-    ) -> Result<Self, TempoPrecompileError> {
-        let base_slot = if is_bid {
-            BID_TICK_LEVELS
-        } else {
-            ASK_TICK_LEVELS
-        };
-
-        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
-        let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
-
-        // Load each field
-        let head = storage
-            .sload(address, tick_level_slot + Self::HEAD_OFFSET)?
-            .to::<u128>();
-
-        let tail = storage
-            .sload(address, tick_level_slot + Self::TAIL_OFFSET)?
-            .to::<u128>();
-
-        let total_liquidity = storage
-            .sload(address, tick_level_slot + Self::TOTAL_LIQUIDITY_OFFSET)?
-            .to::<u128>();
-
-        Ok(Self {
-            head,
-            tail,
-            total_liquidity,
-        })
-    }
-
-    /// Delete PriceLevel from storage
-    pub fn delete<S: PrecompileStorageProvider>(
-        &self,
-        storage: &mut S,
-        address: Address,
-        book_key: B256,
-        tick: i16,
-        is_bid: bool,
-    ) -> Result<(), TempoPrecompileError> {
-        let base_slot = if is_bid {
-            BID_TICK_LEVELS
-        } else {
-            ASK_TICK_LEVELS
-        };
-
-        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
-        let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
-
-        // Clear each field
-        storage.sstore(address, tick_level_slot + Self::HEAD_OFFSET, U256::ZERO)?;
-
-        storage.sstore(address, tick_level_slot + Self::TAIL_OFFSET, U256::ZERO)?;
-
-        storage.sstore(
-            address,
-            tick_level_slot + Self::TOTAL_LIQUIDITY_OFFSET,
-            U256::ZERO,
-        )?;
-
-        Ok(())
-    }
-
-    /// Store this PriceLevel to storage
-    pub fn store<S: PrecompileStorageProvider>(
-        &self,
-        storage: &mut S,
-        address: Address,
-        book_key: B256,
-        tick: i16,
-        is_bid: bool,
-    ) -> Result<(), TempoPrecompileError> {
-        let base_slot = if is_bid {
-            BID_TICK_LEVELS
-        } else {
-            ASK_TICK_LEVELS
-        };
-
-        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
-        let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
-
-        // Store each field
-        storage.sstore(
-            address,
-            tick_level_slot + Self::HEAD_OFFSET,
-            U256::from(self.head),
-        )?;
-
-        storage.sstore(
-            address,
-            tick_level_slot + Self::TAIL_OFFSET,
-            U256::from(self.tail),
-        )?;
-
-        storage.sstore(
-            address,
-            tick_level_slot + Self::TOTAL_LIQUIDITY_OFFSET,
-            U256::from(self.total_liquidity),
-        )
-    }
-
-    /// Update only the head order ID
-    pub fn update_head<S: PrecompileStorageProvider>(
-        storage: &mut S,
-        address: Address,
-        book_key: B256,
-        tick: i16,
-        is_bid: bool,
-        new_head: u128,
-    ) -> Result<(), TempoPrecompileError> {
-        let base_slot = if is_bid {
-            BID_TICK_LEVELS
-        } else {
-            ASK_TICK_LEVELS
-        };
-        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
-        let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
-
-        storage.sstore(
-            address,
-            tick_level_slot + Self::HEAD_OFFSET,
-            U256::from(new_head),
-        )
-    }
-
-    /// Update only the tail order ID
-    pub fn update_tail<S: PrecompileStorageProvider>(
-        storage: &mut S,
-        address: Address,
-        book_key: B256,
-        tick: i16,
-        is_bid: bool,
-        new_tail: u128,
-    ) -> Result<(), TempoPrecompileError> {
-        let base_slot = if is_bid {
-            BID_TICK_LEVELS
-        } else {
-            ASK_TICK_LEVELS
-        };
-        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
-        let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
-
-        storage.sstore(
-            address,
-            tick_level_slot + Self::TAIL_OFFSET,
-            U256::from(new_tail),
-        )
-    }
-
-    /// Update only the total liquidity
-    pub fn update_total_liquidity<S: PrecompileStorageProvider>(
-        storage: &mut S,
-        address: Address,
-        book_key: B256,
-        tick: i16,
-        is_bid: bool,
-        new_total: u128,
-    ) -> Result<(), TempoPrecompileError> {
-        let base_slot = if is_bid {
-            BID_TICK_LEVELS
-        } else {
-            ASK_TICK_LEVELS
-        };
-        let book_key_slot = mapping_slot(book_key.as_slice(), base_slot);
-        let tick_level_slot = mapping_slot(tick.to_be_bytes(), book_key_slot);
-
-        storage.sstore(
-            address,
-            tick_level_slot + Self::TOTAL_LIQUIDITY_OFFSET,
-            U256::from(new_total),
-        )
-    }
 }
 
-impl Default for PriceLevel {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl From<PriceLevel> for IStablecoinExchange::PriceLevel {
-    fn from(value: PriceLevel) -> Self {
+impl From<TickLevel> for IStablecoinExchange::PriceLevel {
+    fn from(value: TickLevel) -> Self {
         Self {
             head: value.head,
             tail: value.tail,
@@ -256,29 +73,28 @@ impl From<PriceLevel> for IStablecoinExchange::PriceLevel {
 
 /// Orderbook for token pair with price-time priority
 /// Uses tick-based pricing with bitmaps for price discovery
-#[derive(Debug)]
+#[derive(Storable, Default)]
 pub struct Orderbook {
     /// Base token address
     pub base: Address,
     /// Quote token address
     pub quote: Address,
+    /// Bid orders by tick
+    bids: Mapping<i16, TickLevel, DummySlot>,
+    /// Ask orders by tick
+    asks: Mapping<i16, TickLevel, DummySlot>,
     /// Best bid tick for highest bid price
     pub best_bid_tick: i16,
     /// Best ask tick for lowest ask price
     pub best_ask_tick: i16,
 }
 
-impl Orderbook {
-    // Orderbook struct field offsets
-    /// Base token address field offset
-    pub const BASE_OFFSET: U256 = uint!(0_U256);
-    /// Quote token address field offset
-    pub const QUOTE_OFFSET: U256 = uint!(1_U256);
-    /// Best bid tick field offset
-    pub const BEST_BID_TICK_OFFSET: U256 = uint!(4_U256);
-    /// Best ask tick field offset
-    pub const BEST_ASK_TICK_OFFSET: U256 = uint!(5_U256);
+// Helper type to easily access storage for orderbook tokens (base, quote)
+type Tokens = Slot<Address, DummySlot>;
+// Helper type to easily access storage for orderbook orders (best bid, best ask)
+type Orders = Slot<i16, DummySlot>;
 
+impl Orderbook {
     /// Creates a new orderbook for a token pair
     pub fn new(base: Address, quote: Address) -> Self {
         Self {
@@ -286,6 +102,7 @@ impl Orderbook {
             quote,
             best_bid_tick: i16::MIN,
             best_ask_tick: i16::MAX,
+            ..Default::default()
         }
     }
 
@@ -317,115 +134,155 @@ impl Orderbook {
         true
     }
 
-    /// Load an Orderbook from storage
-    pub fn from_storage<S: PrecompileStorageProvider>(
-        book_key: B256,
-        storage: &mut S,
-        address: Address,
-    ) -> Result<Self, TempoPrecompileError> {
-        let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
-
-        let base = storage
-            .sload(address, orderbook_slot + Self::BASE_OFFSET)?
-            .into_address();
-
-        let quote = storage
-            .sload(address, orderbook_slot + Self::QUOTE_OFFSET)?
-            .into_address();
-
-        let best_bid_tick = storage
-            .sload(address, orderbook_slot + Self::BEST_BID_TICK_OFFSET)?
-            .to::<u16>() as i16;
-
-        // `tick` is stored into the least significant 16 bits of U256.
-        // When loading from storage, we first load as u16
-        // and then cast to i16 to reinterpret those bits as a signed value.
-        let best_ask_tick = storage
-            .sload(address, orderbook_slot + Self::BEST_ASK_TICK_OFFSET)?
-            .to::<u16>() as i16;
-
-        Ok(Self {
-            base,
-            quote,
-            best_bid_tick,
-            best_ask_tick,
-        })
-    }
-
-    /// Store this Orderbook to storage
-    pub fn store<S: PrecompileStorageProvider>(
-        &self,
-        storage: &mut S,
-        address: Address,
-    ) -> Result<(), TempoPrecompileError> {
-        let book_key = compute_book_key(self.base, self.quote);
-        let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
-
-        storage.sstore(
-            address,
-            orderbook_slot + Self::BASE_OFFSET,
-            self.base.into_u256(),
-        )?;
-
-        storage.sstore(
-            address,
-            orderbook_slot + Self::QUOTE_OFFSET,
-            self.quote.into_u256(),
-        )?;
-
-        storage.sstore(
-            address,
-            orderbook_slot + Self::BEST_BID_TICK_OFFSET,
-            U256::from(self.best_bid_tick as u16),
-        )?;
-
-        storage.sstore(
-            address,
-            orderbook_slot + Self::BEST_ASK_TICK_OFFSET,
-            U256::from(self.best_ask_tick as u16),
-        )
-    }
-
     /// Update only the best bid tick
-    pub fn update_best_bid_tick<S: PrecompileStorageProvider>(
-        storage: &mut S,
-        address: Address,
+    pub fn update_best_bid_tick<S: StorageOps>(
+        contract: &mut S,
         book_key: B256,
         new_best_bid: i16,
     ) -> Result<(), TempoPrecompileError> {
-        let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
-        storage.sstore(
-            address,
-            orderbook_slot + Self::BEST_BID_TICK_OFFSET,
-            U256::from(new_best_bid as u16),
-        )
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        Orders::write_at_offset_packed(
+            contract,
+            orderbook_base_slot,
+            __packing_orderbook::FIELD_4_SLOT,
+            __packing_orderbook::FIELD_4_OFFSET,
+            __packing_orderbook::FIELD_4_BYTES,
+            new_best_bid,
+        )?;
+        Ok(())
     }
 
     /// Update only the best ask tick
-    pub fn update_best_ask_tick<S: PrecompileStorageProvider>(
-        storage: &mut S,
-        address: Address,
+    pub fn update_best_ask_tick<S: StorageOps>(
+        contract: &mut S,
         book_key: B256,
         new_best_ask: i16,
     ) -> Result<(), TempoPrecompileError> {
-        let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
-        storage.sstore(
-            address,
-            orderbook_slot + Self::BEST_ASK_TICK_OFFSET,
-            U256::from(new_best_ask as u16),
-        )
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        Orders::write_at_offset_packed(
+            contract,
+            orderbook_base_slot,
+            __packing_orderbook::FIELD_5_SLOT,
+            __packing_orderbook::FIELD_5_OFFSET,
+            __packing_orderbook::FIELD_5_BYTES,
+            new_best_ask,
+        )?;
+        Ok(())
     }
 
     /// Check if this orderbook exists in storage
-    pub fn exists<S: PrecompileStorageProvider>(
+    pub fn exists<S: StorageOps>(
         book_key: B256,
-        storage: &mut S,
-        address: Address,
+        contract: &mut S,
     ) -> Result<bool, TempoPrecompileError> {
-        let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
-        let base = storage.sload(address, orderbook_slot + Self::BASE_OFFSET)?;
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        let base = Tokens::read_at_offset(
+            contract,
+            orderbook_base_slot,
+            __packing_orderbook::FIELD_0_SLOT,
+        )?;
 
-        Ok(base != U256::ZERO)
+        Ok(base != Address::ZERO)
+    }
+
+    /// Read a TickLevel from the bids mapping at a specific tick
+    pub fn read_bid_tick_level<S: StorageOps>(
+        storage: &mut S,
+        book_key: B256,
+        tick: i16,
+    ) -> Result<TickLevel, TempoPrecompileError> {
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        Mapping::<i16, TickLevel, DummySlot>::read_at_offset(
+            storage,
+            orderbook_base_slot,
+            __packing_orderbook::FIELD_2_SLOT,
+            tick,
+        )
+        .map_err(Into::into)
+    }
+
+    /// Write a TickLevel to the bids mapping at a specific tick
+    pub fn write_bid_tick_level<S: StorageOps>(
+        storage: &mut S,
+        book_key: B256,
+        tick: i16,
+        tick_level: TickLevel,
+    ) -> Result<(), TempoPrecompileError> {
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        Mapping::<i16, TickLevel, DummySlot>::write_at_offset(
+            storage,
+            orderbook_base_slot,
+            __packing_orderbook::FIELD_2_SLOT,
+            tick,
+            tick_level,
+        )
+        .map_err(Into::into)
+    }
+
+    /// Delete a TickLevel from the bids mapping at a specific tick
+    pub fn delete_bid_tick_level<S: StorageOps>(
+        storage: &mut S,
+        book_key: B256,
+        tick: i16,
+    ) -> Result<(), TempoPrecompileError> {
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        Mapping::<i16, TickLevel, DummySlot>::delete_at_offset(
+            storage,
+            orderbook_base_slot,
+            __packing_orderbook::FIELD_2_SLOT,
+            tick,
+        )
+        .map_err(Into::into)
+    }
+
+    /// Read a TickLevel from the asks mapping at a specific tick
+    pub fn read_ask_tick_level<S: StorageOps>(
+        storage: &mut S,
+        book_key: B256,
+        tick: i16,
+    ) -> Result<TickLevel, TempoPrecompileError> {
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        Mapping::<i16, TickLevel, DummySlot>::read_at_offset(
+            storage,
+            orderbook_base_slot,
+            __packing_orderbook::FIELD_3_SLOT,
+            tick,
+        )
+        .map_err(Into::into)
+    }
+
+    /// Write a TickLevel to the asks mapping at a specific tick
+    pub fn write_ask_tick_level<S: StorageOps>(
+        storage: &mut S,
+        book_key: B256,
+        tick: i16,
+        tick_level: TickLevel,
+    ) -> Result<(), TempoPrecompileError> {
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        Mapping::<i16, TickLevel, DummySlot>::write_at_offset(
+            storage,
+            orderbook_base_slot,
+            __packing_orderbook::FIELD_3_SLOT,
+            tick,
+            tick_level,
+        )
+        .map_err(Into::into)
+    }
+
+    /// Delete a TickLevel from the asks mapping at a specific tick
+    pub fn delete_ask_tick_level<S: StorageOps>(
+        storage: &mut S,
+        book_key: B256,
+        tick: i16,
+    ) -> Result<(), TempoPrecompileError> {
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        Mapping::<i16, TickLevel, DummySlot>::delete_at_offset(
+            storage,
+            orderbook_base_slot,
+            __packing_orderbook::FIELD_3_SLOT,
+            tick,
+        )
+        .map_err(Into::into)
     }
 }
 
@@ -433,7 +290,6 @@ impl From<Orderbook> for IStablecoinExchange::Orderbook {
     fn from(value: Orderbook) -> Self {
         Self {
             base: value.base,
-
             quote: value.quote,
             bestBidTick: value.best_bid_tick,
             bestAskTick: value.best_ask_tick,
@@ -551,7 +407,11 @@ impl<'a, S: PrecompileStorageProvider> TickBitmap<'a, S> {
 
     /// Get storage slot for bitmap word
     fn get_bitmap_slot(&self, word_index: i16, is_bid: bool) -> U256 {
-        let base_slot = if is_bid { BID_BITMAPS } else { ASK_BITMAPS };
+        let base_slot = if is_bid {
+            super::slots::Field5Slot::SLOT
+        } else {
+            super::slots::Field6Slot::SLOT
+        };
 
         let book_key_slot = mapping_slot(self.book_key.as_slice(), base_slot);
         mapping_slot(word_index.to_be_bytes(), book_key_slot)
@@ -613,7 +473,7 @@ mod tests {
 
     #[test]
     fn test_tick_level_creation() {
-        let level = PriceLevel::new();
+        let level = TickLevel::new();
         assert_eq!(level.head, 0);
         assert_eq!(level.tail, 0);
         assert_eq!(level.total_liquidity, 0);
