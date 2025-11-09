@@ -105,7 +105,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         for i in 0..count {
             // Read validator address from the array at index i
             let validator_address = ValidatorsArray::read_at(self, i as usize)?;
-            
+
             let Validator {
                 public_key,
                 active,
@@ -195,7 +195,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
             return Err(ValidatorConfigError::validator_not_found())?;
         }
 
-        // Load the current validator info (from sender address)
+        // Load the current validator info
         let old_validator = self.sload_validators(sender)?;
 
         // Check if rotating to a new address
