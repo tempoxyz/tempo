@@ -77,6 +77,10 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value = "0xD3C21BCECCEDA1000000")]
     pub balance: U256,
 
+    /// Fund test accounts with native token balance (skips first 10 for AA tests)
+    #[arg(long, default_value_t = false)]
+    pub fund_test_accounts: bool,
+
     /// Chain ID
     #[arg(long, short, default_value = "1337")]
     pub chain_id: u64,
@@ -170,7 +174,7 @@ impl GenesisArgs {
         let validators = initialize_validator_config(admin, self.validators_config, &mut evm)?;
 
         println!("Initializing fee manager");
-        initialize_fee_manager(alpha_token_address, addresses, validators, &mut evm);
+        initialize_fee_manager(alpha_token_address, addresses.clone(), validators, &mut evm);
 
         println!("Initializing stablecoin exchange");
         initialize_stablecoin_exchange(&mut evm)?;
@@ -268,6 +272,17 @@ impl GenesisArgs {
                 ..Default::default()
             },
         );
+
+        // Fund the user accounts with native token balance if requested
+        // Skip the first 10 accounts as they're used for account abstraction tests
+        // which expect zero native token balance
+        if self.fund_test_accounts {
+            for (index, address) in addresses.iter().enumerate() {
+                if index >= 10 {
+                    genesis_alloc.entry(*address).or_default().balance = self.balance;
+                }
+            }
+        }
 
         let mut chain_config = ChainConfig {
             chain_id: self.chain_id,
