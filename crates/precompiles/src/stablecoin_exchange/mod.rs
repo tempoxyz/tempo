@@ -1457,8 +1457,10 @@ mod tests {
     use tempo_contracts::precompiles::TIP20Error;
 
     use crate::{
-        error::TempoPrecompileError, linking_usd::TRANSFER_ROLE,
-        storage::hashmap::HashMapStorageProvider, tip20::ISSUER_ROLE,
+        error::TempoPrecompileError,
+        linking_usd::TRANSFER_ROLE,
+        storage::{ContractStorage, hashmap::HashMapStorageProvider},
+        tip20::ISSUER_ROLE,
     };
 
     use super::*;
@@ -1477,11 +1479,12 @@ mod tests {
             .expect("Quote token initialization failed");
 
         // Grant issuer role to admin for quote token
-        let mut quote_roles = quote.get_roles_contract();
-        quote_roles
+        quote
+            .token
             .grant_role_internal(admin, *ISSUER_ROLE)
             .unwrap();
-        quote_roles
+        quote
+            .token
             .grant_role_internal(user, *TRANSFER_ROLE)
             .unwrap();
 
@@ -1508,12 +1511,12 @@ mod tests {
             .expect("Quote approve failed");
 
         // Initialize base token  and mint amount
-        let mut base = TIP20Token::new(1, quote.token.storage);
-        base.initialize("BASE", "BASE", "USD", quote.token.token_address, admin)
+        let quote_address = quote.token.address();
+        let mut base = TIP20Token::new(1, quote.token.storage());
+        base.initialize("BASE", "BASE", "USD", quote_address, admin)
             .expect("Base token initialization failed");
 
-        let mut base_roles = base.get_roles_contract();
-        base_roles.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
+        base.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
 
         base.approve(
             user,
@@ -1533,7 +1536,7 @@ mod tests {
         )
         .expect("Base mint failed");
 
-        (base.token_address, quote.token.token_address)
+        (base.address(), quote_address)
     }
 
     #[test]
@@ -2534,14 +2537,14 @@ mod tests {
             linking_usd
                 .initialize(admin)
                 .expect("Failed to initialize LinkingUSD");
-            linking_usd.token.token_address
+            linking_usd.token.address()
         };
 
         let usdc_addr = {
             let mut usdc = TIP20Token::new(2, exchange.storage);
             usdc.initialize("USDC", "USDC", "USD", linking_usd_addr, admin)
                 .expect("Failed to initialize USDC");
-            usdc.token_address
+            usdc.address()
         };
 
         let token_a_addr = {
@@ -2549,7 +2552,7 @@ mod tests {
             token_a
                 .initialize("TokenA", "TKA", "USD", usdc_addr, admin)
                 .expect("Failed to initialize TokenA");
-            token_a.token_address
+            token_a.address()
         };
 
         // Find path from TokenA to root
@@ -2691,21 +2694,21 @@ mod tests {
             linking_usd
                 .initialize(admin)
                 .expect("Failed to initialize LinkingUSD");
-            linking_usd.token.token_address
+            linking_usd.token.address()
         };
 
         let usdc_addr = {
             let mut usdc = TIP20Token::new(2, exchange.storage);
             usdc.initialize("USDC", "USDC", "USD", linking_usd_addr, admin)
                 .expect("Failed to initialize USDC");
-            usdc.token_address
+            usdc.address()
         };
 
         let eurc_addr = {
             let mut eurc = TIP20Token::new(3, exchange.storage);
             eurc.initialize("EURC", "EURC", "USD", linking_usd_addr, admin)
                 .expect("Failed to initialize EURC");
-            eurc.token_address
+            eurc.address()
         };
 
         // Create pairs first
@@ -2758,21 +2761,21 @@ mod tests {
             linking_usd
                 .initialize(admin)
                 .expect("Failed to initialize LinkingUSD");
-            linking_usd.token.token_address
+            linking_usd.token.address()
         };
 
         let usdc_addr = {
             let mut usdc = TIP20Token::new(2, exchange.storage);
             usdc.initialize("USDC", "USDC", "USD", linking_usd_addr, admin)
                 .expect("Failed to initialize USDC");
-            usdc.token_address
+            usdc.address()
         };
 
         let eurc_addr = {
             let mut eurc = TIP20Token::new(3, exchange.storage);
             eurc.initialize("EURC", "EURC", "USD", linking_usd_addr, admin)
                 .expect("Failed to initialize EURC");
-            eurc.token_address
+            eurc.address()
         };
 
         // Create pairs
@@ -2786,8 +2789,7 @@ mod tests {
         // Setup tokens and roles
         {
             let mut usdc = TIP20Token::new(2, exchange.storage);
-            let mut usdc_roles = usdc.get_roles_contract();
-            usdc_roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+            usdc.grant_role_internal(admin, *ISSUER_ROLE)?;
             usdc.mint(
                 admin,
                 ITIP20::mintCall {
@@ -2800,8 +2802,7 @@ mod tests {
 
         {
             let mut eurc = TIP20Token::new(3, exchange.storage);
-            let mut eurc_roles = eurc.get_roles_contract();
-            eurc_roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+            eurc.grant_role_internal(admin, *ISSUER_ROLE)?;
             eurc.mint(
                 admin,
                 ITIP20::mintCall {
@@ -2814,8 +2815,7 @@ mod tests {
 
         {
             let mut linking_usd = LinkingUSD::new(exchange.storage);
-            let mut linking_usd_roles = linking_usd.get_roles_contract();
-            linking_usd_roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+            linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
             linking_usd
                 .token
                 .mint(
@@ -2918,21 +2918,21 @@ mod tests {
             linking_usd
                 .initialize(admin)
                 .expect("Failed to initialize LinkingUSD");
-            linking_usd.token.token_address
+            linking_usd.token.address()
         };
 
         let usdc_addr = {
             let mut usdc = TIP20Token::new(2, exchange.storage);
             usdc.initialize("USDC", "USDC", "USD", linking_usd_addr, admin)
                 .expect("Failed to initialize USDC");
-            usdc.token_address
+            usdc.address()
         };
 
         let eurc_addr = {
             let mut eurc = TIP20Token::new(3, exchange.storage);
             eurc.initialize("EURC", "EURC", "USD", linking_usd_addr, admin)
                 .expect("Failed to initialize EURC");
-            eurc.token_address
+            eurc.address()
         };
 
         // Create pairs and setup (same as previous test)
@@ -2945,8 +2945,7 @@ mod tests {
 
         {
             let mut usdc = TIP20Token::new(2, exchange.storage);
-            let mut usdc_roles = usdc.get_roles_contract();
-            usdc_roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+            usdc.grant_role_internal(admin, *ISSUER_ROLE)?;
             usdc.mint(
                 admin,
                 ITIP20::mintCall {
@@ -2967,8 +2966,7 @@ mod tests {
 
         {
             let mut eurc = TIP20Token::new(3, exchange.storage);
-            let mut eurc_roles = eurc.get_roles_contract();
-            eurc_roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+            eurc.grant_role_internal(admin, *ISSUER_ROLE)?;
             eurc.mint(
                 admin,
                 ITIP20::mintCall {
@@ -2989,8 +2987,7 @@ mod tests {
 
         {
             let mut linking_usd = LinkingUSD::new(exchange.storage);
-            let mut linking_usd_roles = linking_usd.get_roles_contract();
-            linking_usd_roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+            linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
             linking_usd
                 .token
                 .mint(
@@ -3057,21 +3054,21 @@ mod tests {
             linking_usd
                 .initialize(admin)
                 .expect("Failed to initialize LinkingUSD");
-            linking_usd.token.token_address
+            linking_usd.token.address()
         };
 
         let usdc_addr = {
             let mut usdc = TIP20Token::new(2, exchange.storage);
             usdc.initialize("USDC", "USDC", "USD", linking_usd_addr, admin)
                 .expect("Failed to initialize USDC");
-            usdc.token_address
+            usdc.address()
         };
 
         let eurc_addr = {
             let mut eurc = TIP20Token::new(3, exchange.storage);
             eurc.initialize("EURC", "EURC", "USD", linking_usd_addr, admin)
                 .expect("Failed to initialize EURC");
-            eurc.token_address
+            eurc.address()
         };
 
         exchange
@@ -3084,8 +3081,7 @@ mod tests {
         // Setup alice as liquidity provider
         {
             let mut usdc = TIP20Token::new(2, exchange.storage);
-            let mut usdc_roles = usdc.get_roles_contract();
-            usdc_roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+            usdc.grant_role_internal(admin, *ISSUER_ROLE)?;
             usdc.mint(
                 admin,
                 ITIP20::mintCall {
@@ -3106,8 +3102,7 @@ mod tests {
 
         {
             let mut eurc = TIP20Token::new(3, exchange.storage);
-            let mut eurc_roles = eurc.get_roles_contract();
-            eurc_roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+            eurc.grant_role_internal(admin, *ISSUER_ROLE)?;
             eurc.mint(
                 admin,
                 ITIP20::mintCall {
@@ -3128,8 +3123,7 @@ mod tests {
 
         {
             let mut linking_usd = LinkingUSD::new(exchange.storage);
-            let mut linking_usd_roles = linking_usd.get_roles_contract();
-            linking_usd_roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+            linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
             linking_usd.token.mint(
                 admin,
                 ITIP20::mintCall {
@@ -3259,21 +3253,21 @@ mod tests {
             linking_usd
                 .initialize(admin)
                 .expect("Failed to initialize LinkingUSD");
-            linking_usd.token.token_address
+            linking_usd.token.address()
         };
 
         let usdc_addr = {
             let mut usdc = TIP20Token::new(2, exchange.storage);
             usdc.initialize("USDC", "USDC", "USD", linking_usd_addr, admin)
                 .expect("Failed to initialize USDC");
-            usdc.token_address
+            usdc.address()
         };
 
         let eurc_addr = {
             let mut eurc = TIP20Token::new(3, exchange.storage);
             eurc.initialize("EURC", "EURC", "USD", linking_usd_addr, admin)
                 .expect("Failed to initialize EURC");
-            eurc.token_address
+            eurc.address()
         };
 
         exchange
@@ -3286,8 +3280,7 @@ mod tests {
         // Setup alice as liquidity provider
         {
             let mut usdc = TIP20Token::new(2, exchange.storage);
-            let mut usdc_roles = usdc.get_roles_contract();
-            usdc_roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+            usdc.grant_role_internal(admin, *ISSUER_ROLE)?;
             usdc.mint(
                 admin,
                 ITIP20::mintCall {
@@ -3308,8 +3301,7 @@ mod tests {
 
         {
             let mut eurc = TIP20Token::new(3, exchange.storage);
-            let mut eurc_roles = eurc.get_roles_contract();
-            eurc_roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+            eurc.grant_role_internal(admin, *ISSUER_ROLE)?;
             eurc.mint(
                 admin,
                 ITIP20::mintCall {
@@ -3330,8 +3322,7 @@ mod tests {
 
         {
             let mut linking_usd = LinkingUSD::new(exchange.storage);
-            let mut linking_usd_roles = linking_usd.get_roles_contract();
-            linking_usd_roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+            linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
             linking_usd
                 .token
                 .mint(
@@ -3464,13 +3455,13 @@ mod tests {
             .unwrap();
 
         // Create EUR token with LINKING_USD as quote (valid non-USD token)
-        let mut token_0 = TIP20Token::new(1, linking_usd.storage);
+        let mut token_0 = TIP20Token::new(1, linking_usd.storage());
         token_0
             .initialize("EuroToken", "EURO", "EUR", LINKING_USD_ADDRESS, admin)
             .unwrap();
-        let token_0_address = token_0.token_address;
+        let token_0_address = token_0.address();
 
-        let mut exchange = StablecoinExchange::new(token_0.storage);
+        let mut exchange = StablecoinExchange::new(token_0.storage());
         exchange.initialize()?;
 
         // Test: create_pair should reject non-USD token (EUR token has EUR currency)

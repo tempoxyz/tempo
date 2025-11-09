@@ -50,7 +50,17 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         sender: Address,
         call: ITIP20Factory::createTokenCall,
     ) -> Result<Address> {
+<<<<<<< HEAD
         let token_id = self.token_id_counter()?.to::<u64>();
+=======
+        // TODO: We should update `token_id_counter` to be u64 in storage if we assume we can cast
+        // to u64 here. Or we should update `token_id_to_address` to take a larger value
+        let token_id = self
+            .token_id_counter()?
+            .try_into()
+            .map_err(|_| TempoPrecompileError::under_overflow())?;
+
+>>>>>>> fab58d9 (fix!: re-enable commented out modules (#800))
         trace!(%sender, %token_id, ?call, "Create token");
 
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
