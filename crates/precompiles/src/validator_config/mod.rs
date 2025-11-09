@@ -8,7 +8,7 @@ use crate::{
     error::TempoPrecompileError,
     storage::{PrecompileStorageProvider, Slot, Storable, StorageOps, VecSlotExt},
 };
-use alloy::primitives::{Address, B256, Bytes, U256};
+use alloy::primitives::{Address, B256, Bytes};
 use revm::state::Bytecode;
 use tracing::trace;
 

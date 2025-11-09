@@ -26,12 +26,12 @@ use tempo_contracts::{
 };
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    LINKING_USD_ADDRESS,
     linking_usd::{LinkingUSD, TRANSFER_ROLE},
     nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
     storage::{ContractStorage, evm::EvmPrecompileStorageProvider},
-    tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager},
+    tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token, address_to_token_id_unchecked},
     tip20_factory::{ITIP20Factory, TIP20Factory},
     tip20_rewards_registry::TIP20RewardsRegistry,
