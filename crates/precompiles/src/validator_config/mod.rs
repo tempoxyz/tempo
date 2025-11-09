@@ -99,18 +99,21 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         &mut self,
         _call: IValidatorConfig::getValidatorsCall,
     ) -> Result<Vec<IValidatorConfig::Validator>, TempoPrecompileError> {
+        let count = self.validator_count()?;
         let mut validators = Vec::new();
-        let validator_addresses = self.sload_validators_array()?;
 
-        for addr in validator_addresses {
+        for i in 0..count {
+            // Read validator address from the array at index i
+            let validator_address = ValidatorsArray::read_at(self, i as usize)?;
+            
             let Validator {
                 public_key,
                 active,
                 index,
-                validator_address,
+                validator_address: _,
                 inbound_address,
                 outbound_address,
-            } = self.sload_validators(addr)?;
+            } = self.sload_validators(validator_address)?;
 
             validators.push(IValidatorConfig::Validator {
                 publicKey: public_key,
@@ -191,16 +194,16 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         if !self.validator_exists(sender)? {
             return Err(ValidatorConfigError::validator_not_found())?;
         }
-        let validator = self.sload_validators(call.newValidatorAddress)?;
+
+        // Load the current validator info (from sender address)
+        let old_validator = self.sload_validators(sender)?;
 
         // Check if rotating to a new address
-        // If so, we only need to delete storage at the old slot, since we would update the values at the new slot after
         if call.newValidatorAddress != sender {
             if self.validator_exists(call.newValidatorAddress)? {
                 return Err(ValidatorConfigError::validator_already_exists())?;
             }
 
-            let old_validator = self.sload_validators(sender)?;
             // Update the validators array to point at the new validator address
             ValidatorsArray::write_at(
                 self,
@@ -228,16 +231,16 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
             )
         })?;
 
-        let validator = Validator {
+        let updated_validator = Validator {
             public_key: call.publicKey,
-            active: true,
-            index: validator.index,
+            active: old_validator.active,
+            index: old_validator.index,
             validator_address: call.newValidatorAddress,
             inbound_address: call.inboundAddress,
             outbound_address: call.outboundAddress,
         };
 
-        self.sstore_validators(call.newValidatorAddress, validator)?;
+        self.sstore_validators(call.newValidatorAddress, updated_validator)?;
 
         Ok(())
     }
