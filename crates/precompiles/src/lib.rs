@@ -215,7 +215,6 @@ pub struct ValidatorConfigPrecompile;
 impl ValidatorConfigPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
         tempo_precompile!("ValidatorConfig", |input| ValidatorConfig::new(
-            VALIDATOR_CONFIG_ADDRESS,
             &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id),
         ))
     }

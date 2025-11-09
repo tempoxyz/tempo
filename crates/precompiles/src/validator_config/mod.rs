@@ -8,65 +8,9 @@ use crate::{
     error::TempoPrecompileError,
     storage::{PrecompileStorageProvider, Slot, Storable, StorageOps, VecSlotExt},
 };
-use alloy::primitives::{Address, B256, Bytes, FixedBytes, U256};
-use revm::{interpreter::instructions::utility::IntoAddress, state::Bytecode};
+use alloy::primitives::{Address, B256, Bytes};
+use revm::state::Bytecode;
 use tracing::trace;
-
-///// Storage slots for ValidatorConfig precompile
-//pub mod slots {
-//    use crate::storage::slots::mapping_slot;
-//    use alloy::primitives::{Address, U256, uint};
-//
-//    // Simple values
-//    pub const OWNER: U256 = uint!(0_U256);
-//    pub const VALIDATOR_COUNT: U256 = uint!(1_U256);
-//
-//    // Mappings
-//    /// Maps index -> validator address (for iteration)
-//    pub const VALIDATORS_ARRAY: U256 = uint!(2_U256);
-//
-//    /// Maps validator address -> Validator struct (base slot)
-//    pub const VALIDATORS: U256 = uint!(3_U256);
-//
-//    // Validator struct field offsets
-//    /// Communication key field offset (bytes32)
-//    pub const VALIDATOR_KEY_OFFSET: U256 = uint!(0_U256);
-//    /// Packed: active (bool, lowest byte) + index (u64, next 8 bytes)
-//    pub const VALIDATOR_ACTIVE_INDEX_OFFSET: U256 = uint!(1_U256);
-//    /// Inbound address field offset (string, uses 9 slots: 2-10)
-//    pub const VALIDATOR_INBOUND_ADDRESS_OFFSET: U256 = uint!(2_U256);
-//    /// Outbound address field offset (string, uses 9 slots: 11-19)
-//    pub const VALIDATOR_OUTBOUND_ADDRESS_OFFSET: U256 = uint!(11_U256);
-//
-//    pub fn validator_at_index_slot(index: u64) -> U256 {
-//        mapping_slot(index.to_be_bytes(), VALIDATORS_ARRAY)
-//    }
-//
-//    pub fn validator_base_slot(validator: &Address) -> U256 {
-//        mapping_slot(validator, VALIDATORS)
-//    }
-//
-//    /// Pack active (bool) and index (u64) into a single U256
-//    /// Layout: [... zeros ...][index: 8 bytes][active: 1 byte]
-//    pub fn pack_active_index(active: bool, index: u64) -> U256 {
-//        let mut bytes = [0u8; 32];
-//        // Put active in lowest byte
-//        bytes[31] = if active { 1 } else { 0 };
-//        // Put index in next 8 bytes (bytes 23-30)
-//        bytes[23..31].copy_from_slice(&index.to_be_bytes());
-//        U256::from_be_bytes(bytes)
-//    }
-//
-//    /// Unpack active (bool) and index (u64) from a U256
-//    pub fn unpack_active_index(value: U256) -> (bool, u64) {
-//        let bytes = value.to_be_bytes::<32>();
-//        let active = bytes[31] != 0;
-//        // SAFETY: This is safe to unwrap because bytes is always 32 bytes and 23..31 is always 8 bytes
-//        let index = u64::from_be_bytes(bytes[23..31].try_into().unwrap());
-//        (active, index)
-//    }
-//}
-//
 
 /// Validator information
 #[derive(Debug, Storable)]
@@ -92,23 +36,7 @@ pub struct ValidatorConfig {
     owner: Address,
     validator_count: u64,
     validators_array: Vec<Address>,
-    //    // Mappings
-    //    /// Maps index -> validator address (for iteration)
-    //    pub const VALIDATORS_ARRAY: U256 = uint!(2_U256);
-    //
-    //    /// Maps validator address -> Validator struct (base slot)
-    //    pub const VALIDATORS: U256 = uint!(3_U256);
     validators: Mapping<Address, Validator>,
-    //
-    //    // Validator struct field offsets
-    //    /// Communication key field offset (bytes32)
-    //    pub const VALIDATOR_KEY_OFFSET: U256 = uint!(0_U256);
-    //    /// Packed: active (bool, lowest byte) + index (u64, next 8 bytes)
-    //    pub const VALIDATOR_ACTIVE_INDEX_OFFSET: U256 = uint!(1_U256);
-    //    /// Inbound address field offset (string, uses 9 slots: 2-10)
-    //    pub const VALIDATOR_INBOUND_ADDRESS_OFFSET: U256 = uint!(2_U256);
-    //    /// Outbound address field offset (string, uses 9 slots: 11-19)
-    //    pub const VALIDATOR_OUTBOUND_ADDRESS_OFFSET: U256 = uint!(11_U256);
 }
 
 impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
@@ -359,6 +287,7 @@ mod tests {
     use super::*;
     use crate::storage::hashmap::HashMapStorageProvider;
     use alloy::primitives::Address;
+    use alloy_primitives::FixedBytes;
 
     const PRECOMPILE_ADDRESS: Address = Address::new([0x01; 20]);
 
@@ -368,7 +297,7 @@ mod tests {
         let owner1 = Address::from([0x11; 20]);
         let owner2 = Address::from([0x22; 20]);
 
-        let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
 
         // Initialize with owner1
         validator_config.initialize(owner1).unwrap();
@@ -383,7 +312,7 @@ mod tests {
         // Change owner to owner2
         validator_config
             .change_owner(
-                &owner1,
+                owner1,
                 IValidatorConfig::changeOwnerCall { newOwner: owner2 },
             )
             .expect("Should change owner");
@@ -400,7 +329,7 @@ mod tests {
         let owner2 = Address::from([0x22; 20]);
         let validator1 = Address::from([0x33; 20]);
 
-        let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
 
         // Initialize with owner1
         validator_config.initialize(owner1).unwrap();
@@ -408,7 +337,7 @@ mod tests {
         // Owner1 adds a validator - should succeed
         let public_key = FixedBytes::<32>::from([0x44; 32]);
         let result = validator_config.add_validator(
-            &owner1,
+            owner1,
             IValidatorConfig::addValidatorCall {
                 newValidatorAddress: validator1,
                 publicKey: public_key,
@@ -430,7 +359,7 @@ mod tests {
 
         // Owner1 changes validator status - should succeed
         let result = validator_config.change_validator_status(
-            &owner1,
+            owner1,
             IValidatorConfig::changeValidatorStatusCall {
                 validator: validator1,
                 active: false,
@@ -450,7 +379,7 @@ mod tests {
         // Owner2 (non-owner) tries to add validator - should fail
         let validator2 = Address::from([0x55; 20]);
         let result = validator_config.add_validator(
-            &owner2,
+            owner2,
             IValidatorConfig::addValidatorCall {
                 newValidatorAddress: validator2,
                 publicKey: FixedBytes::<32>::from([0x66; 32]),
@@ -471,7 +400,7 @@ mod tests {
 
         // Owner2 (non-owner) tries to change validator status - should fail
         let result = validator_config.change_validator_status(
-            &owner2,
+            owner2,
             IValidatorConfig::changeValidatorStatusCall {
                 validator: validator1,
                 active: true,
@@ -493,7 +422,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::from([0x01; 20]);
 
-        let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
         validator_config.initialize(owner).unwrap();
 
         // Add first validator with long inbound address (100+ bytes)
@@ -504,7 +433,7 @@ mod tests {
         let long_outbound1 = "192.168.1.1:9000".to_string();
         validator_config
             .add_validator(
-                &owner,
+                owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator1,
                     publicKey: public_key1,
@@ -517,7 +446,7 @@ mod tests {
 
         // Try adding duplicate validator - should fail
         let result = validator_config.add_validator(
-            &owner,
+            owner,
             IValidatorConfig::addValidatorCall {
                 newValidatorAddress: validator1,
                 publicKey: FixedBytes::<32>::from([0x22; 32]),
@@ -538,7 +467,7 @@ mod tests {
         let public_key2 = FixedBytes::<32>::from([0x22; 32]);
         validator_config
             .add_validator(
-                &owner,
+                owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator2,
                     publicKey: public_key2,
@@ -553,7 +482,7 @@ mod tests {
         let public_key3 = FixedBytes::<32>::from([0x23; 32]);
         validator_config
             .add_validator(
-                &owner,
+                owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator3,
                     publicKey: public_key3,
@@ -568,7 +497,7 @@ mod tests {
         let public_key4 = FixedBytes::<32>::from([0x24; 32]);
         validator_config
             .add_validator(
-                &owner,
+                owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator4,
                     publicKey: public_key4,
@@ -583,7 +512,7 @@ mod tests {
         let public_key5 = FixedBytes::<32>::from([0x25; 32]);
         validator_config
             .add_validator(
-                &owner,
+                owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator5,
                     publicKey: public_key5,
@@ -637,7 +566,7 @@ mod tests {
         let short_outbound1 = "10.0.0.1:9000".to_string();
         validator_config
             .update_validator(
-                &validator1,
+                validator1,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator1,
                     publicKey: public_key1_new,
@@ -651,7 +580,7 @@ mod tests {
         let validator2_new = Address::from([0x22; 20]);
         validator_config
             .update_validator(
-                &validator2,
+                validator2,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator2_new,
                     publicKey: public_key2,
@@ -668,7 +597,7 @@ mod tests {
         let long_outbound3 = "192.168.1.3:9000".to_string();
         validator_config
             .update_validator(
-                &validator3,
+                validator3,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator3_new,
                     publicKey: public_key3,
@@ -751,7 +680,7 @@ mod tests {
         let public_key = FixedBytes::<32>::from([0x21; 32]);
         validator_config
             .add_validator(
-                &owner,
+                owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator,
                     publicKey: public_key,
@@ -764,7 +693,7 @@ mod tests {
 
         // Owner tries to update validator - should fail
         let result = validator_config.update_validator(
-            &owner,
+            owner,
             IValidatorConfig::updateValidatorCall {
                 newValidatorAddress: validator,
                 publicKey: FixedBytes::<32>::from([0x22; 32]),
@@ -807,7 +736,7 @@ mod tests {
         let public_key = FixedBytes::<32>::from([0x21; 32]);
         validator_config
             .add_validator(
-                &owner,
+                owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator,
                     publicKey: public_key,
@@ -833,7 +762,7 @@ mod tests {
         let owner = Address::from([0x01; 20]);
         let validator = Address::from([0x11; 20]);
 
-        let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
         validator_config.initialize(owner).unwrap();
 
         // Create a 254-character hostname (exceeds max DNS length)
@@ -844,7 +773,7 @@ mod tests {
         // Try to add validator with too-long hostname - should fail
         let public_key = FixedBytes::<32>::from([0x21; 32]);
         let result = validator_config.add_validator(
-            &owner,
+            owner,
             IValidatorConfig::addValidatorCall {
                 newValidatorAddress: validator,
                 publicKey: public_key,
@@ -866,7 +795,7 @@ mod tests {
         let validator1 = Address::from([0x11; 20]);
         let validator2 = Address::from([0x22; 20]);
 
-        let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
         validator_config.initialize(owner).unwrap();
 
         // Add validator with long inbound address that uses multiple slots
@@ -877,7 +806,7 @@ mod tests {
 
         validator_config
             .add_validator(
-                &owner,
+                owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator1,
                     publicKey: public_key,
