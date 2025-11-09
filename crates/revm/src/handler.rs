@@ -35,13 +35,11 @@ use tempo_contracts::{
     precompiles::{FeeManagerError, IFeeManager},
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN,
-    LINKING_USD_ADDRESS,
-    TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{evm::EvmPrecompileStorageProvider, slots::mapping_slot},
-    // tip_fee_manager::{self, TipFeeManager},
+    tip_fee_manager::TipFeeManager,
     tip20::{self, TIP20Token, USD_CURRENCY, address_to_token_id_unchecked, is_tip20},
 };
 use tempo_primitives::transaction::{AASignature, calc_gas_balance_spending};
@@ -587,59 +585,57 @@ where
         // Note: Signature verification happens during recover_signer() before entering the pool
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
 
-        // // Create storage provider wrapper around journal
-        // let internals = EvmInternals::new(journal, &block);
-        // let mut storage_provider =
-        //     EvmPrecompileStorageProvider::new_max_gas(internals, cfg.chain_id());
-        // let mut fee_manager = TipFeeManager::new(
-        //     TIP_FEE_MANAGER_ADDRESS,
-        //     block.beneficiary(),
-        //     &mut storage_provider,
-        // );
+        // Create storage provider wrapper around journal
+        let internals = EvmInternals::new(journal, &block);
+        let beneficiary = internals.block_env().beneficiary();
+        let mut storage_provider =
+            EvmPrecompileStorageProvider::new_max_gas(internals, cfg.chain_id());
+        let mut fee_manager = TipFeeManager::new(&mut storage_provider);
 
-        // if tx.max_balance_spending().ok() == Some(U256::ZERO) {
-        //     return Ok(());
-        // }
+        if tx.max_balance_spending().ok() == Some(U256::ZERO) {
+            return Ok(());
+        }
 
-        // // Call the precompile function to collect the fee
-        // // We specify the `to_addr` to account for the case where the to address is a tip20
-        // // token and the fee token is not set for the specified caller.
-        // // In this case, the collect_fee_pre_tx fn will set the fee token as the `to_addr`
-        // let to_addr = tx.kind().into_to().unwrap_or_default();
-        // fee_manager
-        //     .collect_fee_pre_tx(
-        //         self.fee_payer,
-        //         self.fee_token,
-        //         to_addr,
-        //         gas_balance_spending,
-        //     )
-        //     .map_err(|e| {
-        //         // Map fee collection errors to transaction validation errors since they
-        //         // indicate the transaction cannot be included (e.g., insufficient liquidity
-        //         // in FeeAMM pool for fee swaps)
-        //         match e {
-        //             TempoPrecompileError::FeeManagerError(
-        //                 FeeManagerError::InsufficientLiquidity(_),
-        //             ) => EVMError::Transaction(TempoInvalidTransaction::InsufficientAmmLiquidity {
-        //                 fee: Box::new(gas_balance_spending),
-        //             }),
+        // Call the precompile function to collect the fee
+        // We specify the `to_addr` to account for the case where the to address is a tip20
+        // token and the fee token is not set for the specified caller.
+        // In this case, the collect_fee_pre_tx fn will set the fee token as the `to_addr`
+        let to_addr = tx.kind().into_to().unwrap_or_default();
+        fee_manager
+            .collect_fee_pre_tx(
+                self.fee_payer,
+                self.fee_token,
+                to_addr,
+                gas_balance_spending,
+                beneficiary,
+            )
+            .map_err(|e| {
+                // Map fee collection errors to transaction validation errors since they
+                // indicate the transaction cannot be included (e.g., insufficient liquidity
+                // in FeeAMM pool for fee swaps)
+                match e {
+                    TempoPrecompileError::FeeManagerError(
+                        FeeManagerError::InsufficientLiquidity(_),
+                    ) => EVMError::Transaction(TempoInvalidTransaction::InsufficientAmmLiquidity {
+                        fee: Box::new(gas_balance_spending),
+                    }),
 
-        //             TempoPrecompileError::FeeManagerError(
-        //                 FeeManagerError::InsufficientFeeTokenBalance(_),
-        //             ) => EVMError::Transaction(
-        //                 TempoInvalidTransaction::InsufficientFeeTokenBalance {
-        //                     fee: Box::new(gas_balance_spending),
-        //                     balance: Box::new(account_balance),
-        //                 },
-        //             ),
+                    TempoPrecompileError::FeeManagerError(
+                        FeeManagerError::InsufficientFeeTokenBalance(_),
+                    ) => EVMError::Transaction(
+                        TempoInvalidTransaction::InsufficientFeeTokenBalance {
+                            fee: Box::new(gas_balance_spending),
+                            balance: Box::new(account_balance),
+                        },
+                    ),
 
-        //             TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
+                    TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
 
-        //             _ => EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTxError(
-        //                 e.to_string(),
-        //             )),
-        //         }
-        //     })?;
+                    _ => EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTxError(
+                        e.to_string(),
+                    )),
+                }
+            })?;
         Ok(())
     }
 
@@ -667,24 +663,22 @@ where
         // Create storage provider and fee manager
         let (journal, block) = (&mut context.journaled_state, &context.block);
         let internals = EvmInternals::new(journal, block);
+        let beneficiary = internals.block_env().beneficiary();
         let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, chain_id);
-        // let mut fee_manager = TipFeeManager::new(
-        //     TIP_FEE_MANAGER_ADDRESS,
-        //     block.beneficiary,
-        //     &mut storage_provider,
-        // );
+        let mut fee_manager = TipFeeManager::new(&mut storage_provider);
 
-        // if !actual_spending.is_zero() || !refund_amount.is_zero() {
-        //     // Call collectFeePostTx (handles both refund and fee queuing)
-        //     fee_manager
-        //         .collect_fee_post_tx(
-        //             self.fee_payer,
-        //             actual_spending,
-        //             refund_amount,
-        //             self.fee_token,
-        //         )
-        //         .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
-        // }
+        if !actual_spending.is_zero() || !refund_amount.is_zero() {
+            // Call collectFeePostTx (handles both refund and fee queuing)
+            fee_manager
+                .collect_fee_post_tx(
+                    self.fee_payer,
+                    actual_spending,
+                    refund_amount,
+                    self.fee_token,
+                    beneficiary,
+                )
+                .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
+        }
         Ok(())
     }
 

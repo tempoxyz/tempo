@@ -440,7 +440,6 @@ mod tests {
     #[test]
     fn test_execute_block() -> Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let validator = Address::random();
         let token = Address::random();
 
         // Setup token

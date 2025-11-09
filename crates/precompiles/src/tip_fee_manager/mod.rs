@@ -10,10 +10,8 @@ pub use tempo_contracts::precompiles::{
 use crate::{
     DEFAULT_FEE_TOKEN,
     error::{Result, TempoPrecompileError},
-    storage::{
-        PrecompileStorageProvider, Slot, Storable, StorageOps, VecSlotExt, slots::mapping_slot,
-    },
-    tip_fee_manager::amm::{Pool, PoolKey},
+    storage::{PrecompileStorageProvider, Slot, Storable, VecSlotExt},
+    tip_fee_manager::amm::Pool,
     tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
 };
 
@@ -143,10 +141,10 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         let validator_token = self.get_validator_token(beneficiary)?;
 
         // Verify pool liquidity if user token differs from validator token
-        if user_token != validator_token {
-            if !self.has_liquidity(user_token, validator_token, max_amount)? {
-                return Err(FeeManagerError::insufficient_liquidity().into());
-            }
+        if user_token != validator_token
+            && !self.has_liquidity(user_token, validator_token, max_amount)?
+        {
+            return Err(FeeManagerError::insufficient_liquidity().into());
         }
 
         let mut tip20_token = TIP20Token::from_address(user_token, self.storage);
@@ -377,7 +375,6 @@ mod tests {
     #[test]
     fn test_set_user_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let validator = Address::random();
         let user = Address::random();
 
         // Initialize LinkingUSD first

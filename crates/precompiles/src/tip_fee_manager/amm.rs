@@ -1,6 +1,6 @@
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{PrecompileStorageProvider, StorageOps},
+    storage::PrecompileStorageProvider,
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
@@ -726,7 +726,6 @@ mod tests {
     #[test]
     fn test_burn_identical_addresses() {
         let mut storage = HashMapStorageProvider::new(1);
-        let contract_address = Address::random();
         let mut amm = TipFeeManager::new(&mut storage);
 
         let msg_sender = Address::random();
@@ -1221,7 +1220,6 @@ mod tests {
     #[test]
     fn test_rebalance_swap_rejects_non_usd_tokens() {
         let mut storage = HashMapStorageProvider::new(1);
-        let contract_address = Address::random();
 
         let admin = Address::random();
         let msg_sender = Address::random();
