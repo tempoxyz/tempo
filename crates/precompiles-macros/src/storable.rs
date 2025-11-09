@@ -8,25 +8,16 @@ use crate::{
     storable_primitives::gen_struct_arrays,
     utils::{
         extract_storable_array_sizes, is_array_type, is_custom_struct, is_dynamic_type,
-        is_enum_input, normalize_to_snake_case, validate_enum,
+        normalize_to_snake_case,
     },
 };
 
-/// Implements the `Storable` derive macro for structs and enums.
+/// Implements the `Storable` derive macro for structs.
 ///
-/// For structs: Packs fields into storage slots based on their byte sizes.
+/// Packs fields into storage slots based on their byte sizes.
 /// Fields are placed sequentially in slots, moving to a new slot when
 /// the current slot cannot fit the next field (no spanning across slots).
-///
-/// For enums: Requires unit variants only. Stores as a single u8.
 pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
-    // TODO(rusowsky): enable once finished
-    // // Dispatch to the appropriate implementation based on input type
-    // if is_enum_input(&input.data) {
-    // derive_enum_impl(input)
-    // } else {
-    // derive_struct_impl(input)
-    // }
     derive_struct_impl(input)
 }
 
@@ -591,108 +582,4 @@ fn gen_from_evm_words_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> Token
     quote! {
         #(#decode_fields)*
     }
-}
-
-/// Implements the `Storable` derive macro for C-like enums (enums with unit variants only).
-///
-/// Generates:
-/// - `TryFrom<u8>` implementation that returns `TempoPrecompileError::Fatal()` for invalid discriminants
-/// - `From<EnumType> for u8` implementation
-/// - `Storable<1>` implementation that stores the enum as a single u8
-fn derive_enum_impl(input: DeriveInput) -> syn::Result<TokenStream> {
-    let enum_name = &input.ident;
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-
-    // Extract enum variants
-    let variants = match &input.data {
-        Data::Enum(data_enum) => &data_enum.variants,
-        _ => unreachable!("derive_enum_impl should only be called for enums"),
-    };
-
-    // Validate that all variants are unit variants
-    validate_enum(variants)?;
-
-    if variants.is_empty() {
-        return Err(syn::Error::new_spanned(
-            &input.ident,
-            "`Storable` cannot be derived for empty enums",
-        ));
-    }
-
-    // Generate match arms for TryFrom<u8>
-    let try_from_arms = variants.iter().map(|variant| {
-        let variant_name = &variant.ident;
-        quote! {
-            x if x == #enum_name::#variant_name as u8 => Ok(#enum_name::#variant_name)
-        }
-    });
-
-    // Generate the implementations to treat as `u8`
-    let expanded = quote! {
-        // Implement `TryFrom<u8>`
-        impl #impl_generics ::core::convert::TryFrom<u8> for #enum_name #ty_generics #where_clause {
-            type Error = crate::error::TempoPrecompileError;
-
-            fn try_from(value: u8) -> ::core::result::Result<Self, Self::Error> {
-                match value {
-                    #(#try_from_arms,)*
-                    _ => Err(crate::error::TempoPrecompileError::Fatal(
-                        format!("Invalid discriminant value {} for enum {}", value, stringify!(#enum_name))
-                    )),
-                }
-            }
-        }
-
-        // Implement `From<EnumType>` for u8
-        impl #impl_generics ::core::convert::From<#enum_name #ty_generics> for u8 #where_clause {
-            #[inline]
-            fn from(value: #enum_name #ty_generics) -> Self {
-                value as u8
-            }
-        }
-
-        // Implement `StorableType`
-        impl #impl_generics crate::storage::StorableType for #enum_name #ty_generics #where_clause {
-            const BYTE_COUNT: usize = 1;
-        }
-
-        // Implement `Storable<1>` by treating as a u8
-        impl #impl_generics crate::storage::Storable<1> for #enum_name #ty_generics #where_clause {
-            const SLOT_COUNT: usize = 1;
-
-            #[inline]
-            fn load<S: crate::storage::StorageOps>(
-                storage: &mut S,
-                base_slot: ::alloy::primitives::U256,
-            ) -> crate::error::Result<Self> {
-                let value = storage.sload(base_slot)?;
-                let as_u8 = value.to::<u8>();
-                as_u8.try_into()
-            }
-
-            #[inline]
-            fn store<S: crate::storage::StorageOps>(
-                &self,
-                storage: &mut S,
-                base_slot: ::alloy::primitives::U256,
-            ) -> crate::error::Result<()> {
-                let as_u8: u8 = (*self).into();
-                storage.sstore(base_slot, ::alloy::primitives::U256::from(as_u8))
-            }
-
-            #[inline]
-            fn to_evm_words(&self) -> crate::error::Result<[::alloy::primitives::U256; 1]> {
-                let as_u8: u8 = (*self).into();
-                Ok([::alloy::primitives::U256::from(as_u8)])
-            }
-
-            #[inline]
-            fn from_evm_words(words: [::alloy::primitives::U256; 1]) -> crate::error::Result<Self> {
-                let as_u8 = words[0].to::<u8>();
-                as_u8.try_into()
-            }
-        }
-    };
-
-    Ok(expanded)
 }

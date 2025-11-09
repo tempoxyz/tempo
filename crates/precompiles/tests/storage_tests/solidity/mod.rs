@@ -135,33 +135,25 @@ fn test_structs_layout() {
     }
 }
 
-// Test struct storage layout including individual struct member verification
+// Test enum storage layout with packing
 #[test]
 fn test_enums_layout() {
-    use crate::storage_tests::solidity::__packing_test_block_inner::*;
+    use alloy::primitives::Address;
 
     #[contract]
-    struct Structs {
-        field_a: U256,
-        block_data: TestBlockInner,
-        field_b: U256,
+    struct Enums {
+        field_a: u16,     // 2 bytes - slot 0, offset 0
+        field_b: u8,      // 1 byte (enum) - slot 0, offset 2
+        field_c: Address, // 20 bytes - slot 0, offset 3
     }
 
-    let solc_layout = load_solc_layout(&testdata("enum.sol"));
+    let rust_layout = layout_fields!(field_a, field_b, field_c);
 
-    // Verify top-level fields
-    let rust_layout = layout_fields!(field_a, block_data, field_b);
+    // Compare against expected layout from Solidity
+    let solc_layout = load_solc_layout(&testdata("enum.sol"));
 
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
         panic!("Layout mismatch:\n{}", errors.join("\n"));
-    }
-
-    // Verify struct member slots
-    let base_slot = slots::BLOCK_DATA;
-    let rust_struct = struct_fields!(base_slot, field1, field2, field3);
-
-    if let Err(errors) = compare_struct_members(&solc_layout, "block_data", &rust_struct) {
-        panic!("Struct member layout mismatch:\n{}", errors.join("\n"));
     }
 }
 

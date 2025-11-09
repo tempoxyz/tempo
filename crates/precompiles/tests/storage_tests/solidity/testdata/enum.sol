@@ -3,7 +3,7 @@ pragma solidity ^0.8.0;
 
 /// Test contract with enum storage.
 contract Enums {
-    enum Auth {
+    enum PolicyType {
         WHITELISTED,
         BLACKLISTED
     }
