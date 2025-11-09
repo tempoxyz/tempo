@@ -4,31 +4,10 @@ use alloy::primitives::Bytes;
 use revm::state::Bytecode;
 pub use tempo_contracts::precompiles::INonce;
 use tempo_contracts::precompiles::NonceError;
+use tempo_precompiles_macros::contract;
 
 use crate::{NONCE_PRECOMPILE_ADDRESS, error::Result, storage::PrecompileStorageProvider};
 use alloy::primitives::{Address, U256};
-
-/// Storage slots for Nonce precompile data
-pub mod slots {
-    use alloy::primitives::{Address, U256};
-
-    use crate::storage::slots::{double_mapping_slot, mapping_slot};
-
-    /// Base slot for nonces mapping: nonces\[account\]\[nonce_key\]
-    pub const NONCES: U256 = U256::ZERO;
-    /// Base slot for active key count mapping: activeKeyCount\[account\]
-    pub const ACTIVE_KEY_COUNT: U256 = U256::from_limbs([1, 0, 0, 0]);
-
-    /// Compute storage slot for nonces\[account\]\[nonce_key\]
-    pub fn nonce_slot(account: Address, nonce_key: U256) -> U256 {
-        double_mapping_slot(account, nonce_key.to_be_bytes::<32>(), NONCES)
-    }
-
-    /// Compute storage slot for activeKeyCount\[account\]
-    pub fn active_key_count_slot(account: Address) -> U256 {
-        mapping_slot(account, ACTIVE_KEY_COUNT)
-    }
-}
 
 /// NonceManager contract for managing 2D nonces as per the AA spec
 ///
@@ -45,14 +24,15 @@ pub mod slots {
 ///
 /// Note: Protocol nonce (key 0) is stored directly in account state, not here.
 /// Only user nonce keys (1-N) are managed by this precompile.
-#[derive(Debug)]
-pub struct NonceManager<'a, S: PrecompileStorageProvider> {
-    pub storage: &'a mut S,
+#[contract]
+pub struct NonceManager {
+    nonces: Mapping<Address, Mapping<U256, u64>>,
+    active_key_count: Mapping<Address, U256>,
 }
 
 impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
-        Self { storage }
+        Self::_new(NONCE_PRECOMPILE_ADDRESS, storage)
     }
 
     /// Initializes the nonce manager contract.
@@ -73,10 +53,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
         }
 
         // For user nonce keys, read from precompile storage
-        let slot = slots::nonce_slot(call.account, call.nonceKey);
-        let nonce = self.storage.sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)?;
-
-        Ok(u64::try_from(nonce).map_err(|_| NonceError::nonce_overflow())?)
+        self.sload_nonces(call.account, call.nonceKey)
     }
 
     /// Get the number of active user nonce keys for an account
@@ -84,10 +61,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
         &mut self,
         call: INonce::getActiveNonceKeyCountCall,
     ) -> Result<U256> {
-        let slot = slots::active_key_count_slot(call.account);
-        let count = self.storage.sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)?;
-
-        Ok(count)
+        self.sload_active_key_count(call.account)
     }
 
     /// Internal: Increment nonce for a specific account and nonce key
@@ -97,35 +71,31 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
             return Err(NonceError::invalid_nonce_key().into());
         }
 
-        let slot = slots::nonce_slot(account, nonce_key);
-        let current = self.storage.sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)?;
+        let current = self.sload_nonces(account, nonce_key)?;
 
         // If transitioning from 0 to 1, increment active key count
-        if current == U256::ZERO {
+        if current == 0 {
             self.increment_active_key_count(account)?;
         }
 
         let new_nonce = current
-            .checked_add(U256::ONE)
+            .checked_add(1)
             .ok_or_else(NonceError::nonce_overflow)?;
 
-        self.storage
-            .sstore(crate::NONCE_PRECOMPILE_ADDRESS, slot, new_nonce)?;
+        self.sstore_nonces(account, nonce_key, new_nonce)?;
 
-        u64::try_from(new_nonce).map_err(|_| NonceError::nonce_overflow().into())
+        Ok(new_nonce)
     }
 
     /// Increment the active key count for an account
     fn increment_active_key_count(&mut self, account: Address) -> Result<()> {
-        let slot = slots::active_key_count_slot(account);
-        let current = self.storage.sload(crate::NONCE_PRECOMPILE_ADDRESS, slot)?;
+        let current = self.sload_active_key_count(account)?;
 
         let new_count = current
             .checked_add(U256::ONE)
             .ok_or_else(NonceError::nonce_overflow)?;
 
-        self.storage
-            .sstore(crate::NONCE_PRECOMPILE_ADDRESS, slot, new_count)
+        self.sstore_active_key_count(account, new_count)
     }
 }
 

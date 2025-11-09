@@ -6,7 +6,12 @@ use tempo_contracts::precompiles::ITIP20RewardsRegistry;
 use crate::{storage::PrecompileStorageProvider, tip20_rewards_registry::TIP20RewardsRegistry};
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TIP20RewardsRegistry<'a, S> {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+    fn call(
+        &mut self,
+        calldata: &[u8],
+        msg_sender: Address,
+        _beneficiary: Address,
+    ) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;

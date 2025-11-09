@@ -4,7 +4,12 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 impl<'a, S: PrecompileStorageProvider> Precompile for ValidatorConfig<'a, S> {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+    fn call(
+        &mut self,
+        calldata: &[u8],
+        msg_sender: Address,
+        _beneficiary: Address,
+    ) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
@@ -90,11 +95,15 @@ mod tests {
         validator_config.initialize(owner).unwrap();
 
         // Test invalid selector
-        let result = validator_config.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), sender);
+        let result = validator_config.call(
+            &Bytes::from([0x12, 0x34, 0x56, 0x78]),
+            sender,
+            Address::default(),
+        );
         assert!(matches!(result, Err(PrecompileError::Other(_))));
 
         // Test insufficient calldata
-        let result = validator_config.call(&Bytes::from([0x12, 0x34]), sender);
+        let result = validator_config.call(&Bytes::from([0x12, 0x34]), sender, Address::default());
         assert!(matches!(result, Err(PrecompileError::Other(_))));
     }
 
@@ -114,7 +123,7 @@ mod tests {
         let calldata = owner_call.abi_encode();
 
         let result = validator_config
-            .call(&Bytes::from(calldata), sender)
+            .call(&Bytes::from(calldata), sender, Address::default())
             .unwrap();
         // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
         assert_eq!(result.gas_used, 0);
@@ -147,7 +156,7 @@ mod tests {
         let calldata = add_call.abi_encode();
 
         let result = validator_config
-            .call(&Bytes::from(calldata), owner)
+            .call(&Bytes::from(calldata), owner, Address::default())
             .unwrap();
 
         // HashMapStorageProvider does not have gas accounting, so we expect 0
@@ -187,7 +196,7 @@ mod tests {
         };
         let calldata = add_call.abi_encode();
 
-        let result = validator_config.call(&Bytes::from(calldata), non_owner);
+        let result = validator_config.call(&Bytes::from(calldata), non_owner, Address::default());
         expect_precompile_revert(&result, ValidatorConfigError::unauthorized());
     }
 }
