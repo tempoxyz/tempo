@@ -6,7 +6,7 @@ pub mod error;
 pub use error::Result;
 pub mod linking_usd;
 pub mod nonce;
-// pub mod provider;
+pub mod provider;
 // pub mod stablecoin_exchange;
 pub mod storage;
 pub mod tip20;
@@ -18,7 +18,6 @@ pub mod tip_fee_manager;
 pub mod validator_config;
 
 use crate::{
-    // linking_usd::LinkingUSD,
     linking_usd::LinkingUSD,
     nonce::NonceManager,
     storage::evm::EvmPrecompileStorageProvider,
