@@ -10,7 +10,7 @@ pub use tempo_contracts::precompiles::{
 use crate::{
     DEFAULT_FEE_TOKEN,
     error::{Result, TempoPrecompileError},
-    storage::{Mapping, PrecompileStorageProvider, StorageOps},
+    storage::{PrecompileStorageProvider, StorageOps, VecSlotExt},
     tip_fee_manager::amm::{Pool, PoolKey},
     tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
 };
@@ -341,27 +341,6 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             _1: token_balance,
         })
     }
-
-    // TODO:
-    ///// Burn liquidity tokens
-    //pub fn burn(
-    //    &mut self,
-    //    msg_sender: Address,
-    //    call: ITIPFeeAMM::burnCall,
-    //) -> Result<ITIPFeeAMM::burnReturn> {
-    //    let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-    //    amm.burn(
-    //        msg_sender,
-    //        call.userToken,
-    //        call.validatorToken,
-    //        call.liquidity,
-    //        call.to,
-    //    )
-    //    .map(|(amount0, amount1)| ITIPFeeAMM::burnReturn {
-    //        amountUserToken: amount0,
-    //        amountValidatorToken: amount1,
-    //    })
-    //}
 }
 
 #[cfg(test)]
@@ -576,14 +555,14 @@ mod tests {
             fee_manager.collect_fee_post_tx(user, actual_used, refund_amount, token, validator);
         assert!(result.is_ok());
 
+        // Verify fees were tracked
+        let tracked_amount = fee_manager.sload_collected_fees()?;
+        assert_eq!(tracked_amount, actual_used);
+
         // Verify user got the refund
         let mut tip20_token = TIP20Token::from_address(token, &mut storage);
         let balance = tip20_token.balance_of(ITIP20::balanceOfCall { account: user })?;
         assert_eq!(balance, refund_amount);
-
-        // Verify fees were tracked
-        let tracked_amount = fee_manager.sload_collected_fees()?;
-        assert_eq!(tracked_amount, actual_used);
 
         Ok(())
     }

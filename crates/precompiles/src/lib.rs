@@ -23,6 +23,7 @@ use crate::{
     nonce::NonceManager,
     storage::evm::EvmPrecompileStorageProvider,
     tip_account_registrar::TipAccountRegistrar,
+    tip_fee_manager::TipFeeManager,
     tip20::{TIP20Token, address_to_token_id_unchecked, is_tip20},
     tip20_factory::TIP20Factory,
     tip20_rewards_registry::TIP20RewardsRegistry,
@@ -113,11 +114,8 @@ macro_rules! tempo_precompile {
                     DelegateCallNotAllowed {}.abi_encode().into(),
                 ));
             }
-            $impl.call(
-                $input.data,
-                $input.caller,
-                $input.internals.block_env().beneficiary(),
-            )
+            let beneficiary = $input.internals.block_env().beneficiary();
+            $impl.call($input.data, $input.caller, beneficiary)
         })
     };
 }
@@ -125,12 +123,9 @@ macro_rules! tempo_precompile {
 pub struct TipFeeManagerPrecompile;
 impl TipFeeManagerPrecompile {
     pub fn create(chain_id: u64) -> DynPrecompile {
-        todo!();
-        // tempo_precompile!("TipFeeManager", |input| TipFeeManager::new(
-        //     TIP_FEE_MANAGER_ADDRESS,
-        //     input.internals.block_env().beneficiary(),
-        //     &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id)
-        // ))
+        tempo_precompile!("TipFeeManager", |input| TipFeeManager::new(
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id)
+        ))
     }
 }
 
