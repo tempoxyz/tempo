@@ -8,7 +8,7 @@ use crate::{
     error::TempoPrecompileError,
     storage::{PrecompileStorageProvider, Slot, Storable, StorageOps, VecSlotExt},
 };
-use alloy::primitives::{Address, B256, Bytes};
+use alloy::primitives::{Address, B256, Bytes, U256};
 use revm::state::Bytecode;
 use tracing::trace;
 
@@ -138,6 +138,23 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         if self.validator_exists(call.newValidatorAddress)? {
             return Err(ValidatorConfigError::validator_already_exists())?;
         }
+
+        // Validate addresses
+        ensure_is_host_port(&call.inboundAddress).map_err(|err| {
+            ValidatorConfigError::not_host_port(
+                "inboundAddress".to_string(),
+                call.inboundAddress.clone(),
+                format!("{err:?}"),
+            )
+        })?;
+
+        ensure_is_ip_port(&call.outboundAddress).map_err(|err| {
+            ValidatorConfigError::not_ip_port(
+                "outboundAddress".to_string(),
+                call.outboundAddress.clone(),
+                format!("{err:?}"),
+            )
+        })?;
 
         // Store the new validator in the validators mapping
         let count = self.validator_count()?;
@@ -673,7 +690,7 @@ mod tests {
         let owner = Address::from([0x01; 20]);
         let validator = Address::from([0x11; 20]);
 
-        let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
         validator_config.initialize(owner).unwrap();
 
         // Owner adds a validator
@@ -719,7 +736,7 @@ mod tests {
         let owner = Address::from([0x01; 20]);
         let validator = Address::from([0x11; 20]);
 
-        let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
         validator_config.initialize(owner).unwrap();
 
         // Create a 253-character hostname (max valid DNS length) for inbound
@@ -820,7 +837,7 @@ mod tests {
         // Rotate to new address with shorter addresses
         validator_config
             .update_validator(
-                &validator1,
+                validator1,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator2,
                     publicKey: public_key,
@@ -831,35 +848,33 @@ mod tests {
             .expect("Should rotate validator");
 
         // Verify old slots are cleared by checking storage directly
-        let old_slot = slots::validator_base_slot(&validator1);
-        let old_inbound_slot = old_slot + slots::VALIDATOR_INBOUND_ADDRESS_OFFSET;
+        let validator = validator_config
+            .sload_validators(validator1)
+            .expect("Could not load validator");
 
-        // Check that first slot is cleared
-        let cleared_value = validator_config
-            .storage
-            .sload(validator_config.precompile_address, old_inbound_slot)
-            .unwrap();
+        // Assert all validator fields are cleared/zeroed
         assert_eq!(
-            cleared_value,
-            U256::ZERO,
-            "First slot of old inbound address should be cleared"
+            validator.public_key,
+            B256::ZERO,
+            "Old validator public key should be cleared"
         );
-
-        // Check that additional slots are also cleared
-        for i in 1..9 {
-            let slot_value = validator_config
-                .storage
-                .sload(
-                    validator_config.precompile_address,
-                    old_inbound_slot + U256::from(i),
-                )
-                .unwrap();
-            assert_eq!(
-                slot_value,
-                U256::ZERO,
-                "Additional slot {i} of old inbound address should be cleared"
-            );
-        }
+        assert_eq!(
+            validator.validator_address,
+            Address::ZERO,
+            "Old validator address should be cleared"
+        );
+        assert_eq!(validator.index, 0, "Old validator index should be cleared");
+        assert!(!validator.active, "Old validator should be inactive");
+        assert_eq!(
+            validator.inbound_address,
+            String::default(),
+            "Old validator inbound address should be cleared"
+        );
+        assert_eq!(
+            validator.outbound_address,
+            String::default(),
+            "Old validator outbound address should be cleared"
+        );
     }
 
     #[test]
@@ -868,7 +883,7 @@ mod tests {
         let owner = Address::from([0x01; 20]);
         let validator = Address::from([0x11; 20]);
 
-        let mut validator_config = ValidatorConfig::new(PRECOMPILE_ADDRESS, &mut storage);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
         validator_config.initialize(owner).unwrap();
 
         // Start with a long address
@@ -878,7 +893,7 @@ mod tests {
 
         validator_config
             .add_validator(
-                &owner,
+                owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator,
                     publicKey: public_key,
@@ -892,7 +907,7 @@ mod tests {
         // Update to same value - should still work
         validator_config
             .update_validator(
-                &validator,
+                validator,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator,
                     publicKey: public_key,
@@ -911,7 +926,7 @@ mod tests {
         let short_inbound = "192.168.1.1:8000".to_string();
         validator_config
             .update_validator(
-                &validator,
+                validator,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator,
                     publicKey: public_key,
@@ -926,26 +941,26 @@ mod tests {
             .unwrap();
         assert_eq!(validators[0].inboundAddress, short_inbound);
 
-        // Verify extra slots are cleared
-        let slot = slots::validator_base_slot(&validator);
-        let inbound_slot = slot + slots::VALIDATOR_INBOUND_ADDRESS_OFFSET;
-        for i in 1..9 {
-            let slot_value = validator_config
-                .storage
-                .sload(
-                    validator_config.precompile_address,
-                    inbound_slot + U256::from(i),
-                )
-                .unwrap();
-            assert_eq!(slot_value, U256::ZERO, "Extra slot {i} should be cleared");
-        }
+        // Verify the validator's address was updated successfully
+        let validators = validator_config
+            .get_validators(IValidatorConfig::getValidatorsCall {})
+            .unwrap();
+        assert_eq!(validators.len(), 1, "Should still have 1 validator");
+        assert_eq!(
+            validators[0].inboundAddress, short_inbound,
+            "Address should be updated to short version"
+        );
+        assert_eq!(
+            validators[0].publicKey, public_key,
+            "Public key should remain unchanged"
+        );
 
         // Update to medium-length address
         let medium_host = "b.".repeat(50);
         let medium_inbound = format!("{medium_host}:8000");
         validator_config
             .update_validator(
-                &validator,
+                validator,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator,
                     publicKey: public_key,
