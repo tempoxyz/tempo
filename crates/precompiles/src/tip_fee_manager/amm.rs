@@ -67,7 +67,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     /// Retrieves a pool for a given `pool_id` from storage
     pub fn get_pool(&mut self, call: ITIPFeeAMM::getPoolCall) -> Result<Pool> {
         let pool_id = self.pool_id(call.userToken, call.validatorToken);
-        Ok(self.sload_pools(pool_id)?)
+        self.sload_pools(pool_id)
     }
 
     /// Checks if pool has enough liquidity for a fee swap
@@ -625,7 +625,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             .map_err(|_| TIPFeeAMMError::invalid_amount())?;
 
         self.sstore_pools(pool_id, pool)?;
-        self.set_pending_fee_swap_in(pool_id, 0)?;
+        self.clear_pending_fee_swap_in(pool_id)?;
 
         self.storage.emit_event(
             self.address,

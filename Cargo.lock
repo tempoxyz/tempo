@@ -11462,6 +11462,7 @@ dependencies = [
  "reth-evm",
  "reth-primitives-traits",
  "reth-rpc-convert",
+ "reth-rpc-eth-types",
  "serde",
  "tempo-evm",
  "tempo-primitives",

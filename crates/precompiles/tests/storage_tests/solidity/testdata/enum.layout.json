@@ -36,7 +36,7 @@
           },
           "t_enum(Auth)5": {
             "encoding": "inplace",
-            "label": "enum Enums.Auth",
+            "label": "enum Enums.PolicyType",
             "numberOfBytes": "1"
           },
           "t_uint16": {

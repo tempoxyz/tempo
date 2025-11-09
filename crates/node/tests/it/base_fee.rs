@@ -16,9 +16,7 @@ async fn test_base_fee() -> eyre::Result<()> {
     let source = if let Ok(rpc_url) = env::var("RPC_URL") {
         crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        crate::utils::NodeSource::LocalNode(
-            include_str!("../assets/base-fee-test.json").to_string(),
-        )
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
