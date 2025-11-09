@@ -103,9 +103,11 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
         self.fee_token = get_fee_token(evm.ctx_mut())?;
 
-        // Skip fee token validity check for cases when the transaction is free and is not a part of subblock.
-        if !evm.ctx.tx.max_balance_spending()?.is_zero() || evm.ctx.tx.is_subblock_transaction() {
-            validate_fee_token(evm.ctx_mut(), self.fee_token)?;
+        // Skip fee token validity check for cases when the transaction is free and is not a part of a subblock.
+        if (!evm.ctx.tx.max_balance_spending()?.is_zero() || evm.ctx.tx.is_subblock_transaction())
+            && !is_valid_fee_token(evm.ctx_mut(), self.fee_token)?
+        {
+            return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
         }
         self.fee_payer = evm.ctx().tx().fee_payer()?;
 
@@ -918,15 +920,15 @@ where
 }
 
 /// Validates that token can be used for fee payments.
-pub fn validate_fee_token<DB>(
+pub fn is_valid_fee_token<DB>(
     ctx: &mut TempoContext<DB>,
     fee_token: Address,
-) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>>
+) -> Result<bool, EVMError<DB::Error, TempoInvalidTransaction>>
 where
     DB: alloy_evm::Database,
 {
     if !is_tip20(fee_token) || fee_token == LINKING_USD_ADDRESS {
-        return Err(TempoInvalidTransaction::InvalidFeeToken(fee_token).into());
+        return Ok(false);
     }
 
     // Ensure that token is initialized
@@ -937,7 +939,7 @@ where
         .info
         .is_empty_code_hash()
     {
-        return Err(TempoInvalidTransaction::InvalidFeeToken(fee_token).into());
+        return Ok(false);
     }
 
     let token_id = address_to_token_id_unchecked(fee_token);
@@ -951,9 +953,9 @@ where
         .currency()
         .map_err(|e| EVMError::Custom(e.to_string()))?;
     if currency != USD_CURRENCY {
-        return Err(TempoInvalidTransaction::InvalidFeeToken(fee_token).into());
+        return Ok(false);
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Looks up the user's fee token in the `TIPFeemanager` contract.
@@ -963,7 +965,7 @@ pub fn get_fee_token<DB>(
     ctx: &mut TempoContext<DB>,
 ) -> Result<Address, EVMError<DB::Error, TempoInvalidTransaction>>
 where
-    DB: Database,
+    DB: alloy_evm::Database,
 {
     // If there is a fee token explicitly set on the tx type, use that.
     if let Some(fee_token) = ctx.tx().fee_token {
@@ -995,11 +997,11 @@ where
     }
 
     // If tx.to() is a TIP-20 token, use that token as the fee token
-    if ctx.tx().aa_tx_env.is_none()
-        && let Some(&to_addr) = ctx.tx().kind().to()
-        && is_tip20(to_addr)
+    if let Some(to) = ctx.tx.first_call().and_then(|(kind, _)| kind.to().copied())
+        && ctx.tx().calls().all(|(kind, _)| kind.to() == Some(&to))
+        && is_valid_fee_token(ctx, to)?
     {
-        return Ok(to_addr);
+        return Ok(to);
     }
 
     // Otherwise fall back to the validator fee token preference

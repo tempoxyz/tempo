@@ -4,7 +4,7 @@ pub mod dispatch;
 use crate::{
     TIP20_REWARDS_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::{ContractStorage, Mapping, PrecompileStorageProvider, VecMappingExt},
+    storage::{Mapping, PrecompileStorageProvider, VecMappingExt},
     tip20::{TIP20Token, address_to_token_id_unchecked},
 };
 use alloy::{
@@ -135,7 +135,7 @@ mod tests {
     use crate::{
         LINKING_USD_ADDRESS,
         error::TempoPrecompileError,
-        storage::hashmap::HashMapStorageProvider,
+        storage::{ContractStorage, hashmap::HashMapStorageProvider},
         tip20::{ISSUER_ROLE, TIP20Token, tests::initialize_linking_usd},
         tip20_rewards_registry::TIP20RewardsRegistry,
     };

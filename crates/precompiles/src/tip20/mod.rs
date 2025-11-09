@@ -201,7 +201,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         call: ITIP20::changeTransferPolicyIdCall,
     ) -> Result<()> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
-        self.sstore_transfer_policy_id(call.newPolicyId);
+        self.sstore_transfer_policy_id(call.newPolicyId)?;
 
         self.storage.emit_event(
             self.address,
@@ -679,8 +679,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.sstore_next_quote_token(quote_token)?;
 
         // Set default values
-        self.sstore_supply_cap(U256::MAX);
-        self.sstore_transfer_policy_id(1);
+        self.sstore_supply_cap(U256::MAX)?;
+        self.sstore_transfer_policy_id(1)?;
 
         // Initialize roles system and grant admin role
         self.initialize_roles()?;

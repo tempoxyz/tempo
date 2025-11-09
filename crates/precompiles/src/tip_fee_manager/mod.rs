@@ -1,7 +1,7 @@
 pub mod amm;
 pub mod dispatch;
 
-use alloy::{dyn_abi::abi::token, primitives::B256};
+use alloy::primitives::B256;
 use tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS;
 pub use tempo_contracts::precompiles::{
     FeeManagerError, FeeManagerEvent, IFeeManager, ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent,
