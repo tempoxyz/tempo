@@ -77,6 +77,10 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value = "0xD3C21BCECCEDA1000000")]
     pub balance: U256,
 
+    /// Fund test accounts with native token balance (skips first 10 for AA tests)
+    #[arg(long, default_value_t = false)]
+    pub fund_test_accounts: bool,
+
     /// Chain ID
     #[arg(long, short, default_value = "1337")]
     pub chain_id: u64,
@@ -269,12 +273,14 @@ impl GenesisArgs {
             },
         );
 
-        // Fund the user accounts with native token balance
+        // Fund the user accounts with native token balance if requested
         // Skip the first 10 accounts as they're used for account abstraction tests
         // which expect zero native token balance
-        for (index, address) in addresses.iter().enumerate() {
-            if index >= 10 {
-                genesis_alloc.entry(*address).or_default().balance = self.balance;
+        if self.fund_test_accounts {
+            for (index, address) in addresses.iter().enumerate() {
+                if index >= 10 {
+                    genesis_alloc.entry(*address).or_default().balance = self.balance;
+                }
             }
         }
 

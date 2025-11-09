@@ -58,7 +58,7 @@ jobs:
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Generate genesis
-        run: cargo run --bin tempo-xtask -- generate-genesis --accounts 100 --output generated-test-genesis.json
+        run: cargo run --bin tempo-xtask -- generate-genesis --accounts 100 --fund-test-accounts --output generated-test-genesis.json
       - name: Compare with existing test genesis
         run: |
           # Compare the generated genesis with the existing test-genesis.json
