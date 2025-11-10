@@ -773,7 +773,10 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         } else {
             // If there are subsequent orders at tick, advance to next order
             level.head = order.next();
-            let new_liquidity = level.total_liquidity - fill_amount;
+            let new_liquidity = level
+                .total_liquidity
+                .checked_sub(fill_amount)
+                .ok_or(TempoPrecompileError::under_overflow())?;
             level.total_liquidity = new_liquidity;
 
             if order.is_bid() {
@@ -1012,7 +1015,10 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Update level liquidity
-        let new_liquidity = level.total_liquidity - order.remaining();
+        let new_liquidity = level
+            .total_liquidity
+            .checked_sub(order.remaining())
+            .ok_or(TempoPrecompileError::under_overflow())?;
         level.total_liquidity = new_liquidity;
 
         // If this was the last order at this tick, clear the bitmap bit
