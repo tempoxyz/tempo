@@ -10,17 +10,15 @@ pub use tempo_contracts::precompiles::{
 
 pub use order::Order;
 pub use orderbook::{
-    MAX_PRICE, MAX_TICK, MIN_PRICE, MIN_TICK, Orderbook, PRICE_SCALE, TickBitmap, TickLevel,
-    price_to_tick, tick_to_price,
+    MAX_PRICE, MAX_TICK, MIN_PRICE, MIN_TICK, Orderbook, PRICE_SCALE, TickLevel, price_to_tick,
+    tick_to_price,
 };
 
 use crate::{
     LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     error::{Result, TempoPrecompileError},
     linking_usd::LinkingUSD,
-    stablecoin_exchange::orderbook::{
-        compute_book_key, next_initialized_ask_tick, next_initialized_bid_tick,
-    },
+    stablecoin_exchange::orderbook::compute_book_key,
     storage::{PrecompileStorageProvider, Slot, Storable, VecSlotExt},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
@@ -46,13 +44,11 @@ pub struct StablecoinExchange {
     balances: Mapping<Address, Mapping<Address, u128>>,
     active_order_id: u128,
     pending_order_id: u128,
-    bid_bitmaps: Mapping<i16, U256>,
-    ask_bitmaps: Mapping<i16, U256>,
     book_keys: Vec<B256>, // TODO(rusowsky): make sure this is in the correct slot
 }
 
 /// Helper type to easily interact with the `stream_ending_at` array
-type BookKeys = Slot<Vec<B256>, BidBitmapsSlot>;
+type BookKeys = Slot<Vec<B256>, BookKeysSlot>;
 
 impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
@@ -576,22 +572,15 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             level.head = order_id;
             level.tail = order_id;
 
-            let mut bitmap =
-                orderbook::TickBitmap::new(self.storage, self.address, order.book_key());
-            bitmap
-                .set_tick_bit(order.tick(), order.is_bid())
+            Orderbook::set_tick_bit(self, order.book_key(), order.tick(), order.is_bid())
                 .expect("Tick is valid");
 
             if order.is_bid() {
                 if order.tick() > orderbook.best_bid_tick {
-                    orderbook::Orderbook::update_best_bid_tick(
-                        self,
-                        order.book_key(),
-                        order.tick(),
-                    )?;
+                    Orderbook::update_best_bid_tick(self, order.book_key(), order.tick())?;
                 }
             } else if order.tick() < orderbook.best_ask_tick {
-                orderbook::Orderbook::update_best_ask_tick(self, order.book_key(), order.tick())?;
+                Orderbook::update_best_ask_tick(self, order.book_key(), order.tick())?;
             }
         } else {
             Order::update_next_order(self, prev_tail, order_id)?;
@@ -726,17 +715,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let next_tick_info = if order.next() == 0 {
             Orderbook::delete_tick_level(self, book_key, order.is_bid(), order.tick())?;
 
-            let mut bitmap =
-                orderbook::TickBitmap::new(self.storage, self.address, order.book_key());
-            bitmap
-                .clear_tick_bit(order.tick(), order.is_bid())
+            Orderbook::clear_tick_bit(self, order.book_key(), order.tick(), order.is_bid())
                 .expect("Tick is valid");
 
-            let (tick, has_liquidity) = if order.is_bid() {
-                next_initialized_bid_tick(self.storage, self.address, book_key, order.tick())
-            } else {
-                next_initialized_ask_tick(self.storage, self.address, book_key, order.tick())
-            };
+            let (tick, has_liquidity) =
+                Orderbook::next_initialized_tick(self, book_key, order.is_bid(), order.tick());
 
             if !has_liquidity {
                 // No more liquidity at better prices - return None to signal completion
@@ -985,10 +968,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         // If this was the last order at this tick, clear the bitmap bit
         if level.head == 0 {
-            let mut bitmap =
-                orderbook::TickBitmap::new(self.storage, self.address, order.book_key());
-            bitmap
-                .clear_tick_bit(order.tick(), order.is_bid())
+            Orderbook::clear_tick_bit(self, order.book_key(), order.tick(), order.is_bid())
                 .expect("Tick is valid");
         }
 
@@ -1055,21 +1035,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
             // If no liquidity at this level, move to next tick
             if level.total_liquidity == 0 {
-                let (next_tick, initialized) = if is_bid {
-                    orderbook::next_initialized_bid_tick(
-                        self.storage,
-                        self.address,
-                        book_key,
-                        current_tick,
-                    )
-                } else {
-                    orderbook::next_initialized_ask_tick(
-                        self.storage,
-                        self.address,
-                        book_key,
-                        current_tick,
-                    )
-                };
+                let (next_tick, initialized) =
+                    Orderbook::next_initialized_tick(self, book_key, is_bid, current_tick);
+
                 if !initialized {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
                 }
@@ -1123,21 +1091,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
             // If we exhausted this level or filled our requirement, move to next tick
             if fill_amount == level.total_liquidity {
-                let (next_tick, initialized) = if is_bid {
-                    orderbook::next_initialized_bid_tick(
-                        self.storage,
-                        self.address,
-                        book_key,
-                        current_tick,
-                    )
-                } else {
-                    orderbook::next_initialized_ask_tick(
-                        self.storage,
-                        self.address,
-                        book_key,
-                        current_tick,
-                    )
-                };
+                let (next_tick, initialized) =
+                    Orderbook::next_initialized_tick(self, book_key, is_bid, current_tick);
+
                 if !initialized && remaining_out > 0 {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
                 }
@@ -1269,21 +1225,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
             // If no liquidity at this level, move to next tick
             if level.total_liquidity == 0 {
-                let (next_tick, initialized) = if is_bid {
-                    orderbook::next_initialized_bid_tick(
-                        self.storage,
-                        self.address,
-                        book_key,
-                        current_tick,
-                    )
-                } else {
-                    orderbook::next_initialized_ask_tick(
-                        self.storage,
-                        self.address,
-                        book_key,
-                        current_tick,
-                    )
-                };
+                let (next_tick, initialized) =
+                    Orderbook::next_initialized_tick(self, book_key, is_bid, current_tick);
+
                 if !initialized {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
                 }
@@ -1312,21 +1256,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
             // If we exhausted this level, move to next tick
             if fill_amount == level.total_liquidity {
-                let (next_tick, initialized) = if is_bid {
-                    orderbook::next_initialized_bid_tick(
-                        self.storage,
-                        self.address,
-                        book_key,
-                        current_tick,
-                    )
-                } else {
-                    orderbook::next_initialized_ask_tick(
-                        self.storage,
-                        self.address,
-                        book_key,
-                        current_tick,
-                    )
-                };
+                let (next_tick, initialized) =
+                    Orderbook::next_initialized_tick(self, book_key, is_bid, current_tick);
+
                 if !initialized && remaining_in > 0 {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
                 }
