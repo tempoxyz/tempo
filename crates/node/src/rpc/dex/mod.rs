@@ -99,7 +99,7 @@ impl<
                 };
 
                 let book_iterator = BookIterator::new(
-                    storage,
+                    exchange.storage(),
                     &orderbook,
                     exchange_address,
                     is_bid,
@@ -127,8 +127,6 @@ impl<
                 if all_orders.len() > limit {
                     break;
                 }
-
-                exchange = StablecoinExchange::new(storage);
             }
 
             // Truncate to limit
