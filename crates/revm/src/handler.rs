@@ -27,7 +27,7 @@ use revm::{
         instructions::utility::IntoAddress,
         interpreter::EthInterpreter,
     },
-    primitives::{eip7702, hardfork::SpecId as RevmSpecId},
+    primitives::eip7702,
     state::Bytecode,
 };
 use tempo_contracts::{
@@ -762,7 +762,7 @@ where
             validate_aa_initial_tx_gas(evm)
         } else {
             // Standard transaction - use default revm validation
-            let spec = evm.ctx_ref().cfg().spec();
+            let spec = evm.ctx_ref().cfg().spec().into();
             Ok(
                 validation::validate_initial_tx_gas(tx, spec, evm.ctx.cfg.is_eip7623_disabled())
                     .map_err(TempoInvalidTransaction::EthInvalidTransaction)?,
@@ -789,7 +789,6 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     signature: &AASignature,
     access_list: Option<impl Iterator<Item = &'a AccessListItem>>,
     aa_authorization_list: &[tempo_primitives::transaction::AASignedAuthorization],
-    spec: RevmSpecId,
 ) -> Result<InitialAndFloorGas, TempoInvalidTransaction> {
     let mut gas = InitialAndFloorGas::default();
 
@@ -815,7 +814,7 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
 
     for call in calls {
         // 4a. Calldata gas using revm helper
-        let tokens = get_tokens_in_calldata(&call.input, spec.is_enabled_in(RevmSpecId::ISTANBUL));
+        let tokens = get_tokens_in_calldata(&call.input, true);
         total_tokens += tokens;
 
         // 4b. CREATE-specific costs
@@ -872,7 +871,6 @@ fn validate_aa_initial_tx_gas<DB, I>(
 where
     DB: alloy_evm::Database,
 {
-    let spec = evm.ctx_ref().cfg().spec();
     let tx = evm.ctx_ref().tx();
 
     // This function should only be called for AA transactions
@@ -885,16 +883,14 @@ where
     let gas_limit = tx.gas_limit();
 
     // Validate all CREATE calls' initcode size upfront (EIP-3860)
-    if spec.is_enabled_in(RevmSpecId::SHANGHAI) {
-        let max_initcode_size = evm.ctx_ref().cfg().max_initcode_size();
-        for call in calls {
-            if call.to.is_create() && call.input.len() > max_initcode_size {
-                return Err(EVMError::Transaction(
-                    TempoInvalidTransaction::EthInvalidTransaction(
-                        InvalidTransaction::CreateInitCodeSizeLimit,
-                    ),
-                ));
-            }
+    let max_initcode_size = evm.ctx_ref().cfg().max_initcode_size();
+    for call in calls {
+        if call.to.is_create() && call.input.len() > max_initcode_size {
+            return Err(EVMError::Transaction(
+                TempoInvalidTransaction::EthInvalidTransaction(
+                    InvalidTransaction::CreateInitCodeSizeLimit,
+                ),
+            ));
         }
     }
 
@@ -904,7 +900,6 @@ where
         &aa_env.signature,
         tx.access_list(),
         &aa_env.aa_authorization_list,
-        spec,
     )?;
 
     if evm.ctx.cfg.is_eip7623_disabled() {
@@ -1251,7 +1246,6 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>, // no access list
             &aa_env.aa_authorization_list,
-            spec,
         )
         .unwrap();
 
@@ -1310,7 +1304,6 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            spec,
         )
         .unwrap();
 
@@ -1363,7 +1356,6 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            spec,
         )
         .unwrap();
 
@@ -1405,7 +1397,6 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            spec,
         )
         .unwrap();
 
@@ -1446,7 +1437,6 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            spec,
         );
 
         assert_eq!(
@@ -1483,7 +1473,6 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            spec,
         )
         .unwrap();
 
@@ -1525,7 +1514,6 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            spec,
         )
         .unwrap();
 

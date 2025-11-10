@@ -11793,6 +11793,7 @@ dependencies = [
  "eyre",
  "reth-evm",
  "revm",
+ "tempo-chainspec",
  "tempo-contracts",
  "tempo-precompiles",
  "tempo-primitives",

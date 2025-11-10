@@ -11,10 +11,11 @@ use revm::{
     inspector::InspectorEvmTr,
     interpreter::interpreter::EthInterpreter,
 };
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::extend_tempo_precompiles;
 
 /// The Tempo EVM context type.
-pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv, DB>;
+pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
 
 /// TempoEvm extends the Evm with Tempo specific types and logic.
 #[derive(Debug, derive_more::Deref, derive_more::DerefMut)]
