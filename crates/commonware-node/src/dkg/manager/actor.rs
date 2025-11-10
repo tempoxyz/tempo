@@ -395,7 +395,7 @@ where
             return;
         };
 
-        // Special case boundary height.
+        // Special case boundary height: only start a new epoch and return.
         //
         // Recall, for some epoch length E, the boundary heights are
         // 1E-1, 2E-1, 3E-1, ...
@@ -403,6 +403,20 @@ where
         // So for E = 100, the boundary heights would be 99, 199, 299, ...
         if utils::is_last_block_in_epoch(self.config.epoch_length, block.height()).is_some() {
             self.report_new_epoch().await;
+
+            // Early return here. We want to start processing the ceremony on
+            // the first height of the next epoch.
+            return;
+        }
+
+        // Special case first height: exit the old epoch, start a new ceremony.
+        //
+        // Recall, for an epoch length E the first heights are 0E, 1E, 2E, ...
+        //
+        // So for E = 100, the first heights are 0, 100, 200, ...
+        if block.height().is_multiple_of(self.config.epoch_length) {
+            self.report_epoch_entered().await;
+
             maybe_ceremony.replace(self.start_new_ceremony(ceremony_mux).await);
             let merged_peer_set = self.p2p_states.construct_merged_peerset();
             self.config
@@ -420,19 +434,6 @@ where
                 ?merged_peer_set,
                 "updated latest peer set by merging validator of the last 3 epochs"
             );
-
-            // Early return here. We want to start processing the ceremony on
-            // the first height of the next epoch.
-            return;
-        }
-
-        // Special case first height.
-        //
-        // Recall, for an epoch length E the first heights are 0E, 1E, 2E, ...
-        //
-        // So for E = 100, the first heights are 0, 100, 200, ...
-        if block.height().is_multiple_of(self.config.epoch_length) {
-            self.report_epoch_entered().await;
         }
 
         let mut ceremony = maybe_ceremony.take().expect(
@@ -471,7 +472,7 @@ where
 
         info!("on pre-to-last height of epoch; finalizing ceremony");
 
-        let next_epoch = ceremony.epoch().saturating_add(1);
+        let next_epoch = ceremony.epoch() + 1;
 
         let ceremony_outcome = match ceremony.finalize() {
             Ok(outcome) => {
@@ -512,20 +513,18 @@ where
 
     /// Starts a new ceremony.
     ///
-    /// This method is intended to be called on the boundary block.
+    /// This method is intended to be called on the first block an epoch.
     ///
-    /// 1. The validator config is read from the block immediately before the
-    ///    boundary height. This is to ensure that the boundary block is
-    ///    firmly available in the execution layer.
+    /// 1. The validator config is read from the boundary block of the previous
+    ///    epoch. This is to ensure that the boundary block is firmly available
+    ///    in the execution layer.
     /// 2. The peer set is updated given the new validators.
     /// 3. A new DKG ceremony is launched with the new validators as its players.
-    ///
-    ///
     #[instrument(
         skip_all,
         fields(
             me = %self.config.me.public_key(),
-            for_epoch = self.epoch_state.epoch,
+            epoch = self.epoch_state.epoch,
         )
     )]
     async fn start_new_ceremony<TReceiver, TSender>(
@@ -537,33 +536,31 @@ where
         TSender: Sender<PublicKey = PublicKey>,
     {
         // XXX(!!!): This is critical: start_new_epoch *MUST* be called on the
-        // boundary block, and the validator config *MUST* be read on the *PARENT*
-        // of the boundary block. This ensures that the block is firmly committed
-        // on the execution layer.
-        let one_before_boundary = self.epoch_state.epoch.checked_sub(1).map_or(0, |previous| {
-            utils::last_block_in_epoch(self.config.epoch_length, previous) - 1
+        // first block, and the validator config *MUST* be read on the
+        // *BOUNDARY* of the previous epoch. This ensures that the block is
+        // firmly committed on the execution layer.
+        let boundary = self.epoch_state.epoch.checked_sub(1).map_or(0, |previous| {
+            utils::last_block_in_epoch(self.config.epoch_length, previous)
         });
 
-        let new_p2p_state = match read_validator_config_from_contract(
-            self.config.execution_node.clone(),
-            one_before_boundary,
-        )
-        .await
-        {
-            Ok(p2p_state) => p2p_state,
-            Err(error) => {
-                warn!(
-                    %error,
-                    "unable to read validator config from contract; taking the \
-                    last validator config and starting a new ceremony with that \
-                    instead"
-                );
-                self.p2p_states.highest().cloned().expect(
-                    "there must be one set of validators; if there is not and \
+        let new_p2p_state =
+            match read_validator_config_from_contract(self.config.execution_node.clone(), boundary)
+                .await
+            {
+                Ok(p2p_state) => p2p_state,
+                Err(error) => {
+                    warn!(
+                        %error,
+                        "unable to read validator config from contract; taking the \
+                        last validator config and starting a new ceremony with that \
+                        instead"
+                    );
+                    self.p2p_states.highest().cloned().expect(
+                        "there must be one set of validators; if there is not and \
                     reading it from the contract failed we can't go on",
-                )
-            }
-        };
+                    )
+                }
+            };
 
         self.p2p_metadata
             .put_sync(self.epoch_state.epoch.into(), new_p2p_state.clone())
@@ -917,7 +914,7 @@ impl P2pStates {
         self.inner
             .values()
             .flat_map(|p2p| p2p.peers.iter_pairs())
-            .map(|(key, addr)| (key.clone(), addr))
+            .map(|(key, addr)| (key.clone(), *addr))
             .collect()
     }
 }
