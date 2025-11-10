@@ -30,7 +30,6 @@ use revm::{
 };
 use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, precompiles::FeeManagerError};
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{evm::EvmPrecompileStorageProvider, slots::mapping_slot},
@@ -1030,7 +1029,7 @@ mod tests {
         primitives::hardfork::SpecId,
         state::Account,
     };
-    use tempo_precompiles::tip_fee_manager;
+    use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, tip_fee_manager};
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
         let db = CacheDB::new(EmptyDB::default());
