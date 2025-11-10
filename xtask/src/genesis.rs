@@ -26,12 +26,12 @@ use tempo_contracts::{
 };
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    LINKING_USD_ADDRESS,
     linking_usd::{LinkingUSD, TRANSFER_ROLE},
     nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
     storage::{ContractStorage, evm::EvmPrecompileStorageProvider},
-    tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager},
+    tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token, address_to_token_id_unchecked},
     tip20_factory::{ITIP20Factory, TIP20Factory},
     tip20_rewards_registry::TIP20RewardsRegistry,
@@ -549,7 +549,7 @@ fn initialize_validator_config(
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
     let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
 
-    let mut validator_config = ValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, &mut provider);
+    let mut validator_config = ValidatorConfig::new(&mut provider);
     validator_config
         .initialize(owner)
         .wrap_err("Failed to initialize validator config")?;
@@ -570,7 +570,7 @@ fn initialize_validator_config(
     for validator in initial_validators.iter().tqdm() {
         validator_config
             .add_validator(
-                &owner,
+                owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator.address,
                     publicKey: validator.key,
