@@ -22,8 +22,8 @@ use eyre::WrapErr as _;
 use futures::StreamExt;
 // use reth::{revm::inspector::JournalExt, rpc::types::TransactionReceipt};
 use reth_db::mdbx::DatabaseArguments;
-use reth_ethereum::evm::revm::{context::ContextTr as _, inspector::JournalExt as _};
 use reth_ethereum::{
+    evm::revm::{context::ContextTr as _, inspector::JournalExt as _},
     network::{
         Peers,
         api::{
