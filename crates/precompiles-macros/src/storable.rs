@@ -12,6 +12,35 @@ use crate::{
     },
 };
 
+/// Helper struct for generating packing-related constant identifiers from a field name.
+struct PackingField {
+    /// The `{FIELD}_SLOT` identifier
+    slot_const: Ident,
+    /// The `{FIELD}_OFFSET` identifier
+    offset_const: Ident,
+    /// The `{FIELD}_BYTES` identifier
+    bytes_const: Ident,
+}
+
+impl PackingField {
+    /// Create a new `PackingField` from a field's identifier.
+    fn new(field_name: &Ident) -> Self {
+        let const_name = ident_to_uppercase(field_name);
+        let span = proc_macro2::Span::call_site();
+
+        Self {
+            slot_const: Ident::new(&format!("{const_name}_SLOT"), span),
+            offset_const: Ident::new(&format!("{const_name}_OFFSET"), span),
+            bytes_const: Ident::new(&format!("{const_name}_BYTES"), span),
+        }
+    }
+
+    /// Returns all three constant identifiers as a tuple.
+    fn consts(self) -> (Ident, Ident, Ident) {
+        (self.slot_const, self.offset_const, self.bytes_const)
+    }
+}
+
 /// Implements the `Storable` derive macro for structs.
 ///
 /// Packs fields into storage slots based on their byte sizes.
@@ -290,26 +319,14 @@ fn ident_to_uppercase(field_name: &Ident) -> String {
 /// Generate a compile-time module that calculates the packing layout.
 fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStream {
     let field_byte_sizes = fields.iter().map(|(name, ty)| {
-        let const_name = Ident::new(
-            &format!("{}_BYTES", ident_to_uppercase(name)),
-            proc_macro2::Span::call_site(),
-        );
+        let bytes_const = PackingField::new(name).bytes_const;
         quote! {
-            pub const #const_name: usize = <#ty as crate::storage::StorableType>::BYTE_COUNT;
+            pub const #bytes_const: usize = <#ty as crate::storage::StorableType>::BYTE_COUNT;
         }
     });
 
     let field_layouts = fields.iter().enumerate().map(|(idx, (name, ty))| {
-        let field_const_name = ident_to_uppercase(name);
-        let slot_const = Ident::new(&format!("{}_SLOT", field_const_name), proc_macro2::Span::call_site());
-        let offset_const = Ident::new(
-            &format!("{}_OFFSET", field_const_name),
-            proc_macro2::Span::call_site(),
-        );
-        let bytes_const = Ident::new(
-            &format!("{}_BYTES", field_const_name),
-            proc_macro2::Span::call_site(),
-        );
+        let (slot_const, offset_const, bytes_const) = PackingField::new(name).consts();
 
         if idx == 0 {
             // First field always starts at slot 0, offset 0
@@ -325,19 +342,7 @@ fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStr
             let prev_is_dynamic = is_dynamic_type(prev_ty);
             let prev_is_array = is_array_type(prev_ty);
 
-            let prev_const_name = ident_to_uppercase(prev_name);
-            let prev_slot = Ident::new(
-                &format!("{}_SLOT", prev_const_name),
-                proc_macro2::Span::call_site(),
-            );
-            let prev_offset = Ident::new(
-                &format!("{}_OFFSET", prev_const_name),
-                proc_macro2::Span::call_site(),
-            );
-            let prev_bytes = Ident::new(
-                &format!("{}_BYTES", prev_const_name),
-                proc_macro2::Span::call_site(),
-            );
+            let (prev_slot, prev_offset, prev_bytes) = PackingField::new(prev_name).consts();
 
             // If any of the fields is a non-primitive, this one must start at a new slot
             if prev_is_array || prev_is_dynamic || prev_is_mapping || prev_is_struct ||
@@ -374,11 +379,7 @@ fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStr
     });
 
     let (last_field_name, _) = fields[fields.len() - 1];
-    let last_const_name = ident_to_uppercase(last_field_name);
-    let last_slot_const = Ident::new(
-        &format!("{}_SLOT", last_const_name),
-        proc_macro2::Span::call_site(),
-    );
+    let last_slot_const = PackingField::new(last_field_name).slot_const;
 
     quote! {
         pub mod #mod_ident {
@@ -396,10 +397,7 @@ fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStr
 /// Accepts indexed fields where the usize is the original field index in the struct.
 fn gen_load_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> TokenStream {
     let load_fields = indexed_fields.iter().enumerate().map(|(list_idx, (_orig_idx, name, ty))| {
-        let field_const_name = ident_to_uppercase(name);
-        let slot_const = Ident::new(&format!("{}_SLOT", field_const_name), proc_macro2::Span::call_site());
-        let offset_const = Ident::new(&format!("{}_OFFSET", field_const_name), proc_macro2::Span::call_site());
-        let bytes_const = Ident::new(&format!("{}_BYTES", field_const_name), proc_macro2::Span::call_site());
+        let (slot_const, offset_const, bytes_const) = PackingField::new(name).consts();
 
         // Struct, dynamic type, and array fields always use `load()` directly (never packed)
         if is_array_type(ty) || is_dynamic_type(ty) || is_custom_struct(ty) {
@@ -425,11 +423,9 @@ fn gen_load_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> 
         };
 
         let shares_slot_check = if let Some(prev_name) = prev_field {
-            let prev_const_name = ident_to_uppercase(prev_name);
-            let prev_slot = Ident::new(&format!("{}_SLOT", prev_const_name), proc_macro2::Span::call_site());
+            let prev_slot = PackingField::new(prev_name).slot_const;
             if let Some(next_name) = next_field {
-                let next_const_name = ident_to_uppercase(next_name);
-                let next_slot = Ident::new(&format!("{}_SLOT", next_const_name), proc_macro2::Span::call_site());
+                let next_slot = PackingField::new(next_name).slot_const;
                 quote! {
                     #packing::#prev_slot == #packing::#slot_const || #packing::#next_slot == #packing::#slot_const
                 }
@@ -439,8 +435,7 @@ fn gen_load_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> 
                 }
             }
         } else if let Some(next_name) = next_field {
-            let next_const_name = ident_to_uppercase(next_name);
-            let next_slot = Ident::new(&format!("{}_SLOT", next_const_name), proc_macro2::Span::call_site());
+            let next_slot = PackingField::new(next_name).slot_const;
             quote! {
                 #packing::#next_slot == #packing::#slot_const
             }
@@ -484,10 +479,7 @@ fn gen_load_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> 
 /// Accepts indexed fields where the usize is the original field index in the struct.
 fn gen_store_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> TokenStream {
     let store_fields = indexed_fields.iter().enumerate().map(|(list_idx, (_orig_idx, name, ty))| {
-        let field_const_name = ident_to_uppercase(name);
-        let slot_const = Ident::new(&format!("{}_SLOT", field_const_name), proc_macro2::Span::call_site());
-        let offset_const = Ident::new(&format!("{}_OFFSET", field_const_name), proc_macro2::Span::call_site());
-        let bytes_const = Ident::new(&format!("{}_BYTES", field_const_name), proc_macro2::Span::call_site());
+        let (slot_const, offset_const, bytes_const) = PackingField::new(name).consts();
 
         // Struct, dynamic type, and array fields always use store() directly (never packed)
         if is_array_type(ty) || is_dynamic_type(ty) || is_custom_struct(ty) {
@@ -513,11 +505,9 @@ fn gen_store_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) ->
         };
 
         let shares_slot_check = if let Some(prev_name) = prev_field {
-            let prev_const_name = ident_to_uppercase(prev_name);
-            let prev_slot = Ident::new(&format!("{}_SLOT", prev_const_name), proc_macro2::Span::call_site());
+            let prev_slot = PackingField::new(prev_name).slot_const;
             if let Some(next_name) = next_field {
-                let next_const_name = ident_to_uppercase(next_name);
-                let next_slot = Ident::new(&format!("{}_SLOT", next_const_name), proc_macro2::Span::call_site());
+                let next_slot = PackingField::new(next_name).slot_const;
                 quote! {
                     #packing::#prev_slot == #packing::#slot_const || #packing::#next_slot == #packing::#slot_const
                 }
@@ -527,8 +517,7 @@ fn gen_store_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) ->
                 }
             }
         } else if let Some(next_name) = next_field {
-            let next_const_name = ident_to_uppercase(next_name);
-            let next_slot = Ident::new(&format!("{}_SLOT", next_const_name), proc_macro2::Span::call_site());
+            let next_slot = PackingField::new(next_name).slot_const;
             quote! {
                 #packing::#next_slot == #packing::#slot_const
             }
@@ -573,19 +562,7 @@ fn gen_to_evm_words_impl(
     packing: &Ident,
 ) -> TokenStream {
     let pack_fields = indexed_fields.iter().map(|(_orig_idx, name, ty)| {
-        let field_const_name = ident_to_uppercase(name);
-        let slot_const = Ident::new(
-            &format!("{}_SLOT", field_const_name),
-            proc_macro2::Span::call_site(),
-        );
-        let offset_const = Ident::new(
-            &format!("{}_OFFSET", field_const_name),
-            proc_macro2::Span::call_site(),
-        );
-        let bytes_const = Ident::new(
-            &format!("{}_BYTES", field_const_name),
-            proc_macro2::Span::call_site(),
-        );
+        let (slot_const, offset_const, bytes_const) = PackingField::new(name).consts();
 
         if is_custom_struct(ty) {
             // Nested struct: copy all its words into consecutive slots
@@ -645,19 +622,7 @@ fn gen_from_evm_words_impl(
     packing: &Ident,
 ) -> TokenStream {
     let decode_fields = indexed_fields.iter().map(|(_orig_idx, name, ty)| {
-        let field_const_name = ident_to_uppercase(name);
-        let slot_const = Ident::new(
-            &format!("{}_SLOT", field_const_name),
-            proc_macro2::Span::call_site(),
-        );
-        let offset_const = Ident::new(
-            &format!("{}_OFFSET", field_const_name),
-            proc_macro2::Span::call_site(),
-        );
-        let bytes_const = Ident::new(
-            &format!("{}_BYTES", field_const_name),
-            proc_macro2::Span::call_site(),
-        );
+        let (slot_const, offset_const, bytes_const) = PackingField::new(name).consts();
 
         if is_custom_struct(ty) {
             // Nested struct: extract consecutive words and convert to array
