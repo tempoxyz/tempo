@@ -22,11 +22,11 @@ The blockchain for payments at scale.
 
 [Tempo](https://docs.tempo.xyz/) is designed to be low-cost, fast, and secure. By dedicating capacity to payments, it delivers on the uptime and throughput demands of the real world.
 
-### For Users
+## For Users
 
 See the [Tempo documentation](https://docs.tempo.xyz/documentation/operators#run-a-tempo-node) for instructions on how to install and run Tempo.
 
-### For Developers
+## For Developers
 
 Prerequisites: [`just`](https://github.com/casey/just?tab=readme-ov-file#packages)
 
@@ -36,11 +36,11 @@ just build-all
 just localnet
 ```
 
-### Security
+## Security
 
 See [`SECURITY.md`](https://github.com/tempoxyz/.github/blob/main/SECURITY.md).
 
-### License
+## License
 
 Licensed under either of [Apache License](./LICENSE-APACHE), Version
 2.0 or [MIT License](./LICENSE-MIT) at your option.
