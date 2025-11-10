@@ -7342,52 +7342,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b3789b30bd25ba102de4beabd95d21ac45b69b1be7d14522bab988c526d6799"
 
 [[package]]
-name = "reth"
-version = "1.9.0"
-source = "git+https://github.com/paradigmxyz/reth?rev=4d9d712#4d9d712b436c95700bd25b82071837285b06ef4f"
-dependencies = [
- "alloy-rpc-types",
- "aquamarine",
- "clap",
- "eyre",
- "reth-chainspec",
- "reth-cli-runner",
- "reth-cli-util",
- "reth-consensus",
- "reth-consensus-common",
- "reth-db",
- "reth-ethereum-cli",
- "reth-ethereum-payload-builder",
- "reth-ethereum-primitives",
- "reth-evm",
- "reth-network",
- "reth-network-api",
- "reth-node-api",
- "reth-node-builder",
- "reth-node-core",
- "reth-node-ethereum",
- "reth-node-metrics",
- "reth-payload-builder",
- "reth-payload-primitives",
- "reth-primitives",
- "reth-provider",
- "reth-ress-protocol",
- "reth-ress-provider",
- "reth-revm",
- "reth-rpc",
- "reth-rpc-api",
- "reth-rpc-builder",
- "reth-rpc-convert",
- "reth-rpc-eth-types",
- "reth-rpc-server-types",
- "reth-tasks",
- "reth-tokio-util",
- "reth-transaction-pool",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "reth-basic-payload-builder"
 version = "1.9.0"
 source = "git+https://github.com/paradigmxyz/reth?rev=4d9d712#4d9d712b436c95700bd25b82071837285b06ef4f"
@@ -9288,52 +9242,6 @@ dependencies = [
  "serde",
  "strum 0.27.2",
  "thiserror 2.0.17",
-]
-
-[[package]]
-name = "reth-ress-protocol"
-version = "1.9.0"
-source = "git+https://github.com/paradigmxyz/reth?rev=4d9d712#4d9d712b436c95700bd25b82071837285b06ef4f"
-dependencies = [
- "alloy-consensus",
- "alloy-primitives",
- "alloy-rlp",
- "futures",
- "reth-eth-wire",
- "reth-ethereum-primitives",
- "reth-network",
- "reth-network-api",
- "reth-storage-errors",
- "tokio",
- "tokio-stream",
- "tracing",
-]
-
-[[package]]
-name = "reth-ress-provider"
-version = "1.9.0"
-source = "git+https://github.com/paradigmxyz/reth?rev=4d9d712#4d9d712b436c95700bd25b82071837285b06ef4f"
-dependencies = [
- "alloy-consensus",
- "alloy-primitives",
- "eyre",
- "futures",
- "parking_lot",
- "reth-chain-state",
- "reth-errors",
- "reth-ethereum-primitives",
- "reth-evm",
- "reth-node-api",
- "reth-primitives-traits",
- "reth-ress-protocol",
- "reth-revm",
- "reth-storage-api",
- "reth-tasks",
- "reth-tokio-util",
- "reth-trie",
- "schnellru",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -11940,7 +11848,6 @@ dependencies = [
  "itertools 0.14.0",
  "rand 0.8.5",
  "rayon",
- "reth",
  "reth-evm",
  "reth-network-peers",
  "secp256k1 0.30.0",
