@@ -142,8 +142,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
 
         // Verify pool liquidity if user token differs from validator token
         if user_token != validator_token {
-            let mut amm = TIPFeeAMM::new(self.contract_address, self.storage);
-            amm.reserve_liquidity(user_token, validator_token, max_amount)?;
+            self.reserve_liquidity(user_token, validator_token, max_amount)?;
         }
 
         let mut tip20_token = TIP20Token::from_address(user_token, self.storage);
@@ -179,6 +178,10 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             self.increment_collected_fees(actual_spending)?;
         } else {
             self.release_liquidity(fee_token, validator_token, refund_amount)?;
+
+            if actual_spending.is_zero() {
+                return Ok(());
+            }
 
             // Track the token to be swapped
             if !self.sload_token_in_fees_array(fee_token)? {
@@ -263,6 +266,10 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
 
     /// Increment collected fees for the validator token
     fn increment_collected_fees(&mut self, amount: U256) -> Result<()> {
+        if amount.is_zero() {
+            return Ok(());
+        }
+
         let collected_fees = self.sload_collected_fees()?;
         self.sstore_collected_fees(
             collected_fees

@@ -593,7 +593,7 @@ where
         let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
         let mut fee_manager = TipFeeManager::new(&mut storage_provider);
 
-        if tx.max_balance_spending().ok() == Some(U256::ZERO) {
+        if gas_balance_spending.is_zero() {
             return Ok(());
         }
 

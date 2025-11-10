@@ -92,7 +92,11 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         self.set_pending_fee_swap_in(
             pool_id,
             current_pending_fee_swap_in
-                .checked_add(max_amount)
+                .checked_add(
+                    max_amount
+                        .try_into()
+                        .map_err(|_| TempoPrecompileError::under_overflow())?,
+                )
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
@@ -113,16 +117,6 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             .ok_or(TempoPrecompileError::under_overflow())
     }
 
-    /// Calculate user token reserve plus pending swaps
-    fn get_effective_user_reserve(&mut self, pool_id: B256) -> Result<U256> {
-        let pool = self.sload_pools(pool_id)?;
-        let pending_fee_swap_in = U256::from(self.get_pending_fee_swap_in(pool_id)?);
-
-        U256::from(pool.reserve_user_token)
-            .checked_add(pending_fee_swap_in)
-            .ok_or(TempoPrecompileError::under_overflow())
-    }
-
     /// Execute a swap from one fee token to another
     pub fn release_liquidity(
         &mut self,
@@ -130,12 +124,16 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         validator_token: Address,
         refund_amount: U256,
     ) -> Result<()> {
-        let pool_id = self.get_pool_id(user_token, validator_token);
+        let pool_id = self.pool_id(user_token, validator_token);
         let current_pending = self.get_pending_fee_swap_in(pool_id)?;
         self.set_pending_fee_swap_in(
             pool_id,
             current_pending
-                .checked_sub(refund_amount)
+                .checked_sub(
+                    refund_amount
+                        .try_into()
+                        .map_err(|_| TempoPrecompileError::under_overflow())?,
+                )
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
