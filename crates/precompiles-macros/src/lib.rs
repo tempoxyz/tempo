@@ -84,7 +84,6 @@ struct FieldInfo {
     ty: Type,
     slot: Option<U256>,
     base_slot: Option<U256>,
-    struct_with_mappings: bool,
 }
 
 /// Classification of a field based on its type
@@ -102,9 +101,6 @@ enum FieldKind<'a> {
     },
     /// Multi-slot storage block (custom struct implementing `trait Storable`)
     StorageBlock(&'a Type),
-    /// Struct containing mapping fields (e.g., mapping(K => StructWithMappings))
-    /// The outer mapping stores the struct type, which itself contains nested mappings
-    StructWithMappings(&'a Type),
 }
 
 impl FieldKind<'_> {
@@ -156,13 +152,12 @@ fn parse_fields(input: DeriveInput) -> syn::Result<Vec<FieldInfo>> {
                 ));
             }
 
-            let (slot, base_slot, struct_with_mappings) = extract_attributes(&field.attrs)?;
+            let (slot, base_slot) = extract_attributes(&field.attrs)?;
             Ok(FieldInfo {
                 name: name.to_owned(),
                 ty: field.ty,
                 slot,
                 base_slot,
-                struct_with_mappings,
             })
         })
         .collect()

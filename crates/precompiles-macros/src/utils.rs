@@ -3,8 +3,8 @@
 use alloy::primitives::{U256, keccak256};
 use syn::{Attribute, Lit, Type};
 
-/// Return type for [`extract_attributes`]: (slot, base_slot, struct_with_mappings)
-type ExtractedAttributes = (Option<U256>, Option<U256>, bool);
+/// Return type for [`extract_attributes`]: (slot, base_slot)
+type ExtractedAttributes = (Option<U256>, Option<U256>);
 
 /// Parses a slot value from a literal.
 ///
@@ -76,7 +76,6 @@ pub(crate) fn normalize_to_snake_case(s: &str) -> String {
 pub(crate) fn extract_attributes(attrs: &[Attribute]) -> syn::Result<ExtractedAttributes> {
     let mut slot_attr: Option<U256> = None;
     let mut base_slot_attr: Option<U256> = None;
-    let mut struct_with_mappings = false;
 
     for attr in attrs {
         // Extract `#[slot(N)]` attribute
@@ -112,13 +111,9 @@ pub(crate) fn extract_attributes(attrs: &[Attribute]) -> syn::Result<ExtractedAt
             let value: Lit = attr.parse_args()?;
             base_slot_attr = Some(parse_slot_value(&value)?);
         }
-        // Extract `#[struct_with_mappings]` attribute (marker, no args)
-        else if attr.path().is_ident("struct_with_mappings") {
-            struct_with_mappings = true;
-        }
     }
 
-    Ok((slot_attr, base_slot_attr, struct_with_mappings))
+    Ok((slot_attr, base_slot_attr))
 }
 
 /// Extracts array sizes from the `#[storable_arrays(...)]` attribute.
