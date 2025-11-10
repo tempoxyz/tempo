@@ -38,6 +38,7 @@ use tempo_faucet::{
 use tempo_node::{TempoFullNode, node::TempoNode};
 use tokio::sync::oneshot;
 use tokio_util::either::Either;
+use reth_ethereum_cli as _;
 
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
