@@ -89,10 +89,7 @@ mod tests {
         validator_config.initialize(owner).unwrap();
 
         // Test invalid selector
-        let result = validator_config.call(
-            &Bytes::from([0x12, 0x34, 0x56, 0x78]),
-            sender,
-        );
+        let result = validator_config.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), sender);
         assert!(matches!(result, Err(PrecompileError::Other(_))));
 
         // Test insufficient calldata

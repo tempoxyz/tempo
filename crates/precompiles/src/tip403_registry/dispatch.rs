@@ -131,9 +131,7 @@ mod tests {
         // Get initial counter
         let counter_call = ITIP403Registry::policyIdCounterCall {};
         let calldata = counter_call.abi_encode();
-        let result = precompile
-            .call(&calldata, sender)
-            .unwrap();
+        let result = precompile.call(&calldata, sender).unwrap();
         let counter = u64::abi_decode(&result.bytes).unwrap();
         assert_eq!(counter, 2); // Counter starts at 2 (policies 0 and 1 are reserved)
     }
@@ -153,9 +151,7 @@ mod tests {
             accounts,
         };
         let calldata = call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
 
         let policy_id: u64 =
             ITIP403Registry::createPolicyWithAccountsCall::abi_decode_returns(&result.bytes)
@@ -168,9 +164,7 @@ mod tests {
             user: account1,
         };
         let calldata = is_auth_call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
         assert!(is_authorized);
 
@@ -179,9 +173,7 @@ mod tests {
             user: account2,
         };
         let calldata = is_auth_call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
         assert!(is_authorized);
 
@@ -192,9 +184,7 @@ mod tests {
             user: other_account,
         };
         let calldata = is_auth_call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
         assert!(!is_authorized);
     }
@@ -213,9 +203,7 @@ mod tests {
             policyType: ITIP403Registry::PolicyType::BLACKLIST,
         };
         let calldata = call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let policy_id: u64 =
             ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
 
@@ -225,9 +213,7 @@ mod tests {
             user: blocked_account,
         };
         let calldata = is_auth_call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
         assert!(is_authorized);
 
@@ -238,9 +224,7 @@ mod tests {
             restricted: true,
         };
         let calldata = modify_call.abi_encode();
-        precompile
-            .call(&calldata, admin)
-            .unwrap();
+        precompile.call(&calldata, admin).unwrap();
 
         // Now blocked account should not be authorized
         let is_auth_call = ITIP403Registry::isAuthorizedCall {
@@ -248,9 +232,7 @@ mod tests {
             user: blocked_account,
         };
         let calldata = is_auth_call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
         assert!(!is_authorized);
 
@@ -260,9 +242,7 @@ mod tests {
             user: allowed_account,
         };
         let calldata = is_auth_call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
         assert!(is_authorized);
 
@@ -273,9 +253,7 @@ mod tests {
             restricted: false,
         };
         let calldata = modify_call.abi_encode();
-        precompile
-            .call(&calldata, admin)
-            .unwrap();
+        precompile.call(&calldata, admin).unwrap();
 
         // Account should be authorized again
         let is_auth_call = ITIP403Registry::isAuthorizedCall {
@@ -283,9 +261,7 @@ mod tests {
             user: blocked_account,
         };
         let calldata = is_auth_call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
         assert!(is_authorized);
     }
@@ -304,9 +280,7 @@ mod tests {
             policyType: ITIP403Registry::PolicyType::WHITELIST,
         };
         let calldata = call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let policy_id: u64 =
             ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
 
@@ -317,9 +291,7 @@ mod tests {
             allowed: true,
         };
         let calldata = modify_call1.abi_encode();
-        precompile
-            .call(&calldata, admin)
-            .unwrap();
+        precompile.call(&calldata, admin).unwrap();
 
         let modify_call2 = ITIP403Registry::modifyPolicyWhitelistCall {
             policyId: policy_id,
@@ -327,9 +299,7 @@ mod tests {
             allowed: true,
         };
         let calldata = modify_call2.abi_encode();
-        precompile
-            .call(&calldata, admin)
-            .unwrap();
+        precompile.call(&calldata, admin).unwrap();
 
         // Both accounts should be authorized
         let is_auth_call = ITIP403Registry::isAuthorizedCall {
@@ -337,9 +307,7 @@ mod tests {
             user: account1,
         };
         let calldata = is_auth_call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
         assert!(is_authorized);
 
@@ -348,9 +316,7 @@ mod tests {
             user: account2,
         };
         let calldata = is_auth_call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
         assert!(is_authorized);
 
@@ -361,9 +327,7 @@ mod tests {
             allowed: false,
         };
         let calldata = modify_call.abi_encode();
-        precompile
-            .call(&calldata, admin)
-            .unwrap();
+        precompile.call(&calldata, admin).unwrap();
 
         // Account1 should not be authorized, account2 should still be
         let is_auth_call = ITIP403Registry::isAuthorizedCall {
@@ -371,9 +335,7 @@ mod tests {
             user: account1,
         };
         let calldata = is_auth_call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
         assert!(!is_authorized);
 
@@ -382,9 +344,7 @@ mod tests {
             user: account2,
         };
         let calldata = is_auth_call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
         assert!(is_authorized);
     }
@@ -401,9 +361,7 @@ mod tests {
             policyType: ITIP403Registry::PolicyType::WHITELIST,
         };
         let calldata = call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let policy_id: u64 =
             ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
 
@@ -412,9 +370,7 @@ mod tests {
             policyId: policy_id,
         };
         let calldata = policy_data_call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let policy_data =
             ITIP403Registry::policyDataCall::abi_decode_returns(&result.bytes).unwrap();
         assert_eq!(policy_data.admin, admin);
@@ -426,18 +382,14 @@ mod tests {
             admin: new_admin,
         };
         let calldata = set_admin_call.abi_encode();
-        precompile
-            .call(&calldata, admin)
-            .unwrap();
+        precompile.call(&calldata, admin).unwrap();
 
         // Verify policy admin was changed
         let policy_data_call = ITIP403Registry::policyDataCall {
             policyId: policy_id,
         };
         let calldata = policy_data_call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let policy_data =
             ITIP403Registry::policyDataCall::abi_decode_returns(&result.bytes).unwrap();
         assert_eq!(policy_data.admin, new_admin);
@@ -452,18 +404,14 @@ mod tests {
         // Test policy 0 (always deny)
         let is_auth_call = ITIP403Registry::isAuthorizedCall { policyId: 0, user };
         let calldata = is_auth_call.abi_encode();
-        let result = precompile
-            .call(&calldata, Address::ZERO)
-            .unwrap();
+        let result = precompile.call(&calldata, Address::ZERO).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
         assert!(!is_authorized);
 
         // Test policy 1 (always allow)
         let is_auth_call = ITIP403Registry::isAuthorizedCall { policyId: 1, user };
         let calldata = is_auth_call.abi_encode();
-        let result = precompile
-            .call(&calldata, Address::ZERO)
-            .unwrap();
+        let result = precompile.call(&calldata, Address::ZERO).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
         assert!(is_authorized);
     }
@@ -501,9 +449,7 @@ mod tests {
             policyType: ITIP403Registry::PolicyType::WHITELIST,
         };
         let calldata = whitelist_call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let whitelist_id: u64 =
             ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
 
@@ -512,9 +458,7 @@ mod tests {
             policyType: ITIP403Registry::PolicyType::BLACKLIST,
         };
         let calldata = blacklist_call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let blacklist_id: u64 =
             ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
 
@@ -525,9 +469,7 @@ mod tests {
         // Verify counter has been updated
         let counter_call = ITIP403Registry::policyIdCounterCall {};
         let calldata = counter_call.abi_encode();
-        let result = precompile
-            .call(&calldata, admin)
-            .unwrap();
+        let result = precompile.call(&calldata, admin).unwrap();
         let counter = u64::abi_decode(&result.bytes).unwrap();
         assert_eq!(counter, 4);
     }

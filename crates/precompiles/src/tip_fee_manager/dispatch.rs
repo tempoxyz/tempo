@@ -319,10 +319,7 @@ mod tests {
         };
         let calldata = calldata.abi_encode();
         let result = fee_manager
-            .call(
-                &Bytes::from(calldata),
-                Address::random(),
-            )
+            .call(&Bytes::from(calldata), Address::random())
             .unwrap();
         // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
         assert_eq!(result.gas_used, 0);
@@ -346,10 +343,7 @@ mod tests {
             validatorToken: token_b,
         };
         let calldata = get_pool_call.abi_encode();
-        let result = fee_manager.call(
-            &Bytes::from(calldata),
-            Address::random(),
-        )?;
+        let result = fee_manager.call(&Bytes::from(calldata), Address::random())?;
         // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
         assert_eq!(result.gas_used, 0);
 
@@ -375,10 +369,7 @@ mod tests {
         }
         .abi_encode();
         let result1 = fee_manager
-            .call(
-                &Bytes::from(calldata1),
-                Address::random(),
-            )
+            .call(&Bytes::from(calldata1), Address::random())
             .unwrap();
         let id1 = B256::abi_decode(&result1.bytes).unwrap();
 
@@ -388,10 +379,7 @@ mod tests {
         }
         .abi_encode();
         let result2 = fee_manager
-            .call(
-                &Bytes::from(calldata2),
-                Address::random(),
-            )
+            .call(&Bytes::from(calldata2), Address::random())
             .unwrap();
         let id2 = B256::abi_decode(&result2.bytes).unwrap();
 
@@ -410,19 +398,13 @@ mod tests {
         let set_validator_call = IFeeManager::setValidatorTokenCall {
             token: Address::ZERO,
         };
-        let result = fee_manager.call(
-            &Bytes::from(set_validator_call.abi_encode()),
-            validator,
-        );
+        let result = fee_manager.call(&Bytes::from(set_validator_call.abi_encode()), validator);
         expect_precompile_revert(&result, TIPFeeAMMError::invalid_token());
 
         let set_user_call = IFeeManager::setUserTokenCall {
             token: Address::ZERO,
         };
-        let result = fee_manager.call(
-            &Bytes::from(set_user_call.abi_encode()),
-            user,
-        );
+        let result = fee_manager.call(&Bytes::from(set_user_call.abi_encode()), user);
         expect_precompile_revert(&result, TIPFeeAMMError::invalid_token());
     }
 
@@ -439,10 +421,7 @@ mod tests {
 
         // Call executeBlock (only system contract can call)
         let call = IFeeManager::executeBlockCall {};
-        let result = fee_manager.call(
-            &Bytes::from(call.abi_encode()),
-            Address::ZERO,
-        )?;
+        let result = fee_manager.call(&Bytes::from(call.abi_encode()), Address::ZERO)?;
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
 
@@ -473,18 +452,13 @@ mod tests {
             userToken: user_token,
             validatorToken: validator_token,
         };
-        let pool_id_result = fee_manager.call(
-            &Bytes::from(pool_id_call.abi_encode()),
-            user,
-        )?;
+        let pool_id_result = fee_manager.call(&Bytes::from(pool_id_call.abi_encode()), user)?;
         let pool_id = B256::abi_decode(&pool_id_result.bytes)?;
 
         // Check initial total supply
         let initial_total_supply_call = ITIPFeeAMM::totalSupplyCall { poolId: pool_id };
-        let initial_total_supply_result = fee_manager.call(
-            &Bytes::from(initial_total_supply_call.abi_encode()),
-            user,
-        )?;
+        let initial_total_supply_result =
+            fee_manager.call(&Bytes::from(initial_total_supply_call.abi_encode()), user)?;
         let initial_total_supply = U256::abi_decode(&initial_total_supply_result.bytes)?;
         assert_eq!(initial_total_supply, U256::ZERO);
 
@@ -511,10 +485,8 @@ mod tests {
 
         // Check total supply after mint should equal liquidity + MIN_LIQUIDITY
         let final_total_supply_call = ITIPFeeAMM::totalSupplyCall { poolId: pool_id };
-        let final_total_supply_result = fee_manager.call(
-            &Bytes::from(final_total_supply_call.abi_encode()),
-            user,
-        )?;
+        let final_total_supply_result =
+            fee_manager.call(&Bytes::from(final_total_supply_call.abi_encode()), user)?;
         let final_total_supply = U256::abi_decode(&final_total_supply_result.bytes)?;
 
         let expected_total_supply = liquidity + MIN_LIQUIDITY;
@@ -529,10 +501,7 @@ mod tests {
             userToken: user_token,
             validatorToken: validator_token,
         };
-        let pool_result = fee_manager.call(
-            &Bytes::from(pool_call.abi_encode()),
-            user,
-        )?;
+        let pool_result = fee_manager.call(&Bytes::from(pool_call.abi_encode()), user)?;
         let pool = ITIPFeeAMM::Pool::abi_decode(&pool_result.bytes)?;
 
         assert_eq!(pool.reserveUserToken, 0);
@@ -543,10 +512,7 @@ mod tests {
             poolId: pool_id,
             user: to,
         };
-        let balance_result = fee_manager.call(
-            &Bytes::from(balance_call.abi_encode()),
-            user,
-        )?;
+        let balance_result = fee_manager.call(&Bytes::from(balance_call.abi_encode()), user)?;
         let balance = U256::abi_decode(&balance_result.bytes)?;
 
         assert_eq!(balance, liquidity);
