@@ -24,8 +24,8 @@ struct PackingField {
 
 impl PackingField {
     /// Create a new `PackingField` from a field's identifier.
-    fn new(field_name: &Ident) -> Self {
-        let const_name = ident_to_uppercase(field_name);
+    fn new(field: &Ident) -> Self {
+        let const_name = field.to_string().to_uppercase();
         let span = proc_macro2::Span::call_site();
 
         Self {
@@ -309,11 +309,6 @@ fn derive_struct_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     };
 
     Ok(combined)
-}
-
-/// Convert an identifier to an UPPERCASE string.
-fn ident_to_uppercase(field_name: &Ident) -> String {
-    field_name.to_string().to_uppercase()
 }
 
 /// Generate a compile-time module that calculates the packing layout.
