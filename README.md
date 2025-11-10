@@ -1,7 +1,7 @@
 <br>
 <br>
 
-<p align="center">
+<div style="text-align: center;">
   <a href="https://tempo.xyz">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/tempoxyz/.github/refs/heads/main/assets/combomark-dark.svg">
@@ -9,9 +9,13 @@
     </picture>
   </a>
 
-  <a href="https://docs.tempo.xyz/documentation/operators/installation">Install</a> | <a href="https://docs.tempo.xyz">User Docs</a> | <a href="./docs">Developer Docs</a>
+  <div style="margin-top: 2em;">
+    <a href="https://docs.tempo.xyz/documentation/operators/installation">Install</a> |
+    <a href="https://docs.tempo.xyz">User Docs</a> |
+    <a href="./docs">Developer Docs</a>
+  </div>
 
-</p>
+</div>
 
 <br>
 <br>
