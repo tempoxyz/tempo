@@ -25,6 +25,7 @@ use futures::{
     future::{FusedFuture, pending},
 };
 use reth_ethereum::cli::{Cli, Commands};
+use reth_ethereum_cli as _;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use std::{net::SocketAddr, sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
