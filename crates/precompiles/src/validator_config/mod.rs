@@ -6,7 +6,7 @@ use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
     error::TempoPrecompileError,
-    storage::{PrecompileStorageProvider, Slot, Storable, StorageOps, VecSlotExt},
+    storage::{PrecompileStorageProvider, Slot, Storable, VecSlotExt},
 };
 use alloy::primitives::{Address, B256, Bytes};
 use revm::state::Bytecode;
@@ -308,8 +308,6 @@ mod tests {
     use crate::storage::hashmap::HashMapStorageProvider;
     use alloy::primitives::Address;
     use alloy_primitives::FixedBytes;
-
-    const PRECOMPILE_ADDRESS: Address = Address::new([0x01; 20]);
 
     #[test]
     fn test_owner_initialization_and_change() {
