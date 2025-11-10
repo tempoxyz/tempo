@@ -1,7 +1,6 @@
 //! Stablecoin DEX types and utilities.
 pub mod dispatch;
 pub mod error;
-pub mod offsets;
 pub mod order;
 pub mod orderbook;
 
