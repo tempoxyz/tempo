@@ -15,10 +15,10 @@ use reth_rpc_eth_types::{EthApiError, error::FromEthApiError};
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
     stablecoin_exchange::{
-        Order as PrecompileOrder, Orderbook as PrecompileOrderbook, StablecoinExchange, TickBitmap,
-        TickLevel, orderbook::compute_book_key,
+        Order as PrecompileOrder, Orderbook as PrecompileOrderbook, StablecoinExchange, TickLevel,
+        orderbook::compute_book_key,
     },
-    storage::evm::EvmPrecompileStorageProvider,
+    storage::{ContractStorage, evm::EvmPrecompileStorageProvider},
 };
 use tempo_primitives::TempoHeader;
 
@@ -440,6 +440,17 @@ pub struct BookIterator<'a, 'b> {
     storage: &'b mut EvmPrecompileStorageProvider<'a>,
 }
 
+impl<'a, 'b> ContractStorage for BookIterator<'a, 'b> {
+    type Storage = EvmPrecompileStorageProvider<'a>;
+
+    fn address(&self) -> Address {
+        self.exchange_address
+    }
+    fn storage(&mut self) -> &mut Self::Storage {
+        self.storage
+    }
+}
+
 impl<'a, 'b> BookIterator<'a, 'b> {
     /// Create a new book iterator, optionally with the given order ID as the starting order.
     fn new(
@@ -492,13 +503,8 @@ impl<'a, 'b> BookIterator<'a, 'b> {
     /// Get the next initialized tick after the given tick
     /// Returns None if there are no more ticks
     pub fn get_next_tick(&mut self, tick: i16) -> Option<i16> {
-        let mut bitmap = TickBitmap::new(self.storage, self.exchange_address, self.book_key);
-
-        let (next_tick, more_ticks) = if self.bids {
-            bitmap.next_initialized_bid_tick(tick)
-        } else {
-            bitmap.next_initialized_ask_tick(tick)
-        };
+        let (next_tick, more_ticks) =
+            PrecompileOrderbook::next_initialized_tick(self, self.book_key, self.bids, tick);
 
         if more_ticks { Some(next_tick) } else { None }
     }

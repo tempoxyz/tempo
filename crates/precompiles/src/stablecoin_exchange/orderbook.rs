@@ -3,10 +3,7 @@
 use crate::{
     error::TempoPrecompileError,
     stablecoin_exchange::IStablecoinExchange,
-    storage::{
-        DummySlot, Mapping, PrecompileStorageProvider, Slot, SlotId, StorageOps,
-        slots::mapping_slot,
-    },
+    storage::{DummySlot, Mapping, Slot, SlotId, StorageOps, slots::mapping_slot},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use tempo_contracts::precompiles::StablecoinExchangeError;
@@ -89,14 +86,22 @@ pub struct Orderbook {
     pub best_bid_tick: i16,
     /// Best ask tick for lowest ask price
     pub best_ask_tick: i16,
+    #[allow(dead_code)]
+    /// Mapping of tick index to bid bitmap for price discovery
+    bid_bitmaps: Mapping<i16, U256, DummySlot>,
+    /// Mapping of tick index to ask bitmap for price discovery
+    #[allow(dead_code)]
+    ask_bitmaps: Mapping<i16, U256, DummySlot>,
 }
 
 // Helper type to easily access storage for orderbook tokens (base, quote)
 type Tokens = Slot<Address, DummySlot>;
+// Helper type to easily access storage for best orderbook orders (best_bid, best_ask)
+type BestOrders = Slot<i16, DummySlot>;
 // Helper type to easile access storage for orders (bids, asks)
 type Orders = Mapping<i16, TickLevel, DummySlot>;
-// Helper type to easily access storage for best orderbook orders (best bid, best ask)
-type BestOrders = Slot<i16, DummySlot>;
+// Helper type to easily access storage for bitmaps (bid_bitmaps, ask_bitmaps)
+type BitMaps = Mapping<i16, U256, DummySlot>;
 
 impl Orderbook {
     /// Creates a new orderbook for a token pair
@@ -266,6 +271,157 @@ impl Orderbook {
             )
         }
     }
+
+    /// Set bit in bitmap to mark tick as active
+    pub fn set_tick_bit<S: StorageOps>(
+        storage: &mut S,
+        book_key: B256,
+        tick: i16,
+        is_bid: bool,
+    ) -> Result<(), TempoPrecompileError> {
+        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
+            return Err(StablecoinExchangeError::invalid_tick().into());
+        }
+
+        let word_index = tick >> 8;
+        // Use bitwise AND to get lower 8 bits correctly for both positive and negative ticks
+        let bit_index = (tick & 0xFF) as usize;
+        let mask = U256::from(1u8) << bit_index;
+
+        // Read current bitmap word
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
+        let bitmap_slot = if is_bid {
+            __packing_orderbook::BID_BITMAPS_SLOT
+        } else {
+            __packing_orderbook::ASK_BITMAPS_SLOT
+        };
+        let current_word =
+            BitMaps::read_at_offset(storage, orderbook_base_slot, bitmap_slot, word_index)?;
+
+        // Set the bit
+        let new_word = current_word | mask;
+        BitMaps::write_at_offset(
+            storage,
+            orderbook_base_slot,
+            bitmap_slot,
+            word_index,
+            new_word,
+        )?;
+
+        Ok(())
+    }
+
+    /// Clear bit in bitmap to mark tick as inactive
+    pub fn clear_tick_bit<S: StorageOps>(
+        storage: &mut S,
+        book_key: B256,
+        tick: i16,
+        is_bid: bool,
+    ) -> Result<(), TempoPrecompileError> {
+        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
+            return Err(StablecoinExchangeError::invalid_tick().into());
+        }
+
+        let word_index = tick >> 8;
+        // Use bitwise AND to get lower 8 bits correctly for both positive and negative ticks
+        let bit_index = (tick & 0xFF) as usize;
+        let mask = !(U256::from(1u8) << bit_index);
+
+        // Read current bitmap word
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
+        let bitmap_slot = if is_bid {
+            __packing_orderbook::BID_BITMAPS_SLOT
+        } else {
+            __packing_orderbook::ASK_BITMAPS_SLOT
+        };
+        let current_word =
+            BitMaps::read_at_offset(storage, orderbook_base_slot, bitmap_slot, word_index)?;
+
+        // Clear the bit
+        let new_word = current_word & mask;
+        BitMaps::write_at_offset(
+            storage,
+            orderbook_base_slot,
+            bitmap_slot,
+            word_index,
+            new_word,
+        )?;
+
+        Ok(())
+    }
+
+    /// Check if a tick is initialized (has orders)
+    pub fn is_tick_initialized<S: StorageOps>(
+        storage: &mut S,
+        book_key: B256,
+        tick: i16,
+        is_bid: bool,
+    ) -> Result<bool, TempoPrecompileError> {
+        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
+            return Err(StablecoinExchangeError::invalid_tick().into());
+        }
+
+        let word_index = tick >> 8;
+        // Use bitwise AND to get lower 8 bits correctly for both positive and negative ticks
+        let bit_index = (tick & 0xFF) as usize;
+        let mask = U256::from(1u8) << bit_index;
+
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
+        let bitmap_slot = if is_bid {
+            __packing_orderbook::BID_BITMAPS_SLOT
+        } else {
+            __packing_orderbook::ASK_BITMAPS_SLOT
+        };
+        let word = BitMaps::read_at_offset(storage, orderbook_base_slot, bitmap_slot, word_index)?;
+
+        Ok((word & mask) != U256::ZERO)
+    }
+
+    /// Find next initialized ask tick higher than current tick
+    pub fn next_initialized_tick<S: StorageOps>(
+        storage: &mut S,
+        book_key: B256,
+        is_bid: bool,
+        tick: i16,
+    ) -> (i16, bool) {
+        if is_bid {
+            Self::next_initialized_bid_tick(storage, book_key, tick)
+        } else {
+            Self::next_initialized_ask_tick(storage, book_key, tick)
+        }
+    }
+
+    /// Find next initialized ask tick higher than current tick
+    fn next_initialized_ask_tick<S: StorageOps>(
+        storage: &mut S,
+        book_key: B256,
+        tick: i16,
+    ) -> (i16, bool) {
+        let mut next_tick = tick + 1;
+        while next_tick <= MAX_TICK {
+            if Self::is_tick_initialized(storage, book_key, next_tick, false).unwrap_or(false) {
+                return (next_tick, true);
+            }
+            next_tick += 1;
+        }
+        (next_tick, false)
+    }
+
+    /// Find next initialized bid tick lower than current tick
+    fn next_initialized_bid_tick<S: StorageOps>(
+        storage: &mut S,
+        book_key: B256,
+        tick: i16,
+    ) -> (i16, bool) {
+        let mut next_tick = tick - 1;
+        while next_tick >= MIN_TICK {
+            if Self::is_tick_initialized(storage, book_key, next_tick, true).unwrap_or(false) {
+                return (next_tick, true);
+            }
+            next_tick -= 1;
+        }
+        (next_tick, false)
+    }
 }
 
 impl From<Orderbook> for IStablecoinExchange::Orderbook {
@@ -276,127 +432,6 @@ impl From<Orderbook> for IStablecoinExchange::Orderbook {
             bestBidTick: value.best_bid_tick,
             bestAskTick: value.best_ask_tick,
         }
-    }
-}
-
-/// Tick bitmap manager for efficient price discovery
-pub struct TickBitmap<'a, S: PrecompileStorageProvider> {
-    storage: &'a mut S,
-    address: Address,
-    book_key: B256,
-}
-
-impl<'a, S: PrecompileStorageProvider> TickBitmap<'a, S> {
-    pub fn new(storage: &'a mut S, address: Address, book_key: B256) -> Self {
-        Self {
-            storage,
-            address,
-            book_key,
-        }
-    }
-
-    /// Set bit in bitmap to mark tick as active
-    pub fn set_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<(), TempoPrecompileError> {
-        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(StablecoinExchangeError::invalid_tick().into());
-        }
-
-        let word_index = tick >> 8;
-        // Use bitwise AND to get lower 8 bits correctly for both positive and negative ticks
-        // Casting negative i16 to u8 wraps incorrectly (e.g., -100 as u8 = 156)
-        let bit_index = (tick & 0xFF) as usize;
-        let mask = U256::from(1u8) << bit_index;
-
-        // Get storage slot for this word in the bitmap
-        let bitmap_slot = self.get_bitmap_slot(word_index, is_bid);
-        let current_word = self.storage.sload(self.address, bitmap_slot)?;
-
-        // Set the bit
-        let new_word = current_word | mask;
-        self.storage.sstore(self.address, bitmap_slot, new_word)?;
-
-        Ok(())
-    }
-
-    /// Clear bit in bitmap to mark tick as inactive and update storage
-    pub fn clear_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<(), TempoPrecompileError> {
-        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(StablecoinExchangeError::invalid_tick().into());
-        }
-
-        let word_index = tick >> 8;
-        // Use bitwise AND to get lower 8 bits correctly for both positive and negative ticks
-        // Casting negative i16 to u8 wraps incorrectly (e.g., -100 as u8 = 156)
-        let bit_index = (tick & 0xFF) as usize;
-        let mask = !(U256::from(1u8) << bit_index);
-
-        // Get storage slot for this word in the bitmap
-        let bitmap_slot = self.get_bitmap_slot(word_index, is_bid);
-        let current_word = self.storage.sload(self.address, bitmap_slot)?;
-
-        // Clear the bit
-        let new_word = current_word & mask;
-        self.storage.sstore(self.address, bitmap_slot, new_word)?;
-
-        Ok(())
-    }
-
-    /// Check if a tick is initialized (has orders)
-    pub fn is_tick_initialized(
-        &mut self,
-        tick: i16,
-        is_bid: bool,
-    ) -> Result<bool, TempoPrecompileError> {
-        if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(StablecoinExchangeError::invalid_tick().into());
-        }
-
-        let word_index = tick >> 8;
-        // Use bitwise AND to get lower 8 bits correctly for both positive and negative ticks
-        // Casting negative i16 to u8 wraps incorrectly (e.g., -100 as u8 = 156)
-        let bit_index = (tick & 0xFF) as usize;
-        let mask = U256::from(1u8) << bit_index;
-
-        let bitmap_slot = self.get_bitmap_slot(word_index, is_bid);
-        let word = self.storage.sload(self.address, bitmap_slot)?;
-
-        Ok((word & mask) != U256::ZERO)
-    }
-
-    /// Find next initialized ask tick higher than current tick
-    pub fn next_initialized_ask_tick(&mut self, tick: i16) -> (i16, bool) {
-        let mut next_tick = tick + 1;
-        while next_tick <= MAX_TICK {
-            if self.is_tick_initialized(next_tick, false).unwrap_or(false) {
-                return (next_tick, true);
-            }
-            next_tick += 1;
-        }
-        (next_tick, false)
-    }
-
-    /// Find next initialized bid tick lower than current tick
-    pub fn next_initialized_bid_tick(&mut self, tick: i16) -> (i16, bool) {
-        let mut next_tick = tick - 1;
-        while next_tick >= MIN_TICK {
-            if self.is_tick_initialized(next_tick, true).unwrap_or(false) {
-                return (next_tick, true);
-            }
-            next_tick -= 1;
-        }
-        (next_tick, false)
-    }
-
-    /// Get storage slot for bitmap word
-    fn get_bitmap_slot(&self, word_index: i16, is_bid: bool) -> U256 {
-        let base_slot = if is_bid {
-            super::slots::BidBitmapsSlot::SLOT
-        } else {
-            super::slots::AskBitmapsSlot::SLOT
-        };
-
-        let book_key_slot = mapping_slot(self.book_key.as_slice(), base_slot);
-        mapping_slot(word_index.to_be_bytes(), book_key_slot)
     }
 }
 
@@ -424,28 +459,6 @@ pub fn tick_to_price(tick: i16) -> u32 {
 /// Convert scaled price to relative tick
 pub fn price_to_tick(price: u32) -> i16 {
     (price as i32 - PRICE_SCALE as i32) as i16
-}
-
-/// Find next initialized bid tick lower than current tick
-pub fn next_initialized_bid_tick<S: PrecompileStorageProvider>(
-    storage: &mut S,
-    address: Address,
-    book_key: B256,
-    tick: i16,
-) -> (i16, bool) {
-    let mut bitmap = TickBitmap::new(storage, address, book_key);
-    bitmap.next_initialized_bid_tick(tick)
-}
-
-/// Find next initialized ask tick higher than current tick
-pub fn next_initialized_ask_tick<S: PrecompileStorageProvider>(
-    storage: &mut S,
-    address: Address,
-    book_key: B256,
-    tick: i16,
-) -> (i16, bool) {
-    let mut bitmap = TickBitmap::new(storage, address, book_key);
-    bitmap.next_initialized_ask_tick(tick)
 }
 
 #[cfg(test)]
@@ -528,12 +541,32 @@ mod tests {
 
     mod bitmap_tests {
         use super::*;
-        use crate::storage::hashmap::HashMapStorageProvider;
+        use crate::storage::{ContractStorage, hashmap::HashMapStorageProvider};
+
+        // Test wrapper that implements ContractStorage for HashMapStorageProvider
+        struct TestStorage(HashMapStorageProvider);
+
+        impl TestStorage {
+            fn new(chain_id: u64) -> Self {
+                Self(HashMapStorageProvider::new(chain_id))
+            }
+        }
+
+        impl ContractStorage for TestStorage {
+            type Storage = HashMapStorageProvider;
+
+            fn address(&self) -> Address {
+                Address::ZERO
+            }
+
+            fn storage(&mut self) -> &mut Self::Storage {
+                &mut self.0
+            }
+        }
 
         #[test]
         fn test_tick_lifecycle() {
-            let mut storage = HashMapStorageProvider::new(1);
-            let address = Address::random();
+            let mut storage = TestStorage::new(1);
             let book_key = B256::ZERO;
 
             // Test full lifecycle (set, check, clear, check) for positive and negative ticks
@@ -545,29 +578,24 @@ mod tests {
 
             for &tick in &test_ticks {
                 // Initially not set
-                let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
                 assert!(
-                    !bitmap.is_tick_initialized(tick, true).unwrap(),
+                    !Orderbook::is_tick_initialized(&mut storage, book_key, tick, true).unwrap(),
                     "Tick {tick} should not be initialized initially"
                 );
 
                 // Set the bit
-                let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
-                bitmap.set_tick_bit(tick, true).unwrap();
+                Orderbook::set_tick_bit(&mut storage, book_key, tick, true).unwrap();
 
-                let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
                 assert!(
-                    bitmap.is_tick_initialized(tick, true).unwrap(),
+                    Orderbook::is_tick_initialized(&mut storage, book_key, tick, true).unwrap(),
                     "Tick {tick} should be initialized after set"
                 );
 
                 // Clear the bit
-                let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
-                bitmap.clear_tick_bit(tick, true).unwrap();
+                Orderbook::clear_tick_bit(&mut storage, book_key, tick, true).unwrap();
 
-                let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
                 assert!(
-                    !bitmap.is_tick_initialized(tick, true).unwrap(),
+                    !Orderbook::is_tick_initialized(&mut storage, book_key, tick, true).unwrap(),
                     "Tick {tick} should not be initialized after clear"
                 );
             }
@@ -575,149 +603,127 @@ mod tests {
 
         #[test]
         fn test_boundary_ticks() {
-            let mut storage = HashMapStorageProvider::new(1);
-            let address = Address::random();
+            let mut storage = TestStorage::new(1);
             let book_key = B256::ZERO;
 
             // Test MIN_TICK
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
-            bitmap.set_tick_bit(MIN_TICK, true).unwrap();
+            Orderbook::set_tick_bit(&mut storage, book_key, MIN_TICK, true).unwrap();
 
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
             assert!(
-                bitmap.is_tick_initialized(MIN_TICK, true).unwrap(),
+                Orderbook::is_tick_initialized(&mut storage, book_key, MIN_TICK, true).unwrap(),
                 "MIN_TICK should be settable"
             );
 
             // Test MAX_TICK (use different storage for ask side)
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
-            bitmap.set_tick_bit(MAX_TICK, false).unwrap();
+            Orderbook::set_tick_bit(&mut storage, book_key, MAX_TICK, false).unwrap();
 
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
             assert!(
-                bitmap.is_tick_initialized(MAX_TICK, false).unwrap(),
+                Orderbook::is_tick_initialized(&mut storage, book_key, MAX_TICK, false).unwrap(),
                 "MAX_TICK should be settable"
             );
 
             // Clear MIN_TICK
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
-            bitmap.clear_tick_bit(MIN_TICK, true).unwrap();
+            Orderbook::clear_tick_bit(&mut storage, book_key, MIN_TICK, true).unwrap();
 
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
             assert!(
-                !bitmap.is_tick_initialized(MIN_TICK, true).unwrap(),
+                !Orderbook::is_tick_initialized(&mut storage, book_key, MIN_TICK, true).unwrap(),
                 "MIN_TICK should be clearable"
             );
         }
 
         #[test]
         fn test_bid_and_ask_separate() {
-            let mut storage = HashMapStorageProvider::new(1);
-            let address = Address::random();
+            let mut storage = TestStorage::new(1);
             let book_key = B256::ZERO;
             let tick = 100;
 
             // Set as bid
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
-            bitmap.set_tick_bit(tick, true).unwrap();
+            Orderbook::set_tick_bit(&mut storage, book_key, tick, true).unwrap();
 
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
             assert!(
-                bitmap.is_tick_initialized(tick, true).unwrap(),
+                Orderbook::is_tick_initialized(&mut storage, book_key, tick, true).unwrap(),
                 "Tick should be initialized for bids"
             );
             assert!(
-                !bitmap.is_tick_initialized(tick, false).unwrap(),
+                !Orderbook::is_tick_initialized(&mut storage, book_key, tick, false).unwrap(),
                 "Tick should not be initialized for asks"
             );
 
             // Set as ask
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
-            bitmap.set_tick_bit(tick, false).unwrap();
+            Orderbook::set_tick_bit(&mut storage, book_key, tick, false).unwrap();
 
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
             assert!(
-                bitmap.is_tick_initialized(tick, true).unwrap(),
+                Orderbook::is_tick_initialized(&mut storage, book_key, tick, true).unwrap(),
                 "Tick should still be initialized for bids"
             );
             assert!(
-                bitmap.is_tick_initialized(tick, false).unwrap(),
+                Orderbook::is_tick_initialized(&mut storage, book_key, tick, false).unwrap(),
                 "Tick should now be initialized for asks"
             );
         }
 
         #[test]
         fn test_ticks_across_word_boundary() {
-            let mut storage = HashMapStorageProvider::new(1);
-            let address = Address::random();
+            let mut storage = TestStorage::new(1);
             let book_key = B256::ZERO;
 
             // Ticks that span word boundary at 256
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
-            bitmap.set_tick_bit(255, true).unwrap(); // word_index = 0, bit_index = 255
-            bitmap.set_tick_bit(256, true).unwrap(); // word_index = 1, bit_index = 0
+            Orderbook::set_tick_bit(&mut storage, book_key, 255, true).unwrap(); // word_index = 0, bit_index = 255
+            Orderbook::set_tick_bit(&mut storage, book_key, 256, true).unwrap(); // word_index = 1, bit_index = 0
 
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
-            assert!(bitmap.is_tick_initialized(255, true).unwrap());
-            assert!(bitmap.is_tick_initialized(256, true).unwrap());
+            assert!(Orderbook::is_tick_initialized(&mut storage, book_key, 255, true).unwrap());
+            assert!(Orderbook::is_tick_initialized(&mut storage, book_key, 256, true).unwrap());
         }
 
         #[test]
         fn test_ticks_different_words() {
-            let mut storage = HashMapStorageProvider::new(1);
-            let address = Address::random();
+            let mut storage = TestStorage::new(1);
             let book_key = B256::ZERO;
 
             // Test ticks in different words (both positive and negative)
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
 
             // Negative ticks in different words
-            bitmap.set_tick_bit(-1, true).unwrap(); // word_index = -1, bit_index = 255
-            bitmap.set_tick_bit(-100, true).unwrap(); // word_index = -1, bit_index = 156
-            bitmap.set_tick_bit(-256, true).unwrap(); // word_index = -1, bit_index = 0
-            bitmap.set_tick_bit(-257, true).unwrap(); // word_index = -2, bit_index = 255
+            Orderbook::set_tick_bit(&mut storage, book_key, -1, true).unwrap(); // word_index = -1, bit_index = 255
+            Orderbook::set_tick_bit(&mut storage, book_key, -100, true).unwrap(); // word_index = -1, bit_index = 156
+            Orderbook::set_tick_bit(&mut storage, book_key, -256, true).unwrap(); // word_index = -1, bit_index = 0
+            Orderbook::set_tick_bit(&mut storage, book_key, -257, true).unwrap(); // word_index = -2, bit_index = 255
 
             // Positive ticks in different words
-            bitmap.set_tick_bit(1, true).unwrap(); // word_index = 0, bit_index = 1
-            bitmap.set_tick_bit(100, true).unwrap(); // word_index = 0, bit_index = 100
-            bitmap.set_tick_bit(256, true).unwrap(); // word_index = 1, bit_index = 0
-            bitmap.set_tick_bit(512, true).unwrap(); // word_index = 2, bit_index = 0
-
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
+            Orderbook::set_tick_bit(&mut storage, book_key, 1, true).unwrap(); // word_index = 0, bit_index = 1
+            Orderbook::set_tick_bit(&mut storage, book_key, 100, true).unwrap(); // word_index = 0, bit_index = 100
+            Orderbook::set_tick_bit(&mut storage, book_key, 256, true).unwrap(); // word_index = 1, bit_index = 0
+            Orderbook::set_tick_bit(&mut storage, book_key, 512, true).unwrap(); // word_index = 2, bit_index = 0
 
             // Verify negative ticks
-            assert!(bitmap.is_tick_initialized(-1, true).unwrap());
-            assert!(bitmap.is_tick_initialized(-100, true).unwrap());
-            assert!(bitmap.is_tick_initialized(-256, true).unwrap());
-            assert!(bitmap.is_tick_initialized(-257, true).unwrap());
+            assert!(Orderbook::is_tick_initialized(&mut storage, book_key, -1, true).unwrap());
+            assert!(Orderbook::is_tick_initialized(&mut storage, book_key, -100, true).unwrap());
+            assert!(Orderbook::is_tick_initialized(&mut storage, book_key, -256, true).unwrap());
+            assert!(Orderbook::is_tick_initialized(&mut storage, book_key, -257, true).unwrap());
 
             // Verify positive ticks
-            assert!(bitmap.is_tick_initialized(1, true).unwrap());
-            assert!(bitmap.is_tick_initialized(100, true).unwrap());
-            assert!(bitmap.is_tick_initialized(256, true).unwrap());
-            assert!(bitmap.is_tick_initialized(512, true).unwrap());
+            assert!(Orderbook::is_tick_initialized(&mut storage, book_key, 1, true).unwrap());
+            assert!(Orderbook::is_tick_initialized(&mut storage, book_key, 100, true).unwrap());
+            assert!(Orderbook::is_tick_initialized(&mut storage, book_key, 256, true).unwrap());
+            assert!(Orderbook::is_tick_initialized(&mut storage, book_key, 512, true).unwrap());
 
             // Verify unset ticks
             assert!(
-                !bitmap.is_tick_initialized(-50, true).unwrap(),
+                !Orderbook::is_tick_initialized(&mut storage, book_key, -50, true).unwrap(),
                 "Unset negative tick should not be initialized"
             );
             assert!(
-                !bitmap.is_tick_initialized(50, true).unwrap(),
+                !Orderbook::is_tick_initialized(&mut storage, book_key, 50, true).unwrap(),
                 "Unset positive tick should not be initialized"
             );
         }
 
         #[test]
         fn test_set_tick_bit_out_of_bounds() {
-            let mut storage = HashMapStorageProvider::new(1);
-            let address = Address::random();
+            let mut storage = TestStorage::new(1);
             let book_key = B256::ZERO;
 
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
-
             // Test tick above MAX_TICK
-            let result = bitmap.set_tick_bit(MAX_TICK + 1, true);
+            let result = Orderbook::set_tick_bit(&mut storage, book_key, MAX_TICK + 1, true);
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
@@ -725,7 +731,7 @@ mod tests {
             ));
 
             // Test tick below MIN_TICK
-            let result = bitmap.set_tick_bit(MIN_TICK - 1, true);
+            let result = Orderbook::set_tick_bit(&mut storage, book_key, MIN_TICK - 1, true);
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
@@ -735,14 +741,11 @@ mod tests {
 
         #[test]
         fn test_clear_tick_bit_out_of_bounds() {
-            let mut storage = HashMapStorageProvider::new(1);
-            let address = Address::random();
+            let mut storage = TestStorage::new(1);
             let book_key = B256::ZERO;
 
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
-
             // Test tick above MAX_TICK
-            let result = bitmap.clear_tick_bit(MAX_TICK + 1, true);
+            let result = Orderbook::clear_tick_bit(&mut storage, book_key, MAX_TICK + 1, true);
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
@@ -750,7 +753,7 @@ mod tests {
             ));
 
             // Test tick below MIN_TICK
-            let result = bitmap.clear_tick_bit(MIN_TICK - 1, true);
+            let result = Orderbook::clear_tick_bit(&mut storage, book_key, MIN_TICK - 1, true);
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
@@ -760,14 +763,11 @@ mod tests {
 
         #[test]
         fn test_is_tick_initialized_out_of_bounds() {
-            let mut storage = HashMapStorageProvider::new(1);
-            let address = Address::random();
+            let mut storage = TestStorage::new(1);
             let book_key = B256::ZERO;
 
-            let mut bitmap = TickBitmap::new(&mut storage, address, book_key);
-
             // Test tick above MAX_TICK
-            let result = bitmap.is_tick_initialized(MAX_TICK + 1, true);
+            let result = Orderbook::is_tick_initialized(&mut storage, book_key, MAX_TICK + 1, true);
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
@@ -775,7 +775,7 @@ mod tests {
             ));
 
             // Test tick below MIN_TICK
-            let result = bitmap.is_tick_initialized(MIN_TICK - 1, true);
+            let result = Orderbook::is_tick_initialized(&mut storage, book_key, MIN_TICK - 1, true);
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
