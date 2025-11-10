@@ -129,11 +129,6 @@ fn classify_field(field: &FieldInfo) -> syn::Result<FieldKind<'_>> {
         }
     }
 
-    // Check if marked as struct with mappings
-    if field.struct_with_mappings {
-        return Ok(FieldKind::StructWithMappings(ty));
-    }
-
     // If not a mapping, check if it's a multi-slot field type (structs and fixed-size arrays)
     if is_custom_struct(ty) || is_array_type(ty) {
         Ok(FieldKind::StorageBlock(ty))
@@ -392,11 +387,6 @@ pub(crate) fn gen_getters_and_setters(
                     }
                 }
             }
-        }
-        FieldKind::StructWithMappings(_ty) => {
-            // Structs with mapping fields cannot be loaded/stored as a whole
-            // Individual field access must be done manually using the packing module constants
-            quote! {}
         }
     }
 }

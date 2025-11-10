@@ -311,6 +311,36 @@ fn derive_struct_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     Ok(combined)
 }
 
+/// Generates a TokenStream that checks if a field shares its slot with adjacent fields.
+/// Used during load/store to determine whether to use direct load/store or packed operations.
+fn gen_shares_slot_check(
+    prev_field: Option<&Ident>,
+    next_field: Option<&Ident>,
+    slot_const: &Ident,
+    packing: &Ident,
+) -> TokenStream {
+    if let Some(prev_name) = prev_field {
+        let prev_slot = PackingField::new(prev_name).slot_const;
+        if let Some(next_name) = next_field {
+            let next_slot = PackingField::new(next_name).slot_const;
+            quote! {
+                #packing::#prev_slot == #packing::#slot_const || #packing::#next_slot == #packing::#slot_const
+            }
+        } else {
+            quote! {
+                #packing::#prev_slot == #packing::#slot_const
+            }
+        }
+    } else if let Some(next_name) = next_field {
+        let next_slot = PackingField::new(next_name).slot_const;
+        quote! {
+            #packing::#next_slot == #packing::#slot_const
+        }
+    } else {
+        quote! { false }
+    }
+}
+
 /// Generate a compile-time module that calculates the packing layout.
 fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStream {
     let field_byte_sizes = fields.iter().map(|(name, ty)| {
@@ -391,79 +421,64 @@ fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStr
 /// Generate the `fn load()` implementation with unpacking logic.
 /// Accepts indexed fields where the usize is the original field index in the struct.
 fn gen_load_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> TokenStream {
-    let load_fields = indexed_fields.iter().enumerate().map(|(list_idx, (_orig_idx, name, ty))| {
-        let (slot_const, offset_const, bytes_const) = PackingField::new(name).consts();
+    let load_fields = indexed_fields
+        .iter()
+        .enumerate()
+        .map(|(list_idx, (_orig_idx, name, ty))| {
+            let (slot_const, offset_const, bytes_const) = PackingField::new(name).consts();
 
-        // Struct, dynamic type, and array fields always use `load()` directly (never packed)
-        if is_array_type(ty) || is_dynamic_type(ty) || is_custom_struct(ty) {
-            return quote! {
-                let #name = <#ty>::load(
-                    storage,
-                    base_slot + ::alloy::primitives::U256::from(#packing::#slot_const)
-                )?;
-            };
-        }
-
-        // For primitives, check if this field shares the slot with any other field
-        // by checking adjacent fields in the input list
-        let prev_field = if list_idx > 0 {
-            Some(indexed_fields[list_idx - 1].1)
-        } else {
-            None
-        };
-        let next_field = if list_idx + 1 < indexed_fields.len() {
-            Some(indexed_fields[list_idx + 1].1)
-        } else {
-            None
-        };
-
-        let shares_slot_check = if let Some(prev_name) = prev_field {
-            let prev_slot = PackingField::new(prev_name).slot_const;
-            if let Some(next_name) = next_field {
-                let next_slot = PackingField::new(next_name).slot_const;
-                quote! {
-                    #packing::#prev_slot == #packing::#slot_const || #packing::#next_slot == #packing::#slot_const
-                }
-            } else {
-                quote! {
-                    #packing::#prev_slot == #packing::#slot_const
-                }
-            }
-        } else if let Some(next_name) = next_field {
-            let next_slot = PackingField::new(next_name).slot_const;
-            quote! {
-                #packing::#next_slot == #packing::#slot_const
-            }
-        } else {
-            quote! { false }
-        };
-
-        quote! {
-            let #name = {
-                let shares_slot = #shares_slot_check;
-
-                if !shares_slot {
-                    // If the field is alone in its slot, we can use `field.load()` directly
-                    <#ty>::load(
+            // Struct, dynamic type, and array fields always use `load()` directly (never packed)
+            if is_array_type(ty) || is_dynamic_type(ty) || is_custom_struct(ty) {
+                return quote! {
+                    let #name = <#ty>::load(
                         storage,
                         base_slot + ::alloy::primitives::U256::from(#packing::#slot_const)
-                    )?
-                }
-                // Otherwise, it is packed with others
-                else {
-                    // Use packing module to extract packed value
-                    let slot_value = storage.sload(
-                        base_slot + ::alloy::primitives::U256::from(#packing::#slot_const)
                     )?;
-                    crate::storage::packing::extract_packed_value::<#ty>(
-                        slot_value,
-                        #packing::#offset_const,
-                        #packing::#bytes_const
-                    )?
-                }
+                };
+            }
+
+            // For primitives, check if this field shares the slot with any other field
+            // by checking adjacent fields in the input list
+            let prev_field = if list_idx > 0 {
+                Some(indexed_fields[list_idx - 1].1)
+            } else {
+                None
             };
-        }
-    });
+            let next_field = if list_idx + 1 < indexed_fields.len() {
+                Some(indexed_fields[list_idx + 1].1)
+            } else {
+                None
+            };
+
+            let shares_slot_check =
+                gen_shares_slot_check(prev_field, next_field, &slot_const, packing);
+
+            quote! {
+                let #name = {
+                    let shares_slot = #shares_slot_check;
+
+                    if !shares_slot {
+                        // If the field is alone in its slot, we can use `field.load()` directly
+                        <#ty>::load(
+                            storage,
+                            base_slot + ::alloy::primitives::U256::from(#packing::#slot_const)
+                        )?
+                    }
+                    // Otherwise, it is packed with others
+                    else {
+                        // Use packing module to extract packed value
+                        let slot_value = storage.sload(
+                            base_slot + ::alloy::primitives::U256::from(#packing::#slot_const)
+                        )?;
+                        crate::storage::packing::extract_packed_value::<#ty>(
+                            slot_value,
+                            #packing::#offset_const,
+                            #packing::#bytes_const
+                        )?
+                    }
+                };
+            }
+        });
 
     quote! {
         #(#load_fields)*
@@ -499,26 +514,7 @@ fn gen_store_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) ->
             None
         };
 
-        let shares_slot_check = if let Some(prev_name) = prev_field {
-            let prev_slot = PackingField::new(prev_name).slot_const;
-            if let Some(next_name) = next_field {
-                let next_slot = PackingField::new(next_name).slot_const;
-                quote! {
-                    #packing::#prev_slot == #packing::#slot_const || #packing::#next_slot == #packing::#slot_const
-                }
-            } else {
-                quote! {
-                    #packing::#prev_slot == #packing::#slot_const
-                }
-            }
-        } else if let Some(next_name) = next_field {
-            let next_slot = PackingField::new(next_name).slot_const;
-            quote! {
-                #packing::#next_slot == #packing::#slot_const
-            }
-        } else {
-            quote! { false }
-        };
+        let shares_slot_check = gen_shares_slot_check(prev_field, next_field, &slot_const, packing);
 
         quote! {
             {
