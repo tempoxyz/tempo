@@ -1,3 +1,5 @@
+//! Tempo RPC types.
+
 mod header;
 pub use header::TempoHeaderResponse;
 
