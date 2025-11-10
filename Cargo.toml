@@ -200,6 +200,7 @@ commonware-runtime = "0.0.63"
 commonware-storage = "0.0.63"
 commonware-utils = "0.0.63"
 
+auto_impl = "1"
 anyhow = "1.0.98"
 async-trait = "0.1"
 axum = "0.8.4"

@@ -2,11 +2,12 @@ use crate::subblock::PartialValidatorKey;
 
 use super::{aa_signed::AASigned, fee_token::TxFeeToken};
 use alloy_consensus::{
-    EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
+    EthereumTxEnvelope, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
     TypedTransaction,
     error::{UnsupportedTransactionType, ValueError},
+    transaction::Either,
 };
-use alloy_primitives::{Address, B256, Signature, SignatureError, U256, hex};
+use alloy_primitives::{Address, B256, Bytes, Signature, SignatureError, TxKind, U256, hex};
 use core::fmt;
 use reth_primitives_traits::InMemorySize;
 
@@ -218,6 +219,15 @@ impl TempoTxEnvelope {
     /// Returns true if this is an AA transaction
     pub fn is_aa(&self) -> bool {
         matches!(self, Self::AA(_))
+    }
+
+    /// Returns iterator over the calls in the transaction.
+    pub fn calls(&self) -> impl Iterator<Item = (TxKind, &Bytes)> {
+        if let Some(aa) = self.as_aa() {
+            Either::Left(aa.tx().calls.iter().map(|call| (call.to, &call.input)))
+        } else {
+            Either::Right(core::iter::once((self.kind(), self.input())))
+        }
     }
 }
 

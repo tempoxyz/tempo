@@ -4,11 +4,10 @@ use std::{cmp::Ordering, fmt::Debug};
 
 use alloy_evm::EvmInternals;
 use alloy_primitives::{Address, B256, U256, b256};
-use alloy_sol_types::SolCall;
 use revm::{
     Database,
     context::{
-        Block, Cfg, ContextTr, Host, JournalTr, Transaction,
+        Block, Cfg, ContextTr, JournalTr, Transaction,
         result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction},
         transaction::{AccessListItem, AccessListItemTr},
     },
@@ -24,27 +23,23 @@ use revm::{
             ACCESS_LIST_ADDRESS, ACCESS_LIST_STORAGE_KEY, CALLVALUE, COLD_ACCOUNT_ACCESS_COST,
             CREATE, STANDARD_TOKEN_COST, calc_tx_floor_cost, get_tokens_in_calldata, initcode_cost,
         },
-        instructions::utility::IntoAddress,
         interpreter::EthInterpreter,
     },
     primitives::eip7702,
     state::Bytecode,
 };
-use tempo_contracts::{
-    DEFAULT_7702_DELEGATE_ADDRESS,
-    precompiles::{FeeManagerError, IFeeManager},
-};
+use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, precompiles::FeeManagerError};
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS,
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{evm::EvmPrecompileStorageProvider, slots::mapping_slot},
-    tip_fee_manager::{self, TipFeeManager},
-    tip20::{self, TIP20Token, USD_CURRENCY, address_to_token_id_unchecked, is_tip20},
+    tip_fee_manager::TipFeeManager,
+    tip20::{self},
 };
 use tempo_primitives::transaction::{AASignature, calc_gas_balance_spending};
 
-use crate::{TempoEvm, TempoInvalidTransaction, evm::TempoContext};
+use crate::{TempoEvm, TempoInvalidTransaction, common::TempoStateAccess, evm::TempoContext};
 
 /// Additional gas for P256 signature verification
 /// P256 precompile cost (6900 from EIP-7951) + 1100 for 129 bytes extra signature size - ecrecover savings (3000)
@@ -101,15 +96,19 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         &mut self,
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
-        self.fee_token = get_fee_token(evm.ctx_mut())?;
+        let ctx = evm.ctx_mut();
+
+        self.fee_token = ctx.tx.fee_payer()?;
+        self.fee_token =
+            ctx.journaled_state
+                .get_fee_token(&ctx.tx, ctx.block.beneficiary, self.fee_payer)?;
 
         // Skip fee token validity check for cases when the transaction is free and is not a part of a subblock.
-        if (!evm.ctx.tx.max_balance_spending()?.is_zero() || evm.ctx.tx.is_subblock_transaction())
-            && !is_valid_fee_token(evm.ctx_mut(), self.fee_token)?
+        if (!ctx.tx.max_balance_spending()?.is_zero() || ctx.tx.is_subblock_transaction())
+            && !ctx.journaled_state.is_valid_fee_token(self.fee_token)?
         {
             return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
         }
-        self.fee_payer = evm.ctx().tx().fee_payer()?;
 
         Ok(())
     }
@@ -925,106 +924,6 @@ where
     Ok(batch_gas)
 }
 
-/// Validates that token can be used for fee payments.
-pub fn is_valid_fee_token<DB>(
-    ctx: &mut TempoContext<DB>,
-    fee_token: Address,
-) -> Result<bool, EVMError<DB::Error, TempoInvalidTransaction>>
-where
-    DB: alloy_evm::Database,
-{
-    if !is_tip20(fee_token) || fee_token == LINKING_USD_ADDRESS {
-        return Ok(false);
-    }
-
-    // Ensure that token is initialized
-    if ctx
-        .journaled_state
-        .load_account(fee_token)?
-        .data
-        .info
-        .is_empty_code_hash()
-    {
-        return Ok(false);
-    }
-
-    let token_id = address_to_token_id_unchecked(fee_token);
-
-    let mut storage = EvmPrecompileStorageProvider::new_max_gas(
-        EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
-        &ctx.cfg,
-    );
-
-    let currency = TIP20Token::new(token_id, &mut storage)
-        .currency()
-        .map_err(|e| EVMError::Custom(e.to_string()))?;
-    if currency != USD_CURRENCY {
-        return Ok(false);
-    }
-    Ok(true)
-}
-
-/// Looks up the user's fee token in the `TIPFeemanager` contract.
-///
-/// If no fee token is set for the user, or the fee token is the zero address, the returned fee token will be the validator's fee token.
-pub fn get_fee_token<DB>(
-    ctx: &mut TempoContext<DB>,
-) -> Result<Address, EVMError<DB::Error, TempoInvalidTransaction>>
-where
-    DB: alloy_evm::Database,
-{
-    // If there is a fee token explicitly set on the tx type, use that.
-    if let Some(fee_token) = ctx.tx().fee_token {
-        return Ok(fee_token);
-    }
-
-    // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
-    // new preference, the newly set preference should be used immediately instead of the
-    // previously stored one
-    if ctx.tx().aa_tx_env.is_none()
-        && ctx.tx().fee_payer()? == ctx.tx().caller()
-        && ctx.tx().kind().to() == Some(&TIP_FEE_MANAGER_ADDRESS)
-        && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(ctx.tx().input())
-    {
-        return Ok(call.token);
-    }
-
-    let user_slot = mapping_slot(ctx.tx().fee_payer()?, tip_fee_manager::slots::USER_TOKENS);
-    // ensure TIP_FEE_MANAGER_ADDRESS is loaded
-    ctx.journal_mut().load_account(TIP_FEE_MANAGER_ADDRESS)?;
-    let stored_user_token = ctx
-        .journal_mut()
-        .sload(TIP_FEE_MANAGER_ADDRESS, user_slot)?
-        .data
-        .into_address();
-
-    if !stored_user_token.is_zero() {
-        return Ok(stored_user_token);
-    }
-
-    // If tx.to() is a TIP-20 token, use that token as the fee token
-    if let Some(to) = ctx.tx.first_call().and_then(|(kind, _)| kind.to().copied())
-        && ctx.tx().calls().all(|(kind, _)| kind.to() == Some(&to))
-        && is_valid_fee_token(ctx, to)?
-    {
-        return Ok(to);
-    }
-
-    // Otherwise fall back to the validator fee token preference
-    let validator_slot = mapping_slot(ctx.beneficiary(), tip_fee_manager::slots::VALIDATOR_TOKENS);
-    let validator_fee_token = ctx
-        .journal_mut()
-        .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
-        .data
-        .into_address();
-
-    if !validator_fee_token.is_zero() {
-        return Ok(validator_fee_token);
-    }
-
-    Ok(DEFAULT_FEE_TOKEN)
-}
-
 pub fn get_token_balance<JOURNAL>(
     journal: &mut JOURNAL,
     token: Address,
@@ -1131,6 +1030,7 @@ mod tests {
         primitives::hardfork::SpecId,
         state::Account,
     };
+    use tempo_precompiles::tip_fee_manager;
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
         let db = CacheDB::new(EmptyDB::default());
@@ -1185,7 +1085,9 @@ mod tests {
             )
             .unwrap();
 
-        let fee_token = get_fee_token(&mut ctx).unwrap();
+        let fee_token = ctx
+            .journaled_state
+            .get_fee_token(&ctx.tx, validator, user)?;
         assert_eq!(validator_fee_token, fee_token);
 
         // Set user token
@@ -1198,12 +1100,16 @@ mod tests {
             )
             .unwrap();
 
-        let fee_token = get_fee_token(&mut ctx).unwrap();
+        let fee_token = ctx
+            .journaled_state
+            .get_fee_token(&ctx.tx, validator, user)?;
         assert_eq!(user_fee_token, fee_token);
 
         // Set tx fee token
         ctx.tx.fee_token = Some(tx_fee_token);
-        let fee_token = get_fee_token(&mut ctx).unwrap();
+        let fee_token = ctx
+            .journaled_state
+            .get_fee_token(&ctx.tx, validator, user)?;
         assert_eq!(tx_fee_token, fee_token);
 
         Ok(())

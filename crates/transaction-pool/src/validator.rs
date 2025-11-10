@@ -11,10 +11,11 @@ use reth_transaction_pool::{
     TransactionValidator, error::InvalidPoolTransactionError,
 };
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, provider::TIPFeeStateProviderExt,
-    tip_fee_manager::IFeeManager::setUserTokenCall, tip20::is_tip20,
+    TIP_FEE_MANAGER_ADDRESS,
+    tip_fee_manager::IFeeManager::setUserTokenCall,
 };
 use tempo_primitives::TempoTxEnvelope;
+use tempo_revm::TempoStateAccess;
 
 /// Validator for Tempo transactions.
 #[derive(Debug)]
@@ -35,7 +36,7 @@ where
         &self,
         origin: TransactionOrigin,
         transaction: TempoPooledTransaction,
-        state_provider: impl StateProvider,
+        mut state_provider: impl StateProvider,
     ) -> TransactionValidationOutcome<TempoPooledTransaction> {
         // Reject system transactions, those are never allowed in the pool.
         if transaction.inner().is_system_tx() {
@@ -86,29 +87,20 @@ where
         };
 
         if let Some(fee_token) = tx_fee_token {
-            if !is_tip20(fee_token) || fee_token == LINKING_USD_ADDRESS {
-                return TransactionValidationOutcome::Invalid(
-                    transaction,
-                    InvalidPoolTransactionError::other(TempoPoolTransactionError::InvalidFeeToken(
-                        fee_token,
-                    )),
-                );
-            }
-
-            let account = match state_provider.basic_account(&fee_token) {
-                Ok(code) => code,
+            match state_provider.is_valid_fee_token(fee_token) {
+                Ok(valid) => {
+                    if !valid {
+                        return TransactionValidationOutcome::Invalid(
+                            transaction,
+                            InvalidPoolTransactionError::other(
+                                TempoPoolTransactionError::InvalidFeeToken(fee_token),
+                            ),
+                        );
+                    }
+                }
                 Err(err) => {
                     return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
                 }
-            };
-
-            if account.is_none_or(|acc| !acc.has_bytecode()) {
-                return TransactionValidationOutcome::Invalid(
-                    transaction,
-                    InvalidPoolTransactionError::other(TempoPoolTransactionError::InvalidFeeToken(
-                        fee_token,
-                    )),
-                );
             }
         }
 

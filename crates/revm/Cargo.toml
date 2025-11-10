@@ -17,6 +17,7 @@ tempo-contracts.workspace = true
 tempo-chainspec.workspace = true
 
 reth-evm.workspace = true
+reth-storage-api = { workspace = true, optional = true }
 
 revm.workspace = true
 
@@ -25,6 +26,7 @@ alloy-primitives.workspace = true
 alloy-consensus.workspace = true
 alloy-sol-types.workspace = true
 
+auto_impl.workspace = true
 derive_more.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
@@ -33,3 +35,6 @@ thiserror.workspace = true
 eyre.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
 tempo-evm.workspace = true
+
+[features]
+reth = ["dep:reth-storage-api"]
