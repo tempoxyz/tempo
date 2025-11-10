@@ -2,6 +2,7 @@ pub mod evm;
 pub mod hashmap;
 
 mod types;
+use tempo_chainspec::hardfork::TempoHardfork;
 pub use types::*;
 
 pub mod packing;
@@ -41,6 +42,9 @@ pub trait PrecompileStorageProvider {
 
     /// Returns the gas used so far.
     fn gas_used(&self) -> u64;
+
+    /// Currently active hardfork.
+    fn spec(&self) -> TempoHardfork;
 }
 
 /// Storage operations for a given (contract) address.

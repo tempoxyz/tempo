@@ -523,8 +523,7 @@ where
 
         if !nonce_key.is_zero() {
             let internals = EvmInternals::new(journal, block);
-            let mut storage_provider =
-                EvmPrecompileStorageProvider::new_max_gas(internals, cfg.chain_id);
+            let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
             let mut nonce_manager = NonceManager::new(&mut storage_provider);
 
             if !cfg.is_nonce_check_disabled() {
@@ -590,8 +589,7 @@ where
         // Create storage provider wrapper around journal
         let internals = EvmInternals::new(journal, &block);
         let beneficiary = internals.block_env().beneficiary();
-        let mut storage_provider =
-            EvmPrecompileStorageProvider::new_max_gas(internals, cfg.chain_id());
+        let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
         let mut fee_manager = TipFeeManager::new(&mut storage_provider);
 
         if tx.max_balance_spending().ok() == Some(U256::ZERO) {
@@ -652,7 +650,6 @@ where
         let basefee = context.block().basefee() as u128;
         let effective_gas_price = tx.effective_gas_price(basefee);
         let gas = exec_result.gas();
-        let chain_id = context.cfg().chain_id;
 
         // Calculate actual used and refund amounts
         let actual_spending = calc_gas_balance_spending(gas.used(), effective_gas_price);
@@ -666,7 +663,8 @@ where
         let (journal, block) = (&mut context.journaled_state, &context.block);
         let internals = EvmInternals::new(journal, block);
         let beneficiary = internals.block_env().beneficiary();
-        let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, chain_id);
+        let mut storage_provider =
+            EvmPrecompileStorageProvider::new_max_gas(internals, &context.cfg);
         let mut fee_manager = TipFeeManager::new(&mut storage_provider);
 
         if !actual_spending.is_zero() || !refund_amount.is_zero() {
@@ -954,7 +952,7 @@ where
 
     let mut storage = EvmPrecompileStorageProvider::new_max_gas(
         EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
-        ctx.cfg.chain_id,
+        &ctx.cfg,
     );
 
     let currency = TIP20Token::new(token_id, &mut storage)

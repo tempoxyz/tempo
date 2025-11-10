@@ -1,6 +1,7 @@
 use alloy::primitives::{Address, LogData, U256};
 use revm::state::{AccountInfo, Bytecode};
 use std::collections::HashMap;
+use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
@@ -11,6 +12,7 @@ pub struct HashMapStorageProvider {
     chain_id: u64,
     timestamp: U256,
     beneficiary: Address,
+    spec: TempoHardfork,
 }
 
 impl HashMapStorageProvider {
@@ -28,6 +30,7 @@ impl HashMapStorageProvider {
                     .as_secs(),
             ),
             beneficiary: Address::ZERO,
+            spec: TempoHardfork::default(),
         }
     }
 
@@ -42,6 +45,11 @@ impl HashMapStorageProvider {
 
     pub fn set_beneficiary(&mut self, beneficiary: Address) {
         self.beneficiary = beneficiary;
+    }
+
+    pub fn with_spec(mut self, spec: TempoHardfork) -> Self {
+        self.spec = spec;
+        self
     }
 }
 
@@ -101,5 +109,9 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn gas_used(&self) -> u64 {
         0
+    }
+
+    fn spec(&self) -> TempoHardfork {
+        self.spec
     }
 }

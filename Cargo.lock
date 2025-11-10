@@ -11728,7 +11728,9 @@ dependencies = [
  "revm",
  "serde",
  "serde_json",
+ "tempo-chainspec",
  "tempo-contracts",
+ "tempo-evm",
  "tempo-precompiles-macros",
  "thiserror 2.0.17",
  "tracing",
@@ -11777,7 +11779,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "tempo-precompiles",
  "test-fuzz",
 ]
 
