@@ -9,12 +9,14 @@ use alloy::{
 use clap::Parser;
 use eyre::WrapErr as _;
 use rayon::prelude::*;
-use reth::revm::{
-    context::ContextTr,
-    db::{CacheDB, EmptyDB},
-    inspector::JournalExt,
+use reth_evm::{
+    Evm, EvmEnv, EvmFactory, EvmInternals,
+    revm::{
+        context::ContextTr,
+        database::{CacheDB, EmptyDB},
+        inspector::JournalExt,
+    },
 };
-use reth_evm::{Evm, EvmEnv, EvmFactory, EvmInternals};
 use serde::{Deserialize, Serialize};
 use simple_tqdm::{ParTqdm, Tqdm};
 use std::{collections::BTreeMap, fs, path::PathBuf};
