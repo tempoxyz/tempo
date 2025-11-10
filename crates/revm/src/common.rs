@@ -168,6 +168,8 @@ pub trait TempoStateAccess<T> {
         }
 
         // Ensure the currency is USD
+        // load fee token account to ensure that we can load storage for it.
+        self.basic(fee_token)?;
         Ok(self.sload(fee_token, tip20::slots::CURRENCY)? == USD_CURRENCY_SLOT_VALUE)
     }
 
