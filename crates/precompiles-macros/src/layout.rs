@@ -145,8 +145,6 @@ pub(crate) fn gen_struct(name: &Ident, vis: &Visibility) -> proc_macro2::TokenSt
         #vis struct #name<'a, S: crate::storage::PrecompileStorageProvider> {
             address: ::alloy::primitives::Address,
             storage: &'a mut S,
-            // call ctx values, reset with every new contract call
-            msg_sender: ::alloy::primitives::Address,
         }
     }
 }
@@ -160,7 +158,6 @@ pub(crate) fn gen_constructor(name: &Ident) -> proc_macro2::TokenStream {
                 Self {
                     address,
                     storage,
-                    msg_sender: ::alloy::primitives::Address::ZERO,
                 }
             }
         }
@@ -406,7 +403,7 @@ pub(crate) fn gen_slots_module_with_types(
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
     // Generate packing constants and `SlotId` types
     let packing_constants = gen_packing_constants_for_slots_module(allocated_fields);
-    let slot_id_types = gen_slot_id_types_inline(allocated_fields);
+    let slot_id_types = gen_slot_id_types(allocated_fields);
     let slot_constants: Vec<_> = allocated_fields
         .iter()
         .map(|allocated| {
@@ -617,7 +614,7 @@ fn gen_packing_constants_for_slots_module(
 }
 
 /// Generate `SlotId` marker types for each field (inline version without path prefixes)
-fn gen_slot_id_types_inline(allocated_fields: &[AllocatedField<'_>]) -> proc_macro2::TokenStream {
+fn gen_slot_id_types(allocated_fields: &[AllocatedField<'_>]) -> proc_macro2::TokenStream {
     let mut generated = proc_macro2::TokenStream::new();
 
     // Generate all `SlotId` types (one per field, even if they pack into the same slot)

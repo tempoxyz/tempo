@@ -14,24 +14,24 @@ use crate::{
 ///
 /// - `K`: Key type (must implement `StorageKey`)
 /// - `V`: Value type (must implement `Storable<N>`)
-/// - `Id`: Zero-sized marker type identifying the base slot (implements `SlotId`)
+/// - `Base`: Zero-sized marker type identifying the base slot (implements `SlotId`)
 ///
 /// # Storage Layout
 ///
 /// Mappings use Solidity's storage layout:
-/// - Base slot: `Id::SLOT`
+/// - Base slot: `Base::SLOT`
 /// - Actual slot for key `k`: `keccak256(k || base_slot)`
 ///
 /// # Compile-Time Guarantees
 ///
 /// - Different mappings have distinct types even with same K,V
-/// - Base slot encoded in type system via `Id::SLOT`
+/// - Base slot encoded in type system via `Base::SLOT`
 #[derive(Debug, Clone, Copy)]
-pub struct Mapping<K, V, Id: SlotId> {
-    _phantom: PhantomData<(K, V, Id)>,
+pub struct Mapping<K, V, Base: SlotId> {
+    _phantom: PhantomData<(K, V, Base)>,
 }
 
-impl<K, V, Id: SlotId> Mapping<K, V, Id> {
+impl<K, V, Base: SlotId> Mapping<K, V, Base> {
     /// Creates a new `Mapping` marker.
     ///
     /// This is typically not called directly; instead, mappings are declared
@@ -48,7 +48,7 @@ impl<K, V, Id: SlotId> Mapping<K, V, Id> {
     /// Returns the slot number from the `SlotId` associated const.
     #[inline]
     pub const fn slot() -> U256 {
-        Id::SLOT
+        Base::SLOT
     }
 
     /// Reads a value from the mapping at the given key.
@@ -69,7 +69,7 @@ impl<K, V, Id: SlotId> Mapping<K, V, Id> {
         K: StorageKey,
         V: Storable<N>,
     {
-        let slot = mapping_slot(key.as_storage_bytes(), Id::SLOT);
+        let slot = mapping_slot(key.as_storage_bytes(), Base::SLOT);
         V::load(storage, slot)
     }
 
@@ -91,7 +91,7 @@ impl<K, V, Id: SlotId> Mapping<K, V, Id> {
         K: StorageKey,
         V: Storable<N>,
     {
-        let slot = mapping_slot(key.as_storage_bytes(), Id::SLOT);
+        let slot = mapping_slot(key.as_storage_bytes(), Base::SLOT);
         value.store(storage, slot)
     }
 
@@ -113,7 +113,7 @@ impl<K, V, Id: SlotId> Mapping<K, V, Id> {
         K: StorageKey,
         V: Storable<N>,
     {
-        let slot = mapping_slot(key.as_storage_bytes(), Id::SLOT);
+        let slot = mapping_slot(key.as_storage_bytes(), Base::SLOT);
         V::delete(storage, slot)
     }
 
@@ -167,7 +167,7 @@ impl<K, V, Id: SlotId> Mapping<K, V, Id> {
         K: StorageKey,
         V: Storable<1>,
     {
-        let mapped_value_slot = mapping_slot(key.as_storage_bytes(), Id::SLOT);
+        let mapped_value_slot = mapping_slot(key.as_storage_bytes(), Base::SLOT);
         crate::storage::packing::read_packed_at(
             storage,
             mapped_value_slot,
@@ -226,7 +226,7 @@ impl<K, V, Id: SlotId> Mapping<K, V, Id> {
         K: StorageKey,
         V: Storable<1>,
     {
-        let mapped_value_slot = mapping_slot(key.as_storage_bytes(), Id::SLOT);
+        let mapped_value_slot = mapping_slot(key.as_storage_bytes(), Base::SLOT);
         crate::storage::packing::write_packed_at(
             storage,
             mapped_value_slot,
@@ -254,7 +254,7 @@ impl<K, V, Id: SlotId> Mapping<K, V, Id> {
         K: StorageKey,
         V: Storable<1>,
     {
-        let mapped_value_slot = mapping_slot(key.as_storage_bytes(), Id::SLOT);
+        let mapped_value_slot = mapping_slot(key.as_storage_bytes(), Base::SLOT);
         crate::storage::packing::clear_packed_at(
             storage,
             mapped_value_slot,
@@ -294,7 +294,7 @@ impl<K, V, Id: SlotId> Mapping<K, V, Id> {
     }
 }
 
-impl<K1, K2, V, Id: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyId>, Id> {
+impl<K1, K2, V, Base: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyId>, Base> {
     /// Reads a value from a nested mapping at the given keys.
     ///
     /// This method:
@@ -322,7 +322,8 @@ impl<K1, K2, V, Id: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyId>
         K2: StorageKey,
         V: Storable<N>,
     {
-        let slot = double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Id::SLOT);
+        let slot =
+            double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Base::SLOT);
         V::load(storage, slot)
     }
 
@@ -355,7 +356,8 @@ impl<K1, K2, V, Id: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyId>
         K2: StorageKey,
         V: Storable<N>,
     {
-        let slot = double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Id::SLOT);
+        let slot =
+            double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Base::SLOT);
         value.store(storage, slot)
     }
 
@@ -386,7 +388,8 @@ impl<K1, K2, V, Id: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyId>
         K2: StorageKey,
         V: Storable<N>,
     {
-        let slot = double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Id::SLOT);
+        let slot =
+            double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Base::SLOT);
         V::delete(storage, slot)
     }
 
@@ -515,7 +518,7 @@ impl<K1, K2, V, Id: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyId>
         V: Storable<1>,
     {
         let mapped_value_slot =
-            double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Id::SLOT);
+            double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Base::SLOT);
         crate::storage::packing::read_packed_at(
             storage,
             mapped_value_slot,
@@ -546,7 +549,7 @@ impl<K1, K2, V, Id: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyId>
         V: Storable<1>,
     {
         let mapped_value_slot =
-            double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Id::SLOT);
+            double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Base::SLOT);
         crate::storage::packing::write_packed_at(
             storage,
             mapped_value_slot,
@@ -577,7 +580,7 @@ impl<K1, K2, V, Id: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyId>
         V: Storable<1>,
     {
         let mapped_value_slot =
-            double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Id::SLOT);
+            double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Base::SLOT);
         crate::storage::packing::clear_packed_at(
             storage,
             mapped_value_slot,
@@ -588,7 +591,7 @@ impl<K1, K2, V, Id: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyId>
     }
 }
 
-impl<K, V, Id: SlotId> Default for Mapping<K, V, Id> {
+impl<K, V, Base: SlotId> Default for Mapping<K, V, Base> {
     fn default() -> Self {
         Self::new()
     }
@@ -598,7 +601,7 @@ impl<K, V, Id: SlotId> Default for Mapping<K, V, Id> {
 // even though they don't store data in that slot directly.
 //
 // **NOTE:** Necessary to allow it to participate in struct layout calculations.
-impl<K, V, Id: SlotId> StorableType for Mapping<K, V, Id> {
+impl<K, V, Base: SlotId> StorableType for Mapping<K, V, Base> {
     const BYTE_COUNT: usize = 32;
 }
 
@@ -642,7 +645,7 @@ pub fn double_mapping_slot<T: AsRef<[u8]>, U: AsRef<[u8]>>(
 mod tests {
     use super::*;
     use crate::storage::{PrecompileStorageProvider, hashmap::HashMapStorageProvider};
-    use alloy::primitives::{Address, B256, address};
+    use alloy::primitives::{Address, B256, address, uint};
     use proptest::prelude::*;
 
     // Test helper that implements StorageOps
@@ -684,7 +687,7 @@ mod tests {
 
     struct TestSlot2;
     impl SlotId for TestSlot2 {
-        const SLOT: U256 = U256::from_limbs([2, 0, 0, 0]);
+        const SLOT: U256 = uint!(2_U256);
     }
 
     struct TestSlotMax;

@@ -31,8 +31,7 @@ impl Storable<1> for bool {
 
     #[inline]
     fn load<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<Self> {
-        let value = storage.sload(base_slot)?;
-        Ok(value != U256::ZERO)
+        storage.sload(base_slot).map(|val| !val.is_zero())
     }
 
     #[inline]
@@ -48,7 +47,7 @@ impl Storable<1> for bool {
 
     #[inline]
     fn from_evm_words(words: [U256; 1]) -> Result<Self> {
-        Ok(words[0] != U256::ZERO)
+        Ok(!words[0].is_zero())
     }
 }
 
@@ -61,8 +60,7 @@ impl Storable<1> for Address {
 
     #[inline]
     fn load<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<Self> {
-        let value = storage.sload(base_slot)?;
-        Ok(value.into_address())
+        storage.sload(base_slot).map(|val| val.into_address())
     }
 
     #[inline]

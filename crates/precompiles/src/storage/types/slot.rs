@@ -387,7 +387,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let mut contract = setup_test_contract(&mut storage);
         type ZeroSlot = Slot<U256, TestSlot0>;
-        let value = U256::from(12345u64);
+        let value = U256::random();
 
         _ = ZeroSlot::write(&mut contract, value);
         let loaded = ZeroSlot::read(&mut contract).unwrap();
@@ -403,7 +403,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let mut contract = setup_test_contract(&mut storage);
 
-        let value = U256::from(9999u64);
+        let value = U256::random();
         _ = MaxSlot::write(&mut contract, value);
         let loaded = MaxSlot::read(&mut contract).unwrap();
         assert_eq!(loaded, value);
@@ -414,7 +414,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let mut contract = setup_test_contract(&mut storage);
         type TestSlot = Slot<U256, TestSlot1>;
-        let test_value = U256::from(12345u64);
+        let test_value = U256::random();
 
         // Write using new API
         _ = TestSlot::write(&mut contract, test_value);
