@@ -1,5 +1,5 @@
 use crate::{
-    Precompile, input_cost, mutate, mutate_void,
+    Precompile, fill_precompile_output, input_cost, mutate, mutate_void,
     storage::PrecompileStorageProvider,
     tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager, amm::MIN_LIQUIDITY},
     view,
@@ -97,10 +97,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
             )),
         };
 
-        result.map(|mut res| {
-            res.gas_used = self.storage.gas_used();
-            res
-        })
+        result.map(|res| fill_precompile_output(res, self.storage))
     }
 }
 

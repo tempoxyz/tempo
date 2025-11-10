@@ -1,5 +1,6 @@
 use crate::{
-    Precompile, input_cost, nonce::NonceManager, storage::PrecompileStorageProvider, view,
+    Precompile, fill_precompile_output, input_cost, nonce::NonceManager,
+    storage::PrecompileStorageProvider, view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
@@ -34,9 +35,6 @@ impl<S: PrecompileStorageProvider> Precompile for NonceManager<'_, S> {
             )),
         };
 
-        result.map(|mut res| {
-            res.gas_used = self.storage.gas_used();
-            res
-        })
+        result.map(|res| fill_precompile_output(res, self.storage))
     }
 }

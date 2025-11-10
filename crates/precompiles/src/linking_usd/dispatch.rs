@@ -1,5 +1,5 @@
 use crate::{
-    Precompile, input_cost,
+    Precompile, fill_precompile_output, input_cost,
     linking_usd::LinkingUSD,
     metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
@@ -205,10 +205,7 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
             _ => Err(PrecompileError::Other("Unknown selector".to_string())),
         };
 
-        result.map(|mut res| {
-            res.gas_used = self.token.storage.gas_used();
-            res
-        })
+        result.map(|res| fill_precompile_output(res, self.token.storage))
     }
 }
 

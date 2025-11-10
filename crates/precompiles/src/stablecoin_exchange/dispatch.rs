@@ -5,7 +5,7 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::{
-    Precompile, input_cost, mutate, mutate_void,
+    Precompile, fill_precompile_output, input_cost, mutate, mutate_void,
     stablecoin_exchange::{IStablecoinExchange, StablecoinExchange},
     storage::PrecompileStorageProvider,
     view,
@@ -189,10 +189,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
             )),
         };
 
-        result.map(|mut res| {
-            res.gas_used = self.storage.gas_used();
-            res
-        })
+        result.map(|res| fill_precompile_output(res, self.storage))
     }
 }
 

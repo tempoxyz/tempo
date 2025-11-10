@@ -22,7 +22,7 @@ use crate::{
     linking_usd::LinkingUSD,
     nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
-    storage::evm::EvmPrecompileStorageProvider,
+    storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
     tip_account_registrar::TipAccountRegistrar,
     tip_fee_manager::TipFeeManager,
     tip20::{TIP20Token, address_to_token_id_unchecked, is_tip20},
@@ -253,6 +253,21 @@ fn mutate_void<T: SolCall>(
         return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };
     f(sender, call).into_precompile_result(0, |()| Bytes::new())
+}
+
+#[inline]
+fn fill_precompile_output(
+    mut output: PrecompileOutput,
+    storage: &mut impl PrecompileStorageProvider,
+) -> PrecompileOutput {
+    output.gas_used = storage.gas_used();
+
+    // add refund only if it is not reverted
+    // currently waiting for revm commit https://github.com/bluealloy/revm/pull/3152
+    // if !output.reverted {
+    //     result.gas_refunded = storage.gas_refunded();
+    // }
+    output
 }
 
 #[cfg(test)]

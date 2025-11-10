@@ -1,4 +1,4 @@
-use crate::{Precompile, input_cost, mutate, tip20::is_tip20, view};
+use crate::{Precompile, fill_precompile_output, input_cost, mutate, tip20::is_tip20, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -38,9 +38,6 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Factory<'a, S> {
             )),
         };
 
-        result.map(|mut res| {
-            res.gas_used = self.storage.gas_used();
-            res
-        })
+        result.map(|res| fill_precompile_output(res, self.storage))
     }
 }
