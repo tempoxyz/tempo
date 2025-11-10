@@ -8,6 +8,9 @@
       <img alt="tempo combomark" src="https://raw.githubusercontent.com/tempoxyz/.github/refs/heads/main/assets/combomark-bright.svg" width="auto" height="120">
     </picture>
   </a>
+
+  <a href="https://docs.tempo.xyz/documentation/operators/installation">Install</a> | <a href="https://docs.tempo.xyz">User Docs</a> | <a href="./docs">Developer Docs</a>
+
 </p>
 
 <br>
@@ -18,10 +21,6 @@
 The blockchain for payments at scale.
 
 [Tempo](https://docs.tempo.xyz/) is designed to be low-cost, fast, and secure. By dedicating capacity to payments, it delivers on the uptime and throughput demands of the real world.
-
-**[Install](https://docs.tempo.xyz/documentation/operators/installation)**
-| [User Docs](https://docs.tempo.xyz/)
-| [Developer Docs](./docs)
 
 ### For Users
 
