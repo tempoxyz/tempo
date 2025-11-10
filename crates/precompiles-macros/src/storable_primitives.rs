@@ -403,7 +403,7 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
     let store_impl = if *elem_is_packable {
         gen_packed_array_store(array_size, elem_byte_count)
     } else {
-        gen_unpacked_array_store(array_size)
+        gen_unpacked_array_store()
     };
 
     let delete_impl = if *elem_is_packable {
@@ -549,7 +549,7 @@ fn gen_unpacked_array_load(array_size: &usize) -> TokenStream {
 }
 
 /// Generate store implementation for unpacked arrays
-fn gen_unpacked_array_store(_array_size: &usize) -> TokenStream {
+fn gen_unpacked_array_store() -> TokenStream {
     quote! {
         for (i, elem) in self.iter().enumerate() {
             let elem_slot = base_slot + U256::from(i);
@@ -789,7 +789,7 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
 
     // Generate implementation methods
     let load_impl = gen_struct_array_load(struct_type, array_size);
-    let store_impl = gen_struct_array_store(struct_type, array_size);
+    let store_impl = gen_struct_array_store(struct_type);
     let delete_impl = gen_struct_array_delete(struct_type, array_size);
     let to_evm_words_impl = gen_struct_array_to_evm_words(struct_type, array_size);
     let from_evm_words_impl = gen_struct_array_from_evm_words(struct_type, array_size);
@@ -882,7 +882,7 @@ fn gen_struct_array_load(struct_type: &TokenStream, array_size: usize) -> TokenS
 }
 
 /// Generate store implementation for struct arrays.
-fn gen_struct_array_store(struct_type: &TokenStream, _array_size: usize) -> TokenStream {
+fn gen_struct_array_store(struct_type: &TokenStream) -> TokenStream {
     quote! {
         for (i, elem) in self.iter().enumerate() {
             // Calculate slot for this element: base_slot + (i * element_slot_count)

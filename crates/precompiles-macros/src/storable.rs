@@ -311,6 +311,36 @@ fn derive_struct_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     Ok(combined)
 }
 
+/// Generates a TokenStream that checks if a field shares its slot with adjacent fields.
+/// Used during load/store to determine whether to use direct load/store or packed operations.
+fn gen_shares_slot_check(
+    prev_field: Option<&Ident>,
+    next_field: Option<&Ident>,
+    slot_const: &Ident,
+    packing: &Ident,
+) -> TokenStream {
+    if let Some(prev_name) = prev_field {
+        let prev_slot = PackingField::new(prev_name).slot_const;
+        if let Some(next_name) = next_field {
+            let next_slot = PackingField::new(next_name).slot_const;
+            quote! {
+                #packing::#prev_slot == #packing::#slot_const || #packing::#next_slot == #packing::#slot_const
+            }
+        } else {
+            quote! {
+                #packing::#prev_slot == #packing::#slot_const
+            }
+        }
+    } else if let Some(next_name) = next_field {
+        let next_slot = PackingField::new(next_name).slot_const;
+        quote! {
+            #packing::#next_slot == #packing::#slot_const
+        }
+    } else {
+        quote! { false }
+    }
+}
+
 /// Generate a compile-time module that calculates the packing layout.
 fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStream {
     let field_byte_sizes = fields.iter().map(|(name, ty)| {
@@ -417,26 +447,7 @@ fn gen_load_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> 
             None
         };
 
-        let shares_slot_check = if let Some(prev_name) = prev_field {
-            let prev_slot = PackingField::new(prev_name).slot_const;
-            if let Some(next_name) = next_field {
-                let next_slot = PackingField::new(next_name).slot_const;
-                quote! {
-                    #packing::#prev_slot == #packing::#slot_const || #packing::#next_slot == #packing::#slot_const
-                }
-            } else {
-                quote! {
-                    #packing::#prev_slot == #packing::#slot_const
-                }
-            }
-        } else if let Some(next_name) = next_field {
-            let next_slot = PackingField::new(next_name).slot_const;
-            quote! {
-                #packing::#next_slot == #packing::#slot_const
-            }
-        } else {
-            quote! { false }
-        };
+        let shares_slot_check = gen_shares_slot_check(prev_field, next_field, &slot_const, packing);
 
         quote! {
             let #name = {
@@ -499,26 +510,7 @@ fn gen_store_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) ->
             None
         };
 
-        let shares_slot_check = if let Some(prev_name) = prev_field {
-            let prev_slot = PackingField::new(prev_name).slot_const;
-            if let Some(next_name) = next_field {
-                let next_slot = PackingField::new(next_name).slot_const;
-                quote! {
-                    #packing::#prev_slot == #packing::#slot_const || #packing::#next_slot == #packing::#slot_const
-                }
-            } else {
-                quote! {
-                    #packing::#prev_slot == #packing::#slot_const
-                }
-            }
-        } else if let Some(next_name) = next_field {
-            let next_slot = PackingField::new(next_name).slot_const;
-            quote! {
-                #packing::#next_slot == #packing::#slot_const
-            }
-        } else {
-            quote! { false }
-        };
+        let shares_slot_check = gen_shares_slot_check(prev_field, next_field, &slot_const, packing);
 
         quote! {
             {
