@@ -209,7 +209,7 @@ where
     /// 5. Sending the finalized tip hash from CL to EL does not help - no node has the missing
     ///    blocks persisted in EL
     ///
-    /// Without this recovery mechanism, the network would deadlock: without the last finalized
+    /// Without backfilling the missing blocks, the network would deadlock: without the last finalized
     /// block, no proposer can propose the next block. CL expects EL to have blocks it doesn't,
     /// and EL's normal P2P backfill won't help because no peer has them in their execution
     /// layer either.
