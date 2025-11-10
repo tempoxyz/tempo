@@ -148,9 +148,9 @@ impl Orderbook {
         BestOrders::write_at_offset_packed(
             contract,
             orderbook_base_slot,
-            __packing_orderbook::FIELD_4_SLOT,
-            __packing_orderbook::FIELD_4_OFFSET,
-            __packing_orderbook::FIELD_4_BYTES,
+            __packing_orderbook::BEST_BID_TICK_SLOT,
+            __packing_orderbook::BEST_BID_TICK_OFFSET,
+            __packing_orderbook::BEST_BID_TICK_BYTES,
             new_best_bid,
         )?;
         Ok(())
@@ -166,9 +166,9 @@ impl Orderbook {
         BestOrders::write_at_offset_packed(
             contract,
             orderbook_base_slot,
-            __packing_orderbook::FIELD_5_SLOT,
-            __packing_orderbook::FIELD_5_OFFSET,
-            __packing_orderbook::FIELD_5_BYTES,
+            __packing_orderbook::BEST_ASK_TICK_SLOT,
+            __packing_orderbook::BEST_ASK_TICK_OFFSET,
+            __packing_orderbook::BEST_ASK_TICK_BYTES,
             new_best_ask,
         )?;
         Ok(())
@@ -183,7 +183,7 @@ impl Orderbook {
         let base = Tokens::read_at_offset(
             contract,
             orderbook_base_slot,
-            __packing_orderbook::FIELD_0_SLOT,
+            __packing_orderbook::BASE_SLOT,
         )?;
 
         Ok(base != Address::ZERO)
@@ -199,7 +199,7 @@ impl Orderbook {
         Orders::read_at_offset(
             storage,
             orderbook_base_slot,
-            __packing_orderbook::FIELD_2_SLOT,
+            __packing_orderbook::BIDS_SLOT,
             tick,
         )
     }
@@ -215,7 +215,7 @@ impl Orderbook {
         Orders::write_at_offset(
             storage,
             orderbook_base_slot,
-            __packing_orderbook::FIELD_2_SLOT,
+            __packing_orderbook::BIDS_SLOT,
             tick,
             tick_level,
         )
@@ -231,7 +231,7 @@ impl Orderbook {
         Orders::delete_at_offset(
             storage,
             orderbook_base_slot,
-            __packing_orderbook::FIELD_2_SLOT,
+            __packing_orderbook::BIDS_SLOT,
             tick,
         )
     }
@@ -246,7 +246,7 @@ impl Orderbook {
         Orders::read_at_offset(
             storage,
             orderbook_base_slot,
-            __packing_orderbook::FIELD_3_SLOT,
+            __packing_orderbook::ASKS_SLOT,
             tick,
         )
     }
@@ -262,7 +262,7 @@ impl Orderbook {
         Orders::write_at_offset(
             storage,
             orderbook_base_slot,
-            __packing_orderbook::FIELD_3_SLOT,
+            __packing_orderbook::ASKS_SLOT,
             tick,
             tick_level,
         )
@@ -278,7 +278,7 @@ impl Orderbook {
         Orders::delete_at_offset(
             storage,
             orderbook_base_slot,
-            __packing_orderbook::FIELD_3_SLOT,
+            __packing_orderbook::ASKS_SLOT,
             tick,
         )
     }

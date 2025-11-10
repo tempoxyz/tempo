@@ -392,12 +392,12 @@ pub fn gen_test_fields_struct(input: TokenStream) -> TokenStream {
     // Generate storage fields
     let field_calls: Vec<_> = idents
         .into_iter()
-        .enumerate()
-        .map(|(i, ident)| {
+        .map(|ident| {
             let field_name = ident.to_string();
-            let slot_ident = Ident::new(&format!("FIELD_{i}_SLOT"), ident.span());
-            let offset_ident = Ident::new(&format!("FIELD_{i}_OFFSET"), ident.span());
-            let bytes_ident = Ident::new(&format!("FIELD_{i}_BYTES"), ident.span());
+            let const_name = field_name.to_uppercase();
+            let slot_ident = Ident::new(&format!("{const_name}_SLOT",), ident.span());
+            let offset_ident = Ident::new(&format!("{const_name}_OFFSET"), ident.span());
+            let bytes_ident = Ident::new(&format!("{const_name}_BYTES"), ident.span());
 
             quote! {
                 RustStorageField::new(#field_name, #base_slot + alloy_primitives::U256::from(#slot_ident), #offset_ident, #bytes_ident)

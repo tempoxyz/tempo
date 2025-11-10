@@ -282,11 +282,16 @@ fn derive_struct_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     Ok(combined)
 }
 
+/// Convert an identifier to an UPPERCASE string.
+fn ident_to_uppercase(field_name: &Ident) -> String {
+    field_name.to_string().to_uppercase()
+}
+
 /// Generate a compile-time module that calculates the packing layout.
 fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStream {
-    let field_byte_sizes = fields.iter().enumerate().map(|(idx, (_, ty))| {
+    let field_byte_sizes = fields.iter().map(|(name, ty)| {
         let const_name = Ident::new(
-            &format!("FIELD_{idx}_BYTES"),
+            &format!("{}_BYTES", ident_to_uppercase(name)),
             proc_macro2::Span::call_site(),
         );
         quote! {
@@ -294,119 +299,84 @@ fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStr
         }
     });
 
-    let field_layouts = fields.iter().enumerate().map(|(idx, (_, ty))| {
-        let slot_const = Ident::new(&format!("FIELD_{idx}_SLOT"), proc_macro2::Span::call_site());
+    let field_layouts = fields.iter().enumerate().map(|(idx, (name, ty))| {
+        let field_const_name = ident_to_uppercase(name);
+        let slot_const = Ident::new(&format!("{}_SLOT", field_const_name), proc_macro2::Span::call_site());
         let offset_const = Ident::new(
-            &format!("FIELD_{idx}_OFFSET"),
+            &format!("{}_OFFSET", field_const_name),
             proc_macro2::Span::call_site(),
         );
         let bytes_const = Ident::new(
-            &format!("FIELD_{idx}_BYTES"),
+            &format!("{}_BYTES", field_const_name),
             proc_macro2::Span::call_site(),
         );
 
-        let prev_calculations = if idx == 0 {
+        if idx == 0 {
+            // First field always starts at slot 0, offset 0
             quote! {
-                const PREV_SLOT: usize = 0;
-                const PREV_OFFSET: usize = 0;
-            }
-        } else {
-            let prev_idx = idx - 1;
-            let (_, prev_ty) = &fields[prev_idx];
-            let prev_is_struct = is_custom_struct(prev_ty) && !is_mapping_type(prev_ty);
-            let prev_is_dynamic = is_dynamic_type(prev_ty);
-            let prev_is_array = is_array_type(prev_ty);
-            let prev_is_mapping = is_mapping_type(prev_ty);
-
-            let prev_slot = Ident::new(
-                &format!("FIELD_{prev_idx}_SLOT"),
-                proc_macro2::Span::call_site(),
-            );
-            let prev_offset = Ident::new(
-                &format!("FIELD_{prev_idx}_OFFSET"),
-                proc_macro2::Span::call_site(),
-            );
-            let prev_bytes = Ident::new(
-                &format!("FIELD_{prev_idx}_BYTES"),
-                proc_macro2::Span::call_site(),
-            );
-
-            if prev_is_struct {
-                // Previous field was a struct - advance by its SLOT_COUNT and reset offset
-                quote! {
-                    const PREV_SLOT: usize = #prev_slot + <#prev_ty>::SLOT_COUNT;
-                    const PREV_OFFSET: usize = 0;
-                }
-            } else if prev_is_mapping {
-                // Previous field was a mapping - advance by 1 slot and reset offset
-                // Mappings occupy exactly 1 slot (used as base for hashing)
-                quote! {
-                    const PREV_SLOT: usize = #prev_slot + 1;
-                    const PREV_OFFSET: usize = 0;
-                }
-            } else if prev_is_dynamic {
-                // Previous field was a dynamic type (String/Bytes) - advance by 1 slot and reset offset
-                quote! {
-                    const PREV_SLOT: usize = #prev_slot + 1;
-                    const PREV_OFFSET: usize = 0;
-                }
-            } else if prev_is_array {
-                // Previous field was an array - advance by array's SLOT_COUNT and reset offset
-                // Arrays satisfy BYTE_COUNT = SLOT_COUNT * 32, so div_ceil recovers SLOT_COUNT
-                quote! {
-                    const PREV_SLOT: usize = #prev_slot + #prev_bytes.div_ceil(32);
-                    const PREV_OFFSET: usize = 0;
-                }
-            } else {
-                // Previous field was primitive - continue from its end position
-                quote! {
-                    const PREV_SLOT: usize = #prev_slot;
-                    const PREV_OFFSET: usize = #prev_offset + #prev_bytes;
-                }
-            }
-        };
-
-        if is_array_type(ty) || is_dynamic_type(ty) || is_mapping_type(ty) || is_custom_struct(ty) {
-            // Structs, dynamic types, mappings, and arrays must start on a new slot if PREV_OFFSET != 0
-            quote! {
-                pub const #slot_const: usize = {
-                    #prev_calculations
-                    if PREV_OFFSET == 0 {
-                        PREV_SLOT
-                    } else {
-                        PREV_SLOT + 1
-                    }
-                };
-
+                pub const #slot_const: usize = 0;
                 pub const #offset_const: usize = 0;
             }
         } else {
-            // Primitive fields use standard packing logic
-            quote! {
-                pub const #slot_const: usize = {
-                    #prev_calculations
-                    if PREV_OFFSET + #bytes_const <= 32 {
-                        PREV_SLOT
-                    } else {
-                        PREV_SLOT + 1
-                    }
-                };
+            let prev_idx = idx - 1;
+            let (prev_name, prev_ty) = &fields[prev_idx];
+            let prev_is_mapping = is_mapping_type(prev_ty);
+            let prev_is_struct = is_custom_struct(prev_ty) && !prev_is_mapping;
+            let prev_is_dynamic = is_dynamic_type(prev_ty);
+            let prev_is_array = is_array_type(prev_ty);
 
-                pub const #offset_const: usize = {
-                    #prev_calculations
-                    if PREV_OFFSET + #bytes_const <= 32 {
-                        PREV_OFFSET
+            let prev_const_name = ident_to_uppercase(prev_name);
+            let prev_slot = Ident::new(
+                &format!("{}_SLOT", prev_const_name),
+                proc_macro2::Span::call_site(),
+            );
+            let prev_offset = Ident::new(
+                &format!("{}_OFFSET", prev_const_name),
+                proc_macro2::Span::call_site(),
+            );
+            let prev_bytes = Ident::new(
+                &format!("{}_BYTES", prev_const_name),
+                proc_macro2::Span::call_site(),
+            );
+
+            // If any of the fields is a non-primitive, this one must start at a new slot
+            if prev_is_array || prev_is_dynamic || prev_is_mapping || prev_is_struct ||
+                is_array_type(ty) || is_dynamic_type(ty) || is_mapping_type(ty) || is_custom_struct(ty) {
+                let slot_const_expr = if prev_is_struct {
+                    quote! { #prev_slot + <#prev_ty>::SLOT_COUNT }
+                } else if prev_is_array {
+                    quote! { #prev_slot + #prev_bytes.div_ceil(32) }
+                } else {
+                    quote! { #prev_slot + 1 }
+                };
+                quote! {
+                    pub const #slot_const: usize = #slot_const_expr;
+                    pub const #offset_const: usize = 0;
+                }
+            }
+            // Otherwise, both fields are primitives, so we try to pack them together
+            else {
+                quote! {
+                    pub const #slot_const: usize = if #prev_offset + #prev_bytes + #bytes_const <= 32 {
+                        #prev_slot
+                    } else {
+                        #prev_slot + 1
+                    };
+
+                    pub const #offset_const: usize = if #prev_offset + #prev_bytes + #bytes_const <= 32 {
+                        #prev_offset + #prev_bytes
                     } else {
                         0
-                    }
-                };
+                    };
+                }
             }
         }
     });
 
-    let last_field_idx = fields.len() - 1;
+    let (last_field_name, _) = fields[fields.len() - 1];
+    let last_const_name = ident_to_uppercase(last_field_name);
     let last_slot_const = Ident::new(
-        &format!("FIELD_{last_field_idx}_SLOT"),
+        &format!("{}_SLOT", last_const_name),
         proc_macro2::Span::call_site(),
     );
 
@@ -425,10 +395,11 @@ fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStr
 /// Generate the `fn load()` implementation with unpacking logic.
 /// Accepts indexed fields where the usize is the original field index in the struct.
 fn gen_load_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> TokenStream {
-    let load_fields = indexed_fields.iter().enumerate().map(|(list_idx, (orig_idx, name, ty))| {
-        let slot_const = Ident::new(&format!("FIELD_{orig_idx}_SLOT"), proc_macro2::Span::call_site());
-        let offset_const = Ident::new(&format!("FIELD_{orig_idx}_OFFSET"), proc_macro2::Span::call_site());
-        let bytes_const = Ident::new(&format!("FIELD_{orig_idx}_BYTES"), proc_macro2::Span::call_site());
+    let load_fields = indexed_fields.iter().enumerate().map(|(list_idx, (_orig_idx, name, ty))| {
+        let field_const_name = ident_to_uppercase(name);
+        let slot_const = Ident::new(&format!("{}_SLOT", field_const_name), proc_macro2::Span::call_site());
+        let offset_const = Ident::new(&format!("{}_OFFSET", field_const_name), proc_macro2::Span::call_site());
+        let bytes_const = Ident::new(&format!("{}_BYTES", field_const_name), proc_macro2::Span::call_site());
 
         // Struct, dynamic type, and array fields always use `load()` directly (never packed)
         if is_array_type(ty) || is_dynamic_type(ty) || is_custom_struct(ty) {
@@ -441,22 +412,24 @@ fn gen_load_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> 
         }
 
         // For primitives, check if this field shares the slot with any other field
-        // by checking adjacent fields in the input list (using their original indices)
+        // by checking adjacent fields in the input list
         let prev_field = if list_idx > 0 {
-            Some(indexed_fields[list_idx - 1].0)
+            Some(indexed_fields[list_idx - 1].1)
         } else {
             None
         };
         let next_field = if list_idx + 1 < indexed_fields.len() {
-            Some(indexed_fields[list_idx + 1].0)
+            Some(indexed_fields[list_idx + 1].1)
         } else {
             None
         };
 
-        let shares_slot_check = if let Some(prev_idx) = prev_field {
-            let prev_slot = Ident::new(&format!("FIELD_{prev_idx}_SLOT"), proc_macro2::Span::call_site());
-            if let Some(next_idx) = next_field {
-                let next_slot = Ident::new(&format!("FIELD_{next_idx}_SLOT"), proc_macro2::Span::call_site());
+        let shares_slot_check = if let Some(prev_name) = prev_field {
+            let prev_const_name = ident_to_uppercase(prev_name);
+            let prev_slot = Ident::new(&format!("{}_SLOT", prev_const_name), proc_macro2::Span::call_site());
+            if let Some(next_name) = next_field {
+                let next_const_name = ident_to_uppercase(next_name);
+                let next_slot = Ident::new(&format!("{}_SLOT", next_const_name), proc_macro2::Span::call_site());
                 quote! {
                     #packing::#prev_slot == #packing::#slot_const || #packing::#next_slot == #packing::#slot_const
                 }
@@ -465,8 +438,9 @@ fn gen_load_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> 
                     #packing::#prev_slot == #packing::#slot_const
                 }
             }
-        } else if let Some(next_idx) = next_field {
-            let next_slot = Ident::new(&format!("FIELD_{next_idx}_SLOT"), proc_macro2::Span::call_site());
+        } else if let Some(next_name) = next_field {
+            let next_const_name = ident_to_uppercase(next_name);
+            let next_slot = Ident::new(&format!("{}_SLOT", next_const_name), proc_macro2::Span::call_site());
             quote! {
                 #packing::#next_slot == #packing::#slot_const
             }
@@ -509,10 +483,11 @@ fn gen_load_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> 
 /// Generate the `fn store()` implementation with packing logic.
 /// Accepts indexed fields where the usize is the original field index in the struct.
 fn gen_store_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> TokenStream {
-    let store_fields = indexed_fields.iter().enumerate().map(|(list_idx, (orig_idx, name, ty))| {
-        let slot_const = Ident::new(&format!("FIELD_{orig_idx}_SLOT"), proc_macro2::Span::call_site());
-        let offset_const = Ident::new(&format!("FIELD_{orig_idx}_OFFSET"), proc_macro2::Span::call_site());
-        let bytes_const = Ident::new(&format!("FIELD_{orig_idx}_BYTES"), proc_macro2::Span::call_site());
+    let store_fields = indexed_fields.iter().enumerate().map(|(list_idx, (_orig_idx, name, ty))| {
+        let field_const_name = ident_to_uppercase(name);
+        let slot_const = Ident::new(&format!("{}_SLOT", field_const_name), proc_macro2::Span::call_site());
+        let offset_const = Ident::new(&format!("{}_OFFSET", field_const_name), proc_macro2::Span::call_site());
+        let bytes_const = Ident::new(&format!("{}_BYTES", field_const_name), proc_macro2::Span::call_site());
 
         // Struct, dynamic type, and array fields always use store() directly (never packed)
         if is_array_type(ty) || is_dynamic_type(ty) || is_custom_struct(ty) {
@@ -525,22 +500,24 @@ fn gen_store_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) ->
         }
 
         // For primitives, check if this field shares the slot with any other field
-        // by checking adjacent fields in the input list (using their original indices)
+        // by checking adjacent fields in the input list
         let prev_field = if list_idx > 0 {
-            Some(indexed_fields[list_idx - 1].0)
+            Some(indexed_fields[list_idx - 1].1)
         } else {
             None
         };
         let next_field = if list_idx + 1 < indexed_fields.len() {
-            Some(indexed_fields[list_idx + 1].0)
+            Some(indexed_fields[list_idx + 1].1)
         } else {
             None
         };
 
-        let shares_slot_check = if let Some(prev_idx) = prev_field {
-            let prev_slot = Ident::new(&format!("FIELD_{prev_idx}_SLOT"), proc_macro2::Span::call_site());
-            if let Some(next_idx) = next_field {
-                let next_slot = Ident::new(&format!("FIELD_{next_idx}_SLOT"), proc_macro2::Span::call_site());
+        let shares_slot_check = if let Some(prev_name) = prev_field {
+            let prev_const_name = ident_to_uppercase(prev_name);
+            let prev_slot = Ident::new(&format!("{}_SLOT", prev_const_name), proc_macro2::Span::call_site());
+            if let Some(next_name) = next_field {
+                let next_const_name = ident_to_uppercase(next_name);
+                let next_slot = Ident::new(&format!("{}_SLOT", next_const_name), proc_macro2::Span::call_site());
                 quote! {
                     #packing::#prev_slot == #packing::#slot_const || #packing::#next_slot == #packing::#slot_const
                 }
@@ -549,8 +526,9 @@ fn gen_store_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) ->
                     #packing::#prev_slot == #packing::#slot_const
                 }
             }
-        } else if let Some(next_idx) = next_field {
-            let next_slot = Ident::new(&format!("FIELD_{next_idx}_SLOT"), proc_macro2::Span::call_site());
+        } else if let Some(next_name) = next_field {
+            let next_const_name = ident_to_uppercase(next_name);
+            let next_slot = Ident::new(&format!("{}_SLOT", next_const_name), proc_macro2::Span::call_site());
             quote! {
                 #packing::#next_slot == #packing::#slot_const
             }
@@ -594,25 +572,22 @@ fn gen_to_evm_words_impl(
     indexed_fields: &[(usize, &Ident, &Type)],
     packing: &Ident,
 ) -> TokenStream {
-    let pack_fields = indexed_fields.iter().map(|(orig_idx, name, ty)| {
+    let pack_fields = indexed_fields.iter().map(|(_orig_idx, name, ty)| {
+        let field_const_name = ident_to_uppercase(name);
         let slot_const = Ident::new(
-            &format!("FIELD_{orig_idx}_SLOT"),
+            &format!("{}_SLOT", field_const_name),
             proc_macro2::Span::call_site(),
         );
         let offset_const = Ident::new(
-            &format!("FIELD_{orig_idx}_OFFSET"),
+            &format!("{}_OFFSET", field_const_name),
             proc_macro2::Span::call_site(),
         );
         let bytes_const = Ident::new(
-            &format!("FIELD_{orig_idx}_BYTES"),
+            &format!("{}_BYTES", field_const_name),
             proc_macro2::Span::call_site(),
         );
 
-        let is_struct = is_custom_struct(ty);
-        let is_dynamic = is_dynamic_type(ty);
-        let is_array = is_array_type(ty);
-
-        if is_struct {
+        if is_custom_struct(ty) {
             // Nested struct: copy all its words into consecutive slots
             quote! {
                 {
@@ -622,7 +597,7 @@ fn gen_to_evm_words_impl(
                     }
                 }
             }
-        } else if is_dynamic {
+        } else if is_dynamic_type(ty) {
             // Dynamic type: copy its single word into the appropriate slot
             quote! {
                 {
@@ -630,7 +605,7 @@ fn gen_to_evm_words_impl(
                     result[#packing::#slot_const] = dynamic_words[0];
                 }
             }
-        } else if is_array {
+        } else if is_array_type(ty) {
             // Array: copy all its words into consecutive slots
             quote! {
                 {
@@ -669,25 +644,22 @@ fn gen_from_evm_words_impl(
     indexed_fields: &[(usize, &Ident, &Type)],
     packing: &Ident,
 ) -> TokenStream {
-    let decode_fields = indexed_fields.iter().map(|(orig_idx, name, ty)| {
+    let decode_fields = indexed_fields.iter().map(|(_orig_idx, name, ty)| {
+        let field_const_name = ident_to_uppercase(name);
         let slot_const = Ident::new(
-            &format!("FIELD_{orig_idx}_SLOT"),
+            &format!("{}_SLOT", field_const_name),
             proc_macro2::Span::call_site(),
         );
         let offset_const = Ident::new(
-            &format!("FIELD_{orig_idx}_OFFSET"),
+            &format!("{}_OFFSET", field_const_name),
             proc_macro2::Span::call_site(),
         );
         let bytes_const = Ident::new(
-            &format!("FIELD_{orig_idx}_BYTES"),
+            &format!("{}_BYTES", field_const_name),
             proc_macro2::Span::call_site(),
         );
 
-        let is_struct = is_custom_struct(ty);
-        let is_dynamic = is_dynamic_type(ty);
-        let is_array = is_array_type(ty);
-
-        if is_struct {
+        if is_custom_struct(ty) {
             // Nested struct: extract consecutive words and convert to array
             quote! {
                 let #name = {
@@ -699,7 +671,7 @@ fn gen_from_evm_words_impl(
                     <#ty>::from_evm_words(nested_words)?
                 };
             }
-        } else if is_dynamic {
+        } else if is_dynamic_type(ty) {
             // Dynamic type: extract its single word
             quote! {
                 let #name = {
@@ -707,7 +679,7 @@ fn gen_from_evm_words_impl(
                     <#ty>::from_evm_words([word])?
                 };
             }
-        } else if is_array {
+        } else if is_array_type(ty) {
             // Array: extract consecutive words and convert to array
             quote! {
                 let #name = {
