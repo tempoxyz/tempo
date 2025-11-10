@@ -1221,6 +1221,84 @@ mod tests {
     }
 
     #[test]
+    fn test_write_nested_at_offset_packed() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut contract = setup_test_contract(&mut storage);
+
+        let key1 = Address::random();
+        let key2 = Address::random();
+        let value = U256::from(0xabcd);
+
+        // Write packed field in nested mapping value
+        Mapping::<Address, Mapping<Address, U256, DummySlot>, TestSlot1>::write_nested_at_offset_packed(
+            &mut contract,
+            0, // value_field_offset_slots
+            0, // value_field_offset_bytes
+            2, // value_field_size_bytes (uint16)
+            key1,
+            key2,
+            value,
+        )?;
+
+        // Read back using read_nested_at_offset_packed
+        let read_value =
+            Mapping::<Address, Mapping<Address, U256, DummySlot>, TestSlot1>::read_nested_at_offset_packed(
+                &mut contract,
+                0,
+                0,
+                2,
+                key1,
+                key2,
+            )?;
+
+        assert_eq!(read_value, value);
+        Ok(())
+    }
+
+    #[test]
+    fn test_delete_nested_at_offset_packed() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut contract = setup_test_contract(&mut storage);
+
+        let key1 = Address::random();
+        let key2 = Address::random();
+        let value = U256::from(0x1234);
+
+        // Write then delete packed field
+        Mapping::<Address, Mapping<Address, U256, DummySlot>, TestSlot2>::write_nested_at_offset_packed(
+            &mut contract,
+            0,
+            0,
+            2,
+            key1,
+            key2,
+            value,
+        )?;
+
+        Mapping::<Address, Mapping<Address, U256, DummySlot>, TestSlot2>::delete_nested_at_offset_packed(
+            &mut contract,
+            0,
+            0,
+            2,
+            key1,
+            key2,
+        )?;
+
+        let deleted =
+            Mapping::<Address, Mapping<Address, U256, DummySlot>, TestSlot2>::read_nested_at_offset_packed(
+                &mut contract,
+                0,
+                0,
+                2,
+                key1,
+                key2,
+            )?;
+
+        assert_eq!(deleted, U256::ZERO);
+        Ok(())
+    }
+
+    #[test]
     fn test_multiple_fields_at_different_offsets() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut contract = setup_test_contract(&mut storage);
