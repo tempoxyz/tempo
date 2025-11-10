@@ -114,7 +114,6 @@ tempo-contracts = { path = "crates/contracts", default-features = false }
 tempo-telemetry-util = { path = "crates/telemetry-util", default-features = false }
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 
-reth = { git = "https://github.com/paradigmxyz/reth", rev = "4d9d712" }
 reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "4d9d712" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "4d9d712" }
 reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "4d9d712" }
@@ -171,7 +170,7 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "4d9d712", feat
   "std",
   "optional-checks",
 ] }
-revm = "31.0"
+revm = "31.0.2"
 
 alloy = { version = "1.0.41", default-features = false }
 alloy-evm = "0.23.0"

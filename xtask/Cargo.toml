@@ -29,7 +29,6 @@ eyre.workspace = true
 indexmap.workspace = true
 itertools.workspace = true
 rand.workspace = true
-reth.workspace = true
 reth-evm.workspace = true
 reth-network-peers.workspace = true
 serde.workspace = true

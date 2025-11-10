@@ -29,7 +29,7 @@ use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc, lock::Mutex};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
-use reth::chainspec::EthChainSpec;
+use reth_chainspec::EthChainSpec as _;
 use tempo_dkg_onchain_artifacts::PublicOutcome;
 use tempo_node::TempoFullNode;
 use tracing::{Span, info, instrument, warn};
@@ -681,11 +681,11 @@ async fn read_validator_config_from_contract(
     at_height: u64,
 ) -> eyre::Result<P2pState> {
     use alloy_evm::EvmInternals;
-    use reth::{
-        chainspec::EthChainSpec,
-        revm::{State, context::ContextTr, database::StateProviderDatabase},
+    use reth_chainspec::EthChainSpec as _;
+    use reth_ethereum::evm::revm::{
+        State, context::ContextTr as _, database::StateProviderDatabase,
     };
-    use reth_node_builder::{Block, ConfigureEvm};
+    use reth_node_builder::{Block as _, ConfigureEvm as _};
     use reth_provider::{BlockReader as _, StateProviderFactory as _};
     use tempo_precompiles::{
         VALIDATOR_CONFIG_ADDRESS,

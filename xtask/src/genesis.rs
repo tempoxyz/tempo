@@ -16,12 +16,14 @@ use commonware_cryptography::{
 use commonware_utils::quorum;
 use eyre::WrapErr as _;
 use rayon::prelude::*;
-use reth::revm::{
-    context::ContextTr,
-    db::{CacheDB, EmptyDB},
-    inspector::JournalExt,
+use reth_evm::{
+    Evm, EvmEnv, EvmFactory, EvmInternals,
+    revm::{
+        context::ContextTr,
+        database::{CacheDB, EmptyDB},
+        inspector::JournalExt,
+    },
 };
-use reth_evm::{Evm, EvmEnv, EvmFactory, EvmInternals};
 use simple_tqdm::{ParTqdm, Tqdm};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 use tempo_chainspec::spec::TEMPO_BASE_FEE;

@@ -3,6 +3,7 @@ use std::{net::SocketAddr, path::Path, sync::Arc, time::Duration};
 
 use alloy::{
     providers::ProviderBuilder,
+    rpc::types::TransactionReceipt,
     signers::{
         local::{MnemonicBuilder, coins_bip39::English},
         utils::secret_key_to_address,
@@ -19,15 +20,9 @@ use commonware_cryptography::{
 use commonware_utils::set::OrderedAssociated;
 use eyre::WrapErr as _;
 use futures::StreamExt;
-use reth::{
-    revm::{
-        context::ContextTr as _,
-        db::{CacheDB, EmptyDB},
-        inspector::JournalExt,
-    },
-    rpc::types::TransactionReceipt,
-};
+// use reth::{revm::inspector::JournalExt, rpc::types::TransactionReceipt};
 use reth_db::mdbx::DatabaseArguments;
+use reth_ethereum::evm::revm::{context::ContextTr as _, inspector::JournalExt as _};
 use reth_ethereum::{
     network::{
         Peers,
@@ -38,7 +33,10 @@ use reth_ethereum::{
     },
     tasks::{TaskExecutor, TaskManager},
 };
-use reth_evm::{EvmEnv, EvmFactory, EvmInternals};
+use reth_evm::{
+    EvmEnv, EvmFactory, EvmInternals,
+    revm::database::{CacheDB, EmptyDB},
+};
 use reth_node_builder::{NodeBuilder, NodeConfig};
 use reth_node_core::{
     args::{DatadirArgs, PayloadBuilderArgs, RpcServerArgs},
