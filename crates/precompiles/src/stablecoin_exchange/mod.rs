@@ -315,11 +315,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     pub fn get_price_level(&mut self, base: Address, tick: i16, is_bid: bool) -> Result<TickLevel> {
         let quote = TIP20Token::from_address(base, self.storage).quote_token()?;
         let key = compute_book_key(base, quote);
-        if is_bid {
-            Orderbook::read_bid_tick_level(self, key, tick)
-        } else {
-            Orderbook::read_ask_tick_level(self, key, tick)
-        }
+        Orderbook::read_tick_level(self, key, is_bid, tick)
     }
 
     /// Get active order ID
@@ -572,11 +568,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         let orderbook = self.sload_books(order.book_key())?;
-        let mut level = if order.is_bid() {
-            Orderbook::read_bid_tick_level(self, order.book_key(), order.tick())?
-        } else {
-            Orderbook::read_ask_tick_level(self, order.book_key(), order.tick())?
-        };
+        let mut level =
+            Orderbook::read_tick_level(self, order.book_key(), order.is_bid(), order.tick())?;
 
         let prev_tail = level.tail;
         if prev_tail == 0 {
@@ -612,11 +605,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             .ok_or(TempoPrecompileError::under_overflow())?;
         level.total_liquidity = new_liquidity;
 
-        if order.is_bid() {
-            Orderbook::write_bid_tick_level(self, order.book_key(), order.tick(), level)
-        } else {
-            Orderbook::write_ask_tick_level(self, order.book_key(), order.tick(), level)
-        }
+        Orderbook::write_tick_level(self, order.book_key(), order.is_bid(), order.tick(), level)
     }
 
     /// Partially fill an order with the specified amount.
@@ -660,11 +649,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             .ok_or(TempoPrecompileError::under_overflow())?;
         level.total_liquidity = new_liquidity;
 
-        if order.is_bid() {
-            Orderbook::write_bid_tick_level(self, order.book_key(), order.tick(), level.clone())?;
-        } else {
-            Orderbook::write_ask_tick_level(self, order.book_key(), order.tick(), level.clone())?;
-        }
+        Orderbook::write_tick_level(self, order.book_key(), order.is_bid(), order.tick(), *level)?;
 
         // Emit OrderFilled event for partial fill
         self.storage.emit_event(
@@ -739,11 +724,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         // Advance tick if liquidity is exhausted
         let next_tick_info = if order.next() == 0 {
-            if order.is_bid() {
-                Orderbook::delete_bid_tick_level(self, book_key, order.tick())?;
-            } else {
-                Orderbook::delete_ask_tick_level(self, book_key, order.tick())?;
-            }
+            Orderbook::delete_tick_level(self, book_key, order.is_bid(), order.tick())?;
 
             let mut bitmap =
                 orderbook::TickBitmap::new(self.storage, self.address, order.book_key());
@@ -761,11 +742,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 // No more liquidity at better prices - return None to signal completion
                 None
             } else {
-                let new_level = if order.is_bid() {
-                    Orderbook::read_bid_tick_level(self, book_key, tick)?
-                } else {
-                    Orderbook::read_ask_tick_level(self, book_key, tick)?
-                };
+                let new_level = Orderbook::read_tick_level(self, book_key, order.is_bid(), tick)?;
                 let new_order = self.sload_orders(new_level.head)?;
 
                 Some((new_level, new_order))
@@ -779,21 +756,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 .ok_or(TempoPrecompileError::under_overflow())?;
             level.total_liquidity = new_liquidity;
 
-            if order.is_bid() {
-                Orderbook::write_bid_tick_level(
-                    self,
-                    order.book_key(),
-                    order.tick(),
-                    level.clone(),
-                )?;
-            } else {
-                Orderbook::write_ask_tick_level(
-                    self,
-                    order.book_key(),
-                    order.tick(),
-                    level.clone(),
-                )?;
-            }
+            Orderbook::write_tick_level(
+                self,
+                order.book_key(),
+                order.is_bid(),
+                order.tick(),
+                level,
+            )?;
 
             let new_order = self.sload_orders(order.next())?;
             Some((level, new_order))
@@ -907,10 +876,10 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Helper function to get best tick from orderbook
-    fn get_best_price_level(&mut self, book_key: B256, bid: bool) -> Result<TickLevel> {
+    fn get_best_price_level(&mut self, book_key: B256, is_bid: bool) -> Result<TickLevel> {
         let orderbook = self.sload_books(book_key)?;
 
-        let current_tick = if bid {
+        let current_tick = if is_bid {
             if orderbook.best_bid_tick == i16::MIN {
                 return Err(StablecoinExchangeError::insufficient_liquidity().into());
             }
@@ -922,11 +891,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             orderbook.best_ask_tick
         };
 
-        let level = if bid {
-            Orderbook::read_bid_tick_level(self, book_key, current_tick)?
-        } else {
-            Orderbook::read_ask_tick_level(self, book_key, current_tick)?
-        };
+        let level = Orderbook::read_tick_level(self, book_key, is_bid, current_tick)?;
 
         Ok(level)
     }
@@ -995,11 +960,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     /// Cancel an active order (already in the orderbook)
     fn cancel_active_order(&mut self, order: Order) -> Result<()> {
-        let mut level = if order.is_bid() {
-            Orderbook::read_bid_tick_level(self, order.book_key(), order.tick())?
-        } else {
-            Orderbook::read_ask_tick_level(self, order.book_key(), order.tick())?
-        };
+        let mut level =
+            Orderbook::read_tick_level(self, order.book_key(), order.is_bid(), order.tick())?;
 
         // Update linked list
         if order.prev() != 0 {
@@ -1030,11 +992,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 .expect("Tick is valid");
         }
 
-        if order.is_bid() {
-            Orderbook::write_bid_tick_level(self, order.book_key(), order.tick(), level)?;
-        } else {
-            Orderbook::write_ask_tick_level(self, order.book_key(), order.tick(), level)?;
-        }
+        Orderbook::write_tick_level(self, order.book_key(), order.is_bid(), order.tick(), level)?;
 
         // Refund tokens to maker
         let orderbook = self.sload_books(order.book_key())?;
@@ -1093,11 +1051,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         while remaining_out > 0 {
-            let level = if is_bid {
-                Orderbook::read_bid_tick_level(self, book_key, current_tick)?
-            } else {
-                Orderbook::read_ask_tick_level(self, book_key, current_tick)?
-            };
+            let level = Orderbook::read_tick_level(self, book_key, is_bid, current_tick)?;
 
             // If no liquidity at this level, move to next tick
             if level.total_liquidity == 0 {
@@ -1311,11 +1265,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         while remaining_in > 0 {
-            let level = if is_bid {
-                Orderbook::read_bid_tick_level(self, book_key, current_tick)?
-            } else {
-                Orderbook::read_ask_tick_level(self, book_key, current_tick)?
-            };
+            let level = Orderbook::read_tick_level(self, book_key, is_bid, current_tick)?;
 
             // If no liquidity at this level, move to next tick
             if level.total_liquidity == 0 {
@@ -1618,7 +1568,7 @@ mod tests {
 
         // Verify the order is not yet in the active orderbook
         let book_key = compute_book_key(base_token, quote_token);
-        let level = Orderbook::read_bid_tick_level(&mut exchange, book_key, tick)?;
+        let level = Orderbook::read_tick_level(&mut exchange, book_key, true, tick)?;
         assert_eq!(level.head, 0);
         assert_eq!(level.tail, 0);
         assert_eq!(level.total_liquidity, 0);
@@ -1684,7 +1634,7 @@ mod tests {
         assert_eq!(stored_order.next(), 0);
 
         let book_key = compute_book_key(base_token, quote_token);
-        let level = Orderbook::read_ask_tick_level(&mut exchange, book_key, tick)?;
+        let level = Orderbook::read_tick_level(&mut exchange, book_key, false, tick)?;
         assert_eq!(level.head, 0);
         assert_eq!(level.tail, 0);
         assert_eq!(level.total_liquidity, 0);
@@ -1795,7 +1745,7 @@ mod tests {
 
         // Verify the order is not yet in the active orderbook
         let book_key = compute_book_key(base_token, quote_token);
-        let level = Orderbook::read_bid_tick_level(&mut exchange, book_key, tick)?;
+        let level = Orderbook::read_tick_level(&mut exchange, book_key, true, tick)?;
         assert_eq!(level.head, 0);
         assert_eq!(level.tail, 0);
         assert_eq!(level.total_liquidity, 0);
@@ -1933,7 +1883,7 @@ mod tests {
 
         // Verify tick level is empty before execute_block
         let book_key = compute_book_key(base_token, quote_token);
-        let level_before = Orderbook::read_bid_tick_level(&mut exchange, book_key, tick)?;
+        let level_before = Orderbook::read_tick_level(&mut exchange, book_key, true, tick)?;
         assert_eq!(level_before.head, 0);
         assert_eq!(level_before.tail, 0);
         assert_eq!(level_before.total_liquidity, 0);
@@ -1954,7 +1904,7 @@ mod tests {
         assert_eq!(order_1.next(), 0);
 
         // Assert tick level is updated
-        let level_after = Orderbook::read_bid_tick_level(&mut exchange, book_key, tick)?;
+        let level_after = Orderbook::read_tick_level(&mut exchange, book_key, true, tick)?;
         assert_eq!(level_after.head, order_0.order_id());
         assert_eq!(level_after.tail, order_1.order_id());
         assert_eq!(level_after.total_liquidity, min_order_amount * 2);

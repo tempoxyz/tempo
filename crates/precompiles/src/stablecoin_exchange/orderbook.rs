@@ -21,7 +21,7 @@ pub const MAX_PRICE: u32 = 132_767;
 
 /// Represents a price level in the orderbook with a doubly-linked list of orders
 /// Orders are maintained in FIFO order at each tick level
-#[derive(Debug, Storable, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Storable, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TickLevel {
     /// Order ID of the first order at this tick (0 if empty)
     pub head: u128,
@@ -189,98 +189,82 @@ impl Orderbook {
         Ok(base != Address::ZERO)
     }
 
-    /// Read a TickLevel from the bids mapping at a specific tick
-    pub fn read_bid_tick_level<S: StorageOps>(
+    /// Read a `TickLevel` at a specific tick
+    pub fn read_tick_level<S: StorageOps>(
         storage: &mut S,
         book_key: B256,
+        is_bid: bool,
         tick: i16,
     ) -> Result<TickLevel, TempoPrecompileError> {
         let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
-        Orders::read_at_offset(
-            storage,
-            orderbook_base_slot,
-            __packing_orderbook::BIDS_SLOT,
-            tick,
-        )
+        if is_bid {
+            Orders::read_at_offset(
+                storage,
+                orderbook_base_slot,
+                __packing_orderbook::BIDS_SLOT,
+                tick,
+            )
+        } else {
+            Orders::read_at_offset(
+                storage,
+                orderbook_base_slot,
+                __packing_orderbook::ASKS_SLOT,
+                tick,
+            )
+        }
     }
 
-    /// Write a TickLevel to the bids mapping at a specific tick
-    pub fn write_bid_tick_level<S: StorageOps>(
+    /// Write a `TickLevel` at a specific tick
+    pub fn write_tick_level<S: StorageOps>(
         storage: &mut S,
         book_key: B256,
+        is_bid: bool,
         tick: i16,
         tick_level: TickLevel,
     ) -> Result<(), TempoPrecompileError> {
         let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
-        Orders::write_at_offset(
-            storage,
-            orderbook_base_slot,
-            __packing_orderbook::BIDS_SLOT,
-            tick,
-            tick_level,
-        )
+        if is_bid {
+            Orders::write_at_offset(
+                storage,
+                orderbook_base_slot,
+                __packing_orderbook::BIDS_SLOT,
+                tick,
+                tick_level,
+            )
+        } else {
+            Orders::write_at_offset(
+                storage,
+                orderbook_base_slot,
+                __packing_orderbook::ASKS_SLOT,
+                tick,
+                tick_level,
+            )
+        }
     }
 
-    /// Delete a TickLevel from the bids mapping at a specific tick
-    pub fn delete_bid_tick_level<S: StorageOps>(
+    /// Delete a `TickLevel` at a specific tick
+    pub fn delete_tick_level<S: StorageOps>(
         storage: &mut S,
         book_key: B256,
+        is_bid: bool,
         tick: i16,
     ) -> Result<(), TempoPrecompileError> {
         let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
-        Orders::delete_at_offset(
-            storage,
-            orderbook_base_slot,
-            __packing_orderbook::BIDS_SLOT,
-            tick,
-        )
-    }
-
-    /// Read a TickLevel from the asks mapping at a specific tick
-    pub fn read_ask_tick_level<S: StorageOps>(
-        storage: &mut S,
-        book_key: B256,
-        tick: i16,
-    ) -> Result<TickLevel, TempoPrecompileError> {
-        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
-        Orders::read_at_offset(
-            storage,
-            orderbook_base_slot,
-            __packing_orderbook::ASKS_SLOT,
-            tick,
-        )
-    }
-
-    /// Write a TickLevel to the asks mapping at a specific tick
-    pub fn write_ask_tick_level<S: StorageOps>(
-        storage: &mut S,
-        book_key: B256,
-        tick: i16,
-        tick_level: TickLevel,
-    ) -> Result<(), TempoPrecompileError> {
-        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
-        Orders::write_at_offset(
-            storage,
-            orderbook_base_slot,
-            __packing_orderbook::ASKS_SLOT,
-            tick,
-            tick_level,
-        )
-    }
-
-    /// Delete a TickLevel from the asks mapping at a specific tick
-    pub fn delete_ask_tick_level<S: StorageOps>(
-        storage: &mut S,
-        book_key: B256,
-        tick: i16,
-    ) -> Result<(), TempoPrecompileError> {
-        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
-        Orders::delete_at_offset(
-            storage,
-            orderbook_base_slot,
-            __packing_orderbook::ASKS_SLOT,
-            tick,
-        )
+        if is_bid {
+            Orders::delete_at_offset(
+                storage,
+                orderbook_base_slot,
+                __packing_orderbook::BIDS_SLOT,
+                tick,
+            )
+        } else {
+            Orders::delete_at_offset(
+                storage,
+                orderbook_base_slot,
+                __packing_orderbook::ASKS_SLOT,
+                tick,
+            )
+        }
     }
 }
 
