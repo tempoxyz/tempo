@@ -15,14 +15,19 @@ use tempo_precompiles::{
 };
 use tempo_primitives::TempoTxEnvelope;
 
+/// Helper trait to abstract over different representations of Tempo transactions.
 #[auto_impl::auto_impl(&)]
 pub trait TempoTx {
+    /// Returns the transaction's `feeToken` field, if configured.
     fn fee_token(&self) -> Option<Address>;
 
+    /// Returns true if this is an AA transaction.
     fn is_aa(&self) -> bool;
 
+    /// Returns an iterator over the transaction's calls.
     fn calls(&self) -> impl Iterator<Item = (TxKind, &Bytes)>;
 
+    /// Returns the transaction's caller address.
     fn caller(&self) -> Address;
 }
 
@@ -66,12 +71,92 @@ impl TempoTx for Recovered<TempoTxEnvelope> {
     }
 }
 
+/// Helper trait to perform Tempo-specific operations on top of different state providers.
+///
+/// We provide blanket implementations for revm database, journal and reth state provider.
+///
+/// Generic parameter is used as a workaround to avoid conflicting implementations.
 pub trait TempoStateAccess<T> {
     type Error;
 
+    /// Returns [`AccountInfo`] for the given address.
     fn basic(&mut self, address: Address) -> Result<AccountInfo, Self::Error>;
+
+    /// Returns the storage value for the given address and key.
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error>;
 
+    /// Resolves user-level of transaction-level fee token preference.
+    fn user_or_tx_fee_token(
+        &mut self,
+        tx: impl TempoTx,
+        fee_payer: Address,
+    ) -> Result<Option<Address>, Self::Error> {
+        // If there is a fee token explicitly set on the tx type, use that.
+        if let Some(fee_token) = tx.fee_token() {
+            return Ok(Some(fee_token));
+        }
+
+        // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
+        // new preference, the newly set preference should be used immediately instead of the
+        // previously stored one
+        if !tx.is_aa()
+            && fee_payer == tx.caller()
+            && let Some((kind, input)) = tx.calls().next()
+            && kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
+            && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
+        {
+            return Ok(Some(call.token));
+        }
+
+        let user_slot = mapping_slot(fee_payer, tip_fee_manager::slots::USER_TOKENS);
+        // ensure TIP_FEE_MANAGER_ADDRESS is loaded
+        self.basic(TIP_FEE_MANAGER_ADDRESS)?;
+        let stored_user_token = self
+            .sload(TIP_FEE_MANAGER_ADDRESS, user_slot)?
+            .into_address();
+
+        if !stored_user_token.is_zero() {
+            return Ok(Some(stored_user_token));
+        }
+
+        // If tx.to() is a TIP-20 token, use that token as the fee token
+        if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied())
+            && tx.calls().all(|(kind, _)| kind.to() == Some(&to))
+            && self.is_valid_fee_token(to)?
+        {
+            return Ok(Some(to));
+        }
+
+        Ok(None)
+    }
+
+    /// Resolves fee token for the given transaction. Same as `user_or_tx_fee_token`, but also
+    /// falls back to the validator fee token preference.
+    fn get_fee_token(
+        &mut self,
+        tx: impl TempoTx,
+        validator: Address,
+        fee_payer: Address,
+    ) -> Result<Address, Self::Error> {
+        // First check transaction or user preference
+        if let Some(fee_token) = self.user_or_tx_fee_token(tx, fee_payer)? {
+            return Ok(fee_token);
+        }
+
+        // Otherwise fall back to the validator fee token preference
+        let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
+        let validator_fee_token = self
+            .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
+            .into_address();
+
+        if !validator_fee_token.is_zero() {
+            return Ok(validator_fee_token);
+        }
+
+        Ok(DEFAULT_FEE_TOKEN)
+    }
+
+    /// Checks if the given token can be used as a fee token.
     fn is_valid_fee_token(&mut self, fee_token: Address) -> Result<bool, Self::Error> {
         if !is_tip20(fee_token) || fee_token == LINKING_USD_ADDRESS {
             return Ok(false);
@@ -94,61 +179,7 @@ pub trait TempoStateAccess<T> {
         }
     }
 
-    fn get_fee_token(
-        &mut self,
-        tx: impl TempoTx,
-        validator: Address,
-        fee_payer: Address,
-    ) -> Result<Address, Self::Error> {
-        // If there is a fee token explicitly set on the tx type, use that.
-        if let Some(fee_token) = tx.fee_token() {
-            return Ok(fee_token);
-        }
-
-        // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
-        // new preference, the newly set preference should be used immediately instead of the
-        // previously stored one
-        if !tx.is_aa()
-            && fee_payer == tx.caller()
-            && let Some((kind, input)) = tx.calls().next()
-            && kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
-            && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
-        {
-            return Ok(call.token);
-        }
-
-        let user_slot = mapping_slot(fee_payer, tip_fee_manager::slots::USER_TOKENS);
-        // ensure TIP_FEE_MANAGER_ADDRESS is loaded
-        self.basic(TIP_FEE_MANAGER_ADDRESS)?;
-        let stored_user_token = self
-            .sload(TIP_FEE_MANAGER_ADDRESS, user_slot)?
-            .into_address();
-
-        if !stored_user_token.is_zero() {
-            return Ok(stored_user_token);
-        }
-
-        // If tx.to() is a TIP-20 token, use that token as the fee token
-        if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied())
-            && tx.calls().all(|(kind, _)| kind.to() == Some(&to))
-            && self.is_valid_fee_token(to)?
-        {
-            return Ok(to);
-        }
-
-        // Otherwise fall back to the validator fee token preference
-        let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
-        let validator_fee_token = self
-            .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
-            .into_address();
-
-        if !validator_fee_token.is_zero() {
-            return Ok(validator_fee_token);
-        }
-
-        Ok(DEFAULT_FEE_TOKEN)
-    }
-
+    /// Returns the balance of the given token for the given account.
     fn get_token_balance(&mut self, token: Address, account: Address) -> Result<U256, Self::Error> {
         // Query the user's balance in the determined fee token's TIP20 contract
         let balance_slot = mapping_slot(account, tip20::slots::BALANCES);

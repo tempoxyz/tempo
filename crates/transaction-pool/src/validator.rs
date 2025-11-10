@@ -1,6 +1,5 @@
 use crate::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
 use alloy_consensus::Transaction;
-use alloy_sol_types::SolCall;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
@@ -58,7 +57,7 @@ where
 
         // Reject AA transactions with non-zero nonce keys, we don't have
         // a nice way to track them in the pool yet.
-        if let TempoTxEnvelope::AA(tx) = transaction.inner()
+        if let Some(tx) = transaction.inner().as_aa()
             && !tx.tx().nonce_key.is_zero()
         {
             return TransactionValidationOutcome::Error(
@@ -74,19 +73,15 @@ where
             }
         };
 
-        let tx_fee_token = if let Some(fee_token) = transaction.inner().fee_token() {
-            Some(fee_token)
-        } else if !transaction.inner().is_aa()
-            && fee_payer == transaction.sender()
-            && transaction.inner().kind().to() == Some(&TIP_FEE_MANAGER_ADDRESS)
-            && let Ok(call) = setUserTokenCall::abi_decode(transaction.inner().input())
-        {
-            Some(call.token)
-        } else {
-            None
-        };
+        let maybe_tx_fee_token =
+            match state_provider.user_or_tx_fee_token(transaction.inner(), fee_payer) {
+                Ok(maybe_tx_fee_token) => maybe_tx_fee_token,
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                }
+            };
 
-        if let Some(fee_token) = tx_fee_token {
+        if let Some(fee_token) = maybe_tx_fee_token {
             match state_provider.is_valid_fee_token(fee_token) {
                 Ok(valid) => {
                     if !valid {
@@ -104,11 +99,9 @@ where
             }
         }
 
-        let balance = match state_provider.get_fee_token_balance(
-            fee_payer,
-            tx_fee_token,
-            transaction.inner().kind().to(),
-        ) {
+        let balance = match state_provider
+            .get_token_balance(maybe_tx_fee_token.unwrap_or(DEFAULT_FEE_TOKEN), fee_payer)
+        {
             Ok(balance) => balance,
             Err(err) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
