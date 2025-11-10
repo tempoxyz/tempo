@@ -85,7 +85,6 @@ impl<
 
             // Iterate through books collecting orders until we reach the limit
             for book_key in book_keys {
-                // Get orderbook using exchange, then drop the exchange to free up storage borrow
                 let orderbook = exchange.books(book_key)?;
 
                 // Check if this book matches the base/quote filter
@@ -99,7 +98,6 @@ impl<
                     None
                 };
 
-                // Now create BookIterator with storage
                 let book_iterator = BookIterator::new(
                     storage,
                     &orderbook,
@@ -130,7 +128,6 @@ impl<
                     break;
                 }
 
-                // Recreate exchange for next iteration
                 exchange = StablecoinExchange::new(storage);
             }
 
