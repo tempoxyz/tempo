@@ -41,7 +41,6 @@ use crate::{
         manager::ingress::{Finalize, GetIntermediateDealing, GetOutcome},
     },
     epoch,
-    marshal_utils::UpdateExt as _,
 };
 
 const EPOCH_KEY: u64 = 0;
@@ -379,27 +378,24 @@ where
         parent = cause,
         skip_all,
         fields(
-            block.derived_epoch = update
-                .as_block()
-                .map(|b| utils::epoch(self.config.epoch_length, b.height())),
-            block.height = update.as_block().map(|b| b.height()),
+            block.derived_epoch = utils::epoch(self.config.epoch_length, block.height()),
+            block.height = block.height(),
             ceremony.epoch = maybe_ceremony.as_ref().map(|c| c.epoch()),
         ),
     )]
     async fn handle_finalize<TReceiver, TSender>(
         &mut self,
         cause: Span,
-        Finalize { update }: Finalize,
+        Finalize {
+            block,
+            response: _response,
+        }: Finalize,
         maybe_ceremony: &mut Option<Ceremony<ContextCell<TContext>, TReceiver, TSender>>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
     ) where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let Some(block) = update.into_block() else {
-            return;
-        };
-
         // Special case boundary height: only start a new epoch and return.
         //
         // Recall, for some epoch length E, the boundary heights are

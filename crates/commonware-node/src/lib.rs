@@ -8,7 +8,6 @@ pub(crate) mod config;
 pub mod consensus;
 pub(crate) mod dkg;
 pub(crate) mod epoch;
-pub(crate) mod marshal_utils;
 pub mod metrics;
 
 pub(crate) mod subblocks;

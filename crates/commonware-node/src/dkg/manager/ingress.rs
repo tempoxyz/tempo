@@ -80,7 +80,8 @@ impl From<GetOutcome> for Command {
 }
 
 pub(super) struct Finalize {
-    pub(super) update: Box<Update<Block>>,
+    pub(super) response: oneshot::Sender<()>,
+    pub(super) block: Box<Block>,
 }
 
 pub(super) struct GetIntermediateDealing {
@@ -96,14 +97,20 @@ impl Reporter for Mailbox {
     type Activity = Update<Block>;
 
     async fn report(&mut self, update: Self::Activity) {
+        let Self::Activity::Block(block) = update else {
+            return;
+        };
+        let (response, rx) = oneshot::channel();
         if let Err(error) = self
             .inner
             .unbounded_send(Message::in_current_span(Finalize {
-                update: update.into(),
+                response,
+                block: block.into(),
             }))
             .wrap_err("dkg manager no longer running")
         {
             warn!(%error, "failed to report finalized block to dkg manager")
         }
+        let _ = rx.await;
     }
 }
