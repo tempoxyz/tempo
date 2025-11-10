@@ -25,6 +25,7 @@ use futures::{
     future::{FusedFuture, pending},
 };
 use reth_ethereum::cli::{Cli, Commands};
+use reth_ethereum_cli as _;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use std::{net::SocketAddr, sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
@@ -38,7 +39,6 @@ use tempo_faucet::{
 use tempo_node::{TempoFullNode, node::TempoNode};
 use tokio::sync::oneshot;
 use tokio_util::either::Either;
-use reth_ethereum_cli as _;
 
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
