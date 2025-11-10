@@ -272,7 +272,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
         .await?
         .expect("Could not get block");
     let validator_address = block.header.beneficiary;
-    // Note: validator_address may be zero in test mode with test-genesis.json
+    assert!(!validator_address.is_zero());
 
     // Create different tokens for user and validator
     let user_token = setup_test_token(provider.clone(), user_address).await?;
