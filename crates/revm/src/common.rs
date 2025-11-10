@@ -1,6 +1,6 @@
 use crate::TempoTxEnv;
 use alloy_consensus::transaction::{Either, Recovered};
-use alloy_primitives::{Address, Bytes, TxKind, U256};
+use alloy_primitives::{Address, Bytes, TxKind, U256, uint};
 use alloy_sol_types::SolCall;
 use revm::{
     Database, context::JournalTr, interpreter::instructions::utility::IntoAddress,
@@ -11,9 +11,13 @@ use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     storage::slots::mapping_slot,
     tip_fee_manager,
-    tip20::{self, USD_CURRENCY, is_tip20},
+    tip20::{self, is_tip20},
 };
 use tempo_primitives::TempoTxEnvelope;
+
+/// Value of [`tip20::slots::CURRENCY`] when configured currency is USD.
+const USD_CURRENCY_SLOT_VALUE: U256 =
+    uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
 
 /// Helper trait to abstract over different representations of Tempo transactions.
 #[auto_impl::auto_impl(&)]
@@ -158,25 +162,13 @@ pub trait TempoStateAccess<T> {
 
     /// Checks if the given token can be used as a fee token.
     fn is_valid_fee_token(&mut self, fee_token: Address) -> Result<bool, Self::Error> {
+        // Ensure it's a TIP20
         if !is_tip20(fee_token) || fee_token == LINKING_USD_ADDRESS {
             return Ok(false);
         }
 
-        // Ensure that token is initialized
-        if self.basic(fee_token)?.is_empty_code_hash() {
-            return Ok(false);
-        }
-
-        // TODO: find a better way to do this
-        let bytes = self
-            .sload(fee_token, tip20::slots::CURRENCY)?
-            .to_be_bytes::<32>();
-        let len = bytes[31] as usize / 2; // Last byte stores length * 2 for short strings
-        if len > 31 {
-            Ok(false)
-        } else {
-            Ok(String::from_utf8_lossy(&bytes[..len]) == USD_CURRENCY)
-        }
+        // Ensure the currency is USD
+        Ok(self.sload(fee_token, tip20::slots::CURRENCY)? == USD_CURRENCY_SLOT_VALUE)
     }
 
     /// Returns the balance of the given token for the given account.
