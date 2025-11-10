@@ -576,7 +576,7 @@ where
             self.players_indexed.contains(ack.player())
                 && ack.verify(
                     &union(&self.config.namespace, ACK_NAMESPACE),
-                    &ack.player(),
+                    ack.player(),
                     self.epoch(),
                     block_outcome.dealer(),
                     block_outcome.commitment(),

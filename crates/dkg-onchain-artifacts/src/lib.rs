@@ -12,9 +12,7 @@ use commonware_cryptography::{
 };
 use commonware_utils::{quorum, set::Ordered};
 
-/// A message from a player to a dealer.
-///
-/// Confirms the receipt and verification of a [`Share`] message by a dealer.
+/// A message from a player to a dealer, confirming the receipt of s ahre.
 ///
 /// Contains the player's public key, as well as its signature over the
 /// ceremony's epoch, dealear public key, and commitment contained in the

@@ -917,7 +917,7 @@ impl P2pStates {
         self.inner
             .values()
             .flat_map(|p2p| p2p.peers.iter_pairs())
-            .map(|(key, addr)| (key.clone(), addr.clone()))
+            .map(|(key, addr)| (key.clone(), addr))
             .collect()
     }
 }
