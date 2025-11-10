@@ -15,15 +15,9 @@
 
 # Tempo
 
-High performance, payments first blockchain.
+The blockchain for payments at scale.
 
-## How to run
-
-```
-just localnet
-```
-
-This will spin up a no-consensus network with one node. The logs will be saved in the `./localnet/logs` directory.
+[Tempo](https://docs.tempo.xyz/) is designed to be low-cost, fast, and secure. By dedicating capacity to payments, it delivers on the uptime and throughput demands of the real world.
 
 ### License
 
