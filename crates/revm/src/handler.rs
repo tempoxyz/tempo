@@ -707,6 +707,7 @@ where
     #[inline]
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
         // All accounts have zero balance so transfer of value is not possible.
+        // Check added in https://github.com/tempoxyz/tempo/pull/759
         if !evm.ctx.tx.value().is_zero() {
             return Err(TempoInvalidTransaction::ValueTransferNotAllowed.into());
         }
@@ -830,6 +831,8 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
             gas.initial_gas += initcode_cost(call.input.len());
         }
 
+        // Note: Transaction value is not allowed in AA transactions as there is no balances in accounts yet.
+        // Check added in https://github.com/tempoxyz/tempo/pull/759
         if !call.value.is_zero() {
             return Err(TempoInvalidTransaction::ValueTransferNotAllowedInAATx);
         }
@@ -1611,6 +1614,8 @@ mod tests {
         );
     }
 
+    /// This test will start failing once we get the balance transfer enabled
+    /// PR that introduced [`TempoInvalidTransaction::ValueTransferNotAllowed`] https://github.com/tempoxyz/tempo/pull/759
     #[test]
     fn test_zero_value_transfer() -> eyre::Result<()> {
         use crate::{TempoEvm, evm::TempoContext};
