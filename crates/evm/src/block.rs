@@ -139,15 +139,6 @@ where
         let block = self.evm().block().number.to_be_bytes_vec();
         let to = tx.to().unwrap_or_default();
 
-        if tx.max_fee_per_gas() != 0
-            || tx.gas_limit() != 0
-            || !tx.value().is_zero()
-            || tx.chain_id() != Some(self.evm().chain_id())
-            || tx.nonce() != 0
-        {
-            return Err(BlockValidationError::msg("invalid system transaction"));
-        }
-
         // Handle start-of-block system transaction (rewards registry)
         // Only enforce this restriction when we haven't seen the rewards registry yet
         if let BlockSection::StartOfBlock {
