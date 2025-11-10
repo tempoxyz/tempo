@@ -65,16 +65,28 @@ see [6].
 ## Protocol of a DKG ceremony
 
 The process of initializing, running, and completing a DKG ceremony is closely
-coupled to finalized blocks. The steps below are for the DKG ceremony of epoch
-`C`. The term "boundary block" referred to below describes the last block of an
-epoch (for example, for a given epoch length `E`, the last block before epoch
-`C` commences is `C*E - 1`, and the last block of `C` is `(C+1)*E - 1`). For
-epoch `C`, the boundary block is `B = (C+1)*E-1`
+coupled to finalized blocks. The steps that Tempo is taking to run such a DKG
+protocol are this explained in terms of finalized blocks below. One strong
+assumption: each finalized block will be processed in strict sequential order.
+
+For a detailed description of the role of players, dealers
+
+The steps below are for the DKG ceremony of epoch `C`. The term "boundary block"
+referred to below describes the last block of an epoch (for example, for a given
+epoch length `E`, the last block before epoch `C` commences is `C*E - 1`, and
+the last block of `C` is `(C+1)*E - 1`). For epoch `C`, the boundary block is
+`B = (C+1)*E-1`
 
 The *dealers* of the DKG ceremony are the validators of the current/outgoing
-epoch. The *players* of the DKG ceremony are the validators stored in the
-smart contract on-chain. On success, they will become the validators of the
-next epoch.
+epoch. Dealers are each generating a public polynomial and a set of private key
+shares for that polynomial, one for each player. The combination of all public
+polynomials and private key shares will form a group polynomial with matching
+shares. On success, these will become the threshold keys of the new epoch.
+The *players* of the DKG ceremony are the validators stored in the smart
+contract on-chain. On success, they will become the validators of the next epoch.
+
+For a lower level overview of DKG ceremony and the role of players and dealers,
+see [7]
 
 For each finalized block, the following actions will be taken depending on its
 height H.
@@ -117,6 +129,8 @@ height H.
       `extra_data` matches.
    c. dealer or player: enter epoch `C+1` with the outcome of the ceremony in
       epoch `C`.
+
+[7]: https://docs.rs/commonware-cryptography/0.0.63/commonware_cryptography/bls12381/dkg/index.html
    
 ### On determining ceremony players on the boundary block
 
