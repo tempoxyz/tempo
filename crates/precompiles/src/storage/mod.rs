@@ -21,6 +21,7 @@ use crate::error::TempoPrecompileError;
 pub trait PrecompileStorageProvider {
     fn chain_id(&self) -> u64;
     fn timestamp(&self) -> U256;
+    fn beneficiary(&self) -> Address;
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError>;
     fn get_account_info(
         &mut self,

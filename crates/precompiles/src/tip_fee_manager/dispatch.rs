@@ -8,12 +8,7 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
-    fn call(
-        &mut self,
-        calldata: &[u8],
-        msg_sender: Address,
-        beneficiary: Address,
-    ) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
@@ -83,7 +78,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
                 mutate_void::<IFeeManager::setValidatorTokenCall>(
                     calldata,
                     msg_sender,
-                    |s, call| self.set_validator_token(s, call, beneficiary),
+                    |s, call| self.set_validator_token(s, call, self.storage.beneficiary()),
                 )
             }
             IFeeManager::setUserTokenCall::SELECTOR => {
@@ -93,7 +88,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
             }
             IFeeManager::executeBlockCall::SELECTOR => {
                 mutate_void::<IFeeManager::executeBlockCall>(calldata, msg_sender, |s, _call| {
-                    self.execute_block(s, beneficiary)
+                    self.execute_block(s, self.storage.beneficiary())
                 })
             }
             ITIPFeeAMM::mintCall::SELECTOR => {
@@ -231,13 +226,13 @@ mod tests {
         let mut fee_manager = TipFeeManager::new(&mut storage);
 
         let calldata = IFeeManager::setValidatorTokenCall { token }.abi_encode();
-        let result = fee_manager.call(&Bytes::from(calldata), validator, Address::default())?;
+        let result = fee_manager.call(&Bytes::from(calldata), validator)?;
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
 
         // Verify token was set
         let calldata = IFeeManager::validatorTokensCall { validator }.abi_encode();
-        let result = fee_manager.call(&Bytes::from(calldata), validator, Address::default())?;
+        let result = fee_manager.call(&Bytes::from(calldata), validator)?;
         // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
         assert_eq!(result.gas_used, 0);
         let returned_token = Address::abi_decode(&result.bytes)?;
@@ -256,7 +251,7 @@ mod tests {
             token: Address::ZERO,
         }
         .abi_encode();
-        let result = fee_manager.call(&Bytes::from(calldata), validator, Address::default());
+        let result = fee_manager.call(&Bytes::from(calldata), validator);
         expect_precompile_revert(&result, TIPFeeAMMError::invalid_token());
 
         Ok(())
@@ -281,13 +276,13 @@ mod tests {
         let mut fee_manager = TipFeeManager::new(&mut storage);
 
         let calldata = IFeeManager::setUserTokenCall { token }.abi_encode();
-        let result = fee_manager.call(&Bytes::from(calldata), user, Address::default())?;
+        let result = fee_manager.call(&Bytes::from(calldata), user)?;
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
 
         // Verify token was set
         let calldata = IFeeManager::userTokensCall { user }.abi_encode();
-        let result = fee_manager.call(&Bytes::from(calldata), user, Address::default())?;
+        let result = fee_manager.call(&Bytes::from(calldata), user)?;
         // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
         assert_eq!(result.gas_used, 0);
         let returned_token = Address::abi_decode(&result.bytes)?;
@@ -306,7 +301,7 @@ mod tests {
             token: Address::ZERO,
         }
         .abi_encode();
-        let result = fee_manager.call(&Bytes::from(calldata), user, Address::default());
+        let result = fee_manager.call(&Bytes::from(calldata), user);
         expect_precompile_revert(&result, TIPFeeAMMError::invalid_token());
     }
 
@@ -327,7 +322,6 @@ mod tests {
             .call(
                 &Bytes::from(calldata),
                 Address::random(),
-                Address::default(),
             )
             .unwrap();
         // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
@@ -355,7 +349,6 @@ mod tests {
         let result = fee_manager.call(
             &Bytes::from(calldata),
             Address::random(),
-            Address::default(),
         )?;
         // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
         assert_eq!(result.gas_used, 0);
@@ -385,7 +378,6 @@ mod tests {
             .call(
                 &Bytes::from(calldata1),
                 Address::random(),
-                Address::default(),
             )
             .unwrap();
         let id1 = B256::abi_decode(&result1.bytes).unwrap();
@@ -399,7 +391,6 @@ mod tests {
             .call(
                 &Bytes::from(calldata2),
                 Address::random(),
-                Address::default(),
             )
             .unwrap();
         let id2 = B256::abi_decode(&result2.bytes).unwrap();
@@ -422,7 +413,6 @@ mod tests {
         let result = fee_manager.call(
             &Bytes::from(set_validator_call.abi_encode()),
             validator,
-            Address::default(),
         );
         expect_precompile_revert(&result, TIPFeeAMMError::invalid_token());
 
@@ -432,7 +422,6 @@ mod tests {
         let result = fee_manager.call(
             &Bytes::from(set_user_call.abi_encode()),
             user,
-            Address::default(),
         );
         expect_precompile_revert(&result, TIPFeeAMMError::invalid_token());
     }
@@ -453,7 +442,6 @@ mod tests {
         let result = fee_manager.call(
             &Bytes::from(call.abi_encode()),
             Address::ZERO,
-            Address::default(),
         )?;
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
@@ -488,7 +476,6 @@ mod tests {
         let pool_id_result = fee_manager.call(
             &Bytes::from(pool_id_call.abi_encode()),
             user,
-            Address::default(),
         )?;
         let pool_id = B256::abi_decode(&pool_id_result.bytes)?;
 
@@ -497,7 +484,6 @@ mod tests {
         let initial_total_supply_result = fee_manager.call(
             &Bytes::from(initial_total_supply_call.abi_encode()),
             user,
-            Address::default(),
         )?;
         let initial_total_supply = U256::abi_decode(&initial_total_supply_result.bytes)?;
         assert_eq!(initial_total_supply, U256::ZERO);
@@ -514,7 +500,7 @@ mod tests {
         };
 
         let calldata = call.abi_encode();
-        let result = fee_manager.call(&Bytes::from(calldata), user, Address::default())?;
+        let result = fee_manager.call(&Bytes::from(calldata), user)?;
 
         // Should return liquidity amount
         let liquidity = U256::abi_decode(&result.bytes)?;
@@ -528,7 +514,6 @@ mod tests {
         let final_total_supply_result = fee_manager.call(
             &Bytes::from(final_total_supply_call.abi_encode()),
             user,
-            Address::default(),
         )?;
         let final_total_supply = U256::abi_decode(&final_total_supply_result.bytes)?;
 
@@ -547,7 +532,6 @@ mod tests {
         let pool_result = fee_manager.call(
             &Bytes::from(pool_call.abi_encode()),
             user,
-            Address::default(),
         )?;
         let pool = ITIPFeeAMM::Pool::abi_decode(&pool_result.bytes)?;
 
@@ -562,7 +546,6 @@ mod tests {
         let balance_result = fee_manager.call(
             &Bytes::from(balance_call.abi_encode()),
             user,
-            Address::default(),
         )?;
         let balance = U256::abi_decode(&balance_result.bytes)?;
 
