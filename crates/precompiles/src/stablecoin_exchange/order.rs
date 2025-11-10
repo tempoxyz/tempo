@@ -64,6 +64,11 @@ pub struct Order {
     pub flip_tick: i16,
 }
 
+// Helper type to easily interact with u128 fields (order_id, prev, next)
+type OrderId = Slot<u128, DummySlot>;
+// Helper type to easily interact with u128 fields (amount, remaining)
+type OrderAmount = Slot<u128, DummySlot>;
+
 impl Order {
     // Order struct field offsets
     // Matches Solidity Order struct layout
@@ -235,12 +240,23 @@ impl Order {
         storage: &mut S,
         stablecoin_exchange: Address,
     ) -> Result<(), TempoPrecompileError> {
+<<<<<<< HEAD
         let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
 
         storage.sstore(
             stablecoin_exchange,
             order_slot + Self::MAKER_OFFSET,
             self.maker().into_u256(),
+=======
+        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::Field1Slot::SLOT);
+        OrderAmount::write_at_offset_packed(
+            storage,
+            order_base_slot,
+            __packing_order::REMAINING_SLOT,
+            __packing_order::REMAINING_OFFSET,
+            __packing_order::REMAINING_BYTES,
+            new_remaining,
+>>>>>>> 2909451 (chore(precompiles): storable macro cleanup (#809))
         )?;
 
         // Store book_key
@@ -388,6 +404,7 @@ impl Order {
         storage: &mut S,
         stablecoin_exchange: Address,
     ) -> Result<(), TempoPrecompileError> {
+<<<<<<< HEAD
         let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
 
         storage.sstore(
@@ -395,6 +412,18 @@ impl Order {
             order_slot + Self::NEXT_OFFSET,
             U256::from(new_next),
         )
+=======
+        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::Field1Slot::SLOT);
+        OrderId::write_at_offset_packed(
+            storage,
+            order_base_slot,
+            __packing_order::NEXT_SLOT,
+            __packing_order::NEXT_OFFSET,
+            __packing_order::NEXT_BYTES,
+            new_next,
+        )?;
+        Ok(())
+>>>>>>> 2909451 (chore(precompiles): storable macro cleanup (#809))
     }
 
     pub fn update_prev_order<S: PrecompileStorageProvider>(
@@ -403,6 +432,7 @@ impl Order {
         storage: &mut S,
         stablecoin_exchange: Address,
     ) -> Result<(), TempoPrecompileError> {
+<<<<<<< HEAD
         let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
 
         storage.sstore(
@@ -410,6 +440,18 @@ impl Order {
             order_slot + Self::PREV_OFFSET,
             U256::from(new_prev),
         )
+=======
+        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::Field1Slot::SLOT);
+        OrderId::write_at_offset_packed(
+            storage,
+            order_base_slot,
+            __packing_order::PREV_SLOT,
+            __packing_order::PREV_OFFSET,
+            __packing_order::PREV_BYTES,
+            new_prev,
+        )?;
+        Ok(())
+>>>>>>> 2909451 (chore(precompiles): storable macro cleanup (#809))
     }
 
     /// Returns the order ID.

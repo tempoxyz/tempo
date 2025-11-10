@@ -266,6 +266,16 @@ pub struct Orderbook {
     pub best_ask_tick: i16,
 }
 
+<<<<<<< HEAD
+=======
+// Helper type to easily access storage for orderbook tokens (base, quote)
+type Tokens = Slot<Address, DummySlot>;
+// Helper type to easile access storage for orders (bids, asks)
+type Orders = Mapping<i16, TickLevel, DummySlot>;
+// Helper type to easily access storage for best orderbook orders (best bid, best ask)
+type BestOrders = Slot<i16, DummySlot>;
+
+>>>>>>> 2909451 (chore(precompiles): storable macro cleanup (#809))
 impl Orderbook {
     // Orderbook struct field offsets
     /// Base token address field offset
@@ -391,12 +401,25 @@ impl Orderbook {
         book_key: B256,
         new_best_bid: i16,
     ) -> Result<(), TempoPrecompileError> {
+<<<<<<< HEAD
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
         storage.sstore(
             address,
             orderbook_slot + Self::BEST_BID_TICK_OFFSET,
             U256::from(new_best_bid as u16),
         )
+=======
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        BestOrders::write_at_offset_packed(
+            contract,
+            orderbook_base_slot,
+            __packing_orderbook::BEST_BID_TICK_SLOT,
+            __packing_orderbook::BEST_BID_TICK_OFFSET,
+            __packing_orderbook::BEST_BID_TICK_BYTES,
+            new_best_bid,
+        )?;
+        Ok(())
+>>>>>>> 2909451 (chore(precompiles): storable macro cleanup (#809))
     }
 
     /// Update only the best ask tick
@@ -406,12 +429,25 @@ impl Orderbook {
         book_key: B256,
         new_best_ask: i16,
     ) -> Result<(), TempoPrecompileError> {
+<<<<<<< HEAD
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
         storage.sstore(
             address,
             orderbook_slot + Self::BEST_ASK_TICK_OFFSET,
             U256::from(new_best_ask as u16),
         )
+=======
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        BestOrders::write_at_offset_packed(
+            contract,
+            orderbook_base_slot,
+            __packing_orderbook::BEST_ASK_TICK_SLOT,
+            __packing_orderbook::BEST_ASK_TICK_OFFSET,
+            __packing_orderbook::BEST_ASK_TICK_BYTES,
+            new_best_ask,
+        )?;
+        Ok(())
+>>>>>>> 2909451 (chore(precompiles): storable macro cleanup (#809))
     }
 
     /// Check if this orderbook exists in storage
@@ -420,10 +456,115 @@ impl Orderbook {
         storage: &mut S,
         address: Address,
     ) -> Result<bool, TempoPrecompileError> {
+<<<<<<< HEAD
         let orderbook_slot = mapping_slot(book_key.as_slice(), ORDERBOOKS);
         let base = storage.sload(address, orderbook_slot + Self::BASE_OFFSET)?;
 
         Ok(base != U256::ZERO)
+=======
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        let base = Tokens::read_at_offset(
+            contract,
+            orderbook_base_slot,
+            __packing_orderbook::BASE_SLOT,
+        )?;
+
+        Ok(base != Address::ZERO)
+    }
+
+    /// Read a TickLevel from the bids mapping at a specific tick
+    pub fn read_bid_tick_level<S: StorageOps>(
+        storage: &mut S,
+        book_key: B256,
+        tick: i16,
+    ) -> Result<TickLevel, TempoPrecompileError> {
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        Orders::read_at_offset(
+            storage,
+            orderbook_base_slot,
+            __packing_orderbook::BIDS_SLOT,
+            tick,
+        )
+    }
+
+    /// Write a TickLevel to the bids mapping at a specific tick
+    pub fn write_bid_tick_level<S: StorageOps>(
+        storage: &mut S,
+        book_key: B256,
+        tick: i16,
+        tick_level: TickLevel,
+    ) -> Result<(), TempoPrecompileError> {
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        Orders::write_at_offset(
+            storage,
+            orderbook_base_slot,
+            __packing_orderbook::BIDS_SLOT,
+            tick,
+            tick_level,
+        )
+    }
+
+    /// Delete a TickLevel from the bids mapping at a specific tick
+    pub fn delete_bid_tick_level<S: StorageOps>(
+        storage: &mut S,
+        book_key: B256,
+        tick: i16,
+    ) -> Result<(), TempoPrecompileError> {
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        Orders::delete_at_offset(
+            storage,
+            orderbook_base_slot,
+            __packing_orderbook::BIDS_SLOT,
+            tick,
+        )
+    }
+
+    /// Read a TickLevel from the asks mapping at a specific tick
+    pub fn read_ask_tick_level<S: StorageOps>(
+        storage: &mut S,
+        book_key: B256,
+        tick: i16,
+    ) -> Result<TickLevel, TempoPrecompileError> {
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        Orders::read_at_offset(
+            storage,
+            orderbook_base_slot,
+            __packing_orderbook::ASKS_SLOT,
+            tick,
+        )
+    }
+
+    /// Write a TickLevel to the asks mapping at a specific tick
+    pub fn write_ask_tick_level<S: StorageOps>(
+        storage: &mut S,
+        book_key: B256,
+        tick: i16,
+        tick_level: TickLevel,
+    ) -> Result<(), TempoPrecompileError> {
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        Orders::write_at_offset(
+            storage,
+            orderbook_base_slot,
+            __packing_orderbook::ASKS_SLOT,
+            tick,
+            tick_level,
+        )
+    }
+
+    /// Delete a TickLevel from the asks mapping at a specific tick
+    pub fn delete_ask_tick_level<S: StorageOps>(
+        storage: &mut S,
+        book_key: B256,
+        tick: i16,
+    ) -> Result<(), TempoPrecompileError> {
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        Orders::delete_at_offset(
+            storage,
+            orderbook_base_slot,
+            __packing_orderbook::ASKS_SLOT,
+            tick,
+        )
+>>>>>>> 2909451 (chore(precompiles): storable macro cleanup (#809))
     }
 }
 
