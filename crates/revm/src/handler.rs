@@ -1132,6 +1132,7 @@ mod tests {
         primitives::hardfork::SpecId,
         state::Account,
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
         let db = CacheDB::new(EmptyDB::default());
@@ -1161,7 +1162,7 @@ mod tests {
     #[test]
     fn test_get_fee_token() -> eyre::Result<()> {
         let journal = create_test_journal();
-        let mut ctx = TempoContext::new(CacheDB::new(EmptyDB::default()), SpecId::default())
+        let mut ctx = TempoContext::new(CacheDB::new(EmptyDB::default()), TempoHardfork::default())
             .with_new_journal(journal);
         let user = Address::random();
         ctx.tx.inner.caller = user;
@@ -1223,7 +1224,7 @@ mod tests {
         use tempo_primitives::transaction::{AASignature, Call};
 
         // Test that AA tx with secp256k1 and single call matches normal tx + per-call overhead
-        let spec = RevmSpecId::CANCUN;
+        let spec = SpecId::CANCUN;
         let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
         let to = Address::random();
 
@@ -1272,7 +1273,7 @@ mod tests {
         use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
-        let spec = RevmSpecId::CANCUN;
+        let spec = SpecId::CANCUN;
         let calldata = Bytes::from(vec![1, 2, 3]); // 3 non-zero bytes
 
         let calls = vec![
@@ -1330,7 +1331,7 @@ mod tests {
             AASignature, Call, aa_signature::P256SignatureWithPreHash,
         };
 
-        let spec = RevmSpecId::CANCUN;
+        let spec = SpecId::CANCUN;
         let calldata = Bytes::from(vec![1, 2]);
 
         let call = Call {
@@ -1377,7 +1378,7 @@ mod tests {
         use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
-        let spec = RevmSpecId::CANCUN; // Post-Shanghai
+        let spec = SpecId::CANCUN; // Post-Shanghai
         let initcode = Bytes::from(vec![0x60, 0x80]); // 2 bytes
 
         let call = Call {
@@ -1417,7 +1418,6 @@ mod tests {
         use alloy_primitives::{Bytes, TxKind};
         use tempo_primitives::transaction::{AASignature, Call};
 
-        let spec = RevmSpecId::CANCUN;
         let calldata = Bytes::from(vec![1]);
 
         let call = Call {
@@ -1452,7 +1452,7 @@ mod tests {
         use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
-        let spec = RevmSpecId::CANCUN;
+        let spec = SpecId::CANCUN;
         let calldata = Bytes::from(vec![]);
 
         let call = Call {
@@ -1494,7 +1494,7 @@ mod tests {
         use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
-        let spec = RevmSpecId::PRAGUE;
+        let spec = SpecId::PRAGUE;
         let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
 
         let call = Call {
@@ -1535,7 +1535,7 @@ mod tests {
 
         // Create a test context with a transaction that has a non-zero value
         let db = CacheDB::new(EmptyDB::default());
-        let ctx = TempoContext::new(db, SpecId::CANCUN);
+        let ctx = TempoContext::new(db, TempoHardfork::default());
         let mut evm = TempoEvm::new(ctx, ());
 
         // Set a non-zero value on the transaction

@@ -192,7 +192,6 @@ mod tests {
         ExecuteEvm,
         context::{ContextTr, TxEnv},
         database::{CacheDB, EmptyDB},
-        primitives::hardfork::SpecId,
         state::{AccountInfo, Bytecode},
     };
     use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
@@ -203,7 +202,7 @@ mod tests {
     #[test]
     fn test_auto_7702_delegation() -> eyre::Result<()> {
         let db = CacheDB::new(EmptyDB::new());
-        let mut ctx = TempoContext::new(db, SpecId::default());
+        let mut ctx = TempoContext::new(db, TempoHardfork::default());
 
         // HACK: initialize default fee token and linkingUSD so that fee token validation passes
         let mut storage = EvmPrecompileStorageProvider::new_max_gas(
@@ -242,10 +241,11 @@ mod tests {
     #[test]
     fn test_access_millis_timestamp() -> eyre::Result<()> {
         let db = CacheDB::new(EmptyDB::new());
-        let mut ctx = TempoContext::new(db, SpecId::default()).modify_block_chained(|block| {
-            block.timestamp = U256::from(1000);
-            block.timestamp_millis_part = 100;
-        });
+        let mut ctx =
+            TempoContext::new(db, TempoHardfork::default()).modify_block_chained(|block| {
+                block.timestamp = U256::from(1000);
+                block.timestamp_millis_part = 100;
+            });
         let contract = Address::random();
 
         // HACK: initialize default fee token and linkingUSD so that fee token validation passes
