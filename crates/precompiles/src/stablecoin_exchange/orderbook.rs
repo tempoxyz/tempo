@@ -80,8 +80,10 @@ pub struct Orderbook {
     /// Quote token address
     pub quote: Address,
     /// Bid orders by tick
+    #[allow(dead_code)]
     bids: Mapping<i16, TickLevel, DummySlot>,
     /// Ask orders by tick
+    #[allow(dead_code)]
     asks: Mapping<i16, TickLevel, DummySlot>,
     /// Best bid tick for highest bid price
     pub best_bid_tick: i16,

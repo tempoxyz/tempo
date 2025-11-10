@@ -15,8 +15,8 @@ use reth_rpc_eth_types::{EthApiError, error::FromEthApiError};
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
     stablecoin_exchange::{
-        Order as PrecompileOrder, Orderbook as PrecompileOrderbook, TickLevel, StablecoinExchange,
-        TickBitmap, orderbook::compute_book_key,
+        Order as PrecompileOrder, Orderbook as PrecompileOrderbook, StablecoinExchange, TickBitmap,
+        TickLevel, orderbook::compute_book_key,
     },
     storage::evm::EvmPrecompileStorageProvider,
 };
@@ -83,11 +83,13 @@ impl<
             let mut all_orders: Vec<Order> = Vec::new();
             let mut next_cursor = None;
 
+            // TODO: Fix borrowing conflict between exchange and BookIterator both using storage mutably
+            // Need to restructure so that storage isn't borrowed twice
+            
             // Iterate through books collecting orders until we reach the limit
             for book_key in book_keys {
-                // TODO: Fix orderbook loading from storage
-                // let orderbook = PrecompileOrderbook::from_storage(book_key, storage, exchange_address)?;
-                let orderbook: PrecompileOrderbook = todo!("Need to implement orderbook loading from storage");
+                // let orderbook = exchange.books(book_key)?;
+                let orderbook: PrecompileOrderbook = todo!("Fix borrowing conflict with storage");
 
                 // Check if this book matches the base/quote filter
                 if !orderbook.matches_tokens(base_token, quote_token) {
@@ -100,14 +102,15 @@ impl<
                     None
                 };
 
-                let book_iterator = BookIterator::new(
-                    storage,
-                    &orderbook,
-                    exchange_address,
-                    is_bid,
-                    starting_order,
-                    params.filters.clone(),
-                );
+                // let book_iterator = BookIterator::new(
+                //     storage,
+                //     &orderbook,
+                //     exchange_address,
+                //     is_bid,
+                //     starting_order,
+                //     params.filters.clone(),
+                // );
+                let book_iterator: BookIterator = todo!("Fix borrowing conflict with storage");
 
                 // Collect orders from this book, up to limit + 1
                 for order_result in book_iterator {
@@ -475,23 +478,16 @@ impl<'a, 'b> BookIterator<'a, 'b> {
 
     /// Get a PrecompileOrder from an order ID
     pub fn get_order(&mut self, order_id: u128) -> Result<PrecompileOrder, DexApiError> {
-        // TODO: Fix order loading from storage
-        // PrecompileOrder::from_storage(order_id, self.storage, self.exchange_address)
-        //     .map_err(DexApiError::Precompile)
-        todo!("Need to implement order loading from storage")
+        let mut exchange = StablecoinExchange::new(self.storage);
+        exchange
+            .get_order(order_id)
+            .map_err(DexApiError::Precompile)
     }
 
-    /// Get a PriceLevel from a tick
+    /// Get a TickLevel from a tick
     pub fn get_price_level(&mut self, tick: i16) -> Result<TickLevel, DexApiError> {
-        // TODO: Fix price level loading from storage
-        // PriceLevel::from_storage(
-        //     self.storage,
-        //     self.exchange_address,
-        //     self.book_key,
-        //     tick,
-        //     self.bids,
-        // )
-        // .map_err(DexApiError::Precompile)
+        // TODO: Implement TickLevel loading - use StablecoinExchange.get_price_level(base, tick, is_bid)
+        // but need to pass the base token from self.orderbook.base
         todo!("Need to implement price level loading from storage")
     }
 
