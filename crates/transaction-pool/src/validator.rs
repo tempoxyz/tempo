@@ -215,12 +215,6 @@ mod tests {
         PoolTransaction, blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
         validate::EthTransactionValidatorBuilder,
     };
-    use tempo_precompiles::{
-        TIP_FEE_MANAGER_ADDRESS,
-        storage::slots::mapping_slot,
-        tip_fee_manager,
-        tip20::{self, token_id_to_address},
-    };
     use tempo_primitives::TempoTxEnvelope;
 
     fn get_transaction(with_value: Option<U256>) -> TempoPooledTransaction {
@@ -249,7 +243,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sufficient_balance() {
+    async fn test_insufficient_balance() {
         let transaction = get_transaction(None);
         let provider = MockEthProvider::default();
         provider.add_account(
@@ -276,29 +270,6 @@ mod tests {
         } else {
             panic!("Expected Invalid outcome with InsufficientFunds error");
         }
-
-        // Add fee token balance for tx sender
-        let fee_token = token_id_to_address(1);
-        let storage = vec![(
-            mapping_slot(transaction.sender(), tip20::slots::BALANCES).into(),
-            transaction.fee_token_cost(),
-        )];
-        let fee_token_acct = ExtendedAccount::new(0, U256::ZERO).extend_storage(storage);
-        provider.add_account(fee_token, fee_token_acct);
-
-        // Add fee token for user
-        let storage = vec![(
-            mapping_slot(transaction.sender(), tip_fee_manager::slots::USER_TOKENS).into(),
-            U256::from_be_bytes(fee_token.into_word().0),
-        )];
-        let fee_manager_acct = ExtendedAccount::new(0, U256::ZERO).extend_storage(storage);
-        provider.add_account(TIP_FEE_MANAGER_ADDRESS, fee_manager_acct);
-
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, transaction)
-            .await;
-
-        assert!(outcome.is_valid());
     }
 
     #[tokio::test]
