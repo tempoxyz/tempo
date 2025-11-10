@@ -10,6 +10,7 @@ pub struct HashMapStorageProvider {
     pub events: HashMap<Address, Vec<LogData>>,
     chain_id: u64,
     timestamp: U256,
+    beneficiary: Address,
 }
 
 impl HashMapStorageProvider {
@@ -26,6 +27,7 @@ impl HashMapStorageProvider {
                     .unwrap()
                     .as_secs(),
             ),
+            beneficiary: Address::ZERO,
         }
     }
 
@@ -37,6 +39,10 @@ impl HashMapStorageProvider {
     pub fn set_timestamp(&mut self, timestamp: U256) {
         self.timestamp = timestamp;
     }
+
+    pub fn set_beneficiary(&mut self, beneficiary: Address) {
+        self.beneficiary = beneficiary;
+    }
 }
 
 impl PrecompileStorageProvider for HashMapStorageProvider {
@@ -46,6 +52,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn timestamp(&self) -> U256 {
         self.timestamp
+    }
+
+    fn beneficiary(&self) -> Address {
+        self.beneficiary
     }
 
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {

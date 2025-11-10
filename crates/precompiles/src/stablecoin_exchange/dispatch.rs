@@ -12,12 +12,7 @@ use crate::{
 };
 
 impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> {
-    fn call(
-        &mut self,
-        calldata: &[u8],
-        msg_sender: Address,
-        _beneficiary: Address,
-    ) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
@@ -322,7 +317,7 @@ mod tests {
         let calldata = call.abi_encode();
 
         // Should dispatch to place function (may fail due to business logic, but dispatch works)
-        let result = exchange.call(&Bytes::from(calldata), sender, Address::default());
+        let result = exchange.call(&Bytes::from(calldata), sender);
         // Ok indicates successful dispatch (either success or TempoPrecompileError)
         assert!(result.is_ok());
     }
@@ -346,7 +341,7 @@ mod tests {
         let calldata = call.abi_encode();
 
         // Should dispatch to place_flip function
-        let result = exchange.call(&Bytes::from(calldata), sender, Address::default());
+        let result = exchange.call(&Bytes::from(calldata), sender);
         // Ok indicates successful dispatch (either success or TempoPrecompileError)
         assert!(result.is_ok());
     }
@@ -365,7 +360,7 @@ mod tests {
         let calldata = call.abi_encode();
 
         // Should dispatch to balance_of function and succeed (returns 0 for uninitialized)
-        let result = exchange.call(&Bytes::from(calldata), sender, Address::default());
+        let result = exchange.call(&Bytes::from(calldata), sender);
         assert!(result.is_ok());
     }
 
@@ -382,7 +377,7 @@ mod tests {
         let calldata = call.abi_encode();
 
         // Should dispatch to create_pair function
-        let result = exchange.call(&Bytes::from(calldata), sender, Address::default());
+        let result = exchange.call(&Bytes::from(calldata), sender);
         // Ok indicates successful dispatch (either success or TempoPrecompileError)
         assert!(result.is_ok());
     }
@@ -403,7 +398,7 @@ mod tests {
         let calldata = call.abi_encode();
 
         // Should dispatch to withdraw function
-        let result = exchange.call(&Bytes::from(calldata), sender, Address::default());
+        let result = exchange.call(&Bytes::from(calldata), sender);
         // Ok indicates successful dispatch (either success or TempoPrecompileError)
         assert!(result.is_ok());
     }
@@ -420,7 +415,7 @@ mod tests {
         let calldata = call.abi_encode();
 
         // Should dispatch to cancel function
-        let result = exchange.call(&Bytes::from(calldata), sender, Address::default());
+        let result = exchange.call(&Bytes::from(calldata), sender);
         // Ok indicates successful dispatch (either success or TempoPrecompileError)
         assert!(result.is_ok());
     }
@@ -445,7 +440,7 @@ mod tests {
         let calldata = call.abi_encode();
 
         // Should dispatch to swap_exact_amount_in function and succeed
-        let result = exchange.call(&Bytes::from(calldata), user, Address::default());
+        let result = exchange.call(&Bytes::from(calldata), user);
         assert!(result.is_ok());
     }
 
@@ -475,7 +470,7 @@ mod tests {
         let calldata = call.abi_encode();
 
         // Should dispatch to swap_exact_amount_out function and succeed
-        let result = exchange.call(&Bytes::from(calldata), user, Address::default());
+        let result = exchange.call(&Bytes::from(calldata), user);
         assert!(result.is_ok());
     }
 
@@ -495,7 +490,7 @@ mod tests {
         let calldata = call.abi_encode();
 
         // Should dispatch to quote_swap_exact_amount_in function and succeed
-        let result = exchange.call(&Bytes::from(calldata), sender, Address::default());
+        let result = exchange.call(&Bytes::from(calldata), sender);
         assert!(result.is_ok());
     }
 
@@ -521,7 +516,7 @@ mod tests {
         let calldata = call.abi_encode();
 
         // Should dispatch to quote_swap_exact_amount_out function and succeed
-        let result = exchange.call(&Bytes::from(calldata), sender, Address::default());
+        let result = exchange.call(&Bytes::from(calldata), sender);
         assert!(result.is_ok());
     }
 
@@ -536,7 +531,7 @@ mod tests {
         let call = IStablecoinExchange::activeOrderIdCall {};
         let calldata = call.abi_encode();
 
-        let result = exchange.call(&Bytes::from(calldata), sender, Address::default());
+        let result = exchange.call(&Bytes::from(calldata), sender);
         assert!(result.is_ok());
 
         let output = result.unwrap();
@@ -555,7 +550,7 @@ mod tests {
         let call = IStablecoinExchange::pendingOrderIdCall {};
         let calldata = call.abi_encode();
 
-        let result = exchange.call(&Bytes::from(calldata), sender, Address::default());
+        let result = exchange.call(&Bytes::from(calldata), sender);
         assert!(result.is_ok());
 
         let output = result.unwrap();
@@ -574,7 +569,7 @@ mod tests {
         // Use an invalid selector that doesn't match any function
         let calldata = Bytes::from([0x12, 0x34, 0x56, 0x78]);
 
-        let result = exchange.call(&calldata, sender, Address::default());
+        let result = exchange.call(&calldata, sender);
         assert!(matches!(result, Err(PrecompileError::Other(_))));
     }
 
@@ -589,7 +584,7 @@ mod tests {
         // Use calldata that's too short to contain a selector
         let calldata = Bytes::from([0x12, 0x34]);
 
-        let result = exchange.call(&calldata, sender, Address::default());
+        let result = exchange.call(&calldata, sender);
         assert!(matches!(result, Err(PrecompileError::Other(_))));
     }
 }

@@ -9,12 +9,7 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
-    fn call(
-        &mut self,
-        calldata: &[u8],
-        msg_sender: Address,
-        _benficiary: Address,
-    ) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
@@ -264,15 +259,11 @@ mod tests {
         let sender = Address::from([1u8; 20]);
 
         // Test invalid selector
-        let result = token.call(
-            &Bytes::from([0x12, 0x34, 0x56, 0x78]),
-            sender,
-            Address::default(),
-        );
+        let result = token.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), sender);
         assert!(matches!(result, Err(PrecompileError::Other(_))));
 
         // Test insufficient calldata
-        let result = token.call(&Bytes::from([0x12, 0x34]), sender, Address::default());
+        let result = token.call(&Bytes::from([0x12, 0x34]), sender);
         assert!(matches!(result, Err(PrecompileError::Other(_))));
     }
     #[test]
@@ -318,9 +309,7 @@ mod tests {
         let balance_of_call = ITIP20::balanceOfCall { account };
         let calldata = balance_of_call.abi_encode();
 
-        let result = token
-            .call(&Bytes::from(calldata), sender, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), sender).unwrap();
         // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
         assert_eq!(result.gas_used, 0);
 
@@ -369,9 +358,7 @@ mod tests {
         let calldata = mint_call.abi_encode();
 
         // Execute mint
-        let result = token
-            .call(&Bytes::from(calldata), sender, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), sender).unwrap();
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
 
@@ -440,9 +427,7 @@ mod tests {
         let calldata = transfer_call.abi_encode();
 
         // Execute transfer
-        let result = token
-            .call(&Bytes::from(calldata), sender, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), sender).unwrap();
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
 
@@ -511,9 +496,7 @@ mod tests {
             amount: approve_amount,
         };
         let calldata = approve_call.abi_encode();
-        let result = token
-            .call(&Bytes::from(calldata), owner, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), owner).unwrap();
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
         let success = bool::abi_decode(&result.bytes).unwrap();
@@ -530,9 +513,7 @@ mod tests {
             amount: transfer_amount,
         };
         let calldata = transfer_from_call.abi_encode();
-        let result = token
-            .call(&Bytes::from(calldata), spender, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), spender).unwrap();
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
         let success = bool::abi_decode(&result.bytes).unwrap();
@@ -600,9 +581,7 @@ mod tests {
         // Pause the token
         let pause_call = ITIP20::pauseCall {};
         let calldata = pause_call.abi_encode();
-        let result = token
-            .call(&Bytes::from(calldata), pauser, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), pauser).unwrap();
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
 
@@ -612,9 +591,7 @@ mod tests {
         // Unpause the token
         let unpause_call = ITIP20::unpauseCall {};
         let calldata = unpause_call.abi_encode();
-        let result = token
-            .call(&Bytes::from(calldata), unpauser, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), unpauser).unwrap();
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
 
@@ -686,9 +663,7 @@ mod tests {
             amount: burn_amount,
         };
         let calldata = burn_call.abi_encode();
-        let result = token
-            .call(&Bytes::from(calldata), burner, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), burner).unwrap();
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
 
@@ -718,9 +693,7 @@ mod tests {
         // Test name()
         let name_call = ITIP20::nameCall {};
         let calldata = name_call.abi_encode();
-        let result = token
-            .call(&Bytes::from(calldata), caller, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), caller).unwrap();
         // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
         assert_eq!(result.gas_used, 0);
         let name = String::abi_decode(&result.bytes).unwrap();
@@ -729,9 +702,7 @@ mod tests {
         // Test symbol()
         let symbol_call = ITIP20::symbolCall {};
         let calldata = symbol_call.abi_encode();
-        let result = token
-            .call(&Bytes::from(calldata), caller, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), caller).unwrap();
         // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
         assert_eq!(result.gas_used, 0);
         let symbol = String::abi_decode(&result.bytes).unwrap();
@@ -740,9 +711,7 @@ mod tests {
         // Test decimals()
         let decimals_call = ITIP20::decimalsCall {};
         let calldata = decimals_call.abi_encode();
-        let result = token
-            .call(&Bytes::from(calldata), caller, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), caller).unwrap();
         // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
         assert_eq!(result.gas_used, 0);
         let decimals = ITIP20::decimalsCall::abi_decode_returns(&result.bytes).unwrap();
@@ -751,9 +720,7 @@ mod tests {
         // Test currency()
         let currency_call = ITIP20::currencyCall {};
         let calldata = currency_call.abi_encode();
-        let result = token
-            .call(&Bytes::from(calldata), caller, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), caller).unwrap();
         // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
         assert_eq!(result.gas_used, 0);
         let currency = String::abi_decode(&result.bytes).unwrap();
@@ -762,9 +729,7 @@ mod tests {
         // Test totalSupply()
         let total_supply_call = ITIP20::totalSupplyCall {};
         let calldata = total_supply_call.abi_encode();
-        let result = token
-            .call(&Bytes::from(calldata), caller, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), caller).unwrap();
         // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
         assert_eq!(result.gas_used, 0);
         let total_supply = U256::abi_decode(&result.bytes).unwrap();
@@ -804,9 +769,7 @@ mod tests {
             newSupplyCap: supply_cap,
         };
         let calldata = set_cap_call.abi_encode();
-        let result = token
-            .call(&Bytes::from(calldata), admin, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), admin).unwrap();
 
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
@@ -817,7 +780,7 @@ mod tests {
             amount: mint_amount,
         };
         let calldata = mint_call.abi_encode();
-        let output = token.call(&Bytes::from(calldata), admin, Address::default())?;
+        let output = token.call(&Bytes::from(calldata), admin)?;
         assert!(output.reverted);
 
         let expected: Bytes = TIP20Error::supply_cap_exceeded().selector().into();
@@ -850,9 +813,7 @@ mod tests {
             account: user1,
         };
         let calldata = grant_call.abi_encode();
-        let result = token
-            .call(&Bytes::from(calldata), admin, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), admin).unwrap();
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
 
@@ -862,9 +823,7 @@ mod tests {
             account: user1,
         };
         let calldata = has_role_call.abi_encode();
-        let result = token
-            .call(&Bytes::from(calldata), admin, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), admin).unwrap();
         // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
         assert_eq!(result.gas_used, 0);
         let has_role = bool::abi_decode(&result.bytes).unwrap();
@@ -876,9 +835,7 @@ mod tests {
             account: user2,
         };
         let calldata = has_role_call.abi_encode();
-        let result = token
-            .call(&Bytes::from(calldata), admin, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), admin).unwrap();
         let has_role = bool::abi_decode(&result.bytes).unwrap();
         assert!(!has_role);
 
@@ -888,19 +845,13 @@ mod tests {
             amount: U256::from(100),
         };
         let calldata = mint_call.abi_encode();
-        let output = token.call(
-            &Bytes::from(calldata.clone()),
-            unauthorized,
-            Address::default(),
-        )?;
+        let output = token.call(&Bytes::from(calldata.clone()), unauthorized)?;
         assert!(output.reverted);
         let expected: Bytes = RolesAuthError::unauthorized().selector().into();
         assert_eq!(output.bytes, expected);
 
         // Test authorized mint (should succeed)
-        let result = token
-            .call(&Bytes::from(calldata), user1, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), user1).unwrap();
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
 
@@ -954,9 +905,7 @@ mod tests {
             memo,
         };
         let calldata = transfer_call.abi_encode();
-        let result = token
-            .call(&Bytes::from(calldata), sender, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), sender).unwrap();
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
 
@@ -992,9 +941,7 @@ mod tests {
             newPolicyId: new_policy_id,
         };
         let calldata = change_policy_call.abi_encode();
-        let result = token
-            .call(&Bytes::from(calldata), admin, Address::default())
-            .unwrap();
+        let result = token.call(&Bytes::from(calldata), admin).unwrap();
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
 
@@ -1004,7 +951,7 @@ mod tests {
         // Non-admin cannot change transfer policy ID
         let change_policy_call = ITIP20::changeTransferPolicyIdCall { newPolicyId: 100 };
         let calldata = change_policy_call.abi_encode();
-        let output = token.call(&Bytes::from(calldata), non_admin, Address::default())?;
+        let output = token.call(&Bytes::from(calldata), non_admin)?;
         assert!(output.reverted);
         let expected: Bytes = RolesAuthError::unauthorized().selector().into();
         assert_eq!(output.bytes, expected);

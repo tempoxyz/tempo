@@ -40,10 +40,7 @@ use alloy::{
     sol_types::{SolCall, SolError},
 };
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
-use revm::{
-    context::Block,
-    precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
-};
+use revm::precompile::{PrecompileId, PrecompileOutput, PrecompileResult};
 
 pub use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, NONCE_PRECOMPILE_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
@@ -62,12 +59,7 @@ pub fn input_cost(calldata_len: usize) -> u64 {
 }
 
 pub trait Precompile {
-    fn call(
-        &mut self,
-        calldata: &[u8],
-        msg_sender: Address,
-        beneficiary: Address,
-    ) -> PrecompileResult;
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
 }
 
 pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64) {
@@ -114,8 +106,7 @@ macro_rules! tempo_precompile {
                     DelegateCallNotAllowed {}.abi_encode().into(),
                 ));
             }
-            let beneficiary = $input.internals.block_env().beneficiary();
-            $impl.call($input.data, $input.caller, beneficiary)
+            $impl.call($input.data, $input.caller)
         })
     };
 }
