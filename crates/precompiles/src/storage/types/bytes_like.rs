@@ -250,7 +250,7 @@ fn calc_string_length(slot_value: U256, is_long: bool) -> usize {
         // Long string: slot stores (length * 2 + 1)
         // Extract length: (value - 1) / 2
         let length_times_two_plus_one: U256 = slot_value;
-        let length_times_two: U256 = length_times_two_plus_one - U256::from(1);
+        let length_times_two: U256 = length_times_two_plus_one - U256::ONE;
         let length_u256: U256 = length_times_two >> 1;
         length_u256.to::<usize>()
     } else {

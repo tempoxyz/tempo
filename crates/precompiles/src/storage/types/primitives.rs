@@ -558,14 +558,14 @@ mod tests {
 
         // Verify both slots are used
         let slot0 = contract.sload(base_slot).unwrap();
-        let slot1 = contract.sload(base_slot + U256::from(1)).unwrap();
+        let slot1 = contract.sload(base_slot + U256::ONE).unwrap();
         assert_ne!(slot0, U256::ZERO, "Slot 0 should be non-zero");
         assert_ne!(slot1, U256::ZERO, "Slot 1 should be non-zero");
 
         // Verify delete clears both slots
         <[u64; 5]>::delete(&mut contract, base_slot).unwrap();
         let slot0_after = contract.sload(base_slot).unwrap();
-        let slot1_after = contract.sload(base_slot + U256::from(1)).unwrap();
+        let slot1_after = contract.sload(base_slot + U256::ONE).unwrap();
         assert_eq!(slot0_after, U256::ZERO, "Slot 0 not cleared");
         assert_eq!(slot1_after, U256::ZERO, "Slot 1 not cleared");
     }

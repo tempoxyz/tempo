@@ -55,15 +55,12 @@ fn test_struct_storage() {
         s.storage.sload(s.address, U256::from(12)),
         Ok(U256::from(3000))
     ); // block.field3
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(1)),
-        Ok(U256::from(200))
-    ); // field_b
+    assert_eq!(s.storage.sload(s.address, U256::ONE), Ok(U256::from(200))); // field_b
 
     // Verify slots module
     assert_eq!(slots::FIELD_A, U256::from(0));
     assert_eq!(slots::BLOCK, U256::from(10));
-    assert_eq!(slots::FIELD_B, U256::from(1));
+    assert_eq!(slots::FIELD_B, U256::ONE);
     assert_eq!(slots::ADDRESS_MAPPING, U256::from(2));
     assert_eq!(slots::BLOCK_MAPPING, U256::from(3));
 
@@ -181,10 +178,7 @@ fn test_delete_struct_field_in_contract() {
         s.storage.sload(s.address, U256::from(12)),
         Ok(U256::from(3000))
     ); // block.field3
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(1)),
-        Ok(U256::from(200))
-    ); // field_b
+    assert_eq!(s.storage.sload(s.address, U256::ONE), Ok(U256::from(200))); // field_b
 
     // Delete the block field using the generated delete method
     {
@@ -202,10 +196,7 @@ fn test_delete_struct_field_in_contract() {
         s.storage.sload(s.address, U256::from(0)),
         Ok(U256::from(100))
     ); // field_a
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(1)),
-        Ok(U256::from(200))
-    ); // field_b
+    assert_eq!(s.storage.sload(s.address, U256::ONE), Ok(U256::from(200))); // field_b
 
     // Verify loading the block returns default values
     {
@@ -271,7 +262,7 @@ fn test_user_profile_struct_in_contract() {
     // Verify slots module
     assert_eq!(slots::COUNTER, U256::from(0));
     assert_eq!(slots::PROFILE, U256::from(20));
-    assert_eq!(slots::FLAG, U256::from(1));
+    assert_eq!(slots::FLAG, U256::ONE);
 
     // Test delete
     {
@@ -285,7 +276,7 @@ fn test_user_profile_struct_in_contract() {
 
     // Verify other fields unchanged
     assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::from(5)));
-    assert_eq!(s.storage.sload(s.address, U256::from(1)), Ok(U256::from(1)));
+    assert_eq!(s.storage.sload(s.address, U256::ONE), Ok(U256::ONE));
 
     // Verify loading returns defaults
     {

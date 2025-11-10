@@ -60,7 +60,7 @@ pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<AllocatedF
         } else if let Some(base) = field.base_slot {
             // Explicit base slot, resets auto-assignment chain
             let slot = SlotAssignment::Manual(base);
-            last_auto_slot = base + U256::from(1);
+            last_auto_slot = base + U256::ONE;
             slot
         } else {
             // Auto-assignment with packing support
@@ -71,7 +71,7 @@ pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<AllocatedF
             let base_slot = if idx == 0 || !is_primitive {
                 // First field or non-primitive: start new slot
                 let slot = last_auto_slot;
-                last_auto_slot += U256::from(1);
+                last_auto_slot += U256::ONE;
                 slot
             } else {
                 // Subsequent primitive: check if previous field was also primitive
@@ -89,7 +89,7 @@ pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<AllocatedF
                 // Otherwise, start new slot
                 else {
                     let slot = last_auto_slot;
-                    last_auto_slot += U256::from(1);
+                    last_auto_slot += U256::ONE;
                     slot
                 }
             };
@@ -542,7 +542,7 @@ fn gen_packing_constants_for_slots_module(
                         if prev.kind.is_mapping() || is_dynamic_type(&prev.info.ty) {
                             // Previous field occupies exactly 1 full slot
                             let slot_expr = quote! {
-                                #prev_slot.saturating_add(::alloy::primitives::U256::from_limbs([1, 0, 0, 0]))
+                                #prev_slot.saturating_add(::alloy::primitives::U256::ONE)
                             };
                             (slot_expr, quote! { 0 })
                         } else if is_custom_struct(&prev.info.ty) {
@@ -569,20 +569,9 @@ fn gen_packing_constants_for_slots_module(
                                 || is_array_type(&allocated.info.ty)
                                 || is_custom_struct(&allocated.info.ty)
                             {
-                                // Current is non-primitive: must start on slot boundary
+                                // Current is non-primitive: must start on next slot boundary
                                 let slot_expr = quote! {
-                                    {
-                                        if #prev_offset + #prev_bytes >= 32 {
-                                            // Previous field filled or exceeded slot boundary
-                                            #prev_slot.saturating_add(::alloy::primitives::U256::from_limbs([1, 0, 0, 0]))
-                                        } else if #prev_offset == 0 {
-                                            // Previous field started at offset 0 and didn't fill slot
-                                            #prev_slot
-                                        } else {
-                                            // Previous field was packed (offset > 0)
-                                            #prev_slot.saturating_add(::alloy::primitives::U256::from_limbs([1, 0, 0, 0]))
-                                        }
-                                    }
+                                    #prev_slot.saturating_add(::alloy::primitives::U256::ONE)
                                 };
                                 (slot_expr, quote! { 0 })
                             } else {
@@ -593,7 +582,7 @@ fn gen_packing_constants_for_slots_module(
                                         if #prev_offset + #prev_bytes + #bytes_const <= 32 {
                                             #prev_slot
                                         } else {
-                                            #prev_slot.saturating_add(::alloy::primitives::U256::from_limbs([1, 0, 0, 0]))
+                                            #prev_slot.saturating_add(::alloy::primitives::U256::ONE)
                                         }
                                     }
                                 };
@@ -667,7 +656,7 @@ fn generate_slot_count_expr(kind: &FieldKind<'_>, ty: &Type) -> proc_macro2::Tok
             quote! { ::alloy::primitives::U256::from_limbs([<#ty>::SLOT_COUNT as u64, 0u64, 0u64, 0u64]) }
         }
         _ => {
-            quote! { ::alloy::primitives::U256::from_limbs([1, 0, 0, 0]) }
+            quote! { ::alloy::primitives::U256::ONE }
         }
     }
 }

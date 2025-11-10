@@ -95,7 +95,7 @@ sol! {
         }
 
         struct UserRewardInfo {
-            address delegatedRecipient;
+            address rewardRecipient;
             uint256 rewardPerToken;
             uint256 rewardBalance;
         }

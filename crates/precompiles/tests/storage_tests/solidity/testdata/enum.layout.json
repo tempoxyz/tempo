@@ -6,7 +6,7 @@
           {
             "astId": 7,
             "contract": "tests/storage_tests/solidity/testdata/enum.sol:Enums",
-            "label": "field_a",
+            "label": "fieldA",
             "offset": 0,
             "slot": "0",
             "type": "t_uint16"
@@ -14,15 +14,15 @@
           {
             "astId": 10,
             "contract": "tests/storage_tests/solidity/testdata/enum.sol:Enums",
-            "label": "field_b",
+            "label": "fieldB",
             "offset": 2,
             "slot": "0",
-            "type": "t_enum(Auth)5"
+            "type": "t_enum(PolicyType)5"
           },
           {
             "astId": 12,
             "contract": "tests/storage_tests/solidity/testdata/enum.sol:Enums",
-            "label": "field_c",
+            "label": "fieldC",
             "offset": 3,
             "slot": "0",
             "type": "t_address"
@@ -34,7 +34,7 @@
             "label": "address",
             "numberOfBytes": "20"
           },
-          "t_enum(Auth)5": {
+          "t_enum(PolicyType)5": {
             "encoding": "inplace",
             "label": "enum Enums.PolicyType",
             "numberOfBytes": "1"

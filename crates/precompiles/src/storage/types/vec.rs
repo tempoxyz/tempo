@@ -842,7 +842,7 @@ mod tests {
         );
 
         // Verify slot 1 has the 17th element (1600 = 0x0640)
-        let slot1_addr = data_start + U256::from(1);
+        let slot1_addr = data_start + U256::ONE;
         let slot1_value = contract.sload(slot1_addr).unwrap();
 
         let expected_slot1 = gen_slot_from(&[
@@ -917,7 +917,7 @@ mod tests {
         );
 
         // Verify slot 1 has exactly 3 elements at rightmost positions
-        let slot1_addr = data_start + U256::from(1);
+        let slot1_addr = data_start + U256::ONE;
         let slot1_value = contract.sload(slot1_addr).unwrap();
 
         let expected_slot1 = gen_slot_from(&[
@@ -1013,7 +1013,7 @@ mod tests {
         );
 
         // Verify slot 1: Address(0xBB...) right-aligned with 12-byte padding
-        let slot1_addr = data_start + U256::from(1);
+        let slot1_addr = data_start + U256::ONE;
         let slot1_value = contract.sload(slot1_addr).unwrap();
         let expected_slot1 = gen_slot_from(&["0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"]);
         assert_eq!(
@@ -1072,7 +1072,7 @@ mod tests {
         );
 
         // Verify slot 1: TestStruct { a: 200, b: 2 }
-        let slot1_addr = data_start + U256::from(1);
+        let slot1_addr = data_start + U256::ONE;
         let slot1_value = contract.sload(slot1_addr).unwrap();
         let expected_slot1 = gen_slot_from(&[
             "0x00000000000000000000000000000002", // field b = 2
@@ -1166,7 +1166,7 @@ mod tests {
         );
 
         // Verify slot 1: second struct
-        let slot1_addr = data_start + U256::from(1);
+        let slot1_addr = data_start + U256::ONE;
         let slot1_value = contract.sload(slot1_addr).unwrap();
         let expected_slot1 = gen_slot_from(&[
             "0x00c8", // value = 200 (offset 2-3, 2 bytes)
@@ -1213,7 +1213,7 @@ mod tests {
         let data_start = calc_data_slot(base_slot);
         assert_ne!(
             data_start,
-            base_slot + U256::from(1),
+            base_slot + U256::ONE,
             "Data should not start immediately after base slot"
         );
 
@@ -1304,7 +1304,7 @@ mod tests {
     //     let base_slot = U256::from(2700);
 
     //     let data: Vec<MultiSlotStruct> = vec![MultiSlotStruct {
-    //         field1: U256::from(1),
+    //         field1: U256::ONE,
     //         field2: U256::from(2),
     //         field3: U256::from(3),
     //     }];

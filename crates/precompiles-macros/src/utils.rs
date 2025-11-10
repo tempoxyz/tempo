@@ -61,17 +61,38 @@ pub(crate) fn to_snake_case(s: &str) -> String {
     result
 }
 
+/// Converts a string from snake_case to camelCase.
+pub(crate) fn to_camel_case(s: &str) -> String {
+    let mut result = String::new();
+    let mut first_word = true;
+
+    for word in s.split('_') {
+        if word.is_empty() {
+            continue;
+        }
+
+        if first_word {
+            result.push_str(word);
+            first_word = false;
+        } else {
+            let mut chars = word.chars();
+            if let Some(first) = chars.next() {
+                result.push_str(&first.to_uppercase().collect::<String>());
+                result.push_str(chars.as_str());
+            }
+        }
+    }
+    result
+}
+
 /// Converts a string from snake_case to PascalCase.
 pub(crate) fn to_pascal_case(s: &str) -> String {
-    s.split('_')
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-            }
-        })
-        .collect()
+    let camel = to_camel_case(s);
+    let mut chars = camel.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+    }
 }
 
 /// Extracts `#[slot(N)]`, `#[base_slot(N)]` attributes from a field's attributes.
@@ -327,7 +348,7 @@ mod tests {
     use syn::parse_quote;
 
     #[test]
-    fn test_normalize_to_snake_case() {
+    fn test_to_snake_case() {
         assert_eq!(to_snake_case("balanceOf"), "balance_of");
         assert_eq!(to_snake_case("transferFrom"), "transfer_from");
         assert_eq!(to_snake_case("name"), "name");
@@ -335,6 +356,17 @@ mod tests {
         assert_eq!(to_snake_case("updateQuoteToken"), "update_quote_token");
         assert_eq!(to_snake_case("DOMAIN_SEPARATOR"), "DOMAIN_SEPARATOR");
         assert_eq!(to_snake_case("ERC20Token"), "erc20_token");
+    }
+
+    #[test]
+    fn test_to_camel_case() {
+        assert_eq!(to_camel_case("balance_of"), "balanceOf");
+        assert_eq!(to_camel_case("transfer_from"), "transferFrom");
+        assert_eq!(to_camel_case("update_quote_token"), "updateQuoteToken");
+        assert_eq!(to_camel_case("name"), "name");
+        assert_eq!(to_camel_case("token"), "token");
+        assert_eq!(to_camel_case("alreadycamelCase"), "alreadycamelCase");
+        assert_eq!(to_camel_case("DOMAIN_SEPARATOR"), "DOMAINSEPARATOR");
     }
 
     #[test]

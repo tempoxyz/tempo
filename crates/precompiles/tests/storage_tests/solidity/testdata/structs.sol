@@ -9,7 +9,7 @@ contract Structs {
         uint64 field3;
     }
 
-    uint256 public field_a; // slot 0
-    TestBlock public block_data; // slots 1-3
-    uint256 public field_b; // slot 4
+    uint256 public fieldA; // slot 0
+    TestBlock public blockData; // slots 1-3
+    uint256 public fieldB; // slot 4
 }

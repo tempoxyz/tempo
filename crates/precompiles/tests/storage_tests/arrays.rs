@@ -38,7 +38,7 @@ fn test_array_storage() {
     // Store data
     {
         let mut layout = Layout::_new(s.address, s.storage());
-        layout.sstore_field_a(U256::from(1)).unwrap();
+        layout.sstore_field_a(U256::ONE).unwrap();
         layout.sstore_small_array(small_array).unwrap();
         layout.sstore_field_b(U256::from(2)).unwrap();
         layout.sstore_large_array(large_array).unwrap();
@@ -47,7 +47,7 @@ fn test_array_storage() {
         layout.sstore_field_d(U256::from(4)).unwrap();
 
         // Verify getters
-        assert_eq!(layout.sload_field_a().unwrap(), U256::from(1));
+        assert_eq!(layout.sload_field_a().unwrap(), U256::ONE);
         assert_eq!(layout.sload_small_array().unwrap(), small_array);
         assert_eq!(layout.sload_field_b().unwrap(), U256::from(2));
         assert_eq!(layout.sload_large_array().unwrap(), large_array);
@@ -57,7 +57,7 @@ fn test_array_storage() {
     }
 
     // Verify actual slot assignments
-    assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::from(1))); // field_a
+    assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::ONE)); // field_a
 
     // small_array is packed into slot 10
     let expected_small = U256::from_be_bytes(small_array);
@@ -66,7 +66,7 @@ fn test_array_storage() {
         Ok(expected_small)
     );
 
-    assert_eq!(s.storage.sload(s.address, U256::from(1)), Ok(U256::from(2))); // field_b
+    assert_eq!(s.storage.sload(s.address, U256::ONE), Ok(U256::from(2))); // field_b
 
     // large_array occupies slots 20-24
     assert_eq!(
@@ -111,7 +111,7 @@ fn test_array_storage() {
     // Verify slots module
     assert_eq!(slots::FIELD_A, U256::from(0));
     assert_eq!(slots::SMALL_ARRAY, U256::from(10));
-    assert_eq!(slots::FIELD_B, U256::from(1));
+    assert_eq!(slots::FIELD_B, U256::ONE);
     assert_eq!(slots::LARGE_ARRAY, U256::from(20));
     assert_eq!(slots::FIELD_C, U256::from(2));
     assert_eq!(slots::AUTO_ARRAY, U256::from(3));
@@ -133,12 +133,12 @@ fn test_array_storage() {
     }
 
     // Verify other fields unchanged
-    assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::from(1))); // field_a
+    assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::ONE)); // field_a
     assert_eq!(
         s.storage.sload(s.address, U256::from(10)),
         Ok(expected_small)
     ); // small_array
-    assert_eq!(s.storage.sload(s.address, U256::from(1)), Ok(U256::from(2))); // field_b
+    assert_eq!(s.storage.sload(s.address, U256::ONE), Ok(U256::from(2))); // field_b
     assert_eq!(s.storage.sload(s.address, U256::from(2)), Ok(U256::from(3))); // field_c
     assert_eq!(s.storage.sload(s.address, U256::from(6)), Ok(U256::from(4))); // field_d
 }

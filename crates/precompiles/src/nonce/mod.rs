@@ -168,18 +168,18 @@ mod tests {
         assert_eq!(count, U256::ZERO);
 
         // Increment a nonce key - should increase active count
-        nonce_mgr.increment_nonce(account, U256::from(1)).unwrap();
+        nonce_mgr.increment_nonce(account, U256::ONE).unwrap();
         let count = nonce_mgr
             .get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account })
             .unwrap();
-        assert_eq!(count, U256::from(1));
+        assert_eq!(count, U256::ONE);
 
         // Increment same key again - count should stay the same
-        nonce_mgr.increment_nonce(account, U256::from(1)).unwrap();
+        nonce_mgr.increment_nonce(account, U256::ONE).unwrap();
         let count = nonce_mgr
             .get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account })
             .unwrap();
-        assert_eq!(count, U256::from(1));
+        assert_eq!(count, U256::ONE);
 
         // Increment a different key - count should increase
         nonce_mgr.increment_nonce(account, U256::from(2)).unwrap();

@@ -679,7 +679,7 @@ mod tests {
 
     struct TestSlot1;
     impl SlotId for TestSlot1 {
-        const SLOT: U256 = U256::from_limbs([1, 0, 0, 0]);
+        const SLOT: U256 = U256::ONE;
     }
 
     struct TestSlot2;
@@ -797,8 +797,8 @@ mod tests {
     #[test]
     fn test_double_mapping_account_role() {
         let account = address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
-        let role: B256 = U256::from(1).into();
-        let base_slot = U256::from(1);
+        let role: B256 = U256::ONE.into();
+        let base_slot = U256::ONE;
 
         let slot = double_mapping_slot(account, role, base_slot);
 
@@ -829,7 +829,7 @@ mod tests {
 
     #[test]
     fn test_mapping_slot_extraction() {
-        assert_eq!(Mapping::<Address, U256, TestSlot1>::slot(), U256::from(1));
+        assert_eq!(Mapping::<Address, U256, TestSlot1>::slot(), U256::ONE);
         assert_eq!(Mapping::<U256, Address, TestSlot2>::slot(), U256::from(2));
 
         // Test with larger slot number

@@ -8,7 +8,7 @@ contract Enums {
         BLACKLISTED
     }
 
-    uint16 public field_a; // slot 0
-    Auth public field_b; // slots 0
-    address public field_c; // slot 0
+    uint16 public fieldA; // slot 0
+    PolicyType public fieldB; // slots 0
+    address public fieldC; // slot 0
 }

@@ -171,7 +171,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     pub fn update_rewards(&mut self, holder: Address) -> Result<Address> {
         let mut info = self.sload_user_reward_info(holder)?;
 
-        let cached_delegate = info.delegated_recipient;
+        let cached_delegate = info.reward_recipient;
 
         let global_reward_per_token = self.get_global_reward_per_token()?;
         let reward_per_token_delta = global_reward_per_token
@@ -252,7 +252,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         }
 
         let mut info = self.sload_user_reward_info(msg_sender)?;
-        info.delegated_recipient = call.recipient;
+        info.reward_recipient = call.recipient;
         self.sstore_user_reward_info(msg_sender, info)?;
 
         // Emit reward recipient set event
@@ -428,7 +428,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let contract_balance = self.get_balance(contract_address)?;
         let max_amount = amount.min(contract_balance);
 
-        let delegated_recipient = info.delegated_recipient;
+        let reward_recipient = info.reward_recipient;
         info.reward_balance = amount
             .checked_sub(max_amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
@@ -446,7 +446,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_balance(msg_sender, recipient_balance)?;
 
-            if delegated_recipient != Address::ZERO {
+            if reward_recipient != Address::ZERO {
                 let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                     .checked_add(max_amount)
                     .ok_or(TempoPrecompileError::under_overflow())?;
@@ -599,7 +599,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
 #[derive(Debug, Clone, Storable)]
 pub struct UserRewardInfo {
-    pub delegated_recipient: Address,
+    pub reward_recipient: Address,
     pub reward_per_token: U256,
     pub reward_balance: U256,
 }
@@ -647,7 +647,7 @@ impl From<RewardStream> for ITIP20::RewardStream {
 impl From<UserRewardInfo> for ITIP20::UserRewardInfo {
     fn from(value: UserRewardInfo) -> Self {
         Self {
-            delegatedRecipient: value.delegated_recipient,
+            rewardRecipient: value.reward_recipient,
             rewardPerToken: value.reward_per_token,
             rewardBalance: value.reward_balance,
         }
@@ -732,7 +732,7 @@ mod tests {
         token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
 
         let info = token.sload_user_reward_info(alice)?;
-        assert_eq!(info.delegated_recipient, alice);
+        assert_eq!(info.reward_recipient, alice);
         assert_eq!(token.get_opted_in_supply()?, amount.to::<u128>());
         assert_eq!(info.reward_per_token, U256::ZERO);
 
@@ -744,7 +744,7 @@ mod tests {
         )?;
 
         let info = token.sload_user_reward_info(alice)?;
-        assert_eq!(info.delegated_recipient, Address::ZERO);
+        assert_eq!(info.reward_recipient, Address::ZERO);
         assert_eq!(token.get_opted_in_supply()?, 0u128);
         assert_eq!(info.reward_per_token, U256::ZERO);
 

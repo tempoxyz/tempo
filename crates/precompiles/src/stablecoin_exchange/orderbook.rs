@@ -88,10 +88,10 @@ pub struct Orderbook {
     pub best_ask_tick: i16,
     #[allow(dead_code)]
     /// Mapping of tick index to bid bitmap for price discovery
-    bid_bitmaps: Mapping<i16, U256, DummySlot>,
+    bid_bitmap: Mapping<i16, U256, DummySlot>,
     /// Mapping of tick index to ask bitmap for price discovery
     #[allow(dead_code)]
-    ask_bitmaps: Mapping<i16, U256, DummySlot>,
+    ask_bitmap: Mapping<i16, U256, DummySlot>,
 }
 
 // Helper type to easily access storage for orderbook tokens (base, quote)
@@ -100,7 +100,7 @@ type Tokens = Slot<Address, DummySlot>;
 type BestOrders = Slot<i16, DummySlot>;
 // Helper type to easile access storage for orders (bids, asks)
 type Orders = Mapping<i16, TickLevel, DummySlot>;
-// Helper type to easily access storage for bitmaps (bid_bitmaps, ask_bitmaps)
+// Helper type to easily access storage for bitmaps (bid_bitmap, ask_bitmap)
 type BitMaps = Mapping<i16, U256, DummySlot>;
 
 impl Orderbook {
@@ -291,9 +291,9 @@ impl Orderbook {
         // Read current bitmap word
         let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
         let bitmap_slot = if is_bid {
-            __packing_orderbook::BID_BITMAPS_SLOT
+            __packing_orderbook::BID_BITMAP_SLOT
         } else {
-            __packing_orderbook::ASK_BITMAPS_SLOT
+            __packing_orderbook::ASK_BITMAP_SLOT
         };
         let current_word =
             BitMaps::read_at_offset(storage, orderbook_base_slot, bitmap_slot, word_index)?;
@@ -330,9 +330,9 @@ impl Orderbook {
         // Read current bitmap word
         let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
         let bitmap_slot = if is_bid {
-            __packing_orderbook::BID_BITMAPS_SLOT
+            __packing_orderbook::BID_BITMAP_SLOT
         } else {
-            __packing_orderbook::ASK_BITMAPS_SLOT
+            __packing_orderbook::ASK_BITMAP_SLOT
         };
         let current_word =
             BitMaps::read_at_offset(storage, orderbook_base_slot, bitmap_slot, word_index)?;
@@ -368,9 +368,9 @@ impl Orderbook {
 
         let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
         let bitmap_slot = if is_bid {
-            __packing_orderbook::BID_BITMAPS_SLOT
+            __packing_orderbook::BID_BITMAP_SLOT
         } else {
-            __packing_orderbook::ASK_BITMAPS_SLOT
+            __packing_orderbook::ASK_BITMAP_SLOT
         };
         let word = BitMaps::read_at_offset(storage, orderbook_base_slot, bitmap_slot, word_index)?;
 
