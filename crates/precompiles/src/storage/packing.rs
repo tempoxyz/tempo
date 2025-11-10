@@ -31,7 +31,7 @@ pub fn create_element_mask(byte_count: usize) -> U256 {
     if byte_count >= 32 {
         U256::MAX
     } else {
-        (U256::from(1) << (byte_count * 8)) - U256::from(1)
+        (U256::ONE << (byte_count * 8)) - U256::ONE
     }
 }
 
@@ -59,7 +59,7 @@ pub fn extract_packed_value<T: Storable<1>>(
     let mask = if bytes == 32 {
         U256::MAX
     } else {
-        (U256::from(1) << (bytes * 8)) - U256::from(1)
+        (U256::ONE << (bytes * 8)) - U256::ONE
     };
 
     // Extract and right-align the value
@@ -94,7 +94,7 @@ pub fn insert_packed_value<T: Storable<1>>(
     let mask = if bytes == 32 {
         U256::MAX
     } else {
-        (U256::from(1) << (bytes * 8)) - U256::from(1)
+        (U256::ONE << (bytes * 8)) - U256::ONE
     };
 
     // Clear the bits for this field in the current slot value

@@ -6,7 +6,7 @@
           {
             "astId": 5,
             "contract": "tests/storage_tests/solidity/testdata/tip20_factory.sol:TIP20Factory",
-            "label": "token_id_counter",
+            "label": "tokenIdCounter",
             "offset": 0,
             "slot": "0",
             "type": "t_uint256"

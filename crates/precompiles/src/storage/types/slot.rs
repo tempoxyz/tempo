@@ -336,7 +336,7 @@ mod tests {
 
     struct TestSlot1;
     impl SlotId for TestSlot1 {
-        const SLOT: U256 = U256::from_limbs([1, 0, 0, 0]);
+        const SLOT: U256 = U256::ONE;
     }
 
     struct TestSlot2;
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn test_slot_number_extraction() {
         assert_eq!(Slot::<U256, TestSlot0>::slot(), U256::ZERO);
-        assert_eq!(Slot::<Address, TestSlot1>::slot(), U256::from(1));
+        assert_eq!(Slot::<Address, TestSlot1>::slot(), U256::ONE);
         assert_eq!(Slot::<bool, TestSlotMax>::slot(), U256::MAX);
     }
 
@@ -424,7 +424,7 @@ mod tests {
         assert_eq!(loaded, test_value);
 
         // Verify it actually wrote to slot 1
-        let raw = contract.storage.sload(contract.address, U256::from(1));
+        let raw = contract.storage.sload(contract.address, U256::ONE);
         assert_eq!(raw, Ok(test_value));
     }
 

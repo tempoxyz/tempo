@@ -6,7 +6,7 @@
           {
             "astId": 10,
             "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
-            "label": "policy_id_counter",
+            "label": "policyIdCounter",
             "offset": 0,
             "slot": "0",
             "type": "t_uint64"
@@ -14,7 +14,7 @@
           {
             "astId": 16,
             "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
-            "label": "policy_data",
+            "label": "policyData",
             "offset": 0,
             "slot": "1",
             "type": "t_mapping(t_uint64,t_struct(PolicyData)7_storage)"
@@ -22,7 +22,7 @@
           {
             "astId": 23,
             "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
-            "label": "policy_set",
+            "label": "policySet",
             "offset": 0,
             "slot": "2",
             "type": "t_mapping(t_uint64,t_mapping(t_address,t_bool))"
@@ -67,7 +67,7 @@
               {
                 "astId": 4,
                 "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
-                "label": "policy_type",
+                "label": "policyType",
                 "offset": 0,
                 "slot": "0",
                 "type": "t_uint8"

@@ -7,19 +7,19 @@ contract TIP403Registry {
     // ========== Structs ==========
 
     struct PolicyData {
-        uint8 policy_type;
+        uint8 policyType;
         address admin;
     }
 
     // ========== Storage ==========
 
     /// Counter for policy IDs
-    uint64 public policy_id_counter;
+    uint64 public policyIdCounter;
 
     /// Mapping of policy ID to policy data
-    mapping(uint64 => PolicyData) public policy_data;
+    mapping(uint64 => PolicyData) public policyData;
 
     /// Nested mapping for policy sets: policy_id -> address -> is_in_set
     /// Used for whitelist/blacklist entries
-    mapping(uint64 => mapping(address => bool)) public policy_set;
+    mapping(uint64 => mapping(address => bool)) public policySet;
 }

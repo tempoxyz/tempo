@@ -7,5 +7,5 @@ contract TIP20Factory {
     // ========== Storage ==========
 
     /// Counter for token IDs
-    uint256 public token_id_counter;
+    uint256 public tokenIdCounter;
 }

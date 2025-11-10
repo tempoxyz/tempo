@@ -6,7 +6,7 @@
           {
             "astId": 5,
             "contract": "tests/storage_tests/solidity/testdata/tip20_rewards_registry.sol:TIP20RewardsRegistry",
-            "label": "last_updated_timestamp",
+            "label": "lastUpdatedTimestamp",
             "offset": 0,
             "slot": "0",
             "type": "t_uint128"
@@ -14,7 +14,7 @@
           {
             "astId": 11,
             "contract": "tests/storage_tests/solidity/testdata/tip20_rewards_registry.sol:TIP20RewardsRegistry",
-            "label": "streams_ending_at",
+            "label": "streamsEndingAt",
             "offset": 0,
             "slot": "1",
             "type": "t_mapping(t_uint128,t_array(t_address)dyn_storage)"
@@ -22,7 +22,7 @@
           {
             "astId": 16,
             "contract": "tests/storage_tests/solidity/testdata/tip20_rewards_registry.sol:TIP20RewardsRegistry",
-            "label": "stream_index",
+            "label": "streamIndex",
             "offset": 0,
             "slot": "2",
             "type": "t_mapping(t_bytes32,t_uint256)"

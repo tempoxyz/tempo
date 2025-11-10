@@ -6,7 +6,7 @@
           {
             "astId": 12,
             "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
-            "label": "validator_tokens",
+            "label": "validatorTokens",
             "offset": 0,
             "slot": "0",
             "type": "t_mapping(t_address,t_address)"
@@ -14,7 +14,7 @@
           {
             "astId": 17,
             "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
-            "label": "user_tokens",
+            "label": "userTokens",
             "offset": 0,
             "slot": "1",
             "type": "t_mapping(t_address,t_address)"
@@ -22,7 +22,7 @@
           {
             "astId": 20,
             "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
-            "label": "collected_fees",
+            "label": "collectedFees",
             "offset": 0,
             "slot": "2",
             "type": "t_uint256"
@@ -30,7 +30,7 @@
           {
             "astId": 24,
             "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
-            "label": "tokens_with_fees",
+            "label": "tokensWithFees",
             "offset": 0,
             "slot": "3",
             "type": "t_array(t_address)dyn_storage"
@@ -38,7 +38,7 @@
           {
             "astId": 29,
             "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
-            "label": "token_in_fees_array",
+            "label": "tokenInFeesArray",
             "offset": 0,
             "slot": "4",
             "type": "t_mapping(t_address,t_bool)"
@@ -54,7 +54,7 @@
           {
             "astId": 40,
             "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
-            "label": "pending_fee_swap_in",
+            "label": "pendingFeeSwapIn",
             "offset": 0,
             "slot": "6",
             "type": "t_mapping(t_bytes32,t_uint128)"
@@ -62,7 +62,7 @@
           {
             "astId": 45,
             "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
-            "label": "total_supply",
+            "label": "totalSupply",
             "offset": 0,
             "slot": "7",
             "type": "t_mapping(t_bytes32,t_uint256)"
@@ -70,7 +70,7 @@
           {
             "astId": 52,
             "contract": "tests/storage_tests/solidity/testdata/fee_manager.sol:FeeManager",
-            "label": "liquidity_balances",
+            "label": "liquidityBalances",
             "offset": 0,
             "slot": "8",
             "type": "t_mapping(t_bytes32,t_mapping(t_address,t_uint256))"

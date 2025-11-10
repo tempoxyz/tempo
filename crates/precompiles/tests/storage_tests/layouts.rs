@@ -41,10 +41,7 @@ fn test_mixed_slot_allocation() {
         s.storage.sload(s.address, U256::from(5)),
         Ok(U256::from(200))
     ); // field_b
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(1)),
-        Ok(U256::from(300))
-    ); // field_c
+    assert_eq!(s.storage.sload(s.address, U256::ONE), Ok(U256::from(300))); // field_c
     assert_eq!(
         s.storage.sload(s.address, U256::from(0x10)),
         Ok(U256::from(400))
@@ -84,7 +81,7 @@ fn test_slots_module_generation() {
     // Verify the slots module was generated with correct values
     assert_eq!(slots::FIELD_A, U256::from(0));
     assert_eq!(slots::FIELD_B, U256::from(5));
-    assert_eq!(slots::FIELD_C, U256::from(1));
+    assert_eq!(slots::FIELD_C, U256::ONE);
     assert_eq!(slots::MAPPING_FIELD, U256::from(10));
 }
 
@@ -108,7 +105,7 @@ fn test_base_slots() {
     let mut layout = Layout::_new(s.address, s.storage());
 
     // Set values to verify slot assignments
-    layout.sstore_field_a(U256::from(1)).unwrap();
+    layout.sstore_field_a(U256::ONE).unwrap();
     layout.sstore_field_b(U256::from(2)).unwrap();
     layout.sstore_field_c(U256::from(3)).unwrap();
     layout.sstore_field_d(U256::from(4)).unwrap();
@@ -117,7 +114,7 @@ fn test_base_slots() {
     layout.sstore_field_g(U256::from(7)).unwrap();
 
     // Verify actual slot assignments
-    assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::from(1))); // field_a
+    assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::ONE)); // field_a
     assert_eq!(
         s.storage.sload(s.address, U256::from(100)),
         Ok(U256::from(2))
@@ -169,14 +166,14 @@ fn test_base_slot_with_regular_slot() {
     let mut s = setup_storage();
     let mut layout = Layout::_new(s.address, s.storage());
 
-    layout.sstore_field_a(U256::from(1)).unwrap();
+    layout.sstore_field_a(U256::ONE).unwrap();
     layout.sstore_field_b(U256::from(2)).unwrap();
     layout.sstore_field_c(U256::from(3)).unwrap();
     layout.sstore_field_d(U256::from(4)).unwrap();
     layout.sstore_field_e(U256::from(5)).unwrap();
 
     // Verify slot assignments
-    assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::from(1))); // field_a
+    assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::ONE)); // field_a
     assert_eq!(
         s.storage.sload(s.address, U256::from(100)),
         Ok(U256::from(2))
@@ -214,11 +211,11 @@ fn test_string_literal_slots() {
     let mut layout = Layout::_new(s.address, s.storage());
 
     // Set value
-    layout.sstore_field(U256::from(1)).unwrap();
+    layout.sstore_field(U256::ONE).unwrap();
 
     // Verify
     let slot: U256 = keccak256("id").into();
-    assert_eq!(s.storage.sload(s.address, slot), Ok(U256::from(1))); // field
+    assert_eq!(s.storage.sload(s.address, slot), Ok(U256::ONE)); // field
     assert_eq!(slots::FIELD, slot);
 }
 
@@ -241,7 +238,7 @@ fn test_slot_id_naming_matches_actual_slots() {
     // Verify slot assignments via the slots module constants
     assert_eq!(slots::FIELD_A, U256::from(0));
     assert_eq!(slots::FIELD_B, U256::from(100));
-    assert_eq!(slots::FIELD_C, U256::from(1));
+    assert_eq!(slots::FIELD_C, U256::ONE);
     assert_eq!(slots::FIELD_D, U256::from(200));
     assert_eq!(slots::FIELD_E, U256::from(201));
     assert_eq!(slots::FIELD_F, U256::from(16));
@@ -250,7 +247,7 @@ fn test_slot_id_naming_matches_actual_slots() {
     use tempo_precompiles::storage::SlotId;
     assert_eq!(<FieldASlot as SlotId>::SLOT, U256::from(0)); // field_a (auto)
     assert_eq!(<FieldBSlot as SlotId>::SLOT, U256::from(100)); // field_b (manual)
-    assert_eq!(<FieldCSlot as SlotId>::SLOT, U256::from(1)); // field_c (auto)
+    assert_eq!(<FieldCSlot as SlotId>::SLOT, U256::ONE); // field_c (auto)
     assert_eq!(<FieldDSlot as SlotId>::SLOT, U256::from(200)); // field_d (manual)
     assert_eq!(<FieldESlot as SlotId>::SLOT, U256::from(201)); // field_e (auto)
     assert_eq!(<FieldFSlot as SlotId>::SLOT, U256::from(16)); // field_f (manual)
@@ -298,7 +295,7 @@ proptest! {
         // Isolation property: verify actual slot assignments
         prop_assert_eq!(s.storage.sload(s.address, U256::from(0))?, val_a); // field_a
         prop_assert_eq!(s.storage.sload(s.address, U256::from(5))?, val_b); // field_b
-        prop_assert_eq!(s.storage.sload(s.address, U256::from(1))?, val_c); // field_c
+        prop_assert_eq!(s.storage.sload(s.address, U256::ONE)?, val_c); // field_c
         prop_assert_eq!(s.storage.sload(s.address, U256::from(0x10))?, val_d); // field_d
     }
 

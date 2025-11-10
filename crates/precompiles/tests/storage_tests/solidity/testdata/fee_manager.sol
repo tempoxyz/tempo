@@ -14,29 +14,29 @@ contract FeeManager {
     // ========== Storage ==========
 
     /// Mapping of validator address to their preferred fee token
-    mapping(address => address) public validator_tokens;
+    mapping(address => address) public validatorTokens;
 
     /// Mapping of user address to their preferred fee token
-    mapping(address => address) public user_tokens;
+    mapping(address => address) public userTokens;
 
     /// Total collected fees
-    uint256 public collected_fees;
+    uint256 public collectedFees;
 
     /// Dynamic array of tokens with pending fees
-    address[] public tokens_with_fees;
+    address[] public tokensWithFees;
 
     /// Tracking boolean for whether a token is in tokens_with_fees array
-    mapping(address => bool) public token_in_fees_array;
+    mapping(address => bool) public tokenInFeesArray;
 
     /// Mapping of pool key to pool data (AMM reserves)
     mapping(bytes32 => Pool) public pools;
 
     /// Mapping of pool key to pending swap amounts
-    mapping(bytes32 => uint128) public pending_fee_swap_in;
+    mapping(bytes32 => uint128) public pendingFeeSwapIn;
 
     /// Mapping of pool key to total LP token supply
-    mapping(bytes32 => uint256) public total_supply;
+    mapping(bytes32 => uint256) public totalSupply;
 
     /// Nested mapping for LP token balances: pool_key -> user -> balance
-    mapping(bytes32 => mapping(address => uint256)) public liquidity_balances;
+    mapping(bytes32 => mapping(address => uint256)) public liquidityBalances;
 }

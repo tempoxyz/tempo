@@ -26,42 +26,42 @@ contract TIP20 {
     mapping(address => mapping(bytes32 => bool)) public roles;
 
     /// Mapping of role to its admin role
-    mapping(bytes32 => bytes32) public role_admins;
+    mapping(bytes32 => bytes32) public roleAdmins;
 
     // ========== Metadata Storage ==========
 
     string public name;
     string public symbol;
     string public currency;
-    bytes32 public domain_separator;
-    address public quote_token;
-    address public next_quote_token;
-    uint64 public transfer_policy_id;
+    bytes32 public domainSeparator;
+    address public quoteToken;
+    address public nextQuoteToken;
+    uint64 public transferPolicyId;
 
     // ========== ERC20 Storage ==========
 
-    uint256 public total_supply;
+    uint256 public totalSupply;
     mapping(address => uint256) public balances;
     mapping(address => mapping(address => uint256)) public allowances;
     mapping(address => uint256) public nonces;
     bool public paused;
-    uint256 public supply_cap;
+    uint256 public supplyCap;
     mapping(bytes32 => bool) public salts;
 
     // ========== Rewards Storage ==========
 
-    uint256 public global_reward_per_token;
-    uint64 public last_update_time;
-    uint256 public total_reward_per_second;
-    uint128 public opted_in_supply;
-    uint64 public next_stream_id;
+    uint256 public globalRewardPerToken;
+    uint64 public lastUpdateTime;
+    uint256 public totalRewardPerSecond;
+    uint128 public optedInSupply;
+    uint64 public nextStreamId;
 
     /// Mapping of stream ID to reward stream data
     mapping(uint64 => RewardStream) public streams;
 
     /// Mapping of timestamp to scheduled rate decrease
-    mapping(uint128 => uint256) public scheduled_rate_decrease;
+    mapping(uint128 => uint256) public scheduledRateDecrease;
 
     /// Mapping of user address to their reward info
-    mapping(address => UserRewardInfo) public user_reward_info;
+    mapping(address => UserRewardInfo) public userRewardInfo;
 }

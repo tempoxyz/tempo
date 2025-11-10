@@ -14,7 +14,7 @@
           {
             "astId": 32,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "role_admins",
+            "label": "roleAdmins",
             "offset": 0,
             "slot": "1",
             "type": "t_mapping(t_bytes32,t_bytes32)"
@@ -46,7 +46,7 @@
           {
             "astId": 40,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "domain_separator",
+            "label": "domainSeparator",
             "offset": 0,
             "slot": "5",
             "type": "t_bytes32"
@@ -54,7 +54,7 @@
           {
             "astId": 42,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "quote_token",
+            "label": "quoteToken",
             "offset": 0,
             "slot": "6",
             "type": "t_address"
@@ -62,7 +62,7 @@
           {
             "astId": 44,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "next_quote_token",
+            "label": "nextQuoteToken",
             "offset": 0,
             "slot": "7",
             "type": "t_address"
@@ -70,7 +70,7 @@
           {
             "astId": 46,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "transfer_policy_id",
+            "label": "transferPolicyId",
             "offset": 20,
             "slot": "7",
             "type": "t_uint64"
@@ -78,7 +78,7 @@
           {
             "astId": 48,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "total_supply",
+            "label": "totalSupply",
             "offset": 0,
             "slot": "8",
             "type": "t_uint256"
@@ -118,7 +118,7 @@
           {
             "astId": 66,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "supply_cap",
+            "label": "supplyCap",
             "offset": 0,
             "slot": "13",
             "type": "t_uint256"
@@ -134,7 +134,7 @@
           {
             "astId": 72,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "global_reward_per_token",
+            "label": "globalRewardPerToken",
             "offset": 0,
             "slot": "15",
             "type": "t_uint256"
@@ -142,7 +142,7 @@
           {
             "astId": 74,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "last_update_time",
+            "label": "lastUpdateTime",
             "offset": 0,
             "slot": "16",
             "type": "t_uint64"
@@ -150,7 +150,7 @@
           {
             "astId": 76,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "total_reward_per_second",
+            "label": "totalRewardPerSecond",
             "offset": 0,
             "slot": "17",
             "type": "t_uint256"
@@ -158,7 +158,7 @@
           {
             "astId": 78,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "opted_in_supply",
+            "label": "optedInSupply",
             "offset": 0,
             "slot": "18",
             "type": "t_uint128"
@@ -166,7 +166,7 @@
           {
             "astId": 80,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "next_stream_id",
+            "label": "nextStreamId",
             "offset": 16,
             "slot": "18",
             "type": "t_uint64"
@@ -182,7 +182,7 @@
           {
             "astId": 91,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "scheduled_rate_decrease",
+            "label": "scheduledRateDecrease",
             "offset": 0,
             "slot": "20",
             "type": "t_mapping(t_uint128,t_uint256)"
@@ -190,7 +190,7 @@
           {
             "astId": 97,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "user_reward_info",
+            "label": "userRewardInfo",
             "offset": 0,
             "slot": "21",
             "type": "t_mapping(t_address,t_struct(UserRewardInfo)20_storage)"

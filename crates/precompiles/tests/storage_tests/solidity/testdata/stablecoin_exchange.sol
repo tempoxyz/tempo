@@ -49,11 +49,11 @@ contract StablecoinExchange {
     mapping(address => mapping(address => uint128)) public balances;
 
     /// Last processed order ID
-    uint128 public active_order_id;
+    uint128 public activeOrderId;
 
     /// Latest pending order ID
-    uint128 public pending_order_id;
+    uint128 public pendingOrderId;
 
     /// Dynamic array of all book keys
-    bytes32[] public book_keys;
+    bytes32[] public bookKeys;
 }
