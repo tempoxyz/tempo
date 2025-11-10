@@ -157,7 +157,7 @@ impl Order {
         order_id: u128,
         new_remaining: u128,
     ) -> Result<(), TempoPrecompileError> {
-        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::Field1Slot::SLOT);
+        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::OrdersSlot::SLOT);
         OrderAmount::write_at_offset_packed(
             storage,
             order_base_slot,
@@ -174,7 +174,7 @@ impl Order {
         order_id: u128,
         new_next: u128,
     ) -> Result<(), TempoPrecompileError> {
-        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::Field1Slot::SLOT);
+        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::OrdersSlot::SLOT);
         OrderId::write_at_offset_packed(
             storage,
             order_base_slot,
@@ -191,7 +191,7 @@ impl Order {
         order_id: u128,
         new_prev: u128,
     ) -> Result<(), TempoPrecompileError> {
-        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::Field1Slot::SLOT);
+        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::OrdersSlot::SLOT);
         OrderId::write_at_offset_packed(
             storage,
             order_base_slot,

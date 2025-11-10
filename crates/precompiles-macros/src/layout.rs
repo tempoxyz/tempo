@@ -1,6 +1,8 @@
 use crate::{
     FieldInfo, FieldKind,
-    utils::{extract_mapping_types, is_array_type, is_custom_struct, is_dynamic_type},
+    utils::{
+        extract_mapping_types, is_array_type, is_custom_struct, is_dynamic_type, to_pascal_case,
+    },
 };
 use alloy::primitives::U256;
 use quote::{format_ident, quote};
@@ -22,7 +24,7 @@ pub(crate) struct AllocatedField<'a> {
 impl<'a> AllocatedField<'a> {
     /// Returns the `SlotId` type name for this field
     fn slot_id_name(&self) -> String {
-        format!("Field{}Slot", self.field_index)
+        format!("{}Slot", to_pascal_case(&self.info.name.to_string()))
     }
 }
 

@@ -26,7 +26,7 @@ pub struct TIP20RewardsRegistry {
 }
 
 /// Helper type to easily interact with the `stream_ending_at` array
-type StreamEndingAt = Mapping<u128, Vec<Address>, Field1Slot>;
+type StreamEndingAt = Mapping<u128, Vec<Address>, StreamsEndingAtSlot>;
 
 impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     /// Creates an instance of the precompile.

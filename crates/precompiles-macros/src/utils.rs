@@ -33,7 +33,7 @@ fn parse_slot_value(value: &Lit) -> syn::Result<U256> {
 
 /// Converts a string from CamelCase or snake_case to snake_case.
 /// Preserves SCREAMING_SNAKE_CASE, as those are assumed to be constant/immutable names.
-pub(crate) fn normalize_to_snake_case(s: &str) -> String {
+pub(crate) fn to_snake_case(s: &str) -> String {
     let constant = s.to_uppercase();
     if s == constant {
         return constant;
@@ -59,6 +59,19 @@ pub(crate) fn normalize_to_snake_case(s: &str) -> String {
     }
 
     result
+}
+
+/// Converts a string from snake_case to PascalCase.
+pub(crate) fn to_pascal_case(s: &str) -> String {
+    s.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        })
+        .collect()
 }
 
 /// Extracts `#[slot(N)]`, `#[base_slot(N)]` attributes from a field's attributes.
@@ -315,19 +328,13 @@ mod tests {
 
     #[test]
     fn test_normalize_to_snake_case() {
-        assert_eq!(normalize_to_snake_case("balanceOf"), "balance_of");
-        assert_eq!(normalize_to_snake_case("transferFrom"), "transfer_from");
-        assert_eq!(normalize_to_snake_case("name"), "name");
-        assert_eq!(normalize_to_snake_case("already_snake"), "already_snake");
-        assert_eq!(
-            normalize_to_snake_case("updateQuoteToken"),
-            "update_quote_token"
-        );
-        assert_eq!(
-            normalize_to_snake_case("DOMAIN_SEPARATOR"),
-            "DOMAIN_SEPARATOR"
-        );
-        assert_eq!(normalize_to_snake_case("ERC20Token"), "erc20_token");
+        assert_eq!(to_snake_case("balanceOf"), "balance_of");
+        assert_eq!(to_snake_case("transferFrom"), "transfer_from");
+        assert_eq!(to_snake_case("name"), "name");
+        assert_eq!(to_snake_case("already_snake"), "already_snake");
+        assert_eq!(to_snake_case("updateQuoteToken"), "update_quote_token");
+        assert_eq!(to_snake_case("DOMAIN_SEPARATOR"), "DOMAIN_SEPARATOR");
+        assert_eq!(to_snake_case("ERC20Token"), "erc20_token");
     }
 
     #[test]

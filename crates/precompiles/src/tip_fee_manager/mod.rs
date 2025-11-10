@@ -21,7 +21,7 @@ use revm::state::Bytecode;
 use tempo_precompiles_macros::contract;
 
 /// Helper type to easily interact with the `tokens_with_fees` array
-type TokensWithFees = Slot<Vec<Address>, Field3Slot>;
+type TokensWithFees = Slot<Vec<Address>, TokensWithFeesSlot>;
 
 #[contract]
 pub struct TipFeeManager {

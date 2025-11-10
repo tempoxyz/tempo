@@ -8,7 +8,7 @@ use crate::{
     storable_primitives::gen_struct_arrays,
     utils::{
         extract_mapping_types, extract_storable_array_sizes, is_array_type, is_custom_struct,
-        is_dynamic_type, is_mapping_type, normalize_to_snake_case,
+        is_dynamic_type, is_mapping_type, to_snake_case,
     },
 };
 
@@ -97,7 +97,7 @@ fn derive_struct_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         .any(|(_, ty)| extract_mapping_types(ty).is_some());
 
     // Generate unique module name based on struct name
-    let mod_ident = format_ident!("__packing_{}", normalize_to_snake_case(&strukt.to_string()));
+    let mod_ident = format_ident!("__packing_{}", to_snake_case(&strukt.to_string()));
 
     // Generate helper module with packing layout calculations
     let packing_module = gen_packing_module(&field_infos, &mod_ident);

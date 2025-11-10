@@ -52,7 +52,7 @@ pub struct StablecoinExchange {
 }
 
 /// Helper type to easily interact with the `stream_ending_at` array
-type BookKeys = Slot<Vec<B256>, Field5Slot>;
+type BookKeys = Slot<Vec<B256>, BidBitmapsSlot>;
 
 impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {

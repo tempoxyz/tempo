@@ -28,7 +28,7 @@ struct Validator {
 }
 
 /// Helper type to easily interact with the `validators_array`
-type ValidatorsArray = Slot<Vec<Address>, Field2Slot>;
+type ValidatorsArray = Slot<Vec<Address>, ValidatorsArraySlot>;
 
 /// Validator Config precompile for managing consensus validators
 #[contract]

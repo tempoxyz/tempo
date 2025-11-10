@@ -144,7 +144,7 @@ impl Orderbook {
         book_key: B256,
         new_best_bid: i16,
     ) -> Result<(), TempoPrecompileError> {
-        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
         BestOrders::write_at_offset_packed(
             contract,
             orderbook_base_slot,
@@ -162,7 +162,7 @@ impl Orderbook {
         book_key: B256,
         new_best_ask: i16,
     ) -> Result<(), TempoPrecompileError> {
-        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
         BestOrders::write_at_offset_packed(
             contract,
             orderbook_base_slot,
@@ -179,7 +179,7 @@ impl Orderbook {
         book_key: B256,
         contract: &mut S,
     ) -> Result<bool, TempoPrecompileError> {
-        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
         let base = Tokens::read_at_offset(
             contract,
             orderbook_base_slot,
@@ -196,7 +196,7 @@ impl Orderbook {
         is_bid: bool,
         tick: i16,
     ) -> Result<TickLevel, TempoPrecompileError> {
-        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
         if is_bid {
             Orders::read_at_offset(
                 storage,
@@ -222,7 +222,7 @@ impl Orderbook {
         tick: i16,
         tick_level: TickLevel,
     ) -> Result<(), TempoPrecompileError> {
-        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
         if is_bid {
             Orders::write_at_offset(
                 storage,
@@ -249,7 +249,7 @@ impl Orderbook {
         is_bid: bool,
         tick: i16,
     ) -> Result<(), TempoPrecompileError> {
-        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::Field0Slot::SLOT);
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
         if is_bid {
             Orders::delete_at_offset(
                 storage,
@@ -390,9 +390,9 @@ impl<'a, S: PrecompileStorageProvider> TickBitmap<'a, S> {
     /// Get storage slot for bitmap word
     fn get_bitmap_slot(&self, word_index: i16, is_bid: bool) -> U256 {
         let base_slot = if is_bid {
-            super::slots::Field5Slot::SLOT
+            super::slots::BidBitmapsSlot::SLOT
         } else {
-            super::slots::Field6Slot::SLOT
+            super::slots::AskBitmapsSlot::SLOT
         };
 
         let book_key_slot = mapping_slot(self.book_key.as_slice(), base_slot);
