@@ -58,7 +58,7 @@ jobs:
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Generate genesis
-        run: cargo run --bin tempo-xtask -- generate-genesis --accounts 100 --fund-test-accounts --output generated-test-genesis.json
+        run: cargo run --bin tempo-xtask -- generate-genesis --accounts 100 --output generated-test-genesis.json --coinbase 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
       - name: Compare with existing test genesis
         run: |
           # Compare the generated genesis with the existing test-genesis.json

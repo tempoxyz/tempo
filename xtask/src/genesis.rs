@@ -77,9 +77,9 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value = "0xD3C21BCECCEDA1000000")]
     pub balance: U256,
 
-    /// Fund test accounts with native token balance (skips first 10 for AA tests)
-    #[arg(long, default_value_t = false)]
-    pub fund_test_accounts: bool,
+    /// Coinbase address
+    #[arg(long, default_value = "0x0000000000000000000000000000000000000000")]
+    pub coinbase: Address,
 
     /// Chain ID
     #[arg(long, short, default_value = "1337")]
@@ -273,17 +273,6 @@ impl GenesisArgs {
             },
         );
 
-        // Fund the user accounts with native token balance if requested
-        // Skip the first 10 accounts as they're used for account abstraction tests
-        // which expect zero native token balance
-        if self.fund_test_accounts {
-            for (index, address) in addresses.iter().enumerate() {
-                if index >= 10 {
-                    genesis_alloc.entry(*address).or_default().balance = self.balance;
-                }
-            }
-        }
-
         let mut chain_config = ChainConfig {
             chain_id: self.chain_id,
             homestead_block: Some(0),
@@ -318,7 +307,7 @@ impl GenesisArgs {
             .with_base_fee(Some(self.base_fee_per_gas))
             .with_nonce(0x42)
             .with_extra_data(Bytes::from_static(b"tempo-genesis"))
-            .with_coinbase(Address::ZERO);
+            .with_coinbase(self.coinbase);
 
         genesis.alloc = genesis_alloc;
         genesis.config = chain_config;
