@@ -35,7 +35,7 @@ just localnet
 
 ## Security
 
-See [`SECURITY.md`](https://github.com/tempoxyz/.github/blob/main/SECURITY.md).
+See [`SECURITY.md`](https://github.com/tempoxyz/tempo?tab=security-ov-file).
 
 ## License
 
