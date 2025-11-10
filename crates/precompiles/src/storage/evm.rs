@@ -1,6 +1,7 @@
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::{EvmInternals, EvmInternalsError};
 use revm::{
+    context::Block,
     primitives::hardfork::SpecId,
     state::{AccountInfo, Bytecode},
 };
@@ -44,6 +45,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     fn timestamp(&self) -> U256 {
         self.internals.block_timestamp()
+    }
+
+    fn beneficiary(&self) -> Address {
+        self.internals.block_env().beneficiary()
     }
 
     #[inline]

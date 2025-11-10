@@ -589,13 +589,10 @@ where
 
         // Create storage provider wrapper around journal
         let internals = EvmInternals::new(journal, &block);
+        let beneficiary = internals.block_env().beneficiary();
         let mut storage_provider =
             EvmPrecompileStorageProvider::new_max_gas(internals, cfg.chain_id());
-        let mut fee_manager = TipFeeManager::new(
-            TIP_FEE_MANAGER_ADDRESS,
-            block.beneficiary(),
-            &mut storage_provider,
-        );
+        let mut fee_manager = TipFeeManager::new(&mut storage_provider);
 
         if tx.max_balance_spending().ok() == Some(U256::ZERO) {
             return Ok(());
@@ -612,6 +609,7 @@ where
                 self.fee_token,
                 to_addr,
                 gas_balance_spending,
+                beneficiary,
             )
             .map_err(|e| {
                 // Map fee collection errors to transaction validation errors since they
@@ -667,12 +665,9 @@ where
         // Create storage provider and fee manager
         let (journal, block) = (&mut context.journaled_state, &context.block);
         let internals = EvmInternals::new(journal, block);
+        let beneficiary = internals.block_env().beneficiary();
         let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, chain_id);
-        let mut fee_manager = TipFeeManager::new(
-            TIP_FEE_MANAGER_ADDRESS,
-            block.beneficiary,
-            &mut storage_provider,
-        );
+        let mut fee_manager = TipFeeManager::new(&mut storage_provider);
 
         if !actual_spending.is_zero() || !refund_amount.is_zero() {
             // Call collectFeePostTx (handles both refund and fee queuing)
@@ -682,6 +677,7 @@ where
                     actual_spending,
                     refund_amount,
                     self.fee_token,
+                    beneficiary,
                 )
                 .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
         }

@@ -26,12 +26,12 @@ use tempo_contracts::{
 };
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    LINKING_USD_ADDRESS,
     linking_usd::{LinkingUSD, TRANSFER_ROLE},
     nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
-    storage::evm::EvmPrecompileStorageProvider,
-    tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager},
+    storage::{ContractStorage, evm::EvmPrecompileStorageProvider},
+    tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token, address_to_token_id_unchecked},
     tip20_factory::{ITIP20Factory, TIP20Factory},
     tip20_rewards_registry::TIP20RewardsRegistry,
@@ -374,9 +374,7 @@ fn create_and_mint_token(
     };
 
     let mut token = TIP20Token::new(token_id, &mut provider);
-    token
-        .get_roles_contract()
-        .grant_role_internal(admin, *ISSUER_ROLE)?;
+    token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
     let result = token.set_supply_cap(
         admin,
@@ -408,7 +406,7 @@ fn create_and_mint_token(
             .expect("Could not mint fee token");
     }
 
-    Ok((token_id, token.token_address))
+    Ok((token_id, token.address()))
 }
 
 fn initialize_linking_usd(
@@ -425,11 +423,14 @@ fn initialize_linking_usd(
         .initialize(admin)
         .expect("LinkingUSD initialization should succeed");
 
-    let mut roles = linking_usd.get_roles_contract();
-    roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-    roles.grant_role_internal(admin, *TRANSFER_ROLE)?;
+    linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+    linking_usd
+        .token
+        .grant_role_internal(admin, *TRANSFER_ROLE)?;
     for recipient in recipients.iter().tqdm() {
-        roles.grant_role_internal(*recipient, *TRANSFER_ROLE)?;
+        linking_usd
+            .token
+            .grant_role_internal(*recipient, *TRANSFER_ROLE)?;
     }
 
     for recipient in recipients.iter().tqdm() {
@@ -468,8 +469,7 @@ fn initialize_fee_manager(
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
     let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
 
-    let mut fee_manager =
-        TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut provider);
+    let mut fee_manager = TipFeeManager::new(&mut provider);
     fee_manager
         .initialize()
         .expect("Could not init fee manager");
@@ -484,12 +484,14 @@ fn initialize_fee_manager(
             .expect("Could not set fee token");
     }
 
+    let beneficiary = Address::random();
     fee_manager
         .set_validator_token(
             Address::ZERO,
             IFeeManager::setValidatorTokenCall {
                 token: default_fee_address,
             },
+            beneficiary,
         )
         .expect("Could not set 0x00 validator fee token");
 
@@ -501,6 +503,7 @@ fn initialize_fee_manager(
                 IFeeManager::setValidatorTokenCall {
                     token: LINKING_USD_ADDRESS,
                 },
+                beneficiary,
             )
             .expect("Could not set validator fee token");
     }
@@ -546,7 +549,7 @@ fn initialize_validator_config(
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
     let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
 
-    let mut validator_config = ValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, &mut provider);
+    let mut validator_config = ValidatorConfig::new(&mut provider);
     validator_config
         .initialize(owner)
         .wrap_err("Failed to initialize validator config")?;
@@ -567,7 +570,7 @@ fn initialize_validator_config(
     for validator in initial_validators.iter().tqdm() {
         validator_config
             .add_validator(
-                &owner,
+                owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator.address,
                     publicKey: validator.key,
@@ -595,20 +598,11 @@ fn mint_pairwise_liquidity(
     let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
     let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
 
-    let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::ZERO, &mut provider);
+    let mut fee_manager = TipFeeManager::new(&mut provider);
 
     for b_token_address in b_tokens {
         fee_manager
-            .mint(
-                admin,
-                ITIPFeeAMM::mintCall {
-                    userToken: a_token,
-                    validatorToken: b_token_address,
-                    amountUserToken: amount,
-                    amountValidatorToken: amount,
-                    to: admin,
-                },
-            )
+            .mint(admin, a_token, b_token_address, amount, amount, admin)
             .expect("Could not mint A -> B Liquidity pool");
     }
 }

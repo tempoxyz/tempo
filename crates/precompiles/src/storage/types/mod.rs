@@ -6,7 +6,7 @@ pub use mapping::*;
 
 mod bytes_like;
 mod primitives;
-mod vec;
+pub mod vec;
 
 use crate::{error::Result, storage::StorageOps};
 use alloy::primitives::U256;

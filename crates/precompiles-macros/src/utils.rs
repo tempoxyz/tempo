@@ -33,7 +33,7 @@ fn parse_slot_value(value: &Lit) -> syn::Result<U256> {
 
 /// Converts a string from CamelCase or snake_case to snake_case.
 /// Preserves SCREAMING_SNAKE_CASE, as those are assumed to be constant/immutable names.
-pub(crate) fn normalize_to_snake_case(s: &str) -> String {
+pub(crate) fn to_snake_case(s: &str) -> String {
     let constant = s.to_uppercase();
     if s == constant {
         return constant;
@@ -59,6 +59,40 @@ pub(crate) fn normalize_to_snake_case(s: &str) -> String {
     }
 
     result
+}
+
+/// Converts a string from snake_case to camelCase.
+pub(crate) fn to_camel_case(s: &str) -> String {
+    let mut result = String::new();
+    let mut first_word = true;
+
+    for word in s.split('_') {
+        if word.is_empty() {
+            continue;
+        }
+
+        if first_word {
+            result.push_str(word);
+            first_word = false;
+        } else {
+            let mut chars = word.chars();
+            if let Some(first) = chars.next() {
+                result.push_str(&first.to_uppercase().collect::<String>());
+                result.push_str(chars.as_str());
+            }
+        }
+    }
+    result
+}
+
+/// Converts a string from snake_case to PascalCase.
+pub(crate) fn to_pascal_case(s: &str) -> String {
+    let camel = to_camel_case(s);
+    let mut chars = camel.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+    }
 }
 
 /// Extracts `#[slot(N)]`, `#[base_slot(N)]` attributes from a field's attributes.
@@ -296,26 +330,43 @@ pub(crate) fn is_array_type(ty: &Type) -> bool {
     matches!(ty, Type::Array(_))
 }
 
+/// Checks if a type is a `Mapping` type.
+///
+/// Mappings, like structs and dynamic types, force slot boundaries:
+/// - Start at offset 0 of a new slot
+/// - Force the next field to start at a new slot
+/// - Cannot be packed with other fields
+///
+/// Unlike custom structs, mappings do NOT have a SLOT_COUNT constant.
+pub(crate) fn is_mapping_type(ty: &Type) -> bool {
+    extract_mapping_types(ty).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use syn::parse_quote;
 
     #[test]
-    fn test_normalize_to_snake_case() {
-        assert_eq!(normalize_to_snake_case("balanceOf"), "balance_of");
-        assert_eq!(normalize_to_snake_case("transferFrom"), "transfer_from");
-        assert_eq!(normalize_to_snake_case("name"), "name");
-        assert_eq!(normalize_to_snake_case("already_snake"), "already_snake");
-        assert_eq!(
-            normalize_to_snake_case("updateQuoteToken"),
-            "update_quote_token"
-        );
-        assert_eq!(
-            normalize_to_snake_case("DOMAIN_SEPARATOR"),
-            "DOMAIN_SEPARATOR"
-        );
-        assert_eq!(normalize_to_snake_case("ERC20Token"), "erc20_token");
+    fn test_to_snake_case() {
+        assert_eq!(to_snake_case("balanceOf"), "balance_of");
+        assert_eq!(to_snake_case("transferFrom"), "transfer_from");
+        assert_eq!(to_snake_case("name"), "name");
+        assert_eq!(to_snake_case("already_snake"), "already_snake");
+        assert_eq!(to_snake_case("updateQuoteToken"), "update_quote_token");
+        assert_eq!(to_snake_case("DOMAIN_SEPARATOR"), "DOMAIN_SEPARATOR");
+        assert_eq!(to_snake_case("ERC20Token"), "erc20_token");
+    }
+
+    #[test]
+    fn test_to_camel_case() {
+        assert_eq!(to_camel_case("balance_of"), "balanceOf");
+        assert_eq!(to_camel_case("transfer_from"), "transferFrom");
+        assert_eq!(to_camel_case("update_quote_token"), "updateQuoteToken");
+        assert_eq!(to_camel_case("name"), "name");
+        assert_eq!(to_camel_case("token"), "token");
+        assert_eq!(to_camel_case("alreadycamelCase"), "alreadycamelCase");
+        assert_eq!(to_camel_case("DOMAIN_SEPARATOR"), "DOMAINSEPARATOR");
     }
 
     #[test]

@@ -9,6 +9,9 @@ pub mod packing;
 // TODO(rusowsky): remove once precompiles don't rely it (directly) anymore
 pub use types::mapping as slots;
 
+// Re-export extension traits for convenience
+pub use types::vec::{VecMappingExt, VecSlotExt};
+
 use alloy::primitives::{Address, LogData, U256};
 use revm::state::{AccountInfo, Bytecode};
 
@@ -18,6 +21,7 @@ use crate::error::TempoPrecompileError;
 pub trait PrecompileStorageProvider {
     fn chain_id(&self) -> u64;
     fn timestamp(&self) -> U256;
+    fn beneficiary(&self) -> Address;
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError>;
     fn get_account_info(
         &mut self,
@@ -41,7 +45,9 @@ pub trait PrecompileStorageProvider {
 
 /// Storage operations for a given (contract) address.
 pub trait StorageOps {
+    /// Performs an SSTORE operation at the provided slot, with the given value.
     fn sstore(&mut self, slot: U256, value: U256) -> Result<(), TempoPrecompileError>;
+    /// Performs an SLOAD operation at the provided slot.
     fn sload(&mut self, slot: U256) -> Result<U256, TempoPrecompileError>;
 }
 
@@ -51,7 +57,10 @@ pub trait StorageOps {
 /// to a storage provider. It is automatically implemented by the `#[contract]` macro.
 pub trait ContractStorage {
     type Storage: PrecompileStorageProvider;
+
+    /// Contract address.
     fn address(&self) -> Address;
+    /// Storage provider.
     fn storage(&mut self) -> &mut Self::Storage;
 }
 
@@ -61,11 +70,13 @@ impl<T> StorageOps for T
 where
     T: ContractStorage,
 {
+    /// Performs an SSTORE operation at the provided slot, with the given value.
     fn sstore(&mut self, slot: U256, value: U256) -> Result<(), TempoPrecompileError> {
         let address = self.address();
         self.storage().sstore(address, slot, value)
     }
 
+    /// Performs an SLOAD operation at the provided slot.
     fn sload(&mut self, slot: U256) -> Result<U256, TempoPrecompileError> {
         let address = self.address();
         self.storage().sload(address, slot)

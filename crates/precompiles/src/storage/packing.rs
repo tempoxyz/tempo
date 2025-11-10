@@ -22,6 +22,19 @@ pub fn is_packable(bytes: usize) -> bool {
     bytes < 32 && 32 % bytes == 0
 }
 
+/// Create a bit mask for a value of the given byte size.
+///
+/// For values less than 32 bytes, returns a mask with the appropriate number of bits set.
+/// For 32-byte values, returns U256::MAX.
+#[inline]
+pub fn create_element_mask(byte_count: usize) -> U256 {
+    if byte_count >= 32 {
+        U256::MAX
+    } else {
+        (U256::ONE << (byte_count * 8)) - U256::ONE
+    }
+}
+
 /// Extract a packed value from a storage slot at a given byte offset.
 #[inline]
 pub fn extract_packed_value<T: Storable<1>>(
@@ -46,7 +59,7 @@ pub fn extract_packed_value<T: Storable<1>>(
     let mask = if bytes == 32 {
         U256::MAX
     } else {
-        (U256::from(1) << (bytes * 8)) - U256::from(1)
+        (U256::ONE << (bytes * 8)) - U256::ONE
     };
 
     // Extract and right-align the value
@@ -81,7 +94,7 @@ pub fn insert_packed_value<T: Storable<1>>(
     let mask = if bytes == 32 {
         U256::MAX
     } else {
-        (U256::from(1) << (bytes * 8)) - U256::from(1)
+        (U256::ONE << (bytes * 8)) - U256::ONE
     };
 
     // Clear the bits for this field in the current slot value
@@ -91,6 +104,27 @@ pub fn insert_packed_value<T: Storable<1>>(
     // Position the new value and combine with cleared slot
     let positioned = (field_value & mask) << shift_bits;
     Ok(cleared | positioned)
+}
+
+/// Zero out a packed value in a storage slot at a given byte offset.
+///
+/// This is the inverse operation to `insert_packed_value`, clearing the bits
+/// for a specific field while preserving other packed values in the slot.
+#[inline]
+pub fn zero_packed_value(current: U256, offset: usize, bytes: usize) -> Result<U256> {
+    // Validate that the value doesn't span slot boundaries
+    if offset + bytes > 32 {
+        return Err(crate::error::TempoPrecompileError::Fatal(format!(
+            "Value of {} bytes at offset {} would span slot boundary (max offset: {})",
+            bytes,
+            offset,
+            32 - bytes
+        )));
+    }
+
+    let mask = create_element_mask(bytes);
+    let shifted_mask = mask << (offset * 8);
+    Ok(current & !shifted_mask)
 }
 
 /// Calculate which slot an array element at index `idx` starts in.
@@ -109,6 +143,59 @@ pub const fn calc_element_offset(idx: usize, elem_bytes: usize) -> usize {
 #[inline]
 pub const fn calc_packed_slot_count(n: usize, elem_bytes: usize) -> usize {
     (n * elem_bytes).div_ceil(32)
+}
+
+/// Read a packed field from a struct at a given base slot.
+pub fn read_packed_at<T, S>(
+    storage: &mut S,
+    struct_base_slot: U256,
+    field_offset_slots: usize,
+    field_offset_bytes: usize,
+    field_size_bytes: usize,
+) -> Result<T>
+where
+    S: crate::storage::StorageOps,
+    T: Storable<1>,
+{
+    let slot = struct_base_slot + U256::from(field_offset_slots);
+    let slot_value = storage.sload(slot)?;
+    extract_packed_value::<T>(slot_value, field_offset_bytes, field_size_bytes)
+}
+
+/// Write a packed field to a struct at a given base slot.
+pub fn write_packed_at<T, S>(
+    storage: &mut S,
+    struct_base_slot: U256,
+    field_offset_slots: usize,
+    field_offset_bytes: usize,
+    field_size_bytes: usize,
+    value: &T,
+) -> Result<()>
+where
+    S: crate::storage::StorageOps,
+    T: Storable<1>,
+{
+    let slot = struct_base_slot + U256::from(field_offset_slots);
+    let current = storage.sload(slot)?;
+    let new_value = insert_packed_value(current, value, field_offset_bytes, field_size_bytes)?;
+    storage.sstore(slot, new_value)
+}
+
+/// Clear a packed field in a struct at a given base slot (set to zero).
+pub fn clear_packed_at<S>(
+    storage: &mut S,
+    struct_base_slot: U256,
+    field_offset_slots: usize,
+    field_offset_bytes: usize,
+    field_size_bytes: usize,
+) -> Result<()>
+where
+    S: crate::storage::StorageOps,
+{
+    let slot = struct_base_slot + U256::from(field_offset_slots);
+    let current = storage.sload(slot)?;
+    let cleared = zero_packed_value(current, field_offset_bytes, field_size_bytes)?;
+    storage.sstore(slot, cleared)
 }
 
 /// Extract a field value from a storage slot for testing purposes.
@@ -230,6 +317,62 @@ mod tests {
         assert_eq!(calc_packed_slot_count(1, 20), 1); // [Address; 1] = 20 bytes
         assert_eq!(calc_packed_slot_count(2, 20), 2); // [Address; 2] = 40 bytes
         assert_eq!(calc_packed_slot_count(3, 20), 2); // [Address; 3] = 60 bytes
+    }
+
+    #[test]
+    fn test_create_element_mask() {
+        // 1 byte mask
+        assert_eq!(create_element_mask(1), U256::from(0xff));
+
+        // 2 byte mask
+        assert_eq!(create_element_mask(2), U256::from(0xffff));
+
+        // 4 byte mask
+        assert_eq!(create_element_mask(4), U256::from(0xffffffffu32));
+
+        // 8 byte mask
+        assert_eq!(create_element_mask(8), U256::from(u64::MAX));
+
+        // 16 byte mask (u128::MAX)
+        assert_eq!(create_element_mask(16), U256::from(u128::MAX));
+
+        // 32 byte mask
+        assert_eq!(create_element_mask(32), U256::MAX);
+
+        // Greater than 32 bytes should also return MAX
+        assert_eq!(create_element_mask(64), U256::MAX);
+    }
+
+    #[test]
+    fn test_zero_packed_value() {
+        // Start with a slot containing multiple packed u8 values
+        let slot = gen_slot_from(&[
+            "0xff", // offset 3 (1 byte)
+            "0x56", // offset 2 (1 byte)
+            "0x34", // offset 1 (1 byte)
+            "0x12", // offset 0 (1 byte)
+        ]);
+
+        // Zero out the value at offset 1
+        let cleared = zero_packed_value(slot, 1, 1).unwrap();
+        let expected = gen_slot_from(&[
+            "0xff", // offset 3 - unchanged
+            "0x56", // offset 2 - unchanged
+            "0x00", // offset 1 - cleared
+            "0x12", // offset 0 - unchanged
+        ]);
+        assert_eq!(cleared, expected, "Should zero offset 1");
+
+        // Zero out a u16 (2 bytes) at offset 0
+        let slot = gen_slot_from(&["0x5678", "0x1234"]);
+        let cleared = zero_packed_value(slot, 0, 2).unwrap();
+        let expected = gen_slot_from(&["0x5678", "0x0000"]);
+        assert_eq!(cleared, expected, "Should zero u16 at offset 0");
+
+        // Zero out the last byte in a slot
+        let slot = gen_slot_from(&["0xff"]);
+        let cleared = zero_packed_value(slot, 0, 1).unwrap();
+        assert_eq!(cleared, U256::ZERO, "Should zero entire slot");
     }
 
     #[test]
@@ -659,6 +802,108 @@ mod tests {
         slot = insert_packed_value(slot, &v4, 10, 1).unwrap();
         assert_eq!(extract_packed_value::<u8>(slot, 0, 1).unwrap(), 0);
         assert_eq!(extract_packed_value::<u8>(slot, 10, 1).unwrap(), 0xff);
+    }
+
+    // -- SLOT PACKED FIELD TESTS ------------------------------------------
+    use crate::storage::hashmap::HashMapStorageProvider;
+
+    /// Test contract struct for packed field tests
+    struct TestContract<'a, S> {
+        address: Address,
+        storage: &'a mut S,
+    }
+
+    impl<'a, S: crate::storage::PrecompileStorageProvider> crate::storage::ContractStorage
+        for TestContract<'a, S>
+    {
+        type Storage = S;
+
+        fn address(&self) -> Address {
+            self.address
+        }
+
+        fn storage(&mut self) -> &mut S {
+            self.storage
+        }
+    }
+
+    /// Helper to create a test contract with fresh storage.
+    fn setup_test_contract<'a>(
+        storage: &'a mut HashMapStorageProvider,
+    ) -> TestContract<'a, HashMapStorageProvider> {
+        TestContract {
+            address: Address::random(),
+            storage,
+        }
+    }
+
+    #[test]
+    fn test_packed_at_multiple_types() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut contract = setup_test_contract(&mut storage);
+        let struct_base = U256::from(0x2000);
+
+        // Pack multiple types in same slot: bool(1) + u64(8) + u128(16)
+        let flag = true;
+        let timestamp: u64 = 1234567890;
+        let amount: u128 = 999888777666;
+
+        write_packed_at(&mut contract, struct_base, 0, 0, 1, &flag)?;
+        write_packed_at(&mut contract, struct_base, 0, 1, 8, &timestamp)?;
+        write_packed_at(&mut contract, struct_base, 0, 9, 16, &amount)?;
+
+        // Verify all packed correctly
+        let read_flag = read_packed_at::<bool, _>(&mut contract, struct_base, 0, 0, 1)?;
+        let read_time = read_packed_at::<u64, _>(&mut contract, struct_base, 0, 1, 8)?;
+        let read_amount = read_packed_at::<u128, _>(&mut contract, struct_base, 0, 9, 16)?;
+
+        assert_eq!(read_flag, flag);
+        assert_eq!(read_time, timestamp);
+        assert_eq!(read_amount, amount);
+
+        // Clear the middle one
+        clear_packed_at(&mut contract, struct_base, 0, 1, 8)?;
+
+        // Verify
+        let read_flag = read_packed_at::<bool, _>(&mut contract, struct_base, 0, 0, 1)?;
+        let read_time = read_packed_at::<u64, _>(&mut contract, struct_base, 0, 1, 8)?;
+        let read_amount = read_packed_at::<u128, _>(&mut contract, struct_base, 0, 9, 16)?;
+
+        assert_eq!(read_flag, flag);
+        assert_eq!(read_time, 0);
+        assert_eq!(read_amount, amount);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_packed_at_different_slots() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut contract = setup_test_contract(&mut storage);
+        let struct_base = U256::from(0x4000);
+
+        // Field in slot 0
+        let addr = Address::random();
+        write_packed_at(&mut contract, struct_base, 0, 0, 20, &addr)?;
+
+        // Field in slot 1
+        let value = U256::from(0xdeadbeefu32);
+        write_packed_at(&mut contract, struct_base, 1, 0, 32, &value)?;
+
+        // Field in slot 2
+        let flag = false;
+        write_packed_at(&mut contract, struct_base, 2, 0, 1, &flag)?;
+
+        // Verify all independent
+        let read_addr = read_packed_at::<Address, _>(&mut contract, struct_base, 0, 0, 20)?;
+        let read_val = read_packed_at::<U256, _>(&mut contract, struct_base, 1, 0, 32)?;
+        let read_flag = read_packed_at::<bool, _>(&mut contract, struct_base, 2, 0, 1)?;
+
+        assert_eq!(read_addr, addr);
+        assert_eq!(read_val, value);
+        assert_eq!(read_flag, flag);
+
+        Ok(())
     }
 
     // -- PROPERTY TESTS -----------------------------------------------------------

@@ -198,12 +198,13 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::{
         Precompile,
         linking_usd::{LinkingUSD, TRANSFER_ROLE},
         stablecoin_exchange::{IStablecoinExchange, MIN_ORDER_AMOUNT, StablecoinExchange},
-        storage::{PrecompileStorageProvider, hashmap::HashMapStorageProvider},
+        storage::{ContractStorage, PrecompileStorageProvider, hashmap::HashMapStorageProvider},
         tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     };
     use alloy::{
@@ -226,11 +227,12 @@ mod tests {
         let mut quote = LinkingUSD::new(exchange.storage);
         quote.initialize(admin).unwrap();
 
-        let mut quote_roles = quote.get_roles_contract();
-        quote_roles
+        quote
+            .token
             .grant_role_internal(admin, *ISSUER_ROLE)
             .unwrap();
-        quote_roles
+        quote
+            .token
             .grant_role_internal(user, *TRANSFER_ROLE)
             .unwrap();
 
@@ -255,12 +257,12 @@ mod tests {
             .unwrap();
 
         // Initialize base token
-        let mut base = TIP20Token::new(1, quote.token.storage);
-        base.initialize("BASE", "BASE", "USD", quote.token.token_address, admin)
+        let quote_address = quote.token.address();
+        let mut base = TIP20Token::new(1, quote.token.storage());
+        base.initialize("BASE", "BASE", "USD", quote_address, admin)
             .unwrap();
 
-        let mut base_roles = base.get_roles_contract();
-        base_roles.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
+        base.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
 
         base.approve(
             user,
@@ -280,8 +282,8 @@ mod tests {
         )
         .unwrap();
 
-        let base_token = base.token_address;
-        let quote_token = quote.token.token_address;
+        let base_token = base.address();
+        let quote_token = quote.token.address();
 
         // Create pair and add liquidity
         exchange.create_pair(base_token).unwrap();

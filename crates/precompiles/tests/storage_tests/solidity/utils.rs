@@ -86,8 +86,12 @@ pub(super) fn load_solc_layout(sol_file: &Path) -> StorageLayout {
             panic!("solc failed: {}", String::from_utf8_lossy(&output.stderr));
         }
 
-        let content = String::from_utf8_lossy(&output.stdout).to_string();
+        // (De)serialize the value back to a pretty-printed string, and save it
+        let json_value: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("failed to parse solc JSON output");
+        let content = serde_json::to_string_pretty(&json_value).expect("failed to format JSON");
         std::fs::write(&json_path, &content).expect("failed to write JSON file");
+
         content
     });
 
@@ -229,17 +233,41 @@ pub(super) fn compare_struct_members(
     // Get the base slot of the struct
     let struct_base_slot = parse_slot(&struct_var.slot).map_err(|e| vec![e])?;
 
-    // Get the struct members
+    // Get the type definition
     let type_def = solc_layout.types.get(&struct_var.ty).ok_or_else(|| {
         vec![format!(
-            "Type definition '{}' not found for struct field '{}'",
+            "Type definition '{}' not found for field '{}'",
             struct_var.ty, struct_field_name
         )]
     })?;
-    let members = type_def.members.as_ref().ok_or_else(|| {
+
+    // Handle both direct struct fields and mappings with struct values
+    let struct_type_def = if type_def.encoding == "mapping" {
+        // It's a mapping - get the value type
+        let value_type_name = type_def.value.as_ref().ok_or_else(|| {
+            vec![format!(
+                "Mapping type '{}' does not have a value type",
+                struct_var.ty
+            )]
+        })?;
+
+        // Get the struct type definition from the value type
+        solc_layout.types.get(value_type_name).ok_or_else(|| {
+            vec![format!(
+                "Value type '{}' not found in type definitions",
+                value_type_name
+            )]
+        })?
+    } else {
+        // It's a direct struct field
+        type_def
+    };
+
+    // Get the struct members
+    let members = struct_type_def.members.as_ref().ok_or_else(|| {
         vec![format!(
             "Type '{}' does not have members (not a struct?)",
-            struct_var.ty
+            struct_type_def.label
         )]
     })?;
 

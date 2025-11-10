@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 
 use crate::{
     error::Result,
-    storage::{Storable, StorageKey, StorageOps, types::slot::SlotId},
+    storage::{Storable, StorableType, StorageKey, StorageOps, types::slot::SlotId},
 };
 
 /// Type-safe wrapper for EVM storage mappings (hash-based key-value storage).
@@ -14,24 +14,24 @@ use crate::{
 ///
 /// - `K`: Key type (must implement `StorageKey`)
 /// - `V`: Value type (must implement `Storable<N>`)
-/// - `Id`: Zero-sized marker type identifying the base slot (implements `SlotId`)
+/// - `Base`: Zero-sized marker type identifying the base slot (implements `SlotId`)
 ///
 /// # Storage Layout
 ///
 /// Mappings use Solidity's storage layout:
-/// - Base slot: `Id::SLOT`
+/// - Base slot: `Base::SLOT`
 /// - Actual slot for key `k`: `keccak256(k || base_slot)`
 ///
 /// # Compile-Time Guarantees
 ///
 /// - Different mappings have distinct types even with same K,V
-/// - Base slot encoded in type system via `Id::SLOT`
+/// - Base slot encoded in type system via `Base::SLOT`
 #[derive(Debug, Clone, Copy)]
-pub struct Mapping<K, V, Id: SlotId> {
-    _phantom: PhantomData<(K, V, Id)>,
+pub struct Mapping<K, V, Base: SlotId> {
+    _phantom: PhantomData<(K, V, Base)>,
 }
 
-impl<K, V, Id: SlotId> Mapping<K, V, Id> {
+impl<K, V, Base: SlotId> Mapping<K, V, Base> {
     /// Creates a new `Mapping` marker.
     ///
     /// This is typically not called directly; instead, mappings are declared
@@ -48,7 +48,7 @@ impl<K, V, Id: SlotId> Mapping<K, V, Id> {
     /// Returns the slot number from the `SlotId` associated const.
     #[inline]
     pub const fn slot() -> U256 {
-        Id::SLOT
+        Base::SLOT
     }
 
     /// Reads a value from the mapping at the given key.
@@ -69,7 +69,7 @@ impl<K, V, Id: SlotId> Mapping<K, V, Id> {
         K: StorageKey,
         V: Storable<N>,
     {
-        let slot = mapping_slot(key.as_storage_bytes(), Id::SLOT);
+        let slot = mapping_slot(key.as_storage_bytes(), Base::SLOT);
         V::load(storage, slot)
     }
 
@@ -91,7 +91,7 @@ impl<K, V, Id: SlotId> Mapping<K, V, Id> {
         K: StorageKey,
         V: Storable<N>,
     {
-        let slot = mapping_slot(key.as_storage_bytes(), Id::SLOT);
+        let slot = mapping_slot(key.as_storage_bytes(), Base::SLOT);
         value.store(storage, slot)
     }
 
@@ -113,12 +113,188 @@ impl<K, V, Id: SlotId> Mapping<K, V, Id> {
         K: StorageKey,
         V: Storable<N>,
     {
-        let slot = mapping_slot(key.as_storage_bytes(), Id::SLOT);
+        let slot = mapping_slot(key.as_storage_bytes(), Base::SLOT);
+        V::delete(storage, slot)
+    }
+
+    /// Reads a value from a mapping field within a struct at a given base slot.
+    ///
+    /// This method enables accessing mapping fields within structs when you have
+    /// the struct's base slot at runtime and know the field's offset.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // For: mapping(bytes32 => Orderbook) books, where Orderbook.bids is at field offset 1
+    /// let orderbook_base = mapping_slot(pair_key, BooksSlot::SLOT);
+    /// let bid = Mapping::<i16, TickLevel, DummySlot>::read_at_offset(
+    ///     &mut contract,
+    ///     orderbook_base,
+    ///     1,  // field offset
+    ///     tick
+    /// )?;
+    /// ```
+    #[inline]
+    pub fn read_at_offset<S: StorageOps, const N: usize>(
+        storage: &mut S,
+        struct_base_slot: U256,
+        field_offset_slots: usize,
+        key: K,
+    ) -> Result<V>
+    where
+        K: StorageKey,
+        V: Storable<N>,
+    {
+        let field_slot = struct_base_slot + U256::from(field_offset_slots);
+        let slot = mapping_slot(key.as_storage_bytes(), field_slot);
+        V::load(storage, slot)
+    }
+
+    /// Reads a packed field from within a value stored in a mapping field at a given base slot.
+    ///
+    /// Use this when you have a mapping field within a struct, and the VALUES in that mapping
+    /// are themselves structs with packed fields. This method computes the mapping slot and reads
+    /// a specific packed field from the mapped value.
+    #[inline]
+    pub fn read_at_offset_packed<S: StorageOps>(
+        storage: &mut S,
+        value_field_offset_slots: usize,
+        value_field_offset_bytes: usize,
+        value_field_size_bytes: usize,
+        key: K,
+    ) -> Result<V>
+    where
+        K: StorageKey,
+        V: Storable<1>,
+    {
+        let mapped_value_slot = mapping_slot(key.as_storage_bytes(), Base::SLOT);
+        crate::storage::packing::read_packed_at(
+            storage,
+            mapped_value_slot,
+            value_field_offset_slots,
+            value_field_offset_bytes,
+            value_field_size_bytes,
+        )
+    }
+
+    /// Writes a value to a mapping field within a struct at a given base slot.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let orderbook_base = mapping_slot(pair_key, BooksSlot::SLOT);
+    /// Mapping::<i16, TickLevel, DummySlot>::write_at_offset(
+    ///     &mut contract,
+    ///     orderbook_base,
+    ///     1,  // field offset
+    ///     tick,
+    ///     tick_level
+    /// )?;
+    /// ```
+    #[inline]
+    pub fn write_at_offset<S: StorageOps, const N: usize>(
+        storage: &mut S,
+        struct_base_slot: U256,
+        field_offset_slots: usize,
+        key: K,
+        value: V,
+    ) -> Result<()>
+    where
+        K: StorageKey,
+        V: Storable<N>,
+    {
+        let field_slot = struct_base_slot + U256::from(field_offset_slots);
+        let slot = mapping_slot(key.as_storage_bytes(), field_slot);
+        value.store(storage, slot)
+    }
+
+    /// Writes a packed field within a value stored in a mapping.
+    ///
+    /// Use this when you have a mapping and the VALUES in that mapping are structs with packed fields.
+    /// This method computes the mapping slot and writes a specific packed field, preserving other
+    /// fields in the same slot.
+    #[inline]
+    pub fn write_at_offset_packed<S: StorageOps>(
+        storage: &mut S,
+        value_field_offset_slots: usize,
+        value_field_offset_bytes: usize,
+        value_field_size_bytes: usize,
+        key: K,
+        value: V,
+    ) -> Result<()>
+    where
+        K: StorageKey,
+        V: Storable<1>,
+    {
+        let mapped_value_slot = mapping_slot(key.as_storage_bytes(), Base::SLOT);
+        crate::storage::packing::write_packed_at(
+            storage,
+            mapped_value_slot,
+            value_field_offset_slots,
+            value_field_offset_bytes,
+            value_field_size_bytes,
+            &value,
+        )
+    }
+
+    /// Deletes a packed field within a value stored in a mapping (sets bytes to zero).
+    ///
+    /// Use this when you have a mapping and the VALUES in that mapping are structs with packed fields.
+    /// This method computes the mapping slot and clears a specific packed field, preserving other
+    /// fields in the same slot.
+    #[inline]
+    pub fn delete_at_offset_packed<S: StorageOps>(
+        storage: &mut S,
+        value_field_offset_slots: usize,
+        value_field_offset_bytes: usize,
+        value_field_size_bytes: usize,
+        key: K,
+    ) -> Result<()>
+    where
+        K: StorageKey,
+        V: Storable<1>,
+    {
+        let mapped_value_slot = mapping_slot(key.as_storage_bytes(), Base::SLOT);
+        crate::storage::packing::clear_packed_at(
+            storage,
+            mapped_value_slot,
+            value_field_offset_slots,
+            value_field_offset_bytes,
+            value_field_size_bytes,
+        )
+    }
+
+    /// Deletes a value from a mapping field within a struct at a given base slot.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let orderbook_base = mapping_slot(pair_key, BooksSlot::SLOT);
+    /// Mapping::<i16, TickLevel, DummySlot>::delete_at_offset(
+    ///     &mut contract,
+    ///     orderbook_base,
+    ///     1,  // field offset
+    ///     tick
+    /// )?;
+    /// ```
+    #[inline]
+    pub fn delete_at_offset<S: StorageOps, const N: usize>(
+        storage: &mut S,
+        struct_base_slot: U256,
+        field_offset_slots: usize,
+        key: K,
+    ) -> Result<()>
+    where
+        K: StorageKey,
+        V: Storable<N>,
+    {
+        let field_slot = struct_base_slot + U256::from(field_offset_slots);
+        let slot = mapping_slot(key.as_storage_bytes(), field_slot);
         V::delete(storage, slot)
     }
 }
 
-impl<K1, K2, V, Id: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyId>, Id> {
+impl<K1, K2, V, Base: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyId>, Base> {
     /// Reads a value from a nested mapping at the given keys.
     ///
     /// This method:
@@ -146,7 +322,8 @@ impl<K1, K2, V, Id: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyId>
         K2: StorageKey,
         V: Storable<N>,
     {
-        let slot = double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Id::SLOT);
+        let slot =
+            double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Base::SLOT);
         V::load(storage, slot)
     }
 
@@ -179,7 +356,8 @@ impl<K1, K2, V, Id: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyId>
         K2: StorageKey,
         V: Storable<N>,
     {
-        let slot = double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Id::SLOT);
+        let slot =
+            double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Base::SLOT);
         value.store(storage, slot)
     }
 
@@ -210,15 +388,221 @@ impl<K1, K2, V, Id: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyId>
         K2: StorageKey,
         V: Storable<N>,
     {
-        let slot = double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Id::SLOT);
+        let slot =
+            double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Base::SLOT);
         V::delete(storage, slot)
+    }
+
+    /// Reads a value from a nested mapping field within a struct at a runtime base slot.
+    ///
+    /// This enables accessing nested mapping fields within structs when you have
+    /// the struct's base slot at runtime and know the field's offset.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // For a struct with nested mapping at field offset 3
+    /// let struct_base = mapping_slot(key, StructSlot::SLOT);
+    /// let value = Mapping::<Address, Mapping<Address, U256, DummySlot>, DummySlot>::read_nested_at_offset(
+    ///     &mut storage,
+    ///     struct_base,
+    ///     3,  // field offset
+    ///     owner,
+    ///     spender
+    /// )?;
+    /// ```
+    #[inline]
+    pub fn read_nested_at_offset<S: StorageOps, const N: usize>(
+        storage: &mut S,
+        struct_base_slot: U256,
+        field_offset_slots: usize,
+        key1: K1,
+        key2: K2,
+    ) -> Result<V>
+    where
+        K1: StorageKey,
+        K2: StorageKey,
+        V: Storable<N>,
+    {
+        let field_slot = struct_base_slot + U256::from(field_offset_slots);
+        let slot =
+            double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), field_slot);
+        V::load(storage, slot)
+    }
+
+    /// Writes a value to a nested mapping field within a struct at a runtime base slot.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let struct_base = mapping_slot(key, StructSlot::SLOT);
+    /// Mapping::<Address, Mapping<Address, U256, DummySlot>, DummySlot>::write_nested_at_offset(
+    ///     &mut storage,
+    ///     struct_base,
+    ///     3,  // field offset
+    ///     owner,
+    ///     spender,
+    ///     allowance
+    /// )?;
+    /// ```
+    #[inline]
+    pub fn write_nested_at_offset<S: StorageOps, const N: usize>(
+        storage: &mut S,
+        struct_base_slot: U256,
+        field_offset_slots: usize,
+        key1: K1,
+        key2: K2,
+        value: V,
+    ) -> Result<()>
+    where
+        K1: StorageKey,
+        K2: StorageKey,
+        V: Storable<N>,
+    {
+        let field_slot = struct_base_slot + U256::from(field_offset_slots);
+        let slot =
+            double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), field_slot);
+        value.store(storage, slot)
+    }
+
+    /// Deletes a value from a nested mapping field within a struct at a runtime base slot.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let struct_base = mapping_slot(key, StructSlot::SLOT);
+    /// Mapping::<Address, Mapping<Address, U256, DummySlot>, DummySlot>::delete_nested_at_offset(
+    ///     &mut storage,
+    ///     struct_base,
+    ///     3,  // field offset
+    ///     owner,
+    ///     spender
+    /// )?;
+    /// ```
+    #[inline]
+    pub fn delete_nested_at_offset<S: StorageOps, const N: usize>(
+        storage: &mut S,
+        struct_base_slot: U256,
+        field_offset_slots: usize,
+        key1: K1,
+        key2: K2,
+    ) -> Result<()>
+    where
+        K1: StorageKey,
+        K2: StorageKey,
+        V: Storable<N>,
+    {
+        let field_slot = struct_base_slot + U256::from(field_offset_slots);
+        let slot =
+            double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), field_slot);
+        V::delete(storage, slot)
+    }
+
+    /// Reads a packed field from within a value stored in a nested mapping.
+    ///
+    /// Use this when you have a nested mapping and the VALUES in that mapping are structs
+    /// with packed fields. This method computes the double mapping slot and reads a specific
+    /// packed field from the mapped value.
+    #[inline]
+    pub fn read_nested_at_offset_packed<S: StorageOps>(
+        storage: &mut S,
+        value_field_offset_slots: usize,
+        value_field_offset_bytes: usize,
+        value_field_size_bytes: usize,
+        key1: K1,
+        key2: K2,
+    ) -> Result<V>
+    where
+        K1: StorageKey,
+        K2: StorageKey,
+        V: Storable<1>,
+    {
+        let mapped_value_slot =
+            double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Base::SLOT);
+        crate::storage::packing::read_packed_at(
+            storage,
+            mapped_value_slot,
+            value_field_offset_slots,
+            value_field_offset_bytes,
+            value_field_size_bytes,
+        )
+    }
+
+    /// Writes a packed field within a value stored in a nested mapping.
+    ///
+    /// Use this when you have a nested mapping and the VALUES in that mapping are structs
+    /// with packed fields. This method computes the double mapping slot and writes a specific
+    /// packed field, preserving other fields in the same slot.
+    #[inline]
+    pub fn write_nested_at_offset_packed<S: StorageOps>(
+        storage: &mut S,
+        value_field_offset_slots: usize,
+        value_field_offset_bytes: usize,
+        value_field_size_bytes: usize,
+        key1: K1,
+        key2: K2,
+        value: V,
+    ) -> Result<()>
+    where
+        K1: StorageKey,
+        K2: StorageKey,
+        V: Storable<1>,
+    {
+        let mapped_value_slot =
+            double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Base::SLOT);
+        crate::storage::packing::write_packed_at(
+            storage,
+            mapped_value_slot,
+            value_field_offset_slots,
+            value_field_offset_bytes,
+            value_field_size_bytes,
+            &value,
+        )
+    }
+
+    /// Deletes a packed field within a value stored in a nested mapping (sets bytes to zero).
+    ///
+    /// Use this when you have a nested mapping and the VALUES in that mapping are structs
+    /// with packed fields. This method computes the double mapping slot and clears a specific
+    /// packed field, preserving other fields in the same slot.
+    #[inline]
+    pub fn delete_nested_at_offset_packed<S: StorageOps>(
+        storage: &mut S,
+        value_field_offset_slots: usize,
+        value_field_offset_bytes: usize,
+        value_field_size_bytes: usize,
+        key1: K1,
+        key2: K2,
+    ) -> Result<()>
+    where
+        K1: StorageKey,
+        K2: StorageKey,
+        V: Storable<1>,
+    {
+        let mapped_value_slot =
+            double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Base::SLOT);
+        crate::storage::packing::clear_packed_at(
+            storage,
+            mapped_value_slot,
+            value_field_offset_slots,
+            value_field_offset_bytes,
+            value_field_size_bytes,
+        )
     }
 }
 
-impl<K, V, Id: SlotId> Default for Mapping<K, V, Id> {
+impl<K, V, Base: SlotId> Default for Mapping<K, V, Base> {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// Mappings occupy a full 32-byte slot in the layout (used as a base for hashing),
+// even though they don't store data in that slot directly.
+//
+// **NOTE:** Necessary to allow it to participate in struct layout calculations.
+impl<K, V, Base: SlotId> StorableType for Mapping<K, V, Base> {
+    const BYTE_COUNT: usize = 32;
 }
 
 pub struct DummySlot;
@@ -261,7 +645,7 @@ pub fn double_mapping_slot<T: AsRef<[u8]>, U: AsRef<[u8]>>(
 mod tests {
     use super::*;
     use crate::storage::{PrecompileStorageProvider, hashmap::HashMapStorageProvider};
-    use alloy::primitives::{Address, B256, address};
+    use alloy::primitives::{Address, B256, address, uint};
     use proptest::prelude::*;
 
     // Test helper that implements StorageOps
@@ -298,12 +682,12 @@ mod tests {
 
     struct TestSlot1;
     impl SlotId for TestSlot1 {
-        const SLOT: U256 = U256::from_limbs([1, 0, 0, 0]);
+        const SLOT: U256 = U256::ONE;
     }
 
     struct TestSlot2;
     impl SlotId for TestSlot2 {
-        const SLOT: U256 = U256::from_limbs([2, 0, 0, 0]);
+        const SLOT: U256 = uint!(2_U256);
     }
 
     struct TestSlotMax;
@@ -416,8 +800,8 @@ mod tests {
     #[test]
     fn test_double_mapping_account_role() {
         let account = address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
-        let role: B256 = U256::from(1).into();
-        let base_slot = U256::from(1);
+        let role: B256 = U256::ONE.into();
+        let base_slot = U256::ONE;
 
         let slot = double_mapping_slot(account, role, base_slot);
 
@@ -448,7 +832,7 @@ mod tests {
 
     #[test]
     fn test_mapping_slot_extraction() {
-        assert_eq!(Mapping::<Address, U256, TestSlot1>::slot(), U256::from(1));
+        assert_eq!(Mapping::<Address, U256, TestSlot1>::slot(), U256::ONE);
         assert_eq!(Mapping::<U256, Address, TestSlot2>::slot(), U256::from(2));
 
         // Test with larger slot number
@@ -721,5 +1105,265 @@ mod tests {
             prop_assert_eq!(after_delete1, U256::ZERO, "owner1 allowance not deleted");
             prop_assert_eq!(after_delete2, allowance2, "owner2 allowance affected");
         }
+    }
+
+    // -- RUNTIME SLOT OFFSET TESTS --------------------------------------------
+
+    #[test]
+    fn test_mapping_at_offset() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut contract = setup_test_contract(&mut storage);
+
+        // Simulate: mapping(bytes32 => Orderbook) books
+        // where Orderbook has a mapping field `bids` at field offset 1
+        let pair_key: B256 = U256::from(0x1234).into();
+        let orderbook_base_slot = mapping_slot(pair_key, TestSlot1::SLOT);
+
+        // Use Mapping::*_at_offset() to access the bids mapping within the Orderbook struct
+        let tick: i16 = 100;
+        let bid_value = U256::from(500);
+
+        // Write to orderbook.bids[tick]
+        Mapping::<i16, U256, DummySlot>::write_at_offset(
+            &mut contract,
+            orderbook_base_slot,
+            1, // bids field is at offset 1 in Orderbook
+            tick,
+            bid_value,
+        )?;
+
+        // Read from orderbook.bids[tick]
+        let read_value = Mapping::<i16, U256, DummySlot>::read_at_offset(
+            &mut contract,
+            orderbook_base_slot,
+            1,
+            tick,
+        )?;
+
+        assert_eq!(read_value, bid_value);
+
+        // Delete orderbook.bids[tick]
+        Mapping::<i16, U256, DummySlot>::delete_at_offset(
+            &mut contract,
+            orderbook_base_slot,
+            1,
+            tick,
+        )?;
+
+        let deleted_value = Mapping::<i16, U256, DummySlot>::read_at_offset(
+            &mut contract,
+            orderbook_base_slot,
+            1,
+            tick,
+        )?;
+
+        assert_eq!(deleted_value, U256::ZERO);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_nested_mapping_at_offset() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut contract = setup_test_contract(&mut storage);
+
+        // Simulate a struct with nested mapping at field offset 3
+        let struct_key: B256 = U256::from(0xabcd).into();
+        let struct_base_slot = mapping_slot(struct_key, TestSlot2::SLOT);
+
+        let owner = Address::random();
+        let spender = Address::random();
+        let allowance = U256::from(1000);
+
+        // Write to nested_mapping[owner][spender]
+        Mapping::<Address, Mapping<Address, U256, DummySlot>, DummySlot>::write_nested_at_offset(
+            &mut contract,
+            struct_base_slot,
+            3, // nested mapping at field offset 3
+            owner,
+            spender,
+            allowance,
+        )?;
+
+        // Read back
+        let read_allowance =
+            Mapping::<Address, Mapping<Address, U256, DummySlot>, DummySlot>::read_nested_at_offset(
+                &mut contract,
+                struct_base_slot,
+                3,
+                owner,
+                spender,
+            )?;
+
+        assert_eq!(read_allowance, allowance);
+
+        // Delete
+        Mapping::<Address, Mapping<Address, U256, DummySlot>, DummySlot>::delete_nested_at_offset(
+            &mut contract,
+            struct_base_slot,
+            3,
+            owner,
+            spender,
+        )?;
+
+        let deleted =
+            Mapping::<Address, Mapping<Address, U256, DummySlot>, DummySlot>::read_nested_at_offset(
+                &mut contract,
+                struct_base_slot,
+                3,
+                owner,
+                spender,
+            )?;
+
+        assert_eq!(deleted, U256::ZERO);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_nested_at_offset_packed() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut contract = setup_test_contract(&mut storage);
+
+        let key1 = Address::random();
+        let key2 = Address::random();
+        let value = U256::from(0xabcd);
+
+        // Write packed field in nested mapping value
+        Mapping::<Address, Mapping<Address, U256, DummySlot>, TestSlot1>::write_nested_at_offset_packed(
+            &mut contract,
+            0, // value_field_offset_slots
+            0, // value_field_offset_bytes
+            2, // value_field_size_bytes (uint16)
+            key1,
+            key2,
+            value,
+        )?;
+
+        // Read back using read_nested_at_offset_packed
+        let read_value =
+            Mapping::<Address, Mapping<Address, U256, DummySlot>, TestSlot1>::read_nested_at_offset_packed(
+                &mut contract,
+                0,
+                0,
+                2,
+                key1,
+                key2,
+            )?;
+
+        assert_eq!(read_value, value);
+        Ok(())
+    }
+
+    #[test]
+    fn test_delete_nested_at_offset_packed() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut contract = setup_test_contract(&mut storage);
+
+        let key1 = Address::random();
+        let key2 = Address::random();
+        let value = U256::from(0x1234);
+
+        // Write then delete packed field
+        Mapping::<Address, Mapping<Address, U256, DummySlot>, TestSlot2>::write_nested_at_offset_packed(
+            &mut contract,
+            0,
+            0,
+            2,
+            key1,
+            key2,
+            value,
+        )?;
+
+        Mapping::<Address, Mapping<Address, U256, DummySlot>, TestSlot2>::delete_nested_at_offset_packed(
+            &mut contract,
+            0,
+            0,
+            2,
+            key1,
+            key2,
+        )?;
+
+        let deleted =
+            Mapping::<Address, Mapping<Address, U256, DummySlot>, TestSlot2>::read_nested_at_offset_packed(
+                &mut contract,
+                0,
+                0,
+                2,
+                key1,
+                key2,
+            )?;
+
+        assert_eq!(deleted, U256::ZERO);
+        Ok(())
+    }
+
+    #[test]
+    fn test_multiple_fields_at_different_offsets() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut contract = setup_test_contract(&mut storage);
+
+        // Simulate Orderbook with multiple mapping fields
+        let pair_key: B256 = U256::from(0x5678).into();
+        let orderbook_base = mapping_slot(pair_key, TestSlot0::SLOT);
+
+        // bids at offset 1
+        let tick1: i16 = 50;
+        let bid1 = U256::from(100);
+        Mapping::<i16, U256, DummySlot>::write_at_offset(
+            &mut contract,
+            orderbook_base,
+            1,
+            tick1,
+            bid1,
+        )?;
+
+        // asks at offset 2
+        let tick2: i16 = -25;
+        let ask1 = U256::from(200);
+        Mapping::<i16, U256, DummySlot>::write_at_offset(
+            &mut contract,
+            orderbook_base,
+            2,
+            tick2,
+            ask1,
+        )?;
+
+        // bidBitmap at offset 3
+        let bitmap_key: i16 = 10;
+        let bitmap_value = U256::from(0xff);
+        Mapping::<i16, U256, DummySlot>::write_at_offset(
+            &mut contract,
+            orderbook_base,
+            3,
+            bitmap_key,
+            bitmap_value,
+        )?;
+
+        // Verify all fields are independent
+        let read_bid = Mapping::<i16, U256, DummySlot>::read_at_offset(
+            &mut contract,
+            orderbook_base,
+            1,
+            tick1,
+        )?;
+        let read_ask = Mapping::<i16, U256, DummySlot>::read_at_offset(
+            &mut contract,
+            orderbook_base,
+            2,
+            tick2,
+        )?;
+        let read_bitmap = Mapping::<i16, U256, DummySlot>::read_at_offset(
+            &mut contract,
+            orderbook_base,
+            3,
+            bitmap_key,
+        )?;
+
+        assert_eq!(read_bid, bid1);
+        assert_eq!(read_ask, ask1);
+        assert_eq!(read_bitmap, bitmap_value);
+
+        Ok(())
     }
 }

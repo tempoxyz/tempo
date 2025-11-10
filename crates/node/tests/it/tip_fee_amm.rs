@@ -324,6 +324,13 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
         .await?;
     assert_eq!(user_lp_balance, expected_initial_liquidity);
 
+    // Cache pool balances before setting tokens (to avoid any fee swaps affecting the baseline)
+    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let pool_before = fee_amm
+        .getPool(*user_token.address(), *validator_token.address())
+        .call()
+        .await?;
+
     // Set different tokens for user and validator, validator is already set to predeployed fee
     // token
     pending.push(
@@ -346,18 +353,11 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let _initial_validator_balance = validator_token.balanceOf(validator_address).call().await?;
     let initial_user_balance = user_token.balanceOf(user_address).call().await?;
 
-    // Cache pool balances before
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-    let pool_before = fee_amm
-        .getPool(user_fee_token, val_fee_token)
-        .call()
-        .await?;
-
     // Transfer using predeployed TIP20
     let transfer_token = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone());
 
     let transfer_receipt = transfer_token
-        .transfer(Address::random(), U256::ZERO)
+        .transfer(Address::random(), U256::from(1))
         .send()
         .await?
         .get_receipt()
@@ -379,6 +379,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
         .getPool(user_fee_token, val_fee_token)
         .call()
         .await?;
+
     assert!(pool_before.reserveUserToken < pool_after.reserveUserToken);
     assert!(pool_before.reserveValidatorToken > pool_after.reserveValidatorToken);
 
