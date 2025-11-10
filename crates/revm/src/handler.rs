@@ -1038,51 +1038,6 @@ where
     Ok(balance)
 }
 
-/// Transfers `amount` from the sender's to the receivers balance inside the token contract.
-///
-/// Caution: assumes the `token` address is already loaded
-pub fn transfer_token<JOURNAL>(
-    journal: &mut JOURNAL,
-    token: Address,
-    sender: Address,
-    recipient: Address,
-    amount: U256,
-) -> Result<(), <JOURNAL::Database as Database>::Error>
-where
-    JOURNAL: JournalTr,
-{
-    // Ensure the token account is touched
-    journal.touch_account(token);
-    // Load sender's current balance
-    // NOTE: it is important to note that this expects the token to be a tip20 token with BALANCES
-    // slot at slot 10
-    let sender_slot = mapping_slot(sender, tip20::slots::BALANCES);
-    let sender_balance = journal.sload(token, sender_slot)?.data;
-
-    // Check sender has sufficient balance
-    if amount > sender_balance {
-        todo!()
-    }
-
-    // Update sender balance
-    let new_sender_balance = sender_balance
-        .checked_sub(amount)
-        .expect("TODO: handle err");
-    journal.sstore(token, sender_slot, new_sender_balance)?;
-
-    // Update recipient balance or burn
-    if recipient != Address::ZERO {
-        let recipient_slot = mapping_slot(recipient, tip20::slots::BALANCES);
-        let recipient_balance = journal.sload(token, recipient_slot)?.data;
-        let new_recipient_balance = recipient_balance
-            .checked_add(amount)
-            .expect("TODO: handle error");
-        journal.sstore(token, recipient_slot, new_recipient_balance)?;
-    }
-
-    Ok(())
-}
-
 impl<DB, I> InspectorHandler for TempoEvmHandler<DB, I>
 where
     DB: alloy_evm::Database,
@@ -1195,32 +1150,6 @@ mod tests {
 
         let balance = get_token_balance(&mut journal, token, account).unwrap();
         assert_eq!(balance, expected_balance);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_transfer_token() -> eyre::Result<()> {
-        let mut journal = create_test_journal();
-        let token = Address::random();
-        let sender = Address::random();
-        let recipient = Address::random();
-        let initial_balance = U256::random();
-
-        let sender_slot = mapping_slot(sender, tip20::slots::BALANCES);
-        journal.load_account(token)?;
-        journal.sstore(token, sender_slot, initial_balance).unwrap();
-        let sender_balance = get_token_balance(&mut journal, token, sender).unwrap();
-        assert_eq!(sender_balance, initial_balance);
-
-        transfer_token(&mut journal, token, sender, recipient, initial_balance).unwrap();
-
-        // Verify balances after transfer
-        let sender_balance = get_token_balance(&mut journal, token, sender).unwrap();
-        let recipient_balance = get_token_balance(&mut journal, token, recipient).unwrap();
-
-        assert_eq!(sender_balance, 0);
-        assert_eq!(recipient_balance, initial_balance);
 
         Ok(())
     }
