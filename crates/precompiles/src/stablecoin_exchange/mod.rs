@@ -467,6 +467,10 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
+        let book = self.sload_books(book_key)?;
+        if book.base.is_zero() {
+            return Err(StablecoinExchangeError::pair_does_not_exist().into());
+        }
 
         // Validate tick and flip_tick are within bounds
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
@@ -1622,6 +1626,40 @@ mod tests {
         assert_eq!(
             result,
             Err(StablecoinExchangeError::below_minimum_order_size(below_minimum).into())
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_place_flip_order_pair_does_not_exist() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+        let min_order_amount = MIN_ORDER_AMOUNT;
+        let tick = 100i16;
+        let flip_tick = 200i16;
+
+        let price = orderbook::tick_to_price(tick);
+        let expected_escrow = (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+        let (base_token, _quote_token) = setup_test_tokens(
+            exchange.storage,
+            admin,
+            alice,
+            exchange.address,
+            expected_escrow,
+        );
+
+        // Try to place a flip order without creating the pair first
+        let result =
+            exchange.place_flip(alice, base_token, min_order_amount, true, tick, flip_tick);
+        assert_eq!(
+            result,
+            Err(StablecoinExchangeError::pair_does_not_exist().into())
         );
 
         Ok(())
