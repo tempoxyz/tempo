@@ -24,6 +24,7 @@ use crate::{
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles_macros::contract;
 
 /// Minimum order size of $10 USD
@@ -468,7 +469,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
         let book = self.sload_books(book_key)?;
-        if book.base.is_zero() {
+        // Check book existence (only after Moderato hardfork)
+        if self.storage.spec() >= TempoHardfork::Moderato && book.base.is_zero() {
             return Err(StablecoinExchangeError::pair_does_not_exist().into());
         }
 
@@ -1632,8 +1634,9 @@ mod tests {
     }
 
     #[test]
-    fn test_place_flip_order_pair_does_not_exist() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_place_flip_order_pair_does_not_exist_post_moderato() -> eyre::Result<()> {
+        // Test with Moderato hardfork (validation should be enforced)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -1661,6 +1664,42 @@ mod tests {
             result,
             Err(StablecoinExchangeError::pair_does_not_exist().into())
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_place_flip_order_pair_does_not_exist_pre_moderato() -> eyre::Result<()> {
+        // Test with Adagio (pre-Moderato) - validation should not be enforced
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+        let min_order_amount = MIN_ORDER_AMOUNT;
+        let tick = 100i16;
+        let flip_tick = 200i16;
+
+        let price = orderbook::tick_to_price(tick);
+        let expected_escrow = (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+        let (base_token, _quote_token) = setup_test_tokens(
+            exchange.storage,
+            admin,
+            alice,
+            exchange.address,
+            expected_escrow,
+        );
+
+        // Try to place a flip order without creating the pair first
+        // Pre-Moderato, the book existence check is skipped, so the order is accepted
+        // (it would only fail later during execute_block when trying to process it)
+        let result =
+            exchange.place_flip(alice, base_token, min_order_amount, true, tick, flip_tick);
+
+        // Pre-Moderato: order should be accepted (placed in pending queue)
+        assert!(result.is_ok());
 
         Ok(())
     }
