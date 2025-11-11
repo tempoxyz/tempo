@@ -30,7 +30,7 @@ use revm::{
 };
 use tempo_contracts::{
     DEFAULT_7702_DELEGATE_ADDRESS,
-    precompiles::{FeeManagerError, IFeeManager, TIPFeeAMMError},
+    precompiles::{FeeManagerError, TIPFeeAMMError},
 };
 use tempo_precompiles::{
     error::TempoPrecompileError,

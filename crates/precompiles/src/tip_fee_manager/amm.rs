@@ -597,6 +597,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         if amount_user_token > available_user_token {
             return Err(TIPFeeAMMError::insufficient_reserves().into());
         }
+
         if amount_validator_token > available_validator_token {
             return Err(TIPFeeAMMError::insufficient_reserves().into());
         }
