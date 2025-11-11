@@ -14,6 +14,7 @@ workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives.workspace = true
 tempo-contracts.workspace = true
+tempo-chainspec.workspace = true
 
 reth-evm.workspace = true
 
@@ -31,3 +32,4 @@ thiserror.workspace = true
 [dev-dependencies]
 eyre.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
+tempo-evm.workspace = true

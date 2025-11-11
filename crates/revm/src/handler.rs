@@ -27,7 +27,7 @@ use revm::{
         instructions::utility::IntoAddress,
         interpreter::EthInterpreter,
     },
-    primitives::{eip7702, hardfork::SpecId as RevmSpecId},
+    primitives::eip7702,
     state::Bytecode,
 };
 use tempo_contracts::{
@@ -523,8 +523,7 @@ where
 
         if !nonce_key.is_zero() {
             let internals = EvmInternals::new(journal, block);
-            let mut storage_provider =
-                EvmPrecompileStorageProvider::new_max_gas(internals, cfg.chain_id);
+            let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
             let mut nonce_manager = NonceManager::new(&mut storage_provider);
 
             if !cfg.is_nonce_check_disabled() {
@@ -590,8 +589,7 @@ where
         // Create storage provider wrapper around journal
         let internals = EvmInternals::new(journal, &block);
         let beneficiary = internals.block_env().beneficiary();
-        let mut storage_provider =
-            EvmPrecompileStorageProvider::new_max_gas(internals, cfg.chain_id());
+        let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
         let mut fee_manager = TipFeeManager::new(&mut storage_provider);
 
         if tx.max_balance_spending().ok() == Some(U256::ZERO) {
@@ -652,7 +650,6 @@ where
         let basefee = context.block().basefee() as u128;
         let effective_gas_price = tx.effective_gas_price(basefee);
         let gas = exec_result.gas();
-        let chain_id = context.cfg().chain_id;
 
         // Calculate actual used and refund amounts
         let actual_spending = calc_gas_balance_spending(gas.used(), effective_gas_price);
@@ -666,7 +663,8 @@ where
         let (journal, block) = (&mut context.journaled_state, &context.block);
         let internals = EvmInternals::new(journal, block);
         let beneficiary = internals.block_env().beneficiary();
-        let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, chain_id);
+        let mut storage_provider =
+            EvmPrecompileStorageProvider::new_max_gas(internals, &context.cfg);
         let mut fee_manager = TipFeeManager::new(&mut storage_provider);
 
         if !actual_spending.is_zero() || !refund_amount.is_zero() {
@@ -762,7 +760,7 @@ where
             validate_aa_initial_tx_gas(evm)
         } else {
             // Standard transaction - use default revm validation
-            let spec = evm.ctx_ref().cfg().spec();
+            let spec = evm.ctx_ref().cfg().spec().into();
             Ok(
                 validation::validate_initial_tx_gas(tx, spec, evm.ctx.cfg.is_eip7623_disabled())
                     .map_err(TempoInvalidTransaction::EthInvalidTransaction)?,
@@ -789,7 +787,6 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     signature: &AASignature,
     access_list: Option<impl Iterator<Item = &'a AccessListItem>>,
     aa_authorization_list: &[tempo_primitives::transaction::AASignedAuthorization],
-    spec: RevmSpecId,
 ) -> Result<InitialAndFloorGas, TempoInvalidTransaction> {
     let mut gas = InitialAndFloorGas::default();
 
@@ -815,7 +812,7 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
 
     for call in calls {
         // 4a. Calldata gas using revm helper
-        let tokens = get_tokens_in_calldata(&call.input, spec.is_enabled_in(RevmSpecId::ISTANBUL));
+        let tokens = get_tokens_in_calldata(&call.input, true);
         total_tokens += tokens;
 
         // 4b. CREATE-specific costs
@@ -872,7 +869,6 @@ fn validate_aa_initial_tx_gas<DB, I>(
 where
     DB: alloy_evm::Database,
 {
-    let spec = evm.ctx_ref().cfg().spec();
     let tx = evm.ctx_ref().tx();
 
     // This function should only be called for AA transactions
@@ -885,16 +881,14 @@ where
     let gas_limit = tx.gas_limit();
 
     // Validate all CREATE calls' initcode size upfront (EIP-3860)
-    if spec.is_enabled_in(RevmSpecId::SHANGHAI) {
-        let max_initcode_size = evm.ctx_ref().cfg().max_initcode_size();
-        for call in calls {
-            if call.to.is_create() && call.input.len() > max_initcode_size {
-                return Err(EVMError::Transaction(
-                    TempoInvalidTransaction::EthInvalidTransaction(
-                        InvalidTransaction::CreateInitCodeSizeLimit,
-                    ),
-                ));
-            }
+    let max_initcode_size = evm.ctx_ref().cfg().max_initcode_size();
+    for call in calls {
+        if call.to.is_create() && call.input.len() > max_initcode_size {
+            return Err(EVMError::Transaction(
+                TempoInvalidTransaction::EthInvalidTransaction(
+                    InvalidTransaction::CreateInitCodeSizeLimit,
+                ),
+            ));
         }
     }
 
@@ -904,7 +898,6 @@ where
         &aa_env.signature,
         tx.access_list(),
         &aa_env.aa_authorization_list,
-        spec,
     )?;
 
     if evm.ctx.cfg.is_eip7623_disabled() {
@@ -959,7 +952,7 @@ where
 
     let mut storage = EvmPrecompileStorageProvider::new_max_gas(
         EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
-        ctx.cfg.chain_id,
+        &ctx.cfg,
     );
 
     let currency = TIP20Token::new(token_id, &mut storage)
@@ -1129,9 +1122,10 @@ pub fn validate_time_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{TempoBlockEnv, TempoTxEnv};
     use alloy_primitives::{Address, U256};
     use revm::{
-        Journal,
+        Context, Journal, MainContext,
         database::{CacheDB, EmptyDB},
         interpreter::instructions::utility::IntoU256,
         primitives::hardfork::SpecId,
@@ -1166,7 +1160,11 @@ mod tests {
     #[test]
     fn test_get_fee_token() -> eyre::Result<()> {
         let journal = create_test_journal();
-        let mut ctx = TempoContext::new(CacheDB::new(EmptyDB::default()), SpecId::default())
+        let mut ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(Default::default())
+            .with_tx(TempoTxEnv::default())
             .with_new_journal(journal);
         let user = Address::random();
         ctx.tx.inner.caller = user;
@@ -1228,7 +1226,7 @@ mod tests {
         use tempo_primitives::transaction::{AASignature, Call};
 
         // Test that AA tx with secp256k1 and single call matches normal tx + per-call overhead
-        let spec = RevmSpecId::CANCUN;
+        let spec = SpecId::CANCUN;
         let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
         let to = Address::random();
 
@@ -1251,7 +1249,6 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>, // no access list
             &aa_env.aa_authorization_list,
-            spec,
         )
         .unwrap();
 
@@ -1278,7 +1275,7 @@ mod tests {
         use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
-        let spec = RevmSpecId::CANCUN;
+        let spec = SpecId::CANCUN;
         let calldata = Bytes::from(vec![1, 2, 3]); // 3 non-zero bytes
 
         let calls = vec![
@@ -1310,7 +1307,6 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            spec,
         )
         .unwrap();
 
@@ -1337,7 +1333,7 @@ mod tests {
             AASignature, Call, aa_signature::P256SignatureWithPreHash,
         };
 
-        let spec = RevmSpecId::CANCUN;
+        let spec = SpecId::CANCUN;
         let calldata = Bytes::from(vec![1, 2]);
 
         let call = Call {
@@ -1363,7 +1359,6 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            spec,
         )
         .unwrap();
 
@@ -1385,7 +1380,7 @@ mod tests {
         use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
-        let spec = RevmSpecId::CANCUN; // Post-Shanghai
+        let spec = SpecId::CANCUN; // Post-Shanghai
         let initcode = Bytes::from(vec![0x60, 0x80]); // 2 bytes
 
         let call = Call {
@@ -1405,7 +1400,6 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            spec,
         )
         .unwrap();
 
@@ -1426,7 +1420,6 @@ mod tests {
         use alloy_primitives::{Bytes, TxKind};
         use tempo_primitives::transaction::{AASignature, Call};
 
-        let spec = RevmSpecId::CANCUN;
         let calldata = Bytes::from(vec![1]);
 
         let call = Call {
@@ -1446,7 +1439,6 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            spec,
         );
 
         assert_eq!(
@@ -1462,7 +1454,7 @@ mod tests {
         use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
-        let spec = RevmSpecId::CANCUN;
+        let spec = SpecId::CANCUN;
         let calldata = Bytes::from(vec![]);
 
         let call = Call {
@@ -1483,7 +1475,6 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            spec,
         )
         .unwrap();
 
@@ -1505,7 +1496,7 @@ mod tests {
         use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
-        let spec = RevmSpecId::PRAGUE;
+        let spec = SpecId::PRAGUE;
         let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
 
         let call = Call {
@@ -1525,7 +1516,6 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            spec,
         )
         .unwrap();
 
@@ -1543,11 +1533,14 @@ mod tests {
     /// PR that introduced [`TempoInvalidTransaction::ValueTransferNotAllowed`] https://github.com/tempoxyz/tempo/pull/759
     #[test]
     fn test_zero_value_transfer() -> eyre::Result<()> {
-        use crate::{TempoEvm, evm::TempoContext};
+        use crate::TempoEvm;
 
         // Create a test context with a transaction that has a non-zero value
-        let db = CacheDB::new(EmptyDB::default());
-        let ctx = TempoContext::new(db, SpecId::CANCUN);
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(Default::default())
+            .with_cfg(Default::default())
+            .with_tx(TempoTxEnv::default());
         let mut evm = TempoEvm::new(ctx, ());
 
         // Set a non-zero value on the transaction

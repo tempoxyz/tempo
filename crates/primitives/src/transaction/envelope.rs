@@ -6,10 +6,13 @@ use alloy_consensus::{
     TypedTransaction,
     error::{UnsupportedTransactionType, ValueError},
 };
-use alloy_primitives::{Address, B256, Signature, SignatureError, U256};
+use alloy_primitives::{Address, B256, Signature, SignatureError, U256, hex};
 use core::fmt;
 use reth_primitives_traits::InMemorySize;
-use tempo_precompiles::tip20::TIP20_PAYMENT_PREFIX;
+
+/// TIP20 payment address prefix (14 bytes for payment classification)
+/// Same as TIP20_TOKEN_PREFIX but extended to 14 bytes for payment classification
+pub const TIP20_PAYMENT_PREFIX: [u8; 14] = hex!("20C0000000000000000000000000");
 
 /// Fake signature for Tempo system transactions.
 pub const TEMPO_SYSTEM_TX_SIGNATURE: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
