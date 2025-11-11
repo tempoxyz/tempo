@@ -1059,7 +1059,7 @@ mod tests {
     #[test]
     fn test_get_fee_token() -> eyre::Result<()> {
         let journal = create_test_journal();
-        let mut ctx = Context::mainnet()
+        let mut ctx: TempoContext<_> = Context::mainnet()
             .with_db(CacheDB::new(EmptyDB::default()))
             .with_block(TempoBlockEnv::default())
             .with_cfg(Default::default())

@@ -9,11 +9,7 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
-use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
-    tip_fee_manager::IFeeManager::setUserTokenCall,
-};
-use tempo_primitives::TempoTxEnvelope;
+use tempo_precompiles::DEFAULT_FEE_TOKEN;
 use tempo_revm::TempoStateAccess;
 
 /// Validator for Tempo transactions.
