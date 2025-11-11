@@ -1,11 +1,14 @@
 use crate::{
-    Precompile, input_cost, mutate, mutate_void,
+    Precompile,
+    error::TempoPrecompileError,
+    input_cost, mutate, mutate_void,
     storage::PrecompileStorageProvider,
     tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager, amm::MIN_LIQUIDITY},
     view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
+use tempo_chainspec::hardfork::TempoHardfork;
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -93,14 +96,18 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
             }
             ITIPFeeAMM::mintCall::SELECTOR => {
                 mutate::<ITIPFeeAMM::mintCall>(calldata, msg_sender, |s, call| {
-                    self.mint(
-                        s,
-                        call.userToken,
-                        call.validatorToken,
-                        call.amountUserToken,
-                        call.amountValidatorToken,
-                        call.to,
-                    )
+                    if self.storage.spec() >= TempoHardfork::Moderato {
+                        Err(TempoPrecompileError::UnknownFunctionSelector)
+                    } else {
+                        self.mint(
+                            s,
+                            call.userToken,
+                            call.validatorToken,
+                            call.amountUserToken,
+                            call.amountValidatorToken,
+                            call.to,
+                        )
+                    }
                 })
             }
             ITIPFeeAMM::mintWithValidatorTokenCall::SELECTOR => {
