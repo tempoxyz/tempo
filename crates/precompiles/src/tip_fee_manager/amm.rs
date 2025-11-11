@@ -8,6 +8,7 @@ use alloy::{
     primitives::{Address, B256, IntoLogData, U256, keccak256, uint},
     sol_types::SolValue,
 };
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles_macros::Storable;
 
 /// Constants from the Solidity reference implementation
@@ -114,6 +115,16 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
 
         U256::from(pool.reserve_validator_token)
             .checked_sub(pending_out)
+            .ok_or(TempoPrecompileError::under_overflow())
+    }
+
+    /// Calculate user token reserve plus pending swaps
+    fn get_effective_user_reserve(&mut self, pool_id: B256) -> Result<U256> {
+        let pool = self.sload_pools(pool_id)?;
+        let pending_fee_swap_in = U256::from(self.get_pending_fee_swap_in(pool_id)?);
+
+        U256::from(pool.reserve_user_token)
+            .checked_add(pending_fee_swap_in)
             .ok_or(TempoPrecompileError::under_overflow())
     }
 
@@ -581,6 +592,10 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         }
 
         // Check that withdrawal does not violate pending swaps
+        if self.storage.spec() < TempoHardfork::Moderato {
+            // Keep this for gas usage to be backwards compatible
+            self.get_effective_user_reserve(pool_id)?;
+        }
         let available_validator_token = self.get_effective_validator_reserve(pool_id)?;
 
         if amount_validator_token > available_validator_token {
