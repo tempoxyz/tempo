@@ -207,12 +207,7 @@ impl Consensus<Block> for TempoConsensus {
         let transactions = &block.body().transactions;
 
         if let Some(tx) = transactions.iter().find(|&tx| {
-            tx.is_system_tx()
-                && (tx.max_fee_per_gas() != 0
-                    || tx.gas_limit() != 0
-                    || !tx.value().is_zero()
-                    || tx.chain_id() != Some(self.inner.chain_spec().chain().id())
-                    || tx.nonce() != 0)
+            tx.is_system_tx() && !tx.is_valid_system_tx(self.inner.chain_spec().chain().id())
         }) {
             return Err(ConsensusError::Other(format!(
                 "Invalid system transaction: {}",

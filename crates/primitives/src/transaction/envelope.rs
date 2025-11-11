@@ -2,7 +2,7 @@ use crate::subblock::PartialValidatorKey;
 
 use super::{aa_signed::AASigned, fee_token::TxFeeToken};
 use alloy_consensus::{
-    EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
+    EthereumTxEnvelope, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
     TypedTransaction,
     error::{UnsupportedTransactionType, ValueError},
 };
@@ -162,6 +162,15 @@ impl TempoTxEnvelope {
     /// Returns true if this is a Tempo system transaction
     pub fn is_system_tx(&self) -> bool {
         matches!(self, Self::Legacy(tx) if tx.signature() == &TEMPO_SYSTEM_TX_SIGNATURE)
+    }
+
+    /// Returns true if this is a valid Tempo system transaction, i.e all gas fields and nonce are zero.
+    pub fn is_valid_system_tx(&self, chain_id: u64) -> bool {
+        self.max_fee_per_gas() == 0
+            && self.gas_limit() == 0
+            && self.value().is_zero()
+            && self.chain_id() == Some(chain_id)
+            && self.nonce() == 0
     }
 
     /// Classify a transaction as payment or non-payment.
