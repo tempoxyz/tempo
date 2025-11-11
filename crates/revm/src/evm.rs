@@ -224,11 +224,10 @@ mod tests {
             nonce: 0,
             ..Default::default()
         };
-        let res = tempo_evm.transact_raw(tx_env.into())?;
+        let mut res = tempo_evm.transact_raw(tx_env.into())?;
         assert!(res.result.is_success());
 
-        let ctx = tempo_evm.ctx();
-        let account = ctx.journal().account(caller_0).to_owned();
+        let account = res.state.remove(&caller_0).unwrap();
         assert_eq!(
             account.info.code.unwrap(),
             Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS),
