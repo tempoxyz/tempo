@@ -18,6 +18,7 @@ use crate::{
 // Re-export PoolKey for backward compatibility with tests
 use alloy::primitives::{Address, Bytes, IntoLogData, U256, uint};
 use revm::state::Bytecode;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles_macros::contract;
 
 /// Helper type to easily interact with the `tokens_with_fees` array
@@ -109,8 +110,8 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             return Err(FeeManagerError::invalid_token().into());
         }
 
-        // Forbid setting LinkingUSD as the user's fee token
-        if call.token == LINKING_USD_ADDRESS {
+        // Forbid setting LinkingUSD as the user's fee token (only after Moderato hardfork)
+        if self.storage.spec() >= TempoHardfork::Moderato && call.token == LINKING_USD_ADDRESS {
             return Err(FeeManagerError::invalid_token().into());
         }
 
@@ -404,8 +405,9 @@ mod tests {
     }
 
     #[test]
-    fn test_set_user_token_cannot_be_linking_usd() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_set_user_token_cannot_be_linking_usd_post_moderato() -> eyre::Result<()> {
+        // Test with Moderato hardfork (validation should be enforced)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let user = Address::random();
 
         // Initialize LinkingUSD first
@@ -425,6 +427,29 @@ mod tests {
                 FeeManagerError::InvalidToken(_)
             ))
         ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_user_token_allows_linking_usd_pre_moderato() -> eyre::Result<()> {
+        // Test with Adagio (pre-Moderato) - validation should not be enforced
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let user = Address::random();
+
+        // Initialize LinkingUSD first
+        initialize_linking_usd(&mut storage, user).unwrap();
+
+        let mut fee_manager = TipFeeManager::new(&mut storage);
+
+        // Try to set LinkingUSD as user token - should succeed pre-Moderato
+        let call = IFeeManager::setUserTokenCall {
+            token: LINKING_USD_ADDRESS,
+        };
+        let result = fee_manager.set_user_token(user, call);
+
+        // Pre-Moderato: should be allowed to set LinkingUSD as user token
+        assert!(result.is_ok());
 
         Ok(())
     }
