@@ -8,6 +8,7 @@ use tempo_precompiles_macros::contract;
 
 use crate::{NONCE_PRECOMPILE_ADDRESS, error::Result, storage::PrecompileStorageProvider};
 use alloy::primitives::{Address, IntoLogData, U256};
+use tempo_chainspec::hardfork::TempoHardfork;
 
 /// NonceManager contract for managing 2D nonces as per the AA spec
 ///
@@ -97,15 +98,17 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
 
         self.sstore_active_key_count(account, new_count)?;
 
-        // Emit ActiveKeyCountChanged event
-        self.storage.emit_event(
-            self.address,
-            NonceEvent::ActiveKeyCountChanged(INonce::ActiveKeyCountChanged {
-                account,
-                newCount: new_count,
-            })
-            .into_log_data(),
-        )?;
+        // Emit ActiveKeyCountChanged event (only after Moderato hardfork)
+        if self.storage.spec() >= TempoHardfork::Moderato {
+            self.storage.emit_event(
+                self.address,
+                NonceEvent::ActiveKeyCountChanged(INonce::ActiveKeyCountChanged {
+                    account,
+                    newCount: new_count,
+                })
+                .into_log_data(),
+            )?;
+        }
 
         Ok(())
     }
@@ -235,8 +238,9 @@ mod tests {
     }
 
     #[test]
-    fn test_active_key_count_event_emitted() {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_active_key_count_event_emitted_post_moderato() {
+        // Test with Moderato hardfork (event should be emitted)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let account = address!("0x1111111111111111111111111111111111111111");
         let nonce_key = U256::from(5);
 
@@ -281,5 +285,40 @@ mod tests {
             newCount: U256::from(2),
         });
         assert_eq!(events[1], expected_event2.into_log_data());
+    }
+
+    #[test]
+    fn test_active_key_count_event_not_emitted_pre_moderato() {
+        // Test with Adagio (pre-Moderato) - event should NOT be emitted
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let account = address!("0x1111111111111111111111111111111111111111");
+        let nonce_key = U256::from(5);
+
+        // First increment should NOT emit ActiveKeyCountChanged event pre-Moderato
+        {
+            let mut nonce_mgr = NonceManager::new(&mut storage);
+            nonce_mgr.increment_nonce(account, nonce_key).unwrap();
+        }
+
+        // Check that NO events were emitted
+        let events = storage.events.get(&NONCE_PRECOMPILE_ADDRESS);
+        assert!(
+            events.is_none() || events.unwrap().is_empty(),
+            "No events should be emitted pre-Moderato"
+        );
+
+        // Increment on different key should also NOT emit event
+        let nonce_key2 = U256::from(10);
+        {
+            let mut nonce_mgr = NonceManager::new(&mut storage);
+            nonce_mgr.increment_nonce(account, nonce_key2).unwrap();
+        }
+
+        // Still no events
+        let events = storage.events.get(&NONCE_PRECOMPILE_ADDRESS);
+        assert!(
+            events.is_none() || events.unwrap().is_empty(),
+            "No events should be emitted pre-Moderato"
+        );
     }
 }
