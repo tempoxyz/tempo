@@ -8049,6 +8049,7 @@ dependencies = [
  "revm",
  "revm-primitives",
  "schnellru",
+ "serde_json",
  "smallvec",
  "thiserror 2.0.17",
  "tokio",
@@ -8393,6 +8394,7 @@ dependencies = [
  "reth-storage-errors",
  "reth-trie-common",
  "revm",
+ "serde_json",
 ]
 
 [[package]]
@@ -11430,7 +11432,6 @@ dependencies = [
  "reth-network-peers",
  "serde",
  "serde_json",
- "tempo-contracts",
  "tempo-primitives",
 ]
 
