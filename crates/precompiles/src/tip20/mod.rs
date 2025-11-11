@@ -793,6 +793,25 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             );
         }
 
+        // Accrue rewards up to current timestamp
+        let current_timestamp = self.storage.timestamp();
+        self.accrue(current_timestamp)?;
+
+        // Update rewards for the sender and get their reward recipient
+        let from_reward_recipient = self.update_rewards(from)?;
+
+        // If user is opted into rewards, decrease opted-in supply
+        if from_reward_recipient != Address::ZERO {
+            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
+                .checked_sub(amount)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.set_opted_in_supply(
+                opted_in_supply
+                    .try_into()
+                    .map_err(|_| TempoPrecompileError::under_overflow())?,
+            )?;
+        }
+
         let new_from_balance =
             from_balance
                 .checked_sub(amount)
@@ -833,6 +852,22 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         // Exit early if there is no refund
         if refund.is_zero() {
             return Ok(());
+        }
+
+        // Note: We assume that transferFeePreTx is always called first, so _accrue has already been called
+        // Update rewards for the recipient and get their reward recipient
+        let to_reward_recipient = self.update_rewards(to)?;
+
+        // If user is opted into rewards, increase opted-in supply by refund amount
+        if to_reward_recipient != Address::ZERO {
+            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
+                .checked_add(refund)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.set_opted_in_supply(
+                opted_in_supply
+                    .try_into()
+                    .map_err(|_| TempoPrecompileError::under_overflow())?,
+            )?;
         }
 
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
@@ -879,6 +914,68 @@ pub(crate) mod tests {
     ) -> Result<()> {
         let mut linking_usd = TIP20Token::from_address(LINKING_USD_ADDRESS, storage);
         linking_usd.initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+    }
+
+    /// Helper to setup a token with rewards for testing fee transfer functions
+    /// Returns (token_id, initial_opted_in_supply)
+    fn setup_token_with_rewards(
+        storage: &mut HashMapStorageProvider,
+        admin: Address,
+        user: Address,
+        mint_amount: U256,
+        reward_amount: U256,
+    ) -> Result<(u64, u128)> {
+        initialize_linking_usd(storage, admin)?;
+        let token_id = setup_factory_with_token(storage, admin, "Test", "TST");
+
+        let initial_opted_in = {
+            let mut token = TIP20Token::new(token_id, storage);
+            token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+            // Mint tokens to admin (for reward stream)
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: admin,
+                    amount: reward_amount,
+                },
+            )?;
+
+            // Mint tokens to user
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: user,
+                    amount: mint_amount,
+                },
+            )?;
+
+            // User opts into rewards
+            token.set_reward_recipient(user, ITIP20::setRewardRecipientCall { recipient: user })?;
+
+            // Verify initial opted-in supply
+            let initial_opted_in = token.get_opted_in_supply()?;
+            assert_eq!(initial_opted_in, mint_amount.to::<u128>());
+            initial_opted_in
+        };
+
+        // Start a reward stream
+        {
+            let mut token = TIP20Token::new(token_id, storage);
+            token.start_reward(
+                admin,
+                ITIP20::startRewardCall {
+                    amount: reward_amount,
+                    secs: 100,
+                },
+            )?;
+        }
+
+        // Advance time to accrue rewards
+        let initial_time = storage.timestamp();
+        storage.set_timestamp(initial_time + U256::from(50));
+
+        Ok((token_id, initial_opted_in))
     }
 
     /// Initialize a factory and create a single token
@@ -1903,5 +2000,100 @@ pub(crate) mod tests {
         assert!(is_tip20(LINKING_USD_ADDRESS));
         assert!(is_tip20(created_tip20));
         assert!(!is_tip20(non_tip20));
+    }
+
+    #[test]
+    fn test_transfer_fee_pre_tx_handles_rewards() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+
+        let mint_amount = U256::from(1000e18);
+        let reward_amount = U256::from(100e18);
+
+        // Setup token with rewards enabled
+        let (token_id, initial_opted_in) =
+            setup_token_with_rewards(&mut storage, admin, user, mint_amount, reward_amount)?;
+
+        // Transfer fee from user
+        let fee_amount = U256::from(100e18);
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.transfer_fee_pre_tx(user, fee_amount)?;
+
+        // After transfer_fee_pre_tx, the opted-in supply should be decreased
+        let final_opted_in = token.get_opted_in_supply()?;
+        assert_eq!(
+            final_opted_in,
+            initial_opted_in - fee_amount.to::<u128>(),
+            "opted-in supply should decrease by fee amount"
+        );
+
+        // User should have accumulated rewards (verify rewards were updated)
+        let user_info = token.sload_user_reward_info(user)?;
+        assert!(
+            user_info.reward_balance > U256::ZERO,
+            "user should have accumulated rewards"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_fee_post_tx_handles_rewards() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+
+        let mint_amount = U256::from(1000e18);
+        let reward_amount = U256::from(100e18);
+
+        // Setup token with rewards enabled
+        let (token_id, _initial_opted_in) =
+            setup_token_with_rewards(&mut storage, admin, user, mint_amount, reward_amount)?;
+
+        // Simulate fee transfer: first take fee from user
+        let fee_amount = U256::from(100e18);
+        {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.transfer_fee_pre_tx(user, fee_amount)?;
+        }
+
+        // Get opted-in supply after pre_tx
+        let opted_in_after_pre = {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.get_opted_in_supply()?
+        };
+
+        // Now refund part of it back
+        let refund_amount = U256::from(40e18);
+        let actual_used = U256::from(60e18);
+        {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.transfer_fee_post_tx(user, refund_amount, actual_used)?;
+        }
+
+        // After transfer_fee_post_tx, the opted-in supply should increase by refund amount
+        let final_opted_in = {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.get_opted_in_supply()?
+        };
+
+        assert_eq!(
+            final_opted_in,
+            opted_in_after_pre + refund_amount.to::<u128>(),
+            "opted-in supply should increase by refund amount"
+        );
+
+        // User should have accumulated rewards
+        let user_info = {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.sload_user_reward_info(user)?
+        };
+        assert!(
+            user_info.reward_balance > U256::ZERO,
+            "user should have accumulated rewards"
+        );
+
+        Ok(())
     }
 }
