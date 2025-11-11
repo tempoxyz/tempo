@@ -13,7 +13,6 @@ use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
 use reth_ethereum::evm::primitives::eth::spec::EthExecutorSpec;
 use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
-use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
 use tempo_primitives::TempoHeader;
 
 pub const TEMPO_BASE_FEE: u64 = 10_000_000_000;
@@ -73,29 +72,17 @@ pub static ANDANTINO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     TempoChainSpec::from_genesis(genesis).into()
 });
 
+/// Development chainspec that extends [`ANDANTINO`] testnet with dev accounts from the vanilla
 pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
-    let mut spec = (**reth_chainspec::DEV).clone();
-    let andantino = ANDANTINO.clone();
-
-    let default_7702_alloc = andantino
-        .genesis()
+    let mut genesis = ANDANTINO.genesis().clone();
+    genesis
         .alloc
-        .get(&DEFAULT_7702_DELEGATE_ADDRESS)
-        .expect("Could not get 7702 delegate address");
+        .extend(reth_chainspec::DEV.genesis().alloc.clone());
 
-    spec.genesis
-        .alloc
-        .insert(DEFAULT_7702_DELEGATE_ADDRESS, default_7702_alloc.clone());
-
-    TempoChainSpec {
-        inner: spec.map_header(|inner| TempoHeader {
-            general_gas_limit: 0,
-            timestamp_millis_part: 0,
-            shared_gas_limit: 0,
-            inner,
-        }),
-    }
-    .into()
+    let mut spec = TempoChainSpec::from_genesis(genesis);
+    // update chainid to dev
+    spec.inner.chain = Chain::dev();
+    spec.into()
 });
 
 /// Tempo chain spec type.
@@ -175,6 +162,10 @@ impl Hardforks for TempoChainSpec {
 impl EthChainSpec for TempoChainSpec {
     type Header = TempoHeader;
 
+    fn chain(&self) -> Chain {
+        self.inner.chain()
+    }
+
     fn base_fee_params_at_timestamp(&self, timestamp: u64) -> BaseFeeParams {
         self.inner.base_fee_params_at_timestamp(timestamp)
     }
@@ -183,39 +174,35 @@ impl EthChainSpec for TempoChainSpec {
         self.inner.blob_params_at_timestamp(timestamp)
     }
 
-    fn bootnodes(&self) -> Option<Vec<NodeRecord>> {
-        match self.inner.chain_id() {
-            42429 => Some(andantino_nodes()),
-            _ => self.inner.bootnodes(),
-        }
-    }
-
-    fn chain(&self) -> Chain {
-        self.inner.chain()
-    }
-
     fn deposit_contract(&self) -> Option<&DepositContract> {
         self.inner.deposit_contract()
-    }
-
-    fn display_hardforks(&self) -> Box<dyn std::fmt::Display> {
-        EthChainSpec::display_hardforks(&self.inner)
-    }
-
-    fn prune_delete_limit(&self) -> usize {
-        self.inner.prune_delete_limit()
-    }
-
-    fn genesis(&self) -> &Genesis {
-        self.inner.genesis()
     }
 
     fn genesis_hash(&self) -> B256 {
         self.inner.genesis_hash()
     }
 
+    fn prune_delete_limit(&self) -> usize {
+        self.inner.prune_delete_limit()
+    }
+
+    fn display_hardforks(&self) -> Box<dyn std::fmt::Display> {
+        EthChainSpec::display_hardforks(&self.inner)
+    }
+
     fn genesis_header(&self) -> &Self::Header {
         self.inner.genesis_header()
+    }
+
+    fn genesis(&self) -> &Genesis {
+        self.inner.genesis()
+    }
+
+    fn bootnodes(&self) -> Option<Vec<NodeRecord>> {
+        match self.inner.chain_id() {
+            42429 => Some(andantino_nodes()),
+            _ => self.inner.bootnodes(),
+        }
     }
 
     fn final_paris_total_difficulty(&self) -> Option<U256> {

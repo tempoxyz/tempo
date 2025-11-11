@@ -13,7 +13,6 @@ workspace = true
 
 [dependencies]
 tempo-primitives = { workspace = true, features = ["default"] }
-tempo-contracts.workspace = true
 
 reth-cli.workspace = true
 reth-chainspec.workspace = true
