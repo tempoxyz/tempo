@@ -6,8 +6,9 @@ use alloy_eips::eip7840::BlobParams;
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
 use reth_chainspec::{
-    BaseFeeParams, Chain, ChainSpec, DepositContract, EthChainSpec, EthereumHardfork,
-    EthereumHardforks, ForkCondition, ForkFilter, ForkId, Hardfork, Hardforks, Head,
+    BaseFeeParams, Chain, ChainSpec, DepositContract, DisplayHardforks, EthChainSpec,
+    EthereumHardfork, EthereumHardforks, ForkCondition, ForkFilter, ForkId, Hardfork, Hardforks,
+    Head,
 };
 use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
 use reth_ethereum::evm::primitives::eth::spec::EthExecutorSpec;
@@ -187,7 +188,14 @@ impl EthChainSpec for TempoChainSpec {
     }
 
     fn display_hardforks(&self) -> Box<dyn std::fmt::Display> {
-        EthChainSpec::display_hardforks(&self.inner)
+        // filter only tempo hardforks
+        let tempo_forks = self.inner.hardforks.forks_iter().filter(|(fork, _)| {
+            !EthereumHardfork::VARIANTS
+                .iter()
+                .any(|h| h.name() == (*fork).name())
+        });
+
+        Box::new(DisplayHardforks::new(tempo_forks))
     }
 
     fn genesis_header(&self) -> &Self::Header {
