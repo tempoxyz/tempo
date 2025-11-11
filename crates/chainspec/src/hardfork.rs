@@ -29,7 +29,7 @@ hardfork!(
         #[default]
         Adagio,
         /// Testnet hardfork for Andantino. To be removed before mainnet launch.
-        Andantino,
+        Moderato,
     }
 );
 
@@ -45,15 +45,15 @@ pub trait TempoHardforks: EthereumHardforks {
     }
 
     /// Convenience method to check if Andantino hardfork is active at a given timestamp
-    fn is_andantino_active_at_timestamp(&self, timestamp: u64) -> bool {
-        self.tempo_fork_activation(TempoHardfork::Andantino)
+    fn is_moderato_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.tempo_fork_activation(TempoHardfork::Moderato)
             .active_at_timestamp(timestamp)
     }
 
     /// Retrieves the latest Tempo hardfork active at a given timestamp.
     fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
-        if self.is_andantino_active_at_timestamp(timestamp) {
-            TempoHardfork::Andantino
+        if self.is_moderato_active_at_timestamp(timestamp) {
+            TempoHardfork::Moderato
         } else {
             TempoHardfork::Adagio
         }
@@ -64,7 +64,7 @@ impl From<TempoHardfork> for SpecId {
     fn from(value: TempoHardfork) -> Self {
         match value {
             TempoHardfork::Adagio => Self::OSAKA,
-            TempoHardfork::Andantino => Self::OSAKA,
+            TempoHardfork::Moderato => Self::OSAKA,
         }
     }
 }

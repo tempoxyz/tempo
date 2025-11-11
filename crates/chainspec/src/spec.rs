@@ -28,7 +28,7 @@ struct TempoGenesisInfo {
 
     /// Timestamp of Andantino hardfork activation
     #[serde(skip_serializing_if = "Option::is_none")]
-    andantino_time: Option<u64>,
+    moderato_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
@@ -115,7 +115,7 @@ impl TempoChainSpec {
         // Extract Tempo genesis info from extra_fields
         let TempoGenesisInfo {
             adagio_time,
-            andantino_time,
+            moderato_time,
         } = TempoGenesisInfo::extract_from(&genesis);
 
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
@@ -124,7 +124,7 @@ impl TempoChainSpec {
         // Collect Tempo hardforks to insert
         let tempo_forks = vec![
             (TempoHardfork::Adagio, adagio_time),
-            (TempoHardfork::Andantino, andantino_time),
+            (TempoHardfork::Moderato, moderato_time),
         ]
         .into_iter()
         .filter_map(|(fork, time)| time.map(|time| (fork, ForkCondition::Timestamp(time))));
