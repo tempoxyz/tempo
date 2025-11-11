@@ -8,7 +8,6 @@ use alloy::{
     primitives::{Address, B256, IntoLogData, U256, keccak256, uint},
     sol_types::SolValue,
 };
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles_macros::Storable;
 
 /// Constants from the Solidity reference implementation
@@ -592,12 +591,12 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         }
 
         // Check that withdrawal does not violate pending swaps
-        if self.storage.spec() < TempoHardfork::Moderato {
-            // Keep this for gas usage to be backwards compatible
-            self.get_effective_user_reserve(pool_id)?;
-        }
+        let available_user_token = self.get_effective_user_reserve(pool_id)?;
         let available_validator_token = self.get_effective_validator_reserve(pool_id)?;
 
+        if amount_user_token > available_user_token {
+            return Err(TIPFeeAMMError::insufficient_reserves().into());
+        }
         if amount_validator_token > available_validator_token {
             return Err(TIPFeeAMMError::insufficient_reserves().into());
         }
