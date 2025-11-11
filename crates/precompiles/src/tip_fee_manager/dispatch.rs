@@ -180,6 +180,7 @@ mod tests {
         sol_types::SolValue,
     };
     use eyre::Result;
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     fn setup_token_with_balance(
         storage: &mut HashMapStorageProvider,
@@ -525,5 +526,36 @@ mod tests {
         assert_eq!(balance, liquidity);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_mint_deprecated_after_moderato_hardfork() {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
+        let user = Address::random();
+        let admin = Address::random();
+        initialize_linking_usd(&mut storage, admin).unwrap();
+
+        let user_token = token_id_to_address(1);
+        let validator_token = token_id_to_address(2);
+
+        setup_token_with_balance(&mut storage, user_token, user, U256::from(1000000u64));
+        setup_token_with_balance(&mut storage, validator_token, user, U256::from(1000000u64));
+
+        let mut fee_manager = TipFeeManager::new(&mut storage);
+
+        let call = ITIPFeeAMM::mintCall {
+            userToken: user_token,
+            validatorToken: validator_token,
+            amountUserToken: U256::from(1000u64),
+            amountValidatorToken: U256::from(1000u64),
+            to: user,
+        };
+
+        let calldata = call.abi_encode();
+        let result = fee_manager.call(&Bytes::from(calldata), user);
+
+        assert!(
+            matches!(result, Err(revm::precompile::PrecompileError::Other(ref msg)) if msg == "Unknown function selector")
+        );
     }
 }
