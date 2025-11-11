@@ -1,0 +1,34 @@
+{
+  "contracts": {
+    "tests/storage_tests/solidity/testdata/mixed_slots.sol:MixedSlots": {
+      "storage-layout": {
+        "storage": [
+          {
+            "astId": 4,
+            "contract": "tests/storage_tests/solidity/testdata/mixed_slots.sol:MixedSlots",
+            "label": "fieldA",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_uint256"
+          },
+          {
+            "astId": 6,
+            "contract": "tests/storage_tests/solidity/testdata/mixed_slots.sol:MixedSlots",
+            "label": "fieldC",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_uint256"
+          }
+        ],
+        "types": {
+          "t_uint256": {
+            "encoding": "inplace",
+            "label": "uint256",
+            "numberOfBytes": "32"
+          }
+        }
+      }
+    }
+  },
+  "version": "0.8.30+commit.73712a01.Darwin.appleclang"
+}

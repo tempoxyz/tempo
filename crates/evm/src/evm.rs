@@ -5,12 +5,12 @@ use alloy_evm::{
         Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
         context::result::{EVMError, HaltReason, ResultAndState},
         inspector::NoOpInspector,
-        primitives::hardfork::SpecId,
     },
 };
 use alloy_primitives::{Address, Bytes, Log, TxKind};
 use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
 use std::ops::{Deref, DerefMut};
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv, evm::TempoContext};
 
 use crate::TempoBlockEnv;
@@ -26,7 +26,7 @@ impl EvmFactory for TempoEvmFactory {
     type Error<DBError: std::error::Error + Send + Sync + 'static> =
         EVMError<DBError, TempoInvalidTransaction>;
     type HaltReason = HaltReason;
-    type Spec = SpecId;
+    type Spec = TempoHardfork;
     type BlockEnv = TempoBlockEnv;
     type Precompiles = PrecompilesMap;
 
@@ -61,7 +61,7 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
 
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
-    pub fn new(db: DB, input: EvmEnv<SpecId, TempoBlockEnv>) -> Self {
+    pub fn new(db: DB, input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
@@ -140,7 +140,7 @@ where
     type Tx = TempoTxEnv;
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
     type HaltReason = HaltReason;
-    type Spec = SpecId;
+    type Spec = TempoHardfork;
     type BlockEnv = TempoBlockEnv;
     type Precompiles = PrecompilesMap;
     type Inspector = I;

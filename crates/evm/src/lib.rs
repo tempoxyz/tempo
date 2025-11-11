@@ -31,10 +31,10 @@ use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoT
 
 use crate::{block::TempoBlockExecutor, evm::TempoEvm};
 use reth_evm_ethereum::EthEvmConfig;
-use tempo_chainspec::TempoChainSpec;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_revm::evm::TempoContext;
 
-pub use tempo_revm::TempoBlockEnv;
+pub use tempo_revm::{TempoBlockEnv, TempoStateAccess};
 
 /// Tempo-related EVM configuration.
 #[derive(Debug, Clone)]
@@ -111,17 +111,23 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
-        Ok(EvmEnv::for_eth_block(
+        let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_block(
             header,
             self.chain_spec(),
             self.chain_spec().chain().id(),
             self.chain_spec()
                 .blob_params_at_timestamp(header.timestamp()),
-        )
-        .map_block_env(|inner| TempoBlockEnv {
-            inner,
-            timestamp_millis_part: header.timestamp_millis_part,
-        }))
+        );
+
+        let spec = self.chain_spec().tempo_hardfork_at(header.timestamp());
+
+        Ok(EvmEnv {
+            cfg_env: cfg_env.with_spec(spec),
+            block_env: TempoBlockEnv {
+                inner: block_env,
+                timestamp_millis_part: header.timestamp_millis_part,
+            },
+        })
     }
 
     fn next_evm_env(
@@ -129,7 +135,7 @@ impl ConfigureEvm for TempoEvmConfig {
         parent: &TempoHeader,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        Ok(EvmEnv::for_eth_next_block(
+        let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_next_block(
             parent,
             NextEvmEnvAttributes {
                 timestamp: attributes.timestamp,
@@ -144,11 +150,17 @@ impl ConfigureEvm for TempoEvmConfig {
             self.chain_spec().chain().id(),
             self.chain_spec()
                 .blob_params_at_timestamp(attributes.timestamp),
-        )
-        .map_block_env(|inner| TempoBlockEnv {
-            inner,
-            timestamp_millis_part: attributes.timestamp_millis_part,
-        }))
+        );
+
+        let spec = self.chain_spec().tempo_hardfork_at(attributes.timestamp);
+
+        Ok(EvmEnv {
+            cfg_env: cfg_env.with_spec(spec),
+            block_env: TempoBlockEnv {
+                inner: block_env,
+                timestamp_millis_part: attributes.timestamp_millis_part,
+            },
+        })
     }
 
     fn context_for_block<'a>(

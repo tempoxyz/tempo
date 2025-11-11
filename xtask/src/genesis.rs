@@ -10,9 +10,8 @@ use clap::Parser;
 use eyre::WrapErr as _;
 use rayon::prelude::*;
 use reth_evm::{
-    Evm, EvmEnv, EvmFactory, EvmInternals,
+    EvmEnv, EvmFactory, EvmInternals,
     revm::{
-        context::ContextTr,
         database::{CacheDB, EmptyDB},
         inspector::JournalExt,
     },
@@ -28,12 +27,12 @@ use tempo_contracts::{
 };
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    LINKING_USD_ADDRESS,
     linking_usd::{LinkingUSD, TRANSFER_ROLE},
     nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
-    storage::evm::EvmPrecompileStorageProvider,
-    tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager},
+    storage::{ContractStorage, evm::EvmPrecompileStorageProvider},
+    tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token, address_to_token_id_unchecked},
     tip20_factory::{ITIP20Factory, TIP20Factory},
     tip20_rewards_registry::TIP20RewardsRegistry,
@@ -338,10 +337,9 @@ fn create_and_mint_token(
     mint_amount: U256,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<(u64, Address)> {
-    let chain_id = evm.chain_id();
-    let block = evm.block.clone();
-    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, chain_id);
+    let ctx = evm.ctx_mut();
+    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
     let token_id = {
         let mut factory = TIP20Factory::new(&mut provider);
@@ -365,9 +363,7 @@ fn create_and_mint_token(
     };
 
     let mut token = TIP20Token::new(token_id, &mut provider);
-    token
-        .get_roles_contract()
-        .grant_role_internal(admin, *ISSUER_ROLE)?;
+    token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
     let result = token.set_supply_cap(
         admin,
@@ -399,7 +395,7 @@ fn create_and_mint_token(
             .expect("Could not mint fee token");
     }
 
-    Ok((token_id, token.token_address))
+    Ok((token_id, token.address()))
 }
 
 fn initialize_linking_usd(
@@ -407,20 +403,23 @@ fn initialize_linking_usd(
     recipients: &[Address],
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<()> {
-    let block = evm.block.clone();
-    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
+    let ctx = evm.ctx_mut();
+    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
     let mut linking_usd = LinkingUSD::new(&mut provider);
     linking_usd
         .initialize(admin)
         .expect("LinkingUSD initialization should succeed");
 
-    let mut roles = linking_usd.get_roles_contract();
-    roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-    roles.grant_role_internal(admin, *TRANSFER_ROLE)?;
+    linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+    linking_usd
+        .token
+        .grant_role_internal(admin, *TRANSFER_ROLE)?;
     for recipient in recipients.iter().tqdm() {
-        roles.grant_role_internal(*recipient, *TRANSFER_ROLE)?;
+        linking_usd
+            .token
+            .grant_role_internal(*recipient, *TRANSFER_ROLE)?;
     }
 
     for recipient in recipients.iter().tqdm() {
@@ -439,9 +438,9 @@ fn initialize_linking_usd(
 }
 
 fn initialize_tip20_rewards_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
-    let block = evm.block.clone();
-    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
+    let ctx = evm.ctx_mut();
+    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
     TIP20RewardsRegistry::new(&mut provider).initialize()?;
 
     Ok(())
@@ -454,13 +453,11 @@ fn initialize_fee_manager(
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) {
     // Update the beneficiary since the validator cant set the validator fee token for themselves
-    let block = evm.block.clone();
+    let ctx = evm.ctx_mut();
+    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
-    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
-
-    let mut fee_manager =
-        TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::random(), &mut provider);
+    let mut fee_manager = TipFeeManager::new(&mut provider);
     fee_manager
         .initialize()
         .expect("Could not init fee manager");
@@ -475,12 +472,14 @@ fn initialize_fee_manager(
             .expect("Could not set fee token");
     }
 
+    let beneficiary = Address::random();
     fee_manager
         .set_validator_token(
             Address::ZERO,
             IFeeManager::setValidatorTokenCall {
                 token: default_fee_address,
             },
+            beneficiary,
         )
         .expect("Could not set 0x00 validator fee token");
 
@@ -492,6 +491,7 @@ fn initialize_fee_manager(
                 IFeeManager::setValidatorTokenCall {
                     token: LINKING_USD_ADDRESS,
                 },
+                beneficiary,
             )
             .expect("Could not set validator fee token");
     }
@@ -499,17 +499,17 @@ fn initialize_fee_manager(
 
 /// Initializes the [`TIP403Registry`] contract.
 fn initialize_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
-    let block = evm.block.clone();
-    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
+    let ctx = evm.ctx_mut();
+    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
     TIP403Registry::new(&mut provider).initialize().unwrap();
     Ok(())
 }
 
 fn initialize_stablecoin_exchange(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
-    let block = evm.block.clone();
-    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
+    let ctx = evm.ctx_mut();
+    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
     let mut exchange = StablecoinExchange::new(&mut provider);
     exchange.initialize()?;
@@ -518,9 +518,9 @@ fn initialize_stablecoin_exchange(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre:
 }
 
 fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
-    let block = evm.block.clone();
-    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
+    let ctx = evm.ctx_mut();
+    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
     NonceManager::new(&mut provider).initialize()?;
 
     Ok(())
@@ -533,11 +533,11 @@ fn initialize_validator_config(
     validators_config: Option<PathBuf>,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<Vec<Address>> {
-    let block = evm.block.clone();
-    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
+    let ctx = evm.ctx_mut();
+    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
-    let mut validator_config = ValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, &mut provider);
+    let mut validator_config = ValidatorConfig::new(&mut provider);
     validator_config
         .initialize(owner)
         .wrap_err("Failed to initialize validator config")?;
@@ -558,7 +558,7 @@ fn initialize_validator_config(
     for validator in initial_validators.iter().tqdm() {
         validator_config
             .add_validator(
-                &owner,
+                owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator.address,
                     publicKey: validator.key,
@@ -582,24 +582,15 @@ fn mint_pairwise_liquidity(
     admin: Address,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) {
-    let block = evm.block.clone();
-    let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
+    let ctx = evm.ctx_mut();
+    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
-    let mut fee_manager = TipFeeManager::new(TIP_FEE_MANAGER_ADDRESS, Address::ZERO, &mut provider);
+    let mut fee_manager = TipFeeManager::new(&mut provider);
 
     for b_token_address in b_tokens {
         fee_manager
-            .mint(
-                admin,
-                ITIPFeeAMM::mintCall {
-                    userToken: a_token,
-                    validatorToken: b_token_address,
-                    amountUserToken: amount,
-                    amountValidatorToken: amount,
-                    to: admin,
-                },
-            )
+            .mint(admin, a_token, b_token_address, amount, amount, admin)
             .expect("Could not mint A -> B Liquidity pool");
     }
 }

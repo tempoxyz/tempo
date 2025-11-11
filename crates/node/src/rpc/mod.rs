@@ -20,6 +20,7 @@ use reth_transaction_pool::PoolPooledTx;
 use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::TempoChainSpec;
+use tempo_evm::TempoStateAccess;
 pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::node::TempoNode;
@@ -57,7 +58,6 @@ use reth_rpc_eth_types::{
 };
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::TempoEvmConfig;
-use tempo_precompiles::provider::TIPFeeDatabaseExt;
 use tempo_primitives::{
     TEMPO_GAS_PRICE_SCALING_FACTOR, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };
@@ -249,14 +249,14 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         evm_env: &EvmEnvFor<Self::Evm>,
         tx_env: &TxEnvFor<Self::Evm>,
     ) -> Result<u64, Self::Error> {
+        let fee_payer = tx_env
+            .fee_payer()
+            .map_err(EVMError::<ProviderError, _>::from)?;
+        let fee_token = db
+            .get_fee_token(tx_env, evm_env.block_env.beneficiary, fee_payer)
+            .map_err(Into::into)?;
         let fee_token_balance = db
-            .get_fee_token_balance(
-                tx_env
-                    .fee_payer()
-                    .map_err(EVMError::<ProviderError, _>::from)?,
-                evm_env.block_env.beneficiary,
-                tx_env.fee_token,
-            )
+            .get_token_balance(fee_token, fee_payer)
             .map_err(Into::into)?;
 
         Ok(fee_token_balance
@@ -271,7 +271,6 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> EstimateCall for TempoEthApi<N> {}
-
 impl<N: FullNodeTypes<Types = TempoNode>> LoadBlock for TempoEthApi<N> {}
 impl<N: FullNodeTypes<Types = TempoNode>> LoadReceipt for TempoEthApi<N> {}
 impl<N: FullNodeTypes<Types = TempoNode>> EthBlocks for TempoEthApi<N> {}

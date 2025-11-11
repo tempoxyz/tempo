@@ -51,7 +51,7 @@ impl TempoPooledTransaction {
     }
 
     /// Returns a reference to inner [`TempoTxEnvelope`].
-    pub fn inner(&self) -> &TempoTxEnvelope {
+    pub fn inner(&self) -> &Recovered<TempoTxEnvelope> {
         &self.inner.transaction
     }
 
