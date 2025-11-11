@@ -127,7 +127,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             .ok_or(TempoPrecompileError::under_overflow())
     }
 
-    /// Execute a swap from one fee token to another
+    /// Releases `refund_amount` of liquidity that was locked by `reserve_liquidity`
     pub fn release_liquidity(
         &mut self,
         user_token: Address,

@@ -127,7 +127,8 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
 
     /// Collects fees from user before transaction execution.
     ///
-    /// Determines fee token, verifies pool liquidity for swaps if needed, and transfers max fee amount.
+    /// Determines fee token, verifies pool liquidity for swaps if needed, reserves liquidity
+    /// for the max fee amount and transfers it to the fee manager.
     /// Unused gas is later returned via collect_fee_post_tx
     pub fn collect_fee_pre_tx(
         &mut self,
