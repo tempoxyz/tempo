@@ -137,11 +137,15 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
     fn validate_header(&self, header: &SealedHeader<TempoHeader>) -> Result<(), ConsensusError> {
         self.eth_beacon_validate_header(header)?;
 
-        let shared_gas_limit = header.gas_limit() / TEMPO_SHARED_GAS_DIVISOR;
+        if header.shared_gas_limit != header.gas_limit() / TEMPO_SHARED_GAS_DIVISOR {
+            return Err(ConsensusError::Other(
+                "Shared gas limit does not match header gas limit".to_string(),
+            ));
+        }
 
         // Validate the non-payment gas limit
         if header.general_gas_limit
-            != (header.gas_limit() - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
+            != (header.gas_limit() - header.shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
         {
             return Err(ConsensusError::Other(
                 "Non-payment gas limit does not match header gas limit".to_string(),
