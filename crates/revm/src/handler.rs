@@ -1122,17 +1122,15 @@ pub fn validate_time_window(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_evm::EvmFactory;
+    use crate::{TempoBlockEnv, TempoTxEnv};
     use alloy_primitives::{Address, U256};
     use revm::{
-        Journal,
+        Context, Journal, MainContext,
         database::{CacheDB, EmptyDB},
         interpreter::instructions::utility::IntoU256,
         primitives::hardfork::SpecId,
         state::Account,
     };
-    use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_evm::TempoEvmFactory;
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
         let db = CacheDB::new(EmptyDB::default());
@@ -1162,9 +1160,11 @@ mod tests {
     #[test]
     fn test_get_fee_token() -> eyre::Result<()> {
         let journal = create_test_journal();
-        let mut ctx = TempoEvmFactory::default()
-            .create_evm(CacheDB::new(EmptyDB::default()), Default::default())
-            .into_context()
+        let mut ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(Default::default())
+            .with_tx(TempoTxEnv::default())
             .with_new_journal(journal);
         let user = Address::random();
         ctx.tx.inner.caller = user;
@@ -1533,11 +1533,14 @@ mod tests {
     /// PR that introduced [`TempoInvalidTransaction::ValueTransferNotAllowed`] https://github.com/tempoxyz/tempo/pull/759
     #[test]
     fn test_zero_value_transfer() -> eyre::Result<()> {
-        use crate::{TempoEvm};
+        use crate::TempoEvm;
 
         // Create a test context with a transaction that has a non-zero value
-        let db = CacheDB::new(EmptyDB::default());
-        let ctx = TempoEvmFactory::default().create_evm(db, Default::default()).into_context();
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(Default::default())
+            .with_cfg(Default::default())
+            .with_tx(TempoTxEnv::default());
         let mut evm = TempoEvm::new(ctx, ());
 
         // Set a non-zero value on the transaction
