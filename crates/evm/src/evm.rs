@@ -105,11 +105,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     pub fn take_revert_logs(&mut self) -> Vec<Log> {
         std::mem::take(&mut self.inner.logs)
     }
-
-    /// Consumes self and returns the inner context.
-    pub fn into_context(self) -> TempoContext<DB> {
-        self.inner.inner.ctx
-    }
 }
 
 impl<DB: Database, I> Deref for TempoEvm<DB, I>
