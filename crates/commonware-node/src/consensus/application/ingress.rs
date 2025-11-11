@@ -1,5 +1,5 @@
 use commonware_consensus::{
-    Automaton, Epochable, Relay, Reporter,
+    Automaton, Relay, Reporter,
     marshal::Update,
     simplex::types::Context,
     types::{Epoch, Round, View},
@@ -113,7 +113,7 @@ impl Automaton for Mailbox {
 
     type Digest = Digest;
 
-    async fn genesis(&mut self, epoch: <Self::Context as Epochable>::Epoch) -> Self::Digest {
+    async fn genesis(&mut self, epoch: Epoch) -> Self::Digest {
         let (tx, rx) = oneshot::channel();
         // TODO: panicking here really is not good. there's actually no requirement on `Self::Context` nor `Self::Digest` to fulfill
         // any invariants, so we could just turn them into `Result<Context, Error>` and be happy.

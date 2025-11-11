@@ -115,7 +115,6 @@ pub(crate) fn generate_config(
             epoch_length: 302_400,
             polynomial: polynomial.clone(),
             listen_addr: SocketAddr::from(([127, 0, 0, 1], port)),
-            dialable_addr: SocketAddr::from(([127, 0, 0, 1], port)),
             metrics_port: Some(port + 1),
             p2p: Default::default(),
             storage_directory: output.join(&name).join("storage"),
