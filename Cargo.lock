@@ -11796,6 +11796,7 @@ dependencies = [
  "revm",
  "tempo-chainspec",
  "tempo-contracts",
+ "tempo-evm",
  "tempo-precompiles",
  "tempo-primitives",
  "thiserror 2.0.17",

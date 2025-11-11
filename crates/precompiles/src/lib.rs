@@ -292,7 +292,12 @@ mod tests {
     fn test_precompile_delegatecall() {
         let precompile = tempo_precompile!("TIP20Token", |input| TIP20Token::new(
             1,
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, 1),
+            &mut EvmPrecompileStorageProvider::new(
+                input.internals,
+                input.gas,
+                1,
+                Default::default()
+            ),
         ));
 
         let db = CacheDB::new(EmptyDB::new());

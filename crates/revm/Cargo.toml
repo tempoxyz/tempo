@@ -32,3 +32,4 @@ thiserror.workspace = true
 [dev-dependencies]
 eyre.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
+tempo-evm.workspace = true

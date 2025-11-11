@@ -164,10 +164,7 @@ impl From<EvmInternalsError> for TempoPrecompileError {
 mod tests {
     use super::*;
     use alloy::primitives::{address, b256, bytes};
-    use alloy_evm::{
-        EvmEnv, EvmFactory, EvmInternals,
-        revm::context::{ContextTr, Host},
-    };
+    use alloy_evm::{EvmEnv, EvmFactory, EvmInternals, revm::context::Host};
     use revm::{
         database::{CacheDB, EmptyDB},
         interpreter::StateLoad,
@@ -221,7 +218,7 @@ mod tests {
         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
         let ctx = evm.ctx_mut();
         let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, 1);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
         let address = address!("3000000000000000000000000000000000000003");
 

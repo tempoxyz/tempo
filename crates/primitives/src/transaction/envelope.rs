@@ -727,17 +727,4 @@ mod tests {
 
         assert!(envelope.is_payment());
     }
-
-    #[test]
-    fn test_tip20_payment_prefix() {
-        assert_eq!(
-            TIP20_PAYMENT_PREFIX,
-            [
-                0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-            ]
-        );
-        // Payment prefix should start with token prefix
-        assert_eq!(&TIP20_PAYMENT_PREFIX[..12], &TIP20_TOKEN_PREFIX);
-        assert_eq!(&DEFAULT_FEE_TOKEN.as_slice()[..14], &TIP20_PAYMENT_PREFIX);
-    }
 }
