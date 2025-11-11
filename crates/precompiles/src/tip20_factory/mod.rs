@@ -12,6 +12,7 @@ use crate::{
 };
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tracing::trace;
 
 #[contract]
@@ -56,10 +57,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
 
         trace!(%sender, %token_id, ?call, "Create token");
 
-        // Ensure that the quote token is a valid TIP20 that is currently deployed.
+        // Ensure that the quote token is a valid TIP20 that is currently deployed (only after Moderato hardfork).
         // Note that the token Id increments on each deployment which ensures that the quote
-        // token id must always be <= the current token_id
-        if !is_tip20(call.quoteToken) || address_to_token_id_unchecked(call.quoteToken) > token_id {
+        // token id must always be < the current token_id (strictly less than, not less than or equal).
+        if self.storage.spec() >= TempoHardfork::Moderato
+            && (!is_tip20(call.quoteToken)
+                || address_to_token_id_unchecked(call.quoteToken) >= token_id)
+        {
             return Err(TIP20Error::invalid_quote_token().into());
         }
 
@@ -173,8 +177,9 @@ mod tests {
     }
 
     #[test]
-    fn test_create_token_invalid_quote_token() {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_create_token_invalid_quote_token_post_moderato() {
+        // Test with Moderato hardfork (validation should be enforced)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut factory = TIP20Factory::new(&mut storage);
 
         factory
@@ -199,8 +204,9 @@ mod tests {
     }
 
     #[test]
-    fn test_create_token_quote_token_not_deployed() {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_create_token_quote_token_not_deployed_post_moderato() {
+        // Test with Moderato hardfork (validation should be enforced)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut factory = TIP20Factory::new(&mut storage);
 
         factory
@@ -222,5 +228,90 @@ mod tests {
             result.unwrap_err(),
             TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
         );
+    }
+
+    #[test]
+    fn test_create_token_off_by_one_rejected_post_moderato() {
+        // Test the off-by-one bug fix: using token_id as quote token should be rejected post-Moderato
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let sender = Address::random();
+        initialize_linking_usd(&mut storage, sender).unwrap();
+
+        let mut factory = TIP20Factory::new(&mut storage);
+        factory
+            .initialize()
+            .expect("Factory initialization should succeed");
+
+        // Get the current token_id (should be 1)
+        let current_token_id = factory.token_id_counter().unwrap();
+        assert_eq!(current_token_id, U256::from(1));
+
+        // Try to use token_id 1 (the token being created) as the quote token
+        // This should be rejected because token 1 doesn't exist yet
+        let same_id_quote_token = token_id_to_address(1);
+        let call = ITIP20Factory::createTokenCall {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            currency: "USD".to_string(),
+            quoteToken: same_id_quote_token,
+            admin: sender,
+        };
+
+        let result = factory.create_token(sender, call);
+        // Should fail with InvalidQuoteToken error because token 1 doesn't exist yet (off-by-one)
+        assert_eq!(
+            result.unwrap_err(),
+            TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
+        );
+    }
+
+    #[test]
+    fn test_create_token_off_by_one_allowed_pre_moderato() {
+        // Test the off-by-one bug: using token_id as quote token is allowed pre-Moderato (buggy behavior)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let sender = Address::random();
+        initialize_linking_usd(&mut storage, sender).unwrap();
+
+        let mut factory = TIP20Factory::new(&mut storage);
+        factory
+            .initialize()
+            .expect("Factory initialization should succeed");
+
+        // Get the current token_id (should be 1)
+        let current_token_id = factory.token_id_counter().unwrap();
+        assert_eq!(current_token_id, U256::from(1));
+
+        // Try to use token_id 1 (the token being created) as the quote token
+        // Pre-Moderato, the off-by-one bug allows this to pass the validation check
+        let same_id_quote_token = token_id_to_address(1);
+        let call = ITIP20Factory::createTokenCall {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            currency: "USD".to_string(),
+            quoteToken: same_id_quote_token,
+            admin: sender,
+        };
+
+        let result = factory.create_token(sender, call);
+
+        // Pre-Moderato: the validation is skipped, so the operation may succeed or fail
+        // with a different error. The key is that it should NOT fail with InvalidQuoteToken
+        // from the validation check we're gating behind Moderato.
+        match result {
+            Ok(_) => {
+                // Operation succeeded due to buggy pre-Moderato behavior
+                // This is allowed (though incorrect) in pre-Moderato
+            }
+            Err(e) => {
+                // If it fails, it should NOT be due to the InvalidQuoteToken validation
+                assert!(
+                    !matches!(
+                        e,
+                        TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(_))
+                    ),
+                    "Pre-Moderato should not reject with InvalidQuoteToken from validation"
+                );
+            }
+        }
     }
 }
