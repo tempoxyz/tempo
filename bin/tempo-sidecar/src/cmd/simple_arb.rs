@@ -35,7 +35,7 @@ pub struct SimpleArbArgs {
     #[arg(long, default_value_t = 2)]
     poll_interval: u64,
 
-    /// Number of failed transactions executed by the arb bot
+    /// Prometheus port for metrics
     #[arg(long, default_value_t = 8000)]
     metrics_port: u64,
 }
