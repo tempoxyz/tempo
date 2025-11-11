@@ -23,6 +23,7 @@ use alloy::{
 };
 use revm::state::Bytecode;
 use std::sync::LazyLock;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles_macros::contract;
 use tracing::trace;
 
@@ -793,23 +794,26 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             );
         }
 
-        // Accrue rewards up to current timestamp
-        let current_timestamp = self.storage.timestamp();
-        self.accrue(current_timestamp)?;
+        // Handle rewards (only after Moderato hardfork)
+        if self.storage.spec() >= TempoHardfork::Moderato {
+            // Accrue rewards up to current timestamp
+            let current_timestamp = self.storage.timestamp();
+            self.accrue(current_timestamp)?;
 
-        // Update rewards for the sender and get their reward recipient
-        let from_reward_recipient = self.update_rewards(from)?;
+            // Update rewards for the sender and get their reward recipient
+            let from_reward_recipient = self.update_rewards(from)?;
 
-        // If user is opted into rewards, decrease opted-in supply
-        if from_reward_recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_sub(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
+            // If user is opted into rewards, decrease opted-in supply
+            if from_reward_recipient != Address::ZERO {
+                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
+                    .checked_sub(amount)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                self.set_opted_in_supply(
+                    opted_in_supply
+                        .try_into()
+                        .map_err(|_| TempoPrecompileError::under_overflow())?,
+                )?;
+            }
         }
 
         let new_from_balance =
@@ -854,20 +858,23 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Ok(());
         }
 
-        // Note: We assume that transferFeePreTx is always called first, so _accrue has already been called
-        // Update rewards for the recipient and get their reward recipient
-        let to_reward_recipient = self.update_rewards(to)?;
+        // Handle rewards (only after Moderato hardfork)
+        if self.storage.spec() >= TempoHardfork::Moderato {
+            // Note: We assume that transferFeePreTx is always called first, so _accrue has already been called
+            // Update rewards for the recipient and get their reward recipient
+            let to_reward_recipient = self.update_rewards(to)?;
 
-        // If user is opted into rewards, increase opted-in supply by refund amount
-        if to_reward_recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_add(refund)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
+            // If user is opted into rewards, increase opted-in supply by refund amount
+            if to_reward_recipient != Address::ZERO {
+                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
+                    .checked_add(refund)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                self.set_opted_in_supply(
+                    opted_in_supply
+                        .try_into()
+                        .map_err(|_| TempoPrecompileError::under_overflow())?,
+                )?;
+            }
         }
 
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
@@ -2003,8 +2010,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_transfer_fee_pre_tx_handles_rewards() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_transfer_fee_pre_tx_handles_rewards_post_moderato() -> eyre::Result<()> {
+        // Test with Moderato hardfork (rewards should be handled)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let admin = Address::random();
         let user = Address::random();
 
@@ -2039,8 +2047,46 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_transfer_fee_post_tx_handles_rewards() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_transfer_fee_pre_tx_no_rewards_pre_moderato() -> eyre::Result<()> {
+        // Test with Adagio (pre-Moderato) - rewards should NOT be handled
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::random();
+        let user = Address::random();
+
+        let mint_amount = U256::from(1000e18);
+        let reward_amount = U256::from(100e18);
+
+        // Setup token with rewards enabled
+        let (token_id, initial_opted_in) =
+            setup_token_with_rewards(&mut storage, admin, user, mint_amount, reward_amount)?;
+
+        // Transfer fee from user
+        let fee_amount = U256::from(100e18);
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.transfer_fee_pre_tx(user, fee_amount)?;
+
+        // Pre-Moderato: opted-in supply should NOT be decreased (rewards not handled)
+        let final_opted_in = token.get_opted_in_supply()?;
+        assert_eq!(
+            final_opted_in, initial_opted_in,
+            "opted-in supply should NOT change pre-Moderato"
+        );
+
+        // User should NOT have accumulated rewards (rewards not handled)
+        let user_info = token.sload_user_reward_info(user)?;
+        assert_eq!(
+            user_info.reward_balance,
+            U256::ZERO,
+            "user should NOT have accumulated rewards pre-Moderato"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_fee_post_tx_handles_rewards_post_moderato() -> eyre::Result<()> {
+        // Test with Moderato hardfork (rewards should be handled)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let admin = Address::random();
         let user = Address::random();
 
@@ -2092,6 +2138,70 @@ pub(crate) mod tests {
         assert!(
             user_info.reward_balance > U256::ZERO,
             "user should have accumulated rewards"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_fee_post_tx_no_rewards_pre_moderato() -> eyre::Result<()> {
+        // Test with Adagio (pre-Moderato) - rewards should NOT be handled
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::random();
+        let user = Address::random();
+
+        let mint_amount = U256::from(1000e18);
+        let reward_amount = U256::from(100e18);
+
+        // Setup token with rewards enabled
+        let (token_id, initial_opted_in) =
+            setup_token_with_rewards(&mut storage, admin, user, mint_amount, reward_amount)?;
+
+        // Simulate fee transfer: first take fee from user
+        let fee_amount = U256::from(100e18);
+        {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.transfer_fee_pre_tx(user, fee_amount)?;
+        }
+
+        // Get opted-in supply after pre_tx (should be unchanged pre-Moderato)
+        let opted_in_after_pre = {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.get_opted_in_supply()?
+        };
+        assert_eq!(
+            opted_in_after_pre, initial_opted_in,
+            "opted-in supply should be unchanged in pre_tx pre-Moderato"
+        );
+
+        // Now refund part of it back
+        let refund_amount = U256::from(40e18);
+        let actual_used = U256::from(60e18);
+        {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.transfer_fee_post_tx(user, refund_amount, actual_used)?;
+        }
+
+        // After transfer_fee_post_tx, the opted-in supply should still be unchanged (rewards not handled)
+        let final_opted_in = {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.get_opted_in_supply()?
+        };
+
+        assert_eq!(
+            final_opted_in, initial_opted_in,
+            "opted-in supply should remain unchanged pre-Moderato"
+        );
+
+        // User should NOT have accumulated rewards
+        let user_info = {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.sload_user_reward_info(user)?
+        };
+        assert_eq!(
+            user_info.reward_balance,
+            U256::ZERO,
+            "user should NOT have accumulated rewards pre-Moderato"
         );
 
         Ok(())
