@@ -20,7 +20,7 @@ use crate::{
     linking_usd::LinkingUSD,
     stablecoin_exchange::orderbook::compute_book_key,
     storage::{PrecompileStorageProvider, Slot, Storable, VecSlotExt},
-    tip20::{ITIP20, TIP20Token, validate_usd_currency},
+    tip20::{ITIP20, TIP20Error, TIP20Token, is_tip20, validate_usd_currency},
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
@@ -335,6 +335,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     pub fn create_pair(&mut self, base: Address) -> Result<B256> {
+        // Validate that base is a TIP20 token
+        if !is_tip20(base) {
+            return Err(TIP20Error::invalid_quote_token().into());
+        }
+
         let quote = TIP20Token::from_address(base, self.storage).quote_token()?;
         validate_usd_currency(base, self.storage)?;
         validate_usd_currency(quote, self.storage)?;
@@ -3285,6 +3290,33 @@ mod tests {
         assert!(matches!(
             result,
             Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_pair_rejects_non_tip20_base() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        let admin = Address::random();
+        // Init Linking USD
+        let mut linking_usd = TIP20Token::from_address(LINKING_USD_ADDRESS, &mut storage);
+        linking_usd
+            .initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+            .unwrap();
+
+        let mut exchange = StablecoinExchange::new(linking_usd.storage());
+        exchange.initialize()?;
+
+        // Test: create_pair should reject non-TIP20 address (random address without TIP20 prefix)
+        let non_tip20_address = Address::random();
+        let result = exchange.create_pair(non_tip20_address);
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                _
+            )))
         ));
 
         Ok(())
