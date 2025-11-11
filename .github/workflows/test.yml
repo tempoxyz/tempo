@@ -80,9 +80,9 @@ jobs:
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Download snapshot
-        run: cargo run --bin --release tempo download --datadir snap-rexec
+        run: cargo run --release --bin tempo download --datadir snap-rexec
       - name: Re-execute snapshot
-        run: cargo run --bin --release tempo re-execute --datadir snap-rexec/data
+        run: cargo run --release --bin tempo re-execute --datadir snap-rexec/data
 
   test-success:
     name: test success
