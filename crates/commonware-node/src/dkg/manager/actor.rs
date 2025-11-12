@@ -240,7 +240,10 @@ where
             )
             .await;
 
-        let mut ceremony = Some(self.start_new_ceremony(&mut ceremony_mux).await);
+        let mut ceremony = Some(
+            self.start_new_ceremony_and_register_peers(&mut ceremony_mux)
+                .await,
+        );
         let merged_peer_set = self.p2p_states.construct_merged_peerset();
 
         self.config
@@ -410,26 +413,12 @@ where
         if utils::is_last_block_in_epoch(self.config.epoch_length, block.height()).is_some() {
             self.report_new_epoch().await;
 
-            maybe_ceremony.replace(self.start_new_ceremony(ceremony_mux).await);
-            let merged_peer_set = self.p2p_states.construct_merged_peerset();
-            self.config
-                .peer_manager
-                .update(
-                    self.p2p_states.highest_epoch().expect(
-                        "once a new ceremony was started, there must be a \
-                            highest epoch in the p2p states",
-                    ),
-                    merged_peer_set.clone(),
-                )
-                .await;
-            info!(
-                epoch = self.p2p_states.highest_epoch(),
-                ?merged_peer_set,
-                "updated latest peer set by merging validator of the last 3 epochs"
+            maybe_ceremony.replace(
+                self.start_new_ceremony_and_register_peers(ceremony_mux)
+                    .await,
             );
-
-            // Early return here. We want to start processing the ceremony on
-            // the first height of the next epoch.
+            // Early return: start driving the ceremony on the first height of
+            // the next epoch.
             return;
         }
 
@@ -545,7 +534,7 @@ where
             epoch = self.epoch_state.epoch,
         )
     )]
-    async fn start_new_ceremony<TReceiver, TSender>(
+    async fn start_new_ceremony_and_register_peers<TReceiver, TSender>(
         &mut self,
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> Ceremony<ContextCell<TContext>, TReceiver, TSender>
@@ -613,6 +602,23 @@ where
         self.metrics
             .how_often_player
             .inc_by(ceremony.is_player() as u64);
+
+        let merged_peer_set = self.p2p_states.construct_merged_peerset();
+        self.config
+            .peer_manager
+            .update(
+                self.p2p_states.highest_epoch().expect(
+                    "once a new ceremony was started, there must be a \
+                            highest epoch in the p2p states",
+                ),
+                merged_peer_set.clone(),
+            )
+            .await;
+        info!(
+            epoch = self.p2p_states.highest_epoch(),
+            ?merged_peer_set,
+            "updated latest peer set by merging validator of the last 3 epochs"
+        );
 
         ceremony
     }
