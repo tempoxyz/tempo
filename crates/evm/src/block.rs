@@ -116,7 +116,7 @@ where
             incentive_gas_used: 0,
             validator_set: ctx.validator_set,
             non_payment_gas_left: ctx.general_gas_limit,
-            non_shared_gas_left: evm.block().gas_limit - ctx.general_gas_limit,
+            non_shared_gas_left: evm.block().gas_limit - ctx.shared_gas_limit,
             shared_gas_limit: ctx.shared_gas_limit,
             inner: EthBlockExecutor::new(
                 evm,
