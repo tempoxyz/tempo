@@ -1,7 +1,10 @@
 mod dex;
 mod tip20;
 
+use tempo_alloy::TempoNetwork;
+
 use alloy::{
+    consensus::BlockHeader,
     eips::BlockNumberOrTag::Latest,
     network::{Ethereum, EthereumWallet, Network, TransactionBuilder, TxSignerSync},
     primitives::{Address, BlockNumber, ChainId, Signature, TxKind, U256},
@@ -76,6 +79,9 @@ pub struct MaxTpsArgs {
         default_value = "test test test test test test test test test test test junk"
     )]
     mnemonic: String,
+
+    #[arg(short, long, default_value = "0")]
+    from_mnemonic_index: u64,
 
     /// Chain ID
     #[arg(long, default_value = "1337")]
@@ -344,7 +350,7 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
     println!("Fetching nonces for {} accounts...", signers.len());
 
     let mut params = Vec::new();
-    for signer in signers {
+    for signer in signers.clone() {
         let address = signer.address();
         let current_nonce = provider
             .get_transaction_count(address)
@@ -358,6 +364,11 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
 
     let user_tokens = [base1, base2];
     let user_tokens_count = 2;
+
+    println!(
+        "Pregenerating {} transactions",
+        txs_per_sender as usize * signers.len(),
+    );
 
     let transactions: Vec<_> = params
         .into_par_iter()
@@ -497,7 +508,8 @@ pub async fn generate_report(
     end_block: BlockNumber,
     args: &MaxTpsArgs,
 ) -> eyre::Result<()> {
-    let provider = ProviderBuilder::new().connect_http(rpc_url.clone());
+    let provider =
+        ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(rpc_url.clone());
 
     let mut last_block_timestamp: Option<u64> = None;
 
@@ -512,15 +524,15 @@ pub async fn generate_report(
             .get_block_receipts(number.into())
             .await?
             .expect("there should always be at least one receipt");
-        let timestamp = block.header.timestamp;
+        let timestamp = block.header.timestamp_millis();
 
-        let latency_ms = last_block_timestamp.map(|last| (timestamp - last) * 1000);
+        let latency_ms = last_block_timestamp.map(|last| timestamp - last);
 
         benchmarked_blocks.push(BenchmarkedBlock {
             number,
             tx_count: receipts.len(),
-            gas_used: block.header.gas_used,
-            timestamp: block.header.timestamp,
+            gas_used: block.header.gas_used(),
+            timestamp: block.header.timestamp_millis(),
             latency_ms,
         });
 

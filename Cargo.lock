@@ -11424,6 +11424,7 @@ dependencies = [
  "serde",
  "serde_json",
  "simple-tqdm",
+ "tempo-alloy",
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-precompiles",

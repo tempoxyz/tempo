@@ -8,6 +8,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+tempo-alloy.workspace = true
 tempo-chainspec.workspace = true
 tempo-precompiles.workspace = true
 tempo-contracts.workspace = true
