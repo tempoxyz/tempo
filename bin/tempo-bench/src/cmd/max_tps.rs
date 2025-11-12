@@ -139,6 +139,10 @@ pub struct MaxTpsArgs {
     /// A weight that determines the likelihood of generating a DEX swapExactAmountIn transaction.
     #[arg(long, default_value = "0.19")]
     swap_weight: f64,
+
+    /// An amount of receipts to wait for after sending all the transactions.
+    #[arg(long, default_value = "100")]
+    sample_size: usize,
 }
 
 impl MaxTpsArgs {
@@ -213,7 +217,7 @@ impl MaxTpsArgs {
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         let mut rng = rand::rng();
-        let sample_size = transactions.len().min(100);
+        let sample_size = transactions.len().min(self.sample_size);
         let mut end_block_number = start_block_number;
         println!("Collecting a sample of {sample_size} receipts");
         let progress = ProgressBar::new(sample_size as u64);
