@@ -16,7 +16,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP403Registry<'a, S> {
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".to_string())
+                PrecompileError::Other("Invalid input: missing function selector".into())
             })?
             .try_into()
             .unwrap();
@@ -66,9 +66,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP403Registry<'a, S> {
                     |s, call| self.modify_policy_blacklist(s, call),
                 )
             }
-            _ => Err(PrecompileError::Other(
-                "Unknown function selector".to_string(),
-            )),
+            _ => Err(PrecompileError::Other("Unknown function selector".into())),
         };
 
         result.map(|mut res| {

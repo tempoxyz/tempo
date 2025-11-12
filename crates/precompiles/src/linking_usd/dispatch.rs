@@ -21,7 +21,7 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".to_string())
+                PrecompileError::Other("Invalid input: missing function selector".into())
             })?
             .try_into()
             .unwrap();
@@ -201,7 +201,7 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
                 })
             }
 
-            _ => Err(PrecompileError::Other("Unknown selector".to_string())),
+            _ => Err(PrecompileError::Other("Unknown selector".into())),
         };
 
         result.map(|mut res| {
