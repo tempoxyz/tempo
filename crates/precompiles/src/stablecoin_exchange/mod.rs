@@ -765,7 +765,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let mut level = self.get_best_price_level(book_key, bid)?;
         let mut order = self.sload_orders(level.head)?;
 
-        let mut total_amount_in = 0;
+        let mut total_amount_in: u128 = 0;
         while amount_out > 0 {
             let price = tick_to_price(order.tick());
             let fill_amount = amount_out.min(order.remaining());
@@ -777,10 +777,6 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                     .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
                     .expect("Input needed calculation overflow")
             };
-
-            if total_amount_in + amount_in > max_amount_in {
-                return Err(StablecoinExchangeError::max_input_exceeded().into());
-            }
 
             if fill_amount < order.remaining() {
                 self.partial_fill_order(&mut order, &mut level, fill_amount)?;
@@ -808,6 +804,10 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                     break;
                 }
             }
+        }
+
+        if total_amount_in > max_amount_in {
+            return Err(StablecoinExchangeError::max_input_exceeded().into());
         }
 
         Ok(total_amount_in)
