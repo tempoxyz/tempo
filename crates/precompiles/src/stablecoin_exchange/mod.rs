@@ -3316,7 +3316,7 @@ mod tests {
         let result = exchange.create_pair(non_tip20_address);
         assert!(matches!(
             result,
-            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidBaseToken(
                 _
             )))
         ));
