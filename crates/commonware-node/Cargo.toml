@@ -17,6 +17,7 @@ tempo-node.workspace = true
 tempo-primitives.workspace = true
 tempo-payload-types.workspace = true
 tempo-precompiles.workspace = true
+tempo-telemetry-util.workspace = true
 
 alloy-consensus.workspace = true
 alloy-evm.workspace = true

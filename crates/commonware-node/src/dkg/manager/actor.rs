@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     net::SocketAddr,
     sync::Arc,
+    time::Duration,
 };
 
 use commonware_codec::{
@@ -276,7 +277,7 @@ where
                         self.handle_get_outcome(cause, get_ceremony_outcome).await;
                 }
                 super::Command::Finalize(finalize) => {
-                    self.handle_finalize(cause, finalize, &mut ceremony, &mut ceremony_mux)
+                    self.handle_finalized(cause, finalize, &mut ceremony, &mut ceremony_mux)
                         .await;
                 }
             }
@@ -386,7 +387,7 @@ where
             ceremony.epoch = maybe_ceremony.as_ref().map(|c| c.epoch()),
         ),
     )]
-    async fn handle_finalize<TReceiver, TSender>(
+    async fn handle_finalized<TReceiver, TSender>(
         &mut self,
         cause: Span,
         Finalize {
@@ -399,27 +400,15 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        // Special case boundary height: only start a new epoch and return.
+        // Special case --- boundary block: report that a new epoch should be
+        // entered, start a new ceremony.
         //
         // Recall, for some epoch length E, the boundary heights are
-        // 1E-1, 2E-1, 3E-1, ...
+        // 1E-1, 2E-1, 3E-1, ... for epochs 0, 1, 2.
         //
         // So for E = 100, the boundary heights would be 99, 199, 299, ...
         if utils::is_last_block_in_epoch(self.config.epoch_length, block.height()).is_some() {
             self.report_new_epoch().await;
-
-            // Early return here. We want to start processing the ceremony on
-            // the first height of the next epoch.
-            return;
-        }
-
-        // Special case first height: exit the old epoch, start a new ceremony.
-        //
-        // Recall, for an epoch length E the first heights are 0E, 1E, 2E, ...
-        //
-        // So for E = 100, the first heights are 0, 100, 200, ...
-        if block.height().is_multiple_of(self.config.epoch_length) {
-            self.report_epoch_entered().await;
 
             maybe_ceremony.replace(self.start_new_ceremony(ceremony_mux).await);
             let merged_peer_set = self.p2p_states.construct_merged_peerset();
@@ -438,6 +427,19 @@ where
                 ?merged_peer_set,
                 "updated latest peer set by merging validator of the last 3 epochs"
             );
+
+            // Early return here. We want to start processing the ceremony on
+            // the first height of the next epoch.
+            return;
+        }
+
+        // Special case first height: exit the old epoch, start a new ceremony.
+        //
+        // Recall, for an epoch length E the first heights are 0E, 1E, 2E, ...
+        //
+        // So for E = 100, the first heights are 0, 100, 200, ...
+        if block.height().is_multiple_of(self.config.epoch_length) {
+            self.report_epoch_entered().await;
         }
 
         let mut ceremony = maybe_ceremony.take().expect(
@@ -515,9 +517,21 @@ where
         }
     }
 
-    /// Starts a new ceremony.
+    /// Starts a new ceremony for the given epoch.
     ///
-    /// This method is intended to be called on the first block an epoch.
+    /// This method is intended to be called on the boundary block of an epoch
+    /// `E`. Since it's a core design of the DKG manager that it finalized the
+    /// DKG ceremony before the boundary block, it is safe to assume that
+    /// `self.epoch_state` is updated with the outcome of the previous
+    /// block.
+    ///
+    /// The ceremony for epoch `self.epoch_state.epoch` is then started by
+    /// reading the validator set from the boundary block of the ending epoch,
+    /// `self.epoch_state.epoch - 1`.
+    ///
+    /// If the state of the execution layer is not yet updated and the block not
+    /// yet available, this method will spin until the block
+    /// becomes available on the execution layer.
     ///
     /// 1. The validator config is read from the boundary block of the previous
     ///    epoch. This is to ensure that the boundary block is firmly available
@@ -539,32 +553,13 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        // XXX(!!!): This is critical: start_new_epoch *MUST* be called on the
-        // first block, and the validator config *MUST* be read on the
-        // *BOUNDARY* of the previous epoch. This ensures that the block is
-        // firmly committed on the execution layer.
         let boundary = self.epoch_state.epoch.checked_sub(1).map_or(0, |previous| {
             utils::last_block_in_epoch(self.config.epoch_length, previous)
         });
 
         let new_p2p_state =
-            match read_validator_config_from_contract(self.config.execution_node.clone(), boundary)
-                .await
-            {
-                Ok(p2p_state) => p2p_state,
-                Err(error) => {
-                    warn!(
-                        %error,
-                        "unable to read validator config from contract; taking the \
-                        last validator config and starting a new ceremony with that \
-                        instead"
-                    );
-                    self.p2p_states.highest().cloned().expect(
-                        "there must be one set of validators; if there is not and \
-                    reading it from the contract failed we can't go on",
-                    )
-                }
-            };
+            read_validator_config_with_retry(&self.context, &self.config.execution_node, boundary)
+                .await;
 
         self.p2p_metadata
             .put_sync(self.epoch_state.epoch.into(), new_p2p_state.clone())
@@ -673,10 +668,37 @@ struct Metrics {
     ceremony_players: Gauge,
 }
 
+/// Attempts to read the validator config from the smart contract until it becomes available.
+async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
+    context: &C,
+    node: &TempoFullNode,
+    at_height: u64,
+) -> P2pState {
+    let mut attempts = 1;
+    let retry_after = Duration::from_secs(1);
+    let p2p_state = loop {
+        if let Ok(p2p_state) = read_validator_config_from_contract(attempts, &node, at_height).await
+        {
+            break p2p_state;
+        }
+        tracing::warn_span!("read_validator_config_with_retry").in_scope(|| {
+            warn!(
+                attempts,
+                retry_after = %tempo_telemetry_util::display_duration(retry_after),
+                "reading validator config from contract failed; will retry",
+            );
+        });
+        attempts += 1;
+        context.sleep(retry_after).await;
+    };
+    p2p_state
+}
+
 /// Reads the validator config `at_height` from a smart contract.
-#[instrument(skip_all, fields(at_height), err)]
+#[instrument(skip_all, fields(attempt = _attempt, at_height), err)]
 async fn read_validator_config_from_contract(
-    node: TempoFullNode,
+    _attempt: u32,
+    node: &TempoFullNode,
     at_height: u64,
 ) -> eyre::Result<P2pState> {
     use alloy_evm::EvmInternals;
@@ -846,10 +868,6 @@ impl P2pStates {
         }
         let old_epoch = epoch.checked_sub(3)?;
         self.inner.remove(&old_epoch).map(|p2p| (old_epoch, p2p))
-    }
-
-    fn highest(&self) -> Option<&P2pState> {
-        self.inner.last_key_value().map(|(_, p2p)| p2p)
     }
 
     fn highest_epoch(&self) -> Option<Epoch> {

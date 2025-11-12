@@ -11468,6 +11468,7 @@ dependencies = [
  "tempo-payload-types",
  "tempo-precompiles",
  "tempo-primitives",
+ "tempo-telemetry-util",
  "tokio",
  "tracing",
 ]
