@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    net::{SocketAddr, ToSocketAddrs},
+    net::SocketAddr,
     sync::Arc,
 };
 
@@ -25,7 +25,7 @@ use commonware_utils::{
     set::{Ordered, OrderedAssociated},
 };
 
-use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
+use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc, lock::Mutex};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
@@ -38,7 +38,10 @@ use crate::{
     dkg::{
         CeremonyState,
         ceremony::{self, Ceremony},
-        manager::ingress::{Finalize, GetIntermediateDealing, GetOutcome},
+        manager::{
+            DecodedValidator,
+            ingress::{Finalize, GetIntermediateDealing, GetOutcome},
+        },
     },
     epoch,
 };
@@ -726,99 +729,42 @@ async fn read_validator_config_from_contract(
             .wrap_err("failed to query contract for validator config")?
     };
 
-    let addresses = decode_contract_validators(contract_validators)
-        .await
-        .wrap_err("failed to decode validators read from contract")?;
+    let new_validators = decode_contract_validators(contract_validators);
 
-    let peers = addresses
-        .into_iter()
-        .map(|(key, addrs)| (key, addrs.inbound))
+    let peers = new_validators
+        .await
+        .iter_pairs()
+        .filter_map(|(key, validator)| {
+            validator
+                .inbound_to_socket_addr()
+                .ok()
+                .map(|addr| (key.clone(), addr))
+        })
         .collect();
 
     Ok(P2pState { peers })
 }
 
-struct Addresses {
-    inbound: SocketAddr,
-    _outbound: SocketAddr,
-}
-
 use tempo_precompiles::validator_config::IValidatorConfig;
+#[instrument(skip_all, fields(validators_to_decode = contract_vals.len()))]
 async fn decode_contract_validators(
     contract_vals: Vec<IValidatorConfig::Validator>,
-) -> eyre::Result<HashMap<PublicKey, Addresses>> {
-    let mut parsed_vals = HashMap::new();
+) -> OrderedAssociated<PublicKey, DecodedValidator> {
+    let mut decoded = HashMap::new();
     for val in contract_vals.into_iter().filter(|val| val.active) {
-        let peer = PublicKey::decode(val.publicKey.as_ref()).wrap_err_with(|| {
-            format!(
-                "failed decoding pubkey of validator at index `{}`",
-                val.index
-            )
-        })?;
-        let inbound_address = val.inboundAddress;
-        let outbound_address = val.outboundAddress;
-
-        // TODO(janis): doing all of these in a loop and sequentially is bad.
-        let mut all_inbound = inbound_address
-            .to_socket_addrs()
-            .wrap_err_with(|| {
-                format!(
-                    "failed converting contract inboundAddress of contract \
-                    `{inbound_address}` of peer `{peer}` to socket address by \
-                    parsing it or resolving the hostname"
-                )
-            })?
-            .collect::<Vec<_>>();
-
-        let Some(inbound) = all_inbound.pop() else {
-            return Err(eyre!(
-                "peer `{peer}` with inboundAddress `{inbound_address}` \
-                resolved to zero addresses"
-            ));
-        };
-
-        let mut all_outbound = outbound_address
-            .to_socket_addrs()
-            .wrap_err_with(|| {
-                format!(
-                    "failed converting contract outboundAddress \
-                    `{outbound_address}` of peer `{peer}` to socket address \
-                    by parsing it or resolving the hostname"
-                )
-            })?
-            .collect::<Vec<_>>();
-
-        let Some(outbound) = all_outbound.pop() else {
-            return Err(eyre!(
-                "peer `{peer}` with outboundAddress `{outbound_address}` \
-                resolved to zero addresses"
-            ));
-        };
-
-        info!(
-            peer = %peer,
-            outbound_address,
-            potential_addresses = ?all_outbound,
-            inbound_address,
-            potential_addresses = ?all_inbound,
-            "resolved inbound and outbound addresses to socket addresses; \
-            always taking the last one in case there are more than one"
-        );
-
-        if parsed_vals
-            .insert(
-                peer.clone(),
-                Addresses {
-                    inbound,
-                    _outbound: outbound,
-                },
-            )
-            .is_some()
-        {
-            bail!("pub key `{peer}` was duplicate; this is not permitted");
+        // NOTE: not reporting errors because `decode_from_contract` emits
+        // events on success and error
+        if let Ok(val) = DecodedValidator::decode_from_contract(val) {
+            if let Some(old) = decoded.insert(val.public_key.clone(), val) {
+                warn!(
+                    %old,
+                    new = %decoded.get(&old.public_key).expect("just inserted it"),
+                    "replaced peer because public keys were duplicated",
+                );
+            }
         }
     }
-    Ok(parsed_vals)
+    decoded.into_iter().collect::<_>()
 }
 
 /// The state with all participants, public and private key share for an epoch.

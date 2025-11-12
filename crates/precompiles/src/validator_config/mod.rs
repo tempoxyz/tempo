@@ -226,7 +226,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         )?;
 
         // Store inboundAddress
-        ensure_is_host_port(&call.inboundAddress).map_err(|err| {
+        ensure_inbound_is_host_port(&call.inboundAddress).map_err(|err| {
             ValidatorConfigError::not_host_port(
                 "inboundAddress".to_string(),
                 call.inboundAddress.clone(),
@@ -239,7 +239,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         )?;
 
         // Store outboundAddress (must be IP:port for firewall whitelisting)
-        ensure_is_ip_port(&call.outboundAddress).map_err(|err| {
+        ensure_outbound_is_ip_port(&call.outboundAddress).map_err(|err| {
             ValidatorConfigError::not_ip_port(
                 "outboundAddress".to_string(),
                 call.outboundAddress.clone(),
@@ -354,7 +354,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
             )?;
         }
 
-        ensure_is_host_port(&call.inboundAddress).map_err(|err| {
+        ensure_inbound_is_host_port(&call.inboundAddress).map_err(|err| {
             ValidatorConfigError::not_host_port(
                 "inboundAddress".to_string(),
                 call.inboundAddress.clone(),
@@ -366,7 +366,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
             call.inboundAddress,
         )?;
 
-        ensure_is_ip_port(&call.outboundAddress).map_err(|err| {
+        ensure_outbound_is_ip_port(&call.outboundAddress).map_err(|err| {
             ValidatorConfigError::not_ip_port(
                 "outboundAddress".to_string(),
                 call.outboundAddress.clone(),
@@ -562,22 +562,23 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
 }
 
 #[derive(Debug, thiserror::Error)]
-enum HostWithPortParseError {
+#[error("input was not of the form `<host>:<port>`")]
+pub struct HostWithPortParseError {
+    #[from]
+    source: HostWithPortParseErrorKind,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum HostWithPortParseErrorKind {
     #[error("failed to parse host segment of input")]
-    HostNotFqdn(#[from] fqdn::Error),
+    NotFqdn(#[from] fqdn::Error),
     #[error("failed to parse port segment of input")]
     BadPort(#[from] std::num::ParseIntError),
     #[error("input has no colon and cannot be of the form <host>:<port>")]
     NoColon,
 }
 
-#[derive(Debug, thiserror::Error)]
-enum IpWithPortParseError {
-    #[error("input must be an IP address with port")]
-    NotIpPort(#[from] std::net::AddrParseError),
-}
-
-fn ensure_is_host_port(input: &str) -> Result<(), HostWithPortParseError> {
+pub fn ensure_inbound_is_host_port(input: &str) -> Result<(), HostWithPortParseError> {
     // First, attempt to parse it as a socket addr; this covers the ipv4, ipv6 cases.
     if input.parse::<std::net::SocketAddr>().is_ok() {
         Ok(())
@@ -585,14 +586,25 @@ fn ensure_is_host_port(input: &str) -> Result<(), HostWithPortParseError> {
         // If that fails, try to parse the parts individually
         let (maybe_host, maybe_port) = input
             .rsplit_once(':')
-            .ok_or(HostWithPortParseError::NoColon)?;
-        maybe_host.parse::<fqdn::FQDN>()?;
-        maybe_port.parse::<u16>()?;
+            .ok_or(HostWithPortParseErrorKind::NoColon)?;
+        maybe_host
+            .parse::<fqdn::FQDN>()
+            .map_err(HostWithPortParseErrorKind::NotFqdn)?;
+        maybe_port
+            .parse::<u16>()
+            .map_err(HostWithPortParseErrorKind::BadPort)?;
         Ok(())
     }
 }
 
-fn ensure_is_ip_port(input: &str) -> Result<(), IpWithPortParseError> {
+#[derive(Debug, thiserror::Error)]
+#[error("input was not of the form `<ip>:<port>`")]
+pub struct IpWithPortParseError {
+    #[from]
+    source: std::net::AddrParseError,
+}
+
+pub fn ensure_outbound_is_ip_port(input: &str) -> Result<(), IpWithPortParseError> {
     // Only accept IP addresses (v4 or v6) with port
     input.parse::<std::net::SocketAddr>()?;
     Ok(())
@@ -1278,21 +1290,21 @@ mod tests {
 
     #[test]
     fn ipv4_with_port_is_host_port() {
-        ensure_is_host_port("127.0.0.1:8000").unwrap();
+        ensure_inbound_is_host_port("127.0.0.1:8000").unwrap();
     }
 
     #[test]
     fn ipv6_with_port_is_host_port() {
-        ensure_is_host_port("[::1]:8000").unwrap();
+        ensure_inbound_is_host_port("[::1]:8000").unwrap();
     }
 
     #[test]
     fn hostname_with_port_is_host_port() {
-        ensure_is_host_port("localhost:8000").unwrap();
+        ensure_inbound_is_host_port("localhost:8000").unwrap();
     }
 
     #[test]
     fn k8s_style_with_port_is_host_port() {
-        ensure_is_host_port("service.namespace:8000").unwrap();
+        ensure_inbound_is_host_port("service.namespace:8000").unwrap();
     }
 }

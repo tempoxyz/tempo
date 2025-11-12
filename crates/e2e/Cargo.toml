@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 alloy = { workspace = true, features = [
   "genesis",
+  "rpc-types",
   "signers",
   "signer-local",
   "signer-mnemonic",
