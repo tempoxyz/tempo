@@ -140,6 +140,7 @@ sol! {
         error ContractPaused();
         error InvalidCurrency();
         error InvalidQuoteToken();
+        error InvalidBaseToken();
         error TransfersDisabled();
         error InvalidAmount();
         error NotStreamFunder();
@@ -195,6 +196,11 @@ impl TIP20Error {
     /// Creates an error for invalid quote token.
     pub const fn invalid_quote_token() -> Self {
         Self::InvalidQuoteToken(ITIP20::InvalidQuoteToken {})
+    }
+
+    /// Creates an error for invalid base token.
+    pub const fn invalid_base_token() -> Self {
+        Self::InvalidBaseToken(ITIP20::InvalidBaseToken {})
     }
 
     /// Creates an error when string parameter exceeds maximum length.
