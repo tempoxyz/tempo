@@ -21,7 +21,7 @@ The blockchain for payments at scale.
 
 ## For Operators
 
-See the [Tempo documentation](https://docs.tempo.xyz/documentation/operators#run-a-tempo-node) for instructions on how to install and run Tempo.
+See the [Tempo documentation](https://docs.tempo.xyz/get-started/node#tempo-node) for instructions on how to install and run Tempo.
 
 ## For Developers
 
@@ -32,6 +32,10 @@ just
 just build-all
 just localnet
 ```
+
+## Contributing
+
+Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.com/tempoxyz/tempo?tab=contributing-ov-file).
 
 ## Security
 

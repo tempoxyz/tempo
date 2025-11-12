@@ -958,4 +958,30 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn tip20_test_selector_coverage() {
+        use crate::test_util::{assert_full_coverage, check_selector_coverage};
+        use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
+
+        let mut storage = HashMapStorageProvider::new(1);
+
+        initialize_linking_usd(&mut storage, Address::ZERO).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, Address::ZERO)
+            .unwrap();
+
+        let itip20_unsupported =
+            check_selector_coverage(&mut token, ITIP20Calls::SELECTORS, "ITIP20", |s| {
+                ITIP20Calls::name_by_selector(s)
+            });
+
+        let roles_unsupported =
+            check_selector_coverage(&mut token, IRolesAuthCalls::SELECTORS, "IRolesAuth", |s| {
+                IRolesAuthCalls::name_by_selector(s)
+            });
+
+        assert_full_coverage([itip20_unsupported, roles_unsupported]);
+    }
 }

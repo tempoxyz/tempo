@@ -71,12 +71,18 @@ impl<'a, S: PrecompileStorageProvider> Precompile for ValidatorConfig<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{expect_precompile_revert, storage::hashmap::HashMapStorageProvider};
+    use crate::{
+        expect_precompile_revert,
+        storage::hashmap::HashMapStorageProvider,
+        test_util::{assert_full_coverage, check_selector_coverage},
+    };
     use alloy::{
         primitives::{Bytes, FixedBytes},
         sol_types::SolValue,
     };
-    use tempo_contracts::precompiles::ValidatorConfigError;
+    use tempo_contracts::precompiles::{
+        IValidatorConfig::IValidatorConfigCalls, ValidatorConfigError,
+    };
 
     #[test]
     fn test_function_selector_dispatch() {
@@ -185,5 +191,20 @@ mod tests {
 
         let result = validator_config.call(&Bytes::from(calldata), non_owner);
         expect_precompile_revert(&result, ValidatorConfigError::unauthorized());
+    }
+
+    #[test]
+    fn validator_config_test_selector_coverage() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
+
+        let unsupported = check_selector_coverage(
+            &mut validator_config,
+            IValidatorConfigCalls::SELECTORS,
+            "IValidatorConfig",
+            IValidatorConfigCalls::name_by_selector,
+        );
+
+        assert_full_coverage([unsupported]);
     }
 }

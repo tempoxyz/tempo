@@ -61,9 +61,6 @@ pub struct Config {
     /// on all addresses.
     pub listen_addr: SocketAddr,
 
-    /// Address on which other nodes can reach this node.
-    pub dialable_addr: SocketAddr,
-
     pub metrics_port: Option<u16>,
 
     pub p2p: p2p::Config,
@@ -136,7 +133,6 @@ struct DeserConfig {
     polynomial: Vec<u8>,
 
     listen_addr: SocketAddr,
-    dialable_addr: SocketAddr,
 
     metrics_port: Option<u16>,
 
@@ -177,7 +173,6 @@ impl TryFrom<DeserConfig> for Config {
             share,
             polynomial,
             listen_addr,
-            dialable_addr,
             metrics_port,
             p2p,
             storage_directory,
@@ -199,7 +194,6 @@ impl TryFrom<DeserConfig> for Config {
             polynomial: Poly::decode_cfg(&polynomial[..], &(threshold as usize))
                 .map_err(Error::Polynomial)?,
             listen_addr,
-            dialable_addr,
             metrics_port,
             p2p,
             storage_directory,

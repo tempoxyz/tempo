@@ -244,3 +244,16 @@ test-case = "3"
 # build deps
 vergen = "9"
 vergen-git2 = "1"
+
+[patch.crates-io]
+# main branch, right after https://github.com/commonwarexyz/monorepo/pull/2140 was merged
+commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "c26f028619bffe5ca5902848e46b26da26aa8bb1" }
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "c26f028619bffe5ca5902848e46b26da26aa8bb1" }
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "c26f028619bffe5ca5902848e46b26da26aa8bb1" }
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "c26f028619bffe5ca5902848e46b26da26aa8bb1" }
+commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "c26f028619bffe5ca5902848e46b26da26aa8bb1" }
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "c26f028619bffe5ca5902848e46b26da26aa8bb1" }
+commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "c26f028619bffe5ca5902848e46b26da26aa8bb1" }
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "c26f028619bffe5ca5902848e46b26da26aa8bb1" }
+commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "c26f028619bffe5ca5902848e46b26da26aa8bb1" }
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "c26f028619bffe5ca5902848e46b26da26aa8bb1" }
