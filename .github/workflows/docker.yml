@@ -27,6 +27,7 @@ jobs:
             features: "asm-keccak,jemalloc,otlp"
           - name: tempo-bench
             features: ""
+            dockerfile: "Dockerfile.bench"
           - name: tempo-sidecar
             features: ""
           - name: tempo-xtask
@@ -71,6 +72,7 @@ jobs:
             VERGEN_GIT_SHA_SHORT=${{ steps.shortsha.outputs.shortsha }}
           project: 0c6tg19qsp
           context: .
+          file: ${{ matrix.binary.dockerfile || 'Dockerfile' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64
