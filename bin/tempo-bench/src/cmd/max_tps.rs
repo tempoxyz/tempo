@@ -81,7 +81,7 @@ pub struct MaxTpsArgs {
     mnemonic: String,
 
     #[arg(short, long, default_value = "0")]
-    from_mnemonic_index: u64,
+    from_mnemonic_index: u32,
 
     /// Chain ID
     #[arg(long, default_value = "1337")]
@@ -167,6 +167,7 @@ impl MaxTpsArgs {
                 total_txs,
                 num_accounts: self.accounts,
                 mnemonic: &self.mnemonic,
+                from_mnemonic_index: self.from_mnemonic_index,
                 chain_id: self.chain_id,
                 rpc_url: target_urls[0].clone(),
                 max_concurrent_requests: self.max_concurrent_requests,
@@ -309,6 +310,7 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
         total_txs,
         num_accounts,
         mnemonic,
+        from_mnemonic_index,
         chain_id,
         rpc_url,
         max_concurrent_requests,
@@ -316,10 +318,10 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
         place_order_weight: place_weight,
         swap_weight,
     } = input;
-
     println!("Generating {num_accounts} accounts...");
 
-    let signers: Vec<PrivateKeySigner> = (0..num_accounts as u32)
+    let signers: Vec<PrivateKeySigner> = (from_mnemonic_index
+        ..(from_mnemonic_index + num_accounts as u32))
         .into_par_iter()
         .tqdm()
         .map(|i| -> eyre::Result<PrivateKeySigner> {
@@ -625,6 +627,7 @@ struct GenerateTransactionsInput<'input> {
     mnemonic: &'input str,
     chain_id: u64,
     rpc_url: Url,
+    from_mnemonic_index: u32,
     max_concurrent_requests: usize,
     tip20_weight: u64,
     place_order_weight: u64,
