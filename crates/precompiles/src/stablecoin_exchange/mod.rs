@@ -20,7 +20,7 @@ use crate::{
     linking_usd::LinkingUSD,
     stablecoin_exchange::orderbook::compute_book_key,
     storage::{PrecompileStorageProvider, Slot, Storable, VecSlotExt},
-    tip20::{ITIP20, TIP20Error, TIP20Token, is_tip20, validate_usd_currency},
+    tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
