@@ -7,6 +7,7 @@ use alloy::{
 use alloy_eips::BlockId;
 use alloy_primitives::{Address, uint};
 use std::env;
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{
     IFeeManager,
     ITIP20::{self, ITIP20Instance},
@@ -581,6 +582,81 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
         pool_after.reserveValidatorToken,
         pool_before.reserveValidatorToken - expected_amount1.to::<u128>()
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
+    } else {
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
+    };
+    let (http_url, _local_node) = setup_test_node(source).await?;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let alice = wallet.address();
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    // Setup test tokens and fee AMM
+    let user_token = setup_test_token(provider.clone(), alice).await?;
+    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+
+    // Define amounts (100000 * 1e18)
+    let amount0 = uint!(100000_000000000000000000_U256);
+
+    // Mint tokens to alice
+    let mut pending = vec![];
+    pending.push(user_token.mint(alice, amount0).send().await?);
+    await_receipts(&mut pending).await?;
+
+    // Get pool info
+    let pool_key = PoolKey::new(*user_token.address(), DEFAULT_FEE_TOKEN);
+    let pool_id = pool_key.get_id();
+
+    // Add liquidity
+    let mint_receipt = fee_amm
+        .mintWithValidatorToken(
+            pool_key.user_token,
+            pool_key.validator_token,
+            uint!(100000000_U256),
+            alice,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(mint_receipt.status());
+
+    // Get liquidity balance
+    let liquidity = fee_amm.liquidityBalances(pool_id, alice).call().await?;
+
+    IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone())
+        .setUserToken(*user_token.address())
+        .send()
+        .await?
+        .get_receipt()
+        .await?
+        .status();
+
+    // Burn entire liquidity
+    let burn_receipt = fee_amm
+        .burn(
+            pool_key.user_token,
+            pool_key.validator_token,
+            liquidity,
+            alice,
+        )
+        .max_fee_per_gas(TEMPO_BASE_FEE as u128 * 100)
+        .gas(1000000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(!burn_receipt.status());
 
     Ok(())
 }

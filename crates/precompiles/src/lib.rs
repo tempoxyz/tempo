@@ -17,6 +17,9 @@ pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 pub mod validator_config;
 
+#[cfg(test)]
+pub mod test_util;
+
 use crate::{
     linking_usd::LinkingUSD,
     nonce::NonceManager,

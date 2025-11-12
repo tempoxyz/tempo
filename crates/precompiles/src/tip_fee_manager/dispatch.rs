@@ -167,6 +167,7 @@ mod tests {
     use crate::{
         LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, expect_precompile_revert,
         storage::hashmap::HashMapStorageProvider,
+        test_util::check_selector_coverage,
         tip_fee_manager::{
             TIPFeeAMMError, TipFeeManager,
             amm::{MIN_LIQUIDITY, PoolKey},
@@ -181,6 +182,9 @@ mod tests {
     };
     use eyre::Result;
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::{
+        IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls,
+    };
 
     fn setup_token_with_balance(
         storage: &mut HashMapStorageProvider,
@@ -434,6 +438,30 @@ mod tests {
         assert_eq!(result.gas_used, 0);
 
         Ok(())
+    }
+
+    #[test]
+    fn tip_fee_manager_test_selector_coverage() {
+        use crate::test_util::assert_full_coverage;
+
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut fee_manager = TipFeeManager::new(&mut storage);
+
+        let fee_manager_unsupported = check_selector_coverage(
+            &mut fee_manager,
+            IFeeManagerCalls::SELECTORS,
+            "IFeeManager",
+            IFeeManagerCalls::name_by_selector,
+        );
+
+        let amm_unsupported = check_selector_coverage(
+            &mut fee_manager,
+            ITIPFeeAMMCalls::SELECTORS,
+            "ITIPFeeAMM",
+            ITIPFeeAMMCalls::name_by_selector,
+        );
+
+        assert_full_coverage([fee_manager_unsupported, amm_unsupported]);
     }
 
     #[test]

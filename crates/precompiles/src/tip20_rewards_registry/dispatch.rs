@@ -38,3 +38,28 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20RewardsRegistry<'a, S
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        storage::hashmap::HashMapStorageProvider,
+        test_util::{assert_full_coverage, check_selector_coverage},
+    };
+    use tempo_contracts::precompiles::ITIP20RewardsRegistry::ITIP20RewardsRegistryCalls;
+
+    #[test]
+    fn tip20_rewards_registry_test_selector_coverage() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut registry = TIP20RewardsRegistry::new(&mut storage);
+
+        let unsupported = check_selector_coverage(
+            &mut registry,
+            ITIP20RewardsRegistryCalls::SELECTORS,
+            "ITIP20RewardsRegistry",
+            ITIP20RewardsRegistryCalls::name_by_selector,
+        );
+
+        assert_full_coverage([unsupported]);
+    }
+}

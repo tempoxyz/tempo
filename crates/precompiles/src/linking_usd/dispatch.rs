@@ -214,12 +214,38 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::hashmap::HashMapStorageProvider;
+    use crate::{storage::hashmap::HashMapStorageProvider, test_util::check_selector_coverage};
     use alloy::{
         primitives::{Bytes, U256},
         sol_types::SolInterface,
     };
-    use tempo_contracts::precompiles::TIP20Error;
+    use tempo_contracts::precompiles::{
+        IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error,
+    };
+
+    #[test]
+    fn linking_usd_test_selector_coverage() {
+        use crate::test_util::assert_full_coverage;
+
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut linking_usd = LinkingUSD::new(&mut storage);
+
+        linking_usd.initialize(Address::ZERO).unwrap();
+
+        let itip20_unsupported =
+            check_selector_coverage(&mut linking_usd, ITIP20Calls::SELECTORS, "ITIP20", |s| {
+                ITIP20Calls::name_by_selector(s)
+            });
+
+        let roles_unsupported = check_selector_coverage(
+            &mut linking_usd,
+            IRolesAuthCalls::SELECTORS,
+            "IRolesAuth",
+            IRolesAuthCalls::name_by_selector,
+        );
+
+        assert_full_coverage([itip20_unsupported, roles_unsupported]);
+    }
 
     #[test]
     fn test_start_reward_disabled() -> eyre::Result<()> {

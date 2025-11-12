@@ -37,3 +37,28 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipAccountRegistrar<'a, S>
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        storage::hashmap::HashMapStorageProvider,
+        test_util::{assert_full_coverage, check_selector_coverage},
+    };
+    use tempo_contracts::precompiles::ITipAccountRegistrar::ITipAccountRegistrarCalls;
+
+    #[test]
+    fn tip_account_registrar_test_selector_coverage() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut registrar = TipAccountRegistrar::new(&mut storage);
+
+        let unsupported = check_selector_coverage(
+            &mut registrar,
+            ITipAccountRegistrarCalls::SELECTORS,
+            "ITipAccountRegistrar",
+            ITipAccountRegistrarCalls::name_by_selector,
+        );
+
+        assert_full_coverage([unsupported]);
+    }
+}
