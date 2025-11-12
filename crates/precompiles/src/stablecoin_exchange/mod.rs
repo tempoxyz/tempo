@@ -338,7 +338,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     pub fn create_pair(&mut self, base: Address) -> Result<B256> {
         // Validate that base is a TIP20 token (only after Moderato hardfork)
         if self.storage.spec() >= TempoHardfork::Moderato && !is_tip20(base) {
-            return Err(TIP20Error::invalid_base_token().into());
+            return Err(StablecoinExchangeError::invalid_base_token().into());
         }
 
         let quote = TIP20Token::from_address(base, self.storage).quote_token()?;
