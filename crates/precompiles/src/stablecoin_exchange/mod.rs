@@ -392,12 +392,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
 
-        // Check book existence (only after Moderato hardfork)
-        if self.storage.spec() >= TempoHardfork::Moderato {
-            let book = self.sload_books(book_key)?;
-            if book.base.is_zero() {
-                return Err(StablecoinExchangeError::pair_does_not_exist().into());
-            }
+        let book = self.sload_books(book_key)?;
+        if book.base.is_zero() {
+            return Err(StablecoinExchangeError::pair_does_not_exist().into());
         }
 
         // Validate tick is within bounds
@@ -1428,7 +1425,7 @@ mod tests {
 
     #[test]
     fn test_place_order_pair_does_not_exist_pre_moderato() -> eyre::Result<()> {
-        // Test with Adagio (pre-Moderato) - validation should not be enforced
+        // Test with Adagio (pre-Moderato) - validation is enforced in all hardforks
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
@@ -1450,12 +1447,14 @@ mod tests {
         );
 
         // Try to place an order without creating the pair first
-        // Pre-Moderato, the book existence check is skipped, so the order is accepted
-        // (it would only fail later during execute_block when trying to process it)
+        // This validation is enforced both pre and post Moderato
         let result = exchange.place(alice, base_token, min_order_amount, true, tick);
 
-        // Pre-Moderato: order should be accepted (placed in pending queue)
-        assert!(result.is_ok());
+        // Should fail with pair_does_not_exist error
+        assert_eq!(
+            result,
+            Err(StablecoinExchangeError::pair_does_not_exist().into())
+        );
 
         Ok(())
     }
