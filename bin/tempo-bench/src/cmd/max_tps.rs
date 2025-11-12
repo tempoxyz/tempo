@@ -343,7 +343,7 @@ async fn generate_transactions(
     let user_tokens = [base1, base2];
     let user_tokens_count = 2;
 
-    let transactions: Vec<Vec<u8>> = params
+    let transactions: Vec<_> = params
         .into_par_iter()
         .tqdm()
         .map(|(signer, nonce)| {
@@ -382,11 +382,33 @@ async fn generate_transactions(
             let index = weights.choose_weighted(&mut rng, |item| item.1)?.0;
             let f = &tx_factory[index];
 
-            f(signer, nonce)
+            f(signer, nonce).map(|tx| (index, tx))
         })
         .collect::<eyre::Result<Vec<_>>>()?;
 
-    println!("Generated {} transactions", transactions.len());
+    let mut swaps = 0;
+    let mut transfers = 0;
+    let mut orders = 0;
+
+    let transactions: Vec<_> = transactions
+        .into_iter()
+        .map(|(index, tx)| {
+            match index {
+                0 => transfers += 1,
+                1 => swaps += 1,
+                2 => orders += 1,
+                v => unreachable!("Unknown index {v}"),
+            };
+
+            tx
+        })
+        .collect();
+
+    println!(
+        "Generated {} transactions [{transfers} transfers, {swaps} swaps, {orders} orders]",
+        transactions.len()
+    );
+
     Ok(transactions)
 }
 
