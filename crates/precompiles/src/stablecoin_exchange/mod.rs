@@ -24,6 +24,7 @@ use crate::{
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles_macros::contract;
 
 /// Minimum order size of $10 USD
@@ -778,6 +779,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                     .expect("Input needed calculation overflow")
             };
 
+            // Pre-Moderato: Check maxIn on each iteration for consensus compatibility
+            if self.storage.spec() < TempoHardfork::Moderato
+                && total_amount_in + amount_in > max_amount_in
+            {
+                return Err(StablecoinExchangeError::max_input_exceeded().into());
+            }
+
             if fill_amount < order.remaining() {
                 self.partial_fill_order(&mut order, &mut level, fill_amount)?;
                 total_amount_in = total_amount_in
@@ -806,7 +814,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             }
         }
 
-        if total_amount_in > max_amount_in {
+        // Post-Moderato: Check maxIn only on final amount after all orders filled
+        if self.storage.spec() >= TempoHardfork::Moderato && total_amount_in > max_amount_in {
             return Err(StablecoinExchangeError::max_input_exceeded().into());
         }
 
@@ -3286,6 +3295,98 @@ mod tests {
             result,
             Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
         ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_max_in_check_pre_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let bob = Address::random();
+        let admin = Address::random();
+
+        let (base_token, quote_token) = setup_test_tokens(
+            exchange.storage,
+            admin,
+            alice,
+            exchange.address,
+            200_000_000u128,
+        );
+        exchange.create_pair(base_token)?;
+
+        let tick_50 = 50i16;
+        let tick_100 = 100i16;
+        let order_amount = MIN_ORDER_AMOUNT;
+
+        exchange.place(alice, base_token, order_amount, false, tick_50)?;
+        exchange.place(alice, base_token, order_amount, false, tick_100)?;
+        exchange.execute_block(Address::ZERO)?;
+
+        exchange.set_balance(bob, quote_token, 200_000_000u128)?;
+
+        let price_50 = orderbook::tick_to_price(tick_50);
+        let quote_for_first = (order_amount * price_50 as u128) / orderbook::PRICE_SCALE as u128;
+        let max_in_between = quote_for_first + 500;
+
+        let result = exchange.swap_exact_amount_out(
+            bob,
+            quote_token,
+            base_token,
+            order_amount + 999,
+            max_in_between,
+        );
+        assert!(result.is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_max_in_check_post_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let bob = Address::random();
+        let admin = Address::random();
+
+        let (base_token, quote_token) = setup_test_tokens(
+            exchange.storage,
+            admin,
+            alice,
+            exchange.address,
+            200_000_000u128,
+        );
+        exchange.create_pair(base_token)?;
+
+        let tick_50 = 50i16;
+        let tick_100 = 100i16;
+        let order_amount = MIN_ORDER_AMOUNT;
+
+        exchange.place(alice, base_token, order_amount, false, tick_50)?;
+        exchange.place(alice, base_token, order_amount, false, tick_100)?;
+        exchange.execute_block(Address::ZERO)?;
+
+        exchange.set_balance(bob, quote_token, 200_000_000u128)?;
+
+        let price_50 = orderbook::tick_to_price(tick_50);
+        let price_100 = orderbook::tick_to_price(tick_100);
+        let quote_for_first = (order_amount * price_50 as u128) / orderbook::PRICE_SCALE as u128;
+        let quote_for_partial_second = (999 * price_100 as u128) / orderbook::PRICE_SCALE as u128;
+        let total_needed = quote_for_first + quote_for_partial_second;
+
+        let result = exchange.swap_exact_amount_out(
+            bob,
+            quote_token,
+            base_token,
+            order_amount + 999,
+            total_needed,
+        );
+        assert!(result.is_ok());
 
         Ok(())
     }
