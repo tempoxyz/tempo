@@ -25,10 +25,6 @@ sol! {
             bool hasBeenSet;
         }
 
-        // Constants
-        function BASIS_POINTS() external pure returns (uint256);
-        function FEE_BPS() external pure returns (uint256);
-
         // User preferences
         function userTokens(address user) external view returns (address);
         function validatorTokens(address validator) external view returns (address);
@@ -48,7 +44,6 @@ sol! {
         error OnlySystemContract();
         error InvalidToken();
         error PoolDoesNotExist();
-        error InsufficientLiquidity();
         error InsufficientFeeTokenBalance();
         error InternalError();
         error CannotChangeWithinBlock();
@@ -76,6 +71,10 @@ sol! {
             address token1;
         }
 
+
+        // Constants
+        function MIN_LIQUIDITY() external view returns (uint256);
+
         // Pool Management
         function getPoolId(address userToken, address validatorToken) external pure returns (bytes32);
         function getPool(address userToken, address validatorToken) external view returns (Pool memory);
@@ -83,17 +82,15 @@ sol! {
 
         // Liquidity Operations
         function mint(address userToken, address validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, address to) external returns (uint256 liquidity);
+        function mintWithValidatorToken(address userToken, address validatorToken, uint256 amountValidatorToken, address to) external returns (uint256 liquidity);
         function burn(address userToken, address validatorToken, uint256 liquidity, address to) external returns (uint256 amountUserToken, uint256 amountValidatorToken);
 
         // Liquidity Balances
         function totalSupply(bytes32 poolId) external view returns (uint256);
         function liquidityBalances(bytes32 poolId, address user) external view returns (uint256);
 
-        // TODO: has liquidity
-
         // Swapping
         function rebalanceSwap(address userToken, address validatorToken, uint256 amountOut, address to) external returns (uint256 amountIn);
-        function calculateLiquidity(uint256 x, uint256 y) external pure returns (uint256);
 
         // Events
         event Mint(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity);
@@ -150,11 +147,6 @@ impl FeeManagerError {
     /// Creates an error when pool does not exist.
     pub const fn pool_does_not_exist() -> Self {
         Self::PoolDoesNotExist(IFeeManager::PoolDoesNotExist {})
-    }
-
-    /// Creates an error for insufficient liquidity.
-    pub const fn insufficient_liquidity() -> Self {
-        Self::InsufficientLiquidity(IFeeManager::InsufficientLiquidity {})
     }
 
     /// Creates an error for insufficient fee token balance.

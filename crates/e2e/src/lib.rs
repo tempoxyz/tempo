@@ -7,7 +7,7 @@
 //! All definitions herein are only intended to support the the tests defined
 //! in tests/.
 
-use std::{collections::HashSet, pin::Pin, time::Duration};
+use std::{collections::HashSet, net::SocketAddr, pin::Pin, time::Duration};
 
 use commonware_cryptography::{
     PrivateKeyExt as _, Signer as _,
@@ -26,7 +26,6 @@ use commonware_runtime::{
 use commonware_utils::quorum;
 use futures::future::join_all;
 use reth_node_metrics::recorder::PrometheusRecorder;
-use tempo_commonware_node::subblocks;
 use tracing::debug;
 
 pub mod execution_runtime;
@@ -41,9 +40,6 @@ mod tests;
 pub struct ValidatorNode {
     /// Execution-layer node. Spawned in the background but won't progress unless consensus engine is started.
     pub node: ExecutionNode,
-
-    /// Handle to the subblocks service.
-    pub subblocks: subblocks::Mailbox,
 
     /// Public key of the validator.
     pub public_key: PublicKey,
@@ -83,7 +79,7 @@ pub async fn setup_validators(
 ) -> (Vec<ValidatorNode>, Oracle<PublicKey>) {
     let threshold = quorum(how_many);
 
-    let (network, mut oracle) = Network::new(
+    let (network, oracle) = Network::new(
         context.with_label("network"),
         simulated::Config {
             max_size: 1024 * 1024,
@@ -103,7 +99,21 @@ pub async fn setup_validators(
     }
     validators.sort();
     signers.sort_by_key(|s| s.public_key());
-    oracle.update(0, validators.clone().into()).await;
+    oracle
+        .socket_manager()
+        .update(
+            0,
+            validators
+                .clone()
+                .into_iter()
+                // NOTE: the simulated oracle socket manager ignores the port.
+                // We set this here for completeness.
+                .enumerate()
+                .map(|(i, val)| (val, SocketAddr::from(([127u8, 0, 0, 1], i as u16))))
+                .collect::<Vec<(_, _)>>()
+                .into(),
+        )
+        .await;
 
     let (polynomial, shares) =
         ops::generate_shares::<_, MinSig>(&mut context, None, how_many, threshold);
@@ -136,7 +146,7 @@ pub async fn setup_validators(
             fee_recipient: alloy_primitives::Address::ZERO,
             execution_node: node.node.clone(),
             blocker: oracle.control(public_key.clone()),
-            peer_manager: oracle.clone(),
+            peer_manager: oracle.socket_manager().clone(),
             partition_prefix: uid.clone(),
             signer: signer.clone(),
             polynomial: polynomial.clone(),
@@ -163,7 +173,6 @@ pub async fn setup_validators(
         let link = linkage.clone();
         nodes.push(ValidatorNode {
             node,
-            subblocks: engine.subblocks_mailbox(),
             public_key: signer.public_key(),
             start_engine: Some(Box::pin(async move {
                 let pending = oracle

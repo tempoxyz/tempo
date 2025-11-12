@@ -11,7 +11,7 @@ pub(crate) mod epoch;
 pub(crate) mod marshal_utils;
 pub mod metrics;
 
-pub mod subblocks;
+pub(crate) mod subblocks;
 
 use std::net::SocketAddr;
 
@@ -140,7 +140,6 @@ async fn instantiate_network(
             config.signer.clone(),
             &p2p_namespace,
             config.listen_addr,
-            config.dialable_addr,
             config.p2p.max_message_size_bytes,
         )
     };

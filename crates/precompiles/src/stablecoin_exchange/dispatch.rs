@@ -56,10 +56,10 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                 })
             }
 
-            IStablecoinExchange::getPriceLevelCall::SELECTOR => {
-                view::<IStablecoinExchange::getPriceLevelCall>(calldata, |call| {
-                    self.get_price_level(call.base, call.tick, call.isBid)
-                        .map(Into::into)
+            IStablecoinExchange::getTickLevelCall::SELECTOR => {
+                view::<IStablecoinExchange::getTickLevelCall>(calldata, |call| {
+                    let level = self.get_price_level(call.base, call.tick, call.isBid)?;
+                    Ok((level.head, level.tail, level.total_liquidity).into())
                 })
             }
 
@@ -72,6 +72,17 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
             IStablecoinExchange::booksCall::SELECTOR => {
                 view::<IStablecoinExchange::booksCall>(calldata, |call| {
                     self.books(call.pairKey).map(Into::into)
+                })
+            }
+
+            IStablecoinExchange::activeOrderIdCall::SELECTOR => {
+                view::<IStablecoinExchange::activeOrderIdCall>(calldata, |_call| {
+                    self.active_order_id()
+                })
+            }
+            IStablecoinExchange::pendingOrderIdCall::SELECTOR => {
+                view::<IStablecoinExchange::pendingOrderIdCall>(calldata, |_call| {
+                    self.pending_order_id()
                 })
             }
 
@@ -137,6 +148,41 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                     |_s, _call| self.execute_block(msg_sender),
                 )
             }
+            IStablecoinExchange::MIN_TICKCall::SELECTOR => {
+                view::<IStablecoinExchange::MIN_TICKCall>(calldata, |_call| {
+                    Ok(crate::stablecoin_exchange::MIN_TICK)
+                })
+            }
+            IStablecoinExchange::MAX_TICKCall::SELECTOR => {
+                view::<IStablecoinExchange::MAX_TICKCall>(calldata, |_call| {
+                    Ok(crate::stablecoin_exchange::MAX_TICK)
+                })
+            }
+            IStablecoinExchange::PRICE_SCALECall::SELECTOR => {
+                view::<IStablecoinExchange::PRICE_SCALECall>(calldata, |_call| {
+                    Ok(crate::stablecoin_exchange::PRICE_SCALE)
+                })
+            }
+            IStablecoinExchange::MIN_PRICECall::SELECTOR => {
+                view::<IStablecoinExchange::MIN_PRICECall>(calldata, |_call| {
+                    Ok(crate::stablecoin_exchange::MIN_PRICE)
+                })
+            }
+            IStablecoinExchange::MAX_PRICECall::SELECTOR => {
+                view::<IStablecoinExchange::MAX_PRICECall>(calldata, |_call| {
+                    Ok(crate::stablecoin_exchange::MAX_PRICE)
+                })
+            }
+            IStablecoinExchange::tickToPriceCall::SELECTOR => {
+                view::<IStablecoinExchange::tickToPriceCall>(calldata, |call| {
+                    Ok(crate::stablecoin_exchange::tick_to_price(call.tick))
+                })
+            }
+            IStablecoinExchange::priceToTickCall::SELECTOR => {
+                view::<IStablecoinExchange::priceToTickCall>(calldata, |call| {
+                    Ok(crate::stablecoin_exchange::price_to_tick(call.price))
+                })
+            }
 
             _ => Err(PrecompileError::Other(
                 "Unknown function selector".to_string(),
@@ -152,18 +198,19 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::{
         Precompile,
         linking_usd::{LinkingUSD, TRANSFER_ROLE},
         stablecoin_exchange::{IStablecoinExchange, MIN_ORDER_AMOUNT, StablecoinExchange},
-        storage::{PrecompileStorageProvider, hashmap::HashMapStorageProvider},
+        storage::{ContractStorage, PrecompileStorageProvider, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
         tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     };
     use alloy::{
         primitives::{Address, Bytes, U256},
-        sol_types::SolCall,
+        sol_types::{SolCall, SolValue},
     };
     use tempo_contracts::precompiles::IStablecoinExchange::IStablecoinExchangeCalls;
 
@@ -182,11 +229,12 @@ mod tests {
         let mut quote = LinkingUSD::new(exchange.storage);
         quote.initialize(admin).unwrap();
 
-        let mut quote_roles = quote.get_roles_contract();
-        quote_roles
+        quote
+            .token
             .grant_role_internal(admin, *ISSUER_ROLE)
             .unwrap();
-        quote_roles
+        quote
+            .token
             .grant_role_internal(user, *TRANSFER_ROLE)
             .unwrap();
 
@@ -211,12 +259,12 @@ mod tests {
             .unwrap();
 
         // Initialize base token
-        let mut base = TIP20Token::new(1, quote.token.storage);
-        base.initialize("BASE", "BASE", "USD", quote.token.token_address, admin)
+        let quote_address = quote.token.address();
+        let mut base = TIP20Token::new(1, quote.token.storage());
+        base.initialize("BASE", "BASE", "USD", quote_address, admin)
             .unwrap();
 
-        let mut base_roles = base.get_roles_contract();
-        base_roles.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
+        base.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
 
         base.approve(
             user,
@@ -236,8 +284,8 @@ mod tests {
         )
         .unwrap();
 
-        let base_token = base.token_address;
-        let quote_token = quote.token.token_address;
+        let base_token = base.address();
+        let quote_token = quote.token.address();
 
         // Create pair and add liquidity
         exchange.create_pair(base_token).unwrap();
@@ -472,6 +520,44 @@ mod tests {
         // Should dispatch to quote_swap_exact_amount_out function and succeed
         let result = exchange.call(&Bytes::from(calldata), sender);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_active_order_id_call() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize().unwrap();
+
+        let sender = Address::random();
+
+        let call = IStablecoinExchange::activeOrderIdCall {};
+        let calldata = call.abi_encode();
+
+        let result = exchange.call(&Bytes::from(calldata), sender);
+        assert!(result.is_ok());
+
+        let output = result.unwrap();
+        let active_order_id = u128::abi_decode(&output.bytes).unwrap();
+        assert_eq!(active_order_id, 0); // Should be 0 initially
+    }
+
+    #[test]
+    fn test_pending_order_id_call() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize().unwrap();
+
+        let sender = Address::random();
+
+        let call = IStablecoinExchange::pendingOrderIdCall {};
+        let calldata = call.abi_encode();
+
+        let result = exchange.call(&Bytes::from(calldata), sender);
+        assert!(result.is_ok());
+
+        let output = result.unwrap();
+        let pending_order_id = u128::abi_decode(&output.bytes).unwrap();
+        assert_eq!(pending_order_id, 0); // Should be 0 initially
     }
 
     #[test]

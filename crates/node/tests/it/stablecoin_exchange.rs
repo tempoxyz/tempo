@@ -146,7 +146,7 @@ async fn test_bids() -> eyre::Result<()> {
 
     // Assert the last order is partially filled
     let level = exchange
-        .getPriceLevel(*base.address(), tick, true)
+        .getTickLevel(*base.address(), tick, true)
         .call()
         .await?;
 
@@ -303,7 +303,7 @@ async fn test_asks() -> eyre::Result<()> {
 
     // Assert the last order is partially filled
     let level = exchange
-        .getPriceLevel(*base.address(), tick, false)
+        .getTickLevel(*base.address(), tick, false)
         .call()
         .await?;
 
@@ -613,15 +613,18 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
         "Bob should have received amount_out EURC"
     );
 
-    // Verify Bob has ZERO LinkingUSD (proving intermediate balances are transitory)
+    // Verify Bob's linking USD balance has not changed
     assert_eq!(
         bob_linking_usd_wallet_before, bob_linking_usd_wallet_after,
         "Bob's LinkingUSD wallet balance should not change (transitory)"
     );
-    assert!(
-        bob_linking_usd_wallet_after.is_zero(),
+
+    assert_eq!(
+        bob_linking_usd_wallet_before - bob_linking_usd_wallet_after,
+        U256::ZERO,
         "Bob should have ZERO LinkingUSD in wallet (transitory)"
     );
+
     assert_eq!(
         bob_linking_usd_exchange_before, bob_linking_usd_exchange_after,
         "Bob's LinkingUSD exchange balance should not change (transitory)"

@@ -1,6 +1,7 @@
 use alloy::primitives::{Address, LogData, U256};
 use revm::state::{AccountInfo, Bytecode};
 use std::collections::HashMap;
+use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
@@ -10,6 +11,8 @@ pub struct HashMapStorageProvider {
     pub events: HashMap<Address, Vec<LogData>>,
     chain_id: u64,
     timestamp: U256,
+    beneficiary: Address,
+    spec: TempoHardfork,
 }
 
 impl HashMapStorageProvider {
@@ -26,6 +29,8 @@ impl HashMapStorageProvider {
                     .unwrap()
                     .as_secs(),
             ),
+            beneficiary: Address::ZERO,
+            spec: TempoHardfork::default(),
         }
     }
 
@@ -36,6 +41,15 @@ impl HashMapStorageProvider {
 
     pub fn set_timestamp(&mut self, timestamp: U256) {
         self.timestamp = timestamp;
+    }
+
+    pub fn set_beneficiary(&mut self, beneficiary: Address) {
+        self.beneficiary = beneficiary;
+    }
+
+    pub fn with_spec(mut self, spec: TempoHardfork) -> Self {
+        self.spec = spec;
+        self
     }
 }
 
@@ -48,14 +62,22 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.timestamp
     }
 
+    fn beneficiary(&self) -> Address {
+        self.beneficiary
+    }
+
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
         let account = self.accounts.entry(address).or_default();
         account.code = Some(code);
         Ok(())
     }
 
-    fn get_account_info(&mut self, address: Address) -> Result<AccountInfo, TempoPrecompileError> {
-        Ok(self.accounts.get(&address).cloned().unwrap_or_default())
+    fn get_account_info(
+        &mut self,
+        address: Address,
+    ) -> Result<&'_ AccountInfo, TempoPrecompileError> {
+        let account = self.accounts.entry(address).or_default();
+        Ok(&*account)
     }
 
     fn sstore(
@@ -87,5 +109,9 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn gas_used(&self) -> u64 {
         0
+    }
+
+    fn spec(&self) -> TempoHardfork {
+        self.spec
     }
 }

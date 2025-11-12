@@ -25,6 +25,7 @@ use futures::{
     future::{FusedFuture, pending},
 };
 use reth_ethereum::cli::{Cli, Commands};
+use reth_ethereum_cli as _;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use std::{net::SocketAddr, sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
@@ -46,7 +47,7 @@ struct TempoArgs {
     #[arg(
         long,
         value_name = "URL",
-        default_missing_value = "http://rpc-andante.tempoxyz.dev",
+        default_missing_value = "wss://eng:zealous-mayer@rpc.testnet.tempo.xyz",
         num_args(0..=1)
     )]
     pub follow: Option<String>,

@@ -46,7 +46,7 @@ ARG VERGEN_GIT_SHA_SHORT
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
-    cargo build --bin tempo --profile release
+    cargo build --bin ${RUST_BINARY} --profile ${RUST_PROFILE} --features "${RUST_FEATURES}"
 
 FROM debian:bookworm-slim
 

@@ -101,16 +101,16 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                     self.unpause(s, call)
                 })
             }
-            ITIP20::updateQuoteTokenCall::SELECTOR => {
-                mutate_void::<ITIP20::updateQuoteTokenCall>(calldata, msg_sender, |s, call| {
-                    self.update_quote_token(s, call)
+            ITIP20::setNextQuoteTokenCall::SELECTOR => {
+                mutate_void::<ITIP20::setNextQuoteTokenCall>(calldata, msg_sender, |s, call| {
+                    self.set_next_quote_token(s, call)
                 })
             }
-            ITIP20::finalizeQuoteTokenUpdateCall::SELECTOR => {
-                mutate_void::<ITIP20::finalizeQuoteTokenUpdateCall>(
+            ITIP20::completeQuoteTokenUpdateCall::SELECTOR => {
+                mutate_void::<ITIP20::completeQuoteTokenUpdateCall>(
                     calldata,
                     msg_sender,
-                    |s, call| self.finalize_quote_token_update(s, call),
+                    |s, call| self.complete_quote_token_update(s, call),
                 )
             }
             ITIP20::mintCall::SELECTOR => {
@@ -139,6 +139,11 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                     self.transfer_with_memo(s, call)
                 })
             }
+            ITIP20::transferFromWithMemoCall::SELECTOR => {
+                mutate::<ITIP20::transferFromWithMemoCall>(calldata, msg_sender, |sender, call| {
+                    self.transfer_from_with_memo(sender, call)
+                })
+            }
             ITIP20::startRewardCall::SELECTOR => {
                 mutate::<ITIP20::startRewardCall>(calldata, msg_sender, |s, call| {
                     self.start_reward(s, call)
@@ -160,45 +165,62 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                 })
             }
 
+            ITIP20::finalizeStreamsCall::SELECTOR => {
+                mutate_void::<ITIP20::finalizeStreamsCall>(calldata, msg_sender, |sender, call| {
+                    self.finalize_streams(sender, call.timestamp as u128)
+                })
+            }
+
             ITIP20::totalRewardPerSecondCall::SELECTOR => {
                 view::<ITIP20::totalRewardPerSecondCall>(calldata, |_call| {
                     self.get_total_reward_per_second()
                 })
             }
 
+            ITIP20::optedInSupplyCall::SELECTOR => {
+                view::<ITIP20::optedInSupplyCall>(calldata, |_call| self.get_opted_in_supply())
+            }
+
             ITIP20::getStreamCall::SELECTOR => view::<ITIP20::getStreamCall>(calldata, |call| {
                 self.get_stream(call.id).map(|stream| stream.into())
             }),
 
-            // RolesAuth functions
-            IRolesAuth::hasRoleCall::SELECTOR => {
-                view::<IRolesAuth::hasRoleCall>(calldata, |call| {
-                    self.get_roles_contract().has_role(call)
+            ITIP20::nextStreamIdCall::SELECTOR => {
+                view::<ITIP20::nextStreamIdCall>(calldata, |_call| self.get_next_stream_id())
+            }
+
+            ITIP20::userRewardInfoCall::SELECTOR => {
+                view::<ITIP20::userRewardInfoCall>(calldata, |call| {
+                    self.get_user_reward_info(call.account)
+                        .map(|info| info.into())
                 })
             }
+
+            // RolesAuth functions
+            IRolesAuth::hasRoleCall::SELECTOR => {
+                view::<IRolesAuth::hasRoleCall>(calldata, |call| self.has_role(call))
+            }
             IRolesAuth::getRoleAdminCall::SELECTOR => {
-                view::<IRolesAuth::getRoleAdminCall>(calldata, |call| {
-                    self.get_roles_contract().get_role_admin(call)
-                })
+                view::<IRolesAuth::getRoleAdminCall>(calldata, |call| self.get_role_admin(call))
             }
             IRolesAuth::grantRoleCall::SELECTOR => {
                 mutate_void::<IRolesAuth::grantRoleCall>(calldata, msg_sender, |s, call| {
-                    self.get_roles_contract().grant_role(s, call)
+                    self.grant_role(s, call)
                 })
             }
             IRolesAuth::revokeRoleCall::SELECTOR => {
                 mutate_void::<IRolesAuth::revokeRoleCall>(calldata, msg_sender, |s, call| {
-                    self.get_roles_contract().revoke_role(s, call)
+                    self.revoke_role(s, call)
                 })
             }
             IRolesAuth::renounceRoleCall::SELECTOR => {
                 mutate_void::<IRolesAuth::renounceRoleCall>(calldata, msg_sender, |s, call| {
-                    self.get_roles_contract().renounce_role(s, call)
+                    self.renounce_role(s, call)
                 })
             }
             IRolesAuth::setRoleAdminCall::SELECTOR => {
                 mutate_void::<IRolesAuth::setRoleAdminCall>(calldata, msg_sender, |s, call| {
-                    self.get_roles_contract().set_role_admin(s, call)
+                    self.set_role_admin(s, call)
                 })
             }
 
@@ -262,7 +284,6 @@ mod tests {
         use alloy::primitives::keccak256;
         let issuer_role = keccak256(b"ISSUER_ROLE");
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -316,7 +337,6 @@ mod tests {
         use alloy::primitives::keccak256;
         let issuer_role = keccak256(b"ISSUER_ROLE");
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -369,7 +389,6 @@ mod tests {
         use alloy::primitives::keccak256;
         let issuer_role = keccak256(b"ISSUER_ROLE");
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -451,7 +470,6 @@ mod tests {
         // Grant ISSUER_ROLE to admin
         let issuer_role = keccak256(b"ISSUER_ROLE");
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -538,7 +556,6 @@ mod tests {
         let unpause_role = keccak256(b"UNPAUSE_ROLE");
 
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -549,7 +566,6 @@ mod tests {
             .unwrap();
 
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -605,7 +621,6 @@ mod tests {
         let issuer_role = keccak256(b"ISSUER_ROLE");
 
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -616,7 +631,6 @@ mod tests {
             .unwrap();
 
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -741,7 +755,6 @@ mod tests {
         use alloy::primitives::keccak256;
         let issuer_role = keccak256(b"ISSUER_ROLE");
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -757,6 +770,7 @@ mod tests {
         };
         let calldata = set_cap_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), admin).unwrap();
+
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
 
@@ -863,7 +877,6 @@ mod tests {
         use alloy::primitives::keccak256;
         let issuer_role = keccak256(b"ISSUER_ROLE");
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {

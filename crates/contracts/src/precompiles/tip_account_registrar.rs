@@ -6,7 +6,6 @@ sol! {
     #[sol(rpc, abi)]
     interface ITipAccountRegistrar {
         function delegateToDefault(bytes32 hash, bytes calldata signature) external returns (address authority);
-        function getDelegationMessage() external pure returns (string memory);
 
         // Errors
         error InvalidSignature();

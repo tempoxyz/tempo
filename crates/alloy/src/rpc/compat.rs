@@ -1,15 +1,17 @@
+use crate::rpc::{TempoHeaderResponse, TempoTransactionRequest};
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError};
 use alloy_network::TxSigner;
 use alloy_primitives::{Bytes, Signature};
 use reth_evm::revm::context::CfgEnv;
+use reth_primitives_traits::SealedHeader;
 use reth_rpc_convert::{
-    EthTxEnvError, SignTxRequestError, SignableTxRequest, TryIntoSimTx, transaction::TryIntoTxEnv,
+    SignTxRequestError, SignableTxRequest, TryIntoSimTx,
+    transaction::{FromConsensusHeader, TryIntoTxEnv},
 };
+use reth_rpc_eth_types::EthApiError;
 use tempo_evm::TempoBlockEnv;
-use tempo_primitives::{AASignature, SignatureType, TempoTxEnvelope};
+use tempo_primitives::{AASignature, SignatureType, TempoHeader, TempoTxEnvelope};
 use tempo_revm::{AATxEnv, TempoTxEnv};
-
-use crate::rpc::TempoTransactionRequest;
 
 impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
@@ -69,7 +71,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
 }
 
 impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
-    type Err = EthTxEnvError;
+    type Err = EthApiError;
 
     fn try_into_tx_env<Spec>(
         self,
@@ -89,7 +91,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             fee_token,
             is_system_tx: false,
             fee_payer: None,
-            aa_tx_env: (!calls.is_empty() || !aa_authorization_list.is_empty()).then(|| {
+            aa_tx_env: if !calls.is_empty() || !aa_authorization_list.is_empty() {
                 // Create mock signature for gas estimation
                 // If key_type is not provided, default to secp256k1
                 let mock_signature = key_type
@@ -97,13 +99,19 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                     .map(|kt| create_mock_aa_signature(kt, key_data.as_ref()))
                     .unwrap_or_else(|| create_mock_aa_signature(&SignatureType::Secp256k1, None));
 
-                Box::new(AATxEnv {
+                if calls.is_empty() {
+                    return Err(EthApiError::InvalidParams("empty calls list".to_string()));
+                }
+
+                Some(Box::new(AATxEnv {
                     aa_calls: calls,
                     signature: mock_signature,
                     aa_authorization_list,
                     ..Default::default()
-                })
-            }),
+                }))
+            } else {
+                None
+            },
         })
     }
 }
@@ -196,5 +204,14 @@ impl SignableTxRequest<TempoTxEnvelope> for TempoTransactionRequest {
         signer: impl TxSigner<Signature> + Send,
     ) -> Result<TempoTxEnvelope, SignTxRequestError> {
         SignableTxRequest::<TempoTxEnvelope>::try_build_and_sign(self.inner, signer).await
+    }
+}
+
+impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
+    fn from_consensus_header(header: SealedHeader<TempoHeader>, block_size: usize) -> Self {
+        Self {
+            timestamp_millis: header.timestamp_millis(),
+            inner: FromConsensusHeader::from_consensus_header(header, block_size),
+        }
     }
 }

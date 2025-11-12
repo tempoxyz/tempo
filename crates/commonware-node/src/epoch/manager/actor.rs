@@ -52,6 +52,7 @@ use commonware_consensus::{
     Reporters,
     simplex::{self, signing_scheme::bls12381_threshold::Scheme, types::Voter},
     types::Epoch,
+    utils,
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_macros::select;
@@ -70,10 +71,7 @@ use tracing::{Level, Span, error, error_span, info, instrument, warn, warn_span}
 
 use crate::{
     consensus::Digest,
-    epoch::{
-        self,
-        manager::ingress::{Enter, Exit},
-    },
+    epoch::manager::ingress::{Enter, Exit},
 };
 
 use super::ingress::Message;
@@ -431,7 +429,7 @@ where
             "request epoch `{their_epoch}` is in our past, no action is necessary",
         );
 
-        let boundary_height = epoch::last_height(our_epoch, self.config.epoch_length);
+        let boundary_height = utils::last_block_in_epoch(self.config.epoch_length, our_epoch);
         ensure!(
             self.config
                 .marshal
@@ -471,7 +469,7 @@ where
             .wrap_err("failed decoding epoch channel payload as epoch")?
             .into();
         tracing::Span::current().record("msg.decoded_epoch", requested_epoch);
-        let boundary_height = epoch::last_height(requested_epoch, self.config.epoch_length);
+        let boundary_height = utils::last_block_in_epoch(self.config.epoch_length, requested_epoch);
         let cert = self
             .config
             .marshal

@@ -6,16 +6,28 @@ pub mod token;
 
 mod pagination;
 
+use alloy_primitives::B256;
+use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use amm::{TempoAmm, TempoAmmApiServer};
 pub use dex::{TempoDex, api::TempoDexApiServer};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
+use futures::future::Either;
 pub use pagination::{FilterRange, PaginationParams};
 pub use policy::{TempoPolicy, TempoPolicyApiServer};
+use reth_errors::RethError;
+use reth_primitives_traits::{Recovered, TransactionMeta, WithEncoded, transaction::TxHashRef};
+use reth_transaction_pool::PoolPooledTx;
+use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
+use tempo_chainspec::TempoChainSpec;
+use tempo_evm::TempoStateAccess;
 pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::node::TempoNode;
-use alloy::{consensus::TxReceipt, primitives::U256};
+use alloy::{
+    consensus::TxReceipt,
+    primitives::{U256, uint},
+};
 use reth_ethereum::tasks::{
     TaskSpawner,
     pool::{BlockingTaskGuard, BlockingTaskPool},
@@ -38,16 +50,23 @@ use reth_rpc_eth_api::{
         LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction, SpawnBlocking, Trace,
         estimate::EstimateCall, pending_block::PendingEnvBuilder, spec::SignersForRpc,
     },
+    transaction::{ConvertReceiptInput, ReceiptConverter},
 };
 use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
     builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::TempoEvmConfig;
-use tempo_precompiles::provider::TIPFeeDatabaseExt;
-use tempo_primitives::{TEMPO_GAS_PRICE_SCALING_FACTOR, TempoReceipt};
-use tokio::sync::Mutex;
+use tempo_primitives::{
+    TEMPO_GAS_PRICE_SCALING_FACTOR, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
+};
+use tokio::sync::{Mutex, broadcast};
+
+/// Placeholder constant for `eth_getBalance` calls because the native token balance is N/A on
+/// Tempo.
+pub const NATIVE_BALANCE_PLACEHOLDER: U256 =
+    uint!(4242424242424242424242424242424242424242424242424242424242424242424242424242_U256);
 
 /// Tempo `Eth` API implementation.
 ///
@@ -63,6 +82,9 @@ use tokio::sync::Mutex;
 pub struct TempoEthApi<N: FullNodeTypes<Types = TempoNode>> {
     /// Gateway to node's core components.
     inner: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
+
+    /// Channel for sending subblock transactions to the subblocks service.
+    subblock_transactions_tx: broadcast::Sender<Recovered<TempoTxEnvelope>>,
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
@@ -70,7 +92,15 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
     pub fn new(
         eth_api: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
     ) -> Self {
-        Self { inner: eth_api }
+        Self {
+            inner: eth_api,
+            subblock_transactions_tx: broadcast::channel(100).0,
+        }
+    }
+
+    /// Returns a [`broadcast::Receiver`] for subblock transactions.
+    pub fn subblock_transactions_rx(&self) -> broadcast::Receiver<Recovered<TempoTxEnvelope>> {
+        self.subblock_transactions_tx.subscribe()
     }
 }
 
@@ -176,6 +206,15 @@ impl<N: FullNodeTypes<Types = TempoNode>> LoadState for TempoEthApi<N> {}
 
 impl<N: FullNodeTypes<Types = TempoNode>> EthState for TempoEthApi<N> {
     #[inline]
+    async fn balance(
+        &self,
+        _address: alloy_primitives::Address,
+        _block_id: Option<alloy_eips::BlockId>,
+    ) -> Result<U256, Self::Error> {
+        Ok(NATIVE_BALANCE_PLACEHOLDER)
+    }
+
+    #[inline]
     fn max_proof_window(&self) -> u64 {
         self.inner.eth_proof_window()
     }
@@ -210,14 +249,14 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         evm_env: &EvmEnvFor<Self::Evm>,
         tx_env: &TxEnvFor<Self::Evm>,
     ) -> Result<u64, Self::Error> {
+        let fee_payer = tx_env
+            .fee_payer()
+            .map_err(EVMError::<ProviderError, _>::from)?;
+        let fee_token = db
+            .get_fee_token(tx_env, evm_env.block_env.beneficiary, fee_payer)
+            .map_err(Into::into)?;
         let fee_token_balance = db
-            .get_fee_token_balance(
-                tx_env
-                    .fee_payer()
-                    .map_err(EVMError::<ProviderError, _>::from)?,
-                evm_env.block_env.beneficiary,
-                tx_env.fee_token,
-            )
+            .get_token_balance(fee_token, fee_payer)
             .map_err(Into::into)?;
 
         Ok(fee_token_balance
@@ -232,7 +271,6 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> EstimateCall for TempoEthApi<N> {}
-
 impl<N: FullNodeTypes<Types = TempoNode>> LoadBlock for TempoEthApi<N> {}
 impl<N: FullNodeTypes<Types = TempoNode>> LoadReceipt for TempoEthApi<N> {}
 impl<N: FullNodeTypes<Types = TempoNode>> EthBlocks for TempoEthApi<N> {}
@@ -247,11 +285,78 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
         self.inner.send_raw_transaction_sync_timeout()
     }
 
-    fn send_raw_transaction(
+    fn send_transaction(
         &self,
-        tx: alloy::primitives::Bytes,
-    ) -> impl Future<Output = Result<alloy::primitives::B256, Self::Error>> + Send {
-        self.inner.send_raw_transaction(tx)
+        tx: WithEncoded<Recovered<PoolPooledTx<Self::Pool>>>,
+    ) -> impl Future<Output = Result<B256, Self::Error>> + Send {
+        if tx.value().inner().subblock_proposer().is_some() {
+            // Send subblock transactions to the subblocks service.
+            Either::Left(async move {
+                let tx_hash = *tx.value().tx_hash();
+
+                self.subblock_transactions_tx
+                    .send(tx.into_value())
+                    .map_err(|_| RethError::msg("subblocks service channel closed"))?;
+
+                Ok(tx_hash)
+            })
+        } else {
+            // Send regular transactions to the transaction pool.
+            Either::Right(self.inner.send_transaction(tx))
+        }
+    }
+}
+
+/// Converter for Tempo receipts.
+#[derive(Debug, Clone)]
+#[expect(clippy::type_complexity)]
+pub struct TempoReceiptConverter {
+    inner: EthReceiptConverter<
+        TempoChainSpec,
+        fn(TempoReceipt, usize, TransactionMeta) -> ReceiptWithBloom<TempoReceipt<Log>>,
+    >,
+}
+
+impl TempoReceiptConverter {
+    pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
+        Self {
+            inner: EthReceiptConverter::new(chain_spec).with_builder(
+                |receipt: TempoReceipt, next_log_index, meta| {
+                    receipt.into_rpc(next_log_index, meta).into_with_bloom()
+                },
+            ),
+        }
+    }
+}
+
+impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
+    type RpcReceipt = TempoTransactionReceipt;
+    type Error = EthApiError;
+
+    fn convert_receipts(
+        &self,
+        receipts: Vec<ConvertReceiptInput<'_, TempoPrimitives>>,
+    ) -> Result<Vec<Self::RpcReceipt>, Self::Error> {
+        let receipts = self.inner.convert_receipts(receipts)?;
+        Ok(receipts
+            .into_iter()
+            .map(|inner| {
+                let mut receipt = TempoTransactionReceipt {
+                    inner,
+                    fee_token: None,
+                };
+                if receipt.effective_gas_price == 0 || receipt.gas_used == 0 {
+                    return receipt;
+                }
+
+                // Set fee token to the address that emitted the last log.
+                //
+                // Assumption is that every non-free transaction will end with a
+                // fee token transfer to TIPFeeManager.
+                receipt.fee_token = receipt.logs().last().map(|log| log.address());
+                receipt
+            })
+            .collect())
     }
 }
 
@@ -269,16 +374,7 @@ where
         let eth_api = ctx
             .eth_api_builder()
             .modify_gas_oracle_config(|config| config.default_suggested_fee = Some(U256::ZERO))
-            .map_converter(|_| {
-                RpcConverter::<TempoNetwork, TempoEvmConfig, _>::new(
-                    EthReceiptConverter::new(chain_spec).with_builder(
-                        |receipt: TempoReceipt, next_log_index, meta| {
-                            receipt.into_rpc(next_log_index, meta).into_with_bloom()
-                        },
-                    ),
-                )
-                .erased()
-            })
+            .map_converter(|_| RpcConverter::new(TempoReceiptConverter::new(chain_spec)).erased())
             .build();
 
         Ok(TempoEthApi::new(eth_api))

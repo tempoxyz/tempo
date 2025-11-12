@@ -1,41 +1,17 @@
-use alloy::primitives::{Address, B256, IntoLogData, U256};
+use alloy::primitives::{Address, B256, IntoLogData};
 
 use crate::{
     error::Result,
-    storage::{
-        PrecompileStorageProvider,
-        slots::{double_mapping_slot, mapping_slot},
-    },
-    tip20::{IRolesAuth, RolesAuthError, RolesAuthEvent},
+    storage::PrecompileStorageProvider,
+    tip20::{IRolesAuth, RolesAuthError, RolesAuthEvent, TIP20Token},
 };
 
 pub const DEFAULT_ADMIN_ROLE: B256 = B256::ZERO;
 pub const UNGRANTABLE_ROLE: B256 = B256::new([0xff; 32]);
 
-pub struct RolesAuthContract<'a, S: PrecompileStorageProvider> {
-    storage: &'a mut S,
-    parent_contract_address: Address,
-    roles_slot: U256,
-    role_admin_slot: U256,
-}
-
-impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
-    pub fn new(
-        storage: &'a mut S,
-        parent_contract_address: Address,
-        roles_slot: U256,
-        role_admin_slot: U256,
-    ) -> Self {
-        Self {
-            storage,
-            parent_contract_address,
-            roles_slot,
-            role_admin_slot,
-        }
-    }
-
+impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     /// Initialize the UNGRANTABLE_ROLE to be self-administered
-    pub fn initialize(&mut self) -> Result<()> {
+    pub fn initialize_roles(&mut self) -> Result<()> {
         self.set_role_admin_internal(UNGRANTABLE_ROLE, UNGRANTABLE_ROLE)
     }
 
@@ -63,7 +39,7 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
         self.grant_role_internal(call.account, call.role)?;
 
         self.storage.emit_event(
-            self.parent_contract_address,
+            self.address,
             RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
                 role: call.role,
                 account: call.account,
@@ -84,7 +60,7 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
         self.revoke_role_internal(call.account, call.role)?;
 
         self.storage.emit_event(
-            self.parent_contract_address,
+            self.address,
             RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
                 role: call.role,
                 account: call.account,
@@ -104,7 +80,7 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
         self.revoke_role_internal(msg_sender, call.role)?;
 
         self.storage.emit_event(
-            self.parent_contract_address,
+            self.address,
             RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
                 role: call.role,
                 account: msg_sender,
@@ -126,7 +102,7 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
         self.set_role_admin_internal(call.role, call.adminRole)?;
 
         self.storage.emit_event(
-            self.parent_contract_address,
+            self.address,
             RolesAuthEvent::RoleAdminUpdated(IRolesAuth::RoleAdminUpdated {
                 role: call.role,
                 newAdminRole: call.adminRole,
@@ -143,36 +119,24 @@ impl<'a, S: PrecompileStorageProvider> RolesAuthContract<'a, S> {
 
     // Internal implementation functions
     pub fn has_role_internal(&mut self, account: Address, role: B256) -> Result<bool> {
-        let slot = double_mapping_slot(account, role, self.roles_slot);
-        let value = self.storage.sload(self.parent_contract_address, slot)?;
-        Ok(value != U256::ZERO)
+        self.sload_roles(account, role)
     }
 
     pub fn grant_role_internal(&mut self, account: Address, role: B256) -> Result<()> {
-        let slot = double_mapping_slot(account, role, self.roles_slot);
-        self.storage
-            .sstore(self.parent_contract_address, slot, U256::ONE)
+        self.sstore_roles(account, role, true)
     }
 
     fn revoke_role_internal(&mut self, account: Address, role: B256) -> Result<()> {
-        let slot = double_mapping_slot(account, role, self.roles_slot);
-        self.storage
-            .sstore(self.parent_contract_address, slot, U256::ZERO)
+        self.sstore_roles(account, role, false)
     }
 
+    /// If sloads 0, will be equal to DEFAULT_ADMIN_ROLE
     fn get_role_admin_internal(&mut self, role: B256) -> Result<B256> {
-        let slot = mapping_slot(role, self.role_admin_slot);
-        let admin = self.storage.sload(self.parent_contract_address, slot)?;
-        Ok(B256::from(admin)) // If sloads 0, will be equal to DEFAULT_ADMIN_ROLE
+        self.sload_role_admins(role)
     }
 
     fn set_role_admin_internal(&mut self, role: B256, admin_role: B256) -> Result<()> {
-        let slot = mapping_slot(role, self.role_admin_slot);
-        self.storage.sstore(
-            self.parent_contract_address,
-            slot,
-            U256::from_be_bytes(admin_role.0),
-        )
+        self.sstore_role_admins(role, admin_role)
     }
 
     fn check_role_internal(&mut self, account: Address, role: B256) -> Result<()> {
@@ -196,18 +160,19 @@ mod tests {
         let test_address = Address::from([
             0x20, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
         ]);
-        let mut roles = RolesAuthContract::new(&mut storage, test_address, U256::ZERO, U256::ONE);
+        let mut token = TIP20Token::from_address(test_address, &mut storage);
 
         let admin = Address::from([1u8; 20]);
         let user = Address::from([2u8; 20]);
         let custom_role = keccak256(b"CUSTOM_ROLE");
 
         // Initialize and grant admin
-        roles.initialize().unwrap();
-        roles.grant_default_admin(admin).unwrap();
+        token
+            .initialize("name", "symbol", "currency", Address::ZERO, admin)
+            .unwrap();
 
         // Test hasRole
-        let has_admin = roles
+        let has_admin = token
             .has_role(IRolesAuth::hasRoleCall {
                 account: admin,
                 role: DEFAULT_ADMIN_ROLE,
@@ -216,7 +181,7 @@ mod tests {
         assert!(has_admin);
 
         // Grant custom role
-        roles
+        token
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -227,7 +192,7 @@ mod tests {
             .unwrap();
 
         // Check custom role
-        let has_custom = roles
+        let has_custom = token
             .has_role(IRolesAuth::hasRoleCall {
                 account: user,
                 role: custom_role,
@@ -243,17 +208,19 @@ mod tests {
     fn test_role_admin_functions() {
         let mut storage = HashMapStorageProvider::new(1);
         let test_address = address!("0x20C0000000000000000000000000000000000001");
-        let mut roles = RolesAuthContract::new(&mut storage, test_address, U256::ZERO, U256::ONE);
+        let mut token = TIP20Token::from_address(test_address, &mut storage);
 
         let admin = Address::from([1u8; 20]);
         let custom_role = keccak256(b"CUSTOM_ROLE");
         let admin_role = keccak256(b"ADMIN_ROLE");
 
-        roles.initialize().unwrap();
-        roles.grant_default_admin(admin).unwrap();
+        // Initialize and grant admin
+        token
+            .initialize("name", "symbol", "currency", Address::ZERO, admin)
+            .unwrap();
 
         // Set custom admin for role
-        roles
+        token
             .set_role_admin(
                 admin,
                 IRolesAuth::setRoleAdminCall {
@@ -264,7 +231,7 @@ mod tests {
             .unwrap();
 
         // Check role admin
-        let retrieved_admin = roles
+        let retrieved_admin = token
             .get_role_admin(IRolesAuth::getRoleAdminCall { role: custom_role })
             .expect("Should have admin");
         assert_eq!(retrieved_admin, admin_role);
@@ -274,22 +241,24 @@ mod tests {
     fn test_renounce_role() {
         let mut storage = HashMapStorageProvider::new(1);
         let test_address = address!("0x20C0000000000000000000000000000000000001");
-        let mut roles = RolesAuthContract::new(&mut storage, test_address, U256::ZERO, U256::ONE);
+        let mut token = TIP20Token::from_address(test_address, &mut storage);
 
         let user = Address::from([1u8; 20]);
         let custom_role = keccak256(b"CUSTOM_ROLE");
 
-        roles.initialize().unwrap();
-        roles.grant_role_internal(user, custom_role).unwrap();
+        token
+            .initialize("name", "symbol", "currency", Address::ZERO, Address::ZERO)
+            .unwrap();
+        token.grant_role_internal(user, custom_role).unwrap();
 
         // Renounce role
-        roles
+        token
             .renounce_role(user, IRolesAuth::renounceRoleCall { role: custom_role })
             .unwrap();
 
         // Check role is removed
         assert!(
-            !roles
+            !token
                 .has_role_internal(user, custom_role)
                 .expect("Could not get role")
         );
@@ -299,16 +268,18 @@ mod tests {
     fn test_unauthorized_access() {
         let mut storage = HashMapStorageProvider::new(1);
         let test_address = address!("0x20C0000000000000000000000000000000000001");
-        let mut roles = RolesAuthContract::new(&mut storage, test_address, U256::ZERO, U256::ONE);
+        let mut token = TIP20Token::from_address(test_address, &mut storage);
 
         let user = Address::from([1u8; 20]);
         let other = Address::from([2u8; 20]);
         let custom_role = keccak256(b"CUSTOM_ROLE");
 
-        roles.initialize().unwrap();
+        token
+            .initialize("name", "symbol", "currency", Address::ZERO, Address::ZERO)
+            .unwrap();
 
         // Try to grant role without permission
-        let result = roles.grant_role(
+        let result = token.grant_role(
             user,
             IRolesAuth::grantRoleCall {
                 role: custom_role,

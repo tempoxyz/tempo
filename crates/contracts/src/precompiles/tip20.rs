@@ -67,8 +67,8 @@ sol! {
         function setSupplyCap(uint256 newSupplyCap) external;
         function pause() external;
         function unpause() external;
-        function updateQuoteToken(address newQuoteToken) external;
-        function finalizeQuoteTokenUpdate() external;
+        function setNextQuoteToken(address newQuoteToken) external;
+        function completeQuoteTokenUpdate() external;
 
         /// @notice Returns the role identifier for pausing the contract
         /// @return The pause role identifier
@@ -94,14 +94,23 @@ sol! {
             uint256 amountTotal;
         }
 
+        struct UserRewardInfo {
+            address rewardRecipient;
+            uint256 rewardPerToken;
+            uint256 rewardBalance;
+        }
+
         // Reward Functions
         function startReward(uint256 amount, uint32 secs) external returns (uint64);
         function setRewardRecipient(address recipient) external;
         function cancelReward(uint64 id) external returns (uint256);
         function claimRewards() external returns (uint256);
-        function finalizeStreams() external;
+        function finalizeStreams(uint64 timestamp) external;
         function getStream(uint64 id) external view returns (RewardStream memory);
         function totalRewardPerSecond() external view returns (uint256);
+        function optedInSupply() external view returns (uint128);
+        function nextStreamId() external view returns (uint64);
+        function userRewardInfo(address account) external view returns (UserRewardInfo memory);
 
         // Events
         event Transfer(address indexed from, address indexed to, uint256 amount);
@@ -113,8 +122,8 @@ sol! {
         event TransferPolicyUpdate(address indexed updater, uint64 indexed newPolicyId);
         event SupplyCapUpdate(address indexed updater, uint256 indexed newSupplyCap);
         event PauseStateUpdate(address indexed updater, bool isPaused);
-        event UpdateQuoteToken(address indexed updater, address indexed newQuoteToken);
-        event QuoteTokenUpdateFinalized(address indexed updater, address indexed newQuoteToken);
+        event NextQuoteTokenSet(address indexed updater, address indexed nextQuoteToken);
+        event QuoteTokenUpdate(address indexed updater, address indexed newQuoteToken);
         event RewardScheduled(address indexed funder, uint64 indexed id, uint256 amount, uint32 durationSeconds);
         event RewardCanceled(address indexed funder, uint64 indexed id, uint256 refund);
         event RewardRecipientSet(address indexed holder, address indexed recipient);
@@ -137,6 +146,7 @@ sol! {
         error StreamInactive();
         error NoOptedInSupply();
         error Unauthorized();
+        error RewardsDisabled();
     }
 }
 
@@ -235,5 +245,10 @@ impl TIP20Error {
     /// Error for when opted in supply is 0
     pub const fn no_opted_in_supply() -> Self {
         Self::NoOptedInSupply(ITIP20::NoOptedInSupply {})
+    }
+
+    /// Error for when rewards are disabled
+    pub const fn rewards_disabled() -> Self {
+        Self::RewardsDisabled(ITIP20::RewardsDisabled {})
     }
 }

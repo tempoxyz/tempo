@@ -33,26 +33,26 @@ impl<'a, S: PrecompileStorageProvider> Precompile for ValidatorConfig<'a, S> {
                 mutate_void::<IValidatorConfig::addValidatorCall>(
                     calldata,
                     msg_sender,
-                    |s, call| self.add_validator(&s, call),
+                    |s, call| self.add_validator(s, call),
                 )
             }
             IValidatorConfig::updateValidatorCall::SELECTOR => {
                 mutate_void::<IValidatorConfig::updateValidatorCall>(
                     calldata,
                     msg_sender,
-                    |s, call| self.update_validator(&s, call),
+                    |s, call| self.update_validator(s, call),
                 )
             }
             IValidatorConfig::changeValidatorStatusCall::SELECTOR => {
                 mutate_void::<IValidatorConfig::changeValidatorStatusCall>(
                     calldata,
                     msg_sender,
-                    |s, call| self.change_validator_status(&s, call),
+                    |s, call| self.change_validator_status(s, call),
                 )
             }
             IValidatorConfig::changeOwnerCall::SELECTOR => {
                 mutate_void::<IValidatorConfig::changeOwnerCall>(calldata, msg_sender, |s, call| {
-                    self.change_owner(&s, call)
+                    self.change_owner(s, call)
                 })
             }
 
@@ -87,8 +87,7 @@ mod tests {
     #[test]
     fn test_function_selector_dispatch() {
         let mut storage = HashMapStorageProvider::new(1);
-        let precompile_address = Address::from([0xAA; 20]);
-        let mut validator_config = ValidatorConfig::new(precompile_address, &mut storage);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
         // Initialize with owner
@@ -107,8 +106,7 @@ mod tests {
     #[test]
     fn test_owner_view_dispatch() {
         let mut storage = HashMapStorageProvider::new(1);
-        let precompile_address = Address::from([0xAA; 20]);
-        let mut validator_config = ValidatorConfig::new(precompile_address, &mut storage);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
         // Initialize with owner
@@ -133,8 +131,7 @@ mod tests {
     #[test]
     fn test_add_validator_dispatch() {
         let mut storage = HashMapStorageProvider::new(1);
-        let precompile_address = Address::from([0xAA; 20]);
-        let mut validator_config = ValidatorConfig::new(precompile_address, &mut storage);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
 
         // Initialize with owner
         let owner = Address::from([0u8; 20]);
@@ -173,8 +170,7 @@ mod tests {
     #[test]
     fn test_unauthorized_add_validator_dispatch() {
         let mut storage = HashMapStorageProvider::new(1);
-        let precompile_address = Address::from([0xAA; 20]);
-        let mut validator_config = ValidatorConfig::new(precompile_address, &mut storage);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
 
         // Initialize with owner
         let owner = Address::from([0u8; 20]);
@@ -200,7 +196,7 @@ mod tests {
     #[test]
     fn validator_config_test_selector_coverage() {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut validator_config = ValidatorConfig::new(Address::ZERO, &mut storage);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
 
         let unsupported = check_selector_coverage(
             &mut validator_config,
