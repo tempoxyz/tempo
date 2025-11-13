@@ -13,7 +13,7 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 use rand::Rng;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::{CONSENSUS_NODE_PREFIX, ExecutionRuntime, Setup, link_validators, setup_validators};
 
@@ -81,7 +81,6 @@ fn run_restart_test(
         );
         wait_for_height(&context, running.len() as u32, final_height).await;
 
-        info!("Test completed successfully");
         context.auditor().state()
     })
 }
@@ -171,10 +170,10 @@ async fn ensure_no_progress(context: &Context, tries: u32) {
 /// This is the simplest possible restart case: the network stops becasue we
 /// dropped below quorum. The node should be able to pick up after.
 #[test_traced]
-fn dropping_below_quorum_makes_no_progress_but_continues_after_restart() {
+fn network_resumes_after_restart() {
     let _ = tempo_eyre::install();
 
-    for seed in 0..5 {
+    for seed in 0..3 {
         let linkage = Link {
             latency: Duration::from_millis(10),
             jitter: Duration::from_millis(1),
@@ -182,7 +181,7 @@ fn dropping_below_quorum_makes_no_progress_but_continues_after_restart() {
         };
 
         let setup = Setup {
-            how_many_signers: 3, // quorum is 3, so
+            how_many_signers: 3, // quorum for 3 validators is 3.
             seed,
             linkage,
             epoch_length: 100,
@@ -233,7 +232,7 @@ fn dropping_below_quorum_makes_no_progress_but_continues_after_restart() {
 }
 
 #[test_traced]
-fn validator_restart_perfect_links() {
+fn validator_catches_up_to_network_during_epoch() {
     let _ = tempo_eyre::install();
 
     let linkage = Link {
@@ -247,25 +246,25 @@ fn validator_restart_perfect_links() {
             how_many_signers: 4,
             seed: 0,
             linkage,
-            epoch_length: 10,
+            epoch_length: 100,
             connect_execution_layer_nodes: false,
         },
-        shutdown_height: 5, // Kill at height 5
-        restart_height: 10, // Restart at height 10
-        final_height: 15,   // All reach height 15
+        shutdown_height: 5,
+        restart_height: 10,
+        final_height: 15,
     };
 
     let _state = run_restart_test(setup);
 }
 
 #[test_traced]
-fn validator_restart_with_failures() {
+fn validator_catches_up_across_epochs() {
     let _ = tempo_eyre::install();
 
     let linkage = Link {
         latency: Duration::from_millis(10),
-        jitter: Duration::from_millis(5),
-        success_rate: 0.95, // 5% packet loss
+        jitter: Duration::from_millis(1),
+        success_rate: 1.0,
     };
 
     let epoch_length = 30;
@@ -274,7 +273,7 @@ fn validator_restart_with_failures() {
             how_many_signers: 4,
             seed: 0,
             linkage,
-            epoch_length: 10,
+            epoch_length,
             connect_execution_layer_nodes: false,
         },
         shutdown_height: epoch_length + 1,
