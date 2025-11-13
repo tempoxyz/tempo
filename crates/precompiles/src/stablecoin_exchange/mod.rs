@@ -1418,6 +1418,14 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             return Err(StablecoinExchangeError::identical_tokens().into());
         }
 
+        // Validate that both tokens are TIP20 tokens
+        if !is_tip20(token_in) {
+            return Err(StablecoinExchangeError::invalid_token().into());
+        }
+        if !is_tip20(token_out) {
+            return Err(StablecoinExchangeError::invalid_token().into());
+        }
+
         // Check if direct or reverse pair exists
         let in_quote = TIP20Token::from_address(token_in, self.storage).quote_token()?;
         let out_quote = TIP20Token::from_address(token_out, self.storage).quote_token()?;
