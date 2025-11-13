@@ -196,12 +196,10 @@ fn gen_contract_storage(
         .map(|allocated| layout::gen_getters_and_setters(ident, allocated))
         .collect();
 
-    let (slot_types_for_reexport, slots_module_with_types) =
-        layout::gen_slots_module_with_types(&allocated_fields);
+    let slots_module = layout::gen_slots_module(&allocated_fields);
 
     let output = quote! {
-        #slots_module_with_types
-        #slot_types_for_reexport
+        #slots_module
         #transformed_struct
         #constructor
         #storage_trait

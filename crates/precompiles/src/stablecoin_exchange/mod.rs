@@ -48,7 +48,7 @@ pub struct StablecoinExchange {
 }
 
 /// Helper type to easily interact with the `stream_ending_at` array
-type BookKeys = Slot<Vec<B256>, BookKeysSlot>;
+type BookKeys = Slot<Vec<B256>>;
 
 impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
@@ -347,7 +347,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         let book = Orderbook::new(base, quote);
         self.sstore_books(book_key, book)?;
-        BookKeys::push(self, book_key)?;
+        BookKeys::new(slots::BOOK_KEYS_SLOT).push(self, book_key)?;
 
         // Emit PairCreated event
         self.storage.emit_event(

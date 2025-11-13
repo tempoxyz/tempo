@@ -7,7 +7,7 @@
 use crate::{
     error::TempoPrecompileError,
     stablecoin_exchange::{IStablecoinExchange, error::OrderError},
-    storage::{DummySlot, Slot, SlotId, StorageOps, slots::mapping_slot},
+    storage::{Slot, StorageOps, slots::mapping_slot},
 };
 use alloy::primitives::{Address, B256};
 use tempo_precompiles_macros::Storable;
@@ -65,9 +65,9 @@ pub struct Order {
 }
 
 // Helper type to easily interact with u128 fields (order_id, prev, next)
-type OrderId = Slot<u128, DummySlot>;
+type OrderId = Slot<u128>;
 // Helper type to easily interact with u128 fields (amount, remaining)
-type OrderAmount = Slot<u128, DummySlot>;
+type OrderAmount = Slot<u128>;
 
 impl Order {
     /// Creates a new order with `prev` and `next` initialized to 0.
@@ -157,13 +157,15 @@ impl Order {
         order_id: u128,
         new_remaining: u128,
     ) -> Result<(), TempoPrecompileError> {
-        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::OrdersSlot::SLOT);
+        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS_SLOT);
         OrderAmount::write_at_offset_packed(
             storage,
             order_base_slot,
-            __packing_order::REMAINING_SLOT,
-            __packing_order::REMAINING_OFFSET,
-            __packing_order::REMAINING_BYTES,
+            crate::storage::FieldLocation::new(
+                __packing_order::REMAINING_SLOT,
+                __packing_order::REMAINING_OFFSET,
+                __packing_order::REMAINING_BYTES,
+            ),
             new_remaining,
         )?;
         Ok(())
@@ -174,13 +176,15 @@ impl Order {
         order_id: u128,
         new_next: u128,
     ) -> Result<(), TempoPrecompileError> {
-        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::OrdersSlot::SLOT);
+        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS_SLOT);
         OrderId::write_at_offset_packed(
             storage,
             order_base_slot,
-            __packing_order::NEXT_SLOT,
-            __packing_order::NEXT_OFFSET,
-            __packing_order::NEXT_BYTES,
+            crate::storage::FieldLocation::new(
+                __packing_order::NEXT_SLOT,
+                __packing_order::NEXT_OFFSET,
+                __packing_order::NEXT_BYTES,
+            ),
             new_next,
         )?;
         Ok(())
@@ -191,13 +195,15 @@ impl Order {
         order_id: u128,
         new_prev: u128,
     ) -> Result<(), TempoPrecompileError> {
-        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::OrdersSlot::SLOT);
+        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS_SLOT);
         OrderId::write_at_offset_packed(
             storage,
             order_base_slot,
-            __packing_order::PREV_SLOT,
-            __packing_order::PREV_OFFSET,
-            __packing_order::PREV_BYTES,
+            crate::storage::FieldLocation::new(
+                __packing_order::PREV_SLOT,
+                __packing_order::PREV_OFFSET,
+                __packing_order::PREV_BYTES,
+            ),
             new_prev,
         )?;
         Ok(())

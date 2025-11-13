@@ -452,27 +452,6 @@ pub(crate) fn gen_layout_ctx_expr(
     }
 }
 
-/// Generate a single SlotId type definition.
-///
-/// This creates a marker type that implements the `SlotId` trait, which is used
-/// to reference storage slots in the generated code.
-pub(crate) fn gen_slot_id_type(
-    slot_id_name: &str,
-    field_name: &Ident,
-    slot_const_name: &str,
-) -> TokenStream {
-    let slot_id_ident = format_ident!("{}", slot_id_name);
-    let slot_const = format_ident!("{}", slot_const_name);
-
-    quote! {
-        #[doc = concat!("Storage slot for `", stringify!(#field_name), "` field")]
-        pub struct #slot_id_ident;
-
-        impl crate::storage::SlotId for #slot_id_ident {
-            const SLOT: ::alloy::primitives::U256 = #slot_const;
-        }
-    }
-}
 
 /// Generate collision detection debug assertions for a field against all other fields.
 ///
@@ -483,7 +462,6 @@ pub(crate) fn gen_collision_check_fn(
     idx: usize,
     field: &LayoutField<'_>,
     all_fields: &[LayoutField<'_>],
-    slot_id_name_fn: impl Fn(&Ident) -> String,
 ) -> Option<(Ident, TokenStream)> {
     fn gen_slot_count_expr(kind: &FieldKind<'_>, ty: &Type) -> TokenStream {
         if kind.is_mapping() {
@@ -495,9 +473,9 @@ pub(crate) fn gen_collision_check_fn(
 
     // Only check explicit slot assignments against other fields
     if let SlotAssignment::Manual(_) = field.assigned_slot {
-        let slot_id = format_ident!("{}", slot_id_name_fn(field.name));
         let field_name = field.name;
         let check_fn_name = format_ident!("__check_collision_{}", field_name);
+        let slot_const = PackingConstants::new(field.name).slot();
 
         let mut checks = TokenStream::new();
 
@@ -507,7 +485,7 @@ pub(crate) fn gen_collision_check_fn(
                 continue;
             }
 
-            let other_slot_id = format_ident!("{}", slot_id_name_fn(other_field.name));
+            let other_slot_const = PackingConstants::new(other_field.name).slot();
             let other_name = other_field.name;
 
             // Generate slot count expressions
@@ -517,9 +495,9 @@ pub(crate) fn gen_collision_check_fn(
             // Generate runtime assertion that checks for overlap
             checks.extend(quote! {
                 {
-                    let slot = <#slot_id as crate::storage::SlotId>::SLOT;
+                    let slot = #slot_const;
                     let slot_end = slot + #current_count_expr;
-                    let other_slot = <#other_slot_id as crate::storage::SlotId>::SLOT;
+                    let other_slot = #other_slot_const;
                     let other_end = other_slot + #other_count_expr;
 
                     let no_overlap = slot_end.le(&other_slot) || other_end.le(&slot);

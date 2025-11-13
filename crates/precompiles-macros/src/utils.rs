@@ -86,6 +86,7 @@ pub(crate) fn to_camel_case(s: &str) -> String {
 }
 
 /// Converts a string from snake_case to PascalCase.
+#[allow(dead_code)]
 pub(crate) fn to_pascal_case(s: &str) -> String {
     let camel = to_camel_case(s);
     let mut chars = camel.chars();

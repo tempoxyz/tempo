@@ -243,14 +243,13 @@ fn test_slot_id_naming_matches_actual_slots() {
     assert_eq!(slots::FIELD_E, U256::from(201));
     assert_eq!(slots::FIELD_F, U256::from(16));
 
-    // Verify the SlotId types exist and have correct SLOT values
-    use tempo_precompiles::storage::SlotId;
-    assert_eq!(<FieldASlot as SlotId>::SLOT, U256::from(0)); // field_a (auto)
-    assert_eq!(<FieldBSlot as SlotId>::SLOT, U256::from(100)); // field_b (manual)
-    assert_eq!(<FieldCSlot as SlotId>::SLOT, U256::ONE); // field_c (auto)
-    assert_eq!(<FieldDSlot as SlotId>::SLOT, U256::from(200)); // field_d (manual)
-    assert_eq!(<FieldESlot as SlotId>::SLOT, U256::from(201)); // field_e (auto)
-    assert_eq!(<FieldFSlot as SlotId>::SLOT, U256::from(16)); // field_f (manual)
+    // Verify the slot constants have correct values
+    assert_eq!(slots::FIELD_A_SLOT, U256::from(0)); // field_a (auto)
+    assert_eq!(slots::FIELD_B_SLOT, U256::from(100)); // field_b (manual)
+    assert_eq!(slots::FIELD_C_SLOT, U256::ONE); // field_c (auto)
+    assert_eq!(slots::FIELD_D_SLOT, U256::from(200)); // field_d (manual)
+    assert_eq!(slots::FIELD_E_SLOT, U256::from(201)); // field_e (auto)
+    assert_eq!(slots::FIELD_F_SLOT, U256::from(16)); // field_f (manual)
 }
 
 proptest! {

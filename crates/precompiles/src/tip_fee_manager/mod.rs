@@ -21,7 +21,7 @@ use revm::state::Bytecode;
 use tempo_precompiles_macros::contract;
 
 /// Helper type to easily interact with the `tokens_with_fees` array
-type TokensWithFees = Slot<Vec<Address>, TokensWithFeesSlot>;
+type TokensWithFees = Slot<Vec<Address>>;
 
 #[contract]
 pub struct TipFeeManager {
@@ -250,7 +250,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
 
     /// Add a token to the tokens with fees array
     fn add_token_to_fees_array(&mut self, token: Address) -> Result<()> {
-        TokensWithFees::push(self, token)
+        TokensWithFees::new(slots::TOKENS_WITH_FEES_SLOT).push(self, token)
     }
 
     /// Drain all tokens with fees by popping from the back until empty
@@ -258,7 +258,8 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     /// Also sets token_in_fees_array to false for each token
     fn drain_tokens_with_fees(&mut self) -> Result<Vec<Address>> {
         let mut tokens = Vec::new();
-        while let Some(token) = TokensWithFees::pop(self)? {
+        let tokens_with_fees = TokensWithFees::new(slots::TOKENS_WITH_FEES_SLOT);
+        while let Some(token) = tokens_with_fees.pop(self)? {
             tokens.push(token);
         }
 

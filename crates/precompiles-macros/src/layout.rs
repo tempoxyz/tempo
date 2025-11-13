@@ -1,15 +1,9 @@
 use crate::{
     FieldKind,
     packing::{self, LayoutField, PackingConstants, SlotAssignment, SlotType},
-    utils,
 };
 use quote::{format_ident, quote};
 use syn::{Ident, Visibility};
-
-/// Returns the `SlotId` type name for a field
-fn slot_id_name(field_name: &Ident) -> String {
-    format!("{}Slot", utils::to_pascal_case(&field_name.to_string()))
-}
 
 /// Generate the transformed struct with generic parameters and runtime fields
 pub(crate) fn gen_struct(name: &Ident, vis: &Visibility) -> proc_macro2::TokenStream {
@@ -73,7 +67,7 @@ pub(crate) fn gen_getters_and_setters(
     let getter_name = format_ident!("sload_{}", field_name);
     let setter_name = format_ident!("sstore_{}", field_name);
     let cleaner_name = format_ident!("clear_{}", field_name);
-    let slot_id = format_ident!("{}", slot_id_name(field_name));
+    let slot_const = PackingConstants::new(field_name).slot();
 
     match &allocated.kind {
         FieldKind::Slot(ty) => {
@@ -90,21 +84,21 @@ pub(crate) fn gen_getters_and_setters(
                     #[inline]
                     fn #getter_name(&mut self) -> crate::error::Result<#ty> {
                         <#ty as crate::storage::Storable<{ <#ty as crate::storage::StorableType>::LAYOUT.slots() }>>::load(
-                            self, <#slot_id as crate::storage::SlotId>::SLOT, #layout_ctx
+                            self, slots::#slot_const, #layout_ctx
                         )
                     }
 
                     #[inline]
                     fn #cleaner_name(&mut self) -> crate::error::Result<()> {
                         <#ty as crate::storage::Storable<{ <#ty as crate::storage::StorableType>::LAYOUT.slots() }>>::delete(
-                            self, <#slot_id as crate::storage::SlotId>::SLOT, #layout_ctx
+                            self, slots::#slot_const, #layout_ctx
                         )
                     }
 
                     #[inline]
                     fn #setter_name(&mut self, value: #ty) -> crate::error::Result<()> {
                         <#ty as crate::storage::Storable<{ <#ty as crate::storage::StorableType>::LAYOUT.slots() }>>::store(
-                            &value, self, <#slot_id as crate::storage::SlotId>::SLOT, #layout_ctx
+                            &value, self, slots::#slot_const, #layout_ctx
                         )
                     }
                 }
@@ -118,21 +112,21 @@ pub(crate) fn gen_getters_and_setters(
                 impl<'a, S: crate::storage::PrecompileStorageProvider> #struct_name<'a, S> {
                     #[inline]
                     fn #getter_name(&mut self, key: #key_ty) -> crate::error::Result<#value_ty> {
-                        crate::storage::Mapping::<#key_ty, #value_ty, #slot_id>::read(
+                        crate::storage::Mapping::<#key_ty, #value_ty>::new(slots::#slot_const).read(
                             self, key,
                         )
                     }
 
                     #[inline]
                     fn #cleaner_name(&mut self, key: #key_ty) -> crate::error::Result<()> {
-                        crate::storage::Mapping::<#key_ty, #value_ty, #slot_id>::delete(
+                        crate::storage::Mapping::<#key_ty, #value_ty>::new(slots::#slot_const).delete(
                             self, key,
                         )
                     }
 
                     #[inline]
                     fn #setter_name(&mut self, key: #key_ty, value: #value_ty) -> crate::error::Result<()> {
-                        crate::storage::Mapping::<#key_ty, #value_ty, #slot_id>::write(
+                        crate::storage::Mapping::<#key_ty, #value_ty>::new(slots::#slot_const).write(
                             self, key, value,
                         )
                     }
@@ -148,21 +142,21 @@ pub(crate) fn gen_getters_and_setters(
                 impl<'a, S: crate::storage::PrecompileStorageProvider> #struct_name<'a, S> {
                     #[inline]
                     fn #getter_name(&mut self, key1: #key1_ty, key2: #key2_ty) -> crate::error::Result<#value_ty> {
-                        crate::storage::Mapping::<#key1_ty, crate::storage::Mapping<#key2_ty, #value_ty, crate::storage::DummySlot>, #slot_id>::read_nested(
+                        crate::storage::Mapping::<#key1_ty, crate::storage::Mapping<#key2_ty, #value_ty>>::new(slots::#slot_const).read_nested(
                             self, key1, key2,
                         )
                     }
 
                     #[inline]
                     fn #cleaner_name(&mut self, key1: #key1_ty, key2: #key2_ty) -> crate::error::Result<()> {
-                        crate::storage::Mapping::<#key1_ty, crate::storage::Mapping<#key2_ty, #value_ty, crate::storage::DummySlot>, #slot_id>::delete_nested(
+                        crate::storage::Mapping::<#key1_ty, crate::storage::Mapping<#key2_ty, #value_ty>>::new(slots::#slot_const).delete_nested(
                             self, key1, key2,
                         )
                     }
 
                     #[inline]
                     fn #setter_name(&mut self, key1: #key1_ty, key2: #key2_ty, value: #value_ty) -> crate::error::Result<()> {
-                        crate::storage::Mapping::<#key1_ty, crate::storage::Mapping<#key2_ty, #value_ty, crate::storage::DummySlot>, #slot_id>::write_nested(
+                        crate::storage::Mapping::<#key1_ty, crate::storage::Mapping<#key2_ty, #value_ty>>::new(slots::#slot_const).write_nested(
                             self, key1, key2, value,
                         )
                     }
@@ -172,61 +166,35 @@ pub(crate) fn gen_getters_and_setters(
     }
 }
 
-/// Generate the `slots` module with SlotId types inside it, plus constants and re-exports
+/// Generate the `slots` module with constants and collision checks
 ///
-/// Returns: (re-exports for outer scope, slots module with types and packing constants inside)
-pub(crate) fn gen_slots_module_with_types(
+/// Returns the slots module containing only constants and collision detection functions
+pub(crate) fn gen_slots_module(
     allocated_fields: &[LayoutField<'_>],
-) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
-    // Generate constants and `SlotId` types that reference them.
+) -> proc_macro2::TokenStream {
+    // Generate constants and collision check functions
     let constants = packing::gen_constants_from_ir(allocated_fields, SlotType::U256);
-    let slot_id_types = gen_slot_id_types(allocated_fields);
-    let slots_module = quote! {
+    let collision_checks = gen_collision_checks(allocated_fields);
+
+    quote! {
         pub mod slots {
             use super::*;
 
             #constants
-            #slot_id_types
+            #collision_checks
         }
-    };
-
-    // Generate re-exports for all `SlotId` types
-    let slot_reexports: Vec<_> = allocated_fields
-        .iter()
-        .map(|allocated| {
-            let slot_id = format_ident!("{}", slot_id_name(allocated.name));
-            quote! {
-                pub use slots::#slot_id;
-            }
-        })
-        .collect();
-
-    let reexports = quote! {
-        #(#slot_reexports)*
-    };
-
-    (reexports, slots_module)
+    }
 }
 
-/// Generate `SlotId` marker types for each field (inline version without path prefixes)
-fn gen_slot_id_types(allocated_fields: &[LayoutField<'_>]) -> proc_macro2::TokenStream {
+/// Generate collision check functions for all fields
+fn gen_collision_checks(allocated_fields: &[LayoutField<'_>]) -> proc_macro2::TokenStream {
     let mut generated = proc_macro2::TokenStream::new();
     let mut check_fn_calls = Vec::new();
 
-    // Generate all `SlotId` types (one per field, even if they pack into the same slot)
-    for allocated in allocated_fields.iter() {
-        let slot_id_type = packing::gen_slot_id_type(
-            &slot_id_name(allocated.name),
-            allocated.name,
-            &PackingConstants::new(allocated.name).slot().to_string(),
-        );
-        generated.extend(slot_id_type);
-    }
-
-    // Generate collision detection check functions after all `SlotId` types are defined
+    // Generate collision detection check functions
     for (idx, allocated) in allocated_fields.iter().enumerate() {
         if let Some((check_fn_name, check_fn)) =
-            packing::gen_collision_check_fn(idx, allocated, allocated_fields, slot_id_name)
+            packing::gen_collision_check_fn(idx, allocated, allocated_fields)
         {
             generated.extend(check_fn);
             check_fn_calls.push(check_fn_name);
