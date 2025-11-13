@@ -20,7 +20,7 @@ use crate::{
     linking_usd::LinkingUSD,
     stablecoin_exchange::orderbook::compute_book_key,
     storage::{PrecompileStorageProvider, Slot, Storable, VecSlotExt},
-    tip20::{ITIP20, TIP20Token, validate_usd_currency},
+    tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
@@ -336,6 +336,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     pub fn create_pair(&mut self, base: Address) -> Result<B256> {
+        // Validate that base is a TIP20 token (only after Moderato hardfork)
+        if self.storage.spec() >= TempoHardfork::Moderato && !is_tip20(base) {
+            return Err(StablecoinExchangeError::invalid_base_token().into());
+        }
+
         let quote = TIP20Token::from_address(base, self.storage).quote_token()?;
         validate_usd_currency(base, self.storage)?;
         validate_usd_currency(quote, self.storage)?;
@@ -391,6 +396,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
+
         let book = self.sload_books(book_key)?;
         if book.base.is_zero() {
             return Err(StablecoinExchangeError::pair_does_not_exist().into());
@@ -468,6 +474,14 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
+
+        // Check book existence (only after Moderato hardfork)
+        if self.storage.spec() >= TempoHardfork::Moderato {
+            let book = self.sload_books(book_key)?;
+            if book.base.is_zero() {
+                return Err(StablecoinExchangeError::pair_does_not_exist().into());
+            }
+        }
 
         // Validate tick and flip_tick are within bounds
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
@@ -1391,8 +1405,9 @@ mod tests {
     }
 
     #[test]
-    fn test_place_order_pair_does_not_exist() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_place_order_pair_does_not_exist_post_moderato() -> eyre::Result<()> {
+        // Test with Moderato hardfork (validation should be enforced)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -1413,6 +1428,42 @@ mod tests {
         );
 
         let result = exchange.place(alice, base_token, min_order_amount, true, tick);
+        assert_eq!(
+            result,
+            Err(StablecoinExchangeError::pair_does_not_exist().into())
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_place_order_pair_does_not_exist_pre_moderato() -> eyre::Result<()> {
+        // Test with Adagio (pre-Moderato) - validation is enforced in all hardforks
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+        let min_order_amount = MIN_ORDER_AMOUNT;
+        let tick = 100i16;
+
+        let price = orderbook::tick_to_price(tick);
+        let expected_escrow = (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+        let (base_token, _quote_token) = setup_test_tokens(
+            exchange.storage,
+            admin,
+            alice,
+            exchange.address,
+            expected_escrow,
+        );
+
+        // Try to place an order without creating the pair first
+        // This validation is enforced both pre and post Moderato
+        let result = exchange.place(alice, base_token, min_order_amount, true, tick);
+
+        // Should fail with pair_does_not_exist error
         assert_eq!(
             result,
             Err(StablecoinExchangeError::pair_does_not_exist().into())
@@ -1632,6 +1683,77 @@ mod tests {
             result,
             Err(StablecoinExchangeError::below_minimum_order_size(below_minimum).into())
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_place_flip_order_pair_does_not_exist_post_moderato() -> eyre::Result<()> {
+        // Test with Moderato hardfork (validation should be enforced)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+        let min_order_amount = MIN_ORDER_AMOUNT;
+        let tick = 100i16;
+        let flip_tick = 200i16;
+
+        let price = orderbook::tick_to_price(tick);
+        let expected_escrow = (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+        let (base_token, _quote_token) = setup_test_tokens(
+            exchange.storage,
+            admin,
+            alice,
+            exchange.address,
+            expected_escrow,
+        );
+
+        // Try to place a flip order without creating the pair first
+        let result =
+            exchange.place_flip(alice, base_token, min_order_amount, true, tick, flip_tick);
+        assert_eq!(
+            result,
+            Err(StablecoinExchangeError::pair_does_not_exist().into())
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_place_flip_order_pair_does_not_exist_pre_moderato() -> eyre::Result<()> {
+        // Test with Adagio (pre-Moderato) - validation should not be enforced
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+        let min_order_amount = MIN_ORDER_AMOUNT;
+        let tick = 100i16;
+        let flip_tick = 200i16;
+
+        let price = orderbook::tick_to_price(tick);
+        let expected_escrow = (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+        let (base_token, _quote_token) = setup_test_tokens(
+            exchange.storage,
+            admin,
+            alice,
+            exchange.address,
+            expected_escrow,
+        );
+
+        // Try to place a flip order without creating the pair first
+        // Pre-Moderato, the book existence check is skipped, so the order is accepted
+        // (it would only fail later during execute_block when trying to process it)
+        let result =
+            exchange.place_flip(alice, base_token, min_order_amount, true, tick, flip_tick);
+
+        // Pre-Moderato: order should be accepted (placed in pending queue)
+        assert!(result.is_ok());
 
         Ok(())
     }
@@ -3340,6 +3462,34 @@ mod tests {
             max_in_between,
         );
         assert!(result.is_err());
+      
+          Ok(())
+    }
+  
+    #[test]
+    fn test_create_pair_rejects_non_tip20_base_post_moderato() -> eyre::Result<()> {
+        // Test with Moderato hardfork (validation should be enforced)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+
+        let admin = Address::random();
+        // Init Linking USD
+        let mut linking_usd = TIP20Token::from_address(LINKING_USD_ADDRESS, &mut storage);
+        linking_usd
+            .initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+            .unwrap();
+
+        let mut exchange = StablecoinExchange::new(linking_usd.storage());
+        exchange.initialize()?;
+
+        // Test: create_pair should reject non-TIP20 address (random address without TIP20 prefix)
+        let non_tip20_address = Address::random();
+        let result = exchange.create_pair(non_tip20_address);
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::StablecoinExchange(
+                StablecoinExchangeError::InvalidBaseToken(_)
+            ))
+        ));
 
         Ok(())
     }
@@ -3387,6 +3537,39 @@ mod tests {
             total_needed,
         );
         assert!(result.is_ok());
+      
+          Ok(())
+    }
+  
+    #[test]
+    fn test_create_pair_allows_non_tip20_base_pre_moderato() -> eyre::Result<()> {
+        // Test with Adagio (pre-Moderato) - validation should not be enforced
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+
+        let admin = Address::random();
+        // Init Linking USD
+        let mut linking_usd = TIP20Token::from_address(LINKING_USD_ADDRESS, &mut storage);
+        linking_usd
+            .initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+            .unwrap();
+
+        let mut exchange = StablecoinExchange::new(linking_usd.storage());
+        exchange.initialize()?;
+
+        // Test: create_pair should not reject non-TIP20 address pre-Moderato
+        // This will fail with a different error (trying to read quote_token from non-TIP20)
+        // but NOT the InvalidQuoteToken error from the is_tip20 check
+        let non_tip20_address = Address::random();
+        let result = exchange.create_pair(non_tip20_address);
+
+        // Should fail but not with InvalidQuoteToken error (that check is skipped pre-Moderato)
+        assert!(result.is_err());
+        assert!(!matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                _
+            )))
+        ));
 
         Ok(())
     }
