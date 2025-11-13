@@ -1250,7 +1250,7 @@ pub(crate) mod tests {
             .unwrap();
 
         let events = &storage.events[&token_id_to_address(token_id)];
-        
+
         // TransferWithMemo event should have Address::ZERO as from for post-Moderato
         assert_eq!(
             events[2],
@@ -1288,7 +1288,7 @@ pub(crate) mod tests {
             .unwrap();
 
         let events = &storage.events[&token_id_to_address(token_id)];
-        
+
         // TransferWithMemo event should have msg_sender as from for pre-Moderato
         assert_eq!(
             events[2],
