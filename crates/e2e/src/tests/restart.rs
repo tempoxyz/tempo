@@ -15,7 +15,7 @@ use futures::future::join_all;
 use rand::Rng;
 use tracing::{debug, info};
 
-use crate::{ExecutionRuntime, Setup, link_validators, setup_validators};
+use crate::{CONSENSUS_NODE_PREFIX, ExecutionRuntime, Setup, link_validators, setup_validators};
 
 /// Test configuration for restart scenarios
 #[derive(Clone)]
@@ -88,12 +88,13 @@ fn run_restart_test(
 
 /// Wait for a specific number of validators to reach a target height
 async fn wait_for_height(context: &Context, expected_validators: u32, target_height: u64) {
+    let prefix = format!("{CONSENSUS_NODE_PREFIX}-");
     loop {
         let metrics = context.encode();
         let mut validators_at_height = 0;
 
         for line in metrics.lines() {
-            if !line.starts_with("validator-") {
+            if !line.starts_with(&prefix) {
                 continue;
             }
 
@@ -102,28 +103,75 @@ async fn wait_for_height(context: &Context, expected_validators: u32, target_hei
             let value = parts.next().unwrap();
 
             // Check if this is a height metric
-            if metric.ends_with("_marshal_processed_height")
-                && let Ok(height) = value.parse::<u64>()
-                && height >= target_height
-            {
-                validators_at_height += 1;
+            if metric.ends_with("_marshal_processed_height") {
+                let height = value.parse::<u64>().unwrap();
+                if height >= target_height {
+                    validators_at_height += 1;
+                }
             }
         }
-
         if validators_at_height >= expected_validators {
-            debug!(
-                "Found {} validators at height {} (target: {})",
-                validators_at_height, target_height, expected_validators
-            );
             break;
         }
-
         context.sleep(Duration::from_secs(1)).await;
     }
 }
 
+/// Ensures that no more finalizations happen.
+async fn ensure_no_progress(context: &Context, tries: u32) {
+    let prefix = format!("{CONSENSUS_NODE_PREFIX}-");
+    let baseline = {
+        let metrics = context.encode();
+        let mut height = None;
+        for line in metrics.lines() {
+            if !line.starts_with(&prefix) {
+                continue;
+            }
+            let mut parts = line.split_whitespace();
+            let metrics = parts.next().unwrap();
+            let value = parts.next().unwrap();
+            if metrics.ends_with("_marshal_processed_height") {
+                let value = value.parse::<u64>().unwrap();
+                if Some(value) > height {
+                    height.replace(value);
+                }
+            }
+        }
+        height.expect("processed height is a metric")
+    };
+    for _ in 0..=tries {
+        context.sleep(Duration::from_secs(1)).await;
+
+        let metrics = context.encode();
+        let mut height = None;
+        for line in metrics.lines() {
+            if !line.starts_with(&prefix) {
+                continue;
+            }
+            let mut parts = line.split_whitespace();
+            let metrics = parts.next().unwrap();
+            let value = parts.next().unwrap();
+            if metrics.ends_with("_marshal_processed_height") {
+                let value = value.parse::<u64>().unwrap();
+                if Some(value) > height {
+                    height.replace(value);
+                }
+            }
+        }
+        let height = height.expect("processed height is a metric");
+        if height != baseline {
+            panic!(
+                "height has changed, progress was made while the network was \
+                stopped: baseline = `{baseline}`, progressed_to = `{height}`"
+            );
+        }
+    }
+}
+
+/// This is the simplest possible restart case: the network stops becasue we
+/// dropped below quorum. The node should be able to pick up after.
 #[test_traced]
-fn test_validator_restart_simple() {
+fn dropping_below_quorum_makes_no_progress_but_continues_after_restart() {
     let _ = tempo_eyre::install();
 
     let linkage = Link {
@@ -132,26 +180,58 @@ fn test_validator_restart_simple() {
         success_rate: 1.0,
     };
 
-    // Very simple test - just check that validator can be killed and restarted
-    let setup = RestartSetup {
-        node_setup: Setup {
-            how_many_signers: 3,
-            seed: 0,
-            linkage,
-            epoch_length: 10,
-            connect_execution_layer_nodes: false,
-        },
-        shutdown_height: 3, // Kill very early
-        restart_height: 6,  // Restart soon after
-        final_height: 10,   // Reach one epoch
+    let setup = Setup {
+        how_many_signers: 3, // quorum is 3, so
+        seed: 0,
+        linkage,
+        epoch_length: 100,
+        connect_execution_layer_nodes: false,
     };
+    let shutdown_height = 5;
+    let final_height = 10;
 
-    let _state = run_restart_test(setup);
-    // If we get here without panicking, the test passed
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+    let executor = Runner::from(cfg);
+
+    executor.start(|mut context| async move {
+        let execution_runtime = ExecutionRuntime::new();
+
+        let (nodes, mut oracle) =
+            setup_validators(context.clone(), &execution_runtime, setup.clone()).await;
+
+        let mut running = join_all(nodes.into_iter().map(|node| node.start())).await;
+        link_validators(&mut oracle, &running, setup.linkage.clone(), None).await;
+
+        debug!(
+            height = shutdown_height,
+            "waiting for network to reach target height before stopping a validator",
+        );
+        wait_for_height(&context, setup.how_many_signers, shutdown_height).await;
+
+        let idx = context.gen_range(0..running.len());
+        let to_restart = running.remove(idx).stop();
+        debug!(public_key = %to_restart.public_key, "stopped a random validator");
+
+        // wait a bit to let the network settle; some finalizations come in later
+        context.sleep(Duration::from_secs(1)).await;
+        ensure_no_progress(&context, 5).await;
+
+        running.push(to_restart.start().await);
+        debug!(
+            public_key = %running.last().unwrap().public_key,
+            "restarted validator",
+        );
+
+        debug!(
+            height = final_height,
+            "waiting for reconstituted validators to reach target height to reach test success",
+        );
+        wait_for_height(&context, running.len() as u32, final_height).await;
+    })
 }
 
 #[test_traced]
-fn test_validator_restart_perfect_links() {
+fn validator_restart_perfect_links() {
     let _ = tempo_eyre::install();
 
     let linkage = Link {
@@ -177,7 +257,7 @@ fn test_validator_restart_perfect_links() {
 }
 
 #[test_traced]
-fn test_validator_restart_with_failures() {
+fn validator_restart_with_failures() {
     let _ = tempo_eyre::install();
 
     let linkage = Link {
