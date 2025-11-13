@@ -8,7 +8,6 @@ use crate::{
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
-use tempo_chainspec::hardfork::TempoHardfork;
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -96,7 +95,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
             }
             ITIPFeeAMM::mintCall::SELECTOR => {
                 mutate::<ITIPFeeAMM::mintCall>(calldata, msg_sender, |s, call| {
-                    if self.storage.spec() >= TempoHardfork::Moderato {
+                    if self.storage.spec().is_moderato() {
                         Err(TempoPrecompileError::UnknownFunctionSelector)
                     } else {
                         self.mint(

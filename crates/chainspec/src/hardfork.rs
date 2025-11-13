@@ -33,6 +33,13 @@ hardfork!(
     }
 );
 
+impl TempoHardfork {
+    /// Returns `true` if this hardfork is Moderato or later.
+    pub fn is_moderato(self) -> bool {
+        self >= Self::Moderato
+    }
+}
+
 /// Trait for querying Tempo-specific hardfork activations.
 pub trait TempoHardforks: EthereumHardforks {
     /// Retrieves activation condition for a Tempo-specific hardfork
@@ -109,5 +116,12 @@ mod tests {
         // Deserialize from JSON
         let deserialized: TempoHardfork = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, fork);
+    }
+
+    #[test]
+    fn test_is_moderato() {
+        assert!(!TempoHardfork::Adagio.is_moderato());
+
+        assert!(TempoHardfork::Moderato.is_moderato());
     }
 }

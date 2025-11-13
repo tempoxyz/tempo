@@ -8,7 +8,6 @@ use tempo_precompiles_macros::contract;
 
 use crate::{NONCE_PRECOMPILE_ADDRESS, error::Result, storage::PrecompileStorageProvider};
 use alloy::primitives::{Address, IntoLogData, U256};
-use tempo_chainspec::hardfork::TempoHardfork;
 
 /// NonceManager contract for managing 2D nonces as per the AA spec
 ///
@@ -99,7 +98,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
         self.sstore_active_key_count(account, new_count)?;
 
         // Emit ActiveKeyCountChanged event (only after Moderato hardfork)
-        if self.storage.spec() >= TempoHardfork::Moderato {
+        if self.storage.spec().is_moderato() {
             self.storage.emit_event(
                 self.address,
                 NonceEvent::ActiveKeyCountChanged(INonce::ActiveKeyCountChanged {
@@ -117,6 +116,7 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
 #[cfg(test)]
 mod tests {
     use crate::{error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider};
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     use super::*;
     use alloy::primitives::address;
