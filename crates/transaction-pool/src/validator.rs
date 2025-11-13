@@ -9,7 +9,7 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
-use tempo_precompiles::DEFAULT_FEE_TOKEN;
+use tempo_precompiles::{DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS};
 use tempo_revm::TempoStateAccess;
 
 /// Validator for Tempo transactions.
@@ -77,27 +77,25 @@ where
                 }
             };
 
-        if let Some(fee_token) = maybe_tx_fee_token {
-            match state_provider.is_valid_fee_token(fee_token) {
-                Ok(valid) => {
-                    if !valid {
-                        return TransactionValidationOutcome::Invalid(
-                            transaction,
-                            InvalidPoolTransactionError::other(
-                                TempoPoolTransactionError::InvalidFeeToken(fee_token),
-                            ),
-                        );
-                    }
+        let fee_token = maybe_tx_fee_token.unwrap_or(LINKING_USD_ADDRESS);
+
+        match state_provider.is_valid_fee_token(fee_token) {
+            Ok(valid) => {
+                if !valid {
+                    return TransactionValidationOutcome::Invalid(
+                        transaction,
+                        InvalidPoolTransactionError::other(
+                            TempoPoolTransactionError::InvalidFeeToken(fee_token),
+                        ),
+                    );
                 }
-                Err(err) => {
-                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-                }
+            }
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
             }
         }
 
-        let balance = match state_provider
-            .get_token_balance(maybe_tx_fee_token.unwrap_or(DEFAULT_FEE_TOKEN), fee_payer)
-        {
+        let balance = match state_provider.get_token_balance(fee_token, fee_payer) {
             Ok(balance) => balance,
             Err(err) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
