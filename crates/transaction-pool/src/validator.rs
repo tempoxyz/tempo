@@ -239,36 +239,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_insufficient_balance() {
-        let transaction = get_transaction(None);
-        let provider = MockEthProvider::default();
-        provider.add_account(
-            transaction.sender(),
-            ExtendedAccount::new(transaction.nonce(), alloy_primitives::U256::ZERO),
-        );
-
-        let inner = EthTransactionValidatorBuilder::new(provider.clone())
-            .disable_balance_check()
-            .build(InMemoryBlobStore::default());
-        let validator = TempoTransactionValidator::new(inner);
-
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, transaction.clone())
-            .await;
-
-        let expected_cost = transaction.fee_token_cost();
-        if let TransactionValidationOutcome::Invalid(_, err) = outcome {
-            assert!(matches!(
-                err,
-                InvalidPoolTransactionError::Consensus(InvalidTransactionError::InsufficientFunds(ref funds_err))
-                if funds_err.got == alloy_primitives::U256::ZERO && funds_err.expected == expected_cost
-            ));
-        } else {
-            panic!("Expected Invalid outcome with InsufficientFunds error");
-        }
-    }
-
-    #[tokio::test]
     async fn test_some_balance() {
         let transaction = get_transaction(Some(U256::from(1)));
         let provider = MockEthProvider::default();

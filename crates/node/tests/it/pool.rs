@@ -1,4 +1,7 @@
+use alloy::{consensus::Transaction, signers::local::PrivateKeySigner};
 use alloy_eips::Decodable2718;
+use alloy_network::TxSignerSync;
+use alloy_primitives::{Address, U256};
 use reth_ethereum::{
     evm::revm::primitives::hex,
     node::builder::{NodeBuilder, NodeHandle},
@@ -7,12 +10,17 @@ use reth_ethereum::{
     tasks::TaskManager,
 };
 use reth_node_core::{args::RpcServerArgs, node_config::NodeConfig};
-use reth_transaction_pool::{TransactionOrigin, pool::AddedTransactionState};
+use reth_primitives_traits::transaction::error::InvalidTransactionError;
+use reth_transaction_pool::{
+    TransactionOrigin,
+    error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
+    pool::AddedTransactionState,
+};
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::node::TempoNode;
-use tempo_precompiles::{storage::slots, tip_fee_manager};
-use tempo_primitives::TempoTxEnvelope;
+use tempo_precompiles::{DEFAULT_FEE_TOKEN, storage::slots, tip_fee_manager};
+use tempo_primitives::{TempoTxEnvelope, TxFeeToken, transaction::calc_gas_balance_spending};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn submit_pending_tx() -> eyre::Result<()> {
@@ -58,6 +66,69 @@ async fn submit_pending_tx() -> eyre::Result<()> {
 
     let best = node.pool.best_transactions().next().unwrap();
     assert_eq!(res.hash, *best.hash());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_insufficient_funds() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+    let tasks = TaskManager::current();
+    let executor = tasks.executor();
+    let chain_spec = TempoChainSpec::from_genesis(serde_json::from_str(include_str!(
+        "../assets/test-genesis.json"
+    ))?);
+
+    let node_config = NodeConfig::new(Arc::new(chain_spec))
+        .with_unused_ports()
+        .dev()
+        .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
+
+    let NodeHandle {
+        node,
+        node_exit_future: _,
+    } = NodeBuilder::new(node_config.clone())
+        .testing_node(executor.clone())
+        .node(TempoNode::new())
+        .launch()
+        .await?;
+
+    let mut tx = TxFeeToken {
+        chain_id: 1,
+        nonce: U256::random().saturating_to(),
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        max_priority_fee_per_gas: 74982851675,
+        max_fee_per_gas: 74982851675,
+        gas_limit: 1015288,
+        to: Address::random().into(),
+        ..Default::default()
+    };
+    let signer = PrivateKeySigner::random();
+
+    let signature = signer.sign_transaction_sync(&mut tx).unwrap();
+    let tx = TempoTxEnvelope::FeeToken(tx.into_signed(signature));
+
+    let res = node
+        .pool
+        .add_consensus_transaction(tx.clone().try_into_recovered()?, TransactionOrigin::Local)
+        .await;
+
+    let Err(PoolError {
+        hash: _,
+        kind:
+            PoolErrorKind::InvalidTransaction(InvalidPoolTransactionError::Consensus(
+                InvalidTransactionError::InsufficientFunds(err),
+            )),
+    }) = res
+    else {
+        panic!("Expected InvalidTransaction error, got {res:?}");
+    };
+
+    assert_eq!(err.got, U256::ZERO);
+    assert_eq!(
+        err.expected,
+        calc_gas_balance_spending(tx.gas_limit(), tx.max_fee_per_gas())
+    );
 
     Ok(())
 }
