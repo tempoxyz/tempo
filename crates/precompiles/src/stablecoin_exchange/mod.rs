@@ -828,11 +828,6 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             }
         }
 
-        // Post-Moderato: Check maxIn only on final amount after all orders filled
-        if self.storage.spec() >= TempoHardfork::Moderato && total_amount_in > max_amount_in {
-            return Err(StablecoinExchangeError::max_input_exceeded().into());
-        }
-
         Ok(total_amount_in)
     }
 
@@ -874,7 +869,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             }
         }
 
-        if total_amount_out < min_amount_out {
+        // Pre-Moderato: Check min out after filling the full amount in
+        if self.storage.spec() < TempoHardfork::Moderato && total_amount_out < min_amount_out {
             return Err(StablecoinExchangeError::insufficient_output().into());
         }
 
