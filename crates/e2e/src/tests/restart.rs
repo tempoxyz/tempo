@@ -21,7 +21,7 @@ use futures::future::join_all;
 use rand::Rng;
 use tracing::{debug, info};
 
-use crate::{ExecutionRuntime, Setup, ValidatorNode, link_validators, setup_validators};
+use crate::{ExecutionRuntime, Node, Setup, link_validators, setup_validators};
 
 /// Test configuration for restart scenarios
 #[derive(Clone)]
@@ -178,11 +178,11 @@ struct RestartParams<'a> {
     total_validators: u32,
     linkage: Link,
     epoch_length: u64,
-    existing_nodes: &'a [ValidatorNode],
+    existing_nodes: &'a [Node],
 }
 
 /// Restart a validator that was previously killed
-async fn restart_validator(params: RestartParams<'_>) -> ValidatorNode {
+async fn restart_validator(params: RestartParams<'_>) -> Node {
     let RestartParams {
         mut context,
         execution_runtime,
@@ -267,7 +267,7 @@ async fn restart_validator(params: RestartParams<'_>) -> ValidatorNode {
     let validators_clone = validators.clone();
     let link_clone = linkage.clone();
 
-    ValidatorNode {
+    Node {
         node,
         public_key: signer.public_key(),
         start_engine: Some(Box::pin(async move {
