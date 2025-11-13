@@ -43,7 +43,7 @@ pub const CONSENSUS_NODE_PREFIX: &str = "consensus";
 pub const EXECUTION_NODE_PREFIX: &str = "execution";
 
 /// A Tempo node with lazily started consensus engine.
-pub struct Node {
+pub struct PreparedNode {
     pub uid: String,
 
     /// Execution-layer node. Spawned in the background but won't progress unless consensus engine is started.
@@ -57,44 +57,7 @@ pub struct Node {
     pub oracle: simulated::Oracle<PublicKey>,
 }
 
-/// A Tempo node with lazily started consensus engine.
-pub struct RunningNode {
-    pub uid: String,
-
-    pub consensus_config: consensus::Builder<Control<PublicKey>, Context, SocketManager<PublicKey>>,
-    pub consensus_handle: Handle<eyre::Result<()>>,
-
-    /// Execution-layer node. Spawned in the background but won't progress unless consensus engine is started.
-    pub execution_node: ExecutionNode,
-
-    /// Public key of the validator.
-    pub public_key: PublicKey,
-
-    pub oracle: simulated::Oracle<PublicKey>,
-}
-
-impl RunningNode {
-    pub fn stop(self) -> Node {
-        let Self {
-            uid,
-            execution_node,
-            public_key,
-            oracle,
-            consensus_config,
-            consensus_handle,
-        } = self;
-        consensus_handle.abort();
-        Node {
-            uid,
-            execution_node,
-            public_key,
-            consensus_config,
-            oracle,
-        }
-    }
-}
-
-impl Node {
+impl PreparedNode {
     pub async fn start(self) -> RunningNode {
         let Self {
             uid,
@@ -173,6 +136,43 @@ impl Node {
     }
 }
 
+/// A Tempo node with lazily started consensus engine.
+pub struct RunningNode {
+    pub uid: String,
+
+    pub consensus_config: consensus::Builder<Control<PublicKey>, Context, SocketManager<PublicKey>>,
+    pub consensus_handle: Handle<eyre::Result<()>>,
+
+    /// Execution-layer node. Spawned in the background but won't progress unless consensus engine is started.
+    pub execution_node: ExecutionNode,
+
+    /// Public key of the validator.
+    pub public_key: PublicKey,
+
+    pub oracle: simulated::Oracle<PublicKey>,
+}
+
+impl RunningNode {
+    pub fn stop(self) -> PreparedNode {
+        let Self {
+            uid,
+            execution_node,
+            public_key,
+            oracle,
+            consensus_config,
+            consensus_handle,
+        } = self;
+        consensus_handle.abort();
+        PreparedNode {
+            uid,
+            execution_node,
+            public_key,
+            consensus_config,
+            oracle,
+        }
+    }
+}
+
 /// The test setup run by [`run`].
 #[derive(Clone)]
 pub struct Setup {
@@ -199,7 +199,7 @@ pub async fn setup_validators(
         connect_execution_layer_nodes,
         ..
     }: Setup,
-) -> (Vec<Node>, simulated::Oracle<PublicKey>) {
+) -> (Vec<PreparedNode>, simulated::Oracle<PublicKey>) {
     let (network, oracle) = Network::new(
         context.with_label("network"),
         simulated::Config {
@@ -296,7 +296,7 @@ pub async fn setup_validators(
             time_to_build_subblock: Duration::from_millis(100),
         };
 
-        nodes.push(Node {
+        nodes.push(PreparedNode {
             execution_node,
             public_key: private_key.public_key(),
             consensus_config: engine_config,
