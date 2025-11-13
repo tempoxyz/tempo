@@ -992,6 +992,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                     level = new_level;
                     order = new_order;
                 } else {
+                    if amount_in > 0 {
+                        return Err(StablecoinExchangeError::insufficient_liquidity().into());
+                    }
                     break;
                 }
             }
