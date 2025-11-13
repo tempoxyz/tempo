@@ -1258,7 +1258,7 @@ pub(crate) mod tests {
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         let to = Address::random();
-        let amount = U256::random();
+        let amount = U256::random() % token.supply_cap()?;
         let memo = FixedBytes::random();
 
         token
@@ -1462,7 +1462,7 @@ pub(crate) mod tests {
         let owner = Address::random();
         let spender = Address::random();
         let to = Address::random();
-        let amount = U256::random();
+        let amount = U256::random() % token.supply_cap()?;
         let memo = FixedBytes::random();
 
         token
