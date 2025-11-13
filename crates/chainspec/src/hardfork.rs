@@ -77,6 +77,11 @@ impl From<TempoHardfork> for SpecId {
 }
 
 impl From<SpecId> for TempoHardfork {
+    /// Maps a [`SpecId`] to the *latest compatible* [`TempoHardfork`].
+    ///
+    /// Note: this is intentionally not a strict inverse of
+    /// `From<TempoHardfork> for SpecId`, because multiple Tempo
+    /// hardforks may share the same underlying EVM spec.
     fn from(spec: SpecId) -> Self {
         if spec.is_enabled_in(SpecId::from(Self::Moderato)) {
             Self::Moderato
