@@ -8,6 +8,8 @@ mod block;
 #[cfg(not(test))]
 use tracing as _;
 
+mod common;
+pub use common::{TempoStateAccess, TempoTx};
 pub mod error;
 pub mod evm;
 pub mod exec;

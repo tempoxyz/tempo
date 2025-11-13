@@ -7,6 +7,9 @@ use alloy::{
 use clap::Parser;
 use eyre::Context;
 use itertools::Itertools;
+use metrics::{counter, describe_counter};
+use metrics_exporter_prometheus::PrometheusBuilder;
+use poem::{EndpointExt as _, Route, Server, get, listener::TcpListener};
 use std::{collections::HashSet, time::Duration};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, tip_fee_manager::ITIPFeeAMM,
@@ -14,6 +17,8 @@ use tempo_precompiles::{
 };
 use tempo_telemetry_util::error_field;
 use tracing::{debug, error, info, instrument};
+
+use crate::monitor;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -29,6 +34,10 @@ pub struct SimpleArbArgs {
     /// Interval between checking pools for rebalancing. This should be set to the block time.
     #[arg(long, default_value_t = 2)]
     poll_interval: u64,
+
+    /// Prometheus port for metrics
+    #[arg(long, default_value_t = 8000)]
+    metrics_port: u64,
 }
 
 #[instrument(skip(provider))]
@@ -60,6 +69,34 @@ impl SimpleArbArgs {
         tracing_subscriber::FmtSubscriber::builder()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .init();
+
+        let builder = PrometheusBuilder::new();
+        let metrics_handle = builder
+            .install_recorder()
+            .context("failed to install recorder")?;
+
+        describe_counter!(
+            "tempo_arb_bot_successful_transactions",
+            "Number of successful transactions executed by the arb bot"
+        );
+        describe_counter!(
+            "tempo_arb_bot_failed_transactions",
+            "Number of failed transactions executed by the arb bot"
+        );
+
+        let app = Route::new().at(
+            "/metrics",
+            get(monitor::prometheus_metrics).data(metrics_handle.clone()),
+        );
+
+        let addr = format!("0.0.0.0:{}", self.metrics_port);
+
+        tokio::spawn(async move {
+            Server::new(TcpListener::bind(addr))
+                .run(app)
+                .await
+                .context("failed to run poem server")
+        });
 
         let signer = PrivateKeySigner::from_slice(
             &hex::decode(&self.private_key).context("failed to decode private key")?,
@@ -148,6 +185,9 @@ impl SimpleArbArgs {
                                 err = error_field(&e),
                                 "Failed to send rebalance transaction"
                             );
+
+                            counter!("tempo_arb_bot_failed_transactions", "error" => "tx_send")
+                                .increment(1);
                         }
                     }
 
@@ -161,12 +201,17 @@ impl SimpleArbArgs {
                         {
                             Ok(Ok(_)) => {
                                 debug!("Tx receipt received successfully");
+                                counter!("tempo_arb_bot_successful_transactions").increment(1);
                             }
                             Ok(Err(e)) => {
                                 error!(err = error_field(&e), "Failed to get tx receipt");
+                                counter!("tempo_arb_bot_failed_transactions", "error" => "fetch_receipt")
+                                    .increment(1);
                             }
                             Err(_) => {
                                 error!("Timeout waiting for tx receipt");
+                                counter!("tempo_arb_bot_failed_transactions", "error" => "receipt_timeout")
+                                    .increment(1);
                             }
                         }
                     }

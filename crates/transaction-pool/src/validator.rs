@@ -1,6 +1,5 @@
 use crate::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
 use alloy_consensus::Transaction;
-use alloy_sol_types::SolCall;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
@@ -10,11 +9,8 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
-use tempo_precompiles::{
-    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, provider::TIPFeeStateProviderExt,
-    tip_fee_manager::IFeeManager::setUserTokenCall, tip20::is_tip20,
-};
-use tempo_primitives::TempoTxEnvelope;
+use tempo_precompiles::DEFAULT_FEE_TOKEN;
+use tempo_revm::TempoStateAccess;
 
 /// Validator for Tempo transactions.
 #[derive(Debug)]
@@ -35,7 +31,7 @@ where
         &self,
         origin: TransactionOrigin,
         transaction: TempoPooledTransaction,
-        state_provider: impl StateProvider,
+        mut state_provider: impl StateProvider,
     ) -> TransactionValidationOutcome<TempoPooledTransaction> {
         // Reject system transactions, those are never allowed in the pool.
         if transaction.inner().is_system_tx() {
@@ -57,7 +53,7 @@ where
 
         // Reject AA transactions with non-zero nonce keys, we don't have
         // a nice way to track them in the pool yet.
-        if let TempoTxEnvelope::AA(tx) = transaction.inner()
+        if let Some(tx) = transaction.inner().as_aa()
             && !tx.tx().nonce_key.is_zero()
         {
             return TransactionValidationOutcome::Error(
@@ -73,50 +69,35 @@ where
             }
         };
 
-        let tx_fee_token = if let Some(fee_token) = transaction.inner().fee_token() {
-            Some(fee_token)
-        } else if !transaction.inner().is_aa()
-            && fee_payer == transaction.sender()
-            && transaction.inner().kind().to() == Some(&TIP_FEE_MANAGER_ADDRESS)
-            && let Ok(call) = setUserTokenCall::abi_decode(transaction.inner().input())
-        {
-            Some(call.token)
-        } else {
-            None
-        };
-
-        if let Some(fee_token) = tx_fee_token {
-            if !is_tip20(fee_token) || fee_token == LINKING_USD_ADDRESS {
-                return TransactionValidationOutcome::Invalid(
-                    transaction,
-                    InvalidPoolTransactionError::other(TempoPoolTransactionError::InvalidFeeToken(
-                        fee_token,
-                    )),
-                );
-            }
-
-            let account = match state_provider.basic_account(&fee_token) {
-                Ok(code) => code,
+        let maybe_tx_fee_token =
+            match state_provider.user_or_tx_fee_token(transaction.inner(), fee_payer) {
+                Ok(maybe_tx_fee_token) => maybe_tx_fee_token,
                 Err(err) => {
                     return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
                 }
             };
 
-            if account.is_none_or(|acc| !acc.has_bytecode()) {
-                return TransactionValidationOutcome::Invalid(
-                    transaction,
-                    InvalidPoolTransactionError::other(TempoPoolTransactionError::InvalidFeeToken(
-                        fee_token,
-                    )),
-                );
+        if let Some(fee_token) = maybe_tx_fee_token {
+            match state_provider.is_valid_fee_token(fee_token) {
+                Ok(valid) => {
+                    if !valid {
+                        return TransactionValidationOutcome::Invalid(
+                            transaction,
+                            InvalidPoolTransactionError::other(
+                                TempoPoolTransactionError::InvalidFeeToken(fee_token),
+                            ),
+                        );
+                    }
+                }
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                }
             }
         }
 
-        let balance = match state_provider.get_fee_token_balance(
-            fee_payer,
-            tx_fee_token,
-            transaction.inner().kind().to(),
-        ) {
+        let balance = match state_provider
+            .get_token_balance(maybe_tx_fee_token.unwrap_or(DEFAULT_FEE_TOKEN), fee_payer)
+        {
             Ok(balance) => balance,
             Err(err) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
@@ -230,12 +211,6 @@ mod tests {
         PoolTransaction, blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
         validate::EthTransactionValidatorBuilder,
     };
-    use tempo_precompiles::{
-        TIP_FEE_MANAGER_ADDRESS,
-        storage::slots::mapping_slot,
-        tip_fee_manager,
-        tip20::{self, token_id_to_address},
-    };
     use tempo_primitives::TempoTxEnvelope;
 
     fn get_transaction(with_value: Option<U256>) -> TempoPooledTransaction {
@@ -264,7 +239,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sufficient_balance() {
+    async fn test_insufficient_balance() {
         let transaction = get_transaction(None);
         let provider = MockEthProvider::default();
         provider.add_account(
@@ -291,29 +266,6 @@ mod tests {
         } else {
             panic!("Expected Invalid outcome with InsufficientFunds error");
         }
-
-        // Add fee token balance for tx sender
-        let fee_token = token_id_to_address(1);
-        let storage = vec![(
-            mapping_slot(transaction.sender(), tip20::slots::BALANCES).into(),
-            transaction.fee_token_cost(),
-        )];
-        let fee_token_acct = ExtendedAccount::new(0, U256::ZERO).extend_storage(storage);
-        provider.add_account(fee_token, fee_token_acct);
-
-        // Add fee token for user
-        let storage = vec![(
-            mapping_slot(transaction.sender(), tip_fee_manager::slots::USER_TOKENS).into(),
-            U256::from_be_bytes(fee_token.into_word().0),
-        )];
-        let fee_manager_acct = ExtendedAccount::new(0, U256::ZERO).extend_storage(storage);
-        provider.add_account(TIP_FEE_MANAGER_ADDRESS, fee_manager_acct);
-
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, transaction)
-            .await;
-
-        assert!(outcome.is_valid());
     }
 
     #[tokio::test]

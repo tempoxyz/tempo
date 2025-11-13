@@ -70,6 +70,20 @@ jobs:
             echo "Generated genesis matches test-genesis.json"
           fi
 
+  snapshot-re-execute:
+    name: Snapshot re-execution
+    runs-on: depot-ubuntu-latest-16
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Download snapshot
+        run: cargo run --release --bin tempo download --datadir snap-rexec
+      - name: Re-execute snapshot
+        run: cargo run --release --bin tempo re-execute --datadir snap-rexec/data/tempo
+
   test-success:
     name: test success
     runs-on: depot-ubuntu-latest-4
@@ -78,6 +92,7 @@ jobs:
       - test
       - msrv
       - genesis
+      - snapshot-re-execute
     timeout-minutes: 30
     steps:
       - name: Decide whether the needed jobs succeeded or failed

@@ -41,3 +41,28 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Factory<'a, S> {
         result.map(|res| fill_precompile_output(res, self.storage))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        storage::hashmap::HashMapStorageProvider,
+        test_util::{assert_full_coverage, check_selector_coverage},
+    };
+    use tempo_contracts::precompiles::ITIP20Factory::ITIP20FactoryCalls;
+
+    #[test]
+    fn tip20_factory_test_selector_coverage() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut factory = TIP20Factory::new(&mut storage);
+
+        let unsupported = check_selector_coverage(
+            &mut factory,
+            ITIP20FactoryCalls::SELECTORS,
+            "ITIP20Factory",
+            ITIP20FactoryCalls::name_by_selector,
+        );
+
+        assert_full_coverage([unsupported]);
+    }
+}

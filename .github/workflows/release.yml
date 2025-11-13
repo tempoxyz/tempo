@@ -123,9 +123,9 @@ jobs:
             PROFILE_DIR="$PROFILE"
           fi
 
-          BINARY_PATH="target/${{ matrix.platform.target }}/${PROFILE_DIR}/${{ matrix.binary }}"
-          BINARY_NAME="${{ matrix.binary }}-${{ needs.get-version.outputs.version }}-${{ matrix.platform.target }}"
-          ARCHIVE_NAME="${{ matrix.binary }}-${{ needs.get-version.outputs.version }}-${{ matrix.platform.target }}.tar.gz"
+          BINARY_PATH="target/${{ matrix.platform.target }}/${PROFILE_DIR}/${{ matrix.binary.name }}"
+          BINARY_NAME="${{ matrix.binary.name }}-${{ needs.get-version.outputs.version }}-${{ matrix.platform.target }}"
+          ARCHIVE_NAME="${{ matrix.binary.name }}-${{ needs.get-version.outputs.version }}-${{ matrix.platform.target }}.tar.gz"
 
           cp "$BINARY_PATH" "$BINARY_NAME"
           tar czf "$ARCHIVE_NAME" "$BINARY_NAME"
@@ -141,7 +141,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.binary }}-${{ matrix.platform.target }}
+          name: ${{ matrix.binary.name }}-${{ matrix.platform.target }}
           path: |
             ${{ steps.prepare.outputs.archive_path }}
             ${{ steps.prepare.outputs.archive_name }}.sha256

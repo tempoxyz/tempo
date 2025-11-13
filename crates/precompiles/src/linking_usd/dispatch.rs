@@ -2,10 +2,11 @@ use crate::{
     Precompile, fill_precompile_output, input_cost,
     linking_usd::LinkingUSD,
     metadata, mutate, mutate_void,
-    storage::PrecompileStorageProvider,
+    storage::{ContractStorage, PrecompileStorageProvider},
     tip20::{IRolesAuth, ITIP20},
     view,
 };
+
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::{ILinkingUSD, TIP20Error};
@@ -13,7 +14,7 @@ use tempo_contracts::precompiles::{ILinkingUSD, TIP20Error};
 impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         self.token
-            .storage
+            .storage()
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
@@ -172,33 +173,31 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
 
             // RolesAuth functions
             IRolesAuth::hasRoleCall::SELECTOR => {
-                view::<IRolesAuth::hasRoleCall>(calldata, |call| {
-                    self.get_roles_contract().has_role(call)
-                })
+                view::<IRolesAuth::hasRoleCall>(calldata, |call| self.token.has_role(call))
             }
             IRolesAuth::getRoleAdminCall::SELECTOR => {
                 view::<IRolesAuth::getRoleAdminCall>(calldata, |call| {
-                    self.get_roles_contract().get_role_admin(call)
+                    self.token.get_role_admin(call)
                 })
             }
             IRolesAuth::grantRoleCall::SELECTOR => {
                 mutate_void::<IRolesAuth::grantRoleCall>(calldata, msg_sender, |sender, call| {
-                    self.get_roles_contract().grant_role(sender, call)
+                    self.token.grant_role(sender, call)
                 })
             }
             IRolesAuth::revokeRoleCall::SELECTOR => {
                 mutate_void::<IRolesAuth::revokeRoleCall>(calldata, msg_sender, |sender, call| {
-                    self.get_roles_contract().revoke_role(sender, call)
+                    self.token.revoke_role(sender, call)
                 })
             }
             IRolesAuth::renounceRoleCall::SELECTOR => {
                 mutate_void::<IRolesAuth::renounceRoleCall>(calldata, msg_sender, |sender, call| {
-                    self.get_roles_contract().renounce_role(sender, call)
+                    self.token.renounce_role(sender, call)
                 })
             }
             IRolesAuth::setRoleAdminCall::SELECTOR => {
                 mutate_void::<IRolesAuth::setRoleAdminCall>(calldata, msg_sender, |sender, call| {
-                    self.get_roles_contract().set_role_admin(sender, call)
+                    self.token.set_role_admin(sender, call)
                 })
             }
 
@@ -212,12 +211,38 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::hashmap::HashMapStorageProvider;
+    use crate::{storage::hashmap::HashMapStorageProvider, test_util::check_selector_coverage};
     use alloy::{
         primitives::{Bytes, U256},
         sol_types::SolInterface,
     };
-    use tempo_contracts::precompiles::TIP20Error;
+    use tempo_contracts::precompiles::{
+        IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error,
+    };
+
+    #[test]
+    fn linking_usd_test_selector_coverage() {
+        use crate::test_util::assert_full_coverage;
+
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut linking_usd = LinkingUSD::new(&mut storage);
+
+        linking_usd.initialize(Address::ZERO).unwrap();
+
+        let itip20_unsupported =
+            check_selector_coverage(&mut linking_usd, ITIP20Calls::SELECTORS, "ITIP20", |s| {
+                ITIP20Calls::name_by_selector(s)
+            });
+
+        let roles_unsupported = check_selector_coverage(
+            &mut linking_usd,
+            IRolesAuthCalls::SELECTORS,
+            "IRolesAuth",
+            IRolesAuthCalls::name_by_selector,
+        );
+
+        assert_full_coverage([itip20_unsupported, roles_unsupported]);
+    }
 
     #[test]
     fn test_start_reward_disabled() -> eyre::Result<()> {

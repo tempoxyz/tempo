@@ -12,8 +12,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-precompiles = { workspace = true, features = ["reth"] }
+tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["serde", "reth-codec"] }
+tempo-revm = { workspace = true, features = ["reth"] }
 
 reth-transaction-pool.workspace = true
 reth-chainspec.workspace = true
@@ -22,7 +23,6 @@ reth-storage-api.workspace = true
 
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
-alloy-sol-types.workspace = true
 alloy-eips.workspace = true
 
 thiserror.workspace = true
