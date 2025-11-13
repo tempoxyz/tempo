@@ -9,7 +9,6 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
-use tempo_precompiles::{DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS};
 use tempo_revm::TempoStateAccess;
 
 /// Validator for Tempo transactions.
@@ -69,15 +68,18 @@ where
             }
         };
 
-        let maybe_tx_fee_token =
-            match state_provider.user_or_tx_fee_token(transaction.inner(), fee_payer) {
-                Ok(maybe_tx_fee_token) => maybe_tx_fee_token,
-                Err(err) => {
-                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-                }
-            };
-
-        let fee_token = maybe_tx_fee_token.unwrap_or(LINKING_USD_ADDRESS);
+        let fee_token = match state_provider.user_or_tx_fee_token(transaction.inner(), fee_payer) {
+            Ok(Some(fee_token)) => fee_token,
+            Ok(None) => {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(TempoPoolTransactionError::MissingFeeToken),
+                );
+            }
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        };
 
         match state_provider.is_valid_fee_token(fee_token) {
             Ok(valid) => {

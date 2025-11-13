@@ -11903,7 +11903,6 @@ dependencies = [
  "reth-provider",
  "reth-storage-api",
  "reth-transaction-pool",
- "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",
  "thiserror 2.0.17",
