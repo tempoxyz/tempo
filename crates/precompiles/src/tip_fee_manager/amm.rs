@@ -249,7 +249,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
 
         let liquidity = if total_supply.is_zero() {
             // Use checked math for multiplication and division
-            let mean = if self.storage.spec() >= TempoHardfork::Moderato {
+            let mean = if self.storage.spec().is_moderato() {
                 amount_user_token
                     .checked_add(amount_validator_token)
                     .map(|product| product / uint!(2_U256))

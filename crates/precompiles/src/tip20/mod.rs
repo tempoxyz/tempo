@@ -101,7 +101,7 @@ pub fn validate_usd_currency<S: PrecompileStorageProvider>(
     token: Address,
     storage: &mut S,
 ) -> Result<()> {
-    if storage.spec() >= TempoHardfork::Moderato && !is_tip20(token) {
+    if storage.spec().is_moderato() && !is_tip20(token) {
         return Err(FeeManagerError::invalid_token().into());
     }
 
