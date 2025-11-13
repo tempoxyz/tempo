@@ -38,3 +38,6 @@ mod network;
 pub use network::*;
 
 pub mod rpc;
+
+#[doc(inline)]
+pub use tempo_primitives as primitives;
