@@ -1355,6 +1355,118 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_transfer_from_with_memo_from_address_post_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let admin = Address::random();
+        let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
+        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let owner = Address::random();
+        let spender = Address::random();
+        let to = Address::random();
+        let amount = U256::random();
+        let memo = FixedBytes::random();
+
+        token
+            .mint(admin, ITIP20::mintCall { to: owner, amount })
+            .unwrap();
+
+        token
+            .approve(owner, ITIP20::approveCall { spender, amount })
+            .unwrap();
+
+        token
+            .transfer_from_with_memo(
+                spender,
+                ITIP20::transferFromWithMemoCall {
+                    from: owner,
+                    to,
+                    amount,
+                    memo,
+                },
+            )
+            .unwrap();
+
+        let events = &storage.events[&token_id_to_address(token_id)];
+
+        // TransferWithMemo event should have use call.from in transfer event
+        assert_eq!(
+            events[4],
+            TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: owner,
+                to,
+                amount,
+                memo
+            })
+            .into_log_data()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_from_with_memo_from_address_pre_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::random();
+        let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
+        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let owner = Address::random();
+        let spender = Address::random();
+        let to = Address::random();
+        let amount = U256::random();
+        let memo = FixedBytes::random();
+
+        token
+            .mint(admin, ITIP20::mintCall { to: owner, amount })
+            .unwrap();
+
+        token
+            .approve(owner, ITIP20::approveCall { spender, amount })
+            .unwrap();
+
+        token
+            .transfer_from_with_memo(
+                spender,
+                ITIP20::transferFromWithMemoCall {
+                    from: owner,
+                    to,
+                    amount,
+                    memo,
+                },
+            )
+            .unwrap();
+
+        let events = &storage.events[&token_id_to_address(token_id)];
+
+        // TransferWithMemo event should user msg_sender in transfer event
+        assert_eq!(
+            events[4],
+            TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: spender,
+                to,
+                amount,
+                memo
+            })
+            .into_log_data()
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn test_transfer_fee_pre_tx() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
