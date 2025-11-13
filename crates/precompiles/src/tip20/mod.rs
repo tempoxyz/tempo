@@ -354,10 +354,17 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ) -> Result<()> {
         self._mint(msg_sender, call.to, call.amount)?;
 
+        // Post-Moderato: emit events where sender is Address::ZERO for mint operations
+        let from = if self.storage.spec().is_moderato() {
+            Address::ZERO
+        } else {
+            msg_sender
+        };
+
         self.storage.emit_event(
             self.address,
             TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-                from: msg_sender,
+                from,
                 to: call.to,
                 amount: call.amount,
                 memo: call.memo,
