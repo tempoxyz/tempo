@@ -48,16 +48,15 @@ fn subblocks_are_included() {
         let (nodes, mut oracle) =
             setup_validators(context.clone(), &execution_runtime, setup).await;
 
-        let validators = nodes
-            .iter()
-            .map(|node| node.public_key.clone())
-            .collect::<Vec<_>>();
-
         let running = join_all(nodes.into_iter().map(|node| node.start())).await;
 
-        link_validators(&mut oracle, &validators, linkage.clone(), None).await;
+        link_validators(&mut oracle, &running, linkage.clone(), None).await;
 
-        let mut stream = running[0].node.node.provider.canonical_state_stream();
+        let mut stream = running[0]
+            .execution_node
+            .node
+            .provider
+            .canonical_state_stream();
 
         let mut expected_transactions: Vec<TxHash> = Vec::new();
         while let Some(update) = stream.next().await {
@@ -102,7 +101,7 @@ async fn submit_subblock_tx(node: &RunningNode) -> TxHash {
     nonce_bytes[1..16].copy_from_slice(&node.public_key.as_ref()[..15]);
 
     let mut tx = TxAA {
-        chain_id: node.node.node.provider.chain_spec().chain_id(),
+        chain_id: node.execution_node.node.provider.chain_spec().chain_id(),
         calls: vec![Call {
             to: Address::ZERO.into(),
             input: Default::default(),
@@ -117,7 +116,7 @@ async fn submit_subblock_tx(node: &RunningNode) -> TxHash {
 
     let tx = TempoTxEnvelope::AA(tx.into_signed(signature.into()));
     let tx_hash = *tx.tx_hash();
-    node.node
+    node.execution_node
         .node
         .eth_api()
         .send_raw_transaction(tx.encoded_2718().into())

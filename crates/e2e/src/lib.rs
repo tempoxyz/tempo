@@ -20,13 +20,10 @@ use commonware_p2p::{
 };
 
 use commonware_runtime::{
-    Clock, Metrics as _, Runner as _,
+    Clock, Handle, Metrics as _, Runner as _,
     deterministic::{self, Context, Runner},
 };
-use commonware_utils::{
-    quorum,
-    set::{Ordered, OrderedAssociated},
-};
+use commonware_utils::{quorum, set::OrderedAssociated};
 use futures::future::join_all;
 use itertools::Itertools as _;
 use reth_node_metrics::recorder::PrometheusRecorder;
@@ -50,12 +47,12 @@ pub struct Node {
     pub uid: String,
 
     /// Execution-layer node. Spawned in the background but won't progress unless consensus engine is started.
-    pub node: ExecutionNode,
+    pub execution_node: ExecutionNode,
 
     /// Public key of the validator.
     pub public_key: PublicKey,
 
-    pub engine_config: consensus::Builder<Control<PublicKey>, Context, SocketManager<PublicKey>>,
+    pub consensus_config: consensus::Builder<Control<PublicKey>, Context, SocketManager<PublicKey>>,
 
     pub oracle: simulated::Oracle<PublicKey>,
 }
@@ -64,8 +61,11 @@ pub struct Node {
 pub struct RunningNode {
     pub uid: String,
 
+    pub consensus_config: consensus::Builder<Control<PublicKey>, Context, SocketManager<PublicKey>>,
+    pub consensus_handle: Handle<eyre::Result<()>>,
+
     /// Execution-layer node. Spawned in the background but won't progress unless consensus engine is started.
-    pub node: ExecutionNode,
+    pub execution_node: ExecutionNode,
 
     /// Public key of the validator.
     pub public_key: PublicKey,
@@ -73,13 +73,38 @@ pub struct RunningNode {
     pub oracle: simulated::Oracle<PublicKey>,
 }
 
+impl RunningNode {
+    pub fn stop(self) -> Node {
+        let Self {
+            uid,
+            execution_node,
+            public_key,
+            oracle,
+            consensus_config,
+            consensus_handle,
+        } = self;
+        consensus_handle.abort();
+        Node {
+            uid,
+            execution_node,
+            public_key,
+            consensus_config,
+            oracle,
+        }
+    }
+}
+
 impl Node {
     pub async fn start(self) -> RunningNode {
-        let oracle = self.oracle.clone();
-        let public_key = self.public_key.clone();
-        let uid = self.uid.clone();
-        let engine = self
-            .engine_config
+        let Self {
+            uid,
+            execution_node,
+            public_key,
+            consensus_config,
+            oracle,
+        } = self;
+        let engine = consensus_config
+            .clone()
             .try_init()
             .await
             .expect("must be able to start the engine");
@@ -124,7 +149,7 @@ impl Node {
             .await
             .unwrap();
 
-        engine.start(
+        let consensus_handle = engine.start(
             pending,
             recovered,
             resolver,
@@ -139,7 +164,9 @@ impl Node {
 
         RunningNode {
             uid,
-            node: self.node,
+            consensus_config,
+            consensus_handle,
+            execution_node,
             public_key,
             oracle,
         }
@@ -242,13 +269,13 @@ pub async fn setup_validators(
         let oracle = oracle.clone();
 
         let uid = format!("{CONSENSUS_NODE_PREFIX}-{}", private_key.public_key());
-        let node = execution_nodes.remove(0);
+        let execution_node = execution_nodes.remove(0);
 
         oracle.socket_manager().update(0, peers.clone()).await;
         let engine_config = tempo_commonware_node::consensus::Builder {
             context: context.with_label(&uid),
             fee_recipient: alloy_primitives::Address::ZERO,
-            execution_node: node.node.clone(),
+            execution_node: execution_node.node.clone(),
             blocker: oracle.control(private_key.public_key()),
             peer_manager: oracle.socket_manager(),
             partition_prefix: uid.clone(),
@@ -270,9 +297,9 @@ pub async fn setup_validators(
         };
 
         nodes.push(Node {
-            node,
+            execution_node,
             public_key: private_key.public_key(),
-            engine_config,
+            consensus_config: engine_config,
             oracle: oracle.clone(),
             uid: uid.clone(),
         });
@@ -293,14 +320,10 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
         // Setup and run all validators.
         let (nodes, mut oracle) =
             setup_validators(context.clone(), &execution_runtime, setup).await;
-        let validators: Ordered<_> = nodes
-            .iter()
-            .map(|node| node.public_key.clone())
-            .collect::<Vec<_>>()
-            .into();
-        join_all(nodes.into_iter().map(|node| node.start())).await;
 
-        link_validators(&mut oracle, validators.as_ref(), linkage, None).await;
+        let running = join_all(nodes.into_iter().map(|node| node.start())).await;
+
+        link_validators(&mut oracle, &running, linkage, None).await;
 
         let pat = format!("{CONSENSUS_NODE_PREFIX}-");
         loop {
@@ -345,15 +368,14 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
 /// otherwise all validators will be linked to all other validators.
 pub async fn link_validators(
     oracle: &mut Oracle<PublicKey>,
-    validators: &[PublicKey],
+    validators: &[RunningNode],
     link: Link,
     restrict_to: Option<fn(usize, usize, usize) -> bool>,
 ) {
-    debug!(?validators, "linking validators");
     for (i1, v1) in validators.iter().enumerate() {
         for (i2, v2) in validators.iter().enumerate() {
             // Ignore self
-            if v2 == v1 {
+            if v1.public_key == v2.public_key {
                 continue;
             }
 
@@ -365,7 +387,10 @@ pub async fn link_validators(
             }
 
             // Add link
-            match oracle.add_link(v1.clone(), v2.clone(), link.clone()).await {
+            match oracle
+                .add_link(v1.public_key.clone(), v2.public_key.clone(), link.clone())
+                .await
+            {
                 Ok(()) => (),
                 // TODO: it should be possible to remove the below if Commonware simulated network exposes list of registered peers.
                 //

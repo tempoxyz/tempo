@@ -6,6 +6,7 @@ use commonware_runtime::{
     Clock, Runner as _,
     deterministic::{self, Context, Runner},
 };
+use futures::future::join_all;
 use reth_ethereum::storage::BlockNumReader;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 
@@ -36,35 +37,49 @@ async fn run_validator_late_join_test(
     let (mut nodes, mut oracle) =
         setup_validators(context.clone(), &execution_runtime, setup).await;
 
-    let validators = nodes
-        .iter()
-        .map(|node| node.public_key.clone())
-        .collect::<Vec<_>>();
-
     // Start all nodes except the last one
     let last = nodes.pop().unwrap();
-    let mut running = vec![];
-    for node in nodes {
-        running.push(node.start().await);
-    }
+    let mut running = join_all(nodes.into_iter().map(|node| node.start())).await;
 
-    link_validators(&mut oracle, &validators[0..4], linkage.clone(), None).await;
+    link_validators(&mut oracle, &running, linkage.clone(), None).await;
 
     // Wait for chain to advance before starting the last node
-    while running[0].node.node.provider.last_block_number().unwrap() < blocks_before_join {
+    while running[0]
+        .execution_node
+        .node
+        .provider
+        .last_block_number()
+        .unwrap()
+        < blocks_before_join
+    {
         context.sleep(Duration::from_secs(1)).await;
     }
 
-    assert_eq!(last.node.node.provider.last_block_number().unwrap(), 0);
+    assert_eq!(
+        last.execution_node
+            .node
+            .provider
+            .last_block_number()
+            .unwrap(),
+        0
+    );
 
     let metrics_recorder = install_prometheus_recorder();
 
     // Start the last node
-    let last = last.start().await;
-    link_validators(&mut oracle, &validators[0..5], linkage.clone(), None).await;
+    running.push(last.start().await);
+    link_validators(&mut oracle, &running, linkage.clone(), None).await;
 
+    let last = running.last().unwrap();
     // Assert that last node is able to catch up and progress
-    while last.node.node.provider.last_block_number().unwrap() < blocks_after_join {
+    while last
+        .execution_node
+        .node
+        .provider
+        .last_block_number()
+        .unwrap()
+        < blocks_after_join
+    {
         context.sleep(Duration::from_millis(100)).await;
     }
 
@@ -83,10 +98,20 @@ async fn run_validator_late_join_test(
     }
 
     // Verify that the node is still progressing after sync
-    let last_block = last.node.node.provider.last_block_number().unwrap();
+    let last_block = last
+        .execution_node
+        .node
+        .provider
+        .last_block_number()
+        .unwrap();
     context.sleep(Duration::from_secs(2)).await;
     assert!(
-        last.node.node.provider.last_block_number().unwrap() > last_block,
+        last.execution_node
+            .node
+            .provider
+            .last_block_number()
+            .unwrap()
+            > last_block,
         "Node should still be progressing after sync"
     );
 }
