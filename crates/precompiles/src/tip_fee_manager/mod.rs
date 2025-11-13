@@ -18,7 +18,6 @@ use crate::{
 // Re-export PoolKey for backward compatibility with tests
 use alloy::primitives::{Address, Bytes, IntoLogData, U256, uint};
 use revm::state::Bytecode;
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles_macros::contract;
 
 /// Helper type to easily interact with the `tokens_with_fees` array
@@ -111,7 +110,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         }
 
         // Forbid setting LinkingUSD as the user's fee token (only after Moderato hardfork)
-        if self.storage.spec() >= TempoHardfork::Moderato && call.token == LINKING_USD_ADDRESS {
+        if self.storage.spec().is_moderato() && call.token == LINKING_USD_ADDRESS {
             return Err(FeeManagerError::invalid_token().into());
         }
 
@@ -338,6 +337,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
 
 #[cfg(test)]
 mod tests {
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
     use super::*;

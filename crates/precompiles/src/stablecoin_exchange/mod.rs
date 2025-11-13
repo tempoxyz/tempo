@@ -24,7 +24,6 @@ use crate::{
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles_macros::contract;
 
 /// Minimum order size of $10 USD
@@ -337,7 +336,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     pub fn create_pair(&mut self, base: Address) -> Result<B256> {
         // Validate that base is a TIP20 token (only after Moderato hardfork)
-        if self.storage.spec() >= TempoHardfork::Moderato && !is_tip20(base) {
+        if self.storage.spec().is_moderato() && !is_tip20(base) {
             return Err(StablecoinExchangeError::invalid_base_token().into());
         }
 
@@ -476,7 +475,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let book_key = compute_book_key(token, quote_token);
 
         // Check book existence (only after Moderato hardfork)
-        if self.storage.spec() >= TempoHardfork::Moderato {
+        if self.storage.spec().is_moderato() {
             let book = self.sload_books(book_key)?;
             if book.base.is_zero() {
                 return Err(StablecoinExchangeError::pair_does_not_exist().into());
@@ -794,9 +793,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             };
 
             // Pre-Moderato: Check maxIn on each iteration for consensus compatibility
-            if self.storage.spec() < TempoHardfork::Moderato
-                && total_amount_in + amount_in > max_amount_in
-            {
+            if !self.storage.spec().is_moderato() && total_amount_in + amount_in > max_amount_in {
                 return Err(StablecoinExchangeError::max_input_exceeded().into());
             }
 
@@ -870,7 +867,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Pre-Moderato: Check min out after filling the full amount in
-        if self.storage.spec() < TempoHardfork::Moderato && total_amount_out < min_amount_out {
+        if !self.storage.spec().is_moderato() && total_amount_out < min_amount_out {
             return Err(StablecoinExchangeError::insufficient_output().into());
         }
 
@@ -1293,6 +1290,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
 #[cfg(test)]
 mod tests {
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
     use crate::{

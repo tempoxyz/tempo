@@ -12,7 +12,6 @@ use crate::{
 };
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
-use tempo_chainspec::hardfork::TempoHardfork;
 use tracing::trace;
 
 #[contract]
@@ -59,7 +58,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
 
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
         // Note that the token Id increments on each deployment.
-        if self.storage.spec() >= TempoHardfork::Moderato {
+        if self.storage.spec().is_moderato() {
             // Post-Moderato: Fixed validation - quote token id must be < current token_id (strictly less than).
             if !is_tip20(call.quoteToken)
                 || address_to_token_id_unchecked(call.quoteToken) >= token_id
@@ -128,6 +127,7 @@ mod tests {
         error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
         tip20::tests::initialize_linking_usd,
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
     fn test_create_token() {

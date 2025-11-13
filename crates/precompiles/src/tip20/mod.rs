@@ -23,7 +23,6 @@ use alloy::{
 };
 use revm::state::Bytecode;
 use std::sync::LazyLock;
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles_macros::contract;
 use tracing::trace;
 
@@ -795,7 +794,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         }
 
         // Handle rewards (only after Moderato hardfork)
-        if self.storage.spec() >= TempoHardfork::Moderato {
+        if self.storage.spec().is_moderato() {
             // Accrue rewards up to current timestamp
             let current_timestamp = self.storage.timestamp();
             self.accrue(current_timestamp)?;
@@ -859,7 +858,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         }
 
         // Handle rewards (only after Moderato hardfork)
-        if self.storage.spec() >= TempoHardfork::Moderato {
+        if self.storage.spec().is_moderato() {
             // Note: We assume that transferFeePreTx is always called first, so _accrue has already been called
             // Update rewards for the recipient and get their reward recipient
             let to_reward_recipient = self.update_rewards(to)?;
@@ -906,6 +905,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 #[cfg(test)]
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, U256};
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     use super::*;
     use crate::{
