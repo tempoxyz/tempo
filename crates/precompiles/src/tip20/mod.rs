@@ -2,6 +2,7 @@ pub mod dispatch;
 pub mod rewards;
 pub mod roles;
 
+use tempo_contracts::precompiles::FeeManagerError;
 pub use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event,
 };
@@ -100,6 +101,10 @@ pub fn validate_usd_currency<S: PrecompileStorageProvider>(
     token: Address,
     storage: &mut S,
 ) -> Result<()> {
+    if storage.spec() >= TempoHardfork::Moderato && !is_tip20(token) {
+        return Err(FeeManagerError::invalid_token().into());
+    }
+
     let mut tip20_token = TIP20Token::from_address(token, storage);
     let currency = tip20_token.currency()?;
     if currency != USD_CURRENCY {

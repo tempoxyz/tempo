@@ -8,6 +8,7 @@ use alloy::{
     primitives::{Address, B256, IntoLogData, U256, keccak256, uint},
     sol_types::SolValue,
 };
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles_macros::Storable;
 
 /// Constants from the Solidity reference implementation
@@ -248,10 +249,17 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
 
         let liquidity = if total_supply.is_zero() {
             // Use checked math for multiplication and division
-            let mean = amount_user_token
-                .checked_mul(amount_validator_token)
-                .and_then(|product| product.checked_div(uint!(2_U256)))
-                .ok_or(TIPFeeAMMError::invalid_amount())?;
+            let mean = if self.storage.spec() >= TempoHardfork::Moderato {
+                amount_user_token
+                    .checked_add(amount_validator_token)
+                    .map(|product| product / uint!(2_U256))
+                    .ok_or(TIPFeeAMMError::invalid_amount())?
+            } else {
+                amount_user_token
+                    .checked_mul(amount_validator_token)
+                    .map(|product| product / uint!(2_U256))
+                    .ok_or(TIPFeeAMMError::invalid_amount())?
+            };
             if mean <= MIN_LIQUIDITY {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
             }
