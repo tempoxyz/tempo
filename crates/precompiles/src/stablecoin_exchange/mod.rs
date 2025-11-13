@@ -24,7 +24,6 @@ use crate::{
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles_macros::contract;
 
 /// Minimum order size of $10 USD
@@ -259,7 +258,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let mut amount = amount_in;
         for (book_key, base_for_quote) in route {
             // Fill orders for this hop - no min check on intermediate hops
-            amount = if self.storage.spec() >= TempoHardfork::Moderato {
+            amount = if self.storage.spec().is_moderato() {
                 self.fill_orders_exact_in_post_moderato(book_key, base_for_quote, amount)?
             } else {
                 self.fill_orders_exact_in_pre_moderato(book_key, base_for_quote, amount, 0)?
@@ -290,7 +289,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         // Work backwards from output to calculate input needed - intermediate amounts are TRANSITORY
         let mut amount = amount_out;
         for (book_key, base_for_quote) in route.iter().rev() {
-            amount = if self.storage.spec() >= TempoHardfork::Moderato {
+            amount = if self.storage.spec().is_moderato() {
                 self.fill_orders_exact_out_post_moderato(*book_key, *base_for_quote, amount)?
             } else {
                 self.fill_orders_exact_out_pre_moderato(
@@ -349,7 +348,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     pub fn create_pair(&mut self, base: Address) -> Result<B256> {
         // Validate that base is a TIP20 token (only after Moderato hardfork)
-        if self.storage.spec() >= TempoHardfork::Moderato && !is_tip20(base) {
+        if self.storage.spec().is_moderato() && !is_tip20(base) {
             return Err(StablecoinExchangeError::invalid_base_token().into());
         }
 
@@ -488,7 +487,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let book_key = compute_book_key(token, quote_token);
 
         // Check book existence (only after Moderato hardfork)
-        if self.storage.spec() >= TempoHardfork::Moderato {
+        if self.storage.spec().is_moderato() {
             let book = self.sload_books(book_key)?;
             if book.base.is_zero() {
                 return Err(StablecoinExchangeError::pair_does_not_exist().into());
@@ -1467,6 +1466,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
 #[cfg(test)]
 mod tests {
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
     use crate::{
