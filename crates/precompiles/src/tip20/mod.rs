@@ -22,7 +22,7 @@ use alloy::{
     primitives::{Address, B256, Bytes, IntoLogData, U256, keccak256, uint},
 };
 use revm::state::Bytecode;
-use std::{sync::LazyLock, u128};
+use std::sync::LazyLock;
 use tempo_precompiles_macros::contract;
 use tracing::trace;
 
