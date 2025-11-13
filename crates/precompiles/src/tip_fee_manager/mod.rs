@@ -265,6 +265,9 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         let mut tokens = Vec::new();
         while let Some(token) = TokensWithFees::pop(self)? {
             tokens.push(token);
+            if self.storage.spec().is_moderato() {
+                self.sstore_token_in_fees_array(token, false)?;
+            }
         }
 
         Ok(tokens)

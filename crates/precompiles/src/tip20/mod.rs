@@ -2,6 +2,7 @@ pub mod dispatch;
 pub mod rewards;
 pub mod roles;
 
+use tempo_contracts::precompiles::FeeManagerError;
 pub use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event,
 };
@@ -100,6 +101,10 @@ pub fn validate_usd_currency<S: PrecompileStorageProvider>(
     token: Address,
     storage: &mut S,
 ) -> Result<()> {
+    if storage.spec().is_moderato() && !is_tip20(token) {
+        return Err(FeeManagerError::invalid_token().into());
+    }
+
     let mut tip20_token = TIP20Token::from_address(token, storage);
     let currency = tip20_token.currency()?;
     if currency != USD_CURRENCY {
@@ -354,10 +359,17 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ) -> Result<()> {
         self._mint(msg_sender, call.to, call.amount)?;
 
+        // Post-Moderato: emit events where sender is Address::ZERO for mint operations
+        let from = if self.storage.spec().is_moderato() {
+            Address::ZERO
+        } else {
+            msg_sender
+        };
+
         self.storage.emit_event(
             self.address,
             TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-                from: msg_sender,
+                from,
                 to: call.to,
                 amount: call.amount,
                 memo: call.memo,
@@ -543,10 +555,17 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ) -> Result<bool> {
         self._transfer_from(msg_sender, call.from, call.to, call.amount)?;
 
+        // Post-Moderato: call.from address in events, pre-Moderato uses msg_sender
+        let from = if self.storage.spec().is_moderato() {
+            call.from
+        } else {
+            msg_sender
+        };
+
         self.storage.emit_event(
             self.address,
             TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-                from: msg_sender,
+                from,
                 to: call.to,
                 amount: call.amount,
                 memo: call.memo,
@@ -675,7 +694,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.sstore_next_quote_token(quote_token)?;
 
         // Set default values
-        self.sstore_supply_cap(U256::MAX)?;
+        if self.storage.spec().is_moderato() {
+            self.sstore_supply_cap(U256::from(u128::MAX))?;
+        } else {
+            self.sstore_supply_cap(U256::MAX)?;
+        }
         self.sstore_transfer_policy_id(1)?;
 
         // Initialize roles system and grant admin role
@@ -1222,6 +1245,82 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_mint_with_memo_from_address_post_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let admin = Address::random();
+        let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
+        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let to = Address::random();
+        let amount = U256::random() % token.supply_cap()?;
+        let memo = FixedBytes::random();
+
+        token
+            .mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo })
+            .unwrap();
+
+        let events = &storage.events[&token_id_to_address(token_id)];
+
+        // TransferWithMemo event should have Address::ZERO as from for post-Moderato
+        assert_eq!(
+            events[2],
+            TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: Address::ZERO,
+                to,
+                amount,
+                memo
+            })
+            .into_log_data()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_mint_with_memo_from_address_pre_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::random();
+        let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
+        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let to = Address::random();
+        let amount = U256::random();
+        let memo = FixedBytes::random();
+
+        token
+            .mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo })
+            .unwrap();
+
+        let events = &storage.events[&token_id_to_address(token_id)];
+
+        // TransferWithMemo event should have msg_sender as from for pre-Moderato
+        assert_eq!(
+            events[2],
+            TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: admin,
+                to,
+                amount,
+                memo
+            })
+            .into_log_data()
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn test_burn_with_memo() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
@@ -1333,6 +1432,118 @@ pub(crate) mod tests {
             .into_log_data()
         );
 
+        assert_eq!(
+            events[4],
+            TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: spender,
+                to,
+                amount,
+                memo
+            })
+            .into_log_data()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_from_with_memo_from_address_post_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let admin = Address::random();
+        let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
+        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let owner = Address::random();
+        let spender = Address::random();
+        let to = Address::random();
+        let amount = U256::random() % token.supply_cap()?;
+        let memo = FixedBytes::random();
+
+        token
+            .mint(admin, ITIP20::mintCall { to: owner, amount })
+            .unwrap();
+
+        token
+            .approve(owner, ITIP20::approveCall { spender, amount })
+            .unwrap();
+
+        token
+            .transfer_from_with_memo(
+                spender,
+                ITIP20::transferFromWithMemoCall {
+                    from: owner,
+                    to,
+                    amount,
+                    memo,
+                },
+            )
+            .unwrap();
+
+        let events = &storage.events[&token_id_to_address(token_id)];
+
+        // TransferWithMemo event should have use call.from in transfer event
+        assert_eq!(
+            events[4],
+            TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: owner,
+                to,
+                amount,
+                memo
+            })
+            .into_log_data()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_from_with_memo_from_address_pre_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::random();
+        let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
+        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let owner = Address::random();
+        let spender = Address::random();
+        let to = Address::random();
+        let amount = U256::random();
+        let memo = FixedBytes::random();
+
+        token
+            .mint(admin, ITIP20::mintCall { to: owner, amount })
+            .unwrap();
+
+        token
+            .approve(owner, ITIP20::approveCall { spender, amount })
+            .unwrap();
+
+        token
+            .transfer_from_with_memo(
+                spender,
+                ITIP20::transferFromWithMemoCall {
+                    from: owner,
+                    to,
+                    amount,
+                    memo,
+                },
+            )
+            .unwrap();
+
+        let events = &storage.events[&token_id_to_address(token_id)];
+
+        // TransferWithMemo event should user msg_sender in transfer event
         assert_eq!(
             events[4],
             TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
@@ -2203,6 +2414,34 @@ pub(crate) mod tests {
             U256::ZERO,
             "user should NOT have accumulated rewards pre-Moderato"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_initialize_supply_cap_post_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let admin = Address::random();
+
+        let token_id = setup_factory_with_token(&mut storage, admin, "Test", "TST");
+        let mut token = TIP20Token::new(token_id, &mut storage);
+
+        let supply_cap = token.supply_cap()?;
+        assert_eq!(supply_cap, U256::from(u128::MAX),);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_initialize_supply_cap_pre_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::random();
+
+        let token_id = setup_factory_with_token(&mut storage, admin, "Test", "TST");
+        let mut token = TIP20Token::new(token_id, &mut storage);
+
+        let supply_cap = token.supply_cap()?;
+        assert_eq!(supply_cap, U256::MAX,);
 
         Ok(())
     }
