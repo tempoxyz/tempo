@@ -119,9 +119,7 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
                         return Err(PrecompileError::OutOfGas);
                     }
                     TPErr::UnknownFunctionSelector => {
-                        return Err(PrecompileError::Other(
-                            "Unknown function selector".to_string(),
-                        ));
+                        return Err(PrecompileError::Other("Unknown function selector".into()));
                     }
                     TPErr::Fatal(msg) => {
                         return Err(PrecompileError::Fatal(msg));
