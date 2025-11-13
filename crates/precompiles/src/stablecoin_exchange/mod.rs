@@ -3462,10 +3462,10 @@ mod tests {
             max_in_between,
         );
         assert!(result.is_err());
-      
-          Ok(())
+
+        Ok(())
     }
-  
+
     #[test]
     fn test_create_pair_rejects_non_tip20_base_post_moderato() -> eyre::Result<()> {
         // Test with Moderato hardfork (validation should be enforced)
@@ -3537,10 +3537,10 @@ mod tests {
             total_needed,
         );
         assert!(result.is_ok());
-      
-          Ok(())
+
+        Ok(())
     }
-  
+
     #[test]
     fn test_create_pair_allows_non_tip20_base_pre_moderato() -> eyre::Result<()> {
         // Test with Adagio (pre-Moderato) - validation should not be enforced
