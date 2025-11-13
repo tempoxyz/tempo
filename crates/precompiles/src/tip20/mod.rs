@@ -543,10 +543,17 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ) -> Result<bool> {
         self._transfer_from(msg_sender, call.from, call.to, call.amount)?;
 
+        // Post-Moderato: call.from address in events, pre-Moderato uses msg_sender
+        let from = if self.storage.spec().is_moderato() {
+            call.from
+        } else {
+            msg_sender
+        };
+
         self.storage.emit_event(
             self.address,
             TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-                from: msg_sender,
+                from,
                 to: call.to,
                 amount: call.amount,
                 memo: call.memo,
