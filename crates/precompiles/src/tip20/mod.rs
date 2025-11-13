@@ -22,7 +22,7 @@ use alloy::{
     primitives::{Address, B256, Bytes, IntoLogData, U256, keccak256, uint},
 };
 use revm::state::Bytecode;
-use std::sync::LazyLock;
+use std::{sync::LazyLock, u128};
 use tempo_precompiles_macros::contract;
 use tracing::trace;
 
@@ -675,7 +675,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.sstore_next_quote_token(quote_token)?;
 
         // Set default values
-        self.sstore_supply_cap(U256::MAX)?;
+        if self.storage.spec().is_moderato() {
+            self.sstore_supply_cap(U256::from(u128::MAX))?;
+        } else {
+            self.sstore_supply_cap(U256::MAX)?;
+        }
         self.sstore_transfer_policy_id(1)?;
 
         // Initialize roles system and grant admin role
