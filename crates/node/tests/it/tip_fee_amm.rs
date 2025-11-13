@@ -254,7 +254,9 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let source = if let Ok(rpc_url) = env::var("RPC_URL") {
         crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
+        crate::utils::NodeSource::LocalNode(
+            include_str!("../assets/test-genesis-moderato.json").to_string(),
+        )
     };
     let (http_url, _local_node) = setup_test_node(source).await?;
 
@@ -297,10 +299,9 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let liquidity = U256::from(u16::MAX) + uint!(1_000_000_000_U256);
     pending.push(
         fee_amm
-            .mint(
+            .mintWithValidatorToken(
                 *user_token.address(),
                 *validator_token.address(),
-                liquidity,
                 liquidity,
                 user_address,
             )
@@ -311,12 +312,12 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
 
     // Verify liquidity was added
     let pool = fee_amm.pools(pool_id).call().await?;
-    assert_eq!(pool.reserveUserToken, liquidity.to::<u128>());
+    assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, liquidity.to::<u128>());
 
     // Check total supply and individual LP balances
     let total_supply = fee_amm.totalSupply(pool_id).call().await?;
-    let expected_initial_liquidity = (liquidity * liquidity) / U256::from(2) - MIN_LIQUIDITY;
+    let expected_initial_liquidity = liquidity / U256::from(2) - MIN_LIQUIDITY;
     assert_eq!(total_supply, expected_initial_liquidity + MIN_LIQUIDITY);
 
     let user_lp_balance = fee_amm

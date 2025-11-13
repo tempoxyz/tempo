@@ -16,7 +16,7 @@ use tempo_contracts::precompiles::{
     IFeeManager, ITIP20,
     ITIPFeeAMM::{self},
 };
-use tempo_precompiles::{DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS};
+use tempo_precompiles::{DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_primitives::{TxFeeToken, transaction::calc_gas_balance_spending};
 
 #[test_case::test_case(false; "pre-moderato")]
@@ -152,7 +152,7 @@ async fn test_set_validator_token() -> eyre::Result<()> {
         .call()
         .await?;
     // Initial token should be predeployed token
-    assert_eq!(initial_token, DEFAULT_FEE_TOKEN);
+    assert_eq!(initial_token, LINKING_USD_ADDRESS);
 
     let set_receipt = fee_manager
         .setValidatorToken(*validator_token.address())
