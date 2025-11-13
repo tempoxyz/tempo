@@ -9,39 +9,49 @@ use commonware_runtime::{
 use reth_ethereum::storage::BlockNumReader;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 
-use crate::{ExecutionRuntime, Setup, get_pipeline_runs, setup_validators};
+use crate::{ExecutionRuntime, Setup, get_pipeline_runs, link_validators, setup_validators};
 
 async fn run_validator_late_join_test(
     context: &Context,
     blocks_before_join: u64,
     blocks_after_join: u64,
-    should_backfill: bool,
+    should_pipeline_sync: bool,
 ) {
-    let num_nodes = 5;
+    let how_many_signers = 5;
 
+    let linkage = Link {
+        latency: Duration::from_millis(10),
+        jitter: Duration::from_millis(1),
+        success_rate: 1.0,
+    };
     let setup = Setup {
-        how_many: num_nodes,
+        how_many_signers,
         seed: 0,
-        linkage: Link {
-            latency: Duration::from_millis(10),
-            jitter: Duration::from_millis(1),
-            success_rate: 1.0,
-        },
+        linkage: linkage.clone(),
         epoch_length: 100,
+        connect_execution_layer_nodes: should_pipeline_sync,
     };
 
     let execution_runtime = ExecutionRuntime::new();
-    let (mut nodes, _network_handle) =
+    let (mut nodes, mut oracle) =
         setup_validators(context.clone(), &execution_runtime, setup).await;
 
+    let validators = nodes
+        .iter()
+        .map(|node| node.public_key.clone())
+        .collect::<Vec<_>>();
+
     // Start all nodes except the last one
-    let mut last = nodes.pop().unwrap();
-    for node in &mut nodes {
-        node.start().await;
+    let last = nodes.pop().unwrap();
+    let mut running = vec![];
+    for node in nodes {
+        running.push(node.start().await);
     }
 
+    link_validators(&mut oracle, &validators[0..4], linkage.clone(), None).await;
+
     // Wait for chain to advance before starting the last node
-    while nodes[0].node.node.provider.last_block_number().unwrap() < blocks_before_join {
+    while running[0].node.node.provider.last_block_number().unwrap() < blocks_before_join {
         context.sleep(Duration::from_secs(1)).await;
     }
 
@@ -50,7 +60,8 @@ async fn run_validator_late_join_test(
     let metrics_recorder = install_prometheus_recorder();
 
     // Start the last node
-    last.start().await;
+    let last = last.start().await;
+    link_validators(&mut oracle, &validators[0..5], linkage.clone(), None).await;
 
     // Assert that last node is able to catch up and progress
     while last.node.node.provider.last_block_number().unwrap() < blocks_after_join {
@@ -59,7 +70,7 @@ async fn run_validator_late_join_test(
 
     // Verify backfill behavior
     let actual_runs = get_pipeline_runs(metrics_recorder);
-    if should_backfill {
+    if should_pipeline_sync {
         assert!(
             actual_runs > 0,
             "at least one backfill must have been triggered"

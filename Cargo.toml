@@ -216,7 +216,8 @@ futures = "0.3.31"
 hex = "0.4"
 governor = "0.6.3"
 humantime-serde = "1.1.1"
-indexmap = { version = "2.11.0" }
+indexmap = "2.11.0"
+itertools = "0.14.0"
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 metrics = "0.24.0"
 p256 = "0.13"

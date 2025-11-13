@@ -10,7 +10,12 @@ mod subblocks;
 
 #[test_traced]
 fn spawning_execution_node_works() {
-    // NOTE: to debug the node instance running in tokio, it is useful to
+    //
+    //
+    // NOTE / DEBUG:
+    //
+    //
+    // To debug the node instance running in tokio, it is useful to
     // isolate the tracing subscriber and install it globally (the
     // `test_traced` tests defined by commonware are thread-local
     //

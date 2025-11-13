@@ -1,8 +1,8 @@
 use std::time::Duration;
 
+use alloy::signers::local::PrivateKeySigner;
 use alloy_network::{TxSignerSync, eip2718::Encodable2718};
 use alloy_primitives::{Address, TxHash, U256};
-use alloy_signer_local::PrivateKeySigner;
 use commonware_macros::test_traced;
 use commonware_p2p::simulated::Link;
 use commonware_runtime::{
@@ -21,33 +21,43 @@ use tempo_node::primitives::{
     TempoTxEnvelope, TxAA, subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX, transaction::Call,
 };
 
-use crate::{ExecutionRuntime, Setup, ValidatorNode, setup_validators};
+use crate::{ExecutionRuntime, RunningNode, Setup, link_validators, setup_validators};
 
 #[test_traced]
 fn subblocks_are_included() {
     let _ = tempo_eyre::install();
 
     Runner::from(deterministic::Config::default().with_seed(0)).start(|context| async move {
-        let num_nodes = 5;
+        let how_many_signers = 5;
 
+        let linkage = Link {
+            latency: Duration::from_millis(10),
+            jitter: Duration::from_millis(1),
+            success_rate: 1.0,
+        };
         let setup = Setup {
-            how_many: num_nodes,
+            how_many_signers,
             seed: 0,
-            linkage: Link {
-                latency: Duration::from_millis(10),
-                jitter: Duration::from_millis(1),
-                success_rate: 1.0,
-            },
+            linkage: linkage.clone(),
             epoch_length: 10,
+            connect_execution_layer_nodes: false,
         };
 
         // Setup and start all nodes.
         let execution_runtime = ExecutionRuntime::new();
-        let (mut nodes, _network_handle) =
+        let (nodes, mut oracle) =
             setup_validators(context.clone(), &execution_runtime, setup).await;
-        join_all(nodes.iter_mut().map(|node| node.start())).await;
 
-        let mut stream = nodes[0].node.node.provider.canonical_state_stream();
+        let validators = nodes
+            .iter()
+            .map(|node| node.public_key.clone())
+            .collect::<Vec<_>>();
+
+        let running = join_all(nodes.into_iter().map(|node| node.start())).await;
+
+        link_validators(&mut oracle, &validators, linkage.clone(), None).await;
+
+        let mut stream = running[0].node.node.provider.canonical_state_stream();
 
         let mut expected_transactions: Vec<TxHash> = Vec::new();
         while let Some(update) = stream.next().await {
@@ -75,7 +85,7 @@ fn subblocks_are_included() {
             }
 
             // Send subblock transactions to all nodes.
-            for node in nodes.iter() {
+            for node in running.iter() {
                 for _ in 0..5 {
                     expected_transactions.push(submit_subblock_tx(node).await);
                 }
@@ -84,7 +94,7 @@ fn subblocks_are_included() {
     });
 }
 
-async fn submit_subblock_tx(node: &ValidatorNode) -> TxHash {
+async fn submit_subblock_tx(node: &RunningNode) -> TxHash {
     let wallet = PrivateKeySigner::random();
 
     let mut nonce_bytes = [0; 32];
