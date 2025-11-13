@@ -791,7 +791,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                     let base_needed = amount_out
                         .checked_mul(orderbook::PRICE_SCALE as u128)
                         .and_then(|v| v.checked_div(price as u128))
-                        .expect("Base needed calculation overflow");
+                        .ok_or(TempoPrecompileError::under_overflow())?;
                     let fill_amount = base_needed.min(order.remaining());
                     (fill_amount, fill_amount)
                 } else {
@@ -799,7 +799,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                     let amount_in = fill_amount
                         .checked_mul(price as u128)
                         .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                        .expect("Input needed calculation overflow");
+                        .ok_or(TempoPrecompileError::under_overflow())?;
                     (fill_amount, amount_in)
                 }
             } else {
@@ -811,7 +811,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                     fill_amount
                         .checked_mul(price as u128)
                         .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                        .expect("Input needed calculation overflow")
+                        .ok_or(TempoPrecompileError::under_overflow())?
                 };
                 (fill_amount, amount_in)
             };
@@ -840,7 +840,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                         let base_needed = amount_out
                             .checked_mul(orderbook::PRICE_SCALE as u128)
                             .and_then(|v| v.checked_div(price as u128))
-                            .expect("Base needed calculation overflow");
+                            .ok_or(TempoPrecompileError::under_overflow())?;
                         if base_needed > order.remaining() {
                             amount_out = amount_out
                                 .checked_sub(amount_out_received)
@@ -902,7 +902,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                     let base_out = amount_in
                         .checked_mul(orderbook::PRICE_SCALE as u128)
                         .and_then(|v| v.checked_div(price as u128))
-                        .expect("Base out calculation overflow");
+                        .ok_or(TempoPrecompileError::under_overflow())?;
                     base_out.min(order.remaining())
                 }
             } else {
@@ -936,13 +936,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                         let base_out = amount_in
                             .checked_mul(orderbook::PRICE_SCALE as u128)
                             .and_then(|v| v.checked_div(price as u128))
-                            .expect("Base out calculation overflow");
+                            .ok_or(TempoPrecompileError::under_overflow())?;
                         if base_out > order.remaining() {
                             let quote_needed = order
                                 .remaining()
                                 .checked_mul(price as u128)
                                 .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                                .expect("Quote needed calculation overflow");
+                                .ok_or(TempoPrecompileError::under_overflow())?;
                             amount_in = amount_in
                                 .checked_sub(quote_needed)
                                 .ok_or(TempoPrecompileError::under_overflow())?;
