@@ -69,6 +69,16 @@ impl From<TempoHardfork> for SpecId {
     }
 }
 
+impl From<SpecId> for TempoHardfork {
+    fn from(spec: SpecId) -> Self {
+        if spec.is_enabled_in(SpecId::from(Self::Moderato)) {
+            Self::Moderato
+        } else {
+            Self::Adagio
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
