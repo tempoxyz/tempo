@@ -34,9 +34,10 @@ hardfork!(
 );
 
 impl TempoHardfork {
+    /// Returns `true` if this hardfork is Moderato or later.
     #[inline]
-    pub fn is_enabled_in_spec(&self, spec: Self) -> bool {
-        spec <= *self
+    pub fn is_moderato(self) -> bool {
+        self >= Self::Moderato
     }
 }
 
@@ -76,6 +77,21 @@ impl From<TempoHardfork> for SpecId {
     }
 }
 
+impl From<SpecId> for TempoHardfork {
+    /// Maps a [`SpecId`] to the *latest compatible* [`TempoHardfork`].
+    ///
+    /// Note: this is intentionally not a strict inverse of
+    /// `From<TempoHardfork> for SpecId`, because multiple Tempo
+    /// hardforks may share the same underlying EVM spec.
+    fn from(spec: SpecId) -> Self {
+        if spec.is_enabled_in(SpecId::from(Self::Moderato)) {
+            Self::Moderato
+        } else {
+            Self::Adagio
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,13 +125,8 @@ mod tests {
     }
 
     #[test]
-    fn test_is_enabled_in_spec() {
-        let fork = TempoHardfork::Adagio;
-        assert!(fork.is_enabled_in_spec(TempoHardfork::Adagio));
-        assert!(!fork.is_enabled_in_spec(TempoHardfork::Moderato));
-
-        let fork = TempoHardfork::Moderato;
-        assert!(fork.is_enabled_in_spec(TempoHardfork::Adagio));
-        assert!(fork.is_enabled_in_spec(TempoHardfork::Moderato));
+    fn test_is_moderato() {
+        assert!(!TempoHardfork::Adagio.is_moderato());
+        assert!(TempoHardfork::Moderato.is_moderato());
     }
 }

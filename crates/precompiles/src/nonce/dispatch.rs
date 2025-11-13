@@ -16,7 +16,7 @@ impl<S: PrecompileStorageProvider> Precompile for NonceManager<'_, S> {
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".to_string())
+                PrecompileError::Other("Invalid input: missing function selector".into())
             })?
             .try_into()
             .unwrap();
@@ -30,9 +30,7 @@ impl<S: PrecompileStorageProvider> Precompile for NonceManager<'_, S> {
                     self.get_active_nonce_key_count(call)
                 })
             }
-            _ => Err(PrecompileError::Other(
-                "Unknown function selector".to_string(),
-            )),
+            _ => Err(PrecompileError::Other("Unknown function selector".into())),
         };
 
         result.map(|res| fill_precompile_output(res, self.storage))

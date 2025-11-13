@@ -8,7 +8,6 @@ use crate::{
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
-use tempo_chainspec::hardfork::TempoHardfork;
 
 impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -19,10 +18,10 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".to_string())
+                PrecompileError::Other("Invalid input: missing function selector".into())
             })?
             .try_into()
-            .map_err(|_| PrecompileError::Other("Invalid function selector length".to_string()))?;
+            .map_err(|_| PrecompileError::Other("Invalid function selector length".into()))?;
 
         let result = match selector {
             // View functions
@@ -96,7 +95,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
             }
             ITIPFeeAMM::mintCall::SELECTOR => {
                 mutate::<ITIPFeeAMM::mintCall>(calldata, msg_sender, |s, call| {
-                    if self.storage.spec() >= TempoHardfork::Moderato {
+                    if self.storage.spec().is_moderato() {
                         Err(TempoPrecompileError::UnknownFunctionSelector)
                     } else {
                         self.mint(
@@ -149,9 +148,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
                 })
             }
 
-            _ => Err(PrecompileError::Other(
-                "Unknown function selector".to_string(),
-            )),
+            _ => Err(PrecompileError::Other("Unknown function selector".into())),
         };
 
         result.map(|res| fill_precompile_output(res, self.storage))

@@ -267,8 +267,8 @@ fn fill_precompile_output(
     output.gas_used = storage.gas_used();
 
     // add refund only if it is not reverted
-    if !storage.spec().is_enabled_in_spec(TempoHardfork::Moderato) {
-        // output.gas_refunded = storage.gas_refunded();
+    if storage.spec().is_moderato() {
+        output.gas_refunded = storage.gas_refunded();
     }
     output
 }
