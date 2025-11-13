@@ -1,0 +1,336 @@
+#!/usr/bin/env bash
+set -e
+
+# Tempoup - Tempo installer
+# Downloads and installs the tempo binary from GitHub releases
+
+# NOTE: if you make modifications to this script, please increment the version number.
+# WARNING: the SemVer pattern: major.minor.patch must be followed as we use it to determine if the script is up to date.
+TEMPOUP_INSTALLER_VERSION="0.0.1"
+
+REPO="tempoxyz/tempo"
+INSTALL_DIR="${TEMPO_DIR:-$HOME/.tempo}"
+BIN_DIR="$INSTALL_DIR/bin"
+TEMPOUP_BIN_URL="https://raw.githubusercontent.com/tempoxyz/tempo/main/tempoup/tempoup"
+TEMPOUP_BIN_PATH="$BIN_DIR/tempoup"
+
+# Color output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+info() {
+    echo -e "${GREEN}info${NC}: $1"
+}
+
+warn() {
+    echo -e "${YELLOW}warn${NC}: $1"
+}
+
+error() {
+    echo -e "${RED}error${NC}: $1"
+    exit 1
+}
+
+# Compare SemVer versions
+# Returns 0 if $1 > $2, 1 otherwise
+version_gt() {
+    local ver1="$1"
+    local ver2="$2"
+
+    # Remove 'v' prefix if present
+    ver1="${ver1#v}"
+    ver2="${ver2#v}"
+
+    # Split versions into arrays
+    IFS='.' read -ra v1 <<< "$ver1"
+    IFS='.' read -ra v2 <<< "$ver2"
+
+    # Compare major.minor.patch
+    for i in 0 1 2; do
+        local num1="${v1[$i]:-0}"
+        local num2="${v2[$i]:-0}"
+
+        if [[ $num1 -gt $num2 ]]; then
+            return 0
+        elif [[ $num1 -lt $num2 ]]; then
+            return 1
+        fi
+    done
+
+    return 1  # Versions are equal
+}
+
+# Download file with progress
+download_file() {
+    local url="$1"
+    local output="$2"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -# -L -f "$url" -o "$output"
+    elif command -v wget >/dev/null 2>&1; then
+        wget --show-progress -q -O "$output" "$url"
+    else
+        error "Neither curl nor wget found. Please install one of them."
+    fi
+}
+
+# Check if tempoup installer is up to date
+check_installer_up_to_date() {
+    # Fetch the remote version
+    local remote_version
+    if command -v curl >/dev/null 2>&1; then
+        remote_version=$(curl -sSf "$TEMPOUP_BIN_URL" | grep '^TEMPOUP_INSTALLER_VERSION=' | sed -E 's/TEMPOUP_INSTALLER_VERSION="(.+)"/\1/')
+    elif command -v wget >/dev/null 2>&1; then
+        remote_version=$(wget -qO- "$TEMPOUP_BIN_URL" | grep '^TEMPOUP_INSTALLER_VERSION=' | sed -E 's/TEMPOUP_INSTALLER_VERSION="(.+)"/\1/')
+    else
+        # Can't check without curl or wget
+        return
+    fi
+
+    if [[ -z "$remote_version" ]]; then
+        return
+    fi
+
+    # Compare versions
+    if version_gt "$remote_version" "$TEMPOUP_INSTALLER_VERSION"; then
+        echo ""
+        warn "Your tempoup version ($TEMPOUP_INSTALLER_VERSION) is outdated."
+        warn "Latest version is $remote_version."
+        warn "Run 'tempoup --update' to update to the latest version."
+        echo ""
+    fi
+}
+
+# Update tempoup itself
+update_tempoup() {
+    info "Updating tempoup..."
+
+    # Create temporary file
+    local tmp_file=$(mktemp)
+    trap "rm -f $tmp_file" EXIT
+
+    # Download latest tempoup script
+    info "Downloading latest tempoup from $TEMPOUP_BIN_URL..."
+    if ! download_file "$TEMPOUP_BIN_URL" "$tmp_file"; then
+        error "Failed to download tempoup update"
+    fi
+
+    # Extract remote version
+    local remote_version=$(grep '^TEMPOUP_INSTALLER_VERSION=' "$tmp_file" | sed -E 's/TEMPOUP_INSTALLER_VERSION="(.+)"/\1/')
+
+    if [[ -z "$remote_version" ]]; then
+        error "Failed to determine remote version"
+    fi
+
+    # Check if update is needed
+    if ! version_gt "$remote_version" "$TEMPOUP_INSTALLER_VERSION"; then
+        info "Tempoup is already up to date (version $TEMPOUP_INSTALLER_VERSION)"
+        exit 0
+    fi
+
+    # Replace current script with new version
+    info "Updating from $TEMPOUP_INSTALLER_VERSION to $remote_version..."
+    mkdir -p "$BIN_DIR"
+    cp "$tmp_file" "$TEMPOUP_BIN_PATH"
+    chmod +x "$TEMPOUP_BIN_PATH"
+
+    echo ""
+    info "✓ Tempoup updated successfully to version $remote_version"
+    exit 0
+}
+
+# Parse command-line arguments
+VERSION=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --version)
+            VERSION="$2"
+            shift 2
+            ;;
+        -U|--update)
+            update_tempoup
+            ;;
+        -h|--help)
+            echo "Usage: tempoup [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --version <VERSION>    Install specific version (e.g., v1.0.0)"
+            echo "  -U, --update          Update tempoup to the latest version"
+            echo "  -h, --help            Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  tempoup                   # Install latest release"
+            echo "  tempoup --version v1.0.0  # Install specific version"
+            echo "  tempoup --update          # Update tempoup itself"
+            exit 0
+            ;;
+        *)
+            error "Unknown option: $1. Use --help for usage information."
+            ;;
+    esac
+done
+
+# Detect platform
+detect_platform() {
+    local platform="$(uname -s | tr '[:upper:]' '[:lower:]')"
+
+    case "$platform" in
+        linux*)
+            echo "linux"
+            ;;
+        darwin* | mac*)
+            echo "darwin"
+            ;;
+        mingw* | msys* | cygwin* | win*)
+            echo "win32"
+            ;;
+        *)
+            error "Unsupported platform: $platform"
+            ;;
+    esac
+}
+
+# Detect architecture
+detect_arch() {
+    local arch="$(uname -m)"
+
+    case "$arch" in
+        x86_64 | x64 | amd64)
+            # Check if running under Rosetta on macOS
+            if [[ "$(uname -s)" == "Darwin" ]] && [[ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" == "1" ]]; then
+                echo "arm64"
+            else
+                echo "amd64"
+            fi
+            ;;
+        arm64 | aarch64)
+            echo "arm64"
+            ;;
+        *)
+            warn "Unknown architecture: $arch, defaulting to amd64"
+            echo "amd64"
+            ;;
+    esac
+}
+
+# Get latest release tag from GitHub
+get_latest_version() {
+    local url="https://api.github.com/repos/$REPO/releases/latest"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -sSf "$url" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/'
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- "$url" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/'
+    else
+        error "Neither curl nor wget found. Please install one of them."
+    fi
+}
+
+# Main installation logic
+main() {
+    # Check if tempoup installer is up to date
+    check_installer_up_to_date
+
+    info "Installing tempo..."
+
+    # Detect system
+    PLATFORM=$(detect_platform)
+    ARCH=$(detect_arch)
+    info "Detected platform: $PLATFORM ($ARCH)"
+
+    # Determine version to install
+    if [[ -z "$VERSION" ]]; then
+        info "Fetching latest release version..."
+        VERSION=$(get_latest_version)
+        if [[ -z "$VERSION" ]]; then
+            error "Failed to fetch latest version. Try specifying --version manually."
+        fi
+    fi
+
+    # Strip 'v' prefix if present for consistency
+    VERSION_TAG="$VERSION"
+    VERSION_NUMBER="${VERSION#v}"
+
+    info "Installing tempo $VERSION_TAG"
+
+    # Construct download URL
+    # Format: tempo_{VERSION}_{PLATFORM}_{ARCH}.tar.gz
+    ARCHIVE_EXT="tar.gz"
+    if [[ "$PLATFORM" == "win32" ]]; then
+        ARCHIVE_EXT="zip"
+    fi
+
+    ARCHIVE_NAME="tempo_${VERSION_NUMBER}_${PLATFORM}_${ARCH}.${ARCHIVE_EXT}"
+    DOWNLOAD_URL="https://github.com/$REPO/releases/download/$VERSION_TAG/$ARCHIVE_NAME"
+
+    info "Download URL: $DOWNLOAD_URL"
+
+    # Create temporary directory
+    TMP_DIR=$(mktemp -d)
+    trap "rm -rf $TMP_DIR" EXIT
+
+    ARCHIVE_PATH="$TMP_DIR/$ARCHIVE_NAME"
+
+    # Download archive
+    info "Downloading tempo binary..."
+    if ! download_file "$DOWNLOAD_URL" "$ARCHIVE_PATH"; then
+        error "Failed to download tempo from $DOWNLOAD_URL"
+    fi
+
+    # Extract archive
+    info "Extracting archive..."
+    if [[ "$ARCHIVE_EXT" == "tar.gz" ]]; then
+        tar -xzf "$ARCHIVE_PATH" -C "$TMP_DIR"
+    elif [[ "$ARCHIVE_EXT" == "zip" ]]; then
+        unzip -q "$ARCHIVE_PATH" -d "$TMP_DIR"
+    fi
+
+    # Find tempo binary in extracted files
+    BINARY_NAME="tempo"
+    if [[ "$PLATFORM" == "win32" ]]; then
+        BINARY_NAME="tempo.exe"
+    fi
+
+    BINARY_PATH=$(find "$TMP_DIR" -name "$BINARY_NAME" -type f | head -n 1)
+
+    if [[ -z "$BINARY_PATH" ]]; then
+        error "Could not find tempo binary in downloaded archive"
+    fi
+
+    # Create installation directory
+    mkdir -p "$BIN_DIR"
+
+    # Install binary
+    info "Installing to $BIN_DIR/$BINARY_NAME..."
+    cp "$BINARY_PATH" "$BIN_DIR/$BINARY_NAME"
+    chmod +x "$BIN_DIR/$BINARY_NAME"
+
+    # Success message
+    echo ""
+    info "✓ Tempo $VERSION_TAG installed successfully!"
+    echo ""
+
+    # Check if BIN_DIR is in PATH
+    if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+        warn "The installation directory is not in your PATH."
+        echo ""
+        echo "To use tempo, add the following to your shell configuration file:"
+        echo ""
+        echo "  export PATH=\"$BIN_DIR:\$PATH\""
+        echo ""
+
+        # Suggest appropriate config file based on shell
+        if [[ -n "$ZSH_VERSION" ]]; then
+            echo "For zsh, add it to: ~/.zshenv or ~/.zshrc"
+        elif [[ -n "$BASH_VERSION" ]]; then
+            echo "For bash, add it to: ~/.bashrc or ~/.bash_profile"
+        fi
+        echo ""
+    else
+        info "Run 'tempo --version' to verify installation"
+    fi
+}
+
+main
