@@ -84,6 +84,15 @@ pub trait StorableType {
     /// - Dynamic types (String, Bytes, Vec) use `Layout::Slots(1)`
     /// - Structs and arrays use `Layout::Slots(N)` where N is the slot count
     const LAYOUT: Layout;
+
+    /// Number of storage slots this type takes.
+    const SLOTS: usize = Self::LAYOUT.slots();
+
+    /// Number of bytes this type takes.
+    const BYTES: usize = Self::LAYOUT.bytes();
+
+    /// Whether this type can be packed with adjacent fields.
+    const IS_PACKABLE: bool = Self::LAYOUT.is_packable();
 }
 
 /// Trait for types that can be stored/loaded from EVM storage.

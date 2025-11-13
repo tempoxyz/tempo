@@ -418,7 +418,7 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
         // Helper module with compile-time constants
         mod #mod_ident {
             use super::*;
-            pub const ELEM_BYTES: usize = <#elem_type as StorableType>::LAYOUT.bytes();
+            pub const ELEM_BYTES: usize = <#elem_type as StorableType>::BYTES;
             pub const ELEM_SLOTS: usize = 1; // For single-slot primitives
             pub const ARRAY_LEN: usize = #array_size;
             pub const SLOT_COUNT: usize = #slot_count;
@@ -787,7 +787,7 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
         // Helper module with compile-time constants
         mod #mod_ident {
             use super::*;
-            pub const ELEM_SLOTS: usize = <#struct_type as crate::storage::StorableType>::LAYOUT.slots();
+            pub const ELEM_SLOTS: usize = <#struct_type as crate::storage::StorableType>::SLOTS;
             pub const ARRAY_LEN: usize = #array_size;
             pub const SLOT_COUNT: usize = ARRAY_LEN * ELEM_SLOTS;
         }
@@ -858,11 +858,11 @@ fn gen_struct_array_load(struct_type: &TokenStream, array_size: usize) -> TokenS
             // Calculate slot for this element: base_slot + (i * element_slot_count)
             let elem_slot = base_slot.checked_add(
                 ::alloy::primitives::U256::from(i).checked_mul(
-                    ::alloy::primitives::U256::from(<#struct_type as crate::storage::StorableType>::LAYOUT.slots())
+                    ::alloy::primitives::U256::from(<#struct_type as crate::storage::StorableType>::SLOTS)
                 ).ok_or(crate::error::TempoError::SlotOverflow)?
             ).ok_or(crate::error::TempoError::SlotOverflow)?;
 
-            result[i] = <#struct_type as crate::storage::Storable<{<#struct_type as crate::storage::StorableType>::LAYOUT.slots()}>>::load(storage, elem_slot)?;
+            result[i] = <#struct_type as crate::storage::Storable<{<#struct_type as crate::storage::StorableType>::SLOTS}>>::load(storage, elem_slot)?;
         }
         Ok(result)
     }
@@ -875,11 +875,11 @@ fn gen_struct_array_store(struct_type: &TokenStream) -> TokenStream {
             // Calculate slot for this element: base_slot + (i * element_slot_count)
             let elem_slot = base_slot.checked_add(
                 ::alloy::primitives::U256::from(i).checked_mul(
-                    ::alloy::primitives::U256::from(<#struct_type as crate::storage::StorableType>::LAYOUT.slots())
+                    ::alloy::primitives::U256::from(<#struct_type as crate::storage::StorableType>::SLOTS)
                 ).ok_or(crate::error::TempoError::SlotOverflow)?
             ).ok_or(crate::error::TempoError::SlotOverflow)?;
 
-            <#struct_type as crate::storage::Storable<{<#struct_type as crate::storage::StorableType>::LAYOUT.slots()}>>::store(elem, storage, elem_slot)?;
+            <#struct_type as crate::storage::Storable<{<#struct_type as crate::storage::StorableType>::SLOTS}>>::store(elem, storage, elem_slot)?;
         }
         Ok(())
     }
@@ -894,11 +894,11 @@ fn gen_struct_array_delete(struct_type: &TokenStream, array_size: usize) -> Toke
             // Calculate slot for this element: base_slot + (i * element_slot_count)
             let elem_slot = base_slot.checked_add(
                 ::alloy::primitives::U256::from(i).checked_mul(
-                    ::alloy::primitives::U256::from(<#struct_type as crate::storage::StorableType>::LAYOUT.slots())
+                    ::alloy::primitives::U256::from(<#struct_type as crate::storage::StorableType>::SLOTS)
                 ).ok_or(crate::error::TempoError::SlotOverflow)?
             ).ok_or(crate::error::TempoError::SlotOverflow)?;
 
-            <#struct_type as crate::storage::Storable<{<#struct_type as crate::storage::StorableType>::LAYOUT.slots()}>>::delete(storage, elem_slot)?;
+            <#struct_type as crate::storage::Storable<{<#struct_type as crate::storage::StorableType>::SLOTS}>>::delete(storage, elem_slot)?;
         }
         Ok(())
     }
@@ -909,11 +909,11 @@ fn gen_struct_array_delete(struct_type: &TokenStream, array_size: usize) -> Toke
 /// Copies N-word chunks from each element into the result array.
 fn gen_struct_array_to_evm_words(struct_type: &TokenStream, array_size: usize) -> TokenStream {
     quote! {
-        let mut result = [::alloy::primitives::U256::ZERO; #array_size * <#struct_type as crate::storage::StorableType>::LAYOUT.slots()];
+        let mut result = [::alloy::primitives::U256::ZERO; #array_size * <#struct_type as crate::storage::StorableType>::SLOTS];
 
         for (i, elem) in self.iter().enumerate() {
-            let elem_words = <#struct_type as crate::storage::Storable<{<#struct_type as crate::storage::StorableType>::LAYOUT.slots()}>>::to_evm_words(elem)?;
-            let start_idx = i * <#struct_type as crate::storage::StorableType>::LAYOUT.slots();
+            let elem_words = <#struct_type as crate::storage::Storable<{<#struct_type as crate::storage::StorableType>::SLOTS}>>::to_evm_words(elem)?;
+            let start_idx = i * <#struct_type as crate::storage::StorableType>::SLOTS;
 
             // Copy all words from this element
             for (j, word) in elem_words.iter().enumerate() {
@@ -933,14 +933,14 @@ fn gen_struct_array_from_evm_words(struct_type: &TokenStream, array_size: usize)
         let mut result = [Default::default(); #array_size];
 
         for i in 0..#array_size {
-            let start_idx = i * <#struct_type as crate::storage::StorableType>::LAYOUT.slots();
+            let start_idx = i * <#struct_type as crate::storage::StorableType>::SLOTS;
 
             // Extract words for this element using std::array::from_fn
-            let elem_words = ::std::array::from_fn::<_, {<#struct_type as crate::storage::StorableType>::LAYOUT.slots()}, _>(|j| {
+            let elem_words = ::std::array::from_fn::<_, {<#struct_type as crate::storage::StorableType>::SLOTS}, _>(|j| {
                 words[start_idx + j]
             });
 
-            result[i] = <#struct_type as crate::storage::Storable<{<#struct_type as crate::storage::StorableType>::LAYOUT.slots()}>>::from_evm_words(elem_words)?;
+            result[i] = <#struct_type as crate::storage::Storable<{<#struct_type as crate::storage::StorableType>::SLOTS}>>::from_evm_words(elem_words)?;
         }
 
         Ok(result)

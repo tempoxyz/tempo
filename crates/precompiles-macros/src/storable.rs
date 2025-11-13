@@ -332,7 +332,7 @@ fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStr
     let field_byte_sizes = fields.iter().map(|(name, ty)| {
         let bytes_const = PackingField::new(name).bytes_const;
         quote! {
-            pub const #bytes_const: usize = <#ty as crate::storage::StorableType>::LAYOUT.bytes();
+            pub const #bytes_const: usize = <#ty as crate::storage::StorableType>::BYTES;
         }
     });
 
@@ -359,7 +359,7 @@ fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStr
             if prev_is_array || prev_is_dynamic || prev_is_mapping || prev_is_struct ||
                 is_array_type(ty) || is_dynamic_type(ty) || is_mapping_type(ty) || is_custom_struct(ty) {
                 let slot_const_expr = if prev_is_struct {
-                    quote! { #prev_slot + <#prev_ty as crate::storage::StorableType>::LAYOUT.slots() }
+                    quote! { #prev_slot + <#prev_ty as crate::storage::StorableType>::SLOTS }
                 } else if prev_is_array {
                     quote! { #prev_slot + #prev_bytes.div_ceil(32) }
                 } else {
@@ -607,7 +607,7 @@ fn gen_from_evm_words_impl(
                 let #name = {
                     // Extract slice and convert to fixed-size array using std::array::from_fn
                     let start = #packing::#slot_const;
-                    let nested_words = ::std::array::from_fn::<_, {<#ty as crate::storage::StorableType>::LAYOUT.slots()}, _>(|i| {
+                    let nested_words = ::std::array::from_fn::<_, {<#ty as crate::storage::StorableType>::SLOTS}, _>(|i| {
                         words[start + i]
                     });
                     <#ty>::from_evm_words(nested_words)?
