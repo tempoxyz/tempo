@@ -204,7 +204,7 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
             _ => Err(PrecompileError::Other("Unknown selector".to_string())),
         };
 
-        result.map(|res| fill_precompile_output(res, self.token.storage))
+        result.map(|res| fill_precompile_output(res, self.token.storage()))
     }
 }
 

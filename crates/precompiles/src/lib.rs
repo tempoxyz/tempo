@@ -267,10 +267,9 @@ fn fill_precompile_output(
     output.gas_used = storage.gas_used();
 
     // add refund only if it is not reverted
-    // currently waiting for revm commit https://github.com/bluealloy/revm/pull/3152
-    // if !output.reverted {
-    //     result.gas_refunded = storage.gas_refunded();
-    // }
+    if !storage.spec().is_enabled_in_spec(TempoHardfork::Moderato) {
+        // output.gas_refunded = storage.gas_refunded();
+    }
     output
 }
 

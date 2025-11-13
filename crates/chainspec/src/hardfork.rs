@@ -33,6 +33,13 @@ hardfork!(
     }
 );
 
+impl TempoHardfork {
+    #[inline]
+    pub fn is_enabled_in_spec(&self, spec: Self) -> bool {
+        spec <= *self
+    }
+}
+
 /// Trait for querying Tempo-specific hardfork activations.
 pub trait TempoHardforks: EthereumHardforks {
     /// Retrieves activation condition for a Tempo-specific hardfork
@@ -99,5 +106,16 @@ mod tests {
         // Deserialize from JSON
         let deserialized: TempoHardfork = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, fork);
+    }
+
+    #[test]
+    fn test_is_enabled_in_spec() {
+        let fork = TempoHardfork::Adagio;
+        assert!(fork.is_enabled_in_spec(TempoHardfork::Adagio));
+        assert!(!fork.is_enabled_in_spec(TempoHardfork::Moderato));
+
+        let fork = TempoHardfork::Moderato;
+        assert!(fork.is_enabled_in_spec(TempoHardfork::Adagio));
+        assert!(fork.is_enabled_in_spec(TempoHardfork::Moderato));
     }
 }
