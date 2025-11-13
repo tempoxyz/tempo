@@ -71,7 +71,7 @@ pub enum TempoPoolTransactionError {
     #[error("Invalid fee token: {0}")]
     InvalidFeeToken(Address),
 
-    #[error("no fee token preference configured")]
+    #[error("No fee token preference configured")]
     MissingFeeToken,
 }
 
