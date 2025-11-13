@@ -17,6 +17,10 @@ pub struct HashMapStorageProvider {
 
 impl HashMapStorageProvider {
     pub fn new(chain_id: u64) -> Self {
+        Self::new_with_spec(chain_id, TempoHardfork::default())
+    }
+
+    pub fn new_with_spec(chain_id: u64, spec: TempoHardfork) -> Self {
         Self {
             internals: HashMap::new(),
             accounts: HashMap::new(),
@@ -30,7 +34,7 @@ impl HashMapStorageProvider {
                     .as_secs(),
             ),
             beneficiary: Address::ZERO,
-            spec: TempoHardfork::default(),
+            spec,
         }
     }
 
