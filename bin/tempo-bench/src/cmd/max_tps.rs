@@ -27,7 +27,7 @@ use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English
 use clap::Parser;
 use core_affinity::CoreId;
 use eyre::{Context, OptionExt, ensure};
-use futures::{StreamExt, stream::FuturesUnordered};
+use futures::{StreamExt, stream};
 use governor::{Quota, RateLimiter};
 use indicatif::ProgressBar;
 use rand::{random, seq::IndexedRandom};
@@ -384,16 +384,19 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
 
     println!("Fetching nonces for {accounts} accounts...");
 
+    let mut futures = Vec::new();
     let mut params = Vec::new();
     for signer in signers {
         let address = signer.address();
-        let current_nonce = provider
-            .get_transaction_count(address)
-            .await
-            .context("Failed to get transaction count")?;
+        let current_nonce = provider.get_transaction_count(address);
+        futures.push(async move { (signer, current_nonce.await) });
+    }
 
+    let mut iter = stream::iter(futures).buffer_unordered(max_concurrent_requests);
+    while let Some((signer, nonce)) = iter.next().await {
+        let nonce = nonce.context("Failed to get transaction count")?;
         for i in 0..txs_per_sender {
-            params.push((signer.clone(), current_nonce + i));
+            params.push((signer.clone(), nonce + i));
         }
     }
 
@@ -644,26 +647,36 @@ fn monitor_tps(tx_counter: Arc<AtomicU64>, target_count: u64) -> thread::JoinHan
 
 async fn await_receipts(
     pending_txs: &mut Vec<PendingTransactionBuilder<Ethereum>>,
+    max_concurrent_requests: usize,
+) -> eyre::Result<()> {
+    let mut futures = Vec::new();
+    for tx in pending_txs.drain(..) {
+        futures.push(tx.get_receipt());
+    }
+    let mut iter = stream::iter(futures).buffer_unordered(max_concurrent_requests);
+    while let Some(fut) = iter.next().await {
+        let receipt = fut?;
+        assert!(receipt.status());
+    }
+
+    Ok(())
+}
+
+async fn join_all(
+    futures: impl IntoIterator<
+        Item: Future<Output = alloy::contract::Result<PendingTransactionBuilder<Ethereum>>>,
+    >,
+    receipts: &mut Vec<PendingTransactionBuilder<Ethereum>>,
     tx_count: &ProgressBar,
     max_concurrent_requests: usize,
 ) -> eyre::Result<()> {
-    let mut futures = FuturesUnordered::new();
-    for tx in pending_txs.drain(..) {
-        futures.push(tx.get_receipt());
-
-        if futures.len() >= max_concurrent_requests {
-            while let Some(fut) = futures.next().await {
-                let receipt = fut?;
-                tx_count.inc(1);
-                assert!(receipt.status());
-            }
-        }
-    }
-    while let Some(fut) = futures.next().await {
-        let receipt = fut?;
+    let mut iter = stream::iter(futures).buffer_unordered(max_concurrent_requests);
+    while let Some(next) = iter.next().await {
         tx_count.inc(1);
-        assert!(receipt.status());
+        receipts.push(next?);
     }
+
+    await_receipts(receipts, max_concurrent_requests).await?;
 
     Ok(())
 }

@@ -1,5 +1,4 @@
 use super::*;
-use futures::{StreamExt, stream::FuturesUnordered};
 use std::pin::Pin;
 use tempo_contracts::precompiles::IStablecoinExchange;
 use tempo_precompiles::stablecoin_exchange::{MAX_TICK, MIN_TICK, price_to_tick};
@@ -65,7 +64,7 @@ pub(super) async fn setup(
     let user_tokens = [*base1.address(), *base2.address()];
     let mut receipts = Vec::new();
     let tokens = [&base1, &base2, &quote];
-    let mut futures = FuturesUnordered::new();
+    let mut futures = Vec::new();
 
     for token in user_tokens {
         let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
@@ -74,11 +73,6 @@ pub(super) async fn setup(
             Box::pin(async move { exchange.createPair(token).send().await })
                 as Pin<Box<dyn Future<Output = _>>>,
         );
-        if futures.len() >= max_concurrent_requests {
-            while let Some(next) = futures.next().await {
-                receipts.push(next?);
-            }
-        }
     }
 
     for signer in signers.iter() {
@@ -88,24 +82,22 @@ pub(super) async fn setup(
                 Box::pin(async move { token.mint(recipient, mint_amount).send().await })
                     as Pin<Box<dyn Future<Output = _>>>,
             );
-            if futures.len() >= max_concurrent_requests {
-                while let Some(next) = futures.next().await {
-                    receipts.push(next?);
-                }
-            }
         }
     }
 
-    while let Some(next) = futures.next().await {
-        receipts.push(next?);
-    }
+    join_all(futures, &mut receipts, &tx_count, max_concurrent_requests).await?;
 
-    await_receipts(&mut receipts, &tx_count, max_concurrent_requests).await?;
+    let mut futures = Vec::new();
 
-    for signer in signers.iter() {
-        let account_provider = ProviderBuilder::new()
-            .wallet(signer.clone())
-            .connect_http(url.clone());
+    let signers: Vec<_> = signers
+        .into_iter()
+        .map(|signer| {
+            ProviderBuilder::new()
+                .wallet(signer.clone())
+                .connect_http(url.clone())
+        })
+        .collect();
+    for account_provider in signers.iter() {
         let base1 = ITIP20::new(*base1.address(), account_provider.clone());
         let base2 = ITIP20::new(*base2.address(), account_provider.clone());
         let quote = ITIP20::new(*quote.address(), account_provider.clone());
@@ -118,28 +110,17 @@ pub(super) async fn setup(
                     .send()
                     .await
             }) as Pin<Box<dyn Future<Output = _>>>);
-            if futures.len() >= max_concurrent_requests {
-                while let Some(next) = futures.next().await {
-                    receipts.push(next?);
-                }
-            }
         }
     }
 
-    while let Some(next) = futures.next().await {
-        receipts.push(next?);
-    }
-
-    await_receipts(&mut receipts, &tx_count, max_concurrent_requests).await?;
+    join_all(futures, &mut receipts, &tx_count, max_concurrent_requests).await?;
 
     let tick_over = price_to_tick(100010);
     let tick_under = price_to_tick(99990);
 
-    for signer in signers.into_iter() {
-        let account_provider = ProviderBuilder::new()
-            .wallet(signer)
-            .connect_http(url.clone());
+    let mut futures = Vec::new();
 
+    for account_provider in signers.into_iter() {
         for token in user_tokens {
             let exchange =
                 IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, account_provider.clone());
@@ -150,19 +131,10 @@ pub(super) async fn setup(
                     .send()
                     .await
             }) as Pin<Box<dyn Future<Output = _>>>);
-            if futures.len() >= max_concurrent_requests {
-                while let Some(next) = futures.next().await {
-                    receipts.push(next?);
-                }
-            }
         }
     }
 
-    while let Some(next) = futures.next().await {
-        receipts.push(next?);
-    }
-
-    await_receipts(&mut receipts, &tx_count, max_concurrent_requests).await?;
+    join_all(futures, &mut receipts, &tx_count, max_concurrent_requests).await?;
 
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
 
