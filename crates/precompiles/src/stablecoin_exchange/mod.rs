@@ -286,8 +286,16 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         // Work backwards from output to calculate input needed - intermediate amounts are TRANSITORY
         let mut amount = amount_out;
         for (book_key, base_for_quote) in route.iter().rev() {
-            amount =
-                self.fill_orders_exact_out(*book_key, *base_for_quote, amount, max_amount_in)?;
+            amount = if self.storage.spec() >= TempoHardfork::Moderato {
+                self.fill_orders_exact_out_post_moderato(*book_key, *base_for_quote, amount)?
+            } else {
+                self.fill_orders_exact_out_pre_moderato(
+                    *book_key,
+                    *base_for_quote,
+                    amount,
+                    max_amount_in,
+                )?
+            };
         }
 
         if amount > max_amount_in {
@@ -769,8 +777,88 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         Ok((amount_out, next_tick_info))
     }
 
-    /// Fill orders for exact output amount
-    fn fill_orders_exact_out(
+    /// Fill orders for exact output amount, post moderato hardfork
+    fn fill_orders_exact_out_post_moderato(
+        &mut self,
+        book_key: B256,
+        bid: bool,
+        mut amount_out: u128,
+    ) -> Result<u128> {
+        let mut level = self.get_best_price_level(book_key, bid)?;
+        let mut order = self.sload_orders(level.head)?;
+
+        let mut total_amount_in: u128 = 0;
+
+        while amount_out > 0 {
+            let price = tick_to_price(order.tick());
+
+            let (fill_amount, amount_in) = if bid {
+                let base_needed = amount_out
+                    .checked_mul(orderbook::PRICE_SCALE as u128)
+                    .and_then(|v| v.checked_div(price as u128))
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                let fill_amount = base_needed.min(order.remaining());
+                (fill_amount, fill_amount)
+            } else {
+                let fill_amount = amount_out.min(order.remaining());
+                let amount_in = fill_amount
+                    .checked_mul(price as u128)
+                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                (fill_amount, amount_in)
+            };
+
+            if fill_amount < order.remaining() {
+                self.partial_fill_order(&mut order, &mut level, fill_amount)?;
+                total_amount_in = total_amount_in
+                    .checked_add(amount_in)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                break;
+            } else {
+                let (amount_out_received, next_order_info) =
+                    self.fill_order(book_key, &mut order, level)?;
+                total_amount_in = total_amount_in
+                    .checked_add(amount_in)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+
+                // Post-Moderato: set to 0 to avoid rounding errors
+                if bid {
+                    let base_needed = amount_out
+                        .checked_mul(orderbook::PRICE_SCALE as u128)
+                        .and_then(|v| v.checked_div(price as u128))
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                    if base_needed > order.remaining() {
+                        amount_out = amount_out
+                            .checked_sub(amount_out_received)
+                            .ok_or(TempoPrecompileError::under_overflow())?;
+                    } else {
+                        amount_out = 0;
+                    }
+                } else if amount_out > order.remaining() {
+                    amount_out = amount_out
+                        .checked_sub(amount_out_received)
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                } else {
+                    amount_out = 0;
+                }
+
+                if let Some((new_level, new_order)) = next_order_info {
+                    level = new_level;
+                    order = new_order;
+                } else {
+                    if amount_out > 0 {
+                        return Err(StablecoinExchangeError::insufficient_liquidity().into());
+                    }
+                    break;
+                }
+            }
+        }
+
+        Ok(total_amount_in)
+    }
+
+    /// Fill orders for exact output amount, pre moderato hardfork
+    fn fill_orders_exact_out_pre_moderato(
         &mut self,
         book_key: B256,
         bid: bool,
@@ -781,46 +869,21 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let mut order = self.sload_orders(level.head)?;
 
         let mut total_amount_in: u128 = 0;
-        let is_moderato = self.storage.spec() >= TempoHardfork::Moderato;
 
         while amount_out > 0 {
             let price = tick_to_price(order.tick());
-
-            let (fill_amount, amount_in) = if is_moderato {
-                // Post-Moderato: correct unit conversion
-                if bid {
-                    let base_needed = amount_out
-                        .checked_mul(orderbook::PRICE_SCALE as u128)
-                        .and_then(|v| v.checked_div(price as u128))
-                        .ok_or(TempoPrecompileError::under_overflow())?;
-                    let fill_amount = base_needed.min(order.remaining());
-                    (fill_amount, fill_amount)
-                } else {
-                    let fill_amount = amount_out.min(order.remaining());
-                    let amount_in = fill_amount
-                        .checked_mul(price as u128)
-                        .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                        .ok_or(TempoPrecompileError::under_overflow())?;
-                    (fill_amount, amount_in)
-                }
+            let fill_amount = amount_out.min(order.remaining());
+            let amount_in = if bid {
+                fill_amount
             } else {
-                // Pre-Moderato: old behavior with unit mismatch
-                let fill_amount = amount_out.min(order.remaining());
-                let amount_in = if bid {
-                    fill_amount
-                } else {
-                    fill_amount
-                        .checked_mul(price as u128)
-                        .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                        .ok_or(TempoPrecompileError::under_overflow())?
-                };
-                (fill_amount, amount_in)
+                fill_amount
+                    .checked_mul(price as u128)
+                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                    .ok_or(TempoPrecompileError::under_overflow())?
             };
 
             // Pre-Moderato: Check maxIn on each iteration for consensus compatibility
-            if self.storage.spec() < TempoHardfork::Moderato
-                && total_amount_in + amount_in > max_amount_in
-            {
+            if total_amount_in + amount_in > max_amount_in {
                 return Err(StablecoinExchangeError::max_input_exceeded().into());
             }
 
@@ -837,33 +900,10 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                     .checked_add(amount_in)
                     .ok_or(TempoPrecompileError::under_overflow())?;
 
-                if is_moderato {
-                    // Post-Moderato: set to 0 to avoid rounding errors
-                    if bid {
-                        let base_needed = amount_out
-                            .checked_mul(orderbook::PRICE_SCALE as u128)
-                            .and_then(|v| v.checked_div(price as u128))
-                            .ok_or(TempoPrecompileError::under_overflow())?;
-                        if base_needed > order.remaining() {
-                            amount_out = amount_out
-                                .checked_sub(amount_out_received)
-                                .ok_or(TempoPrecompileError::under_overflow())?;
-                        } else {
-                            amount_out = 0;
-                        }
-                    } else if amount_out > order.remaining() {
-                        amount_out = amount_out
-                            .checked_sub(amount_out_received)
-                            .ok_or(TempoPrecompileError::under_overflow())?;
-                    } else {
-                        amount_out = 0;
-                    }
-                } else {
-                    // Pre-Moderato: always recalculate
-                    amount_out = amount_out
-                        .checked_sub(amount_out_received)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
-                }
+                // Pre-Moderato: always recalculate
+                amount_out = amount_out
+                    .checked_sub(amount_out_received)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
 
                 if let Some((new_level, new_order)) = next_order_info {
                     level = new_level;
