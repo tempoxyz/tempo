@@ -280,7 +280,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     // Create different tokens for user and validator
     let user_token = setup_test_token(provider.clone(), user_address).await?;
     // Use default fee token for validator
-    let validator_token = ITIP20Instance::new(DEFAULT_FEE_TOKEN, provider.clone());
+    let validator_token = ITIP20Instance::new(LINKING_USD_ADDRESS, provider.clone());
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Mint initial balances
