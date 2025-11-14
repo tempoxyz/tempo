@@ -2,11 +2,11 @@ use crate::rpc::{TempoHeaderResponse, TempoTransactionRequest};
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError};
 use alloy_network::TxSigner;
 use alloy_primitives::{Bytes, Signature};
-use reth_evm::revm::context::CfgEnv;
+use reth_evm::EvmEnv;
 use reth_primitives_traits::SealedHeader;
 use reth_rpc_convert::{
-    SignTxRequestError, SignableTxRequest, TryIntoSimTx,
-    transaction::{FromConsensusHeader, TryIntoTxEnv},
+    SignTxRequestError, SignableTxRequest, TryIntoSimTx, TryIntoTxEnv,
+    transaction::FromConsensusHeader,
 };
 use reth_rpc_eth_types::EthApiError;
 use tempo_evm::TempoBlockEnv;
@@ -75,8 +75,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
 
     fn try_into_tx_env<Spec>(
         self,
-        cfg_env: &CfgEnv<Spec>,
-        block_env: &TempoBlockEnv,
+        evm_env: &EvmEnv<Spec, TempoBlockEnv>,
     ) -> Result<TempoTxEnv, Self::Err> {
         let Self {
             inner,
@@ -87,7 +86,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             aa_authorization_list,
         } = self;
         Ok(TempoTxEnv {
-            inner: inner.try_into_tx_env(cfg_env, &block_env.inner)?,
+            inner: inner.try_into_tx_env(evm_env)?,
             fee_token,
             is_system_tx: false,
             fee_payer: None,
