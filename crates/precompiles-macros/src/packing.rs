@@ -19,7 +19,7 @@ impl PackingConstants {
         Self(const_name(name))
     }
 
-    /// The bare field name constant (U256 slot, used by `#[contract] macro)
+    /// The bare field name constant (U256 slot, used by `#[contract]` macro)
     pub(crate) fn slot(&self) -> Ident {
         format_ident!("{}", &self.0)
     }
