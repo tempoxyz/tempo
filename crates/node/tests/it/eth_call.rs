@@ -19,9 +19,7 @@ use tempo_contracts::precompiles::{
     ITIP20::{self, transferCall},
     ITIPFeeAMM,
 };
-use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, storage::slots::mapping_slot, tip20,
-};
+use tempo_precompiles::{LINKING_USD_ADDRESS, storage::slots::mapping_slot, tip20};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_call() -> eyre::Result<()> {
@@ -294,13 +292,6 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     // Setup fee manager to configure different tokens
     let fee_manager =
         IFeeManager::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
-
-    fee_manager
-        .setUserToken(DEFAULT_FEE_TOKEN)
-        .send()
-        .await?
-        .watch()
-        .await?;
 
     // Supply liquidity to enable fee token swapping
     let validator_token_address = LINKING_USD_ADDRESS;
