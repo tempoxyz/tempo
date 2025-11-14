@@ -220,7 +220,7 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
             pub const #offset_const: usize = #offset_expr;
         });
 
-        // For the `Storable` macro, also generate the usize version of the slot, and the location constant
+        // For the `Storable` macro, also generate the location constant
         if gen_location {
             constants.extend(quote! {
                 pub const #loc_const: crate::storage::packing::FieldLocation =
