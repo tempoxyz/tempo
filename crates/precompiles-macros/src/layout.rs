@@ -366,6 +366,7 @@ pub(crate) fn gen_getters_and_setters(
                         <#ty as crate::storage::Storable<{ <#ty as crate::storage::StorableType>::SLOTS }>>::load(
                             self,
                             <#slot_id as crate::storage::SlotId>::SLOT,
+                            crate::storage::LayoutCtx::Full
                         )
                     }
 
@@ -374,6 +375,7 @@ pub(crate) fn gen_getters_and_setters(
                         <#ty as crate::storage::Storable<{ <#ty as crate::storage::StorableType>::SLOTS }>>::delete(
                             self,
                             <#slot_id as crate::storage::SlotId>::SLOT,
+                            crate::storage::LayoutCtx::Full
                         )
                     }
 
@@ -382,6 +384,7 @@ pub(crate) fn gen_getters_and_setters(
                         value.store(
                             self,
                             <#slot_id as crate::storage::SlotId>::SLOT,
+                            crate::storage::LayoutCtx::Full
                         )
                     }
                 }

@@ -88,7 +88,7 @@ impl<T, Id: SlotId> Slot<T, Id> {
     where
         T: Storable<N>,
     {
-        T::load(storage, Id::SLOT)
+        T::load(storage, Id::SLOT, crate::storage::types::LayoutCtx::Full)
     }
 
     /// Writes a value to storage at this slot.
@@ -107,7 +107,7 @@ impl<T, Id: SlotId> Slot<T, Id> {
     where
         T: Storable<N>,
     {
-        value.store(storage, Id::SLOT)
+        value.store(storage, Id::SLOT, crate::storage::types::LayoutCtx::Full)
     }
 
     /// Deletes the value at this slot (sets all slots to zero).
@@ -126,7 +126,7 @@ impl<T, Id: SlotId> Slot<T, Id> {
     where
         T: Storable<N>,
     {
-        T::delete(storage, Id::SLOT)
+        T::delete(storage, Id::SLOT, crate::storage::types::LayoutCtx::Full)
     }
 
     /// Reads a value from a field within a struct at a runtime base slot.
@@ -155,7 +155,7 @@ impl<T, Id: SlotId> Slot<T, Id> {
         T: Storable<N>,
     {
         let slot = struct_base_slot + U256::from(field_offset_slots);
-        T::load(storage, slot)
+        T::load(storage, slot, crate::storage::types::LayoutCtx::Full)
     }
 
     /// Writes a value to a field within a struct at a runtime base slot.
@@ -182,7 +182,7 @@ impl<T, Id: SlotId> Slot<T, Id> {
         T: Storable<N>,
     {
         let slot = struct_base_slot + U256::from(field_offset_slots);
-        value.store(storage, slot)
+        value.store(storage, slot, crate::storage::types::LayoutCtx::Full)
     }
 
     /// Deletes a field within a struct at a runtime base slot (sets slots to zero).
@@ -207,7 +207,7 @@ impl<T, Id: SlotId> Slot<T, Id> {
         T: Storable<N>,
     {
         let slot = struct_base_slot + U256::from(field_offset_slots);
-        T::delete(storage, slot)
+        T::delete(storage, slot, crate::storage::types::LayoutCtx::Full)
     }
 
     /// Reads a packed field from storage at a given base slot.

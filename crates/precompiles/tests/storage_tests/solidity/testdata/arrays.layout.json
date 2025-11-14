@@ -26,19 +26,69 @@
             "offset": 0,
             "slot": "6",
             "type": "t_uint256"
+          },
+          {
+            "astId": 16,
+            "contract": "tests/storage_tests/solidity/testdata/arrays.sol:Arrays",
+            "label": "nestedArray",
+            "offset": 0,
+            "slot": "7",
+            "type": "t_array(t_array(t_uint8)4_storage)8_storage"
+          },
+          {
+            "astId": 22,
+            "contract": "tests/storage_tests/solidity/testdata/arrays.sol:Arrays",
+            "label": "anotherNestedArray",
+            "offset": 0,
+            "slot": "15",
+            "type": "t_array(t_array(t_uint16)2_storage)6_storage"
           }
         ],
         "types": {
+          "t_array(t_array(t_uint16)2_storage)6_storage": {
+            "base": "t_array(t_uint16)2_storage",
+            "encoding": "inplace",
+            "label": "uint16[2][6]",
+            "numberOfBytes": "192"
+          },
+          "t_array(t_array(t_uint8)4_storage)8_storage": {
+            "base": "t_array(t_uint8)4_storage",
+            "encoding": "inplace",
+            "label": "uint8[4][8]",
+            "numberOfBytes": "256"
+          },
+          "t_array(t_uint16)2_storage": {
+            "base": "t_uint16",
+            "encoding": "inplace",
+            "label": "uint16[2]",
+            "numberOfBytes": "32"
+          },
           "t_array(t_uint256)5_storage": {
             "base": "t_uint256",
             "encoding": "inplace",
             "label": "uint256[5]",
             "numberOfBytes": "160"
           },
+          "t_array(t_uint8)4_storage": {
+            "base": "t_uint8",
+            "encoding": "inplace",
+            "label": "uint8[4]",
+            "numberOfBytes": "32"
+          },
+          "t_uint16": {
+            "encoding": "inplace",
+            "label": "uint16",
+            "numberOfBytes": "2"
+          },
           "t_uint256": {
             "encoding": "inplace",
             "label": "uint256",
             "numberOfBytes": "32"
+          },
+          "t_uint8": {
+            "encoding": "inplace",
+            "label": "uint8",
+            "numberOfBytes": "1"
           }
         }
       }

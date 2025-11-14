@@ -155,11 +155,17 @@ fn derive_struct_impl(input: DeriveInput) -> syn::Result<TokenStream> {
                 fn load<S>(
                     storage: &mut S,
                     base_slot: ::alloy::primitives::U256,
+                    ctx: crate::storage::LayoutCtx,
                 ) -> crate::error::Result<Self>
                 where
                     S: crate::storage::StorageOps,
                 {
                     use crate::storage::Storable;
+
+                    debug_assert_eq!(
+                        ctx, crate::storage::LayoutCtx::Full,
+                        "Struct types can only be loaded with LayoutCtx::Full"
+                    );
 
                     #load_impl
 
@@ -174,11 +180,18 @@ fn derive_struct_impl(input: DeriveInput) -> syn::Result<TokenStream> {
                     &self,
                     storage: &mut S,
                     base_slot: ::alloy::primitives::U256,
+                    ctx: crate::storage::LayoutCtx,
                 ) -> crate::error::Result<()>
                 where
                     S: crate::storage::StorageOps,
                 {
                     use crate::storage::Storable;
+
+                    debug_assert_eq!(
+                        ctx, crate::storage::LayoutCtx::Full,
+                        "Struct types can only be stored with LayoutCtx::Full"
+                    );
+
 
                     #store_impl
 
@@ -232,11 +245,17 @@ fn derive_struct_impl(input: DeriveInput) -> syn::Result<TokenStream> {
                     fn load<S>(
                         storage: &mut S,
                         base_slot: ::alloy::primitives::U256,
+                        ctx: crate::storage::LayoutCtx,
                     ) -> crate::error::Result<Self>
                     where
                         S: crate::storage::StorageOps,
                     {
                         use crate::storage::Storable;
+
+                        debug_assert_eq!(
+                            ctx, crate::storage::LayoutCtx::Full,
+                            "Struct types can only be loaded with LayoutCtx::Full"
+                        );
 
                         #load_impl
 
@@ -249,11 +268,17 @@ fn derive_struct_impl(input: DeriveInput) -> syn::Result<TokenStream> {
                         &self,
                         storage: &mut S,
                         base_slot: ::alloy::primitives::U256,
+                        ctx: crate::storage::LayoutCtx,
                     ) -> crate::error::Result<()>
                     where
                         S: crate::storage::StorageOps,
                     {
                         use crate::storage::Storable;
+
+                        debug_assert_eq!(
+                            ctx, crate::storage::LayoutCtx::Full,
+                            "Struct types can only be stored with LayoutCtx::Full"
+                        );
 
                         #store_impl
 
@@ -411,14 +436,15 @@ fn gen_load_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> 
         .iter()
         .enumerate()
         .map(|(list_idx, (_orig_idx, name, ty))| {
-            let (slot_const, offset_const, bytes_const) = PackingField::new(name).consts();
+            let (slot_const, offset_const, _bytes_const) = PackingField::new(name).consts();
 
             // Struct, dynamic type, and array fields always use `load()` directly (never packed)
             if is_array_type(ty) || is_dynamic_type(ty) || is_custom_struct(ty) {
                 return quote! {
                     let #name = <#ty>::load(
                         storage,
-                        base_slot + ::alloy::primitives::U256::from(#packing::#slot_const)
+                        base_slot + ::alloy::primitives::U256::from(#packing::#slot_const),
+                        crate::storage::LayoutCtx::Full
                     )?;
                 };
             }
@@ -444,22 +470,19 @@ fn gen_load_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> 
                     let shares_slot = #shares_slot_check;
 
                     if !shares_slot {
-                        // If the field is alone in its slot, we can use `field.load()` directly
+                        // If the field is alone in its slot, use Full context
                         <#ty>::load(
                             storage,
-                            base_slot + ::alloy::primitives::U256::from(#packing::#slot_const)
+                            base_slot + ::alloy::primitives::U256::from(#packing::#slot_const),
+                            crate::storage::LayoutCtx::Full
                         )?
                     }
-                    // Otherwise, it is packed with others
+                    // Otherwise, it is packed with others - use Packed context with offset
                     else {
-                        // Use packing module to extract packed value
-                        let slot_value = storage.sload(
-                            base_slot + ::alloy::primitives::U256::from(#packing::#slot_const)
-                        )?;
-                        crate::storage::packing::extract_packed_value::<#ty>(
-                            slot_value,
-                            #packing::#offset_const,
-                            #packing::#bytes_const
+                        <#ty>::load(
+                            storage,
+                            base_slot + ::alloy::primitives::U256::from(#packing::#slot_const),
+                            crate::storage::LayoutCtx::Packed(#packing::#offset_const)
                         )?
                     }
                 };
@@ -475,14 +498,15 @@ fn gen_load_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> 
 /// Accepts indexed fields where the usize is the original field index in the struct.
 fn gen_store_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> TokenStream {
     let store_fields = indexed_fields.iter().enumerate().map(|(list_idx, (_orig_idx, name, ty))| {
-        let (slot_const, offset_const, bytes_const) = PackingField::new(name).consts();
+        let (slot_const, offset_const, _bytes_const) = PackingField::new(name).consts();
 
         // Struct, dynamic type, and array fields always use store() directly (never packed)
         if is_array_type(ty) || is_dynamic_type(ty) || is_custom_struct(ty) {
             return quote! {
                 self.#name.store(
                     storage,
-                    base_slot + ::alloy::primitives::U256::from(#packing::#slot_const)
+                    base_slot + ::alloy::primitives::U256::from(#packing::#slot_const),
+                    crate::storage::LayoutCtx::Full
                 )?;
             };
         }
@@ -507,21 +531,13 @@ fn gen_store_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) ->
                 let target_slot = base_slot + ::alloy::primitives::U256::from(#packing::#slot_const);
                 let shares_slot = #shares_slot_check;
 
-                // If the field is alone in its slot, we can use `field.store()` directly
+                // If the field is alone in its slot, use Full context
                 if !shares_slot {
-                    self.#name.store(storage, target_slot)?;
+                    self.#name.store(storage, target_slot, crate::storage::LayoutCtx::Full)?;
                 }
-                // Otherwise, it is packed with others
+                // Otherwise, it is packed with others - use Packed context with offset
                 else {
-                    // Use packing module to insert packed value
-                    let current = storage.sload(target_slot)?;
-                    let new_value = crate::storage::packing::insert_packed_value(
-                        current,
-                        &self.#name,
-                        #packing::#offset_const,
-                        #packing::#bytes_const
-                    )?;
-                    storage.sstore(target_slot, new_value)?;
+                    self.#name.store(storage, target_slot, crate::storage::LayoutCtx::Packed(#packing::#offset_const))?;
                 }
             }
         }

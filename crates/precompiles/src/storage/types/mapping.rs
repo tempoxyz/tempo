@@ -70,7 +70,7 @@ impl<K, V, Base: SlotId> Mapping<K, V, Base> {
         V: Storable<N>,
     {
         let slot = mapping_slot(key.as_storage_bytes(), Base::SLOT);
-        V::load(storage, slot)
+        V::load(storage, slot, crate::storage::types::LayoutCtx::Full)
     }
 
     /// Writes a value to the mapping at the given key.
@@ -92,7 +92,7 @@ impl<K, V, Base: SlotId> Mapping<K, V, Base> {
         V: Storable<N>,
     {
         let slot = mapping_slot(key.as_storage_bytes(), Base::SLOT);
-        value.store(storage, slot)
+        value.store(storage, slot, crate::storage::types::LayoutCtx::Full)
     }
 
     /// Deletes the value from the mapping at the given key (sets all slots to zero).
@@ -114,7 +114,7 @@ impl<K, V, Base: SlotId> Mapping<K, V, Base> {
         V: Storable<N>,
     {
         let slot = mapping_slot(key.as_storage_bytes(), Base::SLOT);
-        V::delete(storage, slot)
+        V::delete(storage, slot, crate::storage::types::LayoutCtx::Full)
     }
 
     /// Reads a value from a mapping field within a struct at a given base slot.
@@ -147,7 +147,7 @@ impl<K, V, Base: SlotId> Mapping<K, V, Base> {
     {
         let field_slot = struct_base_slot + U256::from(field_offset_slots);
         let slot = mapping_slot(key.as_storage_bytes(), field_slot);
-        V::load(storage, slot)
+        V::load(storage, slot, crate::storage::types::LayoutCtx::Full)
     }
 
     /// Reads a packed field from within a value stored in a mapping field at a given base slot.
@@ -205,7 +205,7 @@ impl<K, V, Base: SlotId> Mapping<K, V, Base> {
     {
         let field_slot = struct_base_slot + U256::from(field_offset_slots);
         let slot = mapping_slot(key.as_storage_bytes(), field_slot);
-        value.store(storage, slot)
+        value.store(storage, slot, crate::storage::types::LayoutCtx::Full)
     }
 
     /// Writes a packed field within a value stored in a mapping.
@@ -290,7 +290,7 @@ impl<K, V, Base: SlotId> Mapping<K, V, Base> {
     {
         let field_slot = struct_base_slot + U256::from(field_offset_slots);
         let slot = mapping_slot(key.as_storage_bytes(), field_slot);
-        V::delete(storage, slot)
+        V::delete(storage, slot, crate::storage::types::LayoutCtx::Full)
     }
 }
 
@@ -324,7 +324,7 @@ impl<K1, K2, V, Base: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyI
     {
         let slot =
             double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Base::SLOT);
-        V::load(storage, slot)
+        V::load(storage, slot, crate::storage::types::LayoutCtx::Full)
     }
 
     /// Writes a value to a nested mapping at the given keys.
@@ -358,7 +358,7 @@ impl<K1, K2, V, Base: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyI
     {
         let slot =
             double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Base::SLOT);
-        value.store(storage, slot)
+        value.store(storage, slot, crate::storage::types::LayoutCtx::Full)
     }
 
     /// Deletes a value from a nested mapping at the given keys (sets all slots to zero).
@@ -390,7 +390,7 @@ impl<K1, K2, V, Base: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyI
     {
         let slot =
             double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), Base::SLOT);
-        V::delete(storage, slot)
+        V::delete(storage, slot, crate::storage::types::LayoutCtx::Full)
     }
 
     /// Reads a value from a nested mapping field within a struct at a runtime base slot.
@@ -427,7 +427,7 @@ impl<K1, K2, V, Base: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyI
         let field_slot = struct_base_slot + U256::from(field_offset_slots);
         let slot =
             double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), field_slot);
-        V::load(storage, slot)
+        V::load(storage, slot, crate::storage::types::LayoutCtx::Full)
     }
 
     /// Writes a value to a nested mapping field within a struct at a runtime base slot.
@@ -462,7 +462,7 @@ impl<K1, K2, V, Base: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyI
         let field_slot = struct_base_slot + U256::from(field_offset_slots);
         let slot =
             double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), field_slot);
-        value.store(storage, slot)
+        value.store(storage, slot, crate::storage::types::LayoutCtx::Full)
     }
 
     /// Deletes a value from a nested mapping field within a struct at a runtime base slot.
@@ -495,7 +495,7 @@ impl<K1, K2, V, Base: SlotId, DummyId: SlotId> Mapping<K1, Mapping<K2, V, DummyI
         let field_slot = struct_base_slot + U256::from(field_offset_slots);
         let slot =
             double_mapping_slot(key1.as_storage_bytes(), key2.as_storage_bytes(), field_slot);
-        V::delete(storage, slot)
+        V::delete(storage, slot, crate::storage::types::LayoutCtx::Full)
     }
 
     /// Reads a packed field from within a value stored in a nested mapping.
