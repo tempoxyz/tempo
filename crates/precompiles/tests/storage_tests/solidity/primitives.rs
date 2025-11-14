@@ -54,9 +54,17 @@ fn test_arrays_layout() {
         field_a: U256,
         large_array: [U256; 5],
         field_b: U256,
+        nested_array: [[u8; 4]; 8],
+        another_nested_array: [[u16; 2]; 6],
     }
 
-    let rust_layout = layout_fields!(field_a, large_array, field_b);
+    let rust_layout = layout_fields!(
+        field_a,
+        large_array,
+        field_b,
+        nested_array,
+        another_nested_array
+    );
 
     // Compare against expected layout from Solidity
     let solc_layout = load_solc_layout(&testdata("arrays.sol"));
