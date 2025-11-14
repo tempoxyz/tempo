@@ -640,9 +640,7 @@ fn monitor_tps(tx_counter: Arc<AtomicU64>, target_count: u64) -> thread::JoinHan
 }
 
 async fn join_all(
-    futures: impl IntoIterator<
-        Item: Future<Output = alloy::contract::Result<PendingTransactionBuilder<Ethereum>>>,
-    >,
+    futures: impl IntoIterator<Item: Future<Output = eyre::Result<PendingTransactionBuilder<Ethereum>>>>,
     tx_count: &ProgressBar,
     max_concurrent_requests: usize,
 ) -> eyre::Result<()> {

@@ -31,7 +31,7 @@ pub(super) async fn setup(
 
     let accounts = signers.len();
     // Fetch current nonces for all accounts
-    let provider = ProviderBuilder::new().connect_http(url);
+    let provider = ProviderBuilder::new().connect_http(url.clone());
 
     println!("Fetching nonces for {accounts} accounts...");
 
@@ -53,13 +53,12 @@ pub(super) async fn setup(
 
     let user_tokens_count = 2;
     let tokens_count = user_tokens_count + 1;
-    let signers_count = signers.len() as u64;
     let setup_test_token_tx_count = 2;
     let tx_count = ProgressBar::new(
         setup_test_token_tx_count * user_tokens_count
             + user_tokens_count
-            + 2 * tokens_count * signers_count
-            + user_tokens_count * signers_count,
+            + 2 * tokens_count * accounts as u64
+            + user_tokens_count * accounts as u64,
     );
     tx_count.tick();
 
@@ -85,6 +84,7 @@ pub(super) async fn setup(
 
     for (i, &token) in user_tokens.iter().enumerate() {
         let provider = provider.clone();
+        let signer = wallet.clone();
 
         futures.push(Box::pin(async move {
             let tx = TxLegacy {
@@ -97,7 +97,7 @@ pub(super) async fn setup(
                 input: createPairCall { base: token }.abi_encode().into(),
             };
 
-            let tx = into_signed_encoded(tx, wallet.clone())?;
+            let tx = into_signed_encoded(tx, signer)?;
 
             eyre::Ok(provider.send_raw_transaction(tx.as_slice()).await?)
         }) as Pin<Box<dyn Future<Output = _>>>);
@@ -109,6 +109,7 @@ pub(super) async fn setup(
 
         for (i, token) in tokens.iter().enumerate() {
             let recipient = signer.address();
+            let signer = wallet.clone();
             let provider = provider.clone();
             futures.push(Box::pin(async move {
                 let tx = TxLegacy {
@@ -126,9 +127,9 @@ pub(super) async fn setup(
                     .into(),
                 };
 
-                let tx = into_signed_encoded(tx, wallet.clone())?;
+                let tx = into_signed_encoded(tx, signer)?;
 
-                eyre::Ok(provider.send_raw_transaction(tx.as_slice()).await)
+                eyre::Ok(provider.send_raw_transaction(tx.as_slice()).await?)
             }) as Pin<Box<dyn Future<Output = _>>>);
         }
 
@@ -151,6 +152,9 @@ pub(super) async fn setup(
         let length = tokens.len();
 
         for (i, token) in tokens.into_iter().enumerate() {
+            let account_provider = account_provider.clone();
+            let signer = signer.clone();
+
             futures.push(Box::pin(async move {
                 let tx = TxLegacy {
                     chain_id: Some(chain_id),
@@ -167,9 +171,9 @@ pub(super) async fn setup(
                     .into(),
                 };
 
-                let tx = into_signed_encoded(tx, signer.clone())?;
+                let tx = into_signed_encoded(tx, signer)?;
 
-                eyre::Ok(account_provider.send_raw_transaction(tx.as_slice()).await)
+                eyre::Ok(account_provider.send_raw_transaction(tx.as_slice()).await?)
             }) as Pin<Box<dyn Future<Output = _>>>);
         }
 
@@ -188,6 +192,9 @@ pub(super) async fn setup(
             .wallet(signer.clone())
             .connect_http(url.clone());
         for (i, token) in user_tokens.into_iter().enumerate() {
+            let account_provider = account_provider.clone();
+            let signer = signer.clone();
+
             futures.push(Box::pin(async move {
                 let tx = TxLegacy {
                     chain_id: Some(chain_id),
@@ -207,9 +214,9 @@ pub(super) async fn setup(
                     .into(),
                 };
 
-                let tx = into_signed_encoded(tx, signer.clone())?;
+                let tx = into_signed_encoded(tx, signer)?;
 
-                eyre::Ok(account_provider.send_raw_transaction(tx.as_slice()).await)
+                eyre::Ok(account_provider.send_raw_transaction(tx.as_slice()).await?)
             }) as Pin<Box<dyn Future<Output = _>>>);
         }
     }
