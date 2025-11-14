@@ -180,7 +180,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
             }
             IStablecoinExchange::priceToTickCall::SELECTOR => {
                 view::<IStablecoinExchange::priceToTickCall>(calldata, |call| {
-                    Ok(crate::stablecoin_exchange::price_to_tick(call.price))
+                    self.price_to_tick(call.price)
                 })
             }
 

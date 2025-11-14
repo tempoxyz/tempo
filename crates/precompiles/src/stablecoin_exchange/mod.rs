@@ -346,6 +346,19 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         self.sload_book_keys()
     }
 
+    /// Convert scaled price to relative tick
+    /// Post-Moderato: validates price is within [MIN_PRICE, MAX_PRICE]
+    /// Pre-Moderato: no validation (legacy behavior)
+    pub fn price_to_tick(&self, price: u32) -> Result<i16> {
+        if self.storage.spec().is_moderato() {
+            // Post-Moderato: validate price bounds
+            orderbook::price_to_tick(price)
+        } else {
+            // Pre-Moderato: legacy behavior without validation
+            Ok((price as i32 - orderbook::PRICE_SCALE as i32) as i16)
+        }
+    }
+
     pub fn create_pair(&mut self, base: Address) -> Result<B256> {
         // Validate that base is a TIP20 token (only after Moderato hardfork)
         if self.storage.spec().is_moderato() && !is_tip20(base) {
@@ -1571,10 +1584,66 @@ mod tests {
             98000u32, 99000, 99900, 99999, 100000, 100001, 100100, 101000, 102000,
         ];
         for price in test_prices {
-            let tick = orderbook::price_to_tick(price);
+            let tick = orderbook::price_to_tick(price).unwrap();
             let expected_tick = (price as i32 - orderbook::PRICE_SCALE as i32) as i16;
             assert_eq!(tick, expected_tick);
         }
+    }
+
+    #[test]
+    fn test_price_to_tick_post_moderato() -> eyre::Result<()> {
+        // Post-Moderato: price validation should be enforced
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let exchange = StablecoinExchange::new(&mut storage);
+
+        // Valid prices should succeed
+        assert_eq!(exchange.price_to_tick(orderbook::PRICE_SCALE)?, 0);
+        assert_eq!(exchange.price_to_tick(orderbook::MIN_PRICE)?, i16::MIN);
+        assert_eq!(exchange.price_to_tick(orderbook::MAX_PRICE)?, i16::MAX);
+
+        // Out of bounds prices should fail
+        let result = exchange.price_to_tick(orderbook::MIN_PRICE - 1);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::TickOutOfBounds(_))
+        ));
+
+        let result = exchange.price_to_tick(orderbook::MAX_PRICE + 1);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::TickOutOfBounds(_))
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_price_to_tick_pre_moderato() -> eyre::Result<()> {
+        // Pre-Moderato: no price validation (legacy behavior)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let exchange = StablecoinExchange::new(&mut storage);
+
+        // Valid prices should succeed
+        assert_eq!(exchange.price_to_tick(orderbook::PRICE_SCALE)?, 0);
+        assert_eq!(exchange.price_to_tick(orderbook::MIN_PRICE)?, i16::MIN);
+        assert_eq!(exchange.price_to_tick(orderbook::MAX_PRICE)?, i16::MAX);
+
+        // Out of bounds prices should also succeed (legacy behavior)
+        let tick = exchange.price_to_tick(orderbook::MIN_PRICE - 1)?;
+        assert_eq!(
+            tick,
+            ((orderbook::MIN_PRICE - 1) as i32 - orderbook::PRICE_SCALE as i32) as i16
+        );
+
+        let tick = exchange.price_to_tick(orderbook::MAX_PRICE + 1)?;
+        assert_eq!(
+            tick,
+            ((orderbook::MAX_PRICE + 1) as i32 - orderbook::PRICE_SCALE as i32) as i16
+        );
+
+        Ok(())
     }
 
     #[test]
