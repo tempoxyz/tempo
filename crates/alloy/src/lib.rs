@@ -41,3 +41,6 @@ pub mod rpc;
 
 #[doc(inline)]
 pub use tempo_primitives as primitives;
+
+#[doc(inline)]
+pub use tempo_contracts as contracts;

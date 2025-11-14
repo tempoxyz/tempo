@@ -11429,6 +11429,7 @@ dependencies = [
  "reth-rpc-convert",
  "reth-rpc-eth-types",
  "serde",
+ "tempo-contracts",
  "tempo-evm",
  "tempo-primitives",
  "tempo-revm",
