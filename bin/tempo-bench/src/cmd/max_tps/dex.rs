@@ -52,8 +52,6 @@ pub(super) async fn setup(
 
     let accounts = signers.len();
 
-    println!("Fetching nonces for {accounts} accounts...");
-
     let user_tokens_count = 2;
     let tokens_count = user_tokens_count + 1;
     let setup_test_token_tx_count = 2;
@@ -80,6 +78,7 @@ pub(super) async fn setup(
     let mint_amount = U256::from(1000000000000000u128);
     let first_order_amount = 1000000000000u128;
 
+    let provider = ProviderBuilder::new().connect_http(url.clone());
     let mut nonce = provider.get_transaction_count(caller).await?;
     let user_tokens = [*base1.address(), *base2.address()];
     let tokens = [&base1, &base2, &quote];
