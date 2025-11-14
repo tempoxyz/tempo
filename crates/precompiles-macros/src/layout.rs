@@ -83,21 +83,21 @@ pub(crate) fn gen_getters_and_setters(
                 impl<'a, S: crate::storage::PrecompileStorageProvider> #struct_name<'a, S> {
                     #[inline]
                     fn #getter_name(&mut self) -> crate::error::Result<#ty> {
-                        <#ty as crate::storage::Storable<{ <#ty as crate::storage::StorableType>::LAYOUT.slots() }>>::load(
+                        <#ty as crate::storage::Storable<{ <#ty as crate::storage::StorableType>::SLOTS }>>::load(
                             self, slots::#slot_const, #layout_ctx
                         )
                     }
 
                     #[inline]
                     fn #cleaner_name(&mut self) -> crate::error::Result<()> {
-                        <#ty as crate::storage::Storable<{ <#ty as crate::storage::StorableType>::LAYOUT.slots() }>>::delete(
+                        <#ty as crate::storage::Storable<{ <#ty as crate::storage::StorableType>::SLOTS }>>::delete(
                             self, slots::#slot_const, #layout_ctx
                         )
                     }
 
                     #[inline]
                     fn #setter_name(&mut self, value: #ty) -> crate::error::Result<()> {
-                        <#ty as crate::storage::Storable<{ <#ty as crate::storage::StorableType>::LAYOUT.slots() }>>::store(
+                        <#ty as crate::storage::Storable<{ <#ty as crate::storage::StorableType>::SLOTS }>>::store(
                             &value, self, slots::#slot_const, #layout_ctx
                         )
                     }
