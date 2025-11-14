@@ -12,11 +12,19 @@ pub mod metrics;
 
 pub(crate) mod subblocks;
 
-use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
+use std::{net::SocketAddr, path::Path};
+
+use commonware_codec::{DecodeExt, IsUnit};
+use commonware_cryptography::{
+    bls12381::primitives::group::Share,
+    ed25519::{PrivateKey, PublicKey},
+};
 use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Metrics as _;
 use eyre::{WrapErr as _, eyre};
+use reth_chainspec::EthChainSpec;
 use tempo_node::TempoFullNode;
+use tracing::info;
 
 use crate::config::{
     BOUNDARY_CERT_CHANNEL_IDENT, BOUNDARY_CERT_LIMIT, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
@@ -27,12 +35,39 @@ use crate::config::{
 
 pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,
-    config: &tempo_commonware_node_config::Config,
+    config: &tempo_consensus_args::ConsensusArgs,
     execution_node: TempoFullNode,
 ) -> eyre::Result<()> {
-    let (mut network, oracle) = instantiate_network(context, config)
-        .await
-        .wrap_err("failed to start network")?;
+    let share = config
+        .share
+        .as_ref()
+        .map(|share| {
+            read_from_file::<Share, _, _>(share).wrap_err_with(|| {
+                format!(
+                    "failed reading private bls12-381 key share from file `{}`",
+                    share.display()
+                )
+            })
+        })
+        .transpose()?;
+
+    let signing_key =
+        read_from_file::<PrivateKey, _, _>(&config.signing_key).wrap_err_with(|| {
+            format!(
+                "failed reading private ed25519 signing key share from file `{}`",
+                config.signing_key.display()
+            )
+        })?;
+
+    let (mut network, oracle) = instantiate_network(
+        context,
+        signing_key.clone(),
+        config.listen_address,
+        config.mailbox_size,
+        config.max_message_size_bytes,
+    )
+    .await
+    .wrap_err("failed to start network")?;
 
     let message_backlog = config.message_backlog;
     let pending = network.register(PENDING_CHANNEL_IDENT, PENDING_LIMIT, message_backlog);
@@ -52,29 +87,53 @@ pub async fn run_consensus_stack(
     );
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
+    let fee_recipient = config.fee_recipient.unwrap_or_else(|| {
+        // FIXME: outside of root span; put in root span.
+        info!("argument fee-recipient not set; using coinbase set in genesis");
+        execution_node.chain_spec().genesis().coinbase
+    });
+
     let consensus_engine = crate::consensus::engine::Builder {
         context: context.with_label("engine"),
 
-        fee_recipient: config.fee_recipient,
+        fee_recipient,
 
         execution_node,
         blocker: oracle.clone(),
         peer_manager: oracle.clone(),
         // TODO: Set this through config?
         partition_prefix: "engine".into(),
-        signer: config.signer.clone(),
-        share: config.share.clone(),
+        signer: signing_key,
+        share: share,
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
 
-        time_to_propose: config.timeouts.time_to_propose,
-        time_to_collect_notarizations: config.timeouts.time_to_collect_notarizations,
-        time_to_retry_nullify_broadcast: config.timeouts.time_to_retry_nullify_broadcast,
-        time_for_peer_response: config.timeouts.time_for_peer_response,
-        views_to_track: config.timeouts.views_to_track,
-        views_until_leader_skip: config.timeouts.views_until_leader_skip,
-        new_payload_wait_time: config.timeouts.new_payload_wait_time,
-        time_to_build_subblock: config.timeouts.time_to_build_subblock,
+        time_to_propose: config.wait_for_proposal.try_into().wrap_err(
+            "failed converting argument wait-for-proposal to regular duration; \
+            was it negative or chosen too large?",
+        )?,
+        time_to_collect_notarizations: config.wait_for_notarizations.try_into().wrap_err(
+            "failed converting argument wait-for-notarizations to regular \
+            duration; was it negative or chosen too large",
+        )?,
+        time_to_retry_nullify_broadcast: config.wait_to_rebroadcast_nullify.try_into().wrap_err(
+            "failed converting argument wait-to-rebroadcast-nullify to regular \
+            duration; was it negative or chosen too large",
+        )?,
+        time_for_peer_response: config.wait_for_peer_response.try_into().wrap_err(
+            "failed converting argument wait-for-peer-response to regular \
+            duration; was it negative or chosen too large",
+        )?,
+        views_to_track: config.views_to_track,
+        views_until_leader_skip: config.inactive_views_until_leader_skip,
+        new_payload_wait_time: config.time_to_build_proposal.try_into().wrap_err(
+            "failed converting argument time-to-build-proposal to regular \
+            duration; was it negative or chosen too large",
+        )?,
+        time_to_build_subblock: config.time_to_build_subblock.try_into().wrap_err(
+            "failed converting argument time-to-build-subblock to regular \
+            duration; was it negative or chosen too large",
+        )?,
     }
     .try_init()
     .await
@@ -111,7 +170,10 @@ pub async fn run_consensus_stack(
 
 async fn instantiate_network(
     context: &commonware_runtime::tokio::Context,
-    config: &tempo_commonware_node_config::Config,
+    signing_key: PrivateKey,
+    listen_addr: SocketAddr,
+    mailbox_size: usize,
+    max_message_size: usize,
 ) -> eyre::Result<(
     lookup::Network<commonware_runtime::tokio::Context, PrivateKey>,
     lookup::Oracle<PublicKey>,
@@ -120,15 +182,17 @@ async fn instantiate_network(
     // where `NAMESPACE` is used at all. We follow alto's example for now.
     let p2p_namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
     let p2p_cfg = lookup::Config {
-        mailbox_size: config.mailbox_size,
+        mailbox_size,
         tracked_peer_sets: PEERSETS_TO_TRACK,
-        ..lookup::Config::local(
-            config.signer.clone(),
-            &p2p_namespace,
-            config.listen_addr,
-            config.p2p.max_message_size_bytes,
-        )
+        ..lookup::Config::local(signing_key, &p2p_namespace, listen_addr, max_message_size)
     };
 
     Ok(lookup::Network::new(context.with_label("network"), p2p_cfg))
+}
+
+fn read_from_file<T: DecodeExt<X>, X: IsUnit, P: AsRef<Path>>(path: P) -> eyre::Result<T> {
+    let raw_bytes = std::fs::read(path).wrap_err("failed reading file")?;
+    let decoded = const_hex::decode(&raw_bytes).wrap_err("failed decoding file contents as hex")?;
+    let obj = T::decode(&decoded[..]).wrap_err("failed parsing hex-decoded file contents")?;
+    Ok(obj)
 }

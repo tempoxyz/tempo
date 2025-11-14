@@ -11,7 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-commonware-node-config.workspace = true
+tempo-consensus-args.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-node.workspace = true
 tempo-primitives.workspace = true

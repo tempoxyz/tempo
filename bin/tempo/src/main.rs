@@ -20,17 +20,15 @@ mod download;
 use clap::Parser;
 use commonware_runtime::{Metrics, Runner};
 use eyre::WrapErr as _;
-use futures::{
-    FutureExt as _,
-    future::{FusedFuture, pending},
-};
+use futures::{FutureExt as _, future::FusedFuture as _};
 use reth_ethereum::cli::{Cli, Commands};
 use reth_ethereum_cli as _;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
-use std::{net::SocketAddr, sync::Arc, thread};
+use std::{sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::run_consensus_stack;
 use tempo_consensus::TempoConsensus;
+use tempo_consensus_args::ConsensusArgs;
 use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
 use tempo_faucet::{
     args::FaucetArgs,
@@ -38,7 +36,6 @@ use tempo_faucet::{
 };
 use tempo_node::{TempoFullNode, node::TempoNode};
 use tokio::sync::oneshot;
-use tokio_util::either::Either;
 
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
@@ -52,8 +49,8 @@ struct TempoArgs {
     )]
     pub follow: Option<String>,
 
-    #[clap(long, value_name = "FILE", required_unless_present_any = ["follow", "dev"])]
-    pub consensus_config: Option<camino::Utf8PathBuf>,
+    #[command(flatten)]
+    pub consensus: ConsensusArgs,
 
     #[command(flatten)]
     pub faucet_args: FaucetArgs,
@@ -96,7 +93,10 @@ fn main() -> eyre::Result<()> {
             return Ok(());
         }
 
-        let (node, args) = args_and_node_handle_rx.blocking_recv().wrap_err("channel closed before consensus-relevant command line args and a handle to the execution node could be received")?;
+        let (node, args) = args_and_node_handle_rx.blocking_recv().wrap_err(
+            "channel closed before consensus-relevant command line args \
+                and a handle to the execution node could be received",
+        )?;
 
         let ret = if node.config.dev.dev || args.follow.is_some() {
             futures::executor::block_on(async move {
@@ -104,47 +104,33 @@ fn main() -> eyre::Result<()> {
                 Ok(())
             })
         } else {
-            let consensus_config_path = args
-                .consensus_config
-                .expect("Could not get consensus config path");
-
-            let consensus_config =
-                tempo_commonware_node_config::Config::from_file(&consensus_config_path)
-                    .wrap_err_with(|| {
-                        format!(
-                            "failed parsing consensus config from provided argument `{consensus_config_path}`",
-                        )
-                    })?;
             let runtime_config = commonware_runtime::tokio::Config::default()
                 .with_tcp_nodelay(Some(true))
-                .with_worker_threads(consensus_config.worker_threads)
-                .with_storage_directory(&consensus_config.storage_directory)
+                .with_worker_threads(args.consensus.worker_threads)
+                .with_storage_directory(
+                    &node
+                        .config
+                        .datadir
+                        .datadir
+                        .unwrap_or_default()
+                        .as_ref()
+                        .join("consensus"),
+                )
                 .with_catch_panics(true);
 
             let runner = commonware_runtime::tokio::Runner::new(runtime_config);
 
             runner.start(async move |ctx| {
-
                 // Ensure all consensus metrics are prefixed. Shadow `ctx` to
                 // not forget.
                 let ctx = ctx.with_label("consensus");
 
-                let mut metrics_server = match consensus_config
-                    .metrics_port {
-                    Some(port) => {
-                        Either::Left(
-                            tempo_commonware_node::metrics::install(
-                                ctx.with_label("metrics"),
-                                SocketAddr::new(
-                                    consensus_config.listen_addr.ip(),
-                                    port,
-                                ),
-                            )
-                        )
-                    }
-                    None => Either::Right(pending()),
-                }.fuse();
-                let consensus_stack = run_consensus_stack(&ctx, &consensus_config, node);
+                let mut metrics_server = tempo_commonware_node::metrics::install(
+                    ctx.with_label("metrics"),
+                    args.consensus.metrics_address,
+                )
+                .fuse();
+                let consensus_stack = run_consensus_stack(&ctx, &args.consensus, node);
                 tokio::pin!(consensus_stack);
                 loop {
                     tokio::select!(
@@ -155,7 +141,9 @@ fn main() -> eyre::Result<()> {
                         }
 
                         ret = &mut consensus_stack => {
-                            break ret.and_then(|()| Err(eyre::eyre!("consensus stack exited unexpectedly")))
+                            break ret.and_then(|()| Err(eyre::eyre!(
+                                "consensus stack exited unexpectedly"))
+                            )
                             .wrap_err("consensus stack failed");
                         }
 
