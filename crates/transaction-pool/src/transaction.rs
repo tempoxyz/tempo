@@ -73,6 +73,9 @@ pub enum TempoPoolTransactionError {
 
     #[error("No fee token preference configured")]
     MissingFeeToken,
+
+    #[error("Insufficient liquidity in FeeAMM pool for fee token swap")]
+    InsufficientLiquidity,
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -81,6 +84,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             Self::ExceedsNonPaymentLimit => false,
             Self::InvalidFeeToken(_) => false,
             Self::MissingFeeToken => false,
+            Self::InsufficientLiquidity => false,
         }
     }
 

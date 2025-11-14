@@ -7,7 +7,7 @@ use alloy::{
 use alloy_eips::Encodable2718;
 use alloy_network::TxSignerSync;
 use tempo_contracts::precompiles::IFeeManager::setUserTokenCall;
-use tempo_precompiles::DEFAULT_FEE_TOKEN;
+use tempo_precompiles::{DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS};
 use tempo_primitives::TxFeeToken;
 
 /// Test block building when FeeAMM pool has insufficient liquidity for payment transactions
@@ -32,10 +32,10 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     let payment_token = crate::utils::setup_test_token(provider.clone(), sender_address).await?;
     let payment_token_addr = *payment_token.address();
 
-    // Get validator token address (USDC from genesis)
+    // Get validator token address (LINKING_USD - validators always use this)
     use tempo_contracts::precompiles::ITIPFeeAMM;
     use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
-    let validator_token_addr = DEFAULT_FEE_TOKEN;
+    let validator_token_addr = LINKING_USD_ADDRESS;
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
     let validator_token =
@@ -145,19 +145,18 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         .await?;
 
     // Now try to send payment transactions that require fee swaps
-    // With insufficient liquidity, these should be excluded from blocks
+    // With insufficient liquidity, these should be rejected by the transaction pool validator
     let num_payment_txs = 5;
     println!("Sending {num_payment_txs} payment transactions that require fee swaps...");
 
-    let mut transactions_included = 0;
-    let mut transactions_timed_out = 0;
+    let mut transactions_rejected = 0;
 
     for i in 0..num_payment_txs {
         let transfer = payment_token.transfer(sender_address, U256::from((i + 1) as u64));
         match transfer.send().await {
             Ok(pending_tx) => {
                 let tx_num = i + 1;
-                println!("Transaction {tx_num} sent, waiting for receipt...");
+                println!("Transaction {tx_num} unexpectedly sent! Waiting for receipt...");
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(10),
                     pending_tx.get_receipt(),
@@ -166,39 +165,39 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
                 {
                     Ok(Ok(receipt)) => {
                         let status = receipt.status();
-                        println!("Transaction {tx_num} included with status: {status:?}");
-                        transactions_included += 1;
+                        println!(
+                            "Transaction {tx_num} unexpectedly included with status: {status:?}"
+                        );
                     }
                     Ok(Err(e)) => {
                         println!("Transaction {tx_num} receipt error: {e}");
                     }
                     Err(_) => {
-                        println!("Transaction {tx_num} timed out waiting for receipt");
-                        transactions_timed_out += 1;
-                        break; // Stop trying if we timeout
+                        println!("Transaction {tx_num} timed out");
                     }
                 }
             }
             Err(e) => {
                 let tx_num = i + 1;
-                println!("Transaction {tx_num} failed to send: {e}");
+                let error_msg = e.to_string();
+                println!("Transaction {tx_num} rejected: {e}");
+                // Verify it's rejected due to insufficient liquidity
+                if error_msg.contains("Insufficient liquidity in FeeAMM pool for fee token swap") {
+                    transactions_rejected += 1;
+                }
             }
         }
     }
 
-    println!("Transactions included: {transactions_included}, timed out: {transactions_timed_out}");
+    println!("Transactions rejected due to insufficient liquidity: {transactions_rejected}");
 
-    // Verify that transactions requiring unavailable liquidity were NOT included
+    // Verify that all transactions requiring unavailable liquidity were rejected
     assert_eq!(
-        transactions_included, 0,
-        "Transactions requiring unavailable liquidity should be excluded from blocks"
-    );
-    assert!(
-        transactions_timed_out > 0,
-        "At least one transaction should have timed out (indicating it was excluded)"
+        transactions_rejected, num_payment_txs,
+        "All transactions requiring unavailable liquidity should be rejected by the pool validator"
     );
 
-    println!("Test completed: block building continued without stalling");
+    println!("Test completed: transactions with insufficient AMM liquidity correctly rejected");
 
     Ok(())
 }

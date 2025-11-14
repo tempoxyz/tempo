@@ -1,5 +1,6 @@
 use crate::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
 use alloy_consensus::Transaction;
+use alloy_primitives::{Address, U256};
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
@@ -9,6 +10,7 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
+use tempo_precompiles::{LINKING_USD_ADDRESS, tip_fee_manager::amm::compute_amount_out};
 use tempo_revm::TempoStateAccess;
 
 /// Validator for Tempo transactions.
@@ -101,6 +103,12 @@ where
             }
         }
 
+        // For testnet, we assume all validators use LinkingUSD as their fee token.
+        // We hardcode this assumption here to avoid expensive header lookups on every validation.
+        // TODO: For mainnet, this will need to be updated to use actual validator addresses.
+        const VALIDATOR_FEE_TOKEN: Address = LINKING_USD_ADDRESS;
+
+        // Check user balance first
         let balance = match state_provider.get_token_balance(fee_token, fee_payer) {
             Ok(balance) => balance,
             Err(err) => {
@@ -122,6 +130,52 @@ where
                 )
                 .into(),
             );
+        }
+
+        // Validate AMM liquidity for fee token swap.
+        // Skip liquidity check only for LINKING_USD as it's the primary validator token
+        // and doesn't require a swap. All other tokens (including DEFAULT_FEE_TOKEN)
+        // need sufficient AMM liquidity to swap to LINKING_USD.
+        // Note: There is no fallback mechanism - if a token doesn't have liquidity
+        // against LINKING_USD, the transaction will fail.
+        // TODO: For mainnet, this will need to be updated to check liquidity
+        // against actual validator tokens or implement a more sophisticated validation strategy.
+        if fee_token != VALIDATOR_FEE_TOKEN {
+            let fee_amount = transaction.fee_token_cost();
+
+            // Check liquidity: get pool reserves
+            let pool = match state_provider.get_fee_amm_pool(fee_token, VALIDATOR_FEE_TOKEN) {
+                Ok(pool) => pool,
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                }
+            };
+
+            // Calculate output: amount_out = amount_in * M / SCALE (M=9970, SCALE=10000)
+            let amount_out = match compute_amount_out(fee_amount) {
+                Some(amount) => amount,
+                None => {
+                    return TransactionValidationOutcome::Error(
+                        *transaction.hash(),
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "overflow",
+                        )),
+                    );
+                }
+            };
+
+            // Check if pool has sufficient liquidity for the swap
+            let has_liquidity = amount_out <= U256::from(pool.reserve_validator_token);
+
+            if !has_liquidity {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(
+                        TempoPoolTransactionError::InsufficientLiquidity,
+                    ),
+                );
+            }
         }
 
         self.inner.validate_one(origin, transaction)

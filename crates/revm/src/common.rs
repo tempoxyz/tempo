@@ -10,7 +10,7 @@ use tempo_contracts::precompiles::IFeeManager;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     storage::slots::mapping_slot,
-    tip_fee_manager,
+    tip_fee_manager::{self, amm::Pool},
     tip20::{self, is_tip20},
 };
 use tempo_primitives::TempoTxEnvelope;
@@ -180,6 +180,31 @@ pub trait TempoStateAccess<T> {
         // Load fee token account to ensure that we can load storage for it.
         self.basic(token)?;
         self.sload(token, balance_slot)
+    }
+
+    /// Returns the FeeAMM pool reserves for the given token pair.
+    fn get_fee_amm_pool(
+        &mut self,
+        user_token: Address,
+        validator_token: Address,
+    ) -> Result<Pool, Self::Error> {
+        let pool_id = tip_fee_manager::amm::PoolKey::new(user_token, validator_token).get_id();
+        let pool_slot = mapping_slot(pool_id, tip_fee_manager::slots::POOLS);
+
+        // Load FeeManager account to ensure we can load storage for it
+        self.basic(TIP_FEE_MANAGER_ADDRESS)?;
+        let pool_data = self.sload(TIP_FEE_MANAGER_ADDRESS, pool_slot)?;
+
+        // Unpack reserves: lower 128 bits = user token, upper 128 bits = validator token
+        const MASK_128: U256 = uint!(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF_U256);
+        let reserve_user_token: u128 = (pool_data & MASK_128).to();
+        let shifted: U256 = pool_data >> 128;
+        let reserve_validator_token: u128 = shifted.to();
+
+        Ok(Pool {
+            reserve_user_token,
+            reserve_validator_token,
+        })
     }
 }
 

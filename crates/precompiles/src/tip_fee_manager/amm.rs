@@ -17,6 +17,12 @@ pub const SCALE: U256 = uint!(10000_U256);
 pub const SQRT_SCALE: U256 = uint!(100000_U256);
 pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
 
+/// Computes the output amount for a given input amount using the constant product formula
+/// with a 0.3% fee (M=9970, SCALE=10000).
+pub fn compute_amount_out(amount_in: U256) -> Option<U256> {
+    amount_in.checked_mul(M).map(|p| p / SCALE)
+}
+
 /// Pool structure matching the Solidity implementation
 #[derive(Debug, Clone, Default, Storable)]
 pub struct Pool {
@@ -720,6 +726,30 @@ mod tests {
     };
     use alloy::primitives::{Address, uint};
     use tempo_contracts::precompiles::TIP20Error;
+
+    #[test]
+    fn test_compute_amount_out() {
+        // Test basic calculation: 1000 * 9970 / 10000 = 997
+        let amount_in = U256::from(1000);
+        let amount_out = compute_amount_out(amount_in);
+        assert_eq!(amount_out, Some(U256::from(997)));
+
+        // Test with larger amount
+        let amount_in = U256::from(1_000_000);
+        let amount_out = compute_amount_out(amount_in);
+        assert_eq!(amount_out, Some(U256::from(997_000)));
+
+        // Test with zero
+        let amount_in = U256::ZERO;
+        let amount_out = compute_amount_out(amount_in);
+        assert_eq!(amount_out, Some(U256::ZERO));
+
+        // Test with max value (should not overflow since we divide by SCALE)
+        let amount_in = U256::MAX;
+        let amount_out = compute_amount_out(amount_in);
+        // This should overflow during multiplication
+        assert_eq!(amount_out, None);
+    }
 
     #[test]
     fn test_mint_identical_addresses() {
