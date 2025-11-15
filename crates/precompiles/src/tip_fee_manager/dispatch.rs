@@ -1,5 +1,7 @@
 use crate::{
-    Precompile, input_cost, mutate, mutate_void,
+    Precompile,
+    error::TempoPrecompileError,
+    input_cost, mutate, mutate_void,
     storage::PrecompileStorageProvider,
     tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager, amm::MIN_LIQUIDITY},
     view,
@@ -16,10 +18,10 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".to_string())
+                PrecompileError::Other("Invalid input: missing function selector".into())
             })?
             .try_into()
-            .map_err(|_| PrecompileError::Other("Invalid function selector length".to_string()))?;
+            .map_err(|_| PrecompileError::Other("Invalid function selector length".into()))?;
 
         let result = match selector {
             // View functions
@@ -93,14 +95,18 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
             }
             ITIPFeeAMM::mintCall::SELECTOR => {
                 mutate::<ITIPFeeAMM::mintCall>(calldata, msg_sender, |s, call| {
-                    self.mint(
-                        s,
-                        call.userToken,
-                        call.validatorToken,
-                        call.amountUserToken,
-                        call.amountValidatorToken,
-                        call.to,
-                    )
+                    if self.storage.spec().is_moderato() {
+                        Err(TempoPrecompileError::UnknownFunctionSelector)
+                    } else {
+                        self.mint(
+                            s,
+                            call.userToken,
+                            call.validatorToken,
+                            call.amountUserToken,
+                            call.amountValidatorToken,
+                            call.to,
+                        )
+                    }
                 })
             }
             ITIPFeeAMM::mintWithValidatorTokenCall::SELECTOR => {
@@ -142,9 +148,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
                 })
             }
 
-            _ => Err(PrecompileError::Other(
-                "Unknown function selector".to_string(),
-            )),
+            _ => Err(PrecompileError::Other("Unknown function selector".into())),
         };
 
         result.map(|mut res| {
@@ -174,6 +178,7 @@ mod tests {
         sol_types::SolValue,
     };
     use eyre::Result;
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls,
     };
@@ -546,5 +551,36 @@ mod tests {
         assert_eq!(balance, liquidity);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_mint_deprecated_after_moderato_hardfork() {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
+        let user = Address::random();
+        let admin = Address::random();
+        initialize_linking_usd(&mut storage, admin).unwrap();
+
+        let user_token = token_id_to_address(1);
+        let validator_token = token_id_to_address(2);
+
+        setup_token_with_balance(&mut storage, user_token, user, U256::from(1000000u64));
+        setup_token_with_balance(&mut storage, validator_token, user, U256::from(1000000u64));
+
+        let mut fee_manager = TipFeeManager::new(&mut storage);
+
+        let call = ITIPFeeAMM::mintCall {
+            userToken: user_token,
+            validatorToken: validator_token,
+            amountUserToken: U256::from(1000u64),
+            amountValidatorToken: U256::from(1000u64),
+            to: user,
+        };
+
+        let calldata = call.abi_encode();
+        let result = fee_manager.call(&Bytes::from(calldata), user);
+
+        assert!(
+            matches!(result, Err(revm::precompile::PrecompileError::Other(ref msg)) if msg == "Unknown function selector")
+        );
     }
 }

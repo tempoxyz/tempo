@@ -61,6 +61,7 @@ const MAX_REPAIR: u64 = 20;
 ///
 // XXX: Mostly a one-to-one copy of alto for now. We also put the context in here
 // because there doesn't really seem to be a point putting it into an extra initializer.
+#[derive(Clone)]
 pub struct Builder<
     TBlocker,
     TContext,

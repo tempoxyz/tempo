@@ -12,7 +12,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["serde", "reth-codec"] }
 tempo-revm = { workspace = true, features = ["reth"] }
 

@@ -9,7 +9,6 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
-use tempo_precompiles::DEFAULT_FEE_TOKEN;
 use tempo_revm::TempoStateAccess;
 
 /// Validator for Tempo transactions.
@@ -69,35 +68,40 @@ where
             }
         };
 
-        let maybe_tx_fee_token =
-            match state_provider.user_or_tx_fee_token(transaction.inner(), fee_payer) {
-                Ok(maybe_tx_fee_token) => maybe_tx_fee_token,
-                Err(err) => {
-                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-                }
-            };
+        let fee_token = match state_provider.user_or_tx_fee_token(transaction.inner(), fee_payer) {
+            Ok(Some(fee_token)) => fee_token,
+            Ok(None) => {
+                // If no fee token preference was specified at transaction or user level, this means that we will
+                // fallback to validator token. On Andantino testnet, all validators use LINKING_USD as their fee token,
+                // which will cause the transaction to be rejected because it can't be used to pay fees.
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(TempoPoolTransactionError::MissingFeeToken),
+                );
+            }
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        };
 
-        if let Some(fee_token) = maybe_tx_fee_token {
-            match state_provider.is_valid_fee_token(fee_token) {
-                Ok(valid) => {
-                    if !valid {
-                        return TransactionValidationOutcome::Invalid(
-                            transaction,
-                            InvalidPoolTransactionError::other(
-                                TempoPoolTransactionError::InvalidFeeToken(fee_token),
-                            ),
-                        );
-                    }
+        // Ensure that fee token is valid.
+        match state_provider.is_valid_fee_token(fee_token) {
+            Ok(valid) => {
+                if !valid {
+                    return TransactionValidationOutcome::Invalid(
+                        transaction,
+                        InvalidPoolTransactionError::other(
+                            TempoPoolTransactionError::InvalidFeeToken(fee_token),
+                        ),
+                    );
                 }
-                Err(err) => {
-                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-                }
+            }
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
             }
         }
 
-        let balance = match state_provider
-            .get_token_balance(maybe_tx_fee_token.unwrap_or(DEFAULT_FEE_TOKEN), fee_payer)
-        {
+        let balance = match state_provider.get_token_balance(fee_token, fee_payer) {
             Ok(balance) => balance,
             Err(err) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
@@ -236,36 +240,6 @@ mod tests {
         }
 
         TempoPooledTransaction::new(tx.try_into_recovered().unwrap())
-    }
-
-    #[tokio::test]
-    async fn test_insufficient_balance() {
-        let transaction = get_transaction(None);
-        let provider = MockEthProvider::default();
-        provider.add_account(
-            transaction.sender(),
-            ExtendedAccount::new(transaction.nonce(), alloy_primitives::U256::ZERO),
-        );
-
-        let inner = EthTransactionValidatorBuilder::new(provider.clone())
-            .disable_balance_check()
-            .build(InMemoryBlobStore::default());
-        let validator = TempoTransactionValidator::new(inner);
-
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, transaction.clone())
-            .await;
-
-        let expected_cost = transaction.fee_token_cost();
-        if let TransactionValidationOutcome::Invalid(_, err) = outcome {
-            assert!(matches!(
-                err,
-                InvalidPoolTransactionError::Consensus(InvalidTransactionError::InsufficientFunds(ref funds_err))
-                if funds_err.got == alloy_primitives::U256::ZERO && funds_err.expected == expected_cost
-            ));
-        } else {
-            panic!("Expected Invalid outcome with InsufficientFunds error");
-        }
     }
 
     #[tokio::test]

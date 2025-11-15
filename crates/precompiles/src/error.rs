@@ -60,6 +60,9 @@ pub enum TempoPrecompileError {
     #[error("Gas limit exceeded")]
     OutOfGas,
 
+    #[error("Unknown function selector")]
+    UnknownFunctionSelector,
+
     #[error("Fatal precompile error: {0:?}")]
     #[from(skip)]
     Fatal(String),
@@ -114,6 +117,9 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
                     TPErr::ValidatorConfigError(e) => e.abi_encode().into(),
                     TPErr::OutOfGas => {
                         return Err(PrecompileError::OutOfGas);
+                    }
+                    TPErr::UnknownFunctionSelector => {
+                        return Err(PrecompileError::Other("Unknown function selector".into()));
                     }
                     TPErr::Fatal(msg) => {
                         return Err(PrecompileError::Fatal(msg));

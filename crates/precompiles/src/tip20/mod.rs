@@ -2,6 +2,7 @@ pub mod dispatch;
 pub mod rewards;
 pub mod roles;
 
+use tempo_contracts::precompiles::FeeManagerError;
 pub use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event,
 };
@@ -100,6 +101,10 @@ pub fn validate_usd_currency<S: PrecompileStorageProvider>(
     token: Address,
     storage: &mut S,
 ) -> Result<()> {
+    if storage.spec().is_moderato() && !is_tip20(token) {
+        return Err(FeeManagerError::invalid_token().into());
+    }
+
     let mut tip20_token = TIP20Token::from_address(token, storage);
     let currency = tip20_token.currency()?;
     if currency != USD_CURRENCY {
@@ -354,10 +359,17 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ) -> Result<()> {
         self._mint(msg_sender, call.to, call.amount)?;
 
+        // Post-Moderato: emit events where sender is Address::ZERO for mint operations
+        let from = if self.storage.spec().is_moderato() {
+            Address::ZERO
+        } else {
+            msg_sender
+        };
+
         self.storage.emit_event(
             self.address,
             TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-                from: msg_sender,
+                from,
                 to: call.to,
                 amount: call.amount,
                 memo: call.memo,
@@ -543,10 +555,17 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ) -> Result<bool> {
         self._transfer_from(msg_sender, call.from, call.to, call.amount)?;
 
+        // Post-Moderato: call.from address in events, pre-Moderato uses msg_sender
+        let from = if self.storage.spec().is_moderato() {
+            call.from
+        } else {
+            msg_sender
+        };
+
         self.storage.emit_event(
             self.address,
             TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-                from: msg_sender,
+                from,
                 to: call.to,
                 amount: call.amount,
                 memo: call.memo,
@@ -675,7 +694,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.sstore_next_quote_token(quote_token)?;
 
         // Set default values
-        self.sstore_supply_cap(U256::MAX)?;
+        if self.storage.spec().is_moderato() {
+            self.sstore_supply_cap(U256::from(u128::MAX))?;
+        } else {
+            self.sstore_supply_cap(U256::MAX)?;
+        }
         self.sstore_transfer_policy_id(1)?;
 
         // Initialize roles system and grant admin role
@@ -793,6 +816,28 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             );
         }
 
+        // Handle rewards (only after Moderato hardfork)
+        if self.storage.spec().is_moderato() {
+            // Accrue rewards up to current timestamp
+            let current_timestamp = self.storage.timestamp();
+            self.accrue(current_timestamp)?;
+
+            // Update rewards for the sender and get their reward recipient
+            let from_reward_recipient = self.update_rewards(from)?;
+
+            // If user is opted into rewards, decrease opted-in supply
+            if from_reward_recipient != Address::ZERO {
+                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
+                    .checked_sub(amount)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                self.set_opted_in_supply(
+                    opted_in_supply
+                        .try_into()
+                        .map_err(|_| TempoPrecompileError::under_overflow())?,
+                )?;
+            }
+        }
+
         let new_from_balance =
             from_balance
                 .checked_sub(amount)
@@ -835,6 +880,25 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Ok(());
         }
 
+        // Handle rewards (only after Moderato hardfork)
+        if self.storage.spec().is_moderato() {
+            // Note: We assume that transferFeePreTx is always called first, so _accrue has already been called
+            // Update rewards for the recipient and get their reward recipient
+            let to_reward_recipient = self.update_rewards(to)?;
+
+            // If user is opted into rewards, increase opted-in supply by refund amount
+            if to_reward_recipient != Address::ZERO {
+                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
+                    .checked_add(refund)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                self.set_opted_in_supply(
+                    opted_in_supply
+                        .try_into()
+                        .map_err(|_| TempoPrecompileError::under_overflow())?,
+                )?;
+            }
+        }
+
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
         if refund > from_balance {
             return Err(
@@ -864,6 +928,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 #[cfg(test)]
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, U256};
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     use super::*;
     use crate::{
@@ -879,6 +944,68 @@ pub(crate) mod tests {
     ) -> Result<()> {
         let mut linking_usd = TIP20Token::from_address(LINKING_USD_ADDRESS, storage);
         linking_usd.initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+    }
+
+    /// Helper to setup a token with rewards for testing fee transfer functions
+    /// Returns (token_id, initial_opted_in_supply)
+    fn setup_token_with_rewards(
+        storage: &mut HashMapStorageProvider,
+        admin: Address,
+        user: Address,
+        mint_amount: U256,
+        reward_amount: U256,
+    ) -> Result<(u64, u128)> {
+        initialize_linking_usd(storage, admin)?;
+        let token_id = setup_factory_with_token(storage, admin, "Test", "TST");
+
+        let initial_opted_in = {
+            let mut token = TIP20Token::new(token_id, storage);
+            token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+            // Mint tokens to admin (for reward stream)
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: admin,
+                    amount: reward_amount,
+                },
+            )?;
+
+            // Mint tokens to user
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: user,
+                    amount: mint_amount,
+                },
+            )?;
+
+            // User opts into rewards
+            token.set_reward_recipient(user, ITIP20::setRewardRecipientCall { recipient: user })?;
+
+            // Verify initial opted-in supply
+            let initial_opted_in = token.get_opted_in_supply()?;
+            assert_eq!(initial_opted_in, mint_amount.to::<u128>());
+            initial_opted_in
+        };
+
+        // Start a reward stream
+        {
+            let mut token = TIP20Token::new(token_id, storage);
+            token.start_reward(
+                admin,
+                ITIP20::startRewardCall {
+                    amount: reward_amount,
+                    secs: 100,
+                },
+            )?;
+        }
+
+        // Advance time to accrue rewards
+        let initial_time = storage.timestamp();
+        storage.set_timestamp(initial_time + U256::from(50));
+
+        Ok((token_id, initial_opted_in))
     }
 
     /// Initialize a factory and create a single token
@@ -1118,6 +1245,82 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_mint_with_memo_from_address_post_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let admin = Address::random();
+        let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
+        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let to = Address::random();
+        let amount = U256::random() % token.supply_cap()?;
+        let memo = FixedBytes::random();
+
+        token
+            .mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo })
+            .unwrap();
+
+        let events = &storage.events[&token_id_to_address(token_id)];
+
+        // TransferWithMemo event should have Address::ZERO as from for post-Moderato
+        assert_eq!(
+            events[2],
+            TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: Address::ZERO,
+                to,
+                amount,
+                memo
+            })
+            .into_log_data()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_mint_with_memo_from_address_pre_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::random();
+        let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
+        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let to = Address::random();
+        let amount = U256::random();
+        let memo = FixedBytes::random();
+
+        token
+            .mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo })
+            .unwrap();
+
+        let events = &storage.events[&token_id_to_address(token_id)];
+
+        // TransferWithMemo event should have msg_sender as from for pre-Moderato
+        assert_eq!(
+            events[2],
+            TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: admin,
+                to,
+                amount,
+                memo
+            })
+            .into_log_data()
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn test_burn_with_memo() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
@@ -1229,6 +1432,118 @@ pub(crate) mod tests {
             .into_log_data()
         );
 
+        assert_eq!(
+            events[4],
+            TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: spender,
+                to,
+                amount,
+                memo
+            })
+            .into_log_data()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_from_with_memo_from_address_post_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let admin = Address::random();
+        let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
+        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let owner = Address::random();
+        let spender = Address::random();
+        let to = Address::random();
+        let amount = U256::random() % token.supply_cap()?;
+        let memo = FixedBytes::random();
+
+        token
+            .mint(admin, ITIP20::mintCall { to: owner, amount })
+            .unwrap();
+
+        token
+            .approve(owner, ITIP20::approveCall { spender, amount })
+            .unwrap();
+
+        token
+            .transfer_from_with_memo(
+                spender,
+                ITIP20::transferFromWithMemoCall {
+                    from: owner,
+                    to,
+                    amount,
+                    memo,
+                },
+            )
+            .unwrap();
+
+        let events = &storage.events[&token_id_to_address(token_id)];
+
+        // TransferWithMemo event should have use call.from in transfer event
+        assert_eq!(
+            events[4],
+            TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: owner,
+                to,
+                amount,
+                memo
+            })
+            .into_log_data()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_from_with_memo_from_address_pre_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::random();
+        let token_id = 1;
+        initialize_linking_usd(&mut storage, admin).unwrap();
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .unwrap();
+
+        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let owner = Address::random();
+        let spender = Address::random();
+        let to = Address::random();
+        let amount = U256::random();
+        let memo = FixedBytes::random();
+
+        token
+            .mint(admin, ITIP20::mintCall { to: owner, amount })
+            .unwrap();
+
+        token
+            .approve(owner, ITIP20::approveCall { spender, amount })
+            .unwrap();
+
+        token
+            .transfer_from_with_memo(
+                spender,
+                ITIP20::transferFromWithMemoCall {
+                    from: owner,
+                    to,
+                    amount,
+                    memo,
+                },
+            )
+            .unwrap();
+
+        let events = &storage.events[&token_id_to_address(token_id)];
+
+        // TransferWithMemo event should user msg_sender in transfer event
         assert_eq!(
             events[4],
             TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
@@ -1903,5 +2218,231 @@ pub(crate) mod tests {
         assert!(is_tip20(LINKING_USD_ADDRESS));
         assert!(is_tip20(created_tip20));
         assert!(!is_tip20(non_tip20));
+    }
+
+    #[test]
+    fn test_transfer_fee_pre_tx_handles_rewards_post_moderato() -> eyre::Result<()> {
+        // Test with Moderato hardfork (rewards should be handled)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let admin = Address::random();
+        let user = Address::random();
+
+        let mint_amount = U256::from(1000e18);
+        let reward_amount = U256::from(100e18);
+
+        // Setup token with rewards enabled
+        let (token_id, initial_opted_in) =
+            setup_token_with_rewards(&mut storage, admin, user, mint_amount, reward_amount)?;
+
+        // Transfer fee from user
+        let fee_amount = U256::from(100e18);
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.transfer_fee_pre_tx(user, fee_amount)?;
+
+        // After transfer_fee_pre_tx, the opted-in supply should be decreased
+        let final_opted_in = token.get_opted_in_supply()?;
+        assert_eq!(
+            final_opted_in,
+            initial_opted_in - fee_amount.to::<u128>(),
+            "opted-in supply should decrease by fee amount"
+        );
+
+        // User should have accumulated rewards (verify rewards were updated)
+        let user_info = token.sload_user_reward_info(user)?;
+        assert!(
+            user_info.reward_balance > U256::ZERO,
+            "user should have accumulated rewards"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_fee_pre_tx_no_rewards_pre_moderato() -> eyre::Result<()> {
+        // Test with Adagio (pre-Moderato) - rewards should NOT be handled
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::random();
+        let user = Address::random();
+
+        let mint_amount = U256::from(1000e18);
+        let reward_amount = U256::from(100e18);
+
+        // Setup token with rewards enabled
+        let (token_id, initial_opted_in) =
+            setup_token_with_rewards(&mut storage, admin, user, mint_amount, reward_amount)?;
+
+        // Transfer fee from user
+        let fee_amount = U256::from(100e18);
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.transfer_fee_pre_tx(user, fee_amount)?;
+
+        // Pre-Moderato: opted-in supply should NOT be decreased (rewards not handled)
+        let final_opted_in = token.get_opted_in_supply()?;
+        assert_eq!(
+            final_opted_in, initial_opted_in,
+            "opted-in supply should NOT change pre-Moderato"
+        );
+
+        // User should NOT have accumulated rewards (rewards not handled)
+        let user_info = token.sload_user_reward_info(user)?;
+        assert_eq!(
+            user_info.reward_balance,
+            U256::ZERO,
+            "user should NOT have accumulated rewards pre-Moderato"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_fee_post_tx_handles_rewards_post_moderato() -> eyre::Result<()> {
+        // Test with Moderato hardfork (rewards should be handled)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let admin = Address::random();
+        let user = Address::random();
+
+        let mint_amount = U256::from(1000e18);
+        let reward_amount = U256::from(100e18);
+
+        // Setup token with rewards enabled
+        let (token_id, _initial_opted_in) =
+            setup_token_with_rewards(&mut storage, admin, user, mint_amount, reward_amount)?;
+
+        // Simulate fee transfer: first take fee from user
+        let fee_amount = U256::from(100e18);
+        {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.transfer_fee_pre_tx(user, fee_amount)?;
+        }
+
+        // Get opted-in supply after pre_tx
+        let opted_in_after_pre = {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.get_opted_in_supply()?
+        };
+
+        // Now refund part of it back
+        let refund_amount = U256::from(40e18);
+        let actual_used = U256::from(60e18);
+        {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.transfer_fee_post_tx(user, refund_amount, actual_used)?;
+        }
+
+        // After transfer_fee_post_tx, the opted-in supply should increase by refund amount
+        let final_opted_in = {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.get_opted_in_supply()?
+        };
+
+        assert_eq!(
+            final_opted_in,
+            opted_in_after_pre + refund_amount.to::<u128>(),
+            "opted-in supply should increase by refund amount"
+        );
+
+        // User should have accumulated rewards
+        let user_info = {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.sload_user_reward_info(user)?
+        };
+        assert!(
+            user_info.reward_balance > U256::ZERO,
+            "user should have accumulated rewards"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_fee_post_tx_no_rewards_pre_moderato() -> eyre::Result<()> {
+        // Test with Adagio (pre-Moderato) - rewards should NOT be handled
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::random();
+        let user = Address::random();
+
+        let mint_amount = U256::from(1000e18);
+        let reward_amount = U256::from(100e18);
+
+        // Setup token with rewards enabled
+        let (token_id, initial_opted_in) =
+            setup_token_with_rewards(&mut storage, admin, user, mint_amount, reward_amount)?;
+
+        // Simulate fee transfer: first take fee from user
+        let fee_amount = U256::from(100e18);
+        {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.transfer_fee_pre_tx(user, fee_amount)?;
+        }
+
+        // Get opted-in supply after pre_tx (should be unchanged pre-Moderato)
+        let opted_in_after_pre = {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.get_opted_in_supply()?
+        };
+        assert_eq!(
+            opted_in_after_pre, initial_opted_in,
+            "opted-in supply should be unchanged in pre_tx pre-Moderato"
+        );
+
+        // Now refund part of it back
+        let refund_amount = U256::from(40e18);
+        let actual_used = U256::from(60e18);
+        {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.transfer_fee_post_tx(user, refund_amount, actual_used)?;
+        }
+
+        // After transfer_fee_post_tx, the opted-in supply should still be unchanged (rewards not handled)
+        let final_opted_in = {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.get_opted_in_supply()?
+        };
+
+        assert_eq!(
+            final_opted_in, initial_opted_in,
+            "opted-in supply should remain unchanged pre-Moderato"
+        );
+
+        // User should NOT have accumulated rewards
+        let user_info = {
+            let mut token = TIP20Token::new(token_id, &mut storage);
+            token.sload_user_reward_info(user)?
+        };
+        assert_eq!(
+            user_info.reward_balance,
+            U256::ZERO,
+            "user should NOT have accumulated rewards pre-Moderato"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_initialize_supply_cap_post_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let admin = Address::random();
+
+        let token_id = setup_factory_with_token(&mut storage, admin, "Test", "TST");
+        let mut token = TIP20Token::new(token_id, &mut storage);
+
+        let supply_cap = token.supply_cap()?;
+        assert_eq!(supply_cap, U256::from(u128::MAX),);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_initialize_supply_cap_pre_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::random();
+
+        let token_id = setup_factory_with_token(&mut storage, admin, "Test", "TST");
+        let mut token = TIP20Token::new(token_id, &mut storage);
+
+        let supply_cap = token.supply_cap()?;
+        assert_eq!(supply_cap, U256::MAX,);
+
+        Ok(())
     }
 }

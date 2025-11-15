@@ -1,0 +1,35 @@
+name: Deploy Alloy docs
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: RUSTDOCFLAGS="--cfg docsrs --show-type-layout --generate-link-to-definition --enable-index-page -Zunstable-options" cargo docs
+      - uses: actions/upload-pages-artifact@v3
+        id: deployment
+        with:
+          path: ./target/doc/
+
+  # Disabled until public
+  #deploy:
+  #  environment:
+  #    name: github-pages
+  #    url: ${{ steps.deployment.outputs.page_url }}
+  #  runs-on: ubuntu-latest
+  #  needs: build
+  #  # Grant GITHUB_TOKEN the permissions required to make a Pages deployment
+  #  permissions:
+  #    pages: write
+  #    id-token: write
+
+  #  steps:
+  #    - name: Deploy to GitHub Pages
+  #      id: deployment
+  #      uses: actions/deploy-pages@v4

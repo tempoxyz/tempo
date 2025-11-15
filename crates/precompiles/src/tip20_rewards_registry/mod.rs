@@ -127,6 +127,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
 
         Ok(())
     }
+
+    /// Helper method to get the count of streams at a given end time (for testing)
+    #[cfg(test)]
+    pub(crate) fn get_stream_count_at(&mut self, end_time: u128) -> Result<usize> {
+        StreamEndingAt::len(self, end_time)
+    }
 }
 
 #[cfg(test)]
