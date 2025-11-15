@@ -190,7 +190,20 @@ fn gen_contract_storage(
     let constructor = layout::gen_constructor(ident);
     let methods: Vec<_> = allocated_fields
         .iter()
-        .map(|allocated| layout::gen_getters_and_setters(ident, allocated))
+        .enumerate()
+        .map(|(idx, allocated)| {
+            let prev_field = if idx > 0 {
+                Some(&allocated_fields[idx - 1])
+            } else {
+                None
+            };
+            let next_field = if idx + 1 < allocated_fields.len() {
+                Some(&allocated_fields[idx + 1])
+            } else {
+                None
+            };
+            layout::gen_getters_and_setters(ident, allocated, prev_field, next_field)
+        })
         .collect();
 
     let (slot_types_for_reexport, slots_module_with_types) =

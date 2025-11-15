@@ -67,6 +67,8 @@ pub(crate) fn gen_contract_storage_impl(name: &Ident) -> proc_macro2::TokenStrea
 pub(crate) fn gen_getters_and_setters(
     struct_name: &Ident,
     allocated: &LayoutField<'_>,
+    prev_field: Option<&LayoutField<'_>>,
+    next_field: Option<&LayoutField<'_>>,
 ) -> proc_macro2::TokenStream {
     let field_name = allocated.name;
 
@@ -78,11 +80,27 @@ pub(crate) fn gen_getters_and_setters(
     match &allocated.kind {
         FieldKind::Slot(ty) => {
             // Generate `LayoutCtx` expression using shared helper
-            let offset_const = PackingConstants::new(field_name).offset();
+            let consts = PackingConstants::new(field_name);
+            let slot_const = consts.slot();
+            let offset_const = consts.offset();
+
+            let prev_slot_const_ref = prev_field.map(|prev| {
+                let prev_slot = PackingConstants::new(prev.name).slot();
+                quote! { slots::#prev_slot }
+            });
+
+            let next_slot_const_ref = next_field.map(|next| {
+                let next_slot = PackingConstants::new(next.name).slot();
+                quote! { slots::#next_slot }
+            });
+
             let layout_ctx = packing::gen_layout_ctx_expr(
                 allocated.ty,
                 matches!(allocated.assigned_slot, SlotAssignment::Manual(_)),
+                quote! { slots::#slot_const },
                 quote! { slots::#offset_const },
+                prev_slot_const_ref,
+                next_slot_const_ref,
             );
 
             quote! {
