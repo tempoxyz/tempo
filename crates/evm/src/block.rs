@@ -21,7 +21,7 @@ use commonware_cryptography::{
 };
 use reth_revm::{Inspector, State, context::result::ResultAndState};
 use std::collections::HashSet;
-use tempo_chainspec::TempoChainSpec;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_precompiles::{
     STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
     stablecoin_exchange::IStablecoinExchange, tip_fee_manager::IFeeManager,
@@ -136,36 +136,45 @@ where
         &self,
         tx: &TempoTxEnvelope,
     ) -> Result<BlockSection, BlockValidationError> {
-        let block = self.evm().block().number.to_be_bytes_vec();
+        let block = self.evm().block();
+        let block_timestamp = block.timestamp;
+
+        let block = block.number.to_be_bytes_vec();
         let to = tx.to().unwrap_or_default();
 
-        // Handle start-of-block system transaction (rewards registry)
-        // Only enforce this restriction when we haven't seen the rewards registry yet
-        if let BlockSection::StartOfBlock {
-            seen_tip20_rewards_registry: false,
-        } = self.section
+        if !self
+            .inner
+            .spec
+            .is_moderato_active_at_timestamp(block_timestamp.to::<u64>())
         {
-            if to != TIP20_REWARDS_REGISTRY_ADDRESS {
-                return Err(BlockValidationError::msg(
-                    "only rewards registry system transaction allowed at start of block",
-                ));
+            // Handle start-of-block system transaction (rewards registry)
+            // Only enforce this restriction when we haven't seen the rewards registry yet
+            if let BlockSection::StartOfBlock {
+                seen_tip20_rewards_registry: false,
+            } = self.section
+            {
+                if to != TIP20_REWARDS_REGISTRY_ADDRESS {
+                    return Err(BlockValidationError::msg(
+                        "only rewards registry system transaction allowed at start of block",
+                    ));
+                }
+
+                let finalize_streams_input = ITIP20RewardsRegistry::finalizeStreamsCall {}
+                    .abi_encode()
+                    .into_iter()
+                    .chain(block)
+                    .collect::<Bytes>();
+
+                if *tx.input() != finalize_streams_input {
+                    return Err(BlockValidationError::msg(
+                        "invalid TIP20 rewards registry system transaction",
+                    ));
+                }
+
+                return Ok(BlockSection::StartOfBlock {
+                    seen_tip20_rewards_registry: true,
+                });
             }
-
-            let finalize_streams_input = ITIP20RewardsRegistry::finalizeStreamsCall {}
-                .abi_encode()
-                .into_iter()
-                .chain(block)
-                .collect::<Bytes>();
-
-            if *tx.input() != finalize_streams_input {
-                return Err(BlockValidationError::msg(
-                    "invalid TIP20 rewards registry system transaction",
-                ));
-            }
-
-            return Ok(BlockSection::StartOfBlock {
-                seen_tip20_rewards_registry: true,
-            });
         }
 
         // Handle end-of-block system transactions (fee manager, DEX, subblocks signatures)
