@@ -26,6 +26,13 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipAccountRegistrar<'a, S>
                     |_, call| self.delegate_to_default(call),
                 )
             }
+            ITipAccountRegistrar::delegateToDefaultV2Call::SELECTOR => {
+                mutate::<ITipAccountRegistrar::delegateToDefaultV2Call>(
+                    calldata,
+                    msg_sender,
+                    |_, call| self.delegate_to_default_v2(call),
+                )
+            }
             _ => Err(PrecompileError::Other("Unknown function selector".into())),
         };
 

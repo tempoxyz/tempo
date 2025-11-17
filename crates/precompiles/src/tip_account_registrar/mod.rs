@@ -35,8 +35,9 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
         )
     }
 
-    /// Validates an ECDSA signature, and deploys the default 7702 delegate code
-    /// to the recovered signer's account. The account must have nonce = 0 and empty code.
+    /// Pre-Moderato: Validates an ECDSA signature against a provided hash.
+    /// **WARNING**: This version is vulnerable to signature forgery and is only
+    /// kept for pre-Moderato compatibility.
     pub fn delegate_to_default(
         &mut self,
         call: ITipAccountRegistrar::delegateToDefaultCall,
@@ -80,6 +81,83 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
 
         Ok(signer)
     }
+
+    /// Post-Moderato: Validates an ECDSA signature and deploys the default 7702 delegate code
+    /// to the recovered signer's account. The account must have nonce = 0 and empty code.
+    ///
+    /// This version computes the hash internally with domain separation to prevent signature forgery.
+    pub fn delegate_to_default_v2(
+        &mut self,
+        call: ITipAccountRegistrar::delegateToDefaultV2Call,
+    ) -> Result<Address> {
+        let ITipAccountRegistrar::delegateToDefaultV2Call { nonce, signature } = call;
+
+        // Compute the hash internally with domain separation
+        let hash = compute_delegation_hash(
+            nonce,
+            DEFAULT_7702_DELEGATE_ADDRESS,
+            self.storage.chain_id(),
+            TIP_ACCOUNT_REGISTRAR,
+        );
+
+        // taken from precompile gas cost
+        // https://github.com/bluealloy/revm/blob/a1fdb9d9e98f9dd14b7577edbad49c139ab53b16/crates/precompile/src/secp256k1.rs#L34
+        self.storage.deduct_gas(3_000)?;
+        let (sig, v) = validate_signature(&signature)?;
+
+        let signer = match ecrecover(&sig, v, &hash) {
+            Ok(recovered_addr) => Address::from_word(recovered_addr),
+            Err(_) => {
+                return Err(TIPAccountRegistrarError::invalid_signature().into());
+            }
+        };
+
+        let account_info = self.storage.get_account_info(signer)?;
+
+        if account_info.nonce != 0 {
+            return Err(TIPAccountRegistrarError::nonce_not_zero().into());
+        }
+
+        if !account_info.is_empty_code_hash() {
+            return Err(TIPAccountRegistrarError::code_not_empty().into());
+        }
+
+        // EIP-7702 gas cost
+        // can be discussed to lower this down as this cost i think encompasses the bytes of authorization in EIP-7702 tx.
+        let cost = if account_info.is_empty() {
+            revm::primitives::eip7702::PER_EMPTY_ACCOUNT_COST
+        } else {
+            revm::primitives::eip7702::PER_AUTH_BASE_COST
+        };
+        self.storage.deduct_gas(cost)?;
+
+        // Delegate the account to the default 7702 implementation
+        self.storage
+            .set_code(signer, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS))?;
+
+        Ok(signer)
+    }
+}
+
+/// Computes the hash for delegation authorization with domain separation.
+/// Includes nonce for replay protection, and chain ID + contract address to prevent
+/// cross-chain and cross-contract replay attacks.
+pub fn compute_delegation_hash(
+    nonce: U256,
+    delegate_address: Address,
+    chain_id: u64,
+    contract_address: Address,
+) -> alloy::primitives::B256 {
+    use alloy::primitives::keccak256;
+
+    let mut data = Vec::new();
+    data.extend_from_slice(b"TEMPO_DELEGATE_TO_DEFAULT");
+    data.extend_from_slice(&nonce.to_be_bytes::<32>());
+    data.extend_from_slice(delegate_address.as_slice());
+    data.extend_from_slice(&chain_id.to_be_bytes());
+    data.extend_from_slice(contract_address.as_slice());
+
+    keccak256(&data)
 }
 
 /// Validates an ECDSA signature according to Ethereum standards.
@@ -118,7 +196,6 @@ fn validate_signature(signature: &[u8]) -> Result<(B512, u8)> {
 mod tests {
     use super::*;
     use crate::{error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider};
-    use alloy::primitives::keccak256;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use tempo_contracts::precompiles::TIPAccountRegistrarError;
@@ -131,7 +208,7 @@ mod tests {
         let signer = PrivateKeySigner::random();
         let expected_address = signer.address();
 
-        let hash = keccak256(b"test");
+        let hash = alloy::primitives::keccak256(b"test");
         let signature = signer.sign_hash_sync(&hash).unwrap();
         let call = ITipAccountRegistrar::delegateToDefaultCall {
             hash,
@@ -158,8 +235,9 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let mut registrar = TipAccountRegistrar::new(&mut storage);
 
+        let hash = alloy::primitives::keccak256(b"test");
+
         // Signature too short
-        let hash = keccak256(b"test message");
         let call = ITipAccountRegistrar::delegateToDefaultCall {
             hash,
             signature: vec![0u8; 64].into(),
@@ -195,7 +273,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let mut registrar = TipAccountRegistrar::new(&mut storage);
 
-        let hash = keccak256(b"test message");
+        let hash = alloy::primitives::keccak256(b"test");
 
         // Create a signature with an invalid recovery value
         let mut invalid_signature = vec![0u8; 65];
@@ -225,7 +303,7 @@ mod tests {
 
         let mut registrar = TipAccountRegistrar::new(&mut storage);
 
-        let hash = keccak256(b"test");
+        let hash = alloy::primitives::keccak256(b"test");
         let signature = signer.sign_hash_sync(&hash).unwrap();
         let call = ITipAccountRegistrar::delegateToDefaultCall {
             hash,
@@ -244,5 +322,71 @@ mod tests {
             .get_account_info(expected_address)
             .expect("Failed to get account info");
         assert!(account_info_after.is_empty_code_hash());
+    }
+
+    #[test]
+    fn test_compute_delegation_hash() {
+        use alloy::primitives::address;
+
+        let nonce = U256::from(12345);
+        let delegate_address = address!("0000000000000000000000000000000000007702");
+        let chain_id = 1;
+        let contract_address = address!("0000000000000000000000000000000000007821");
+
+        let hash = compute_delegation_hash(nonce, delegate_address, chain_id, contract_address);
+
+        // Hash should be deterministic
+        let hash2 = compute_delegation_hash(nonce, delegate_address, chain_id, contract_address);
+        assert_eq!(hash, hash2);
+
+        // Different nonce should produce different hash
+        let different_hash = compute_delegation_hash(
+            U256::from(54321),
+            delegate_address,
+            chain_id,
+            contract_address,
+        );
+        assert_ne!(hash, different_hash);
+    }
+
+    #[test]
+    fn test_delegate_to_default_v2_with_nonce() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let chain_id = storage.chain_id();
+
+        let mut registrar = TipAccountRegistrar::new(&mut storage);
+
+        let signer = PrivateKeySigner::random();
+        let expected_address = signer.address();
+        let nonce = U256::from(12345);
+
+        // Compute the hash that delegate_to_default_v2 will compute internally
+        let message_hash = compute_delegation_hash(
+            nonce,
+            DEFAULT_7702_DELEGATE_ADDRESS,
+            chain_id,
+            TIP_ACCOUNT_REGISTRAR,
+        );
+
+        let signature = signer.sign_hash_sync(&message_hash).unwrap();
+
+        let call = ITipAccountRegistrar::delegateToDefaultV2Call {
+            nonce,
+            signature: signature.as_bytes().into(),
+        };
+
+        let result = registrar.delegate_to_default_v2(call);
+        assert!(result.is_ok());
+
+        let recovered_address = result.unwrap();
+        assert_eq!(recovered_address, expected_address);
+
+        let account_info_after = storage
+            .get_account_info(expected_address)
+            .expect("Failed to get account info");
+        assert_eq!(
+            account_info_after.code,
+            Some(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS)),
+        );
     }
 }
