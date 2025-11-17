@@ -111,11 +111,11 @@ pub(super) fn load_solc_layout(sol_file: &Path) -> StorageLayout {
 
 /// Represents a Rust storage field extracted from generated constants.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct RustStorageField {
-    pub(crate) name: &'static str,
-    pub(crate) slot: U256,
-    pub(crate) offset: usize,
-    pub(crate) bytes: usize,
+pub(super) struct RustStorageField {
+    pub(super) name: &'static str,
+    pub(super) slot: U256,
+    pub(super) offset: usize,
+    pub(super) bytes: usize,
 }
 
 impl RustStorageField {

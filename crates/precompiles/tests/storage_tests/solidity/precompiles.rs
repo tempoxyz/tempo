@@ -3,9 +3,8 @@
 //! This module verifies that the storage layouts of production precompile contracts
 //! match their Solidity equivalents, ensuring compatibility with the EVM.
 //!
-//! Individual tests load Rust storage layouts from the committed snapshot
-//! (`storage-layout.json`) and compare them against Solidity layouts. This ensures
-//! consistency without duplicating layout construction logic across tests.
+//! Individual tests load storage layouts from the cached snapshot and compare them
+//! against solc-generated Solidity layouts.
 
 use super::*;
 use utils::*;
