@@ -2005,32 +2005,6 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    //
-    #[test]
-    #[ignore = "NOTE(rusowsky): this doesn't panic anymore, as storage primitives can handle long strings now"]
-    fn test_invalid_currency() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        for _ in 0..10 {
-            let mut token = TIP20Token::new(1, &mut storage);
-
-            let currency: String = thread_rng()
-                .sample_iter(&Alphanumeric)
-                .take(32)
-                .map(char::from)
-                .collect();
-
-            let result = token.initialize("Test", "TST", &currency, LINKING_USD_ADDRESS, admin);
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::StringTooLong(_)))
-            ),);
-        }
-
-        Ok(())
-    }
-
     #[test]
     fn test_from_address() {
         let mut storage = HashMapStorageProvider::new(1);

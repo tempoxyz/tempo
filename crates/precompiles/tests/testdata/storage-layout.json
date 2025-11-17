@@ -1,0 +1,555 @@
+{
+  "tip20_factory": {
+    "fields": [
+      {
+        "name": "tokenIdCounter",
+        "slot": "0x0",
+        "offset": 0,
+        "bytes": 32
+      }
+    ]
+  },
+  "tip20_rewards_registry": {
+    "fields": [
+      {
+        "name": "lastUpdatedTimestamp",
+        "slot": "0x0",
+        "offset": 0,
+        "bytes": 16
+      },
+      {
+        "name": "streamsEndingAt",
+        "slot": "0x1",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "streamIndex",
+        "slot": "0x2",
+        "offset": 0,
+        "bytes": 32
+      }
+    ]
+  },
+  "tip403_registry": {
+    "fields": [
+      {
+        "name": "policyIdCounter",
+        "slot": "0x0",
+        "offset": 0,
+        "bytes": 8
+      },
+      {
+        "name": "policyData",
+        "slot": "0x1",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "policySet",
+        "slot": "0x2",
+        "offset": 0,
+        "bytes": 32
+      }
+    ],
+    "structs": {
+      "policyData": [
+        {
+          "name": "policyType",
+          "slot": "0x1",
+          "offset": 0,
+          "bytes": 1
+        },
+        {
+          "name": "admin",
+          "slot": "0x1",
+          "offset": 1,
+          "bytes": 20
+        }
+      ]
+    }
+  },
+  "tip_fee_manager": {
+    "fields": [
+      {
+        "name": "validatorTokens",
+        "slot": "0x0",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "userTokens",
+        "slot": "0x1",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "collectedFees",
+        "slot": "0x2",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "tokensWithFees",
+        "slot": "0x3",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "tokenInFeesArray",
+        "slot": "0x4",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "pools",
+        "slot": "0x5",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "pendingFeeSwapIn",
+        "slot": "0x6",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "totalSupply",
+        "slot": "0x7",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "liquidityBalances",
+        "slot": "0x8",
+        "offset": 0,
+        "bytes": 32
+      }
+    ],
+    "structs": {
+      "pools": [
+        {
+          "name": "reserveUserToken",
+          "slot": "0x5",
+          "offset": 0,
+          "bytes": 16
+        },
+        {
+          "name": "reserveValidatorToken",
+          "slot": "0x5",
+          "offset": 16,
+          "bytes": 16
+        }
+      ]
+    }
+  },
+  "stablecoin_exchange": {
+    "fields": [
+      {
+        "name": "books",
+        "slot": "0x0",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "orders",
+        "slot": "0x1",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "balances",
+        "slot": "0x2",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "activeOrderId",
+        "slot": "0x3",
+        "offset": 0,
+        "bytes": 16
+      },
+      {
+        "name": "pendingOrderId",
+        "slot": "0x3",
+        "offset": 16,
+        "bytes": 16
+      },
+      {
+        "name": "bookKeys",
+        "slot": "0x4",
+        "offset": 0,
+        "bytes": 32
+      }
+    ],
+    "structs": {
+      "orders": [
+        {
+          "name": "orderId",
+          "slot": "0x1",
+          "offset": 0,
+          "bytes": 16
+        },
+        {
+          "name": "maker",
+          "slot": "0x2",
+          "offset": 0,
+          "bytes": 20
+        },
+        {
+          "name": "bookKey",
+          "slot": "0x3",
+          "offset": 0,
+          "bytes": 32
+        },
+        {
+          "name": "isBid",
+          "slot": "0x4",
+          "offset": 0,
+          "bytes": 1
+        },
+        {
+          "name": "tick",
+          "slot": "0x4",
+          "offset": 1,
+          "bytes": 2
+        },
+        {
+          "name": "amount",
+          "slot": "0x4",
+          "offset": 3,
+          "bytes": 16
+        },
+        {
+          "name": "remaining",
+          "slot": "0x5",
+          "offset": 0,
+          "bytes": 16
+        },
+        {
+          "name": "prev",
+          "slot": "0x5",
+          "offset": 16,
+          "bytes": 16
+        },
+        {
+          "name": "next",
+          "slot": "0x6",
+          "offset": 0,
+          "bytes": 16
+        },
+        {
+          "name": "isFlip",
+          "slot": "0x6",
+          "offset": 16,
+          "bytes": 1
+        },
+        {
+          "name": "flipTick",
+          "slot": "0x6",
+          "offset": 17,
+          "bytes": 2
+        }
+      ],
+      "books": [
+        {
+          "name": "base",
+          "slot": "0x0",
+          "offset": 0,
+          "bytes": 20
+        },
+        {
+          "name": "quote",
+          "slot": "0x1",
+          "offset": 0,
+          "bytes": 20
+        },
+        {
+          "name": "bids",
+          "slot": "0x2",
+          "offset": 0,
+          "bytes": 32
+        },
+        {
+          "name": "asks",
+          "slot": "0x3",
+          "offset": 0,
+          "bytes": 32
+        },
+        {
+          "name": "bestBidTick",
+          "slot": "0x4",
+          "offset": 0,
+          "bytes": 2
+        },
+        {
+          "name": "bestAskTick",
+          "slot": "0x4",
+          "offset": 2,
+          "bytes": 2
+        },
+        {
+          "name": "bidBitmap",
+          "slot": "0x5",
+          "offset": 0,
+          "bytes": 32
+        },
+        {
+          "name": "askBitmap",
+          "slot": "0x6",
+          "offset": 0,
+          "bytes": 32
+        }
+      ]
+    }
+  },
+  "tip20": {
+    "fields": [
+      {
+        "name": "roles",
+        "slot": "0x0",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "roleAdmins",
+        "slot": "0x1",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "name",
+        "slot": "0x2",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "symbol",
+        "slot": "0x3",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "currency",
+        "slot": "0x4",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "domainSeparator",
+        "slot": "0x5",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "quoteToken",
+        "slot": "0x6",
+        "offset": 0,
+        "bytes": 20
+      },
+      {
+        "name": "nextQuoteToken",
+        "slot": "0x7",
+        "offset": 0,
+        "bytes": 20
+      },
+      {
+        "name": "transferPolicyId",
+        "slot": "0x7",
+        "offset": 20,
+        "bytes": 8
+      },
+      {
+        "name": "totalSupply",
+        "slot": "0x8",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "balances",
+        "slot": "0x9",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "allowances",
+        "slot": "0xa",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "nonces",
+        "slot": "0xb",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "paused",
+        "slot": "0xc",
+        "offset": 0,
+        "bytes": 1
+      },
+      {
+        "name": "supplyCap",
+        "slot": "0xd",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "salts",
+        "slot": "0xe",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "globalRewardPerToken",
+        "slot": "0xf",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "lastUpdateTime",
+        "slot": "0x10",
+        "offset": 0,
+        "bytes": 8
+      },
+      {
+        "name": "totalRewardPerSecond",
+        "slot": "0x11",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "optedInSupply",
+        "slot": "0x12",
+        "offset": 0,
+        "bytes": 16
+      },
+      {
+        "name": "nextStreamId",
+        "slot": "0x12",
+        "offset": 16,
+        "bytes": 8
+      },
+      {
+        "name": "streams",
+        "slot": "0x13",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "scheduledRateDecrease",
+        "slot": "0x14",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "userRewardInfo",
+        "slot": "0x15",
+        "offset": 0,
+        "bytes": 32
+      }
+    ],
+    "structs": {
+      "streams": [
+        {
+          "name": "funder",
+          "slot": "0x13",
+          "offset": 0,
+          "bytes": 20
+        },
+        {
+          "name": "startTime",
+          "slot": "0x13",
+          "offset": 20,
+          "bytes": 8
+        },
+        {
+          "name": "endTime",
+          "slot": "0x14",
+          "offset": 0,
+          "bytes": 8
+        },
+        {
+          "name": "ratePerSecondScaled",
+          "slot": "0x15",
+          "offset": 0,
+          "bytes": 32
+        },
+        {
+          "name": "amountTotal",
+          "slot": "0x16",
+          "offset": 0,
+          "bytes": 32
+        }
+      ],
+      "userRewardInfo": [
+        {
+          "name": "rewardRecipient",
+          "slot": "0x15",
+          "offset": 0,
+          "bytes": 20
+        },
+        {
+          "name": "rewardPerToken",
+          "slot": "0x16",
+          "offset": 0,
+          "bytes": 32
+        },
+        {
+          "name": "rewardBalance",
+          "slot": "0x17",
+          "offset": 0,
+          "bytes": 32
+        }
+      ]
+    }
+  },
+  "validator_config": {
+    "fields": [
+      {
+        "name": "owner",
+        "slot": "0x0",
+        "offset": 0,
+        "bytes": 20
+      },
+      {
+        "name": "validatorCount",
+        "slot": "0x0",
+        "offset": 20,
+        "bytes": 8
+      },
+      {
+        "name": "validatorsArray",
+        "slot": "0x1",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "validators",
+        "slot": "0x2",
+        "offset": 0,
+        "bytes": 32
+      }
+    ]
+  },
+  "nonce_manager": {
+    "fields": [
+      {
+        "name": "nonces",
+        "slot": "0x0",
+        "offset": 0,
+        "bytes": 32
+      },
+      {
+        "name": "activeKeyCount",
+        "slot": "0x1",
+        "offset": 0,
+        "bytes": 32
+      }
+    ]
+  },
+  "tip_account_registrar": {
+    "fields": []
+  }
+}

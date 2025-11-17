@@ -3,8 +3,6 @@
 //! This module tests that the `contract` macro-generated storage layouts match their
 //! Solidity counterparts by comparing against the expected solc-generated outputs.
 
-// TODO(rusowsky): add tests against the actual pre-compiles solidity-equivalent contracts
-
 mod precompiles;
 mod primitives;
 mod utils;
@@ -22,10 +20,13 @@ pub(crate) struct TestBlockInner {
 
 /// Helper function to construct paths to testdata files
 pub(crate) fn testdata(filename: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let testdata = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
-        .join("storage_tests")
-        .join("solidity")
-        .join("testdata")
-        .join(filename)
+        .join("testdata");
+
+    if filename.ends_with(".sol") {
+        testdata.join("solidity").join(filename)
+    } else {
+        testdata.join(filename)
+    }
 }

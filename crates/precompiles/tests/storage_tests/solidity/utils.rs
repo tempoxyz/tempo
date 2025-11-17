@@ -2,6 +2,8 @@ use alloy::primitives::U256;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::Path, process::Command};
 
+use crate::storage_tests::solidity::testdata;
+
 /// Represents the full compiler output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SolcOutput {
@@ -341,4 +343,77 @@ pub(super) fn compare_struct_members(
     } else {
         Err(errors)
     }
+}
+
+/// Snapshot data structure matching the JSON format in storage-layout.json
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct PrecompileSnapshot {
+    pub(super) fields: Vec<SnapshotField>,
+    #[serde(default)]
+    pub(super) structs: HashMap<String, Vec<SnapshotField>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct SnapshotField {
+    pub(super) name: String,
+    pub(super) slot: String,
+    pub(super) offset: usize,
+    pub(super) bytes: usize,
+}
+
+/// Loads the precompile snapshot from the JSON file.
+fn load_precompile_snapshot(precompile_name: &str) -> Result<PrecompileSnapshot, String> {
+    let snapshot_path = testdata("storage-layout.json");
+    if !snapshot_path.exists() {
+        return Err(format!(
+            "Storage layout snapshot not found at: {}",
+            snapshot_path.display()
+        ));
+    }
+
+    let snapshot_json = std::fs::read_to_string(&snapshot_path)
+        .map_err(|e| format!("Failed to read snapshot file: {e}"))?;
+
+    serde_json::from_str::<HashMap<String, PrecompileSnapshot>>(&snapshot_json)
+        .map_err(|e| format!("Failed to parse snapshot JSON: {e}"))?
+        .get(precompile_name)
+        .cloned()
+        .ok_or_else(|| format!("Precompile '{precompile_name}' not found in snapshot"))
+}
+
+/// Converts snapshot fields to RustStorageField instances.
+fn convert_snapshot_fields(fields: &[SnapshotField]) -> Result<Vec<RustStorageField>, String> {
+    fields
+        .iter()
+        .map(|field| {
+            let slot = U256::from_str_radix(field.slot.trim_start_matches("0x"), 16)
+                .map_err(|e| format!("Failed to parse slot '{}': {e}", field.slot))?;
+            Ok(RustStorageField {
+                name: Box::leak(field.name.clone().into_boxed_str()),
+                slot,
+                offset: field.offset,
+                bytes: field.bytes,
+            })
+        })
+        .collect()
+}
+
+/// Loads the Rust storage layout for a specific precompile from the snapshot JSON.
+pub(super) fn load_rust_layout_from_snapshot(
+    precompile_name: &str,
+) -> Result<Vec<RustStorageField>, String> {
+    let snapshot = load_precompile_snapshot(precompile_name)?;
+    convert_snapshot_fields(&snapshot.fields)
+}
+
+/// Loads the Rust struct member layout from the snapshot JSON.
+pub(super) fn load_rust_struct_from_snapshot(
+    precompile_name: &str,
+    struct_name: &str,
+) -> Result<Vec<RustStorageField>, String> {
+    let snapshot = load_precompile_snapshot(precompile_name)?;
+    let struct_fields = snapshot.structs.get(struct_name).ok_or_else(|| {
+        format!("Struct '{struct_name}' not found in precompile '{precompile_name}'")
+    })?;
+    convert_snapshot_fields(struct_fields)
 }
