@@ -42,10 +42,7 @@ fn calculate_quote_amount_floor(amount: u128, tick: i16) -> Option<u128> {
 /// Post-Moderato behavior
 fn calculate_quote_amount_ceil(amount: u128, tick: i16) -> Option<u128> {
     let price = tick_to_price(tick) as u128;
-    let scale = PRICE_SCALE as u128;
-    let product = amount.checked_mul(price)?;
-    // Ceiling division: (a + b - 1) / b
-    product.checked_add(scale - 1)?.checked_div(scale)
+    Some(amount.checked_mul(price)?.div_ceil(PRICE_SCALE as u128))
 }
 
 #[contract]
