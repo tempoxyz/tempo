@@ -15,12 +15,18 @@ pub const MAX_TICK: i16 = 2000;
 pub const PRICE_SCALE: u32 = 100_000;
 
 // Pre-moderato: MIN_PRICE and MAX_PRICE covered full i16 range
-pub(crate) const MIN_PRICE_PRE_MODERATO: u32 = 67_232; // i16::MIN as price
-pub(crate) const MAX_PRICE_PRE_MODERATO: u32 = 132_767; // i16::MAX as price
+//
+// i16::MIN as price
+pub(crate) const MIN_PRICE_PRE_MODERATO: u32 = 67_232;
+// i16::MAX as price
+pub(crate) const MAX_PRICE_PRE_MODERATO: u32 = 132_767;
 
 // Post-moderato: MIN_PRICE and MAX_PRICE match MIN_TICK and MAX_TICK
-pub(crate) const MIN_PRICE_POST_MODERATO: u32 = 98_000; // PRICE_SCALE + MIN_TICK = 100_000 - 2000
-pub(crate) const MAX_PRICE_POST_MODERATO: u32 = 102_000; // PRICE_SCALE + MAX_TICK = 100_000 + 2000
+//
+// PRICE_SCALE + MIN_TICK = 100_000 - 2000
+pub(crate) const MIN_PRICE_POST_MODERATO: u32 = 98_000;
+// PRICE_SCALE + MAX_TICK = 100_000 + 2000
+pub(crate) const MAX_PRICE_POST_MODERATO: u32 = 102_000;
 
 /// Represents a price level in the orderbook with a doubly-linked list of orders
 /// Orders are maintained in FIFO order at each tick level
