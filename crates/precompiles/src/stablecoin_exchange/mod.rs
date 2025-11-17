@@ -1677,6 +1677,7 @@ mod tests {
         );
 
         Ok(())
+    }
     fn test_calculate_quote_amount_floor() {
         // Floor division rounds DOWN
         // amount = 100, tick = 1 means price = 100001

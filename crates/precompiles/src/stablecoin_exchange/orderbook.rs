@@ -470,7 +470,7 @@ pub fn tick_to_price(tick: i16) -> u32 {
 
 /// Convert scaled price to relative tick
 pub fn price_to_tick(price: u32) -> Result<i16, TempoPrecompileError> {
-    if !(MIN_PRICE..=MAX_PRICE).contains(&price) {
+    if !(MIN_PRICE_POST_MODERATO..=MAX_PRICE_POST_MODERATO).contains(&price) {
         let invalid_tick = (price as i32 - PRICE_SCALE as i32) as i16;
         return Err(StablecoinExchangeError::tick_out_of_bounds(invalid_tick).into());
     }
@@ -523,7 +523,7 @@ mod tests {
     #[test]
     fn test_price_to_tick_below_min() {
         // Price below MIN_PRICE should return an error
-        let result = price_to_tick(MIN_PRICE - 1);
+        let result = price_to_tick(MIN_PRICE_POST_MODERATO - 1);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -534,7 +534,7 @@ mod tests {
     #[test]
     fn test_price_to_tick_above_max() {
         // Price above MAX_PRICE should return an error
-        let result = price_to_tick(MAX_PRICE + 1);
+        let result = price_to_tick(MAX_PRICE_POST_MODERATO + 1);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -545,7 +545,7 @@ mod tests {
     #[test]
     fn test_price_to_tick_at_min_boundary() {
         // MIN_PRICE should be valid and return i16::MIN (the minimum representable tick)
-        let result = price_to_tick(MIN_PRICE);
+        let result = price_to_tick(MIN_PRICE_POST_MODERATO);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), i16::MIN);
         // Verify MIN_PRICE = PRICE_SCALE + i16::MIN
@@ -555,7 +555,7 @@ mod tests {
     #[test]
     fn test_price_to_tick_at_max_boundary() {
         // MAX_PRICE should be valid and return i16::MAX (the maximum representable tick)
-        let result = price_to_tick(MAX_PRICE);
+        let result = price_to_tick(MAX_PRICE_POST_MODERATO);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), i16::MAX);
         // Verify MAX_PRICE = PRICE_SCALE + i16::MAX
