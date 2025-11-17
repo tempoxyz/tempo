@@ -13,8 +13,12 @@ use tempo_precompiles_macros::Storable;
 pub const MIN_TICK: i16 = -2000;
 pub const MAX_TICK: i16 = 2000;
 pub const PRICE_SCALE: u32 = 100_000;
-pub const MIN_PRICE: u32 = 67_232;
-pub const MAX_PRICE: u32 = 132_767;
+
+// Deprecated: Use StablecoinExchange::min_price() and max_price() methods for hardfork-aware values
+#[deprecated(note = "Use StablecoinExchange::min_price() for hardfork-aware value")]
+pub const MIN_PRICE: u32 = 67_232; // Pre-moderato value
+#[deprecated(note = "Use StablecoinExchange::max_price() for hardfork-aware value")]
+pub const MAX_PRICE: u32 = 132_767; // Pre-moderato value
 
 /// Represents a price level in the orderbook with a doubly-linked list of orders
 /// Orders are maintained in FIFO order at each tick level

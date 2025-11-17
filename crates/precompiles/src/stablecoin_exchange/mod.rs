@@ -9,9 +9,10 @@ pub use tempo_contracts::precompiles::{
 };
 
 pub use order::Order;
+#[allow(deprecated)]
+pub use orderbook::{MAX_PRICE, MIN_PRICE};
 pub use orderbook::{
-    MAX_PRICE, MAX_TICK, MIN_PRICE, MIN_TICK, Orderbook, PRICE_SCALE, TickLevel, price_to_tick,
-    tick_to_price,
+    MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, TickLevel, price_to_tick, tick_to_price,
 };
 
 use crate::{
@@ -28,6 +29,14 @@ use tempo_precompiles_macros::contract;
 
 /// Minimum order size of $10 USD
 pub const MIN_ORDER_AMOUNT: u128 = 10_000_000;
+
+// Pre-moderato: MIN_PRICE and MAX_PRICE covered full i16 range
+const MIN_PRICE_PRE_MODERATO: u32 = 67_232; // i16::MIN as price
+const MAX_PRICE_PRE_MODERATO: u32 = 132_767; // i16::MAX as price
+
+// Post-moderato: MIN_PRICE and MAX_PRICE match MIN_TICK and MAX_TICK
+const MIN_PRICE_POST_MODERATO: u32 = 98_000; // PRICE_SCALE + MIN_TICK = 100_000 - 2000
+const MAX_PRICE_POST_MODERATO: u32 = 102_000; // PRICE_SCALE + MAX_TICK = 100_000 + 2000
 
 /// Calculate quote amount from base amount and tick price using checked arithmetic
 ///
@@ -101,6 +110,24 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// Get user's balance for a specific token
     pub fn balance_of(&mut self, user: Address, token: Address) -> Result<u128> {
         self.sload_balances(user, token)
+    }
+
+    /// Get MIN_PRICE value based on current hardfork
+    pub fn min_price(&self) -> u32 {
+        if self.storage.spec().is_moderato() {
+            MIN_PRICE_POST_MODERATO
+        } else {
+            MIN_PRICE_PRE_MODERATO
+        }
+    }
+
+    /// Get MAX_PRICE value based on current hardfork
+    pub fn max_price(&self) -> u32 {
+        if self.storage.spec().is_moderato() {
+            MAX_PRICE_POST_MODERATO
+        } else {
+            MAX_PRICE_PRE_MODERATO
+        }
     }
 
     /// Fetch order from storage. If the order is currently pending or filled, this function returns
