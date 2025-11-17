@@ -19,7 +19,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     linking_usd::LinkingUSD,
     stablecoin_exchange::orderbook::compute_book_key,
-    storage::{PrecompileStorageProvider, Slot, Storable, VecSlotExt},
+    storage::{PrecompileStorageProvider, Slot, VecSlotExt},
     tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};

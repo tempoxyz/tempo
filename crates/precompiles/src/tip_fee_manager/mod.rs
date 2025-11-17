@@ -10,7 +10,7 @@ pub use tempo_contracts::precompiles::{
 use crate::{
     DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::{PrecompileStorageProvider, Slot, Storable, VecSlotExt},
+    storage::{PrecompileStorageProvider, Slot, VecSlotExt},
     tip_fee_manager::amm::Pool,
     tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
 };

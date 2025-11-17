@@ -303,7 +303,7 @@ where
 
         // Extract each element from this slot
         for _ in 0..elements_in_this_slot {
-            let elem = extract_packed_value::<T>(slot_value, current_offset, byte_count)?;
+            let elem = extract_packed_value::<1, T>(slot_value, current_offset, byte_count)?;
             result.push(elem);
 
             // Move to next element position
@@ -425,7 +425,7 @@ where
     let slot_addr = data_start + U256::from(slot_idx);
     let slot_value = storage.sload(slot_addr)?;
 
-    extract_packed_value::<T>(slot_value, offset, byte_count)
+    extract_packed_value::<1, T>(slot_value, offset, byte_count)
 }
 
 /// Write a single packed element to storage.
@@ -675,7 +675,7 @@ mod tests {
         T: Storable<1> + StorableType + PartialEq + std::fmt::Debug,
     {
         let slot_value = contract.sload(slot_addr).unwrap();
-        let actual = extract_packed_value::<T>(slot_value, offset, byte_count).unwrap();
+        let actual = extract_packed_value::<1, T>(slot_value, offset, byte_count).unwrap();
         assert_eq!(
             actual, expected,
             "{elem_name} at offset {offset} in slot {slot_addr:?} mismatch"

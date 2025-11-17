@@ -6,7 +6,7 @@ use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
     error::TempoPrecompileError,
-    storage::{PrecompileStorageProvider, Slot, Storable, VecSlotExt},
+    storage::{PrecompileStorageProvider, Slot, VecSlotExt},
 };
 use alloy::primitives::{Address, B256, Bytes};
 use revm::state::Bytecode;

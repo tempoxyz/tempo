@@ -30,11 +30,11 @@ pub enum Layout {
 
 impl Layout {
     /// Returns true if this field can be packed with adjacent fields.
-    ///
-    /// Only `Bytes` variants with size < 32 can be packed.
     pub const fn is_packable(&self) -> bool {
         match self {
-            Self::Bytes(n) => *n < 32,
+            // TODO(rusowsky): use `Self::Bytes(n) => *n < 32` to reduce gas usage.
+            // Note that this requires a hardfork and must be properly coordinated.
+            Self::Bytes(_) => true,
             Self::Slots(_) => false,
         }
     }

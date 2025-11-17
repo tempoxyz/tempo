@@ -73,7 +73,7 @@ fn gen_storable_impl(
     strategy: &StorableConversionStrategy,
 ) -> TokenStream {
     match strategy {
-        StorableConversionStrategy::Unsigned => {
+        StorableConversionStrategy::Unsigned | StorableConversionStrategy::U256 => {
             quote! {
                 impl Storable<1> for #type_path {
                     #[inline]
@@ -119,33 +119,34 @@ fn gen_storable_impl(
                 }
             }
         }
-        StorableConversionStrategy::U256 => {
-            quote! {
-                impl Storable<1> for #type_path {
-                    #[inline]
-                    fn load<S: StorageOps>(storage: &mut S, base_slot: #type_path, ctx: LayoutCtx) -> Result<Self> {
-                        debug_assert_eq!(ctx, LayoutCtx::Full, "U256 takes a full slot and cannot be packed");
-                        storage.sload(base_slot)
-                    }
+        // TODO(rusowsky): enable once `Layout.is_packable()` returns `false` for `U256`
+        // StorableConversionStrategy::U256 => {
+        //     quote! {
+        //         impl Storable<1> for #type_path {
+        //             #[inline]
+        //             fn load<S: StorageOps>(storage: &mut S, base_slot: #type_path, ctx: LayoutCtx) -> Result<Self> {
+        //                 debug_assert_eq!(ctx, LayoutCtx::Full, "U256 takes a full slot and cannot be packed");
+        //                 storage.sload(base_slot)
+        //             }
 
-                    #[inline]
-                    fn store<S: StorageOps>(&self, storage: &mut S, base_slot: #type_path, ctx: LayoutCtx) -> Result<()> {
-                        debug_assert_eq!(ctx, LayoutCtx::Full, "U256 takes a full slot and cannot be packed");
-                        storage.sstore(base_slot, *self)
-                    }
+        //             #[inline]
+        //             fn store<S: StorageOps>(&self, storage: &mut S, base_slot: #type_path, ctx: LayoutCtx) -> Result<()> {
+        //                 debug_assert_eq!(ctx, LayoutCtx::Full, "U256 takes a full slot and cannot be packed");
+        //                 storage.sstore(base_slot, *self)
+        //             }
 
-                    #[inline]
-                    fn to_evm_words(&self) -> Result<[#type_path; 1]> {
-                        Ok([*self])
-                    }
+        //             #[inline]
+        //             fn to_evm_words(&self) -> Result<[#type_path; 1]> {
+        //                 Ok([*self])
+        //             }
 
-                    #[inline]
-                    fn from_evm_words(words: [#type_path; 1]) -> Result<Self> {
-                        Ok(words[0])
-                    }
-                }
-            }
-        }
+        //             #[inline]
+        //             fn from_evm_words(words: [#type_path; 1]) -> Result<Self> {
+        //                 Ok(words[0])
+        //             }
+        //         }
+        //     }
+        // }
         StorableConversionStrategy::SignedRust(unsigned_type) => {
             quote! {
                 impl Storable<1> for #type_path {
