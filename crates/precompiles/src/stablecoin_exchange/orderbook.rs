@@ -460,7 +460,7 @@ pub fn tick_to_price(tick: i16) -> u32 {
 pub fn price_to_tick(price: u32) -> Result<i16, TempoPrecompileError> {
     if !(MIN_PRICE..=MAX_PRICE).contains(&price) {
         // If the price is outside of the price bounds
-        // we cant gaurantee that it can fit in an i32
+        // we cant guarantee that it can fit in an i32
         let price_i32: i32 = price
             .try_into()
             .map_err(|_| TempoPrecompileError::under_overflow())?;
