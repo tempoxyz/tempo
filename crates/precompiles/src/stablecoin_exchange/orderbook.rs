@@ -14,11 +14,19 @@ pub const MIN_TICK: i16 = -2000;
 pub const MAX_TICK: i16 = 2000;
 pub const PRICE_SCALE: u32 = 100_000;
 
-// Deprecated: Use StablecoinExchange::min_price() and max_price() methods for hardfork-aware values
-#[deprecated(note = "Use StablecoinExchange::min_price() for hardfork-aware value")]
-pub const MIN_PRICE: u32 = 67_232; // Pre-moderato value
-#[deprecated(note = "Use StablecoinExchange::max_price() for hardfork-aware value")]
-pub const MAX_PRICE: u32 = 132_767; // Pre-moderato value
+// // Deprecated: Use StablecoinExchange::min_price() and max_price() methods for hardfork-aware values
+// #[deprecated(note = "Use StablecoinExchange::min_price() for hardfork-aware value")]
+// pub const MIN_PRICE: u32 = 67_232; // Pre-moderato value
+// #[deprecated(note = "Use StablecoinExchange::max_price() for hardfork-aware value")]
+// pub const MAX_PRICE: u32 = 132_767; // Pre-moderato value
+
+// Pre-moderato: MIN_PRICE and MAX_PRICE covered full i16 range
+pub(crate) const MIN_PRICE_PRE_MODERATO: u32 = 67_232; // i16::MIN as price
+pub(crate) const MAX_PRICE_PRE_MODERATO: u32 = 132_767; // i16::MAX as price
+
+// Post-moderato: MIN_PRICE and MAX_PRICE match MIN_TICK and MAX_TICK
+pub(crate) const MIN_PRICE_POST_MODERATO: u32 = 98_000; // PRICE_SCALE + MIN_TICK = 100_000 - 2000
+pub(crate) const MAX_PRICE_POST_MODERATO: u32 = 102_000; // PRICE_SCALE + MAX_TICK = 100_000 + 2000
 
 /// Represents a price level in the orderbook with a doubly-linked list of orders
 /// Orders are maintained in FIFO order at each tick level

@@ -4,22 +4,22 @@ pub mod error;
 pub mod order;
 pub mod orderbook;
 
-pub use tempo_contracts::precompiles::{
-    IStablecoinExchange, StablecoinExchangeError, StablecoinExchangeEvents,
-};
-
 pub use order::Order;
-#[allow(deprecated)]
-pub use orderbook::{MAX_PRICE, MIN_PRICE};
 pub use orderbook::{
     MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, TickLevel, price_to_tick, tick_to_price,
+};
+pub use tempo_contracts::precompiles::{
+    IStablecoinExchange, StablecoinExchangeError, StablecoinExchangeEvents,
 };
 
 use crate::{
     LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     error::{Result, TempoPrecompileError},
     linking_usd::LinkingUSD,
-    stablecoin_exchange::orderbook::compute_book_key,
+    stablecoin_exchange::orderbook::{
+        MAX_PRICE_POST_MODERATO, MAX_PRICE_PRE_MODERATO, MIN_PRICE_POST_MODERATO,
+        MIN_PRICE_PRE_MODERATO, compute_book_key,
+    },
     storage::{PrecompileStorageProvider, Slot, Storable, VecSlotExt},
     tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
 };
@@ -29,14 +29,6 @@ use tempo_precompiles_macros::contract;
 
 /// Minimum order size of $10 USD
 pub const MIN_ORDER_AMOUNT: u128 = 10_000_000;
-
-// Pre-moderato: MIN_PRICE and MAX_PRICE covered full i16 range
-const MIN_PRICE_PRE_MODERATO: u32 = 67_232; // i16::MIN as price
-const MAX_PRICE_PRE_MODERATO: u32 = 132_767; // i16::MAX as price
-
-// Post-moderato: MIN_PRICE and MAX_PRICE match MIN_TICK and MAX_TICK
-const MIN_PRICE_POST_MODERATO: u32 = 98_000; // PRICE_SCALE + MIN_TICK = 100_000 - 2000
-const MAX_PRICE_POST_MODERATO: u32 = 102_000; // PRICE_SCALE + MAX_TICK = 100_000 + 2000
 
 /// Calculate quote amount from base amount and tick price using checked arithmetic
 ///
