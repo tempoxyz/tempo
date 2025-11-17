@@ -63,6 +63,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
             Ok(0)
         } else {
+            // Scheduled rewards are disabled post-Moderato hardfork
+            if self.storage.spec().is_moderato() {
+                return Err(TIP20Error::scheduled_rewards_disabled().into());
+            }
+
             let rate = call
                 .amount
                 .checked_mul(ACC_PRECISION)
@@ -1295,6 +1300,45 @@ mod tests {
                 "Pre-Moderato: Registry should still have 1 stream (not removed for consensus compatibility)"
             );
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_scheduled_rewards_disabled_post_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let admin = Address::random();
+        let token_address = Address::random();
+
+        let mut token = TIP20Token::new(token_address, &mut storage);
+        token.initialize("TestToken", "TEST", "USD", Address::ZERO, admin)?;
+
+        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let mint_amount = U256::from(1000e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: admin,
+                amount: mint_amount,
+            },
+        )?;
+
+        let reward_amount = U256::from(100e18);
+        let result = token.start_reward(
+            admin,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                secs: 10,
+            },
+        );
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            TempoPrecompileError::TIP20(TIP20Error::ScheduledRewardsDisabled(_))
+        ));
 
         Ok(())
     }
