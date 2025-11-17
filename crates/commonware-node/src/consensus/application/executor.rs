@@ -11,21 +11,22 @@ use std::{cmp::Ordering, sync::Arc, time::Duration};
 
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::ForkchoiceState;
-use commonware_consensus::{Block as _, marshal::ingress::mailbox::Identifier};
+use commonware_consensus::{
+    Block as _,
+    marshal::{Update, ingress::mailbox::Identifier},
+};
 
 use commonware_macros::select;
 use commonware_runtime::{ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell};
+use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
-use futures::{
-    StreamExt as _,
-    channel::{mpsc, oneshot},
-};
+use futures::{StreamExt as _, channel::mpsc};
 use reth_primitives_traits::SealedBlock;
 use reth_provider::{BlockNumReader as _, BlockReader as _};
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tracing::{Level, Span, debug, info, instrument, warn};
 
-use crate::consensus::{Digest, application::ingress::Finalized, block::Block};
+use crate::consensus::{Digest, block::Block};
 
 pub(super) struct Builder {
     /// A handle to the execution node layer. Used to forward finalized blocks
@@ -369,15 +370,15 @@ where
     #[instrument(parent = &cause, skip_all)]
     /// Handles finalization events.
     async fn finalize(&mut self, cause: Span, finalized: super::ingress::Finalized) {
-        match finalized {
-            Finalized::Tip { height, digest } => {
+        match finalized.inner {
+            Update::Tip(height, digest) => {
                 let _: Result<_, _> = self
                     .canonicalize(Span::current(), HeadOrFinalized::Finalized, height, digest)
                     .await;
             }
-            Finalized::Block { block, response } => {
+            Update::Block(block, acknowledgment) => {
                 let _: Result<_, _> = self
-                    .forward_finalized(Span::current(), *block, response)
+                    .forward_finalized(Span::current(), block, acknowledgment)
                     .await;
             }
         }
@@ -416,7 +417,7 @@ where
         &mut self,
         cause: Span,
         block: Block,
-        response: oneshot::Sender<()>,
+        acknowledgment: Exact,
     ) -> eyre::Result<()> {
         if let Err(error) = self
             .canonicalize(
@@ -457,9 +458,7 @@ where
             neither valid nor syncing: `{payload_status}`"
         );
 
-        if let Err(()) = response.send(()) {
-            warn!("tried acknowledging finalization but channel was already closed");
-        }
+        acknowledgment.acknowledge();
 
         Ok(())
     }
