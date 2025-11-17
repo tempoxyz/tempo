@@ -8,7 +8,7 @@ use commonware_p2p::{
 };
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics as _, Spawner, Storage, spawn_cell};
 use commonware_storage::metadata::Metadata;
-use commonware_utils::sequence::U64;
+use commonware_utils::{Acknowledgement as _, sequence::U64};
 use eyre::eyre;
 use futures::{StreamExt as _, channel::mpsc, lock::Mutex};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
@@ -22,7 +22,6 @@ use crate::{
         manager::ingress::{Finalize, GetIntermediateDealing, GetOutcome},
     },
     epoch,
-    marshal_utils::UpdateExt as _,
 };
 
 const EPOCH_KEY: u64 = 0;
@@ -311,17 +310,18 @@ where
         parent = cause,
         skip_all,
         fields(
-            block.derived_epoch = update
-                .as_block()
-                .map(|b| utils::epoch(self.config.epoch_length, b.height())),
-            block.height = update.as_block().map(|b| b.height()),
+            block.derived_epoch = utils::epoch(self.config.epoch_length, block.height()),
+            block.height = block.height(),
             ceremony.epoch = ceremony.epoch(),
         ),
     )]
     async fn handle_finalize<TReceiver, TSender>(
         &mut self,
         cause: Span,
-        Finalize { update, response }: Finalize,
+        Finalize {
+            block,
+            acknowledgment,
+        }: Finalize,
         mut ceremony: Ceremony<ContextCell<TContext>, TReceiver, TSender>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> Ceremony<ContextCell<TContext>, TReceiver, TSender>
@@ -329,11 +329,8 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let Some(block) = update.into_block() else {
-            return ceremony;
-        };
-
         if block.height() == 0 {
+            acknowledgment.acknowledge();
             return ceremony;
         }
 
@@ -369,6 +366,7 @@ where
                 "block was for a different epoch; not including it in the \
                 ceremony"
             );
+            acknowledgment.acknowledge();
             return ceremony;
         };
 
@@ -479,9 +477,7 @@ where
             .expect("must always be able to initialize ceremony")
         }
 
-        if let Err(()) = response.send(()) {
-            warn!("could not confirm finalization because recipient already went away");
-        }
+        acknowledgment.acknowledge();
 
         ceremony
     }
