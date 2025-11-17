@@ -269,4 +269,43 @@ mod tests {
 
         assert!(result.result.is_success());
     }
+
+    #[test]
+    fn test_system_tx_validation_post_moderato() {
+        use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
+        
+        let chain_spec = TempoChainSpec::tempo_testnet()
+            .with_hardfork(TempoHardfork::Moderato, 0);
+
+        let mut evm = TempoEvm::new(
+            EmptyDB::default(),
+            EvmEnv {
+                block_env: TempoBlockEnv {
+                    inner: BlockEnv {
+                        basefee: 1,
+                        timestamp: U256::from(1000),
+                        ..Default::default()
+                    },
+                    spec: chain_spec,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let result = evm
+            .transact(TempoTxEnv {
+                inner: TxEnv {
+                    caller: Address::random(),
+                    gas_price: 1,
+                    gas_limit: 21000,
+                    transact_to: revm::primitives::TransactTo::Call(Address::random()),
+                    ..Default::default()
+                },
+                is_system_tx: false,
+                ..Default::default()
+            });
+
+        assert!(result.is_ok());
+    }
 }
