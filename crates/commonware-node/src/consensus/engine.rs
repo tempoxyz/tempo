@@ -135,6 +135,7 @@ where
             public_key: self.signer.public_key(),
             manager: self.peer_manager,
             mailbox_size: self.mailbox_size,
+            blocker: self.blocker.clone(),
             requester_config: commonware_p2p::utils::requester::Config {
                 me: Some(self.signer.public_key()),
                 rate_limit: MARSHAL_LIMIT,
@@ -293,7 +294,7 @@ where
     application_mailbox: application::Mailbox,
 
     /// Resolver config that will be passed to the marshal actor upon start.
-    resolver_config: marshal::resolver::p2p::Config<PublicKey, TPeerManager>,
+    resolver_config: marshal::resolver::p2p::Config<PublicKey, TPeerManager, TBlocker>,
 
     /// Listens to consensus events and syncs blocks from the network to the
     /// local node.

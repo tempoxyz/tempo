@@ -2349,7 +2349,7 @@ dependencies = [
 [[package]]
 name = "commonware-broadcast"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2ad0fd34c16631956649d49973a59d0b989fbd36#2ad0fd34c16631956649d49973a59d0b989fbd36"
+source = "git+https://github.com/commonwarexyz/monorepo?branch=bc%2F2149-simplex-reconciliation#6ba9044607c7bd6971e61c3edaee6139b5b88f7e"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2367,7 +2367,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2ad0fd34c16631956649d49973a59d0b989fbd36#2ad0fd34c16631956649d49973a59d0b989fbd36"
+source = "git+https://github.com/commonwarexyz/monorepo?branch=bc%2F2149-simplex-reconciliation#6ba9044607c7bd6971e61c3edaee6139b5b88f7e"
 dependencies = [
  "bytes",
  "paste",
@@ -2377,7 +2377,7 @@ dependencies = [
 [[package]]
 name = "commonware-consensus"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2ad0fd34c16631956649d49973a59d0b989fbd36#2ad0fd34c16631956649d49973a59d0b989fbd36"
+source = "git+https://github.com/commonwarexyz/monorepo?branch=bc%2F2149-simplex-reconciliation#6ba9044607c7bd6971e61c3edaee6139b5b88f7e"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -2403,7 +2403,7 @@ dependencies = [
 [[package]]
 name = "commonware-cryptography"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2ad0fd34c16631956649d49973a59d0b989fbd36#2ad0fd34c16631956649d49973a59d0b989fbd36"
+source = "git+https://github.com/commonwarexyz/monorepo?branch=bc%2F2149-simplex-reconciliation#6ba9044607c7bd6971e61c3edaee6139b5b88f7e"
 dependencies = [
  "blake3",
  "blst",
@@ -2428,7 +2428,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2ad0fd34c16631956649d49973a59d0b989fbd36#2ad0fd34c16631956649d49973a59d0b989fbd36"
+source = "git+https://github.com/commonwarexyz/monorepo?branch=bc%2F2149-simplex-reconciliation#6ba9044607c7bd6971e61c3edaee6139b5b88f7e"
 dependencies = [
  "futures",
  "proc-macro-crate",
@@ -2442,7 +2442,7 @@ dependencies = [
 [[package]]
 name = "commonware-p2p"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2ad0fd34c16631956649d49973a59d0b989fbd36#2ad0fd34c16631956649d49973a59d0b989fbd36"
+source = "git+https://github.com/commonwarexyz/monorepo?branch=bc%2F2149-simplex-reconciliation#6ba9044607c7bd6971e61c3edaee6139b5b88f7e"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2468,7 +2468,7 @@ dependencies = [
 [[package]]
 name = "commonware-resolver"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2ad0fd34c16631956649d49973a59d0b989fbd36#2ad0fd34c16631956649d49973a59d0b989fbd36"
+source = "git+https://github.com/commonwarexyz/monorepo?branch=bc%2F2149-simplex-reconciliation#6ba9044607c7bd6971e61c3edaee6139b5b88f7e"
 dependencies = [
  "bimap",
  "bytes",
@@ -2490,7 +2490,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2ad0fd34c16631956649d49973a59d0b989fbd36#2ad0fd34c16631956649d49973a59d0b989fbd36"
+source = "git+https://github.com/commonwarexyz/monorepo?branch=bc%2F2149-simplex-reconciliation#6ba9044607c7bd6971e61c3edaee6139b5b88f7e"
 dependencies = [
  "async-lock",
  "axum",
@@ -2522,7 +2522,7 @@ dependencies = [
 [[package]]
 name = "commonware-storage"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2ad0fd34c16631956649d49973a59d0b989fbd36#2ad0fd34c16631956649d49973a59d0b989fbd36"
+source = "git+https://github.com/commonwarexyz/monorepo?branch=bc%2F2149-simplex-reconciliation#6ba9044607c7bd6971e61c3edaee6139b5b88f7e"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2545,7 +2545,7 @@ dependencies = [
 [[package]]
 name = "commonware-stream"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2ad0fd34c16631956649d49973a59d0b989fbd36#2ad0fd34c16631956649d49973a59d0b989fbd36"
+source = "git+https://github.com/commonwarexyz/monorepo?branch=bc%2F2149-simplex-reconciliation#6ba9044607c7bd6971e61c3edaee6139b5b88f7e"
 dependencies = [
  "bytes",
  "chacha20poly1305",
@@ -2565,7 +2565,7 @@ dependencies = [
 [[package]]
 name = "commonware-utils"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=2ad0fd34c16631956649d49973a59d0b989fbd36#2ad0fd34c16631956649d49973a59d0b989fbd36"
+source = "git+https://github.com/commonwarexyz/monorepo?branch=bc%2F2149-simplex-reconciliation#6ba9044607c7bd6971e61c3edaee6139b5b88f7e"
 dependencies = [
  "bytes",
  "cfg-if",
