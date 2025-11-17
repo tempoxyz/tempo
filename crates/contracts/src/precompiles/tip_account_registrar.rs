@@ -8,8 +8,8 @@ sol! {
         /// Pre-Moderato: accepts arbitrary hash (vulnerable to signature forgery)
         function delegateToDefault(bytes32 hash, bytes calldata signature) external returns (address authority);
 
-        /// Post-Moderato: accepts nonce, computes hash internally (secure)
-        function delegateToDefaultV2(uint256 nonce, bytes calldata signature) external returns (address authority);
+        /// Post-Moderato: accepts arbitrary message bytes, computes keccak256(bytes) internally
+        function delegateToDefaultV2(bytes calldata message, bytes calldata signature) external returns (address authority);
 
         // Errors
         error InvalidSignature();

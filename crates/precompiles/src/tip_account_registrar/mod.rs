@@ -85,20 +85,15 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
     /// Post-Moderato: Validates an ECDSA signature and deploys the default 7702 delegate code
     /// to the recovered signer's account. The account must have nonce = 0 and empty code.
     ///
-    /// This version computes the hash internally with domain separation to prevent signature forgery.
+    /// This version computes the hash internally from arbitrary message bytes to prevent signature forgery.
     pub fn delegate_to_default_v2(
         &mut self,
         call: ITipAccountRegistrar::delegateToDefaultV2Call,
     ) -> Result<Address> {
-        let ITipAccountRegistrar::delegateToDefaultV2Call { nonce, signature } = call;
+        let ITipAccountRegistrar::delegateToDefaultV2Call { message, signature } = call;
 
-        // Compute the hash internally with domain separation
-        let hash = compute_delegation_hash(
-            nonce,
-            DEFAULT_7702_DELEGATE_ADDRESS,
-            self.storage.chain_id(),
-            TIP_ACCOUNT_REGISTRAR,
-        );
+        // Compute the hash internally from the provided message
+        let hash = alloy::primitives::keccak256(&message);
 
         // taken from precompile gas cost
         // https://github.com/bluealloy/revm/blob/a1fdb9d9e98f9dd14b7577edbad49c139ab53b16/crates/precompile/src/secp256k1.rs#L34
@@ -137,27 +132,6 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
 
         Ok(signer)
     }
-}
-
-/// Computes the hash for delegation authorization with domain separation.
-/// Includes nonce for replay protection, and chain ID + contract address to prevent
-/// cross-chain and cross-contract replay attacks.
-pub fn compute_delegation_hash(
-    nonce: U256,
-    delegate_address: Address,
-    chain_id: u64,
-    contract_address: Address,
-) -> alloy::primitives::B256 {
-    use alloy::primitives::keccak256;
-
-    let mut data = Vec::new();
-    data.extend_from_slice(b"TEMPO_DELEGATE_TO_DEFAULT");
-    data.extend_from_slice(&nonce.to_be_bytes::<32>());
-    data.extend_from_slice(delegate_address.as_slice());
-    data.extend_from_slice(&chain_id.to_be_bytes());
-    data.extend_from_slice(contract_address.as_slice());
-
-    keccak256(&data)
 }
 
 /// Validates an ECDSA signature according to Ethereum standards.
@@ -325,53 +299,24 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_delegation_hash() {
-        use alloy::primitives::address;
-
-        let nonce = U256::from(12345);
-        let delegate_address = address!("0000000000000000000000000000000000007702");
-        let chain_id = 1;
-        let contract_address = address!("0000000000000000000000000000000000007821");
-
-        let hash = compute_delegation_hash(nonce, delegate_address, chain_id, contract_address);
-
-        // Hash should be deterministic
-        let hash2 = compute_delegation_hash(nonce, delegate_address, chain_id, contract_address);
-        assert_eq!(hash, hash2);
-
-        // Different nonce should produce different hash
-        let different_hash = compute_delegation_hash(
-            U256::from(54321),
-            delegate_address,
-            chain_id,
-            contract_address,
-        );
-        assert_ne!(hash, different_hash);
-    }
-
-    #[test]
-    fn test_delegate_to_default_v2_with_nonce() {
+    fn test_delegate_to_default_v2_with_arbitrary_message() {
         let mut storage = HashMapStorageProvider::new(1);
-        let chain_id = storage.chain_id();
 
         let mut registrar = TipAccountRegistrar::new(&mut storage);
 
         let signer = PrivateKeySigner::random();
         let expected_address = signer.address();
-        let nonce = U256::from(12345);
 
-        // Compute the hash that delegate_to_default_v2 will compute internally
-        let message_hash = compute_delegation_hash(
-            nonce,
-            DEFAULT_7702_DELEGATE_ADDRESS,
-            chain_id,
-            TIP_ACCOUNT_REGISTRAR,
-        );
+        // User can sign any arbitrary message
+        let message = b"Hello, Tempo! I want to delegate my account.";
+
+        // Compute the hash from the message
+        let message_hash = alloy::primitives::keccak256(message);
 
         let signature = signer.sign_hash_sync(&message_hash).unwrap();
 
         let call = ITipAccountRegistrar::delegateToDefaultV2Call {
-            nonce,
+            message: message.to_vec().into(),
             signature: signature.as_bytes().into(),
         };
 
@@ -388,5 +333,42 @@ mod tests {
             account_info_after.code,
             Some(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS)),
         );
+    }
+
+    #[test]
+    fn test_delegate_to_default_v2_different_messages_different_signers() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut registrar = TipAccountRegistrar::new(&mut storage);
+
+        let signer = PrivateKeySigner::random();
+        let expected_address = signer.address();
+
+        // Sign one message
+        let message1 = b"Message 1";
+        let hash1 = alloy::primitives::keccak256(message1);
+        let signature1 = signer.sign_hash_sync(&hash1).unwrap();
+
+        // Try to reuse the signature for a different message
+        let message2 = b"Message 2";
+
+        let call = ITipAccountRegistrar::delegateToDefaultV2Call {
+            message: message2.to_vec().into(),
+            signature: signature1.as_bytes().into(),
+        };
+
+        // The signature was for message1, not message2
+        // ecrecover will succeed but recover a different (random) address
+        let result = registrar.delegate_to_default_v2(call);
+
+        // Either it fails (ecrecover error) OR recovers a different address
+        match result {
+            Ok(recovered_addr) => {
+                // Should recover a different address than the actual signer
+                assert_ne!(recovered_addr, expected_address);
+            }
+            Err(_) => {
+                // Also acceptable - signature verification can fail
+            }
+        }
     }
 }

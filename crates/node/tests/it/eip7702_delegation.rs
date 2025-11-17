@@ -9,10 +9,7 @@ use alloy_primitives::{Address, B256, U256, b256};
 use reth_evm::revm::state::Bytecode;
 use std::{env, str::FromStr};
 use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, IthacaAccount};
-use tempo_precompiles::{
-    TIP_ACCOUNT_REGISTRAR,
-    tip_account_registrar::{ITipAccountRegistrar, compute_delegation_hash},
-};
+use tempo_precompiles::{TIP_ACCOUNT_REGISTRAR, tip_account_registrar::ITipAccountRegistrar};
 
 sol! {
     struct Call {
@@ -240,22 +237,17 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     let code_before = provider.get_code_at(bob_addr).await?;
     assert!(code_before.is_empty());
 
-    let nonce = U256::from(12345);
+    // User can sign any arbitrary message
+    let message = b"I authorize delegation of my account to the default 7702 implementation";
 
-    // Get the actual chain_id from the provider
-    let chain_id = provider.get_chain_id().await?;
-
-    let hash = compute_delegation_hash(
-        nonce,
-        DEFAULT_7702_DELEGATE_ADDRESS,
-        chain_id,
-        TIP_ACCOUNT_REGISTRAR,
-    );
+    // Compute the hash from the message
+    let hash = alloy::primitives::keccak256(message);
     let signature = bob.sign_hash_sync(&hash)?;
 
     // Create a new tx to delegate to the default 7702 impl using V2
     let registrar = ITipAccountRegistrar::new(TIP_ACCOUNT_REGISTRAR, provider.clone());
-    let registrar_call = registrar.delegateToDefaultV2(nonce, signature.as_bytes().into());
+    let registrar_call =
+        registrar.delegateToDefaultV2(message.to_vec().into(), signature.as_bytes().into());
     let addr = registrar_call.call().await?;
     assert_eq!(addr, bob_addr);
     let receipt = registrar_call.send().await?.get_receipt().await?;
