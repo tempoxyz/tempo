@@ -164,14 +164,10 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                 })
             }
             IStablecoinExchange::MIN_PRICECall::SELECTOR => {
-                view::<IStablecoinExchange::MIN_PRICECall>(calldata, |_call| {
-                    Ok(crate::stablecoin_exchange::MIN_PRICE)
-                })
+                view::<IStablecoinExchange::MIN_PRICECall>(calldata, |_call| Ok(self.min_price()))
             }
             IStablecoinExchange::MAX_PRICECall::SELECTOR => {
-                view::<IStablecoinExchange::MAX_PRICECall>(calldata, |_call| {
-                    Ok(crate::stablecoin_exchange::MAX_PRICE)
-                })
+                view::<IStablecoinExchange::MAX_PRICECall>(calldata, |_call| Ok(self.max_price()))
             }
             IStablecoinExchange::tickToPriceCall::SELECTOR => {
                 view::<IStablecoinExchange::tickToPriceCall>(calldata, |call| {
@@ -210,6 +206,7 @@ mod tests {
         primitives::{Address, Bytes, U256},
         sol_types::{SolCall, SolValue},
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::IStablecoinExchange::IStablecoinExchangeCalls;
 
     /// Setup a basic exchange with tokens and liquidity for swap tests
@@ -362,6 +359,94 @@ mod tests {
         // Should dispatch to balance_of function and succeed (returns 0 for uninitialized)
         let result = exchange.call(&Bytes::from(calldata), sender);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_min_price_pre_moderato() {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize().unwrap();
+
+        let sender = Address::ZERO;
+        let call = IStablecoinExchange::MIN_PRICECall {};
+        let calldata = call.abi_encode();
+
+        let result = exchange.call(&Bytes::from(calldata), sender);
+        assert!(result.is_ok());
+
+        let output = result.unwrap().bytes;
+        let returned_value = u32::abi_decode(&output).unwrap();
+
+        assert_eq!(
+            returned_value, 67_232,
+            "Pre-moderato MIN_PRICE should be 67_232"
+        );
+    }
+
+    #[test]
+    fn test_min_price_post_moderato() {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize().unwrap();
+
+        let sender = Address::ZERO;
+        let call = IStablecoinExchange::MIN_PRICECall {};
+        let calldata = call.abi_encode();
+
+        let result = exchange.call(&Bytes::from(calldata), sender);
+        assert!(result.is_ok());
+
+        let output = result.unwrap().bytes;
+        let returned_value = u32::abi_decode(&output).unwrap();
+
+        assert_eq!(
+            returned_value, 98_000,
+            "Post-moderato MIN_PRICE should be 98_000"
+        );
+    }
+
+    #[test]
+    fn test_max_price_pre_moderato() {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize().unwrap();
+
+        let sender = Address::ZERO;
+        let call = IStablecoinExchange::MAX_PRICECall {};
+        let calldata = call.abi_encode();
+
+        let result = exchange.call(&Bytes::from(calldata), sender);
+        assert!(result.is_ok());
+
+        let output = result.unwrap().bytes;
+        let returned_value = u32::abi_decode(&output).unwrap();
+
+        assert_eq!(
+            returned_value, 132_767,
+            "Pre-moderato MAX_PRICE should be 132_767"
+        );
+    }
+
+    #[test]
+    fn test_max_price_post_moderato() {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize().unwrap();
+
+        let sender = Address::ZERO;
+        let call = IStablecoinExchange::MAX_PRICECall {};
+        let calldata = call.abi_encode();
+
+        let result = exchange.call(&Bytes::from(calldata), sender);
+        assert!(result.is_ok());
+
+        let output = result.unwrap().bytes;
+        let returned_value = u32::abi_decode(&output).unwrap();
+
+        assert_eq!(
+            returned_value, 102_000,
+            "Post-moderato MAX_PRICE should be 102_000"
+        );
     }
 
     #[test]
