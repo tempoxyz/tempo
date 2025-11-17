@@ -33,9 +33,7 @@ pub const MIN_ORDER_AMOUNT: u128 = 10_000_000;
 /// Pre-Moderato behavior
 fn calculate_quote_amount_floor(amount: u128, tick: i16) -> Option<u128> {
     let price = tick_to_price(tick) as u128;
-    let scale = PRICE_SCALE as u128;
-    let product = amount.checked_mul(price)?;
-    product.checked_div(scale)
+    amount.checked_mul(price)?.checked_div(PRICE_SCALE as u128)
 }
 
 /// Calculate quote amount using ceiling division (rounds up)
