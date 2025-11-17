@@ -241,10 +241,14 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     assert!(code_before.is_empty());
 
     let nonce = U256::from(12345);
+
+    // Get the actual chain_id from the provider
+    let chain_id = provider.get_chain_id().await?;
+
     let hash = compute_delegation_hash(
         nonce,
         DEFAULT_7702_DELEGATE_ADDRESS,
-        1, // chain_id from test genesis
+        chain_id,
         TIP_ACCOUNT_REGISTRAR,
     );
     let signature = bob.sign_hash_sync(&hash)?;
