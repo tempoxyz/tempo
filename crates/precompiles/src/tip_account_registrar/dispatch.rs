@@ -1,4 +1,6 @@
-use crate::{Precompile, input_cost, mutate, storage::PrecompileStorageProvider};
+use crate::{
+    Precompile, error::TempoPrecompileError, input_cost, mutate, storage::PrecompileStorageProvider,
+};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -23,7 +25,13 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipAccountRegistrar<'a, S>
                 mutate::<ITipAccountRegistrar::delegateToDefaultCall>(
                     calldata,
                     msg_sender,
-                    |_, call| self.delegate_to_default(call),
+                    |_, call| {
+                        if self.storage.spec().is_moderato() {
+                            Err(TempoPrecompileError::UnknownFunctionSelector)
+                        } else {
+                            self.delegate_to_default(call)
+                        }
+                    },
                 )
             }
             ITipAccountRegistrar::delegateToDefaultV2Call::SELECTOR => {

@@ -37,7 +37,7 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
 
     /// Pre-Moderato: Validates an ECDSA signature against a provided hash.
     /// **WARNING**: This version is vulnerable to signature forgery and is only
-    /// kept for pre-Moderato compatibility.
+    /// kept for pre-Moderato compatibility. **Deprecated at Moderato hardfork**.
     pub fn delegate_to_default(
         &mut self,
         call: ITipAccountRegistrar::delegateToDefaultCall,
@@ -169,13 +169,17 @@ fn validate_signature(signature: &[u8]) -> Result<(B512, u8)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider};
+    use crate::{
+        TempoHardfork, error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
+    };
+    use alloy::sol_types::SolCall;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use tempo_contracts::precompiles::TIPAccountRegistrarError;
 
     #[test]
-    fn test_delegate_to_default() {
+    fn test_delegate_to_default_pre_moderato() {
+        // Pre-Moderato: v1 function should work
         let mut storage = HashMapStorageProvider::new(1);
         let mut registrar = TipAccountRegistrar::new(&mut storage);
 
@@ -202,6 +206,30 @@ mod tests {
             account_info_after.code,
             Some(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS)),
         );
+    }
+
+    #[test]
+    fn test_delegate_to_default_deprecated_post_moderato() {
+        // Post-Moderato: v1 function should be deprecated
+        use crate::Precompile;
+
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut registrar = TipAccountRegistrar::new(&mut storage);
+
+        let signer = PrivateKeySigner::random();
+        let hash = alloy::primitives::keccak256(b"test");
+        let signature = signer.sign_hash_sync(&hash).unwrap();
+
+        // Encode the call
+        let call = ITipAccountRegistrar::delegateToDefaultCall {
+            hash,
+            signature: signature.as_bytes().into(),
+        };
+        let calldata = call.abi_encode();
+
+        // Should fail with UnknownFunctionSelector after Moderato
+        let result = registrar.call(&calldata, signer.address());
+        assert!(result.is_err());
     }
 
     #[test]
