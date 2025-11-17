@@ -45,7 +45,7 @@ use alloy::{
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
     context::CfgEnv,
-    precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
+    precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
 pub use tempo_contracts::precompiles::{
@@ -257,6 +257,20 @@ fn mutate_void<T: SolCall>(
         return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };
     f(sender, call).into_precompile_result(0, |()| Bytes::new())
+}
+
+/// Helper function to return an unknown function selector error
+///
+/// Before Moderato: Returns a generic PrecompileError::Other
+/// Moderato onwards: Returns an ABI-encoded UnknownFunctionSelector error with the selector
+#[inline]
+pub fn unknown_selector(selector: [u8; 4], gas: u64, spec: TempoHardfork) -> PrecompileResult {
+    if spec.is_moderato() {
+        error::TempoPrecompileError::UnknownFunctionSelector(selector)
+            .into_precompile_result(gas, |_: ()| Bytes::new())
+    } else {
+        Err(PrecompileError::Other("Unknown function selector".into()))
+    }
 }
 
 #[cfg(test)]

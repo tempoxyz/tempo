@@ -1,8 +1,12 @@
 //! Test utilities for precompile dispatch testing
 
 use crate::Precompile;
-use alloy::primitives::{Address, Bytes};
+use alloy::{
+    primitives::{Address, Bytes},
+    sol_types::SolInterface,
+};
 use revm::precompile::PrecompileError;
+use tempo_contracts::precompiles::CommonPrecompileError;
 
 /// Checks that all selectors in an interface have dispatch handlers.
 ///
@@ -23,9 +27,21 @@ pub fn check_selector_coverage<P: Precompile>(
 
         let result = precompile.call(&Bytes::from(calldata), Address::ZERO);
 
-        // Check if we got "Unknown function selector" error
-        if let Err(PrecompileError::Other(msg)) = result
-            && msg.contains("Unknown function selector")
+        // Check if we got "Unknown function selector" error (old format)
+        let is_unsupported_old = matches!(&result,
+            Err(PrecompileError::Other(msg)) if msg.contains("Unknown function selector")
+        );
+
+        // Check if we got "Unknown function selector" error (new format - ABI-encoded)
+        let is_unsupported_new = if let Ok(output) = &result {
+            output.reverted
+                && CommonPrecompileError::abi_decode(&output.bytes)
+                    .is_ok_and(|e| matches!(e, CommonPrecompileError::UnknownFunctionSelector(_)))
+        } else {
+            false
+        };
+
+        if (is_unsupported_old || is_unsupported_new)
             && let Some(name) = name_lookup(*selector)
         {
             unsupported_selectors.push((*selector, name));

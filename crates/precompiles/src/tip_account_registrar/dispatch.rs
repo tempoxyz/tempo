@@ -1,5 +1,6 @@
 use crate::{
-    Precompile, error::TempoPrecompileError, input_cost, mutate, storage::PrecompileStorageProvider,
+    Precompile, error::TempoPrecompileError, input_cost, mutate,
+    storage::PrecompileStorageProvider, unknown_selector,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
@@ -28,7 +29,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipAccountRegistrar<'a, S>
                     msg_sender,
                     |_, call| {
                         if self.storage.spec().is_moderato() {
-                            Err(TempoPrecompileError::UnknownFunctionSelector)
+                            Err(TempoPrecompileError::UnknownFunctionSelector(selector))
                         } else {
                             self.delegate_to_default_v1(call)
                         }
@@ -44,12 +45,12 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipAccountRegistrar<'a, S>
                         if self.storage.spec().is_moderato() {
                             self.delegate_to_default_v2(call)
                         } else {
-                            Err(TempoPrecompileError::UnknownFunctionSelector)
+                            Err(TempoPrecompileError::UnknownFunctionSelector(selector))
                         }
                     },
                 )
             }
-            _ => Err(PrecompileError::Other("Unknown function selector".into())),
+            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
         result.map(|mut res| {
