@@ -516,6 +516,27 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
     // Standard token functions
     pub fn approve(&mut self, msg_sender: Address, call: ITIP20::approveCall) -> Result<bool> {
+        // If the sender is using an access key, check the spending limits
+        if let Some(transaction_key) = self.is_access_key_used(&msg_sender)? {
+            // Get the old allowance to calculate the increase
+            let old_allowance = self.get_allowance(msg_sender, call.spender)?;
+
+            // Calculate the increase in approval (only deduct if increasing)
+            // If old approval is 100 and new approval is 120, deduct 20 from spending limit
+            // If old approval is 100 and new approval is 80, deduct 0 (decreasing approval is free)
+            let approval_increase = if call.amount > old_allowance {
+                call.amount - old_allowance
+            } else {
+                U256::ZERO
+            };
+
+            // Check spending limits if there's an increase in approval
+            if !approval_increase.is_zero() {
+                self.check_spending_limit(&msg_sender, transaction_key, approval_increase)?;
+            }
+        }
+
+        // Set the new allowance
         self.set_allowance(msg_sender, call.spender, call.amount)?;
 
         self.storage.emit_event(
@@ -536,9 +557,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.check_not_paused()?;
         self.check_not_token_address(call.to)?;
         self.ensure_transfer_authorized(msg_sender, call.to)?;
-
         // Check spending limits if using access key
-        self.check_spending_limit(&msg_sender, call.amount)?;
+        if let Some(transaction_key) = self.is_access_key_used(&msg_sender)? {
+            self.check_spending_limit(&msg_sender, transaction_key, call.amount)?;
+        }
 
         self._transfer(msg_sender, call.to, call.amount)?;
         Ok(true)
@@ -620,9 +642,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 .ok_or(TIP20Error::insufficient_allowance())?;
             self.set_allowance(from, msg_sender, new_allowance)?;
         }
-
-        // Check spending limits if using access key (based on 'from' account)
-        self.check_spending_limit(&from, amount)?;
 
         self._transfer(from, to, amount)?;
 
@@ -778,11 +797,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Ok(())
     }
 
-    /// Check spending limits for access key transfers
-    ///
-    /// This method uses the AccountKeychain precompile to check and update
-    /// spending limits if the transaction is using an access key.
-    fn check_spending_limit(&mut self, account: &Address, amount: U256) -> Result<()> {
+    /// Checks if the account is using an access key.
+    /// Returns the transaction key if an access key is used, otherwise returns None.
+    fn is_access_key_used(&mut self, account: &Address) -> Result<Option<Address>> {
         // Create AccountKeychain instance to read transaction key
         let mut keychain = AccountKeychain::new(self.storage);
 
@@ -791,8 +808,26 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         // If using main key (Address::ZERO), no spending limits apply
         if transaction_key == Address::ZERO {
-            return Ok(());
+            return Ok(None);
         }
+
+        Ok(Some(transaction_key))
+    }
+
+    /// Check spending limits for access key approvals
+    ///
+    /// This method uses the AccountKeychain precompile to check and update
+    /// spending limits if the transaction is using an access key.
+    /// This is called when approving tokens to ensure the access key has
+    /// sufficient spending limit for the approval increase.
+    fn check_spending_limit(
+        &mut self,
+        account: &Address,
+        transaction_key: Address,
+        amount: U256,
+    ) -> Result<()> {
+        // Create AccountKeychain instance to read transaction key
+        let mut keychain = AccountKeychain::new(self.storage);
 
         // Verify and update spending limits for this access key
         keychain.verify_and_update_spending(*account, transaction_key, self.address, amount)?;
