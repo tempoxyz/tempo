@@ -25,15 +25,16 @@ use revm::{
         },
         interpreter::EthInterpreter,
     },
-    primitives::eip7702,
+    primitives::{eip7702, hardfork::SpecId as RevmSpecId},
     state::Bytecode,
 };
 use tempo_contracts::{
     DEFAULT_7702_DELEGATE_ADDRESS,
-    precompiles::{FeeManagerError, IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError},
+    precompiles::{
+        FeeManagerError, IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
+    },
 };
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
     account_keychain::{AccountKeychain, TokenLimit, authorizeKeyCall},
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
@@ -679,7 +680,8 @@ where
 
                 // Now authorize the key in the precompile
                 let internals = EvmInternals::new(journal, block);
-                let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
+                let mut storage_provider =
+                    EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
 
                 let mut keychain = AccountKeychain::new(
                     &mut storage_provider,
@@ -729,6 +731,7 @@ where
 
         // Create storage provider wrapper around journal for fee manager
         let internals = EvmInternals::new(journal, &block);
+        let beneficiary = internals.block_env().beneficiary();
         let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
 
         // For Keychain signatures, validate that the keychain is authorized in the precompile
@@ -1013,6 +1016,7 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     signature: &AASignature,
     access_list: Option<impl Iterator<Item = &'a AccessListItem>>,
     aa_authorization_list: &[tempo_primitives::transaction::AASignedAuthorization],
+    spec: &tempo_chainspec::hardfork::TempoHardfork,
 ) -> Result<InitialAndFloorGas, TempoInvalidTransaction> {
     let mut gas = InitialAndFloorGas::default();
 
@@ -1020,8 +1024,9 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     gas.initial_gas += 21_000;
 
     // 2. Signature verification gas
+    let spec_id: RevmSpecId = (*spec).into();
     gas.initial_gas +=
-        aa_signature_verification_gas(signature, spec.is_enabled_in(RevmSpecId::ISTANBUL));
+        aa_signature_verification_gas(signature, spec_id.is_enabled_in(RevmSpecId::ISTANBUL));
 
     // 3. Per-call overhead: cold account access
     // if the `to` address has not appeared in the call batch before.
@@ -1033,7 +1038,7 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     for aa_auth in aa_authorization_list {
         gas.initial_gas += aa_signature_verification_gas(
             aa_auth.signature(),
-            spec.is_enabled_in(RevmSpecId::ISTANBUL),
+            spec_id.is_enabled_in(RevmSpecId::ISTANBUL),
         );
     }
 
@@ -1123,11 +1128,13 @@ where
     }
 
     // Calculate batch intrinsic gas using helper
+    let spec = evm.ctx_ref().cfg().spec;
     let mut batch_gas = calculate_aa_batch_intrinsic_gas(
         calls,
         &aa_env.signature,
         tx.access_list(),
         &aa_env.aa_authorization_list,
+        &spec,
     )?;
 
     if evm.ctx.cfg.is_eip7623_disabled() {
@@ -1384,11 +1391,13 @@ mod tests {
         };
 
         // Calculate AA gas
+        let spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let aa_gas = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>, // no access list
             &aa_env.aa_authorization_list,
+            &spec,
         )
         .unwrap();
 
@@ -1445,11 +1454,13 @@ mod tests {
             ..Default::default()
         };
 
+        let spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let gas = calculate_aa_batch_intrinsic_gas(
             &calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
+            &spec,
         )
         .unwrap();
 
@@ -1500,11 +1511,13 @@ mod tests {
             ..Default::default()
         };
 
+        let tempo_spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let gas = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
+            &tempo_spec,
         )
         .unwrap();
 
@@ -1544,11 +1557,13 @@ mod tests {
             ..Default::default()
         };
 
+        let tempo_spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let gas = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
+            &tempo_spec,
         )
         .unwrap();
 
@@ -1586,11 +1601,13 @@ mod tests {
             ..Default::default()
         };
 
+        let tempo_spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let res = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
+            &tempo_spec,
         );
 
         assert_eq!(
@@ -1625,11 +1642,13 @@ mod tests {
         };
 
         // Test without access list
+        let tempo_spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let gas = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
+            &tempo_spec,
         )
         .unwrap();
 
@@ -1701,11 +1720,13 @@ mod tests {
             ..Default::default()
         };
 
+        let tempo_spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let gas = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
+            &tempo_spec,
         )
         .unwrap();
 

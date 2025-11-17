@@ -1,19 +1,23 @@
 use super::{AccountKeychain, IAccountKeychain};
-use crate::{Precompile, mutate_void, storage::PrecompileStorageProvider, view};
+use crate::{Precompile, input_cost, mutate_void, storage::PrecompileStorageProvider, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 impl<S: PrecompileStorageProvider> Precompile for AccountKeychain<'_, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+        self.storage
+            .deduct_gas(input_cost(calldata.len()))
+            .map_err(|_| PrecompileError::OutOfGas)?;
+
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".to_string())
+                PrecompileError::Other("Invalid input: missing function selector".into())
             })?
             .try_into()
             .unwrap();
 
-        match selector {
+        let result = match selector {
             IAccountKeychain::authorizeKeyCall::SELECTOR => {
                 mutate_void::<IAccountKeychain::authorizeKeyCall>(
                     calldata,
@@ -54,9 +58,12 @@ impl<S: PrecompileStorageProvider> Precompile for AccountKeychain<'_, S> {
                 })
             }
 
-            _ => Err(PrecompileError::Other(
-                "Unknown function selector".to_string(),
-            )),
-        }
+            _ => Err(PrecompileError::Other("Unknown function selector".into())),
+        };
+
+        result.map(|mut res| {
+            res.gas_used = self.storage.gas_used();
+            res
+        })
     }
 }

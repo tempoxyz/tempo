@@ -11,10 +11,7 @@ use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS, LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     account_keychain::{AccountKeychain, getTransactionKeyCall},
     error::{Result, TempoPrecompileError},
-    storage::{
-        PrecompileStorageProvider,
-        slots::{double_mapping_slot, mapping_slot},
-    },
+    storage::PrecompileStorageProvider,
     tip20::{
         rewards::{RewardStream, UserRewardInfo},
         roles::DEFAULT_ADMIN_ROLE,
@@ -785,11 +782,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ///
     /// This method uses the AccountKeychain precompile to check and update
     /// spending limits if the transaction is using an access key.
-    fn check_spending_limit(
-        &mut self,
-        account: &Address,
-        amount: U256,
-    ) -> Result<(), TempoPrecompileError> {
+    fn check_spending_limit(&mut self, account: &Address, amount: U256) -> Result<()> {
         // Create AccountKeychain instance to read transaction key
         let mut keychain = AccountKeychain::new(self.storage, ACCOUNT_KEYCHAIN_ADDRESS);
 
@@ -802,22 +795,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         }
 
         // Verify and update spending limits for this access key
-        keychain.verify_and_update_spending(
-            account,
-            &transaction_key,
-            &self.token_address,
-            amount,
-        )?;
+        keychain.verify_and_update_spending(account, &transaction_key, &self.address, amount)?;
 
         Ok(())
     }
 
-    fn _transfer(
-        &mut self,
-        from: Address,
-        to: Address,
-        amount: U256,
-    ) -> Result<(), TempoPrecompileError> {
+    fn _transfer(&mut self, from: Address, to: Address, amount: U256) -> Result<()> {
         let from_balance = self.get_balance(from)?;
         if amount > from_balance {
             return Err(

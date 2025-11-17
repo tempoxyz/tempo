@@ -210,9 +210,9 @@ impl NoncePrecompile {
 
 pub struct AccountKeychainPrecompile;
 impl AccountKeychainPrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
+    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         tempo_precompile!("AccountKeychain", |input| AccountKeychain::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, chain_id),
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec),
             ACCOUNT_KEYCHAIN_ADDRESS
         ))
     }

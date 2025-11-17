@@ -612,7 +612,7 @@ fn create_basic_aa_tx(chain_id: u64, nonce: u64, calls: Vec<Call>, gas_limit: u6
         calls,
         nonce_key: U256::ZERO,
         nonce,
-        fee_token: None,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         valid_after: None,
@@ -960,18 +960,8 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-<<<<<<< HEAD
-        nonce_key: U256::ZERO,              // Protocol nonce
-        nonce: 0,                           // First transaction
-        fee_token: Some(DEFAULT_FEE_TOKEN), // Will use DEFAULT_FEE_TOKEN from genesis
-        fee_payer_signature: None,
-        valid_before: Some(u64::MAX),
-        ..Default::default()
-    };
-=======
         200_000, // Higher gas limit for WebAuthn verification
     );
->>>>>>> a394353a (chore: cleanup and negative tests)
 
     println!("Created AA transaction for WebAuthn signature");
 
