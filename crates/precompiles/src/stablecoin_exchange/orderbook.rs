@@ -549,7 +549,10 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), i16::MIN);
         // Verify MIN_PRICE = PRICE_SCALE + i16::MIN
-        assert_eq!(MIN_PRICE, (PRICE_SCALE as i32 + i16::MIN as i32) as u32);
+        assert_eq!(
+            MIN_PRICE_PRE_MODERATO,
+            (PRICE_SCALE as i32 + i16::MIN as i32) as u32
+        );
     }
 
     #[test]
@@ -559,7 +562,32 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), i16::MAX);
         // Verify MAX_PRICE = PRICE_SCALE + i16::MAX
-        assert_eq!(MAX_PRICE, (PRICE_SCALE as i32 + i16::MAX as i32) as u32);
+        assert_eq!(
+            MAX_PRICE_PRE_MODERATO,
+            (PRICE_SCALE as i32 + i16::MAX as i32) as u32
+        );
+    }
+
+    #[test]
+    fn test_price_to_tick_at_min_boundary_post_moderato() {
+        let result = price_to_tick(MIN_PRICE_POST_MODERATO);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), i16::MIN);
+        assert_eq!(
+            MIN_PRICE_POST_MODERATO,
+            (PRICE_SCALE as i32 + MIN_TICK as i32) as u32
+        );
+    }
+
+    #[test]
+    fn test_price_to_tick_at_max_boundary_post_moderato() {
+        let result = price_to_tick(MAX_PRICE_POST_MODERATO);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), i16::MAX);
+        assert_eq!(
+            MAX_PRICE_POST_MODERATO,
+            (PRICE_SCALE as i32 + MAX_TICK as i32) as u32
+        );
     }
 
     #[test]

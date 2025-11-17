@@ -1631,18 +1631,24 @@ mod tests {
 
         // Valid prices should succeed
         assert_eq!(exchange.price_to_tick(orderbook::PRICE_SCALE)?, 0);
-        assert_eq!(exchange.price_to_tick(orderbook::MIN_PRICE)?, i16::MIN);
-        assert_eq!(exchange.price_to_tick(orderbook::MAX_PRICE)?, i16::MAX);
+        assert_eq!(
+            exchange.price_to_tick(orderbook::MIN_PRICE_POST_MODERATO)?,
+            MIN_TICK
+        );
+        assert_eq!(
+            exchange.price_to_tick(orderbook::MAX_PRICE_POST_MODERATO)?,
+            MAX_TICK
+        );
 
         // Out of bounds prices should fail
-        let result = exchange.price_to_tick(orderbook::MIN_PRICE - 1);
+        let result = exchange.price_to_tick(orderbook::MIN_PRICE_POST_MODERATO - 1);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
             TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::TickOutOfBounds(_))
         ));
 
-        let result = exchange.price_to_tick(orderbook::MAX_PRICE + 1);
+        let result = exchange.price_to_tick(orderbook::MAX_PRICE_POST_MODERATO + 1);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -1660,20 +1666,26 @@ mod tests {
 
         // Valid prices should succeed
         assert_eq!(exchange.price_to_tick(orderbook::PRICE_SCALE)?, 0);
-        assert_eq!(exchange.price_to_tick(orderbook::MIN_PRICE)?, i16::MIN);
-        assert_eq!(exchange.price_to_tick(orderbook::MAX_PRICE)?, i16::MAX);
-
-        // Out of bounds prices should also succeed (legacy behavior)
-        let tick = exchange.price_to_tick(orderbook::MIN_PRICE - 1)?;
         assert_eq!(
-            tick,
-            ((orderbook::MIN_PRICE - 1) as i32 - orderbook::PRICE_SCALE as i32) as i16
+            exchange.price_to_tick(orderbook::MIN_PRICE_PRE_MODERATO)?,
+            i16::MIN
+        );
+        assert_eq!(
+            exchange.price_to_tick(orderbook::MAX_PRICE_PRE_MODERATO)?,
+            i16::MAX
         );
 
-        let tick = exchange.price_to_tick(orderbook::MAX_PRICE + 1)?;
+        // Out of bounds prices should also succeed (legacy behavior)
+        let tick = exchange.price_to_tick(orderbook::MIN_PRICE_PRE_MODERATO - 1)?;
         assert_eq!(
             tick,
-            ((orderbook::MAX_PRICE + 1) as i32 - orderbook::PRICE_SCALE as i32) as i16
+            ((orderbook::MIN_PRICE_PRE_MODERATO - 1) as i32 - orderbook::PRICE_SCALE as i32) as i16
+        );
+
+        let tick = exchange.price_to_tick(orderbook::MAX_PRICE_PRE_MODERATO + 1)?;
+        assert_eq!(
+            tick,
+            ((orderbook::MAX_PRICE_PRE_MODERATO + 1) as i32 - orderbook::PRICE_SCALE as i32) as i16
         );
 
         Ok(())
