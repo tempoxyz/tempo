@@ -1310,7 +1310,7 @@ mod tests {
         let admin = Address::random();
         let token_address = Address::random();
 
-        let mut token = TIP20Token::new(token_address, &mut storage);
+        let mut token = TIP20Token::new(1, &mut storage);
         token.initialize("TestToken", "TEST", "USD", Address::ZERO, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
