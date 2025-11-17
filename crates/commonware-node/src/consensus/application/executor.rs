@@ -296,8 +296,7 @@ where
                     .await;
             }
             Command::Finalize(finalized) => {
-                // let _ = self.forward_finalized(*update, response, cause).await;
-                let _ = self.finalize(cause, finalized).await;
+                let _ = self.finalize(cause, *finalized).await;
             }
         }
     }
@@ -551,7 +550,7 @@ impl ExecutorMailbox {
         self.inner
             .unbounded_send(Message {
                 cause: Span::current(),
-                command: Command::Finalize(finalized),
+                command: Command::Finalize(finalized.into()),
             })
             .wrap_err("failed sending finalization request to agent, this means it exited")
     }
@@ -568,5 +567,5 @@ enum Command {
     /// Requests the agent to set the head of the canonical chain to `digest`.
     CanonicalizeHead { height: u64, digest: Digest },
     /// Requests the agent to forward a finalization event to the execution layer.
-    Finalize(super::ingress::Finalized),
+    Finalize(Box<super::ingress::Finalized>),
 }
