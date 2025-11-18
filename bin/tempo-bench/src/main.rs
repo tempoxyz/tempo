@@ -16,5 +16,8 @@ async fn main() -> eyre::Result<()> {
 
     match args.cmd {
         TempoBenchSubcommand::RunMaxTps(cmd) => cmd.run().await,
+        TempoBenchSubcommand::Opcodes(cmd) => cmd.run().await,
+        TempoBenchSubcommand::StateBloat(cmd) => cmd.run().await,
+        TempoBenchSubcommand::Precompiles(cmd) => cmd.run().await,
     }
 }
