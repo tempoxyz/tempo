@@ -95,42 +95,11 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
         // Compute the hash internally from the provided message
         let hash = alloy::primitives::keccak256(&message);
 
-        // taken from precompile gas cost
-        // https://github.com/bluealloy/revm/blob/a1fdb9d9e98f9dd14b7577edbad49c139ab53b16/crates/precompile/src/secp256k1.rs#L34
-        self.storage.deduct_gas(3_000)?;
-        let (sig, v) = validate_signature(&signature)?;
-
-        let signer = match ecrecover(&sig, v, &hash) {
-            Ok(recovered_addr) => Address::from_word(recovered_addr),
-            Err(_) => {
-                return Err(TIPAccountRegistrarError::invalid_signature().into());
-            }
-        };
-
-        let account_info = self.storage.get_account_info(signer)?;
-
-        if account_info.nonce != 0 {
-            return Err(TIPAccountRegistrarError::nonce_not_zero().into());
-        }
-
-        if !account_info.is_empty_code_hash() {
-            return Err(TIPAccountRegistrarError::code_not_empty().into());
-        }
-
-        // EIP-7702 gas cost
-        // can be discussed to lower this down as this cost i think encompasses the bytes of authorization in EIP-7702 tx.
-        let cost = if account_info.is_empty() {
-            revm::primitives::eip7702::PER_EMPTY_ACCOUNT_COST
-        } else {
-            revm::primitives::eip7702::PER_AUTH_BASE_COST
-        };
-        self.storage.deduct_gas(cost)?;
-
-        // Delegate the account to the default 7702 implementation
-        self.storage
-            .set_code(signer, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS))?;
-
-        Ok(signer)
+        // Reuse v1 logic with the computed hash
+        self.delegate_to_default_v1(ITipAccountRegistrar::delegateToDefault_0Call {
+            hash,
+            signature,
+        })
     }
 }
 
