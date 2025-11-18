@@ -8,7 +8,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Ident, Type};
 
-use crate::FieldKind;
+use crate::{FieldInfo, FieldKind};
 
 /// Helper for generating packing constant identifiers
 pub(crate) struct PackingConstants(String);
@@ -24,32 +24,21 @@ impl PackingConstants {
         format_ident!("{}", &self.0)
     }
 
-    /// The `_SLOT` suffixed constant (usize slot, used by `Storable` macro)
-    pub(crate) fn slot_usize(&self) -> Ident {
+    /// The `_LOC` suffixed constant
+    pub(crate) fn location(&self) -> Ident {
         let span = proc_macro2::Span::call_site();
-        Ident::new(&format!("{}_SLOT", self.0), span)
+        Ident::new(&format!("{}_LOC", self.0), span)
     }
 
-    /// The `OFFSET` constant identifier
+    /// The `_OFFSET` constant identifier
     pub(crate) fn offset(&self) -> Ident {
         let span = proc_macro2::Span::call_site();
         Ident::new(&format!("{}_OFFSET", self.0), span)
     }
 
-    /// The `BYTES` constant identifier
-    pub(crate) fn bytes(&self) -> Ident {
-        let span = proc_macro2::Span::call_site();
-        Ident::new(&format!("{}_BYTES", self.0), span)
-    }
-
-    /// Returns all three constant identifiers as a tuple (slot, offset, bytes)
-    pub(crate) fn into_tuple(self) -> (Ident, Ident, Ident) {
-        (self.slot(), self.offset(), self.bytes())
-    }
-
-    /// Returns all three constant identifiers as a tuple (slot_usize, offset, bytes)
-    pub(crate) fn into_tuple_usize(self) -> (Ident, Ident, Ident) {
-        (self.slot_usize(), self.offset(), self.bytes())
+    /// Returns the constant identifiers required by both macros (slot, offset)
+    pub(crate) fn into_tuple(self) -> (Ident, Ident) {
+        (self.slot(), self.offset())
     }
 }
 
@@ -92,34 +81,6 @@ pub(crate) struct LayoutField<'a> {
     pub assigned_slot: SlotAssignment,
 }
 
-/// Helper trait to extract field information needed for layout IR construction.
-///
-/// This allows `allocate_slots` to work with different field types from
-/// different macros (e.g., `FieldInfo` from `#[contract]`, or tuples from `#[derive(Storable)]`).
-pub(crate) trait FieldInfoExt {
-    fn field_name(&self) -> &Ident;
-    fn field_type(&self) -> &Type;
-    fn manual_slot(&self) -> Option<U256>;
-    fn base_slot_attr(&self) -> Option<U256>;
-}
-
-/// Implementation for simple (name, type) tuples used by the `Storable` derive macro.
-/// These fields never have manual slot assignments.
-impl<'a> FieldInfoExt for (&'a Ident, &'a Type) {
-    fn field_name(&self) -> &Ident {
-        self.0
-    }
-    fn field_type(&self) -> &Type {
-        self.1
-    }
-    fn manual_slot(&self) -> Option<U256> {
-        None
-    }
-    fn base_slot_attr(&self) -> Option<U256> {
-        None
-    }
-}
-
 /// Build layout IR from field information.
 ///
 /// This function performs slot allocation and packing decisions, returning
@@ -129,25 +90,17 @@ impl<'a> FieldInfoExt for (&'a Ident, &'a Type) {
 ///
 /// The IR captures the *structure* of the layout (which fields share base slots,
 /// which are manually assigned, etc.) using the `SlotAssignment` enum.
-pub(crate) fn allocate_slots<'a, F>(fields: &'a [F]) -> syn::Result<Vec<LayoutField<'a>>>
-where
-    F: FieldInfoExt,
-{
+pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<LayoutField<'_>>> {
     let mut result = Vec::with_capacity(fields.len());
     let mut current_base_slot = U256::ZERO;
 
     for field in fields.iter() {
-        let name = field.field_name();
-        let ty = field.field_type();
-        let manual_slot = field.manual_slot();
-        let base_slot_attr = field.base_slot_attr();
-        let kind = classify_field_type(ty)?;
+        let kind = classify_field_type(&field.ty)?;
 
-        // Determine slot assignment
-        let assigned_slot = if let Some(explicit) = manual_slot {
-            // Explicit fixed slot, doesn't affect auto-assignment chain
+        // Explicit fixed slot, doesn't affect auto-assignment chain
+        let assigned_slot = if let Some(explicit) = field.slot {
             SlotAssignment::Manual(explicit)
-        } else if let Some(new_base) = base_slot_attr {
+        } else if let Some(new_base) = field.base_slot {
             // Explicit base slot, resets auto-assignment chain
             current_base_slot = new_base;
             SlotAssignment::Auto {
@@ -160,8 +113,8 @@ where
         };
 
         result.push(LayoutField {
-            name,
-            ty,
+            name: &field.name,
+            ty: &field.ty,
             kind,
             assigned_slot,
         });
@@ -175,19 +128,17 @@ where
 /// This function generates compile-time constants (`<FIELD>`, `<FIELD>_OFFSET`, `<FIELD>_BYTES`)
 /// for slot assignments, offsets, and byte sizes based on the layout IR using field-name-based naming.
 /// Slot constants (`<FIELD>`) are generated as `U256` types, while offset and bytes constants use `usize`.
-pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>]) -> TokenStream {
+pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bool) -> TokenStream {
     let mut constants = TokenStream::new();
-    let mut last_auto: Option<&LayoutField<'_>> = None;
+    let mut current_base_slot: Option<&LayoutField<'_>> = None;
 
     for field in fields {
+        let ty = field.ty;
         let consts = PackingConstants::new(field.name);
-        let (slot_const, offset_const, bytes_const) = consts.into_tuple();
+        let (loc_const, (slot_const, offset_const)) = (consts.location(), consts.into_tuple());
 
         // Generate byte count constants for each field
-        let byte_count_expr = gen_byte_count_expr(field.ty, field.kind.is_mapping());
-        constants.extend(quote! {
-            pub const #bytes_const: usize = #byte_count_expr;
-        });
+        let bytes_expr = quote! { <#ty as crate::storage::StorableType>::BYTES };
 
         // Generate slot and offset constants for each field
         let (slot_expr, offset_expr) = match &field.assigned_slot {
@@ -195,58 +146,64 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>]) -> TokenStream {
             SlotAssignment::Manual(manual_slot) => {
                 let hex_value = format!("{manual_slot}_U256");
                 let slot_lit = syn::LitInt::new(&hex_value, proc_macro2::Span::call_site());
-                let slot_expr =
-                    quote! { ::alloy::primitives::U256 = ::alloy::primitives::uint!(#slot_lit) };
+                let slot_expr = quote! { ::alloy::primitives::uint!(#slot_lit) };
                 (slot_expr, quote! { 0 })
             }
             // Auto-assignment computes slot/offset using const expressions
             SlotAssignment::Auto { base_slot, .. } => {
-                let output = if let Some(last_auto) = last_auto {
+                let output = if let Some(current_base) = current_base_slot {
                     // Fields that share the same base compute their slots based on the previous field
-                    if last_auto.assigned_slot.ref_slot() == field.assigned_slot.ref_slot() {
-                        let (prev_slot, prev_offset, _) =
-                            PackingConstants::new(last_auto.name).into_tuple();
-                        let (slot_expr_inner, offset_expr) = gen_slot_packing_logic(
-                            last_auto.ty,
+                    if current_base.assigned_slot.ref_slot() == field.assigned_slot.ref_slot() {
+                        let (prev_slot, prev_offset) =
+                            PackingConstants::new(current_base.name).into_tuple();
+                        gen_slot_packing_logic(
+                            current_base.ty,
                             field.ty,
                             quote! { #prev_slot },
                             quote! { #prev_offset },
-                            last_auto.kind.is_mapping(),
-                            field.kind.is_mapping(),
-                        );
-
-                        (
-                            quote! { ::alloy::primitives::U256 = #slot_expr_inner },
-                            offset_expr,
                         )
                     }
                     // If a new base is adopted, start from the base slot and offset 0
                     else {
                         let limbs = *base_slot.as_limbs();
                         (
-                            quote! { ::alloy::primitives::U256 = ::alloy::primitives::U256::from_limbs([#(#limbs),*]) },
+                            quote! { ::alloy::primitives::U256::from_limbs([#(#limbs),*]) },
                             quote! { 0 },
                         )
                     }
                 }
                 // First field always starts at slot 0 and offset 0
                 else {
-                    (
-                        quote! { ::alloy::primitives::U256 = ::alloy::primitives::U256::ZERO },
-                        quote! { 0 },
-                    )
+                    (quote! { ::alloy::primitives::U256::ZERO }, quote! { 0 })
                 };
                 // update cache
-                last_auto = Some(field);
+                current_base_slot = Some(field);
                 output
             }
         };
 
         // Generate slot constant without suffix (U256) and offset constant (usize)
         constants.extend(quote! {
-            pub const #slot_const: #slot_expr;
+            pub const #slot_const: ::alloy::primitives::U256 = #slot_expr;
             pub const #offset_const: usize = #offset_expr;
         });
+
+        // For the `Storable` macro, also generate the location constant
+        // NOTE: `slot_const` refers to the slot offset of the struct field relative to the struct's base slot.
+        // Because of that it is safe to use the usize -> U256 conversion (a struct will never have 2**64 fields).
+        if gen_location {
+            constants.extend(quote! {
+                pub const #loc_const: crate::storage::packing::FieldLocation =
+                    crate::storage::packing::FieldLocation::new(#slot_const.as_limbs()[0] as usize, #offset_const, #bytes_expr);
+            });
+        }
+
+        // generate constants used in tests for solidity layout compatibility assertions
+        #[cfg(debug_assertions)]
+        {
+            let bytes_const = format_ident!("{slot_const}_BYTES");
+            constants.extend(quote! { pub const #bytes_const: usize = #bytes_expr; });
+        }
     }
 
     constants
@@ -278,20 +235,6 @@ pub(crate) fn classify_field_type(ty: &Type) -> syn::Result<FieldKind<'_>> {
     Ok(FieldKind::Slot(ty))
 }
 
-/// Generate byte count expression for a field type.
-///
-/// Returns a const expression that evaluates to the byte size of the type.
-/// For mapping types, returns `32` directly to avoid type resolution issues.
-pub(crate) fn gen_byte_count_expr(ty: &Type, is_mapping: bool) -> TokenStream {
-    if is_mapping {
-        // Mappings: hardcode 32 bytes to avoid type resolution issues
-        // TODO(rusowsky): remove once `SlotId` is dropped
-        quote! { 32 }
-    } else {
-        quote! { <#ty as crate::storage::StorableType>::BYTES }
-    }
-}
-
 /// Generate slot packing decision logic.
 ///
 /// This function generates const expressions that determine whether two consecutive
@@ -303,31 +246,11 @@ pub(crate) fn gen_slot_packing_logic(
     curr_ty: &Type,
     prev_slot_expr: TokenStream,
     prev_offset_expr: TokenStream,
-    is_prev_mapping: bool,
-    is_curr_mapping: bool,
 ) -> (TokenStream, TokenStream) {
     // Helper for converting SLOTS to U256
     let prev_layout_slots = quote! {
         ::alloy::primitives::U256::from_limbs([<#prev_ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
     };
-
-    // If previous field is a mapping, current field starts on next slot
-    // TODO(rusowsky): Necessary to avoid type resolution issues. Remove once `SlotId` is dropped
-    if is_prev_mapping {
-        let slot_expr = quote! {
-            #prev_slot_expr.checked_add(::alloy::primitives::U256::ONE).expect("slot overflow")
-        };
-        return (slot_expr, quote! { 0 });
-    }
-
-    // If current field is a mapping, it must start on a new slot
-    // TODO(rusowsky): Necessary to avoid type resolution issues. Remove once `SlotId` is dropped
-    if is_curr_mapping {
-        let slot_expr = quote! {{
-            #prev_slot_expr.checked_add(#prev_layout_slots).expect("slot overflow")
-        }};
-        return (slot_expr, quote! { 0 });
-    }
 
     // Compute packing decision at compile-time
     let can_pack_expr = quote! {
@@ -387,7 +310,7 @@ pub(crate) fn gen_layout_ctx_expr(
     }
 }
 
-// TODO(rusowsky): fully embrace `fn gen_layout_ctx_expr` to reduce has usage.
+// TODO(rusowsky): fully embrace `fn gen_layout_ctx_expr` to reduce gas usage.
 // Note that this requires a hardfork and must be properly coordinated.
 
 /// Generate a `LayoutCtx` expression for accessing a field.
@@ -415,28 +338,6 @@ pub(crate) fn gen_layout_ctx_expr_inefficient(
     }
 }
 
-/// Generate a single SlotId type definition.
-///
-/// This creates a marker type that implements the `SlotId` trait, which is used
-/// to reference storage slots in the generated code.
-pub(crate) fn gen_slot_id_type(
-    slot_id_name: &str,
-    field_name: &Ident,
-    slot_const_name: &str,
-) -> TokenStream {
-    let slot_id_ident = format_ident!("{}", slot_id_name);
-    let slot_const = format_ident!("{}", slot_const_name);
-
-    quote! {
-        #[doc = concat!("Storage slot for `", stringify!(#field_name), "` field")]
-        pub struct #slot_id_ident;
-
-        impl crate::storage::SlotId for #slot_id_ident {
-            const SLOT: ::alloy::primitives::U256 = #slot_const;
-        }
-    }
-}
-
 /// Generate collision detection debug assertions for a field against all other fields.
 ///
 /// This function generates runtime checks that verify storage slots don't overlap.
@@ -446,21 +347,16 @@ pub(crate) fn gen_collision_check_fn(
     idx: usize,
     field: &LayoutField<'_>,
     all_fields: &[LayoutField<'_>],
-    slot_id_name_fn: impl Fn(&Ident) -> String,
 ) -> Option<(Ident, TokenStream)> {
-    fn gen_slot_count_expr(kind: &FieldKind<'_>, ty: &Type) -> TokenStream {
-        if kind.is_mapping() {
-            quote! { ::alloy::primitives::U256::ONE }
-        } else {
-            quote! { ::alloy::primitives::U256::from_limbs([<#ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0]) }
-        }
+    fn gen_slot_count_expr(ty: &Type) -> TokenStream {
+        quote! { ::alloy::primitives::U256::from_limbs([<#ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0]) }
     }
 
     // Only check explicit slot assignments against other fields
     if let SlotAssignment::Manual(_) = field.assigned_slot {
-        let slot_id = format_ident!("{}", slot_id_name_fn(field.name));
         let field_name = field.name;
         let check_fn_name = format_ident!("__check_collision_{}", field_name);
+        let slot_const = PackingConstants::new(field.name).slot();
 
         let mut checks = TokenStream::new();
 
@@ -470,19 +366,19 @@ pub(crate) fn gen_collision_check_fn(
                 continue;
             }
 
-            let other_slot_id = format_ident!("{}", slot_id_name_fn(other_field.name));
+            let other_slot_const = PackingConstants::new(other_field.name).slot();
             let other_name = other_field.name;
 
             // Generate slot count expressions
-            let current_count_expr = gen_slot_count_expr(&field.kind, field.ty);
-            let other_count_expr = gen_slot_count_expr(&other_field.kind, other_field.ty);
+            let current_count_expr = gen_slot_count_expr(field.ty);
+            let other_count_expr = gen_slot_count_expr(other_field.ty);
 
             // Generate runtime assertion that checks for overlap
             checks.extend(quote! {
                 {
-                    let slot = <#slot_id as crate::storage::SlotId>::SLOT;
+                    let slot = #slot_const;
                     let slot_end = slot + #current_count_expr;
-                    let other_slot = <#other_slot_id as crate::storage::SlotId>::SLOT;
+                    let other_slot = #other_slot_const;
                     let other_end = other_slot + #other_count_expr;
 
                     let no_overlap = slot_end.le(&other_slot) || other_end.le(&slot);

@@ -10,7 +10,7 @@ pub use tempo_contracts::precompiles::{
 use crate::{
     DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::{PrecompileStorageProvider, Slot, VecSlotExt},
+    storage::{Mapping, PrecompileStorageProvider, Slot, VecSlotExt},
     tip_fee_manager::amm::Pool,
     tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
 };
@@ -21,7 +21,7 @@ use revm::state::Bytecode;
 use tempo_precompiles_macros::contract;
 
 /// Helper type to easily interact with the `tokens_with_fees` array
-type TokensWithFees = Slot<Vec<Address>, TokensWithFeesSlot>;
+type TokensWithFees = Slot<Vec<Address>>;
 
 #[contract]
 pub struct TipFeeManager {
@@ -255,7 +255,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
 
     /// Add a token to the tokens with fees array
     fn add_token_to_fees_array(&mut self, token: Address) -> Result<()> {
-        TokensWithFees::push(self, token)
+        TokensWithFees::new(slots::TOKENS_WITH_FEES).push(self, token)
     }
 
     /// Drain all tokens with fees by popping from the back until empty
@@ -263,7 +263,8 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     /// Also sets token_in_fees_array to false for each token
     fn drain_tokens_with_fees(&mut self) -> Result<Vec<Address>> {
         let mut tokens = Vec::new();
-        while let Some(token) = TokensWithFees::pop(self)? {
+        let tokens_with_fees = TokensWithFees::new(slots::TOKENS_WITH_FEES);
+        while let Some(token) = tokens_with_fees.pop(self)? {
             tokens.push(token);
             if self.storage.spec().is_moderato() {
                 self.sstore_token_in_fees_array(token, false)?;

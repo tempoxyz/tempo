@@ -5,6 +5,7 @@ use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Fields, Ident, Type};
 
 use crate::{
+    FieldInfo,
     packing::{self, LayoutField, PackingConstants},
     storable_primitives::gen_struct_arrays,
     utils::{extract_mapping_types, extract_storable_array_sizes, to_snake_case},
@@ -46,10 +47,15 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         ));
     }
 
-    // Extract field names and types
+    // Extract field names and types into `FieldInfo` structs
     let field_infos: Vec<_> = fields
         .iter()
-        .map(|f| (f.ident.as_ref().unwrap(), &f.ty))
+        .map(|f| FieldInfo {
+            name: f.ident.as_ref().unwrap().clone(),
+            ty: f.ty.clone(),
+            slot: None,
+            base_slot: None,
+        })
         .collect();
 
     // Build layout IR using the unified function
@@ -61,24 +67,24 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
 
     // Classify fields to figure out which impl `Storable`
     let len = fields.len();
-    let (direct_fields, direct_names, mapping_names) = field_infos.iter().enumerate().fold(
+    let (direct_fields, direct_names, mapping_names) = field_infos.iter().fold(
         (Vec::with_capacity(len), Vec::with_capacity(len), Vec::new()),
-        |mut out, (idx, (name, ty))| {
-            if extract_mapping_types(ty).is_none() {
+        |mut out, field_info| {
+            if extract_mapping_types(&field_info.ty).is_none() {
                 // fields with direct slot allocation
-                out.0.push((idx, *name, *ty));
-                out.1.push(*name);
+                out.0.push((&field_info.name, &field_info.ty));
+                out.1.push(&field_info.name);
             } else {
                 // fields with indirect slot allocation (mappings)
-                out.2.push(*name);
+                out.2.push(&field_info.name);
             }
             out
         },
     );
 
     // Generate load/store implementations for scalar fields only
-    let load_impl = gen_load_impl(&direct_fields, &mod_ident);
-    let store_impl = gen_store_impl(&direct_fields, &mod_ident);
+    let load_impl = gen_storage_op_impl(&direct_fields, &mod_ident, true);
+    let store_impl = gen_storage_op_impl(&direct_fields, &mod_ident, false);
     let to_evm_words_impl = gen_to_evm_words_impl(&direct_fields, &mod_ident);
     let from_evm_words_impl = gen_from_evm_words_impl(&direct_fields, &mod_ident);
 
@@ -158,27 +164,15 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
 /// Generate a compile-time module that calculates the packing layout from IR.
 fn gen_packing_module_from_ir(fields: &[LayoutField<'_>], mod_ident: &Ident) -> TokenStream {
     // Generate constants using the unified IR-based function (generates <FIELD>: U256)
-    let packing_constants = packing::gen_constants_from_ir(fields);
-
-    // Generate Storable-specific usize version of the slot constants
-    let slot_usize_constants = fields.iter().map(|field| {
-        let consts = PackingConstants::new(field.name);
-        let (slot_u256, slot_usize) = (consts.slot(), consts.slot_usize());
-        quote! {
-            pub const #slot_usize: usize = #slot_u256.as_limbs()[0] as usize;
-        }
-    });
-
     let last_field = &fields[fields.len() - 1];
     let last_slot_const = PackingConstants::new(last_field.name).slot();
+    let packing_constants = packing::gen_constants_from_ir(fields, true);
 
     quote! {
         pub mod #mod_ident {
             use super::*;
 
             #packing_constants
-            #(#slot_usize_constants)*
-
             pub const SLOT_COUNT: usize = (#last_slot_const.saturating_add(::alloy::primitives::U256::ONE)).as_limbs()[0] as usize;
         }
     }
@@ -187,21 +181,21 @@ fn gen_packing_module_from_ir(fields: &[LayoutField<'_>], mod_ident: &Ident) -> 
 /// Helper to compute prev and next slot constant references for a field at a given index.
 fn get_neighbor_slot_refs(
     idx: usize,
-    indexed_fields: &[(usize, &Ident, &Type)],
+    fields: &[(&Ident, &Type)],
     packing: &Ident,
 ) -> (Option<TokenStream>, Option<TokenStream>) {
     let prev_slot_ref = if idx > 0 {
-        let prev_name = indexed_fields[idx - 1].1;
-        let prev_slot = PackingConstants::new(prev_name).slot_usize();
-        Some(quote! { #packing::#prev_slot })
+        let prev_name = fields[idx - 1].0;
+        let prev_slot = PackingConstants::new(prev_name).location();
+        Some(quote! { #packing::#prev_slot.offset_slots })
     } else {
         None
     };
 
-    let next_slot_ref = if idx + 1 < indexed_fields.len() {
-        let next_name = indexed_fields[idx + 1].1;
-        let next_slot = PackingConstants::new(next_name).slot_usize();
-        Some(quote! { #packing::#next_slot })
+    let next_slot_ref = if idx + 1 < fields.len() {
+        let next_name = fields[idx + 1].0;
+        let next_slot = PackingConstants::new(next_name).location();
+        Some(quote! { #packing::#next_slot.offset_slots })
     } else {
         None
     };
@@ -209,104 +203,71 @@ fn get_neighbor_slot_refs(
     (prev_slot_ref, next_slot_ref)
 }
 
-/// Generate the `fn load()` implementation with unpacking logic.
-/// Accepts indexed fields where the usize is the original field index in the struct.
-fn gen_load_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> TokenStream {
-    let load_fields = indexed_fields
+/// Generate either `fn load()` or `fn store()` implementation.
+///
+/// If `is_load` is true, generates load implementation with unpacking logic.
+/// If `is_load` is false, generates store implementation with packing logic.
+fn gen_storage_op_impl(fields: &[(&Ident, &Type)], packing: &Ident, is_load: bool) -> TokenStream {
+    let field_ops = fields
         .iter()
         .enumerate()
-        .map(|(idx, (_orig_idx, name, ty))| {
-            let consts = PackingConstants::new(name);
-            let (slot_const, offset_const, _) = consts.into_tuple_usize();
-
+        .map(|(idx, (name, ty))| {
             let (prev_slot_const_ref, next_slot_const_ref) =
-                get_neighbor_slot_refs(idx, indexed_fields, packing);
+                get_neighbor_slot_refs(idx, fields, packing);
 
+            let loc_const = PackingConstants::new(name).location();
             let layout_ctx = packing::gen_layout_ctx_expr(
                 ty,
                 false,
-                quote! { #packing::#slot_const },
-                quote! { #packing::#offset_const },
+                quote! { #packing::#loc_const.offset_slots },
+                quote! { #packing::#loc_const.offset_bytes },
                 prev_slot_const_ref,
                 next_slot_const_ref,
             );
 
-            quote! {
-                let #name = <#ty>::load(
-                    storage,
-                    base_slot + ::alloy::primitives::U256::from(#packing::#slot_const),
-                    #layout_ctx
-                )?;
+            if is_load {
+                quote! {
+                    let #name = <#ty>::load(
+                        storage,
+                        base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots),
+                        #layout_ctx
+                    )?;
+                }
+            } else {
+                quote! {{
+                    let target_slot = base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots);
+                    self.#name.store(storage, target_slot, #layout_ctx)?;
+                }}
             }
         });
 
     quote! {
-        #(#load_fields)*
-    }
-}
-
-/// Generate the `fn store()` implementation with packing logic.
-/// Accepts indexed fields where the usize is the original field index in the struct.
-fn gen_store_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> TokenStream {
-    let store_fields = indexed_fields.iter().enumerate().map(|(idx, (_orig_idx, name, ty))| {
-        let consts = PackingConstants::new(name);
-        let (slot_const, offset_const, _) = consts.into_tuple_usize();
-
-        let (prev_slot_const_ref, next_slot_const_ref) =
-            get_neighbor_slot_refs(idx, indexed_fields, packing);
-
-        let layout_ctx = packing::gen_layout_ctx_expr(
-            ty,
-            false,
-            quote! { #packing::#slot_const },
-            quote! { #packing::#offset_const },
-            prev_slot_const_ref,
-            next_slot_const_ref,
-        );
-
-        quote! {
-            {
-                let target_slot = base_slot + ::alloy::primitives::U256::from(#packing::#slot_const);
-                self.#name.store(storage, target_slot, #layout_ctx)?;
-            }
-        }
-    });
-
-    quote! {
-        #(#store_fields)*
+        #(#field_ops)*
     }
 }
 
 /// Generate the `fn to_evm_words()` implementation that packs fields into an array of words.
-/// Accepts indexed fields where the usize is the original field index in the struct.
-fn gen_to_evm_words_impl(
-    indexed_fields: &[(usize, &Ident, &Type)],
-    packing: &Ident,
-) -> TokenStream {
-    let pack_fields = indexed_fields.iter().map(|(_orig_idx, name, ty)| {
-        let (slot_const, offset_const, bytes_const) = PackingConstants::new(name).into_tuple_usize();
+fn gen_to_evm_words_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
+    let pack_fields = fields.iter().map(|(name, ty)| {
+        let loc_const = PackingConstants::new(name).location();
 
-        quote! {
-            {
-                const SLOT_COUNT: usize = <#ty as crate::storage::StorableType>::SLOTS;
-                const IS_PACKABLE: bool = <#ty as crate::storage::StorableType>::IS_PACKABLE;
-
-                if IS_PACKABLE {
-                    // Packable primitive: use packing module (handles both packed and unpacked)
-                    result[#packing::#slot_const] = crate::storage::packing::insert_packed_value::<SLOT_COUNT, #ty>(
-                        result[#packing::#slot_const],
-                        &self.#name,
-                        #packing::#offset_const,
-                        #packing::#bytes_const
-                    )?;
-                } else {
-                    let nested_words = self.#name.to_evm_words()?;
-                    for (i, word) in nested_words.iter().enumerate() {
-                        result[#packing::#slot_const + i] = *word;
-                    }
+        quote! {{
+            const SLOT_COUNT: usize = <#ty as crate::storage::StorableType>::SLOTS;
+            if <#ty as crate::storage::StorableType>::IS_PACKABLE {
+                // Packable primitive: use packing module (handles both packed and unpacked)
+                result[#packing::#loc_const.offset_slots] = crate::storage::packing::insert_packed_value::<SLOT_COUNT, #ty>(
+                    result[#packing::#loc_const.offset_slots],
+                    &self.#name,
+                    #packing::#loc_const.offset_bytes,
+                    #packing::#loc_const.size
+                )?;
+            } else {
+                let nested_words = self.#name.to_evm_words()?;
+                for (i, word) in nested_words.iter().enumerate() {
+                    result[#packing::#loc_const.offset_slots + i] = *word;
                 }
             }
-        }
+        }}
     });
 
     quote! {
@@ -317,31 +278,24 @@ fn gen_to_evm_words_impl(
 }
 
 /// Generate the `fn from_evm_words()` implementation that unpacks fields from an array of words.
-/// Accepts indexed fields where the usize is the original field index in the struct.
-fn gen_from_evm_words_impl(
-    indexed_fields: &[(usize, &Ident, &Type)],
-    packing: &Ident,
-) -> TokenStream {
-    let decode_fields = indexed_fields.iter().map(|(_orig_idx, name, ty)| {
-        let (slot_const, offset_const, bytes_const) =
-            PackingConstants::new(name).into_tuple_usize();
+fn gen_from_evm_words_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
+    let decode_fields = fields.iter().map(|(name, ty)| {
+        let loc_const = PackingConstants::new(name).location();
 
         quote! {
             let #name = {
                 const SLOT_COUNT: usize = <#ty as crate::storage::StorableType>::SLOTS;
-                const IS_PACKABLE: bool = <#ty as crate::storage::StorableType>::IS_PACKABLE;
-
-                if IS_PACKABLE {
+                if <#ty as crate::storage::StorableType>::IS_PACKABLE {
                     // Packable primitive: use packing module (handles both packed and unpacked)
-                    let word = words[#packing::#slot_const];
+                    let word = words[#packing::#loc_const.offset_slots];
                     crate::storage::packing::extract_packed_value::<SLOT_COUNT, #ty>(
                         word,
-                        #packing::#offset_const,
-                        #packing::#bytes_const
+                        #packing::#loc_const.offset_bytes,
+                        #packing::#loc_const.size
                     )?
                 } else {
                     // Non-packable (structs, multi-slot types): use from_evm_words()
-                    let start = #packing::#slot_const;
+                    let start = #packing::#loc_const.offset_slots;
                     let nested_words = ::std::array::from_fn::<_, SLOT_COUNT, _>(|i| {
                         words[start + i]
                     });

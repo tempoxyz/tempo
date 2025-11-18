@@ -26,7 +26,7 @@ pub struct TIP20RewardsRegistry {
 }
 
 /// Helper type to easily interact with the `stream_ending_at` array
-type StreamEndingAt = Mapping<u128, Vec<Address>, StreamsEndingAtSlot>;
+type StreamEndingAt = Mapping<u128, Vec<Address>>;
 
 impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     /// Creates an instance of the precompile.
@@ -49,10 +49,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     /// Add a token to the registry for a given stream end time
     pub fn add_stream(&mut self, token: Address, end_time: u128) -> Result<()> {
         let stream_key = keccak256((token, end_time).abi_encode());
-        let length = StreamEndingAt::len(self, end_time)?;
+        let stream_ending_at = StreamEndingAt::new(slots::STREAMS_ENDING_AT);
+        let length = stream_ending_at.len(self, end_time)?;
 
         self.sstore_stream_index(stream_key, U256::from(length))?;
-        StreamEndingAt::push(self, end_time, token)
+        stream_ending_at.push(self, end_time, token)
     }
 
     /// Remove stream before it is finalized
@@ -60,15 +61,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         let stream_key = keccak256((token, end_time).abi_encode());
         let index = self.sload_stream_index(stream_key)?.to::<usize>();
 
-        let length = StreamEndingAt::len(self, end_time)?;
+        let stream_ending_at = StreamEndingAt::new(slots::STREAMS_ENDING_AT);
+        let length = stream_ending_at.len(self, end_time)?;
         let last_index = length
             .checked_sub(1)
             .ok_or(TempoPrecompileError::under_overflow())?;
 
         // If removing element that's not the last, swap with last element
         if index != last_index {
-            let last_token = StreamEndingAt::read_at(self, end_time, last_index)?;
-            StreamEndingAt::write_at(self, end_time, index, last_token)?;
+            let last_token = stream_ending_at.read_at(self, end_time, last_index)?;
+            stream_ending_at.write_at(self, end_time, index, last_token)?;
 
             // Update stream_index for the moved element
             let last_stream_key = keccak256((last_token, end_time).abi_encode());
@@ -76,7 +78,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         }
 
         // Remove last element and clear its index
-        StreamEndingAt::pop(self, end_time)?;
+        stream_ending_at.pop(self, end_time)?;
         self.clear_stream_index(stream_key)?;
 
         Ok(())
@@ -131,7 +133,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     /// Helper method to get the count of streams at a given end time (for testing)
     #[cfg(test)]
     pub(crate) fn get_stream_count_at(&mut self, end_time: u128) -> Result<usize> {
-        StreamEndingAt::len(self, end_time)
+        StreamEndingAt::new(slots::STREAMS_ENDING_AT).len(self, end_time)
     }
 }
 

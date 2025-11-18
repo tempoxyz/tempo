@@ -6,7 +6,11 @@ pub use tempo_contracts::precompiles::INonce;
 use tempo_contracts::precompiles::{NonceError, NonceEvent};
 use tempo_precompiles_macros::contract;
 
-use crate::{NONCE_PRECOMPILE_ADDRESS, error::Result, storage::PrecompileStorageProvider};
+use crate::{
+    NONCE_PRECOMPILE_ADDRESS,
+    error::Result,
+    storage::{Mapping, PrecompileStorageProvider},
+};
 use alloy::primitives::{Address, IntoLogData, U256};
 
 /// NonceManager contract for managing 2D nonces as per the AA spec

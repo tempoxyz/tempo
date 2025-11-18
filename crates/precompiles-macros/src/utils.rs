@@ -85,16 +85,6 @@ pub(crate) fn to_camel_case(s: &str) -> String {
     result
 }
 
-/// Converts a string from snake_case to PascalCase.
-pub(crate) fn to_pascal_case(s: &str) -> String {
-    let camel = to_camel_case(s);
-    let mut chars = camel.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-    }
-}
-
 /// Extracts `#[slot(N)]`, `#[base_slot(N)]` attributes from a field's attributes.
 ///
 /// This function iterates through the attributes a single time to find all

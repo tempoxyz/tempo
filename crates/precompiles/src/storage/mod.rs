@@ -6,8 +6,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 pub use types::*;
 
 pub mod packing;
-
-// TODO(rusowsky): remove once precompiles don't rely it (directly) anymore
+pub use packing::FieldLocation;
 pub use types::mapping as slots;
 
 // Re-export extension traits for convenience

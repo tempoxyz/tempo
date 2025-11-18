@@ -87,24 +87,6 @@ struct FieldInfo {
     base_slot: Option<U256>,
 }
 
-impl packing::FieldInfoExt for FieldInfo {
-    fn field_name(&self) -> &Ident {
-        &self.name
-    }
-
-    fn field_type(&self) -> &Type {
-        &self.ty
-    }
-
-    fn manual_slot(&self) -> Option<U256> {
-        self.slot
-    }
-
-    fn base_slot_attr(&self) -> Option<U256> {
-        self.base_slot
-    }
-}
-
 /// Classification of a field based on its type
 #[derive(Debug, Clone, Copy)]
 enum FieldKind<'a> {
@@ -118,15 +100,6 @@ enum FieldKind<'a> {
         key2: &'a Type,
         value: &'a Type,
     },
-}
-
-impl FieldKind<'_> {
-    pub(crate) fn is_mapping(&self) -> bool {
-        matches!(
-            self,
-            FieldKind::Mapping { .. } | FieldKind::NestedMapping { .. }
-        )
-    }
 }
 
 fn parse_fields(input: DeriveInput) -> syn::Result<Vec<FieldInfo>> {
@@ -206,12 +179,10 @@ fn gen_contract_storage(
         })
         .collect();
 
-    let (slot_types_for_reexport, slots_module_with_types) =
-        layout::gen_slots_module_with_types(&allocated_fields);
+    let slots_module = layout::gen_slots_module(&allocated_fields);
 
     let output = quote! {
-        #slots_module_with_types
-        #slot_types_for_reexport
+        #slots_module
         #transformed_struct
         #constructor
         #storage_trait
@@ -374,11 +345,11 @@ pub fn gen_test_fields_layout(input: TokenStream) -> TokenStream {
         .into_iter()
         .map(|ident| {
             let field_name = ident.to_string();
-            let uppercase_name = field_name.to_uppercase();
+            let const_name = field_name.to_uppercase();
             let field_name = utils::to_camel_case(&field_name);
-            let slot_ident = Ident::new(&uppercase_name, ident.span());
-            let offset_ident = Ident::new(&format!("{uppercase_name}_OFFSET"), ident.span());
-            let bytes_ident = Ident::new(&format!("{uppercase_name}_BYTES"), ident.span());
+            let slot_ident = Ident::new(&const_name, ident.span());
+            let offset_ident = Ident::new(&format!("{const_name}_OFFSET"), ident.span());
+            let bytes_ident = Ident::new(&format!("{const_name}_BYTES"), ident.span());
 
             quote! {
                 RustStorageField::new(#field_name, slots::#slot_ident, slots::#offset_ident, slots::#bytes_ident)
@@ -419,12 +390,13 @@ pub fn gen_test_fields_struct(input: TokenStream) -> TokenStream {
             let field_name = ident.to_string();
             let const_name = field_name.to_uppercase();
             let field_name = utils::to_camel_case(&field_name);
-            let slot_ident = Ident::new(&format!("{const_name}_SLOT",), ident.span());
+            let slot_ident = Ident::new(&const_name, ident.span());
             let offset_ident = Ident::new(&format!("{const_name}_OFFSET"), ident.span());
-            let bytes_ident = Ident::new(&format!("{const_name}_BYTES"), ident.span());
+            let loc_ident = Ident::new(&format!("{const_name}_LOC"), ident.span());
+            let bytes_ident = quote! {#loc_ident.size};
 
             quote! {
-                RustStorageField::new(#field_name, #base_slot + alloy_primitives::U256::from(#slot_ident), #offset_ident, #bytes_ident)
+                RustStorageField::new(#field_name, #base_slot + #slot_ident, #offset_ident, #bytes_ident)
             }
         })
         .collect();

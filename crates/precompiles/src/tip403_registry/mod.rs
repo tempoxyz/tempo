@@ -6,7 +6,7 @@ use tempo_precompiles_macros::{Storable, contract};
 use crate::{
     TIP403_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::PrecompileStorageProvider,
+    storage::{Mapping, PrecompileStorageProvider},
 };
 use alloy::primitives::{Address, Bytes, IntoLogData};
 use revm::state::Bytecode;
