@@ -1398,7 +1398,9 @@ mod tests {
 
         // Calculate expected gas using revm's function for equivalent normal tx
         let normal_tx_gas = calculate_initial_tx_gas(
-            spec, &calldata, false, // not create
+            spec.into(),
+            &calldata,
+            false, // not create
             0,     // no access list accounts
             0,     // no access list storage
             0,     // no authorization list
@@ -1460,7 +1462,7 @@ mod tests {
         .unwrap();
 
         // Calculate base gas for a single normal tx
-        let base_tx_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
+        let base_tx_gas = calculate_initial_tx_gas(spec.into(), &calldata, false, 0, 0, 0);
 
         // For 3 calls: base (21k) + 3*calldata + 3*per-call overhead
         // = 21k + 2*(calldata cost) + 3*COLD_ACCOUNT_ACCESS_COST

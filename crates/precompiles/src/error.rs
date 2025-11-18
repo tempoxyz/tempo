@@ -161,6 +161,7 @@ impl<T> IntoPrecompileResult<T> for TempoPrecompileError {
             Self::FeeManagerError(e) => e.abi_encode().into(),
             Self::TIPFeeAMMError(e) => e.abi_encode().into(),
             Self::NonceError(e) => e.abi_encode().into(),
+            TempoPrecompileError::AccountKeychainError(e) => e.abi_encode().into(),
             Self::Panic(kind) => {
                 let panic = Panic {
                     code: U256::from(kind as u32),

@@ -1081,10 +1081,10 @@ mod serde_input {
 
 #[cfg(feature = "reth-codec")]
 mod compact {
+    use super::*;
     use reth_codecs::Compact;
 
-    use super::*;
-    #[derive(reth_codecs::Compact)]
+    #[derive(Compact)]
 
     struct OldTxAA {
         chain_id: ChainId,
@@ -1102,7 +1102,7 @@ mod compact {
         aa_authorization_list: Vec<AASignedAuthorization>,
     }
 
-    #[derive(reth_codecs::Compact)]
+    #[derive(Compact)]
 
     struct NewTxAA {
         chain_id: ChainId,
@@ -1164,6 +1164,13 @@ mod compact {
         }
 
         fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
+            // HACK: for OldTxAA 5th byte is highest non-zero chainid byte. For NewTxAA its
+            // either 1 (when keyAuthorization is Some) or 0 (when keyAuthorization is None)
+            //
+            // We infer the encoding version by checking this byte. The assumption here is that this
+            // encoding will only be used for chains which chain_id's highest non-zero byte is >1.
+            //
+            // This is very hacky and should be removed ASAP.
             if buf[4] <= 1 {
                 let (
                     NewTxAA {
