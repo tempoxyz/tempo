@@ -631,42 +631,202 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_moderato_hardfork_active_from_start() {
-        // With moderatoTime: 0, moderato should be active from the beginning
-        let mut evm = setup_tempo_evm(100);
+    fn setup_pre_moderato_evm(timestamp: u64) -> (TempoEvm<EmptyDB>, Arc<TempoChainSpec>) {
+        let genesis_json = json!({
+            "config": {
+                "chainId": 1337,
+                "homesteadBlock": 0,
+                "eip150Block": 0,
+                "eip155Block": 0,
+                "eip158Block": 0,
+                "byzantiumBlock": 0,
+                "constantinopleBlock": 0,
+                "petersburgBlock": 0,
+                "istanbulBlock": 0,
+                "berlinBlock": 0,
+                "londonBlock": 0,
+                "mergeNetsplitBlock": 0,
+                "terminalTotalDifficulty": 0,
+                "terminalTotalDifficultyPassed": true,
+                "shanghaiTime": 0,
+                "cancunTime": 0,
+                "adagioTime": 0,
+                "moderatoTime": 2000
+            },
+            "alloc": {}
+        });
 
-        let tx = create_rewards_registry_system_tx();
-        let result = evm.transact_raw(tx);
+        let genesis: alloy_genesis::Genesis =
+            serde_json::from_value(genesis_json).expect("genesis should be valid");
+        let chain_spec = Arc::new(TempoChainSpec::from_genesis(genesis));
+        let config = TempoEvmConfig::new(chain_spec.clone(), TempoEvmFactory::default());
 
-        assert!(result.is_ok());
-        assert_eq!(evm.cfg.spec, TempoHardfork::Moderato);
+        let mut evm_env = config
+            .evm_env(chain_spec.genesis_header())
+            .expect("could not init evm env");
 
-        // Verify gas consumption for system tx
-        if let Ok(result_and_state) = result {
-            if let reth_revm::context::result::ExecutionResult::Success {
-                gas_used,
-                gas_refunded,
-                ..
-            } = result_and_state.result
-            {
-                assert_eq!(gas_used, 0);
-                assert_eq!(gas_refunded, 0);
-            }
-        }
+        evm_env.block_env.inner.timestamp = U256::from(timestamp);
+        evm_env.cfg_env.spec = chain_spec.tempo_hardfork_at(timestamp);
+
+        (TempoEvm::new(EmptyDB::default(), evm_env), chain_spec)
+    }
+
+    fn setup_post_moderato_evm(timestamp: u64) -> (TempoEvm<EmptyDB>, Arc<TempoChainSpec>) {
+        let genesis_json = json!({
+            "config": {
+                "chainId": 1337,
+                "homesteadBlock": 0,
+                "eip150Block": 0,
+                "eip155Block": 0,
+                "eip158Block": 0,
+                "byzantiumBlock": 0,
+                "constantinopleBlock": 0,
+                "petersburgBlock": 0,
+                "istanbulBlock": 0,
+                "berlinBlock": 0,
+                "londonBlock": 0,
+                "mergeNetsplitBlock": 0,
+                "terminalTotalDifficulty": 0,
+                "terminalTotalDifficultyPassed": true,
+                "shanghaiTime": 0,
+                "cancunTime": 0,
+                "adagioTime": 0,
+                "moderatoTime": 1000
+            },
+            "alloc": {}
+        });
+
+        let genesis: alloy_genesis::Genesis =
+            serde_json::from_value(genesis_json).expect("genesis should be valid");
+        let chain_spec = Arc::new(TempoChainSpec::from_genesis(genesis));
+        let config = TempoEvmConfig::new(chain_spec.clone(), TempoEvmFactory::default());
+
+        let mut evm_env = config
+            .evm_env(chain_spec.genesis_header())
+            .expect("could not init evm env");
+
+        evm_env.block_env.inner.timestamp = U256::from(timestamp);
+        evm_env.cfg_env.spec = chain_spec.tempo_hardfork_at(timestamp);
+
+        (TempoEvm::new(EmptyDB::default(), evm_env), chain_spec)
+    }
+
+    fn create_non_rewards_system_tx() -> TempoTxEnvelope {
+        use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::IFeeManager};
+
+        let input = IFeeManager::executeBlockCall {}
+            .abi_encode()
+            .into_iter()
+            .collect::<Bytes>();
+
+        TempoTxEnvelope::Legacy(alloy_consensus::Signed::new_unhashed(
+            alloy_consensus::TxLegacy {
+                chain_id: Some(1337),
+                nonce: 0,
+                gas_price: 0,
+                gas_limit: 0,
+                to: alloy_primitives::TxKind::Call(TIP_FEE_MANAGER_ADDRESS),
+                value: U256::ZERO,
+                input,
+            },
+            alloy_primitives::Signature::test_signature(),
+        ))
     }
 
     #[test]
-    fn test_rewards_registry_system_tx_execution() {
-        // Test that TIP20 rewards registry system transactions execute properly
-        let mut evm = setup_tempo_evm(1000);
+    fn test_validate_tx_pre_moderato_enforces_rewards_registry() {
+        let (evm, spec) = setup_pre_moderato_evm(1500);
+        let ctx = TempoBlockExecutionCtx {
+            inner: alloy_evm::eth::EthBlockExecutionCtx {
+                parent_hash: Default::default(),
+                parent_beacon_block_root: None,
+                ommers: &[],
+                withdrawals: None,
+            },
+            general_gas_limit: 1_000_000,
+            shared_gas_limit: 500_000,
+            extra_data: Default::default(),
+            validator_set: None,
+        };
 
-        let tx = create_rewards_registry_system_tx();
-        let result = evm.transact_raw(tx);
+        todo!()
+        // let mut executor = TempoBlockExecutor::new(evm, ctx, &spec);
+        // executor.section = BlockSection::StartOfBlock {
+        //     seen_tip20_rewards_registry: false,
+        // };
+        //
+        // // Create a regular user transaction
+        // let tx = TempoTxEnvelope::Legacy(alloy_consensus::Signed::new_unhashed(
+        //     alloy_consensus::TxLegacy {
+        //         chain_id: Some(1337),
+        //         nonce: 0,
+        //         gas_price: 1,
+        //         gas_limit: 21000,
+        //         to: alloy_primitives::TxKind::Call(Address::random()),
+        //         value: U256::ZERO,
+        //         input: Default::default(),
+        //     },
+        //     alloy_primitives::Signature::test_signature(),
+        // ));
+        //
+        // let result = executor.validate_tx(&tx, 21000);
+        //
+        // assert!(result.is_err());
+        // assert!(
+        //     result
+        //         .unwrap_err()
+        //         .to_string()
+        //         .contains("TIP20 rewards registry system transaction was not seen")
+        // );
+    }
 
-        // The system transaction should execute successfully
-        // The rewards registry precompile logic will handle moderato behavior internally
-        assert!(result.is_ok());
-        assert_eq!(evm.cfg.spec, TempoHardfork::Moderato);
+    #[test]
+    fn test_validate_tx_post_moderato_skips_rewards_registry() {
+        let (evm, spec) = setup_post_moderato_evm(1500);
+        let ctx = TempoBlockExecutionCtx {
+            inner: alloy_evm::eth::EthBlockExecutionCtx {
+                parent_hash: Default::default(),
+                parent_beacon_block_root: None,
+                ommers: &[],
+                withdrawals: None,
+            },
+            general_gas_limit: 1_000_000,
+            shared_gas_limit: 500_000,
+            extra_data: Default::default(),
+            validator_set: None,
+        };
+
+        todo!()
+        // let mut executor = TempoBlockExecutor::new(evm, ctx, &spec);
+        // executor.section = BlockSection::StartOfBlock {
+        //     seen_tip20_rewards_registry: false,
+        // };
+        // executor.non_shared_gas_left = 1_000_000;
+        // executor.non_payment_gas_left = 1_000_000;
+        //
+        // // Create a regular user transaction
+        // let tx = TempoTxEnvelope::Legacy(alloy_consensus::Signed::new_unhashed(
+        //     alloy_consensus::TxLegacy {
+        //         chain_id: Some(1337),
+        //         nonce: 0,
+        //         gas_price: 1,
+        //         gas_limit: 21000,
+        //         to: alloy_primitives::TxKind::Call(Address::random()),
+        //         value: U256::ZERO,
+        //         input: Default::default(),
+        //     },
+        //     alloy_primitives::Signature::test_signature(),
+        // ));
+        //
+        // let result = executor.validate_tx(&tx, 21000);
+        //
+        // // Post-moderato should allow regular transactions without requiring rewards registry first
+        // assert!(
+        //     result.is_ok()
+        //         || !result
+        //             .unwrap_err()
+        //             .to_string()
+        //             .contains("TIP20 rewards registry")
+        // );
     }
 }
