@@ -1,6 +1,6 @@
 use crate::utils::{NodeSource, setup_test_node, setup_test_token};
 use alloy::{
-    primitives::{Address, B256, U256},
+    primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder, ext::TraceApi},
     rpc::types::{
         Filter, TransactionRequest,
@@ -15,11 +15,13 @@ use reth_evm::revm::interpreter::instructions::utility::IntoU256;
 use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{
-    IFeeManager,
+    CommonPrecompileError, IFeeManager,
     ITIP20::{self, transferCall},
     ITIPFeeAMM,
 };
-use tempo_precompiles::{LINKING_USD_ADDRESS, storage::slots::mapping_slot, tip20};
+use tempo_precompiles::{
+    LINKING_USD_ADDRESS, TIP_ACCOUNT_REGISTRAR, storage::slots::mapping_slot, tip20,
+};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_call() -> eyre::Result<()> {
@@ -361,6 +363,63 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
 
     assert!(receipt.status());
     assert!(receipt.gas_used <= gas);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        NodeSource::ExternalRpc(rpc_url.parse()?)
+    } else {
+        NodeSource::LocalNode(include_str!("../assets/test-genesis-moderato.json").to_string())
+    };
+    let (http_url, _node_handle) = setup_test_node(source).await?;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    // Call with an unknown function selector (0x12345678)
+    let unknown_selector = [0x12u8, 0x34, 0x56, 0x78];
+    let mut calldata = unknown_selector.to_vec();
+    // Add some dummy data
+    calldata.extend_from_slice(&[0u8; 64]);
+
+    let tx = TransactionRequest::default()
+        .to(TIP_ACCOUNT_REGISTRAR)
+        .input(TransactionInput::new(Bytes::from(calldata)));
+
+    // The call should fail with UnknownFunctionSelector error
+    let result = provider.call(tx).await;
+
+    assert!(
+        result.is_err(),
+        "Call should have failed with unknown selector"
+    );
+
+    let err = result.unwrap_err();
+
+    // Decode the error from the error payload
+    let decoded_error = err
+        .as_error_resp()
+        .and_then(|payload| payload.as_decoded_interface_error::<CommonPrecompileError>());
+
+    assert!(
+        decoded_error.is_some(),
+        "Error should be decodable as CommonPrecompileError"
+    );
+
+    // Verify it's the UnknownFunctionSelector error with the correct selector
+    match decoded_error.unwrap() {
+        CommonPrecompileError::UnknownFunctionSelector(error) => {
+            assert_eq!(
+                error.selector, unknown_selector,
+                "Error should contain the correct unknown selector"
+            );
+        }
+    }
 
     Ok(())
 }
