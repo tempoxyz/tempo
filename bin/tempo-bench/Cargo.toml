@@ -42,8 +42,8 @@ http = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
+indicatif = { workspace = true, features = ["rayon"] }
 mimalloc = "0.1.47"
 rayon = "1.10"
 rlimit = "0.10.2"
-simple-tqdm = { version = "0.2.0", features = ["rayon"] }
 governor = "0.10.1"
