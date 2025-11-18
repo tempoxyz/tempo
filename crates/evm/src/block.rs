@@ -138,8 +138,7 @@ where
     ) -> Result<BlockSection, BlockValidationError> {
         let block = self.evm().block();
         let block_timestamp = block.timestamp;
-
-        let block = block.number.to_be_bytes_vec();
+        let block_number = block.number.to_be_bytes_vec();
         let to = tx.to().unwrap_or_default();
 
         if !self
@@ -162,7 +161,7 @@ where
                 let finalize_streams_input = ITIP20RewardsRegistry::finalizeStreamsCall {}
                     .abi_encode()
                     .into_iter()
-                    .chain(block)
+                    .chain(block_number)
                     .collect::<Bytes>();
 
                 if *tx.input() != finalize_streams_input {
@@ -202,7 +201,7 @@ where
             let fee_input = IFeeManager::executeBlockCall
                 .abi_encode()
                 .into_iter()
-                .chain(block)
+                .chain(block_number)
                 .collect::<Bytes>();
 
             if *tx.input() != fee_input {
@@ -222,7 +221,7 @@ where
             let dex_input = IStablecoinExchange::executeBlockCall {}
                 .abi_encode()
                 .into_iter()
-                .chain(block)
+                .chain(block_number)
                 .collect::<Bytes>();
 
             if *tx.input() != dex_input {
@@ -240,7 +239,7 @@ where
             }
 
             if tx.input().len() < U256::BYTES
-                || tx.input()[tx.input().len() - U256::BYTES..] != block
+                || tx.input()[tx.input().len() - U256::BYTES..] != block_number
             {
                 return Err(BlockValidationError::msg(
                     "invalid subblocks metadata system transaction",
@@ -359,6 +358,13 @@ where
         tx: &TempoTxEnvelope,
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
+        let block = self.evm().block();
+        let block_timestamp = block.timestamp.to::<u64>();
+        let post_moderato = self
+            .inner
+            .spec
+            .is_moderato_active_at_timestamp(block_timestamp);
+
         // Start with processing of transaction kinds that require specific sections.
         if tx.is_system_tx() {
             self.validate_system_tx(tx)
@@ -366,9 +372,11 @@ where
             match self.section {
                 BlockSection::StartOfBlock {
                     seen_tip20_rewards_registry,
-                } if !seen_tip20_rewards_registry => Err(BlockValidationError::msg(
-                    "TIP20 rewards registry system transaction was not seen",
-                )),
+                } if !post_moderato && !seen_tip20_rewards_registry => {
+                    Err(BlockValidationError::msg(
+                        "TIP20 rewards registry system transaction was not seen",
+                    ))
+                }
                 BlockSection::GasIncentive | BlockSection::System { .. } => {
                     Err(BlockValidationError::msg("subblock section already passed"))
                 }
@@ -395,9 +403,11 @@ where
             match self.section {
                 BlockSection::StartOfBlock {
                     seen_tip20_rewards_registry,
-                } if !seen_tip20_rewards_registry => Err(BlockValidationError::msg(
-                    "TIP20 rewards registry system transaction was not seen",
-                )),
+                } if !post_moderato && !seen_tip20_rewards_registry => {
+                    Err(BlockValidationError::msg(
+                        "TIP20 rewards registry system transaction was not seen",
+                    ))
+                }
                 BlockSection::StartOfBlock { .. } | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
                         || (!tx.is_payment() && gas_used > self.non_payment_gas_left)
