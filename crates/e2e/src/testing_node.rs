@@ -380,7 +380,7 @@ mod tests {
         });
 
         let rpc_addr = rx_started.await.unwrap();
-        let rpc_url = format!("http://{}", rpc_addr);
+        let rpc_url = format!("http://{rpc_addr}");
 
         // Verify RPC is accessible while running
         let provider = ProviderBuilder::new().connect_http(rpc_url.parse().unwrap());

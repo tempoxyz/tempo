@@ -18,7 +18,7 @@ use reth_ethereum::{
             events::{NetworkEvent, PeerEvent},
         },
     },
-    tasks::{TaskManager},
+    tasks::TaskManager,
 };
 use reth_network_peers::{NodeRecord, TrustedPeer};
 use reth_node_builder::{NodeBuilder, NodeConfig};
