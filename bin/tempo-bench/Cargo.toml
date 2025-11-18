@@ -8,17 +8,16 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-tempo-alloy.workspace = true
 tempo-chainspec.workspace = true
 tempo-precompiles.workspace = true
 tempo-contracts.workspace = true
 # Workspace dependencies
 alloy = { workspace = true, features = [
-    "genesis",
-    "signers",
-    "signer-local",
-    "network",
-    "sol-types",
+  "genesis",
+  "signers",
+  "signer-local",
+  "network",
+  "sol-types",
 ] }
 alloy-consensus = { workspace = true, features = ["secp256k1"] }
 clap = { workspace = true, features = ["derive", "env"] }
@@ -48,5 +47,3 @@ rayon = "1.10"
 rlimit = "0.10.2"
 simple-tqdm = { version = "0.2.0", features = ["rayon"] }
 governor = "0.10.1"
-rand = "0.9.2"
-indicatif = "0.18.2"
