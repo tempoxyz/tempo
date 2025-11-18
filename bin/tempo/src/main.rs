@@ -31,7 +31,6 @@ use std::{sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::run_consensus_stack;
 use tempo_consensus::TempoConsensus;
-use tempo_consensus_args::ConsensusArgs;
 use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
 use tempo_faucet::{
     args::FaucetArgs,
@@ -54,7 +53,7 @@ struct TempoArgs {
     pub follow: Option<String>,
 
     #[command(flatten)]
-    pub consensus: commonware_node::Args,
+    pub consensus: tempo_commonware_node::Args,
 
     #[command(flatten)]
     pub faucet_args: FaucetArgs,
