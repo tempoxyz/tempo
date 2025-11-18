@@ -18,7 +18,7 @@ use crate::{
         MAX_PRICE_POST_MODERATO, MAX_PRICE_PRE_MODERATO, MIN_PRICE_POST_MODERATO,
         MIN_PRICE_PRE_MODERATO, compute_book_key,
     },
-    storage::{PrecompileStorageProvider, Slot, VecSlotExt},
+    storage::{Mapping, PrecompileStorageProvider, Slot, VecSlotExt},
     tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
