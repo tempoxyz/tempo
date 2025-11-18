@@ -60,4 +60,3 @@ reth-provider.workspace = true
 
 tokio = { workspace = true, features = ["macros", "sync"] }
 tracing.workspace = true
-ringbuffer = { version = "0.16.0", default-features = false }

@@ -5,7 +5,7 @@ use std::{
 
 use alloy_evm::EvmInternals;
 use alloy_primitives::Address;
-use commonware_codec::{DecodeExt as _, EncodeSize, RangeCfg, Read, Write};
+use commonware_codec::{DecodeExt as _, EncodeSize, RangeCfg, Read, Write, varint::UInt};
 use commonware_consensus::{types::Epoch, utils};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::set::{Ordered, OrderedAssociated};
@@ -13,7 +13,6 @@ use eyre::{OptionExt as _, WrapErr as _, ensure};
 use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
 use reth_node_builder::{Block as _, ConfigureEvm as _};
 use reth_provider::{BlockReader as _, StateProviderFactory as _};
-use ringbuffer::RingBuffer as _;
 use tempo_node::TempoFullNode;
 use tempo_precompiles::{
     storage::evm::EvmPrecompileStorageProvider,
@@ -110,33 +109,40 @@ async fn decode_from_contract(
 /// 1. the dealers, that will drop out of the next ceremony
 /// 2. the player, that will become dealers in the next ceremony
 /// 3. the syncing players, that will become players in the next ceremony
-pub(super) struct Participants {
-    buffered: ringbuffer::ConstGenericRingBuffer<OrderedAssociated<PublicKey, DecodedValidator>, 3>,
+#[derive(Clone, Debug)]
+pub(super) struct Tracked {
+    dealers: OrderedAssociated<PublicKey, DecodedValidator>,
+    players: OrderedAssociated<PublicKey, DecodedValidator>,
+    syncing_players: OrderedAssociated<PublicKey, DecodedValidator>,
 }
 
-impl Participants {
+impl Tracked {
     pub(super) fn new(validators: OrderedAssociated<PublicKey, DecodedValidator>) -> Self {
-        let mut buffered = ringbuffer::ConstGenericRingBuffer::new();
-        buffered.enqueue(validators.clone());
-        buffered.enqueue(validators.clone());
-        buffered.enqueue(validators);
-        Self { buffered }
+        Self {
+            dealers: validators.clone(),
+            players: validators.clone(),
+            syncing_players: validators,
+        }
     }
 
     pub(super) fn dealers(&self) -> &OrderedAssociated<PublicKey, DecodedValidator> {
-        &self.buffered[0]
+        &self.dealers
     }
 
-    pub(super) fn syncing_players(&self) -> &Ordered<PublicKey> {
-        &self.buffered[0]
+    pub(super) fn players(&self) -> &OrderedAssociated<PublicKey, DecodedValidator> {
+        &self.players
+    }
+
+    pub(super) fn syncing_players(&self) -> &OrderedAssociated<PublicKey, DecodedValidator> {
+        &self.syncing_players
     }
 
     pub(super) fn dealer_pubkeys(&self) -> Ordered<PublicKey> {
-        self.buffered[0].keys().clone()
+        self.dealers.keys().clone()
     }
 
     pub(super) fn player_pubkeys(&self) -> Ordered<PublicKey> {
-        self.buffered[1].keys().clone()
+        self.dealers.keys().clone()
     }
 
     /// Constructs a peerset to register on the peer manager.
@@ -148,32 +154,88 @@ impl Participants {
     /// If a validator has entries across the tracked sets, then then its entry
     /// for the latest pushed set is taken. For those cases where looking up
     /// domain names failed, the last successfully looked up name is taken.
-    pub(super) fn construct_peers_to_register(&self) -> PeersRegistered {
-        PeersRegistered(
-            self.buffered
-                .iter()
-                // IMPORTANT: iterator starting from the latest registered set.
-                .rev()
-                .flat_map(|valset| valset.iter_pairs())
-                .filter_map(|(pubkey, validator)| {
-                    let addr = validator.inbound_to_socket_addr().ok()?;
-                    Some((pubkey.clone(), addr))
-                })
-                .collect(),
-        )
+    pub(super) fn resolve_addresses_and_merge(&self) -> OrderedAssociated<PublicKey, SocketAddr> {
+        // IMPORTANT: Starting with the syncing players to ensure that the
+        // latest address for a validator with a given pubkey is used.
+        // OrderedAssociated takes the first instance of a key it sees and
+        // drops the later instances.
+        self.syncing_players()
+            .iter_pairs()
+            .chain(self.players().iter_pairs())
+            .chain(self.dealers().iter_pairs())
+            .filter_map(|(pubkey, validator)| {
+                let addr = validator.inbound_to_socket_addr().ok()?;
+                Some((pubkey.clone(), addr))
+            })
+            .collect()
     }
 
-    /// Pushes `validators` into the participants queue.
+    /// Pushes `syncing_players` into the participants queue.
     ///
-    /// Returns the oldest peers that were pushed into this queue (usually
-    /// the dealers of the previous ceremony).
-    pub(super) fn push(
+    /// This method is called on successful DKG ceremonies: the current players
+    /// wll become the next dealers, and the current syncing players will become
+    /// the next regular players.
+    ///
+    /// Removes and returns the old dealers.
+    pub(super) fn push_on_success(
         &mut self,
-        validators: OrderedAssociated<PublicKey, DecodedValidator>,
+        syncing_players: OrderedAssociated<PublicKey, DecodedValidator>,
     ) -> OrderedAssociated<PublicKey, DecodedValidator> {
-        self.buffered
-            .enqueue(validators)
-            .expect("the buffer must always be full")
+        let players = std::mem::replace(&mut self.syncing_players, syncing_players);
+        let dealers = std::mem::replace(&mut self.players, players);
+        std::mem::replace(&mut self.dealers, dealers)
+    }
+
+    /// Pushes `syncing_players` into the participants queue.
+    ///
+    /// This method is called on failed DKG ceremonies: the current dealers
+    /// will remain dealers for the next epoch, the current players are dropped
+    /// (since for them, the cermony failed), and the current syncing players
+    /// will become the next regular players.
+    pub(super) fn push_on_failure(
+        &mut self,
+        syncing_players: OrderedAssociated<PublicKey, DecodedValidator>,
+    ) -> OrderedAssociated<PublicKey, DecodedValidator> {
+        let players = std::mem::replace(&mut self.syncing_players, syncing_players);
+        let dropped = std::mem::replace(&mut self.players, players);
+        dropped
+    }
+}
+
+impl Write for Tracked {
+    fn write(&self, buf: &mut impl bytes::BufMut) {
+        self.dealers().write(buf);
+        self.players().write(buf);
+        self.syncing_players().write(buf);
+    }
+}
+
+impl EncodeSize for Tracked {
+    fn encode_size(&self) -> usize {
+        self.dealers().encode_size()
+            + self.players().encode_size()
+            + self.syncing_players().encode_size()
+    }
+}
+
+impl Read for Tracked {
+    type Cfg = ();
+
+    fn read_cfg(
+        buf: &mut impl bytes::Buf,
+        _cfg: &Self::Cfg,
+    ) -> Result<Self, commonware_codec::Error> {
+        // The range 0..=usize::MAX here is ok: what we are writing to disk
+        // is completely under our control and there is no danger of DoS.
+        let dealers = OrderedAssociated::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), (), ()))?;
+        let players = OrderedAssociated::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), (), ()))?;
+        let syncing_players =
+            OrderedAssociated::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), (), ()))?;
+        Ok(Self {
+            dealers,
+            players,
+            syncing_players,
+        })
     }
 }
 
@@ -267,47 +329,58 @@ impl std::fmt::Display for DecodedValidator {
     }
 }
 
-/// Peers that were registered on the peer manager.
-#[derive(Clone)]
-pub(super) struct PeersRegistered(OrderedAssociated<PublicKey, SocketAddr>);
-
-impl PeersRegistered {
-    pub(super) fn into_inner(self) -> OrderedAssociated<PublicKey, SocketAddr> {
-        self.0
-    }
-
-    pub(super) fn len(&self) -> usize {
-        self.0.len()
-    }
-}
-
-impl std::fmt::Debug for PeersRegistered {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl Write for PeersRegistered {
+impl Write for DecodedValidator {
     fn write(&self, buf: &mut impl bytes::BufMut) {
-        self.0.write(buf);
+        self.public_key.write(buf);
+        self.inbound.as_bytes().write(buf);
+        self.outbound.as_bytes().write(buf);
+        UInt(self.index).write(buf);
+        self.address.as_slice().write(buf);
     }
 }
 
-impl EncodeSize for PeersRegistered {
+impl EncodeSize for DecodedValidator {
     fn encode_size(&self) -> usize {
-        self.0.encode_size()
+        self.public_key.encode_size()
+            + self.inbound.as_bytes().encode_size()
+            + self.outbound.as_bytes().encode_size()
+            + UInt(self.index).encode_size()
+            + self.address.as_slice().encode_size()
     }
 }
 
-impl Read for PeersRegistered {
+impl Read for DecodedValidator {
     type Cfg = ();
 
     fn read_cfg(
-        buf: &mut impl bytes::Buf,
+        mut buf: &mut impl bytes::Buf,
         _cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
-        let inner = OrderedAssociated::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), (), ()))?;
-        Ok(Self(inner))
+        let public_key = PublicKey::decode(&mut buf)?;
+        let inbound = {
+            // 253 is the maximum length of a fqdn.
+            let bytes = Vec::<u8>::read_cfg(buf, &(RangeCfg::new(0..=253usize), ()))?;
+            String::from_utf8(bytes).map_err(|_| {
+                commonware_codec::Error::Invalid("decode inbound address", "not utf8")
+            })?
+        };
+        let outbound = {
+            // 253 is the maximum length of a fqdn.
+            let bytes = Vec::<u8>::read_cfg(buf, &(RangeCfg::new(0..=253usize), ()))?;
+            String::from_utf8(bytes).map_err(|_| {
+                commonware_codec::Error::Invalid("decode outbound address", "not utf8")
+            })?
+        };
+        let index = UInt::decode(&mut buf)?.into();
+        let address = Address::new(<[u8; 20]>::decode(&mut buf)?);
+
+        Ok(Self {
+            public_key,
+            inbound,
+            outbound,
+            index,
+            address,
+        })
     }
 }
 

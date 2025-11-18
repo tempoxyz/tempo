@@ -35,7 +35,7 @@ use crate::{
         CeremonyState,
         ceremony::{self, Ceremony},
         manager::{
-            DecodedValidator, Participants, PeersRegistered,
+            DecodedValidator,
             ingress::{Finalize, GetIntermediateDealing, GetOutcome},
             validators,
         },
@@ -81,7 +81,7 @@ where
     /// epoch i and its precursors i-1 and i-2. Peer information is persisted
     /// on the last height of an epoch.
     // FIXME(janis): we are not actually deleting the information ever.
-    registered_peers_metadata: Metadata<ContextCell<TContext>, U64, PeersRegistered>,
+    validators_metadata: Metadata<ContextCell<TContext>, U64, validators::Tracked>,
 
     /// The epoch state of the current epoch. Populated from `epoch_metadata` on
     /// initialization and updated on every completed ceremony (one before the
@@ -89,9 +89,9 @@ where
     epoch_state: EpochState,
 
     /// Tracks all current and potential future validators as read from the
-    /// smart contract. This object is populated from `registered_peers_metadata`
+    /// smart contract. This object is populated from `validators_metadata`.
     /// on init and updated on
-    all_participants: Participants,
+    validator_state: validators::Tracked,
 
     /// Handles to the metrics objects that the actor will update during its
     /// runtime.
@@ -107,7 +107,7 @@ where
         >,
 {
     pub(super) async fn init(
-        mut config: super::Config<TPeerManager>,
+        config: super::Config<TPeerManager>,
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
@@ -133,10 +133,10 @@ where
         .await
         .expect("must be able to initialize metadata on disk to function");
 
-        let registered_peers_metadata = Metadata::init(
-            context.with_label("registered_peers_metadata"),
+        let validators_metadata = Metadata::init(
+            context.with_label("validators__metadata"),
             commonware_storage::metadata::Config {
-                partition: format!("{}_registered_peers", config.partition_prefix),
+                partition: format!("{}_validators", config.partition_prefix),
                 codec_config: (),
             },
         )
@@ -211,10 +211,19 @@ where
             syncing_players,
         };
 
-        let epoch_state = if let Some::<EpochState>(epoch_state) =
+        let (epoch_state, validator_state) = if let Some::<EpochState>(epoch_state) =
             epoch_metadata.get(&EPOCH_KEY.into()).cloned()
         {
-            epoch_state
+            let validator_state = validators_metadata
+                .get(&epoch_state.epoch.into())
+                .cloned()
+                .ok_or_else(|| {
+                    eyre!(
+                        "found epoch state for epoch `{}` on dsk, but no matching validator state",
+                        epoch_state.epoch
+                    )
+                })?;
+            (epoch_state, validator_state)
         } else {
             let spec = config.execution_node.chain_spec();
             let outcome =
@@ -232,71 +241,37 @@ where
                 "at genesis, the epoch must be zero, but genesis reported `{}`",
                 outcome.epoch
             );
+            let initial =
+                validators::read_from_contract(0, &config.execution_node, 0, config.epoch_length)
+                    .await
+                    .wrap_err("validator config could not be read from contract for genesis")?;
+            let validator_state = validators::Tracked::new(initial);
 
-            EpochState {
+            // ensure, just on genesis, that the peerset we'd get out of the
+            // on-chain contract would result in what we see in the initial
+            // outcome.
+            let peers_as_per_contract = validator_state.resolve_addresses_and_merge();
+            ensure!(
+                peers_as_per_contract.keys() == &outcome.participants,
+                "the DKG participants stored in the genesis extraData header \
+                don't match the peers determined from the onchain contract of \
+                the genesis block; \
+                extraData.participants = `{:?}; \
+                contract.peers = `{:?}",
+                outcome.participants,
+                peers_as_per_contract.keys(),
+            );
+
+            let epoch_state = EpochState {
+                dkg_successful: true,
                 epoch: 0,
                 participants: outcome.participants,
                 public: outcome.public,
                 share: config.initial_share.clone(),
-            }
+            };
+
+            (epoch_state, validator_state)
         };
-
-        // Initialize the peers of the last 2 epochs, but *not the current epoch*.
-        //
-        // Upon entering `Actor::run`, a new ceremony will be started which will
-        // in turn read the latest validator set. This is done in a staggered
-        // way because starting a new ceremony needs a p2p muxer, which only
-        // becomes available on `Actor::run`.
-        //
-        // Note that for epochs 0 and 1 this will read the same block twice.
-        // That's ok.
-        let dealers_epoch = epoch_state.epoch.saturating_sub(2);
-        let dealers = validators::read_from_contract(
-            0,
-            &config.execution_node,
-            dealers_epoch,
-            config.epoch_length,
-        )
-        .await
-        .wrap_err_with(|| {
-            format!(
-                "validator config could not be read for epoch \
-                    `{dealers_epoch}` (latest known epoch `{}`)",
-                epoch_state.epoch,
-            )
-        })?;
-        let mut all_participants = Participants::new(dealers);
-
-        let players_epoch = epoch_state.epoch.saturating_sub(1);
-        let players = validators::read_from_contract(
-            0,
-            &config.execution_node,
-            players_epoch,
-            config.epoch_length,
-        )
-        .await
-        .wrap_err_with(|| {
-            format!(
-                "validator config could not be read for epoch \
-                    `{players_epoch}` (latest known epoch `{}`)",
-                epoch_state.epoch,
-            )
-        })?;
-        all_participants.push(players);
-
-        // Similarly, try and recover the peers registered on the peer manager
-        // for the last 2 epochs - but not the current epoch, which will be
-        // determined and overwritten when starting a new ceremony on `run`.
-        for epoch in epoch_state.epoch.saturating_sub(2)..epoch_state.epoch {
-            if let Some::<PeersRegistered>(peers) =
-                registered_peers_metadata.get(&epoch.into()).cloned()
-            {
-                info!(epoch, ?peers, "peers recovered; registering");
-                config.peer_manager.update(epoch, peers.into_inner()).await;
-            } else {
-                info!(epoch, "no peers found on disk");
-            }
-        }
 
         Ok(Self {
             config,
@@ -305,9 +280,9 @@ where
             ceremony_metadata: Arc::new(Mutex::new(ceremony_metadata)),
             epoch_metadata,
             epoch_state,
-            registered_peers_metadata,
+            validators_metadata,
+            validator_state,
             metrics,
-            all_participants,
         })
     }
 
@@ -339,23 +314,8 @@ where
             )
             .await;
 
-        let mut ceremony = Some(
-            self.start_new_ceremony_and_register_peers(&mut ceremony_mux)
-                .await,
-        );
-
-        // Sanity check: after the ceremony is started, the tracked dealers must
-        // match participants in the epoch.
-        assert_eq!(
-            self.all_participants.dealer_pubkeys(),
-            self.epoch_state.participants,
-            "the public keys of the validators read from the smart contract \
-            of the genesis block do not match the participants listed in the \
-            DKG outcome read from the genesis header's `extraData` field; \
-            read from contract: `{:?}`, read from header: `{:?}`",
-            self.all_participants.dealers(),
-            self.epoch_state.participants,
-        );
+        let mut ceremony = Some(self.start_ceremony(&mut ceremony_mux).await);
+        self.register_peers().await;
 
         while let Some(message) = self.mailbox.next().await {
             let cause = message.cause;
@@ -507,10 +467,21 @@ where
         if utils::is_last_block_in_epoch(self.config.epoch_length, block.height()).is_some() {
             self.report_new_epoch().await;
 
-            maybe_ceremony.replace(
-                self.start_new_ceremony_and_register_peers(ceremony_mux)
-                    .await,
-            );
+            let syncing_players = read_validator_config_with_retry(
+                &self.context,
+                &self.config.execution_node,
+                self.epoch_state.epoch,
+                self.config.epoch_length,
+            )
+            .await;
+
+            if self.epoch_state.dkg_successful {
+                self.validator_state.push_on_success(syncing_players);
+            } else {
+                self.validator_state.push_on_failure(syncing_players);
+            }
+            self.register_peers().await;
+            maybe_ceremony.replace(self.start_ceremony(ceremony_mux).await);
             // Early return: start driving the ceremony on the first height of
             // the next epoch.
             return;
@@ -563,25 +534,26 @@ where
 
         let next_epoch = ceremony.epoch() + 1;
 
-        let ceremony_outcome = match ceremony.finalize() {
+        let (ceremony_outcome, dkg_successful) = match ceremony.finalize() {
             Ok(outcome) => {
                 self.metrics.ceremony_successes.inc();
                 info!(
                     "ceremony was successful; using the new participants, polynomial and secret key"
                 );
-                outcome
+                (outcome, true)
             }
             Err(outcome) => {
                 self.metrics.ceremony_failures.inc();
                 warn!(
                     "ceremony was a failure; using the old participants, polynomial and secret key"
                 );
-                outcome
+                (outcome, false)
             }
         };
         let (public, share) = ceremony_outcome.role.into_key_pair();
 
         self.epoch_state = EpochState {
+            dkg_successful,
             epoch: next_epoch,
             participants: ceremony_outcome.participants,
             public,
@@ -600,27 +572,33 @@ where
         }
     }
 
-    /// Starts a new ceremony for the given epoch.
+    /// Registers the known peers on the p2p peer manager for the current epoch.
     ///
-    /// This method is intended to be called on the boundary block of an epoch
-    /// `E`. Since it's a core design of the DKG manager that it finalized the
-    /// DKG ceremony before the boundary block, it is safe to assume that
-    /// `self.epoch_state` is updated with the outcome of the previous
-    /// block.
+    /// The peers are derived from the tracked validators and the epoch they are
+    /// registered for from the tracked epoch state.
     ///
-    /// The ceremony for epoch `self.epoch_state.epoch` is then started by
-    /// reading the validator set from the boundary block of the ending epoch,
-    /// `self.epoch_state.epoch - 1`.
-    ///
-    /// If the state of the execution layer is not yet updated and the block not
-    /// yet available, this method will spin until the block
-    /// becomes available on the execution layer.
-    ///
-    /// 1. The validator config is read from the boundary block of the previous
-    ///    epoch. This is to ensure that the boundary block is firmly available
-    ///    in the execution layer.
-    /// 2. The peer set is updated given the new validators.
-    /// 3. A new DKG ceremony is launched with the new validators as its players.
+    /// This function also persists the validators on disk.
+    async fn register_peers(&mut self) {
+        let peers_to_register = self.validator_state.resolve_addresses_and_merge();
+        self.metrics.peers.set(peers_to_register.len() as i64);
+
+        self.validators_metadata
+            .put_sync(self.epoch_state.epoch.into(), self.validator_state.clone())
+            .await
+            .expect("must always be able to store validators peers on disk");
+        self.config
+            .peer_manager
+            .update(self.epoch_state.epoch, peers_to_register.clone())
+            .await;
+
+        info!(
+            epoch = self.epoch_state.epoch,
+            peers_registered = ?peers_to_register,
+            "registered p2p peers by merging dealers, players, syncing players",
+        );
+    }
+
+    /// Starts a new ceremony for the epoch state tracked by the actor.
     #[instrument(
         skip_all,
         fields(
@@ -628,7 +606,7 @@ where
             epoch = self.epoch_state.epoch,
         )
     )]
-    async fn start_new_ceremony_and_register_peers<TReceiver, TSender>(
+    async fn start_ceremony<TReceiver, TSender>(
         &mut self,
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> Ceremony<ContextCell<TContext>, TReceiver, TSender>
@@ -636,25 +614,14 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let syncing_players = read_validator_config_with_retry(
-            &self.context,
-            &self.config.execution_node,
-            self.epoch_state.epoch,
-            self.config.epoch_length,
-        )
-        .await;
-
-        self.all_participants.push(syncing_players);
-        // TODO: report changes between the validators here.
-
         let config = ceremony::Config {
             namespace: self.config.namespace.clone(),
             me: self.config.me.clone(),
             public: self.epoch_state.public.clone(),
             share: self.epoch_state.share.clone(),
             epoch: self.epoch_state.epoch,
-            dealers: self.all_participants.dealer_pubkeys(),
-            players: self.all_participants.player_pubkeys(),
+            dealers: self.validator_state.dealer_pubkeys(),
+            players: self.validator_state.player_pubkeys(),
         };
         let ceremony = ceremony::Ceremony::init(
             &mut self.context,
@@ -672,8 +639,8 @@ where
             players = ?ceremony.players(),
             as_player = ceremony.is_player(),
             as_dealer = ceremony.is_dealer(),
-            n_syncing_players = self.all_participants.syncing_players().len(),
-            syncing_players = ?self.all_participants.syncing_players(),
+            n_syncing_players = self.validator_state.syncing_players().len(),
+            syncing_players = ?self.validator_state.syncing_players(),
             "started a ceremony",
         );
 
@@ -685,31 +652,13 @@ where
             .set(ceremony.players().len() as i64);
         self.metrics
             .syncing_players
-            .set(self.all_participants.syncing_players().len() as i64);
+            .set(self.validator_state.syncing_players().len() as i64);
         self.metrics
             .how_often_dealer
             .inc_by(ceremony.is_dealer() as u64);
         self.metrics
             .how_often_player
             .inc_by(ceremony.is_player() as u64);
-
-        let peers_to_register = self.all_participants.construct_peers_to_register();
-        info!(
-            epoch = self.epoch_state.epoch,
-            peers_registered = ?peers_to_register,
-            "registering p2p peers by merging last 3 validator sets read from smart contract",
-        );
-
-        self.metrics.peers.set(peers_to_register.len() as i64);
-
-        self.registered_peers_metadata
-            .put_sync(self.epoch_state.epoch.into(), peers_to_register.clone())
-            .await
-            .expect("must always be able to store registered p2p peers on disk");
-        self.config
-            .peer_manager
-            .update(self.epoch_state.epoch, peers_to_register.into_inner())
-            .await;
 
         ceremony
     }
@@ -797,6 +746,7 @@ async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
 /// The state with all participants, public and private key share for an epoch.
 #[derive(Clone)]
 struct EpochState {
+    dkg_successful: bool,
     epoch: Epoch,
     participants: Ordered<PublicKey>,
     public: Public<MinSig>,
@@ -805,6 +755,7 @@ struct EpochState {
 
 impl Write for EpochState {
     fn write(&self, buf: &mut impl bytes::BufMut) {
+        self.dkg_successful.write(buf);
         UInt(self.epoch).write(buf);
         self.participants.write(buf);
         self.public.write(buf);
@@ -814,7 +765,8 @@ impl Write for EpochState {
 
 impl EncodeSize for EpochState {
     fn encode_size(&self) -> usize {
-        UInt(self.epoch).encode_size()
+        self.dkg_successful.encode_size()
+            + UInt(self.epoch).encode_size()
             + self.participants.encode_size()
             + self.public.encode_size()
             + self.share.encode_size()
@@ -828,12 +780,14 @@ impl Read for EpochState {
         buf: &mut impl bytes::Buf,
         _cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
+        let dkg_successful = bool::read(buf)?;
         let epoch = UInt::read(buf)?.into();
         let participants = Ordered::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), ()))?;
         let public =
             Public::<MinSig>::read_cfg(buf, &(quorum(participants.len() as u32) as usize))?;
         let share = Option::<Share>::read_cfg(buf, &())?;
         Ok(Self {
+            dkg_successful,
             epoch,
             participants,
             public,
