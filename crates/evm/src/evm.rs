@@ -231,3 +231,42 @@ where
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use reth_revm::context::BlockEnv;
+    use revm::{context::TxEnv, database::EmptyDB};
+
+    use super::*;
+
+    #[test]
+    fn can_execute_system_tx() {
+        let mut evm = TempoEvm::new(
+            EmptyDB::default(),
+            EvmEnv {
+                block_env: TempoBlockEnv {
+                    inner: BlockEnv {
+                        basefee: 1,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let result = evm
+            .transact(TempoTxEnv {
+                inner: TxEnv {
+                    caller: Address::ZERO,
+                    gas_price: 0,
+                    gas_limit: 21000,
+                    ..Default::default()
+                },
+                is_system_tx: true,
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert!(result.result.is_success());
+    }
+}
