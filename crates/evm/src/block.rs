@@ -21,7 +21,7 @@ use commonware_cryptography::{
 };
 use reth_revm::{Inspector, State, context::result::ResultAndState};
 use std::collections::HashSet;
-use tempo_chainspec::TempoChainSpec;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_precompiles::{
     STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
     stablecoin_exchange::IStablecoinExchange, tip_fee_manager::IFeeManager,
@@ -136,36 +136,44 @@ where
         &self,
         tx: &TempoTxEnvelope,
     ) -> Result<BlockSection, BlockValidationError> {
-        let block = self.evm().block().number.to_be_bytes_vec();
+        let block = self.evm().block();
+        let block_timestamp = block.timestamp;
+        let block_number = block.number.to_be_bytes_vec();
         let to = tx.to().unwrap_or_default();
 
-        // Handle start-of-block system transaction (rewards registry)
-        // Only enforce this restriction when we haven't seen the rewards registry yet
-        if let BlockSection::StartOfBlock {
-            seen_tip20_rewards_registry: false,
-        } = self.section
+        if !self
+            .inner
+            .spec
+            .is_moderato_active_at_timestamp(block_timestamp.to::<u64>())
         {
-            if to != TIP20_REWARDS_REGISTRY_ADDRESS {
-                return Err(BlockValidationError::msg(
-                    "only rewards registry system transaction allowed at start of block",
-                ));
+            // Handle start-of-block system transaction (rewards registry)
+            // Only enforce this restriction when we haven't seen the rewards registry yet
+            if let BlockSection::StartOfBlock {
+                seen_tip20_rewards_registry: false,
+            } = self.section
+            {
+                if to != TIP20_REWARDS_REGISTRY_ADDRESS {
+                    return Err(BlockValidationError::msg(
+                        "only rewards registry system transaction allowed at start of block",
+                    ));
+                }
+
+                let finalize_streams_input = ITIP20RewardsRegistry::finalizeStreamsCall {}
+                    .abi_encode()
+                    .into_iter()
+                    .chain(block_number)
+                    .collect::<Bytes>();
+
+                if *tx.input() != finalize_streams_input {
+                    return Err(BlockValidationError::msg(
+                        "invalid TIP20 rewards registry system transaction",
+                    ));
+                }
+
+                return Ok(BlockSection::StartOfBlock {
+                    seen_tip20_rewards_registry: true,
+                });
             }
-
-            let finalize_streams_input = ITIP20RewardsRegistry::finalizeStreamsCall {}
-                .abi_encode()
-                .into_iter()
-                .chain(block)
-                .collect::<Bytes>();
-
-            if *tx.input() != finalize_streams_input {
-                return Err(BlockValidationError::msg(
-                    "invalid TIP20 rewards registry system transaction",
-                ));
-            }
-
-            return Ok(BlockSection::StartOfBlock {
-                seen_tip20_rewards_registry: true,
-            });
         }
 
         // Handle end-of-block system transactions (fee manager, DEX, subblocks signatures)
@@ -193,7 +201,7 @@ where
             let fee_input = IFeeManager::executeBlockCall
                 .abi_encode()
                 .into_iter()
-                .chain(block)
+                .chain(block_number)
                 .collect::<Bytes>();
 
             if *tx.input() != fee_input {
@@ -213,7 +221,7 @@ where
             let dex_input = IStablecoinExchange::executeBlockCall {}
                 .abi_encode()
                 .into_iter()
-                .chain(block)
+                .chain(block_number)
                 .collect::<Bytes>();
 
             if *tx.input() != dex_input {
@@ -231,7 +239,7 @@ where
             }
 
             if tx.input().len() < U256::BYTES
-                || tx.input()[tx.input().len() - U256::BYTES..] != block
+                || tx.input()[tx.input().len() - U256::BYTES..] != block_number
             {
                 return Err(BlockValidationError::msg(
                     "invalid subblocks metadata system transaction",
@@ -350,6 +358,13 @@ where
         tx: &TempoTxEnvelope,
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
+        let block = self.evm().block();
+        let block_timestamp = block.timestamp.to::<u64>();
+        let post_moderato = self
+            .inner
+            .spec
+            .is_moderato_active_at_timestamp(block_timestamp);
+
         // Start with processing of transaction kinds that require specific sections.
         if tx.is_system_tx() {
             self.validate_system_tx(tx)
@@ -357,9 +372,11 @@ where
             match self.section {
                 BlockSection::StartOfBlock {
                     seen_tip20_rewards_registry,
-                } if !seen_tip20_rewards_registry => Err(BlockValidationError::msg(
-                    "TIP20 rewards registry system transaction was not seen",
-                )),
+                } if !post_moderato && !seen_tip20_rewards_registry => {
+                    Err(BlockValidationError::msg(
+                        "TIP20 rewards registry system transaction was not seen",
+                    ))
+                }
                 BlockSection::GasIncentive | BlockSection::System { .. } => {
                     Err(BlockValidationError::msg("subblock section already passed"))
                 }
@@ -386,9 +403,11 @@ where
             match self.section {
                 BlockSection::StartOfBlock {
                     seen_tip20_rewards_registry,
-                } if !seen_tip20_rewards_registry => Err(BlockValidationError::msg(
-                    "TIP20 rewards registry system transaction was not seen",
-                )),
+                } if !post_moderato && !seen_tip20_rewards_registry => {
+                    Err(BlockValidationError::msg(
+                        "TIP20 rewards registry system transaction was not seen",
+                    ))
+                }
                 BlockSection::StartOfBlock { .. } | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
                         || (!tx.is_payment() && gas_used > self.non_payment_gas_left)

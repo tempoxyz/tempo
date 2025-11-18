@@ -11467,6 +11467,7 @@ version = "0.4.0"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
+ "alloy-genesis",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-sol-types",
@@ -11481,6 +11482,7 @@ dependencies = [
  "reth-revm",
  "reth-rpc-eth-api",
  "revm",
+ "serde_json",
  "tempo-chainspec",
  "tempo-consensus",
  "tempo-payload-types",
