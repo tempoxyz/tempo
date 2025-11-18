@@ -248,7 +248,7 @@ vergen = "9"
 vergen-git2 = "1"
 
 [patch.crates-io]
-# Includes fix for race condition in resolver/voter interaction during validator catch-up
+# main branch, right after https://github.com/commonwarexyz/monorepo/pull/2265 was merged
 commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "b9740e83dbdacc45acc2dd14fcbaddc2f02e8252" }
 commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "b9740e83dbdacc45acc2dd14fcbaddc2f02e8252" }
 commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "b9740e83dbdacc45acc2dd14fcbaddc2f02e8252" }
