@@ -552,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn test_price_to_tick_at_min_boundary() {
+    fn test_price_to_tick_at_min_boundary_pre_moderato() {
         // MIN_PRICE should be valid and return i16::MIN (the minimum representable tick)
         let result = price_to_tick_pre_moderato(MIN_PRICE_PRE_MODERATO);
         assert!(result.is_ok());
@@ -565,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn test_price_to_tick_at_max_boundary() {
+    fn test_price_to_tick_at_max_boundary_pre_moderato() {
         // MAX_PRICE should be valid and return i16::MAX (the maximum representable tick)
         let result = price_to_tick_pre_moderato(MAX_PRICE_PRE_MODERATO);
         assert!(result.is_ok());
