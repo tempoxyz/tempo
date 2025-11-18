@@ -109,7 +109,7 @@ impl AASigned {
     }
 
     /// Encode the transaction fields and signature as RLP list (without type byte)
-    fn rlp_encode(&self, out: &mut dyn BufMut) {
+    pub fn rlp_encode(&self, out: &mut dyn BufMut) {
         // RLP header
         self.rlp_header().encode(out);
 
@@ -145,7 +145,7 @@ impl AASigned {
     }
 
     /// Decode the RLP fields (without type byte).
-    fn rlp_decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+    pub fn rlp_decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let header = alloy_rlp::Header::decode(buf)?;
         if !header.list {
             return Err(alloy_rlp::Error::UnexpectedString);
@@ -156,13 +156,15 @@ impl AASigned {
             return Err(alloy_rlp::Error::InputTooShort);
         }
 
-        // Decode transaction fields
+        // Decode transaction fields directly from the buffer
         let tx = TxAA::rlp_decode_fields(buf)?;
 
         // Decode signature bytes
         let sig_bytes: Bytes = Decodable::decode(buf)?;
 
-        if buf.len() + header.payload_length != remaining {
+        // Check that we consumed the expected amount
+        let consumed = remaining - buf.len();
+        if consumed != header.payload_length {
             return Err(alloy_rlp::Error::UnexpectedLength);
         }
 

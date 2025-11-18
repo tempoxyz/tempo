@@ -526,11 +526,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 // Calculate the increase in approval (only deduct if increasing)
                 // If old approval is 100 and new approval is 120, deduct 20 from spending limit
                 // If old approval is 100 and new approval is 80, deduct 0 (decreasing approval is free)
-                let approval_increase = if call.amount > old_allowance {
-                    call.amount - old_allowance
-                } else {
-                    U256::ZERO
-                };
+                let approval_increase = call.amount.saturating_sub(old_allowance);
 
                 // Check spending limits if there's an increase in approval
                 if !approval_increase.is_zero() {
