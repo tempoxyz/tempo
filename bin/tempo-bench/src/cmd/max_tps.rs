@@ -13,10 +13,10 @@ use clap::Parser;
 use core_affinity::CoreId;
 use eyre::{Context, OptionExt, ensure};
 use governor::{Quota, RateLimiter};
+use indicatif::ParallelProgressIterator;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rlimit::Resource;
 use serde::Serialize;
-use simple_tqdm::ParTqdm;
 use std::{
     fs::File,
     io::BufWriter,
@@ -270,7 +270,7 @@ async fn generate_transactions(
     println!("Generating {num_accounts} accounts...");
     let signers: Vec<PrivateKeySigner> = (0..num_accounts as u32)
         .into_par_iter()
-        .tqdm()
+        .progress()
         .map(|i| -> eyre::Result<PrivateKeySigner> {
             let signer = MnemonicBuilder::<English>::default()
                 .phrase(mnemonic)
@@ -305,7 +305,7 @@ async fn generate_transactions(
 
     let transactions: Vec<Vec<u8>> = params
         .into_par_iter()
-        .tqdm()
+        .progress()
         .map(|(signer, nonce)| -> eyre::Result<Vec<u8>> {
             let mut tx = TxLegacy {
                 chain_id: Some(chain_id),
