@@ -270,7 +270,7 @@ async fn generate_transactions(
     println!("Generating {num_accounts} accounts...");
     let signers: Vec<PrivateKeySigner> = (0..num_accounts as u32)
         .into_par_iter()
-        .progress_count(num_accounts)
+        .progress()
         .map(|i| -> eyre::Result<PrivateKeySigner> {
             let signer = MnemonicBuilder::<English>::default()
                 .phrase(mnemonic)

@@ -113,7 +113,7 @@ impl GenesisArgs {
 
         let addresses: Vec<Address> = (0..self.accounts)
             .into_par_iter()
-            .progress_count(self.accounts as u64)
+            .progress()
             .map(|worker_id| -> eyre::Result<Address> {
                 let signer = MnemonicBuilder::<English>::default()
                     .phrase(self.mnemonic.clone())
