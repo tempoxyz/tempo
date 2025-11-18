@@ -2,7 +2,10 @@ use super::*;
 use alloy::providers::DynProvider;
 use std::pin::Pin;
 use tempo_contracts::precompiles::IStablecoinExchange;
-use tempo_precompiles::stablecoin_exchange::{MAX_TICK, MIN_TICK, price_to_tick};
+use tempo_precompiles::stablecoin_exchange::{
+    MAX_TICK, MIN_TICK,
+    orderbook::price_to_tick_pre_moderato,
+};
 use tracing::{info, debug};
 
 const GAS_LIMIT: u64 = 500_000;
@@ -140,8 +143,8 @@ pub(super) async fn setup(
     join_all(futures, &tx_count, max_concurrent_requests, "approvals").await?;
     info!("  ✓ Approvals complete");
 
-    let tick_over = price_to_tick(100010);
-    let tick_under = price_to_tick(99990);
+    let tick_over = price_to_tick_pre_moderato(100010)?;
+    let tick_under = price_to_tick_pre_moderato(99990)?;
 
     let mut futures = Vec::new();
 
