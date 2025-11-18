@@ -1,7 +1,9 @@
 mod dex;
 mod tip20;
+mod verification;
 
 use tempo_alloy::TempoNetwork;
+use verification::{spawn_verification_service, VerificationConfig};
 
 use alloy::{
     consensus::BlockHeader,
@@ -190,10 +192,51 @@ impl MaxTpsArgs {
         // Create shared transaction counter and monitoring
         let tx_counter = Arc::new(AtomicU64::new(0));
 
+        // Create shared verification statistics
+        let verification_stats = verification::VerificationStats::new();
+
         // Spawn monitoring thread for TPS tracking
         let _monitor_handle = monitor_tps(tx_counter.clone(), total_txs);
 
-        // Spawn workers and send transactions
+        // Spawn verification stats monitoring thread
+        let verification_stats_clone = verification_stats.clone();
+        let verification_monitor_handle = tokio::spawn(async move {
+            let mut last_confirmed = 0u64;
+            let mut last_print = std::time::Instant::now();
+
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+
+                let elapsed = last_print.elapsed();
+                if elapsed >= Duration::from_secs(1) {
+                    let sent = verification_stats_clone.total_sent();
+                    let confirmed = verification_stats_clone.confirmed();
+                    let pending = verification_stats_clone.pending();
+                    let failed = verification_stats_clone.failed();
+
+                    // Calculate TPS (confirmations per second since last print)
+                    let confirmed_delta = confirmed.saturating_sub(last_confirmed);
+                    let verification_tps = confirmed_delta as f64 / elapsed.as_secs_f64();
+
+                    if sent > 0 {
+                        println!(
+                            "Verification: Sent: {}, Confirmed: {}, Pending: {}, Failed: {}, Rate: {:.2}%, TPS Verified: {:.2}",
+                            sent,
+                            confirmed,
+                            pending,
+                            failed,
+                            (confirmed as f64 / sent as f64) * 100.0,
+                            verification_tps
+                        );
+                    }
+
+                    last_confirmed = confirmed;
+                    last_print = std::time::Instant::now();
+                }
+            }
+        });
+
+        // Spawn workers and send transactions (with verification services)
         send_transactions(
             transactions.clone(),
             self.workers,
@@ -202,11 +245,29 @@ impl MaxTpsArgs {
             self.tps,
             self.disable_thread_pinning,
             tx_counter,
+            verification_stats.clone(),
         )
         .context("Failed to send transactions")?;
 
+        // Stop verification monitoring
+        verification_monitor_handle.abort();
+
         // Graceful period of 1 second for `monitor_tps` to print out last statement
         tokio::time::sleep(Duration::from_secs(1)).await;
+
+        // Print final verification statistics
+        println!("\n=== Final Verification Statistics ===");
+        println!("Total transactions sent: {}", verification_stats.total_sent());
+        println!("Transactions confirmed: {}", verification_stats.confirmed());
+        println!("Transactions pending: {}", verification_stats.pending());
+        println!("Transactions failed: {}", verification_stats.failed());
+        if verification_stats.total_sent() > 0 {
+            println!(
+                "Confirmation rate: {:.2}%",
+                (verification_stats.confirmed() as f64 / verification_stats.total_sent() as f64) * 100.0
+            );
+        }
+        println!("======================================\n");
 
         let mut rng = rand::rng();
         let sample_size = transactions.len().min(self.sample_size);
@@ -252,6 +313,7 @@ fn send_transactions(
     tps: u64,
     disable_thread_pinning: bool,
     tx_counter: Arc<AtomicU64>,
+    verification_stats: verification::VerificationStats,
 ) -> eyre::Result<()> {
     // Get available cores
     let core_ids =
@@ -278,6 +340,7 @@ fn send_transactions(
             let transactions = transactions.clone();
             let target_urls = target_urls.to_vec();
             let tx_counter = tx_counter.clone();
+            let verification_stats = verification_stats.clone();
             let start = thread_id * chunk_size;
             let end = (start + chunk_size).min(transactions.len());
 
@@ -289,17 +352,15 @@ fn send_transactions(
                     .expect("Failed to build tokio runtime");
 
                 rt.block_on(async {
-                    // TODO: Send txs from multiple senders
-                    // Create multiple connections for this thread
-                    // let mut providers = Vec::new();
-                    // for i in 0..num_connections {
-                    //     println!("{i:?}");
-                    //     let url = &target_urls[(i as usize) % target_urls.len()];
-                    //     let provider = ProviderBuilder::new().connect_http(url.clone());
-                    //     providers.push(provider);
-                    // }
-
+                    // Create provider for sending and verification
                     let provider = ProviderBuilder::new().connect_http(target_urls[0].clone());
+
+                    // Spawn verification service for this thread (shares stats with other threads)
+                    let verification_provider = ProviderBuilder::new().connect_http(target_urls[0].clone());
+                    let (verification_tx, verification_handle) =
+                        spawn_verification_service(verification_provider, VerificationConfig::default(), verification_stats.clone());
+
+                    // Send transactions
                     for tx_bytes in transactions[start..end].iter() {
                         rate_limiter.until_ready().await;
 
@@ -309,14 +370,20 @@ fn send_transactions(
                         )
                         .await
                         {
-                            Ok(Ok(_)) => {
+                            Ok(Ok(pending_tx)) => {
                                 tx_counter.fetch_add(1, Ordering::Relaxed);
+                                // Send tx hash to verification service
+                                let _ = verification_tx.send(*pending_tx.tx_hash());
                             }
                             Ok(Err(e)) => eprintln!("Failed to send transaction: {e}"),
                             Err(_) => eprintln!("Tx send timed out"),
                         }
                     }
-                });
+
+                    // Close verification channel and wait for it to finish
+                    drop(verification_tx);
+                    let _ = verification_handle.await;
+                })
             })
         })
         .collect();
