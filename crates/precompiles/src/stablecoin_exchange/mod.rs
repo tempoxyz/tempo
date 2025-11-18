@@ -5,9 +5,7 @@ pub mod order;
 pub mod orderbook;
 
 pub use order::Order;
-pub use orderbook::{
-    MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, TickLevel, price_to_tick, tick_to_price,
-};
+pub use orderbook::{MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, TickLevel, tick_to_price};
 pub use tempo_contracts::precompiles::{
     IStablecoinExchange, StablecoinExchangeError, StablecoinExchangeEvents,
 };
@@ -377,10 +375,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     pub fn price_to_tick(&self, price: u32) -> Result<i16> {
         if self.storage.spec().is_moderato() {
             // Post-Moderato: validate price bounds
-            orderbook::price_to_tick(price)
+            orderbook::price_to_tick_post_moderato(price)
         } else {
-            // Pre-Moderato: legacy behavior without validation
-            Ok((price as i32 - orderbook::PRICE_SCALE as i32) as i16)
+            orderbook::price_to_tick_pre_moderato(price)
         }
     }
 
@@ -1616,8 +1613,12 @@ mod tests {
         let test_prices = [
             98000u32, 99000, 99900, 99999, 100000, 100001, 100100, 101000, 102000,
         ];
+
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let exchange = StablecoinExchange::new(&mut storage);
+
         for price in test_prices {
-            let tick = orderbook::price_to_tick(price).unwrap();
+            let tick = exchange.price_to_tick(price).unwrap();
             let expected_tick = (price as i32 - orderbook::PRICE_SCALE as i32) as i16;
             assert_eq!(tick, expected_tick);
         }
