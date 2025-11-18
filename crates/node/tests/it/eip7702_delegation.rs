@@ -244,10 +244,10 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     let hash = alloy::primitives::keccak256(message);
     let signature = bob.sign_hash_sync(&hash)?;
 
-    // Create a new tx to delegate to the default 7702 impl using V2
+    // Create a new tx to delegate to the default 7702 impl using the new signature (bytes,bytes)
     let registrar = ITipAccountRegistrar::new(TIP_ACCOUNT_REGISTRAR, provider.clone());
     let registrar_call =
-        registrar.delegateToDefaultV2(message.to_vec().into(), signature.as_bytes().into());
+        registrar.delegateToDefault_1(message.to_vec().into(), signature.as_bytes().into());
     let addr = registrar_call.call().await?;
     assert_eq!(addr, bob_addr);
     let receipt = registrar_call.send().await?.get_receipt().await?;
