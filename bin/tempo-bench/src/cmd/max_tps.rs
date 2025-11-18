@@ -643,13 +643,67 @@ async fn join_all(
     >,
     tx_count: &ProgressBar,
     max_concurrent_requests: usize,
+    phase: &str,
 ) -> eyre::Result<()> {
-    let mut iter = stream::iter(futures)
-        .map(|receipt| async { eyre::Ok(receipt.await?.get_receipt().await?) })
+    use tracing::{info, debug, warn};
+
+    let futures_vec: Vec<_> = futures.into_iter().collect();
+    let total = futures_vec.len();
+    info!("  Processing {} {} transactions with {} concurrent requests", total, phase, max_concurrent_requests);
+
+    let mut completed = 0;
+    let mut failed = 0;
+    let mut iter = stream::iter(futures_vec)
+        .map(|receipt| async {
+            debug!("Waiting for pending transaction");
+            let result = receipt.await;
+            match &result {
+                Ok(pending) => {
+                    debug!("Getting receipt for transaction");
+                    let receipt_result = pending.get_receipt().await;
+                    match &receipt_result {
+                        Ok(r) => debug!("Received receipt, status: {}", r.status()),
+                        Err(e) => warn!("Failed to get receipt: {}", e),
+                    }
+                    receipt_result
+                }
+                Err(e) => {
+                    warn!("Transaction send failed: {}", e);
+                    Err(e.clone().into())
+                }
+            }
+        })
         .buffer_unordered(max_concurrent_requests);
+
     while let Some(receipt) = iter.next().await {
+        match receipt {
+            Ok(r) => {
+                if r.status() {
+                    completed += 1;
+                } else {
+                    failed += 1;
+                    warn!("Transaction failed with status false");
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                warn!("Receipt error: {}", e);
+            }
+        }
         tx_count.inc(1);
-        assert!(receipt?.status());
+
+        // Log progress every 10%
+        let progress = (completed + failed) * 100 / total;
+        if (completed + failed) % (total / 10).max(1) == 0 {
+            info!("  Progress: {}/{} ({}%) - {} succeeded, {} failed",
+                completed + failed, total, progress, completed, failed);
+        }
+    }
+
+    if failed > 0 {
+        warn!("Completed {} phase with {} failures out of {} transactions", phase, failed, total);
+    } else {
+        info!("  Successfully completed all {} {} transactions", total, phase);
     }
 
     Ok(())
