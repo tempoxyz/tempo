@@ -1,4 +1,6 @@
-use crate::{Precompile, input_cost, mutate, storage::PrecompileStorageProvider};
+use crate::{
+    Precompile, error::TempoPrecompileError, input_cost, mutate, storage::PrecompileStorageProvider,
+};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -19,11 +21,32 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipAccountRegistrar<'a, S>
             .unwrap();
 
         let result = match selector {
-            ITipAccountRegistrar::delegateToDefaultCall::SELECTOR => {
-                mutate::<ITipAccountRegistrar::delegateToDefaultCall>(
+            // Old signature: delegateToDefault(bytes32,bytes) - only pre-Moderato
+            ITipAccountRegistrar::delegateToDefault_0Call::SELECTOR => {
+                mutate::<ITipAccountRegistrar::delegateToDefault_0Call>(
                     calldata,
                     msg_sender,
-                    |_, call| self.delegate_to_default(call),
+                    |_, call| {
+                        if self.storage.spec().is_moderato() {
+                            Err(TempoPrecompileError::UnknownFunctionSelector)
+                        } else {
+                            self.delegate_to_default_v1(call)
+                        }
+                    },
+                )
+            }
+            // New signature: delegateToDefault(bytes,bytes) - only post-Moderato
+            ITipAccountRegistrar::delegateToDefault_1Call::SELECTOR => {
+                mutate::<ITipAccountRegistrar::delegateToDefault_1Call>(
+                    calldata,
+                    msg_sender,
+                    |_, call| {
+                        if self.storage.spec().is_moderato() {
+                            self.delegate_to_default_v2(call)
+                        } else {
+                            Err(TempoPrecompileError::UnknownFunctionSelector)
+                        }
+                    },
                 )
             }
             _ => Err(PrecompileError::Other("Unknown function selector".into())),
