@@ -420,7 +420,7 @@ where
         ));
 
         // Execute start-of-block system transactions (rewards registry finalize)
-        for tx in self.build_start_block_txs(&builder.evm()) {
+        for tx in self.build_start_block_txs(builder.evm()) {
             block_size_used += tx.inner().length();
 
             builder
