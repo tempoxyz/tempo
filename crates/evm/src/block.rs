@@ -547,3 +547,126 @@ where
         self.inner.evm()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use alloy_evm::{EvmEnv, revm::context::CfgEnv};
+    use alloy_genesis::Genesis;
+    use alloy_primitives::{Address, Bytes, U256};
+    use alloy_sol_types::SolCall;
+    use reth_chainspec::EthChainSpec;
+    use reth_evm::ConfigureEvm;
+    use reth_revm::context::BlockEnv;
+    use revm::{context::TxEnv, database::EmptyDB};
+    use serde_json::json;
+    use tempo_chainspec::{
+        TempoChainSpec,
+        hardfork::{TempoHardfork, TempoHardforks},
+    };
+    use tempo_precompiles::{
+        TIP20_REWARDS_REGISTRY_ADDRESS, tip20_rewards_registry::ITIP20RewardsRegistry,
+    };
+    use tempo_revm::TempoTxEnv;
+
+    use super::*;
+    use crate::{TempoBlockEnv, TempoEvmConfig, TempoEvmFactory};
+
+    fn setup_tempo_evm(timestamp: u64) -> TempoEvm<EmptyDB> {
+        let genesis_json = json!({
+            "config": {
+                "chainId": 1337,
+                "homesteadBlock": 0,
+                "eip150Block": 0,
+                "eip155Block": 0,
+                "eip158Block": 0,
+                "byzantiumBlock": 0,
+                "constantinopleBlock": 0,
+                "petersburgBlock": 0,
+                "istanbulBlock": 0,
+                "berlinBlock": 0,
+                "londonBlock": 0,
+                "mergeNetsplitBlock": 0,
+                "terminalTotalDifficulty": 0,
+                "terminalTotalDifficultyPassed": true,
+                "shanghaiTime": 0,
+                "cancunTime": 0,
+                "adagioTime": 0,
+                "moderatoTime": 0
+            },
+            "alloc": {}
+        });
+
+        let genesis: alloy_genesis::Genesis =
+            serde_json::from_value(genesis_json).expect("genesis should be valid");
+        let chain_spec = TempoChainSpec::from_genesis(genesis);
+        let config = TempoEvmConfig::new(Arc::new(chain_spec.clone()), TempoEvmFactory::default());
+
+        TempoEvm::new(
+            EmptyDB::default(),
+            config
+                .evm_env(chain_spec.genesis_header())
+                .expect("could not init evm env"),
+        )
+    }
+
+    fn create_rewards_registry_system_tx() -> TempoTxEnv {
+        let input = ITIP20RewardsRegistry::finalizeStreamsCall {}
+            .abi_encode()
+            .into_iter()
+            .collect::<Bytes>();
+
+        TempoTxEnv {
+            inner: TxEnv {
+                caller: Address::ZERO,
+                gas_price: 0,
+                gas_limit: 0,
+                kind: alloy_primitives::TxKind::Call(TIP20_REWARDS_REGISTRY_ADDRESS),
+                data: input,
+                ..Default::default()
+            },
+            is_system_tx: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_moderato_hardfork_active_from_start() {
+        // With moderatoTime: 0, moderato should be active from the beginning
+        let mut evm = setup_tempo_evm(100);
+
+        let tx = create_rewards_registry_system_tx();
+        let result = evm.transact_raw(tx);
+
+        assert!(result.is_ok());
+        assert_eq!(evm.cfg.spec, TempoHardfork::Moderato);
+
+        // Verify gas consumption for system tx
+        if let Ok(result_and_state) = result {
+            if let reth_revm::context::result::ExecutionResult::Success {
+                gas_used,
+                gas_refunded,
+                ..
+            } = result_and_state.result
+            {
+                assert_eq!(gas_used, 0);
+                assert_eq!(gas_refunded, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_rewards_registry_system_tx_execution() {
+        // Test that TIP20 rewards registry system transactions execute properly
+        let mut evm = setup_tempo_evm(1000);
+
+        let tx = create_rewards_registry_system_tx();
+        let result = evm.transact_raw(tx);
+
+        // The system transaction should execute successfully
+        // The rewards registry precompile logic will handle moderato behavior internally
+        assert!(result.is_ok());
+        assert_eq!(evm.cfg.spec, TempoHardfork::Moderato);
+    }
+}
