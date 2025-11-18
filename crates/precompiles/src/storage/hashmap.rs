@@ -7,6 +7,7 @@ use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
 pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
+    transient: HashMap<(Address, U256), U256>,
     accounts: HashMap<Address, AccountInfo>,
     pub events: HashMap<Address, Vec<LogData>>,
     chain_id: u64,
@@ -23,6 +24,7 @@ impl HashMapStorageProvider {
     pub fn new_with_spec(chain_id: u64, spec: TempoHardfork) -> Self {
         Self {
             internals: HashMap::new(),
+            transient: HashMap::new(),
             accounts: HashMap::new(),
             events: HashMap::new(),
             chain_id,
@@ -94,6 +96,16 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         Ok(())
     }
 
+    fn tstore(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        self.transient.insert((address, key), value);
+        Ok(())
+    }
+
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
         self.events.entry(address).or_default().push(event);
         Ok(())
@@ -102,6 +114,14 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
         Ok(self
             .internals
+            .get(&(address, key))
+            .copied()
+            .unwrap_or(U256::ZERO))
+    }
+
+    fn tload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
+        Ok(self
+            .transient
             .get(&(address, key))
             .copied()
             .unwrap_or(U256::ZERO))

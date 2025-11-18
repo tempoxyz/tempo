@@ -107,6 +107,19 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
+    fn tstore(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        self.ensure_loaded_account(address)?;
+        self.deduct_gas(revm::interpreter::gas::WARM_STORAGE_READ_COST)?;
+
+        Ok(self.internals.tstore(address, key, value))
+    }
+
+    #[inline]
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
         self.deduct_gas(
             revm::interpreter::gas::log_cost(event.topics().len() as u8, event.data.len() as u64)
@@ -132,6 +145,14 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         ))?;
 
         Ok(val.data)
+    }
+
+    #[inline]
+    fn tload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
+        self.ensure_loaded_account(address)?;
+        self.deduct_gas(revm::interpreter::gas::WARM_STORAGE_READ_COST)?;
+
+        Ok(self.internals.tload(address, key))
     }
 
     #[inline]

@@ -28,13 +28,20 @@ pub trait PrecompileStorageProvider {
         &mut self,
         address: Address,
     ) -> Result<&'_ AccountInfo, TempoPrecompileError>;
+    fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError>;
+    fn tload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError>;
     fn sstore(
         &mut self,
         address: Address,
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError>;
-    fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError>;
+    fn tstore(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+    ) -> Result<(), TempoPrecompileError>;
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError>;
 
     /// Deducts gas from the remaining gas and return an error if the gas is insufficient.
