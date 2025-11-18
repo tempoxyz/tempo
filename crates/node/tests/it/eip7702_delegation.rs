@@ -207,7 +207,7 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     let source = if let Ok(rpc_url) = env::var("RPC_URL") {
         NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
+        NodeSource::LocalNode(include_str!("../assets/test-genesis-moderato.json").to_string())
     };
     let (http_url, _node_handle) = setup_test_node(source).await?;
 
@@ -224,7 +224,7 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
         .build()?;
     let bob_addr = bob.address();
 
-    let amount = U256::random();
+    let amount = U256::from(1000000);
     token
         .mint(bob_addr, amount)
         .send()
