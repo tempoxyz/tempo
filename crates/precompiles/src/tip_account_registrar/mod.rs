@@ -141,10 +141,10 @@ mod tests {
     use crate::{
         TempoHardfork, error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
     };
-    use alloy::sol_types::SolCall;
+    use alloy::sol_types::{SolCall, SolInterface};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use tempo_contracts::precompiles::TIPAccountRegistrarError;
+    use tempo_contracts::precompiles::{CommonPrecompileError, TIPAccountRegistrarError};
 
     #[test]
     fn test_delegate_to_default_v1_pre_moderato() {
@@ -196,11 +196,18 @@ mod tests {
         };
         let calldata = call.abi_encode();
 
-        // Should fail with UnknownFunctionSelector after Moderato
+        // Should fail with UnknownFunctionSelector after Moderato (ABI-encoded error)
         let result = registrar.call(&calldata, signer.address());
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.reverted);
+
+        // Verify the error can be decoded as UnknownFunctionSelector
+        let decoded_error = CommonPrecompileError::abi_decode(&output.bytes);
+        assert!(decoded_error.is_ok());
         assert!(matches!(
-            result,
-            Err(revm::precompile::PrecompileError::Other(ref msg)) if msg.contains("Unknown function selector")
+            decoded_error.unwrap(),
+            CommonPrecompileError::UnknownFunctionSelector(_)
         ));
     }
 
