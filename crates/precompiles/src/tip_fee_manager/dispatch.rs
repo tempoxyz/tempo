@@ -177,12 +177,12 @@ mod tests {
     };
     use alloy::{
         primitives::{Address, B256, Bytes, U256},
-        sol_types::{SolInterface, SolValue},
+        sol_types::{SolError, SolValue},
     };
     use eyre::Result;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        CommonPrecompileError, IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls,
+        IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls, UnknownFunctionSelector,
     };
 
     fn setup_token_with_balance(
@@ -589,16 +589,16 @@ mod tests {
         let output = result.unwrap();
         assert!(output.reverted);
 
-        // Verify the error can be decoded and contains the correct selector
-        let decoded_error = CommonPrecompileError::abi_decode(&output.bytes);
-        assert!(decoded_error.is_ok());
+        // Verify the error can be decoded as UnknownFunctionSelector
+        let decoded_error = UnknownFunctionSelector::abi_decode(&output.bytes);
+        assert!(
+            decoded_error.is_ok(),
+            "Should decode as UnknownFunctionSelector"
+        );
 
-        match decoded_error.unwrap() {
-            CommonPrecompileError::UnknownFunctionSelector(err) => {
-                // Verify the selector matches what we sent
-                assert_eq!(err.selector.as_slice(), &unknown_selector);
-            }
-        }
+        // Verify the selector matches what we sent
+        let error = decoded_error.unwrap();
+        assert_eq!(error.selector.as_slice(), &unknown_selector);
     }
 
     #[test]
@@ -632,15 +632,15 @@ mod tests {
         let output = result.unwrap();
         assert!(output.reverted);
 
-        // Verify the error can be decoded and contains the correct selector
-        let decoded_error = CommonPrecompileError::abi_decode(&output.bytes);
-        assert!(decoded_error.is_ok());
+        // Verify the error can be decoded as UnknownFunctionSelector
+        let decoded_error = UnknownFunctionSelector::abi_decode(&output.bytes);
+        assert!(
+            decoded_error.is_ok(),
+            "Should decode as UnknownFunctionSelector"
+        );
 
-        match decoded_error.unwrap() {
-            CommonPrecompileError::UnknownFunctionSelector(err) => {
-                // Verify it's the mint selector
-                assert_eq!(err.selector.as_slice(), &ITIPFeeAMM::mintCall::SELECTOR);
-            }
-        }
+        // Verify it's the mint selector
+        let error = decoded_error.unwrap();
+        assert_eq!(error.selector.as_slice(), &ITIPFeeAMM::mintCall::SELECTOR);
     }
 }

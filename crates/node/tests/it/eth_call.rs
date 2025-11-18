@@ -7,7 +7,7 @@ use alloy::{
         trace::parity::{ChangedType, Delta},
     },
     signers::local::MnemonicBuilder,
-    sol_types::{SolCall, SolEvent},
+    sol_types::{SolCall, SolError, SolEvent},
 };
 use alloy_eips::BlockId;
 use alloy_rpc_types_eth::TransactionInput;
@@ -15,9 +15,9 @@ use reth_evm::revm::interpreter::instructions::utility::IntoU256;
 use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{
-    CommonPrecompileError, IFeeManager,
+    IFeeManager,
     ITIP20::{self, transferCall},
-    ITIPFeeAMM,
+    ITIPFeeAMM, UnknownFunctionSelector,
 };
 use tempo_precompiles::{
     LINKING_USD_ADDRESS, TIP_ACCOUNT_REGISTRAR, storage::slots::mapping_slot, tip20,
@@ -401,25 +401,33 @@ async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
 
     let err = result.unwrap_err();
 
-    // Decode the error from the error payload
-    let decoded_error = err
-        .as_error_resp()
-        .and_then(|payload| payload.as_decoded_interface_error::<CommonPrecompileError>());
-
+    // Get the error response payload
+    let error_payload = err.as_error_resp();
     assert!(
-        decoded_error.is_some(),
-        "Error should be decodable as CommonPrecompileError"
+        error_payload.is_some(),
+        "Should have error response payload"
     );
 
-    // Verify it's the UnknownFunctionSelector error with the correct selector
-    match decoded_error.unwrap() {
-        CommonPrecompileError::UnknownFunctionSelector(error) => {
-            assert_eq!(
-                error.selector, unknown_selector,
-                "Error should contain the correct unknown selector"
-            );
-        }
-    }
+    let payload = error_payload.unwrap();
+    assert!(payload.data.is_some(), "Should have error data");
+
+    // Deserialize the error data as Bytes
+    let error_bytes: Bytes = serde_json::from_str(payload.data.as_ref().unwrap().get())
+        .expect("Failed to deserialize error data as bytes");
+
+    // Decode UnknownFunctionSelector from the error data
+    let decoded_error = UnknownFunctionSelector::abi_decode(&error_bytes);
+    assert!(
+        decoded_error.is_ok(),
+        "Error should be decodable as UnknownFunctionSelector"
+    );
+
+    // Verify it contains the correct selector
+    let error = decoded_error.unwrap();
+    assert_eq!(
+        error.selector, unknown_selector,
+        "Error should contain the correct unknown selector"
+    );
 
     Ok(())
 }

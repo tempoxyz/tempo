@@ -3,10 +3,10 @@
 use crate::Precompile;
 use alloy::{
     primitives::{Address, Bytes},
-    sol_types::SolInterface,
+    sol_types::SolError,
 };
 use revm::precompile::PrecompileError;
-use tempo_contracts::precompiles::CommonPrecompileError;
+use tempo_contracts::precompiles::UnknownFunctionSelector;
 
 /// Checks that all selectors in an interface have dispatch handlers.
 ///
@@ -34,9 +34,7 @@ pub fn check_selector_coverage<P: Precompile>(
 
         // Check if we got "Unknown function selector" error (new format - ABI-encoded)
         let is_unsupported_new = if let Ok(output) = &result {
-            output.reverted
-                && CommonPrecompileError::abi_decode(&output.bytes)
-                    .is_ok_and(|e| matches!(e, CommonPrecompileError::UnknownFunctionSelector(_)))
+            output.reverted && UnknownFunctionSelector::abi_decode(&output.bytes).is_ok()
         } else {
             false
         };

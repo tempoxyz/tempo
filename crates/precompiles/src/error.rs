@@ -5,9 +5,9 @@ use alloy::{
 };
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{
-    CommonPrecompileError, FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError,
+    FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError,
     TIP20RewardsRegistryError, TIP403RegistryError, TIPAccountRegistrarError, TIPFeeAMMError,
-    ValidatorConfigError,
+    UnknownFunctionSelector, ValidatorConfigError,
 };
 
 // TODO: add error type for overflow/underflow
@@ -118,11 +118,11 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
                     TPErr::OutOfGas => {
                         return Err(PrecompileError::OutOfGas);
                     }
-                    TPErr::UnknownFunctionSelector(selector) => {
-                        CommonPrecompileError::unknown_function_selector(selector)
-                            .abi_encode()
-                            .into()
+                    TPErr::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
+                        selector: selector.into(),
                     }
+                    .abi_encode()
+                    .into(),
                     TPErr::Fatal(msg) => {
                         return Err(PrecompileError::Fatal(msg));
                     }
@@ -160,11 +160,11 @@ impl<T> IntoPrecompileResult<T> for TempoPrecompileError {
             Self::OutOfGas => {
                 return Err(PrecompileError::OutOfGas);
             }
-            Self::UnknownFunctionSelector(selector) => {
-                CommonPrecompileError::unknown_function_selector(selector)
-                    .abi_encode()
-                    .into()
+            Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
+                selector: selector.into(),
             }
+            .abi_encode()
+            .into(),
             Self::Fatal(msg) => {
                 return Err(PrecompileError::Fatal(msg));
             }

@@ -141,10 +141,10 @@ mod tests {
     use crate::{
         TempoHardfork, error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
     };
-    use alloy::sol_types::{SolCall, SolInterface};
+    use alloy::sol_types::{SolCall, SolError};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use tempo_contracts::precompiles::{CommonPrecompileError, TIPAccountRegistrarError};
+    use tempo_contracts::precompiles::{TIPAccountRegistrarError, UnknownFunctionSelector};
 
     #[test]
     fn test_delegate_to_default_v1_pre_moderato() {
@@ -203,12 +203,18 @@ mod tests {
         assert!(output.reverted);
 
         // Verify the error can be decoded as UnknownFunctionSelector
-        let decoded_error = CommonPrecompileError::abi_decode(&output.bytes);
-        assert!(decoded_error.is_ok());
-        assert!(matches!(
-            decoded_error.unwrap(),
-            CommonPrecompileError::UnknownFunctionSelector(_)
-        ));
+        let decoded_error = UnknownFunctionSelector::abi_decode(&output.bytes);
+        assert!(
+            decoded_error.is_ok(),
+            "Should decode as UnknownFunctionSelector"
+        );
+
+        // Verify it contains the expected selector
+        let error = decoded_error.unwrap();
+        assert_eq!(
+            error.selector.as_slice(),
+            &ITipAccountRegistrar::delegateToDefault_0Call::SELECTOR
+        );
     }
 
     #[test]
