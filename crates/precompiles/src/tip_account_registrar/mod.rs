@@ -229,7 +229,10 @@ mod tests {
 
         // Should fail with UnknownFunctionSelector after Moderato
         let result = registrar.call(&calldata, signer.address());
-        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(revm::precompile::PrecompileError::Other(ref msg)) if msg.contains("Unknown function selector")
+        ));
     }
 
     #[test]
@@ -287,7 +290,10 @@ mod tests {
 
         // Should fail with UnknownFunctionSelector pre-Moderato
         let result = registrar.call(&calldata, signer.address());
-        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(revm::precompile::PrecompileError::Other(ref msg)) if msg.contains("Unknown function selector")
+        ));
     }
 
     #[test]
@@ -409,15 +415,12 @@ mod tests {
         // ecrecover will succeed but recover a different (random) address
         let result = registrar.delegate_to_default_v2(call);
 
-        // Either it fails (ecrecover error) OR recovers a different address
-        match result {
-            Ok(recovered_addr) => {
-                // Should recover a different address than the actual signer
-                assert_ne!(recovered_addr, expected_address);
-            }
-            Err(_) => {
-                // Also acceptable - signature verification can fail
-            }
-        }
+        // Should succeed and recover a different address than the actual signer
+        // This demonstrates the signature is valid but for a different message
+        let recovered_addr = result.expect("ecrecover should succeed with valid signature");
+        assert_ne!(
+            recovered_addr, expected_address,
+            "Should recover a different address when signature is for different message"
+        );
     }
 }
