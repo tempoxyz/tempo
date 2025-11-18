@@ -244,7 +244,11 @@ where
                 .put_sync(
                     config.epoch.into(),
                     State {
-                        num_players: config.players.len() as u64,
+                        num_players: config
+                            .players
+                            .len()
+                            .try_into()
+                            .expect("there should never be more than u16::MAX players"),
                         dealing: dealer_me.as_ref().map(|me| Dealing {
                             commitment: me.commitment.clone(),
                             shares: me.shares.clone(),

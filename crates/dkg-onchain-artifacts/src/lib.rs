@@ -296,9 +296,8 @@ impl Read for IntermediateOutcome {
         let commitment = Public::<MinSig>::read_cfg(buf, &(quorum(n_players as u32) as usize))?;
 
         let acks = Vec::read_cfg(buf, &(RangeCfg::from(0..=n_players as usize), ()))?;
-        let n_reveals = n_players.saturating_sub(acks.len() as u16);
         let reveals =
-            Vec::<group::Share>::read_cfg(buf, &(RangeCfg::from(0..=n_reveals as usize), ()))?;
+            Vec::<group::Share>::read_cfg(buf, &(RangeCfg::from(0..=n_players as usize), ()))?;
 
         Ok(Self {
             n_players,
@@ -385,6 +384,66 @@ mod tests {
             ),
         ];
         let reveals = vec![shares[3].clone()];
+        let dealing_outcome = IntermediateOutcome::new(
+            4,
+            &four_private_keys()[0],
+            &union(b"test", OUTCOME_NAMESPACE),
+            42,
+            commitment,
+            acks,
+            reveals,
+        );
+
+        let bytes = dealing_outcome.encode();
+        assert_eq!(
+            IntermediateOutcome::decode(&mut bytes.as_ref()).unwrap(),
+            dealing_outcome,
+        );
+    }
+
+    #[test]
+    fn dealing_outcome_roundtrip_without_reveals() {
+        let (_, commitment, _) = dkg::Dealer::<_, MinSig>::new(
+            &mut StdRng::from_seed([0; 32]),
+            None,
+            four_public_keys(),
+        );
+
+        let acks = vec![
+            Ack::new(
+                &union(b"test", ACK_NAMESPACE),
+                four_private_keys()[0].clone(),
+                four_public_keys()[0].clone(),
+                42,
+                &four_public_keys()[0],
+                &commitment,
+            ),
+            Ack::new(
+                &union(b"test", ACK_NAMESPACE),
+                four_private_keys()[1].clone(),
+                four_public_keys()[1].clone(),
+                42,
+                &four_public_keys()[0],
+                &commitment,
+            ),
+            Ack::new(
+                &union(b"test", ACK_NAMESPACE),
+                four_private_keys()[2].clone(),
+                four_public_keys()[2].clone(),
+                42,
+                &four_public_keys()[0],
+                &commitment,
+            ),
+            Ack::new(
+                &union(b"test", ACK_NAMESPACE),
+                four_private_keys()[3].clone(),
+                four_public_keys()[3].clone(),
+                42,
+                &four_public_keys()[0],
+                &commitment,
+            ),
+        ];
+        let reveals = vec![];
         let dealing_outcome = IntermediateOutcome::new(
             4,
             &four_private_keys()[0],
