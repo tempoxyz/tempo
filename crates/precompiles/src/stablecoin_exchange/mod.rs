@@ -4,21 +4,20 @@ pub mod error;
 pub mod order;
 pub mod orderbook;
 
+pub use order::Order;
+pub use orderbook::{MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, TickLevel, tick_to_price};
 pub use tempo_contracts::precompiles::{
     IStablecoinExchange, StablecoinExchangeError, StablecoinExchangeEvents,
-};
-
-pub use order::Order;
-pub use orderbook::{
-    MAX_PRICE, MAX_TICK, MIN_PRICE, MIN_TICK, Orderbook, PRICE_SCALE, TickLevel, price_to_tick,
-    tick_to_price,
 };
 
 use crate::{
     LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     error::{Result, TempoPrecompileError},
     linking_usd::LinkingUSD,
-    stablecoin_exchange::orderbook::compute_book_key,
+    stablecoin_exchange::orderbook::{
+        MAX_PRICE_POST_MODERATO, MAX_PRICE_PRE_MODERATO, MIN_PRICE_POST_MODERATO,
+        MIN_PRICE_PRE_MODERATO, compute_book_key,
+    },
     storage::{PrecompileStorageProvider, Slot, Storable, VecSlotExt},
     tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
 };
@@ -29,12 +28,18 @@ use tempo_precompiles_macros::contract;
 /// Minimum order size of $10 USD
 pub const MIN_ORDER_AMOUNT: u128 = 10_000_000;
 
-/// Calculate quote amount from base amount and tick price using checked arithmetic
-///
-/// Returns None if overflow would occur
-fn calculate_quote_amount(amount: u128, tick: i16) -> Option<u128> {
+/// Calculate quote amount using floor division (rounds down)
+/// Pre-Moderato behavior
+fn calculate_quote_amount_floor(amount: u128, tick: i16) -> Option<u128> {
     let price = tick_to_price(tick) as u128;
     amount.checked_mul(price)?.checked_div(PRICE_SCALE as u128)
+}
+
+/// Calculate quote amount using ceiling division (rounds up)
+/// Post-Moderato behavior
+fn calculate_quote_amount_ceil(amount: u128, tick: i16) -> Option<u128> {
+    let price = tick_to_price(tick) as u128;
+    Some(amount.checked_mul(price)?.div_ceil(PRICE_SCALE as u128))
 }
 
 #[contract]
@@ -101,6 +106,24 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// Get user's balance for a specific token
     pub fn balance_of(&mut self, user: Address, token: Address) -> Result<u128> {
         self.sload_balances(user, token)
+    }
+
+    /// Get MIN_PRICE value based on current hardfork
+    pub fn min_price(&self) -> u32 {
+        if self.storage.spec().is_moderato() {
+            MIN_PRICE_POST_MODERATO
+        } else {
+            MIN_PRICE_PRE_MODERATO
+        }
+    }
+
+    /// Get MAX_PRICE value based on current hardfork
+    pub fn max_price(&self) -> u32 {
+        if self.storage.spec().is_moderato() {
+            MAX_PRICE_POST_MODERATO
+        } else {
+            MAX_PRICE_PRE_MODERATO
+        }
     }
 
     /// Fetch order from storage. If the order is currently pending or filled, this function returns
@@ -346,6 +369,18 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         self.sload_book_keys()
     }
 
+    /// Convert scaled price to relative tick
+    /// Post-Moderato: validates price is within [MIN_PRICE, MAX_PRICE]
+    /// Pre-Moderato: no validation (legacy behavior)
+    pub fn price_to_tick(&self, price: u32) -> Result<i16> {
+        if self.storage.spec().is_moderato() {
+            // Post-Moderato: validate price bounds
+            orderbook::price_to_tick_post_moderato(price)
+        } else {
+            orderbook::price_to_tick_pre_moderato(price)
+        }
+    }
+
     pub fn create_pair(&mut self, base: Address) -> Result<B256> {
         // Validate that base is a TIP20 token (only after Moderato hardfork)
         if self.storage.spec().is_moderato() && !is_tip20(base) {
@@ -426,8 +461,12 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
-            let quote_amount = calculate_quote_amount(amount, tick)
-                .ok_or(StablecoinExchangeError::insufficient_balance())?;
+            let quote_amount = if self.storage.spec().is_moderato() {
+                calculate_quote_amount_ceil(amount, tick)
+            } else {
+                calculate_quote_amount_floor(amount, tick)
+            }
+            .ok_or(StablecoinExchangeError::insufficient_balance())?;
             (quote_token, quote_amount)
         } else {
             // For asks, escrow base tokens
@@ -515,8 +554,12 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
-            let quote_amount = calculate_quote_amount(amount, tick)
-                .ok_or(StablecoinExchangeError::insufficient_balance())?;
+            let quote_amount = if self.storage.spec().is_moderato() {
+                calculate_quote_amount_ceil(amount, tick)
+            } else {
+                calculate_quote_amount_floor(amount, tick)
+            }
+            .ok_or(StablecoinExchangeError::insufficient_balance())?;
             (quote_token, quote_amount)
         } else {
             // For asks, escrow base tokens
@@ -1570,11 +1613,137 @@ mod tests {
         let test_prices = [
             98000u32, 99000, 99900, 99999, 100000, 100001, 100100, 101000, 102000,
         ];
+
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let exchange = StablecoinExchange::new(&mut storage);
+
         for price in test_prices {
-            let tick = orderbook::price_to_tick(price);
+            let tick = exchange.price_to_tick(price).unwrap();
             let expected_tick = (price as i32 - orderbook::PRICE_SCALE as i32) as i16;
             assert_eq!(tick, expected_tick);
         }
+    }
+
+    #[test]
+    fn test_price_to_tick_post_moderato() -> eyre::Result<()> {
+        // Post-Moderato: price validation should be enforced
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let exchange = StablecoinExchange::new(&mut storage);
+
+        // Valid prices should succeed
+        assert_eq!(exchange.price_to_tick(orderbook::PRICE_SCALE)?, 0);
+        assert_eq!(
+            exchange.price_to_tick(orderbook::MIN_PRICE_POST_MODERATO)?,
+            MIN_TICK
+        );
+        assert_eq!(
+            exchange.price_to_tick(orderbook::MAX_PRICE_POST_MODERATO)?,
+            MAX_TICK
+        );
+
+        // Out of bounds prices should fail
+        let result = exchange.price_to_tick(orderbook::MIN_PRICE_POST_MODERATO - 1);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::TickOutOfBounds(_))
+        ));
+
+        let result = exchange.price_to_tick(orderbook::MAX_PRICE_POST_MODERATO + 1);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::TickOutOfBounds(_))
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_price_to_tick_pre_moderato() -> eyre::Result<()> {
+        // Pre-Moderato: no price validation (legacy behavior)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let exchange = StablecoinExchange::new(&mut storage);
+
+        // Valid prices should succeed
+        assert_eq!(exchange.price_to_tick(orderbook::PRICE_SCALE)?, 0);
+        assert_eq!(
+            exchange.price_to_tick(orderbook::MIN_PRICE_PRE_MODERATO)?,
+            i16::MIN
+        );
+        assert_eq!(
+            exchange.price_to_tick(orderbook::MAX_PRICE_PRE_MODERATO)?,
+            i16::MAX
+        );
+
+        // Out of bounds prices should also succeed (legacy behavior)
+        let tick = exchange.price_to_tick(orderbook::MIN_PRICE_PRE_MODERATO - 1)?;
+        assert_eq!(
+            tick,
+            ((orderbook::MIN_PRICE_PRE_MODERATO - 1) as i32 - orderbook::PRICE_SCALE as i32) as i16
+        );
+
+        let tick = exchange.price_to_tick(orderbook::MAX_PRICE_PRE_MODERATO + 1)?;
+        assert_eq!(
+            tick,
+            ((orderbook::MAX_PRICE_PRE_MODERATO + 1) as i32 - orderbook::PRICE_SCALE as i32) as i16
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_calculate_quote_amount_floor() {
+        // Floor division rounds DOWN
+        // amount = 100, tick = 1 means price = 100001
+        // 100 * 100001 / 100000 = 10000100 / 100000 = 100.001
+        // Should round down to 100
+        let amount = 100u128;
+        let tick = 1i16;
+        let result = calculate_quote_amount_floor(amount, tick).unwrap();
+
+        assert_eq!(result, 100, "Expected 100 (rounded down from 100.001)");
+
+        // Another test case
+        let amount2 = 999u128;
+        let tick2 = 5i16; // price = 100005
+        let result2 = calculate_quote_amount_floor(amount2, tick2).unwrap();
+        // 999 * 100005 / 100000 = 99904995 / 100000 = 999.04995 -> should be 999
+        assert_eq!(result2, 999, "Expected 999 (rounded down from 999.04995)");
+
+        // Test with no remainder (should work the same)
+        let amount3 = 100000u128;
+        let tick3 = 0i16; // price = 100000
+        let result3 = calculate_quote_amount_floor(amount3, tick3).unwrap();
+        // 100000 * 100000 / 100000 = 100000 (exact, no rounding)
+        assert_eq!(result3, 100000, "Exact division should remain exact");
+    }
+
+    #[test]
+    fn test_calculate_quote_amount_ceil() {
+        // Ceiling division rounds UP
+        // amount = 100, tick = 1 means price = 100001
+        // 100 * 100001 / 100000 = 10000100 / 100000 = 100.001
+        // Should round up to 101
+        let amount = 100u128;
+        let tick = 1i16;
+        let result = calculate_quote_amount_ceil(amount, tick).unwrap();
+
+        assert_eq!(result, 101, "Expected 101 (rounded up from 100.001)");
+
+        // Another test case
+        let amount2 = 999u128;
+        let tick2 = 5i16; // price = 100005
+        let result2 = calculate_quote_amount_ceil(amount2, tick2).unwrap();
+        // 999 * 100005 / 100000 = 99904995 / 100000 = 999.04995 -> should be 1000
+        assert_eq!(result2, 1000, "Expected 1000 (rounded up from 999.04995)");
+
+        // Test with no remainder (should work the same)
+        let amount3 = 100000u128;
+        let tick3 = 0i16; // price = 100000
+        let result3 = calculate_quote_amount_ceil(amount3, tick3).unwrap();
+        // 100000 * 100000 / 100000 = 100000 (exact, no rounding needed)
+        assert_eq!(result3, 100000, "Exact division should remain exact");
     }
 
     #[test]
