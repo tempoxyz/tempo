@@ -51,8 +51,12 @@ impl HashMapStorageProvider {
         self.beneficiary = beneficiary;
     }
 
-    pub fn with_spec(mut self, spec: TempoHardfork) -> Self {
+    pub fn set_spec(&mut self, spec: TempoHardfork) {
         self.spec = spec;
+    }
+
+    pub fn with_spec(mut self, spec: TempoHardfork) -> Self {
+        self.set_spec(spec);
         self
     }
 }

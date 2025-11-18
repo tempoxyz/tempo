@@ -2223,7 +2223,7 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_fee_pre_tx_handles_rewards_post_moderato() -> eyre::Result<()> {
         // Test with Moderato hardfork (rewards should be handled)
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let user = Address::random();
 
@@ -2233,6 +2233,8 @@ pub(crate) mod tests {
         // Setup token with rewards enabled
         let (token_id, initial_opted_in) =
             setup_token_with_rewards(&mut storage, admin, user, mint_amount, reward_amount)?;
+
+        storage.set_spec(TempoHardfork::Moderato);
 
         // Transfer fee from user
         let fee_amount = U256::from(100e18);
@@ -2297,7 +2299,7 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_fee_post_tx_handles_rewards_post_moderato() -> eyre::Result<()> {
         // Test with Moderato hardfork (rewards should be handled)
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let user = Address::random();
 
@@ -2307,6 +2309,8 @@ pub(crate) mod tests {
         // Setup token with rewards enabled
         let (token_id, _initial_opted_in) =
             setup_token_with_rewards(&mut storage, admin, user, mint_amount, reward_amount)?;
+
+        storage.set_spec(TempoHardfork::Moderato);
 
         // Simulate fee transfer: first take fee from user
         let fee_amount = U256::from(100e18);

@@ -1178,7 +1178,7 @@ mod tests {
     fn test_cancel_reward_removes_from_registry_post_moderato() -> eyre::Result<()> {
         // Test with Moderato hardfork - when cancelling the last stream at an end_time,
         // the token should be removed from the registry
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
         initialize_linking_usd(&mut storage, admin)?;
@@ -1209,6 +1209,8 @@ mod tests {
             let stream = token.get_stream(stream_id)?;
             (stream_id, stream.end_time as u128)
         };
+
+        storage.set_spec(TempoHardfork::Moderato);
 
         // Verify the token is in the registry before cancellation
         {
@@ -1308,10 +1310,11 @@ mod tests {
     fn test_scheduled_rewards_disabled_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let admin = Address::random();
-        let token_address = Address::random();
+
+        initialize_linking_usd(&mut storage, admin)?;
 
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "TEST", "USD", Address::ZERO, admin)?;
+        token.initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
