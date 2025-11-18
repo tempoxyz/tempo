@@ -219,7 +219,7 @@ impl Consensus<Block> for TempoConsensus {
             )));
         }
 
-        // If the moderator hardfork is not active, valdiate that the TIP20 Rewards Registry system
+        // If the moderator hardfork is not active, validate that the TIP20 Rewards Registry system
         // tx is the first transaction in the block. If the block timestamp is post moderato, skip
         // this step
         if !self
