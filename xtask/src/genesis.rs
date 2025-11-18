@@ -8,6 +8,7 @@ use alloy::{
 };
 use clap::Parser;
 use eyre::WrapErr as _;
+use indicatif::{ParallelProgressIterator, ProgressIterator};
 use rayon::prelude::*;
 use reth_evm::{
     EvmEnv, EvmFactory, EvmInternals,
@@ -17,7 +18,6 @@ use reth_evm::{
     },
 };
 use serde::{Deserialize, Serialize};
-use simple_tqdm::{ParTqdm, Tqdm};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::{
@@ -113,7 +113,7 @@ impl GenesisArgs {
 
         let addresses: Vec<Address> = (0..self.accounts)
             .into_par_iter()
-            .tqdm()
+            .progress()
             .map(|worker_id| -> eyre::Result<Address> {
                 let signer = MnemonicBuilder::<English>::default()
                     .phrase(self.mnemonic.clone())
@@ -198,7 +198,7 @@ impl GenesisArgs {
         let evm_state = evm.ctx_mut().journaled_state.evm_state();
         let mut genesis_alloc: BTreeMap<Address, GenesisAccount> = evm_state
             .iter()
-            .tqdm()
+            .progress()
             .map(|(address, account)| {
                 let storage = if !account.storage.is_empty() {
                     Some(
@@ -384,7 +384,7 @@ fn create_and_mint_token(
         )
         .expect("Token minting failed");
 
-    for address in recipients.iter().tqdm() {
+    for address in recipients.iter().progress() {
         token
             .mint(
                 admin,
@@ -417,13 +417,13 @@ fn initialize_linking_usd(
     linking_usd
         .token
         .grant_role_internal(admin, *TRANSFER_ROLE)?;
-    for recipient in recipients.iter().tqdm() {
+    for recipient in recipients.iter().progress() {
         linking_usd
             .token
             .grant_role_internal(*recipient, *TRANSFER_ROLE)?;
     }
 
-    for recipient in recipients.iter().tqdm() {
+    for recipient in recipients.iter().progress() {
         linking_usd
             .mint(
                 admin,
@@ -462,7 +462,7 @@ fn initialize_fee_manager(
     fee_manager
         .initialize()
         .expect("Could not init fee manager");
-    for address in initial_accounts.iter().tqdm() {
+    for address in initial_accounts.iter().progress() {
         fee_manager
             .set_user_token(
                 *address,
@@ -546,7 +546,7 @@ fn initialize_validator_config(
 
     // Add initial validators
     let mut validator_addresses = Vec::new();
-    for validator in initial_validators.iter().tqdm() {
+    for validator in initial_validators.iter().progress() {
         validator_config
             .add_validator(
                 owner,
