@@ -5,7 +5,7 @@ use alloy::{
     sol,
     sol_types::SolValue,
 };
-use alloy_primitives::{Address, B256, U256, b256, keccak256};
+use alloy_primitives::{Address, B256, U256, b256};
 use reth_evm::revm::state::Bytecode;
 use std::{env, str::FromStr};
 use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, IthacaAccount};
@@ -207,7 +207,7 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     let source = if let Ok(rpc_url) = env::var("RPC_URL") {
         NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
+        NodeSource::LocalNode(include_str!("../assets/test-genesis-moderato.json").to_string())
     };
     let (http_url, _node_handle) = setup_test_node(source).await?;
 
@@ -224,7 +224,7 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
         .build()?;
     let bob_addr = bob.address();
 
-    let amount = U256::random();
+    let amount = U256::from(1000000);
     token
         .mint(bob_addr, amount)
         .send()
@@ -237,12 +237,17 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     let code_before = provider.get_code_at(bob_addr).await?;
     assert!(code_before.is_empty());
 
-    let hash = keccak256(b"test");
+    // User can sign any arbitrary message
+    let message = b"I authorize delegation of my account to the default 7702 implementation";
+
+    // Compute the hash from the message
+    let hash = alloy::primitives::keccak256(message);
     let signature = bob.sign_hash_sync(&hash)?;
 
-    // Create a new tx to delegate to the default 7702 impl
+    // Create a new tx to delegate to the default 7702 impl using the new signature (bytes,bytes)
     let registrar = ITipAccountRegistrar::new(TIP_ACCOUNT_REGISTRAR, provider.clone());
-    let registrar_call = registrar.delegateToDefault(hash, signature.as_bytes().into());
+    let registrar_call =
+        registrar.delegateToDefault_1(message.to_vec().into(), signature.as_bytes().into());
     let addr = registrar_call.call().await?;
     assert_eq!(addr, bob_addr);
     let receipt = registrar_call.send().await?.get_receipt().await?;
