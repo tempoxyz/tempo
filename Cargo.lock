@@ -11402,7 +11402,6 @@ name = "tempo-consensus"
 version = "0.4.0"
 dependencies = [
  "alloy-consensus",
- "alloy-eips",
  "alloy-evm",
  "reth-chainspec",
  "reth-consensus",
