@@ -1,27 +1,9 @@
-use crate::rpc::pagination::{FilterRange, PaginationParams};
 use alloy::primitives::Address;
 use serde::{Deserialize, Serialize};
+use tempo_alloy::rpc::pagination::{FilterRange, PaginationParams};
 
 pub type OrdersParams = PaginationParams<OrdersFilters>;
 pub type Tick = i16;
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OrdersSort {
-    /// A field the items are compared with.
-    pub on: String,
-
-    /// An ordering direction.
-    pub order: OrdersSortOrder,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum OrdersSortOrder {
-    Asc,
-    #[default]
-    Desc,
-}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

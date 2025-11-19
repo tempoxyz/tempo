@@ -1,14 +1,12 @@
-use crate::rpc::{
-    pagination::PaginationParams,
-    token::{
-        role_history::{RoleHistoryFilters, RoleHistoryResponse},
-        tokens::{TokensFilters, TokensResponse},
-        tokens_by_address::{TokensByAddressParams, TokensByAddressResponse},
-    },
+use crate::rpc::token::{
+    role_history::{RoleHistoryFilters, RoleHistoryResponse},
+    tokens::{TokensFilters, TokensResponse},
+    tokens_by_address::{TokensByAddressParams, TokensByAddressResponse},
 };
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_node_core::rpc::result::internal_rpc_err;
 use reth_rpc_eth_api::RpcNodeCore;
+use tempo_alloy::rpc::pagination::PaginationParams;
 
 pub mod role_history;
 pub mod tokens;

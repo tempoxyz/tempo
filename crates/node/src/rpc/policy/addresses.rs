@@ -1,6 +1,6 @@
-use crate::rpc::pagination::PaginationParams;
 use alloy_primitives::Address;
 use serde::{Deserialize, Serialize};
+use tempo_alloy::rpc::pagination::PaginationParams;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
