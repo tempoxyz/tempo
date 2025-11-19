@@ -1625,7 +1625,7 @@ dependencies = [
  "bitflags 2.10.0",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "regex",
@@ -1643,7 +1643,7 @@ dependencies = [
  "bitflags 2.10.0",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "regex",
@@ -2349,7 +2349,7 @@ dependencies = [
 [[package]]
 name = "commonware-broadcast"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=19f19d32760daf1d497295726ec92a1e6b84959f#19f19d32760daf1d497295726ec92a1e6b84959f"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=b9740e83dbdacc45acc2dd14fcbaddc2f02e8252#b9740e83dbdacc45acc2dd14fcbaddc2f02e8252"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2367,7 +2367,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=19f19d32760daf1d497295726ec92a1e6b84959f#19f19d32760daf1d497295726ec92a1e6b84959f"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=b9740e83dbdacc45acc2dd14fcbaddc2f02e8252#b9740e83dbdacc45acc2dd14fcbaddc2f02e8252"
 dependencies = [
  "bytes",
  "paste",
@@ -2377,7 +2377,7 @@ dependencies = [
 [[package]]
 name = "commonware-consensus"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=19f19d32760daf1d497295726ec92a1e6b84959f#19f19d32760daf1d497295726ec92a1e6b84959f"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=b9740e83dbdacc45acc2dd14fcbaddc2f02e8252#b9740e83dbdacc45acc2dd14fcbaddc2f02e8252"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -2403,7 +2403,7 @@ dependencies = [
 [[package]]
 name = "commonware-cryptography"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=19f19d32760daf1d497295726ec92a1e6b84959f#19f19d32760daf1d497295726ec92a1e6b84959f"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=b9740e83dbdacc45acc2dd14fcbaddc2f02e8252#b9740e83dbdacc45acc2dd14fcbaddc2f02e8252"
 dependencies = [
  "blake3",
  "blst",
@@ -2428,7 +2428,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=19f19d32760daf1d497295726ec92a1e6b84959f#19f19d32760daf1d497295726ec92a1e6b84959f"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=b9740e83dbdacc45acc2dd14fcbaddc2f02e8252#b9740e83dbdacc45acc2dd14fcbaddc2f02e8252"
 dependencies = [
  "futures",
  "proc-macro-crate",
@@ -2442,7 +2442,7 @@ dependencies = [
 [[package]]
 name = "commonware-p2p"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=19f19d32760daf1d497295726ec92a1e6b84959f#19f19d32760daf1d497295726ec92a1e6b84959f"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=b9740e83dbdacc45acc2dd14fcbaddc2f02e8252#b9740e83dbdacc45acc2dd14fcbaddc2f02e8252"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2468,7 +2468,7 @@ dependencies = [
 [[package]]
 name = "commonware-resolver"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=19f19d32760daf1d497295726ec92a1e6b84959f#19f19d32760daf1d497295726ec92a1e6b84959f"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=b9740e83dbdacc45acc2dd14fcbaddc2f02e8252#b9740e83dbdacc45acc2dd14fcbaddc2f02e8252"
 dependencies = [
  "bimap",
  "bytes",
@@ -2490,7 +2490,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=19f19d32760daf1d497295726ec92a1e6b84959f#19f19d32760daf1d497295726ec92a1e6b84959f"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=b9740e83dbdacc45acc2dd14fcbaddc2f02e8252#b9740e83dbdacc45acc2dd14fcbaddc2f02e8252"
 dependencies = [
  "async-lock",
  "axum",
@@ -2522,7 +2522,7 @@ dependencies = [
 [[package]]
 name = "commonware-storage"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=19f19d32760daf1d497295726ec92a1e6b84959f#19f19d32760daf1d497295726ec92a1e6b84959f"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=b9740e83dbdacc45acc2dd14fcbaddc2f02e8252#b9740e83dbdacc45acc2dd14fcbaddc2f02e8252"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2545,7 +2545,7 @@ dependencies = [
 [[package]]
 name = "commonware-stream"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=19f19d32760daf1d497295726ec92a1e6b84959f#19f19d32760daf1d497295726ec92a1e6b84959f"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=b9740e83dbdacc45acc2dd14fcbaddc2f02e8252#b9740e83dbdacc45acc2dd14fcbaddc2f02e8252"
 dependencies = [
  "bytes",
  "chacha20poly1305",
@@ -2565,7 +2565,7 @@ dependencies = [
 [[package]]
 name = "commonware-utils"
 version = "0.0.63"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=19f19d32760daf1d497295726ec92a1e6b84959f#19f19d32760daf1d497295726ec92a1e6b84959f"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=b9740e83dbdacc45acc2dd14fcbaddc2f02e8252#b9740e83dbdacc45acc2dd14fcbaddc2f02e8252"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -3111,7 +3111,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d162beedaa69905488a8da94f5ac3edb4dd4788b732fadb7bd120b2625c1976"
 dependencies = [
  "data-encoding",
- "syn 2.0.110",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -3299,7 +3299,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3597,7 +3597,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4529,7 +4529,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.1",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -5828,7 +5828,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6820,7 +6820,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9120690fafc389a67ba3803df527d0ec9cbbc9cc45e4cc20b332996dfb672425"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.110",
@@ -6880,7 +6880,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.1",
+ "socket2 0.5.10",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
@@ -6917,9 +6917,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.1",
+ "socket2 0.5.10",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -10327,7 +10327,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -11230,7 +11230,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -11466,6 +11466,7 @@ version = "0.4.0"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
+ "alloy-genesis",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-sol-types",
@@ -11480,6 +11481,7 @@ dependencies = [
  "reth-revm",
  "reth-rpc-eth-api",
  "revm",
+ "serde_json",
  "tempo-chainspec",
  "tempo-consensus",
  "tempo-payload-types",
@@ -12994,7 +12996,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

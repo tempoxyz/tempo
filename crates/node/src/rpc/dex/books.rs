@@ -1,6 +1,7 @@
-use crate::rpc::{dex::orders::Tick, pagination::FilterRange};
+use crate::rpc::dex::orders::Tick;
 use alloy_primitives::{Address, B256};
 use serde::{Deserialize, Serialize};
+use tempo_alloy::rpc::pagination::FilterRange;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

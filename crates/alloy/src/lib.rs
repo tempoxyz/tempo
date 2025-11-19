@@ -37,6 +37,9 @@
 mod network;
 pub use network::*;
 
+/// Provider traits.
+pub mod provider;
+
 pub mod rpc;
 
 #[doc(inline)]

@@ -11,3 +11,6 @@ pub use receipt::TempoTransactionReceipt;
 
 #[cfg(feature = "tempo-compat")]
 mod compat;
+
+/// Various helper types for paginated queries.
+pub mod pagination;
