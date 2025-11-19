@@ -45,11 +45,38 @@ pub struct ExecutionNodeConfig {
 }
 
 impl ExecutionNodeConfig {
-    /// Generate multiple execution node configs with optional trusted peer connections.
-    pub fn generate_many(count: u32, connect_peers: bool) -> Vec<Self> {
+    /// Create a default generator for building multiple execution node configs.
+    pub fn generator() -> ExecutionNodeConfigGenerator {
+        ExecutionNodeConfigGenerator::default()
+    }
+}
+
+/// Generator for creating multiple execution node configurations.
+#[derive(Default)]
+pub struct ExecutionNodeConfigGenerator {
+    count: u32,
+    connect_peers: bool,
+}
+
+impl ExecutionNodeConfigGenerator {
+    /// Set the number of nodes to generate.
+    pub fn with_count(mut self, count: u32) -> Self {
+        self.count = count;
+        self
+    }
+
+    /// Set whether to enable peer connections between all generated nodes.
+    pub fn with_peers(mut self, connect: bool) -> Self {
+        self.connect_peers = connect;
+        self
+    }
+
+    /// Generate the execution node configurations.
+    pub fn generate(self) -> Vec<ExecutionNodeConfig> {
         // Reserve ports by binding to them
-        let ports: Vec<u16> = (0..count)
+        let ports: Vec<u16> = (0..self.count)
             .map(|_| {
+                // This should work, but there's a chance that it results in flaky tests
                 let listener = TcpListener::bind("127.0.0.1:0").unwrap();
                 let port = listener
                     .local_addr()
@@ -60,16 +87,16 @@ impl ExecutionNodeConfig {
             })
             .collect();
 
-        let mut configs: Vec<Self> = ports
-            .iter()
-            .map(|&port| Self {
+        let mut configs: Vec<ExecutionNodeConfig> = ports
+            .into_iter()
+            .map(|port| ExecutionNodeConfig {
                 secret_key: B256::random(),
                 trusted_peers: vec![],
                 port,
             })
             .collect();
 
-        if connect_peers {
+        if self.connect_peers {
             let enode_urls: Vec<String> = configs
                 .iter()
                 .map(|config| {

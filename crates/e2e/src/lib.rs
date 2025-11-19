@@ -110,8 +110,11 @@ pub async fn setup_validators(
         .into();
 
     let mut private_keys = private_keys.into_iter();
-    let execution_configs =
-        ExecutionNodeConfig::generate_many(how_many_signers, connect_execution_layer_nodes);
+    let execution_configs = ExecutionNodeConfig::generator()
+        .with_count(how_many_signers)
+        .with_peers(connect_execution_layer_nodes)
+        .generate();
+
     // Process the signers
     for ((private_key, share), execution_config) in private_keys
         .by_ref()
