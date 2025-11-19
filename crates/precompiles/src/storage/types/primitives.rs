@@ -24,6 +24,12 @@ tempo_precompiles_macros::storable_nested_arrays!();
 
 impl StorableType for bool {
     const LAYOUT: Layout = Layout::Bytes(1);
+
+    type Handler = Slot<Self>;
+
+    fn handle(slot: U256, ctx: LayoutCtx) -> Self::Handler {
+        Slot::new_with_ctx(slot, ctx)
+    }
 }
 
 impl Storable<1> for bool {
@@ -65,6 +71,11 @@ impl Storable<1> for bool {
 
 impl StorableType for Address {
     const LAYOUT: Layout = Layout::Bytes(20);
+    type Handler = Slot<Self>;
+
+    fn handle(slot: U256, ctx: LayoutCtx) -> Self::Handler {
+        Slot::new_with_ctx(slot, ctx)
+    }
 }
 
 impl Storable<1> for Address {

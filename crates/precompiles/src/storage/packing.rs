@@ -173,6 +173,16 @@ pub const fn calc_element_offset(idx: usize, elem_bytes: usize) -> usize {
     (idx * elem_bytes) % 32
 }
 
+/// Calculate the element location within a slot for an array element at index `idx`.
+#[inline]
+pub const fn calc_element_loc(idx: usize, elem_bytes: usize) -> FieldLocation {
+    FieldLocation::new(
+        calc_element_slot(idx, elem_bytes),
+        calc_element_offset(idx, elem_bytes),
+        elem_bytes,
+    )
+}
+
 /// Calculate the total number of slots needed for an array.
 #[inline]
 pub const fn calc_packed_slot_count(n: usize, elem_bytes: usize) -> usize {

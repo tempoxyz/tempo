@@ -43,6 +43,11 @@ fn gen_storable_type_impl(type_path: &TokenStream, byte_count: usize) -> TokenSt
     quote! {
         impl StorableType for #type_path {
             const LAYOUT: Layout = Layout::Bytes(#byte_count);
+            type Handler = crate::storage::Slot<Self>;
+
+            fn handle(slot: U256, ctx: LayoutCtx) -> Self::Handler {
+                crate::storage::Slot::new_with_ctx(slot, ctx)
+            }
         }
     }
 }
@@ -517,6 +522,13 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
         impl StorableType for [#elem_type; #array_size] {
             // Arrays cannot be packed, so they must take full slots
             const LAYOUT: Layout = Layout::Slots(#mod_ident::SLOT_COUNT);
+
+            type Handler = crate::storage::types::ArrayHandler<#elem_type, #array_size>;
+
+            fn handle(slot: U256, ctx: LayoutCtx) -> Self::Handler {
+                debug_assert_eq!(ctx, LayoutCtx::FULL, "Arrays cannot be packed");
+                Self::Handler::new(slot)
+            }
         }
 
         // Implement Storable
@@ -867,6 +879,12 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
         // Implement StorableType
         impl crate::storage::StorableType for [#struct_type; #array_size] {
             const LAYOUT: crate::storage::Layout = crate::storage::Layout::Slots(#mod_ident::SLOT_COUNT);
+
+            type Handler = crate::storage::Slot<Self>;
+
+            fn handle(slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx) -> Self::Handler {
+                crate::storage::Slot::new_with_ctx(slot, ctx)
+            }
         }
 
         // Implement Storable

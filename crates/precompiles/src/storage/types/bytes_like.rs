@@ -20,6 +20,11 @@ use crate::{
 
 impl StorableType for Bytes {
     const LAYOUT: Layout = Layout::Slots(1);
+    type Handler = Slot<Self>;
+
+    fn handle(slot: U256, ctx: LayoutCtx) -> Self::Handler {
+        Slot::new_with_ctx(slot, ctx)
+    }
 }
 
 impl Storable<1> for Bytes {
@@ -54,6 +59,11 @@ impl Storable<1> for Bytes {
 
 impl StorableType for String {
     const LAYOUT: Layout = Layout::Slots(1);
+    type Handler = Slot<Self>;
+
+    fn handle(slot: U256, ctx: LayoutCtx) -> Self::Handler {
+        Slot::new_with_ctx(slot, ctx)
+    }
 }
 
 impl Storable<1> for String {

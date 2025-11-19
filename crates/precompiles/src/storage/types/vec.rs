@@ -12,22 +12,141 @@
 //! - Multi-slot structs are not currently supported in Vec
 
 use alloy::primitives::U256;
+use std::marker::PhantomData;
 
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::{
         Layout, LayoutCtx, Storable, StorableType, StorageOps,
         packing::{
-            calc_element_offset, calc_element_slot, calc_packed_slot_count, extract_packed_value,
-            insert_packed_value, is_packable, zero_packed_value,
+            calc_element_loc, calc_element_offset, calc_element_slot, calc_packed_slot_count,
+            extract_packed_value, insert_packed_value, is_packable, zero_packed_value,
         },
         types::Slot,
     },
 };
 
-impl<T: StorableType> StorableType for Vec<T> {
+impl<T> StorableType for Vec<T>
+where
+    T: Storable<1> + StorableType,
+{
     /// Vec base slot occupies one full storage slot (stores length).
     const LAYOUT: Layout = Layout::Slots(1);
+    type Handler = VecHandler<T>;
+
+    fn handle(slot: U256, _ctx: LayoutCtx) -> Self::Handler {
+        VecHandler::new(slot)
+    }
+}
+
+/// Type-safe handler for accessing `Vec<T>` in storage.
+///
+/// Provides both full-vector operations (read/write/delete) and individual element access.
+/// The handler is a thin wrapper around a storage slot number and delegates full-vector
+/// operations to `Slot<Vec<T>>`.
+///
+/// # Element Access
+///
+/// Use `at(index)` to get a `Slot<T>` for individual element operations:
+/// - For packed elements (T::BYTES ≤ 16): returns a packed `Slot<T>` with byte offsets
+/// - For unpacked elements: returns a full `Slot<T>` for the element's dedicated slot
+///
+/// # Example
+///
+/// ```ignore
+/// let handler = <Vec<u8> as StorableType>::handle(base_slot, LayoutCtx::FULL);
+///
+/// // Full vector operations
+/// let vec = handler.read(&mut storage)?;
+/// handler.write(&mut storage, vec![1, 2, 3])?;
+///
+/// // Individual element operations
+/// let elem = handler.at(0).read(&mut storage)?;
+/// handler.at(1).write(&mut storage, 42)?;
+/// handler.at(2).delete(&mut storage)?;
+/// ```
+pub struct VecHandler<T>
+where
+    T: Storable<1> + StorableType,
+{
+    base_slot: U256,
+    _phantom: PhantomData<T>,
+}
+
+impl<T> VecHandler<T>
+where
+    T: Storable<1> + StorableType,
+{
+    /// Creates a new handler for the vector at the given base slot.
+    #[inline]
+    pub const fn new(base_slot: U256) -> Self {
+        Self {
+            base_slot,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Returns a `Slot` accessor for full-vector operations.
+    #[inline]
+    fn as_slot(&self) -> Slot<Vec<T>> {
+        Slot::new(self.base_slot)
+    }
+
+    /// Reads the entire vector from storage.
+    #[inline]
+    pub fn read<S: StorageOps>(&self, storage: &mut S) -> Result<Vec<T>> {
+        self.as_slot().read(storage)
+    }
+
+    /// Writes the entire vector to storage.
+    #[inline]
+    pub fn write<S: StorageOps>(&self, storage: &mut S, value: Vec<T>) -> Result<()> {
+        self.as_slot().write(storage, value)
+    }
+
+    /// Deletes the entire vector from storage (clears length and all elements).
+    #[inline]
+    pub fn delete<S: StorageOps>(&self, storage: &mut S) -> Result<()> {
+        self.as_slot().delete(storage)
+    }
+
+    /// Returns the length of the vector.
+    #[inline]
+    pub fn len<S: StorageOps>(&self, storage: &mut S) -> Result<usize> {
+        read_length(storage, self.base_slot)
+    }
+
+    /// Returns a `Slot<T>` accessor for the element at the given index.
+    ///
+    /// The returned `Slot` automatically handles packing based on `T::BYTES`:
+    #[inline]
+    pub fn at(&self, index: usize) -> Slot<T> {
+        let data_start = calc_data_slot(self.base_slot);
+
+        // Pack elements if necessary. Vec elements can't be split across slots.
+        if T::BYTES <= 16 {
+            Slot::<T>::new_at_loc(data_start, calc_element_loc(index, T::BYTES))
+        } else {
+            Slot::<T>::new(data_start + U256::from(index))
+        }
+    }
+
+    /// Pushes a new element to the end of the vector.
+    ///
+    /// Automatically increments the length and handles packing for small types.
+    #[inline]
+    pub fn push<S: StorageOps>(&self, storage: &mut S, value: T) -> Result<()> {
+        vec_push(storage, self.base_slot, value)
+    }
+
+    /// Pops the last element from the vector.
+    ///
+    /// Returns `None` if the vector is empty. Automatically decrements the length
+    /// and zeros out the popped element's storage slot.
+    #[inline]
+    pub fn pop<S: StorageOps>(&self, storage: &mut S) -> Result<Option<T>> {
+        vec_pop(storage, self.base_slot)
+    }
 }
 
 impl<T> Storable<1> for Vec<T>

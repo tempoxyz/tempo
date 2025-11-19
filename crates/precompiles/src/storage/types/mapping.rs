@@ -3,7 +3,7 @@
 use alloy::primitives::{U256, keccak256};
 use std::marker::PhantomData;
 
-use crate::storage::{Layout, Slot, Storable, StorableType, StorageKey};
+use crate::storage::{Layout, LayoutCtx, Slot, Storable, StorableType, StorageKey};
 
 /// Type-safe access wrapper for EVM storage mappings (hash-based key-value storage).
 ///
@@ -184,6 +184,11 @@ impl<K1, K2, V> Default for NestedMapping<K1, K2, V> {
 // **NOTE:** Necessary to allow it to participate in struct layout calculations.
 impl<K, V> StorableType for Mapping<K, V> {
     const LAYOUT: Layout = Layout::Slots(1);
+    type Handler = Self;
+
+    fn handle(slot: U256, _ctx: LayoutCtx) -> Self::Handler {
+        Self::new(slot)
+    }
 }
 
 // Nested mappings occupy a full 32-byte slot in the layout (used as a base for hashing),
@@ -192,6 +197,11 @@ impl<K, V> StorableType for Mapping<K, V> {
 // **NOTE:** Necessary to allow it to participate in struct layout calculations.
 impl<K1, K2, V> StorableType for NestedMapping<K1, K2, V> {
     const LAYOUT: Layout = Layout::Slots(1);
+    type Handler = Self;
+
+    fn handle(slot: U256, _ctx: LayoutCtx) -> Self::Handler {
+        Self::new(slot)
+    }
 }
 
 // -- HELPER FUNCTIONS ---------------------------------------------------------

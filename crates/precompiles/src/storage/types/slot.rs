@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 use crate::{
     error::Result,
-    storage::{FieldLocation, Storable, StorageOps},
+    storage::{FieldLocation, LayoutCtx, Storable, StorageOps},
 };
 
 /// Type-safe wrapper for a single EVM storage slot.
@@ -47,6 +47,18 @@ impl<T> Slot<T> {
         Self {
             slot,
             ctx: crate::storage::types::LayoutCtx::FULL,
+            _ty: PhantomData,
+        }
+    }
+
+    /// Creates a new `Slot` with the given slot number and layout context.
+    ///
+    /// This is used by the handler system to create slots with specific packing contexts.
+    #[inline]
+    pub const fn new_with_ctx(slot: U256, ctx: LayoutCtx) -> Self {
+        Self {
+            slot,
+            ctx,
             _ty: PhantomData,
         }
     }

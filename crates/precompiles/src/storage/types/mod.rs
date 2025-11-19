@@ -4,8 +4,10 @@ pub use slot::*;
 pub mod mapping;
 pub use mapping::*;
 
+pub mod array;
 mod bytes_like;
 mod primitives;
+pub use array::*;
 pub mod vec;
 
 use crate::{error::Result, storage::StorageOps};
@@ -134,6 +136,16 @@ pub trait StorableType {
 
     /// Whether this type can be packed with adjacent fields.
     const IS_PACKABLE: bool = Self::LAYOUT.is_packable();
+
+    /// The handler type that provides storage access for this type.
+    ///
+    /// For primitives, this is `Slot<Self>`.
+    /// For mappings, this is `Self` (mappings are their own handlers).
+    /// For user-defined structs, this is a generated handler type (e.g., `MyStructHandler`).
+    type Handler;
+
+    /// Creates a handler for this type at the given storage location.
+    fn handle(slot: U256, ctx: LayoutCtx) -> Self::Handler;
 }
 
 /// Trait for types that can be stored/loaded from EVM storage.

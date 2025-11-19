@@ -5,7 +5,7 @@ use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Fields, Ident, Type};
 
 use crate::{
-    FieldInfo,
+    FieldInfo, FieldKind,
     packing::{self, LayoutField, PackingConstants},
     storable_primitives::gen_struct_arrays,
     utils::{extract_mapping_types, extract_storable_array_sizes, to_snake_case},
@@ -88,13 +88,23 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     let to_evm_words_impl = gen_to_evm_words_impl(&direct_fields, &mod_ident);
     let from_evm_words_impl = gen_from_evm_words_impl(&direct_fields, &mod_ident);
 
+    // Generate handler struct for field access
+    let handler_struct = gen_handler_struct(strukt, &layout_fields, &mod_ident);
+    let handler_name = format_ident!("{}Handler", strukt);
+
     let expanded = quote! {
         #packing_module
+        #handler_struct
 
         // impl `StorableType` for layout information
         impl #impl_generics crate::storage::StorableType for #strukt #ty_generics #where_clause {
             // Structs cannot be packed, so they must take full slots
             const LAYOUT: crate::storage::Layout = crate::storage::Layout::Slots(#mod_ident::SLOT_COUNT);
+            type Handler = #handler_name;
+
+            fn handle(slot: ::alloy::primitives::U256, _ctx: crate::storage::LayoutCtx) -> Self::Handler {
+                #handler_name::new(slot)
+            }
         }
 
         // `Storable` implementation: loads/stores only directly accessible fields, skips mappings
@@ -174,6 +184,119 @@ fn gen_packing_module_from_ir(fields: &[LayoutField<'_>], mod_ident: &Ident) -> 
 
             #packing_constants
             pub const SLOT_COUNT: usize = (#last_slot_const.saturating_add(::alloy::primitives::U256::ONE)).as_limbs()[0] as usize;
+        }
+    }
+}
+
+/// Generate a handler struct for the storable type.
+///
+/// The handler provides type-safe access to both the full struct and individual fields.
+fn gen_handler_struct(
+    struct_name: &Ident,
+    fields: &[LayoutField<'_>],
+    mod_ident: &Ident,
+) -> TokenStream {
+    let handler_name = format_ident!("{}Handler", struct_name);
+
+    // Generate field accessor methods
+    let field_accessors: Vec<_> = fields
+        .iter()
+        .map(|field| gen_field_accessor(field, mod_ident))
+        .collect();
+
+    quote! {
+        /// Type-safe handler for accessing `#struct_name` in storage.
+        ///
+        /// Provides both full-struct operations (read/write/delete) and individual field access.
+        pub struct #handler_name {
+            base_slot: ::alloy::primitives::U256,
+        }
+
+        impl #handler_name {
+            /// Creates a new handler for the struct at the given base slot.
+            #[inline]
+            pub const fn new(base_slot: ::alloy::primitives::U256) -> Self {
+                Self { base_slot }
+            }
+
+            /// Returns a `Slot` accessor for full-struct operations.
+            #[inline]
+            fn as_slot(&self) -> crate::storage::Slot<#struct_name> {
+                crate::storage::Slot::new(self.base_slot)
+            }
+
+            /// Reads the entire struct from storage.
+            #[inline]
+            pub fn read<S: crate::storage::StorageOps>(
+                &self,
+                storage: &mut S
+            ) -> crate::error::Result<#struct_name> {
+                self.as_slot().read(storage)
+            }
+
+            /// Writes the entire struct to storage.
+            #[inline]
+            pub fn write<S: crate::storage::StorageOps>(
+                &self,
+                storage: &mut S,
+                value: #struct_name
+            ) -> crate::error::Result<()> {
+                self.as_slot().write(storage, value)
+            }
+
+            /// Deletes the entire struct from storage (sets all slots to zero).
+            #[inline]
+            pub fn delete<S: crate::storage::StorageOps>(
+                &self,
+                storage: &mut S
+            ) -> crate::error::Result<()> {
+                self.as_slot().delete(storage)
+            }
+
+            // Field accessors
+            #(#field_accessors)*
+        }
+    }
+}
+
+/// Generate a field accessor method for the handler.
+fn gen_field_accessor(field: &LayoutField<'_>, mod_ident: &Ident) -> TokenStream {
+    let field_name = field.name;
+
+    match &field.kind {
+        FieldKind::Slot(ty) => {
+            // Use FieldLocation constant for scalar fields
+            let loc_const = PackingConstants::new(field_name).location();
+            quote! {
+                /// Returns a `Slot` accessor for the `#field_name` field.
+                #[inline]
+                pub fn #field_name(&self) -> crate::storage::Slot<#ty> {
+                    crate::storage::Slot::new_at_loc::<{ <#ty as crate::storage::StorableType>::SLOTS }>(
+                        self.base_slot,
+                        #mod_ident::#loc_const
+                    )
+                }
+            }
+        }
+        FieldKind::Mapping { key, value } => {
+            let slot_const = PackingConstants::new(field_name).slot();
+            quote! {
+                /// Returns a `Mapping` accessor for the `#field_name` field.
+                #[inline]
+                pub fn #field_name(&self) -> crate::storage::Mapping<#key, #value> {
+                    crate::storage::Mapping::new(self.base_slot + #mod_ident::#slot_const)
+                }
+            }
+        }
+        FieldKind::NestedMapping { key1, key2, value } => {
+            let slot_const = PackingConstants::new(field_name).slot();
+            quote! {
+                /// Returns a `NestedMapping` accessor for the `#field_name` field.
+                #[inline]
+                pub fn #field_name(&self) -> crate::storage::NestedMapping<#key1, #key2, #value> {
+                    crate::storage::NestedMapping::new(self.base_slot + #mod_ident::#slot_const)
+                }
+            }
         }
     }
 }
