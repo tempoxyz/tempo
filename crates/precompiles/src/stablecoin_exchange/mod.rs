@@ -4677,4 +4677,83 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_place_post_allegretto() -> Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+        let admin = Address::random();
+        let user = Address::random();
+
+        // Setup tokens
+        let (base_token, quote_token) =
+            setup_test_tokens(exchange.storage, admin, user, exchange.address, 1_000_000);
+
+        // Before placing order, verify pair doesn't exist
+        let book_key = compute_book_key(base_token, quote_token);
+        let book_before = exchange.sload_books(book_key)?;
+        assert!(book_before.base.is_zero(),);
+
+        // Place a order which should also create the pair
+        exchange.place(user, base_token, MIN_ORDER_AMOUNT, true, 0)?;
+
+        let book_after = exchange.sload_books(book_key)?;
+        assert_eq!(book_after.base, base_token);
+
+        // Verify PairCreated event was emitted (along with OrderPlaced)
+        let events = &exchange.storage.events[&exchange.address];
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0],
+            StablecoinExchangeEvents::PairCreated(IStablecoinExchange::PairCreated {
+                key: book_key,
+                base: base_token,
+                quote: quote_token,
+            })
+            .into_log_data()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_place_flip_post_allegretto() -> Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let admin = Address::random();
+        let user = Address::random();
+
+        // Setup tokens
+        let (base_token, quote_token) =
+            setup_test_tokens(exchange.storage, admin, user, exchange.address, 1_000_000);
+
+        // Before placing flip order, verify pair doesn't exist
+        let book_key = compute_book_key(base_token, quote_token);
+        let book_before = exchange.sload_books(book_key)?;
+        assert!(book_before.base.is_zero(),);
+
+        // Place a flip order which should also create the pair
+        exchange.place_flip(user, base_token, MIN_ORDER_AMOUNT, true, 0, 10)?;
+
+        let book_after = exchange.sload_books(book_key)?;
+        assert_eq!(book_after.base, base_token);
+
+        // Verify PairCreated event was emitted (along with FlipOrderPlaced)
+        let events = &exchange.storage.events[&exchange.address];
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0],
+            StablecoinExchangeEvents::PairCreated(IStablecoinExchange::PairCreated {
+                key: book_key,
+                base: base_token,
+                quote: quote_token,
+            })
+            .into_log_data()
+        );
+
+        Ok(())
+    }
 }
