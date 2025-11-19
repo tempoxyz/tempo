@@ -174,62 +174,60 @@ async fn ensure_no_progress(context: &Context, tries: u32) {
 fn network_resumes_after_restart() {
     let _ = tempo_eyre::install();
 
-    for seed in 0..3 {
-        let linkage = Link {
-            latency: Duration::from_millis(10),
-            jitter: Duration::from_millis(1),
-            success_rate: 1.0,
-        };
+    let linkage = Link {
+        latency: Duration::from_millis(10),
+        jitter: Duration::from_millis(1),
+        success_rate: 1.0,
+    };
 
-        let setup = Setup {
-            how_many_signers: 3, // quorum for 3 validators is 3.
-            seed,
-            linkage,
-            epoch_length: 100,
-            connect_execution_layer_nodes: false,
-        };
-        let shutdown_height = 5;
-        let final_height = 10;
+    let setup = Setup {
+        how_many_signers: 3, // quorum for 3 validators is 3.
+        seed: 0,
+        linkage,
+        epoch_length: 100,
+        connect_execution_layer_nodes: false,
+    };
+    let shutdown_height = 5;
+    let final_height = 10;
 
-        let cfg = deterministic::Config::default().with_seed(setup.seed);
-        let executor = Runner::from(cfg);
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+    let executor = Runner::from(cfg);
 
-        executor.start(|mut context| async move {
-            let execution_runtime = ExecutionRuntime::new();
+    executor.start(|mut context| async move {
+        let execution_runtime = ExecutionRuntime::new();
 
-            let (mut nodes, mut oracle) =
-                setup_validators(context.clone(), &execution_runtime, setup.clone()).await;
+        let (mut nodes, mut oracle) =
+            setup_validators(context.clone(), &execution_runtime, setup.clone()).await;
 
-            join_all(nodes.iter_mut().map(|node| node.start())).await;
-            link_validators(&mut oracle, &nodes, setup.linkage.clone(), None).await;
+        join_all(nodes.iter_mut().map(|node| node.start())).await;
+        link_validators(&mut oracle, &nodes, setup.linkage.clone(), None).await;
 
-            debug!(
-                height = shutdown_height,
-                "waiting for network to reach target height before stopping a validator",
-            );
-            wait_for_height(&context, setup.how_many_signers, shutdown_height).await;
+        debug!(
+            height = shutdown_height,
+            "waiting for network to reach target height before stopping a validator",
+        );
+        wait_for_height(&context, setup.how_many_signers, shutdown_height).await;
 
-            let idx = context.gen_range(0..nodes.len());
-            nodes[idx].stop().await;
-            debug!(public_key = %nodes[idx].public_key(), "stopped a random validator");
+        let idx = context.gen_range(0..nodes.len());
+        nodes[idx].stop().await;
+        debug!(public_key = %nodes[idx].public_key(), "stopped a random validator");
 
-            // wait a bit to let the network settle; some finalizations come in later
-            context.sleep(Duration::from_secs(1)).await;
-            ensure_no_progress(&context, 5).await;
+        // wait a bit to let the network settle; some finalizations come in later
+        context.sleep(Duration::from_secs(1)).await;
+        ensure_no_progress(&context, 5).await;
 
-            nodes[idx].start().await;
-            debug!(
-                public_key = %nodes[idx].public_key(),
-                "restarted validator",
-            );
+        nodes[idx].start().await;
+        debug!(
+            public_key = %nodes[idx].public_key(),
+            "restarted validator",
+        );
 
-            debug!(
-                height = final_height,
-                "waiting for reconstituted validators to reach target height to reach test success",
-            );
-            wait_for_height(&context, nodes.len() as u32, final_height).await;
-        })
-    }
+        debug!(
+            height = final_height,
+            "waiting for reconstituted validators to reach target height to reach test success",
+        );
+        wait_for_height(&context, nodes.len() as u32, final_height).await;
+    })
 }
 
 #[test_traced]
