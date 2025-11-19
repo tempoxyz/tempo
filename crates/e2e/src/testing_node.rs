@@ -4,7 +4,7 @@ use crate::execution_runtime::{self, ExecutionNode, ExecutionNodeConfig, Executi
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::simulated::{Control, Oracle, SocketManager};
 use commonware_runtime::{Handle, deterministic::Context};
-use reth_db::{mdbx::DatabaseArguments, open_db_read_only};
+use reth_db::{DatabaseEnv, mdbx::DatabaseArguments, open_db_read_only};
 use reth_ethereum::provider::{
     ProviderFactory,
     providers::{BlockchainProvider, StaticFileProvider},
@@ -270,42 +270,38 @@ impl TestingNode {
 
     /// Get a blockchain provider for the execution node.
     ///
-    /// If the execution node is running, returns the provider from the running node.
-    /// If the execution node is stopped, opens a new provider to its storage.
-    ///
     /// # Panics
-    /// Panics if unable to open the database or static files.
+    /// Panics if the execution node is not running.
     pub fn execution_provider(
         &self,
     ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, tempo_node::WeakDatabase>> {
-        // If execution node is running, return its provider
-        if let Some(execution_node) = &self.execution_node {
-            return execution_node.node.provider.clone();
-        }
+        self.execution().provider.clone()
+    }
 
-        // Otherwise, open a read-only provider to the database
+    /// Get a blockchain provider for when the execution node is down.
+    ///
+    /// This provider MUST BE DROPPED before starting the node again.
+    pub fn execution_provider_offline(
+        &self,
+    ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, Arc<DatabaseEnv>>> {
+        // Open a read-only provider to the database
         // Note: MDBX allows multiple readers, so this is safe even if another process
         // has the database open for reading
         let database = Arc::new(
             open_db_read_only(
-                &self.execution_node_datadir.join("db"),
+                self.execution_node_datadir.join("db"),
                 DatabaseArguments::default(),
             )
             .expect("failed to open execution node database")
             .with_metrics(),
         );
 
-        // Create WeakDatabase from the Arc
-        let weak_database = tempo_node::WeakDatabase(Arc::downgrade(&database));
-        // Keep the Arc alive by storing it temporarily (it will be dropped when this function returns)
-        std::mem::forget(database); // HACK: prevent Arc from being dropped
-
         let static_file_provider =
             StaticFileProvider::read_only(self.execution_node_datadir.join("static_files"), true)
                 .expect("failed to open static files");
 
         let provider_factory = ProviderFactory::<NodeTypesWithDBAdapter<TempoNode, _>>::new(
-            weak_database,
+            database,
             execution_runtime::chainspec(),
             static_file_provider,
         )
@@ -333,9 +329,7 @@ mod tests {
     }
 
     /// Start node and verify RPC is accessible
-    async fn start_and_verify(
-        tx_msg: &tokio::sync::mpsc::UnboundedSender<Message>,
-    ) -> String {
+    async fn start_and_verify(tx_msg: &tokio::sync::mpsc::UnboundedSender<Message>) -> String {
         let (tx_rpc_addr, rx_rpc_addr) = oneshot::channel();
         let _ = tx_msg.send(Message::Start(tx_rpc_addr));
         let rpc_addr = rx_rpc_addr.await.unwrap();
@@ -344,10 +338,7 @@ mod tests {
         // Verify RPC is accessible
         let provider = ProviderBuilder::new().connect_http(rpc_url.parse().unwrap());
         let block_number = provider.get_block_number().await;
-        assert!(
-            block_number.is_ok(),
-            "RPC should be accessible after start"
-        );
+        assert!(block_number.is_ok(), "RPC should be accessible after start");
 
         rpc_url
     }
