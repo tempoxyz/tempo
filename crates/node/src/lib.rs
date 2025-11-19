@@ -7,7 +7,9 @@ pub use tempo_payload_types::{TempoExecutionData, TempoPayloadTypes};
 pub use version::{init_version_metadata, version_metadata};
 
 use crate::node::{TempoAddOns, TempoNode};
+use reth_ethereum::provider::db::DatabaseEnv;
 use reth_node_builder::{FullNode, NodeAdapter, RethFullAdapter};
+use std::sync::Arc;
 
 pub mod engine;
 pub mod node;
@@ -18,8 +20,7 @@ pub use tempo_primitives as primitives;
 
 mod version;
 
-type TempoNodeAdapter =
-    NodeAdapter<RethFullAdapter<std::sync::Arc<reth_db::DatabaseEnv>, TempoNode>>;
+type TempoNodeAdapter = NodeAdapter<RethFullAdapter<Arc<DatabaseEnv>, TempoNode>>;
 
 /// Type alias for a launched tempo node.
 pub type TempoFullNode = FullNode<TempoNodeAdapter, TempoAddOns<TempoNodeAdapter>>;
