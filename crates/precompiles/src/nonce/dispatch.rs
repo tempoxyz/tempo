@@ -1,5 +1,6 @@
 use crate::{
-    Precompile, input_cost, nonce::NonceManager, storage::PrecompileStorageProvider, view,
+    Precompile, input_cost, nonce::NonceManager, storage::PrecompileStorageProvider,
+    unknown_selector, view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
@@ -29,7 +30,7 @@ impl<S: PrecompileStorageProvider> Precompile for NonceManager<'_, S> {
                     self.get_active_nonce_key_count(call)
                 })
             }
-            _ => Err(PrecompileError::Other("Unknown function selector".into())),
+            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
         result.map(|mut res| {

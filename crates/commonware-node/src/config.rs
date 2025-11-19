@@ -25,7 +25,6 @@ pub(crate) const BOUNDARY_CERT_CHANNEL_IDENT: commonware_p2p::Channel = 6;
 pub(crate) const SUBBLOCKS_CHANNEL_IDENT: commonware_p2p::Channel = 7;
 
 pub(crate) const NUMBER_CONCURRENT_FETCHES: usize = 4;
-pub(crate) const NUMBER_MAX_FETCHES: usize = 16;
 
 pub(crate) const BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES: u32 = 2u32.pow(21); // 100MB
 
