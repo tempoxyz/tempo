@@ -7,7 +7,7 @@
 //! All definitions herein are only intended to support the the tests defined
 //! in tests/.
 
-use std::{net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use commonware_cryptography::{
     PrivateKeyExt as _, Signer as _,
@@ -115,10 +115,23 @@ pub async fn setup_validators(
 
     // Spawn a dummy execution node to use as a placeholder in consensus configs
     // This will be replaced when TestingNode::start_execution() is called
+    let dummy_database = Arc::new(
+        reth_db::init_db(
+            execution_runtime
+                .handle()
+                .nodes_dir()
+                .join("dummy")
+                .join("db"),
+            reth_db::mdbx::DatabaseArguments::default(),
+        )
+        .expect("failed to init dummy database")
+        .with_metrics(),
+    );
     let dummy_execution_node = execution_runtime
         .spawn_node(
             "dummy",
             ExecutionNodeConfig::generate_many(1, false)[0].clone(),
+            dummy_database,
         )
         .await
         .expect("must be able to spawn dummy execution node");

@@ -37,8 +37,14 @@ fn spawning_execution_node_works() {
             trusted_peers: vec![],
             port: 0,
         };
+        let db_path = handle.nodes_dir().join("node-1").join("db");
+        let database = std::sync::Arc::new(
+            reth_db::init_db(db_path, reth_db::mdbx::DatabaseArguments::default())
+                .expect("failed to init database")
+                .with_metrics(),
+        );
         let node = handle
-            .spawn_node("node-1", config)
+            .spawn_node("node-1", config, database)
             .await
             .expect("a running execution runtime must be able to spawn nodes");
 

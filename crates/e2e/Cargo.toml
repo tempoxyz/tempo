@@ -54,7 +54,6 @@ serde_json.workspace = true
 [dev-dependencies]
 commonware-macros.workspace = true
 tempo-contracts.workspace = true
-tempo-node = { workspace = true, features = ["weak-db"] }
 tracing-subscriber.workspace = true
 
 alloy-network.workspace = true

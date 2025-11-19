@@ -35,6 +35,8 @@ pub struct TestingNode {
     execution_runtime: ExecutionRuntimeHandle,
     /// Configuration for the execution node
     execution_config: ExecutionNodeConfig,
+    /// Database instance for the execution node
+    execution_database: Option<Arc<DatabaseEnv>>,
 }
 
 impl TestingNode {
@@ -63,6 +65,7 @@ impl TestingNode {
             execution_node_datadir,
             execution_runtime,
             execution_config,
+            execution_database: None,
         }
     }
 
@@ -92,11 +95,22 @@ impl TestingNode {
             self.uid
         );
 
+        // Create database if not exists
+        if self.execution_database.is_none() {
+            let db_path = self.execution_node_datadir.join("db");
+            self.execution_database = Some(Arc::new(
+                reth_db::init_db(db_path, DatabaseArguments::default())
+                    .expect("failed to init database")
+                    .with_metrics(),
+            ));
+        }
+
         let execution_node = self
             .execution_runtime
             .spawn_node(
                 &execution_runtime::execution_node_name(&self.public_key),
                 self.execution_config.clone(),
+                self.execution_database.as_ref().unwrap().clone(),
             )
             .await
             .expect("must be able to spawn execution node");
@@ -274,7 +288,7 @@ impl TestingNode {
     /// Panics if the execution node is not running.
     pub fn execution_provider(
         &self,
-    ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, tempo_node::WeakDatabase>> {
+    ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, Arc<DatabaseEnv>>> {
         self.execution().provider.clone()
     }
 
