@@ -1420,10 +1420,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         // Validate that both tokens are TIP20 tokens
         if self.storage.spec().is_allegretto() {
-            if !is_tip20(token_in) {
-                return Err(StablecoinExchangeError::invalid_token().into());
-            }
-            if !is_tip20(token_out) {
+            if !is_tip20(token_in) || !is_tip20(token_out) {
                 return Err(StablecoinExchangeError::invalid_token().into());
             }
         }
