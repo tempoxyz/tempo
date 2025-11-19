@@ -1419,11 +1419,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Validate that both tokens are TIP20 tokens
-        if !is_tip20(token_in) {
-            return Err(StablecoinExchangeError::invalid_token().into());
-        }
-        if !is_tip20(token_out) {
-            return Err(StablecoinExchangeError::invalid_token().into());
+        if self.storage.spec().is_allegretto() {
+            if !is_tip20(token_in) {
+                return Err(StablecoinExchangeError::invalid_token().into());
+            }
+            if !is_tip20(token_out) {
+                return Err(StablecoinExchangeError::invalid_token().into());
+            }
         }
 
         // Check if direct or reverse pair exists
