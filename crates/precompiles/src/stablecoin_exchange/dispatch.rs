@@ -8,7 +8,7 @@ use crate::{
     Precompile, input_cost, mutate, mutate_void,
     stablecoin_exchange::{IStablecoinExchange, StablecoinExchange},
     storage::PrecompileStorageProvider,
-    view,
+    unknown_selector, view,
 };
 
 impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> {
@@ -180,7 +180,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                 })
             }
 
-            _ => Err(PrecompileError::Other("Unknown function selector".into())),
+            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
         result.map(|mut res| {
@@ -645,17 +645,19 @@ mod tests {
 
     #[test]
     fn test_invalid_selector() {
-        let mut storage = HashMapStorageProvider::new(1);
+        use tempo_chainspec::hardfork::TempoHardfork;
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize().unwrap();
 
         let sender = Address::from([1u8; 20]);
 
-        // Use an invalid selector that doesn't match any function
+        // Use an invalid selector that doesn't match any function - should return Ok with reverted status
         let calldata = Bytes::from([0x12, 0x34, 0x56, 0x78]);
 
         let result = exchange.call(&calldata, sender);
-        assert!(matches!(result, Err(PrecompileError::Other(_))));
+        assert!(result.is_ok());
+        assert!(result.unwrap().reverted);
     }
 
     #[test]
