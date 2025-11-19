@@ -1,6 +1,6 @@
 use crate::{
     error::Result,
-    storage::{Mapping, Slot, thread_local::AddressGuard},
+    storage::{Mapping, Slot, thread_local::ContractCall},
 };
 use alloy::primitives::{Address, U256};
 
@@ -9,35 +9,17 @@ pub struct ThreadLocalToken {
     balances: Mapping<Address, U256>,
 }
 
-impl ThreadLocalToken {
-    // macro generated
-    pub fn _new() -> Self {
+// macro generated
+impl ContractCall for ThreadLocalToken {
+    fn _new() -> Self {
         Self {
             total_supply: Slot::new(U256::ZERO),
             balances: Mapping::new(U256::ONE),
         }
     }
+}
 
-    // macro generated
-    pub fn staticcall<F, R>(address: Address, f: F) -> Result<R>
-    where
-        F: for<'b> FnOnce(&Self) -> Result<R>,
-    {
-        let _guard = AddressGuard::new(address)?;
-        let instance = Self::_new();
-        f(&instance)
-    }
-
-    // macro generated
-    pub fn call_mut<F, R>(address: Address, f: F) -> Result<R>
-    where
-        F: for<'b> FnOnce(&mut Self) -> Result<R>,
-    {
-        let _guard = AddressGuard::new(address)?;
-        let mut instance = Self::_new();
-        f(&mut instance)
-    }
-
+impl ThreadLocalToken {
     pub fn total_supply(&self) -> Result<U256> {
         self.total_supply.read_tl()
     }
@@ -82,7 +64,8 @@ impl ThreadLocalToken {
     ) -> Result<()> {
         self.transfer(from, to, amount)?;
 
-        ThreadLocalRewards::call_mut(REWARDS_ADDRESS, |rewards| rewards.distribute(amount))?;
+        ThreadLocalRewards::new(self, REWARDS_ADDRESS)
+            .call(|rewards| rewards.distribute(amount))?;
 
         Ok(())
     }
@@ -94,34 +77,16 @@ pub struct ThreadLocalRewards {
     rewards_pool: Slot<U256>,
 }
 
-impl ThreadLocalRewards {
-    // macro generated
+// macro generated
+impl ContractCall for ThreadLocalRewards {
     fn _new() -> Self {
         Self {
             rewards_pool: Slot::new(U256::ZERO),
         }
     }
+}
 
-    // macro generated
-    pub fn staticcall<F, R>(address: Address, f: F) -> Result<R>
-    where
-        F: for<'b> FnOnce(&Self) -> Result<R>,
-    {
-        let _guard = AddressGuard::new(address)?;
-        let instance = Self::_new();
-        f(&instance)
-    }
-
-    // macro generated
-    pub fn call_mut<F, R>(address: Address, f: F) -> Result<R>
-    where
-        F: for<'b> FnOnce(&mut Self) -> Result<R>,
-    {
-        let _guard = AddressGuard::new(address)?;
-        let mut instance = Self::_new();
-        f(&mut instance)
-    }
-
+impl ThreadLocalRewards {
     pub fn distribute(&mut self, transfer_amount: U256) -> Result<()> {
         let reward = transfer_amount / U256::from(100);
         let pool = self.rewards_pool.read_tl()?;
@@ -148,8 +113,10 @@ mod tests {
         let token_address = Address::new([0x01; 20]);
         let alice = Address::new([0xA1; 20]);
         let bob = Address::new([0xB0; 20]);
+        let mut ctx = ();
 
-        ThreadLocalToken::call_mut(token_address, |token| {
+        // For top-level test entry points, pass `&mut ctx` to get `ReadWrite` context
+        ThreadLocalToken::new(&mut ctx, token_address).call(|token| {
             // mint
             token.mint(alice, U256::from(1000))?;
             assert_eq!(token.balance_of(alice)?, U256::from(1000));
@@ -172,8 +139,9 @@ mod tests {
         let token_address = Address::new([0x01; 20]);
         let alice = Address::new([0xA1; 20]);
         let bob = Address::new([0xB0; 20]);
+        let mut ctx = ();
 
-        ThreadLocalToken::call_mut(token_address, |token| {
+        ThreadLocalToken::new(&mut ctx, token_address).call(|token| {
             token.mint(alice, U256::from(1000))?;
 
             // transfer with rewards - demonstrates scoped cross-contract call
@@ -184,8 +152,8 @@ mod tests {
             Ok(())
         })?;
 
-        // verify rewards were distributed
-        ThreadLocalRewards::staticcall(REWARDS_ADDRESS, |rewards| {
+        // verify rewards were distributed (read-only context)
+        ThreadLocalRewards::new(&ctx, REWARDS_ADDRESS).staticcall(|rewards| {
             let pool = rewards.get_pool()?;
             assert_eq!(pool, U256::from(1));
             Ok(())
@@ -197,20 +165,21 @@ mod tests {
         use crate::storage::thread_local::context;
 
         let mut storage = HashMapStorageProvider::new(1);
+        let _storage_guard = unsafe { StorageGuard::new(&mut storage) };
+
         let addr1 = Address::new([0x01; 20]);
         let addr2 = Address::new([0x02; 20]);
         let addr3 = Address::new([0x03; 20]);
-
-        let _storage_guard = unsafe { StorageGuard::new(&mut storage) };
+        let ctx = ();
 
         // demonstrate nested contract calls with automatic address stack management
-        ThreadLocalToken::staticcall(addr1, |_token1| {
+        ThreadLocalToken::new(&ctx, addr1).staticcall(|token1| {
             assert_eq!(context::call_depth(), 1);
 
-            ThreadLocalToken::staticcall(addr2, |_token2| {
+            ThreadLocalToken::new(token1, addr2).staticcall(|token2| {
                 assert_eq!(context::call_depth(), 2);
 
-                ThreadLocalToken::staticcall(addr3, |_token3| {
+                ThreadLocalToken::new(token2, addr3).staticcall(|_token3| {
                     assert_eq!(context::call_depth(), 3);
                     Ok(())
                 })?;

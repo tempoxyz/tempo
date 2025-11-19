@@ -29,7 +29,7 @@ thread_local! {
     pub(crate) static STORAGE: Cell<Option<*mut dyn PrecompileStorageProvider>> = const { Cell::new(None) };
 
     /// Thread-local stack of contract addresses for nested calls
-    static ADDRESS_STACK: RefCell<Vec<Address>> = RefCell::new(Vec::new());
+    static ADDRESS_STACK: RefCell<Vec<Address>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Transaction-scoped guard that provides thread-local storage access
@@ -159,6 +159,100 @@ where
     let storage = unsafe { &mut *storage_ptr };
 
     f(storage, address)
+}
+
+// Context types for compile-time enforcement of call mutability
+//
+// These zero-sized types track whether a cross-contract call context allows
+// state modifications, enforcing EVM-like static call restrictions at compile time.
+
+/// Marker type for read-only (static) call context
+pub struct ReadOnly;
+/// Marker type for read-write (mutable) call context
+pub struct ReadWrite;
+
+// Marker traits to determine call context
+pub trait CallCtx {}
+pub trait StaticCtx: CallCtx {}
+pub trait MutableCtx: StaticCtx {}
+
+impl CallCtx for ReadOnly {}
+impl CallCtx for ReadWrite {}
+impl StaticCtx for ReadOnly {}
+impl StaticCtx for ReadWrite {}
+impl MutableCtx for ReadWrite {}
+
+/// Trait to infer call context from method receiver type
+///
+/// This enables automatic inference: `&self` → `ReadOnly`, `&mut self` → `ReadWrite`
+pub trait MethodCtx {
+    type Allowed: CallCtx;
+}
+
+impl<T> MethodCtx for &T {
+    type Allowed = ReadOnly;
+}
+
+impl<T> MethodCtx for &mut T {
+    type Allowed = ReadWrite;
+}
+
+/// Builder for cross-contract calls with compile-time context enforcement
+///
+/// Generic over the contract type `T` and call context `Ctx`, leveraging
+/// the type system to only allow mutable operations in mutable contexts.
+pub struct CallBuilder<T, CTX: CallCtx> {
+    address: Address,
+    _ctx: PhantomData<(T, CTX)>,
+}
+
+impl<T, CTX: CallCtx> CallBuilder<T, CTX> {
+    pub fn new(address: Address) -> Self {
+        Self {
+            address,
+            _ctx: PhantomData,
+        }
+    }
+}
+
+/// Read-only context: closure receives immutable reference
+impl<T: ContractCall> CallBuilder<T, ReadOnly> {
+    pub fn staticcall<F, R>(self, f: F) -> Result<R, TempoPrecompileError>
+    where
+        F: FnOnce(&T) -> Result<R, TempoPrecompileError>,
+    {
+        let _guard = AddressGuard::new(self.address)?;
+        let instance = T::_new();
+        f(&instance)
+    }
+}
+
+/// Read-write context: closure receives mutable reference
+impl<T: ContractCall> CallBuilder<T, ReadWrite> {
+    pub fn call<F, R>(self, f: F) -> Result<R, TempoPrecompileError>
+    where
+        F: FnOnce(&mut T) -> Result<R, TempoPrecompileError>,
+    {
+        let _guard = AddressGuard::new(self.address)?;
+        let mut instance = T::_new();
+        f(&mut instance)
+    }
+}
+
+/// Trait for contracts that support the builder-based cross-contract call pattern
+///
+/// This is typically implemented by the macro-generated code for each contract.
+pub trait ContractCall: Sized {
+    /// Create a new instance of the contract (macro-generated)
+    fn _new() -> Self;
+
+    /// Create a call builder with context inferred from method receiver
+    fn new<M>(_ctx: M, address: Address) -> CallBuilder<Self, M::Allowed>
+    where
+        M: MethodCtx,
+    {
+        CallBuilder::new(address)
+    }
 }
 
 /// Helper functions for accessing storage provider methods without explicit parameters
