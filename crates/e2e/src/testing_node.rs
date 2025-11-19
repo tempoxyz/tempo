@@ -4,10 +4,7 @@ use crate::execution_runtime::{self, ExecutionNode, ExecutionNodeConfig, Executi
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::simulated::{Control, Oracle, SocketManager};
 use commonware_runtime::{Handle, deterministic::Context};
-use reth_db::{
-    init_db,
-    mdbx::{DatabaseArguments, DatabaseEnv},
-};
+use reth_db::{mdbx::DatabaseArguments, open_db_read_only};
 use reth_ethereum::provider::{
     ProviderFactory,
     providers::{BlockchainProvider, StaticFileProvider},
@@ -280,26 +277,35 @@ impl TestingNode {
     /// Panics if unable to open the database or static files.
     pub fn execution_provider(
         &self,
-    ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, Arc<DatabaseEnv>>> {
+    ) -> BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, tempo_node::WeakDatabase>> {
         // If execution node is running, return its provider
         if let Some(execution_node) = &self.execution_node {
             return execution_node.node.provider.clone();
         }
 
         // Otherwise, open a read-only provider to the database
-        let db_path = self.execution_node_datadir.join("db");
+        // Note: MDBX allows multiple readers, so this is safe even if another process
+        // has the database open for reading
         let database = Arc::new(
-            init_db(&db_path, DatabaseArguments::default())
-                .expect("failed to open execution node database")
-                .with_metrics(),
+            open_db_read_only(
+                &self.execution_node_datadir.join("db"),
+                DatabaseArguments::default(),
+            )
+            .expect("failed to open execution node database")
+            .with_metrics(),
         );
+
+        // Create WeakDatabase from the Arc
+        let weak_database = tempo_node::WeakDatabase(Arc::downgrade(&database));
+        // Keep the Arc alive by storing it temporarily (it will be dropped when this function returns)
+        std::mem::forget(database); // HACK: prevent Arc from being dropped
 
         let static_file_provider =
             StaticFileProvider::read_only(self.execution_node_datadir.join("static_files"), true)
                 .expect("failed to open static files");
 
         let provider_factory = ProviderFactory::<NodeTypesWithDBAdapter<TempoNode, _>>::new(
-            database,
+            weak_database,
             execution_runtime::chainspec(),
             static_file_provider,
         )
@@ -315,18 +321,44 @@ mod tests {
     use alloy::providers::{Provider, ProviderBuilder};
     use commonware_p2p::simulated::Link;
     use commonware_runtime::{
-        Clock, Runner as _,
+        Runner as _,
         deterministic::{Config, Runner},
     };
     use std::time::Duration;
+    use tokio::sync::{oneshot, oneshot::Sender};
+
+    enum Message {
+        Stop(Sender<()>),
+        Start(Sender<std::net::SocketAddr>),
+    }
+
+    /// Start node and verify RPC is accessible
+    async fn start_and_verify(
+        tx_msg: &tokio::sync::mpsc::UnboundedSender<Message>,
+    ) -> String {
+        let (tx_rpc_addr, rx_rpc_addr) = oneshot::channel();
+        let _ = tx_msg.send(Message::Start(tx_rpc_addr));
+        let rpc_addr = rx_rpc_addr.await.unwrap();
+        let rpc_url = format!("http://{rpc_addr}");
+
+        // Verify RPC is accessible
+        let provider = ProviderBuilder::new().connect_http(rpc_url.parse().unwrap());
+        let block_number = provider.get_block_number().await;
+        assert!(
+            block_number.is_ok(),
+            "RPC should be accessible after start"
+        );
+
+        rpc_url
+    }
 
     #[tokio::test]
-    async fn test_stop_shuts_down_everything() {
+    async fn test_restart() {
+        // Ensures that the node can be stopped completely and brought up inside a test.
         let _ = tempo_eyre::install();
 
         let runner = Runner::from(Config::default().with_seed(0));
-        let (tx_started, rx_started) = tokio::sync::oneshot::channel();
-        let (tx_stopped, rx_stopped) = tokio::sync::oneshot::channel();
+        let (tx_msg, mut rx_msg) = tokio::sync::mpsc::unbounded_channel::<Message>();
 
         std::thread::spawn(move || {
             runner.start(|context| async move {
@@ -348,66 +380,63 @@ mod tests {
                     setup_validators(context.clone(), &execution_runtime, setup).await;
 
                 let mut node = nodes.pop().unwrap();
-                node.start().await;
 
-                // Get the RPC HTTP address while running
-                let rpc_addr = node
-                    .execution()
-                    .rpc_server_handles
-                    .rpc
-                    .http_local_addr()
-                    .expect("http rpc server should be running");
-
-                // Signal that node is started
-                let _ = tx_started.send(rpc_addr);
-
-                // Wait for signal to stop
-                let _ = rx_stopped.blocking_recv();
-
-                // Stop the node
-                node.stop().await;
-                assert!(!node.is_running(), "node should not be running after stop");
-                assert!(
-                    !node.is_consensus_running(),
-                    "consensus should not be running after stop"
-                );
-                assert!(
-                    !node.is_execution_running(),
-                    "execution should not be running after stop"
-                );
-
-                // Keep execution runtime alive so we can verify RPC is actually stopped
                 loop {
-                    context.sleep(Duration::from_secs(1)).await;
+                    match rx_msg.blocking_recv() {
+                        Some(Message::Stop(tx_stopped)) => {
+                            node.stop().await;
+                            assert!(!node.is_running(), "node should not be running after stop");
+                            assert!(
+                                !node.is_consensus_running(),
+                                "consensus should not be running after stop"
+                            );
+                            assert!(
+                                !node.is_execution_running(),
+                                "execution should not be running after stop"
+                            );
+
+                            let _ = tx_stopped.send(());
+                        }
+                        Some(Message::Start(tx_rpc_addr)) => {
+                            node.start().await;
+                            assert!(node.is_running(), "node should be running after start");
+
+                            // Get the RPC HTTP address while running
+                            let rpc_addr = node
+                                .execution()
+                                .rpc_server_handles
+                                .rpc
+                                .http_local_addr()
+                                .expect("http rpc server should be running");
+
+                            let _ = tx_rpc_addr.send(rpc_addr);
+                        }
+                        None => {
+                            break;
+                        }
+                    }
                 }
             });
         });
 
-        let rpc_addr = rx_started.await.unwrap();
-        let rpc_url = format!("http://{rpc_addr}");
-
-        // Verify RPC is accessible while running
-        let provider = ProviderBuilder::new().connect_http(rpc_url.parse().unwrap());
-
-        let block_number = provider.get_block_number().await;
-        assert!(
-            block_number.is_ok(),
-            "RPC should be accessible while running"
-        );
+        // Start the node initially
+        let rpc_url = start_and_verify(&tx_msg).await;
 
         // Signal to stop the node
-        let _ = tx_stopped.send(());
-
-        // Wait for shutdown to complete
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        let (tx_stopped, rx_stopped) = oneshot::channel();
+        let _ = tx_msg.send(Message::Stop(tx_stopped));
+        rx_stopped.await.unwrap();
 
         // Verify RPC is no longer accessible after stopping
+        let provider = ProviderBuilder::new().connect_http(rpc_url.parse().unwrap());
         let result =
             tokio::time::timeout(Duration::from_millis(500), provider.get_block_number()).await;
-
         assert!(
             result.is_err() || result.unwrap().is_err(),
             "RPC should not be accessible after stopping"
         );
+
+        // Start the node again
+        start_and_verify(&tx_msg).await;
     }
 }

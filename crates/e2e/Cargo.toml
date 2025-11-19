@@ -41,7 +41,7 @@ tempo-chainspec.workspace = true
 tempo-commonware-node.workspace = true
 tempo-eyre.workspace = true
 tempo-evm.workspace = true
-tempo-node.workspace = true
+tempo-node = { workspace = true, features = ["test-utils"] }
 tempo-precompiles.workspace = true
 
 futures.workspace = true

@@ -23,6 +23,8 @@ tempo-primitives = { workspace = true, features = ["default"] }
 
 thiserror.workspace = true
 
+reth-db.workspace = true
+reth-metrics.workspace = true
 reth-errors.workspace = true
 reth-ethereum-engine-primitives.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }
@@ -87,6 +89,7 @@ vergen-git2.workspace = true
 
 [features]
 default = []
+test-utils = []
 asm-keccak = [
     "alloy/asm-keccak",
     "alloy-primitives/asm-keccak",

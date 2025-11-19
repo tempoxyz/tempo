@@ -7,9 +7,7 @@ pub use tempo_payload_types::{TempoExecutionData, TempoPayloadTypes};
 pub use version::{init_version_metadata, version_metadata};
 
 use crate::node::{TempoAddOns, TempoNode};
-use reth_ethereum::provider::db::DatabaseEnv;
 use reth_node_builder::{FullNode, NodeAdapter, RethFullAdapter};
-use std::sync::Arc;
 
 pub mod engine;
 pub mod node;
@@ -18,8 +16,16 @@ pub use tempo_consensus as consensus;
 pub use tempo_evm as evm;
 pub use tempo_primitives as primitives;
 
+#[cfg(feature = "test-utils")]
+pub mod weak_database;
+#[cfg(feature = "test-utils")]
+pub use weak_database::WeakDatabase;
+
 mod version;
 
+#[cfg(feature = "test-utils")]
+type TempoNodeAdapter = NodeAdapter<RethFullAdapter<WeakDatabase, TempoNode>>;
+#[cfg(not(feature = "test-utils"))]
 type TempoNodeAdapter = NodeAdapter<RethFullAdapter<Arc<DatabaseEnv>, TempoNode>>;
 
 /// Type alias for a launched tempo node.

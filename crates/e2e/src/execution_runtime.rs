@@ -9,7 +9,7 @@ use std::{
 use alloy_primitives::B256;
 use eyre::WrapErr as _;
 use futures::StreamExt;
-use reth_db::mdbx::DatabaseArguments;
+use reth_db::mdbx::{DatabaseArguments, DatabaseEnv};
 use reth_ethereum::{
     network::{
         Peers,
@@ -32,6 +32,7 @@ use std::net::TcpListener;
 use tempfile::TempDir;
 use tempo_chainspec::TempoChainSpec;
 use tempo_node::{TempoFullNode, node::TempoNode};
+use tracing::debug;
 
 /// Configuration for launching an execution node.
 #[derive(Clone, Debug)]
@@ -286,11 +287,17 @@ impl ExecutionRuntimeHandle {
 /// avoids the type parameters.
 pub struct ExecutionNode {
     /// All handles to interact with the launched node instances and services.
+    ///
+    /// When test-utils feature is enabled, TempoFullNode uses WeakDatabase instead of Arc<DatabaseEnv>.
     pub node: TempoFullNode,
     /// The [`TaskManager`] that drives the node's services.
     pub task_manager: TaskManager,
     /// The exist future that resolves when the node's engine future resolves.
     pub exit_fut: NodeExitFuture,
+    /// Strong reference to the database that we control.
+    ///
+    /// By holding this strong reference, we can drop it in shutdown() to force close the database in every thread.
+    pub(crate) database: Option<Arc<DatabaseEnv>>,
 }
 
 impl ExecutionNode {
@@ -322,11 +329,24 @@ impl ExecutionNode {
     }
 
     /// Shuts down the node and awaits until the node is terminated.
-    pub async fn shutdown(self) {
+    ///
+    /// Also waits for all Arc<DatabaseEnv> references to be dropped before returning,
+    /// ensuring the database is fully closed and can be safely reopened.
+    pub async fn shutdown(mut self) {
         let _ = self.node.rpc_server_handle().clone().stop();
         self.task_manager
             .graceful_shutdown_with_timeout(Duration::from_secs(1));
         let _ = self.exit_fut.await;
+
+        // Drops the only strong Arc, and wait for any upgraded Weak to finish.
+        let database_weak = self.database.as_ref().map(Arc::downgrade);
+        drop(self.database.take());
+        if let Some(database_weak) = database_weak {
+            while database_weak.strong_count() > 0 {
+                debug!("Waiting for database Arc to drop");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
     }
 }
 
@@ -403,16 +423,18 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     );
 
     let node_handle = NodeBuilder::new(node_config)
-        .with_database(database)
+        .with_database(tempo_node::WeakDatabase(Arc::downgrade(&database)))
         .with_launch_context(task_manager.executor())
         .node(TempoNode::default())
         .launch()
         .await
         .wrap_err("failed launching node")?;
+
     Ok(ExecutionNode {
         node: node_handle.node,
         task_manager,
         exit_fut: node_handle.node_exit_future,
+        database: Some(database),
     })
 }
 
