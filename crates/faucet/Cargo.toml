@@ -13,8 +13,6 @@ workspace = true
 
 [dependencies]
 tempo-precompiles.workspace = true
-tempo-transaction-pool.workspace = true
-reth-transaction-pool.workspace = true
 reth-rpc-server-types.workspace = true
 alloy = { workspace = true, features = [
   "rpc-types",
@@ -26,5 +24,3 @@ alloy = { workspace = true, features = [
 async-trait.workspace = true
 jsonrpsee.workspace = true
 clap.workspace = true
-thiserror.workspace = true
-url = "2.5.4"

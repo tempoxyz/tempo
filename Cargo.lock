@@ -11509,11 +11509,7 @@ dependencies = [
  "clap",
  "jsonrpsee",
  "reth-rpc-server-types",
- "reth-transaction-pool",
  "tempo-precompiles",
- "tempo-transaction-pool",
- "thiserror 2.0.17",
- "url",
 ]
 
 [[package]]

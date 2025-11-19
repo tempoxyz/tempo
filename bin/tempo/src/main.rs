@@ -198,9 +198,7 @@ fn main() -> eyre::Result<()> {
             })
             .extend_rpc_modules(move |ctx| {
                 if faucet_args.enabled {
-                    let txpool = ctx.pool().clone();
                     let ext = TempoFaucetExt::new(
-                        txpool,
                         faucet_args.addresses(),
                         faucet_args.amount(),
                         faucet_args.provider(),
