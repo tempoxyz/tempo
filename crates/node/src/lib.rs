@@ -16,16 +16,16 @@ pub use tempo_consensus as consensus;
 pub use tempo_evm as evm;
 pub use tempo_primitives as primitives;
 
-#[cfg(feature = "test-utils")]
+#[cfg(feature = "weak-db")]
 pub mod weak_database;
-#[cfg(feature = "test-utils")]
+#[cfg(feature = "weak-db")]
 pub use weak_database::WeakDatabase;
 
 mod version;
 
-#[cfg(feature = "test-utils")]
+#[cfg(feature = "weak-db")]
 type TempoNodeAdapter = NodeAdapter<RethFullAdapter<WeakDatabase, TempoNode>>;
-#[cfg(not(feature = "test-utils"))]
+#[cfg(not(feature = "weak-db"))]
 type TempoNodeAdapter = NodeAdapter<RethFullAdapter<Arc<DatabaseEnv>, TempoNode>>;
 
 /// Type alias for a launched tempo node.

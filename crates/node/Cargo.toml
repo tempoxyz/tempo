@@ -89,7 +89,7 @@ vergen-git2.workspace = true
 
 [features]
 default = []
-test-utils = []
+weak-db = []
 asm-keccak = [
     "alloy/asm-keccak",
     "alloy-primitives/asm-keccak",
