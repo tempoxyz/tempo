@@ -112,30 +112,6 @@ pub async fn setup_validators(
     let mut private_keys = private_keys.into_iter();
     let execution_configs =
         ExecutionNodeConfig::generate_many(how_many_signers, connect_execution_layer_nodes);
-
-    // Spawn a dummy execution node to use as a placeholder in consensus configs
-    // This will be replaced when TestingNode::start_execution() is called
-    let dummy_database = Arc::new(
-        reth_db::init_db(
-            execution_runtime
-                .handle()
-                .nodes_dir()
-                .join("dummy")
-                .join("db"),
-            reth_db::mdbx::DatabaseArguments::default(),
-        )
-        .expect("failed to init dummy database")
-        .with_metrics(),
-    );
-    let dummy_execution_node = execution_runtime
-        .spawn_node(
-            "dummy",
-            ExecutionNodeConfig::generate_many(1, false)[0].clone(),
-            dummy_database,
-        )
-        .await
-        .expect("must be able to spawn dummy execution node");
-
     // Process the signers
     for ((private_key, share), execution_config) in private_keys
         .by_ref()
@@ -151,8 +127,7 @@ pub async fn setup_validators(
         let engine_config = tempo_commonware_node::consensus::Builder {
             context: context.with_label(&uid),
             fee_recipient: alloy_primitives::Address::ZERO,
-            // Placeholder that will be replaced by TestingNode::start_execution()
-            execution_node: dummy_execution_node.node.clone(),
+            execution_node: None,
             blocker: oracle.control(private_key.public_key()),
             peer_manager: oracle.socket_manager(),
             partition_prefix: uid.clone(),

@@ -74,7 +74,7 @@ pub struct Builder<
 
     pub fee_recipient: alloy_primitives::Address,
 
-    pub execution_node: TempoFullNode,
+    pub execution_node: Option<TempoFullNode>,
 
     pub blocker: TBlocker,
     pub peer_manager: TPeerManager,
@@ -113,7 +113,15 @@ where
         + Network,
     TPeerManager: commonware_p2p::Manager<PublicKey = PublicKey>,
 {
+    pub fn with_execution_node(mut self, execution_node: TempoFullNode) -> Self {
+        self.execution_node = Some(execution_node);
+        self
+    }
+
     pub async fn try_init(self) -> eyre::Result<Engine<TBlocker, TContext, TPeerManager>> {
+        let execution_node = self
+            .execution_node
+            .ok_or_else(|| eyre::eyre!("execution_node must be set using with_execution_node()"))?;
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
             self.context.with_label("broadcast"),
             buffered::Config {
@@ -182,7 +190,7 @@ where
             context: self.context.clone(),
             signer: self.signer.clone(),
             scheme_provider: scheme_provider.clone(),
-            node: self.execution_node.clone(),
+            node: execution_node.clone(),
             fee_recipient: self.fee_recipient,
             time_to_build_subblock: self.time_to_build_subblock,
             epoch_length: self.epoch_length,
@@ -194,7 +202,7 @@ where
             fee_recipient: self.fee_recipient,
             mailbox_size: self.mailbox_size,
             marshal: marshal_mailbox.clone(),
-            execution_node: self.execution_node,
+            execution_node,
             new_payload_wait_time: self.new_payload_wait_time,
             subblocks: subblocks.mailbox(),
             epoch_length: self.epoch_length,

@@ -116,7 +116,10 @@ impl TestingNode {
             .expect("must be able to spawn execution node");
 
         // Update consensus config to point to the new execution node
-        self.consensus_config.execution_node = execution_node.node.clone();
+        self.consensus_config = self
+            .consensus_config
+            .clone()
+            .with_execution_node(execution_node.node.clone());
         self.execution_node = Some(execution_node);
         debug!(%self.uid, "started execution node for testing node");
     }

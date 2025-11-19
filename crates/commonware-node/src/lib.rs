@@ -67,7 +67,7 @@ pub async fn run_consensus_stack(
 
         fee_recipient: config.fee_recipient,
 
-        execution_node,
+        execution_node: Some(execution_node),
         blocker: oracle.clone(),
         peer_manager: oracle.clone(),
         // TODO: Set this through config?
