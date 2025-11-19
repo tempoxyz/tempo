@@ -5,7 +5,9 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::{
-    Precompile, fill_precompile_output, input_cost, mutate, mutate_void,
+    Precompile,
+    error::TempoPrecompileError,
+    fill_precompile_output, input_cost, mutate, mutate_void,
     stablecoin_exchange::{IStablecoinExchange, StablecoinExchange},
     storage::PrecompileStorageProvider,
     unknown_selector, view,
@@ -88,7 +90,13 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
 
             IStablecoinExchange::createPairCall::SELECTOR => {
                 mutate::<IStablecoinExchange::createPairCall>(calldata, msg_sender, |_s, call| {
-                    self.create_pair(call.base)
+                    if self.storage.spec().is_allegretto() {
+                        Err(TempoPrecompileError::UnknownFunctionSelector(
+                            IStablecoinExchange::createPairCall::SELECTOR,
+                        ))
+                    } else {
+                        self.create_pair(call.base)
+                    }
                 })
             }
             IStablecoinExchange::withdrawCall::SELECTOR => {

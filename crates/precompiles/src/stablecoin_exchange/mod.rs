@@ -491,7 +491,12 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         let book = self.sload_books(book_key)?;
         if book.base.is_zero() {
-            return Err(StablecoinExchangeError::pair_does_not_exist().into());
+            //  Post Allegretto hardfork, create the book if it does not already exist
+            if self.storage.spec().is_allegretto() {
+                self.create_pair(token)?;
+            } else {
+                return Err(StablecoinExchangeError::pair_does_not_exist().into());
+            }
         }
 
         // Validate tick is within bounds
@@ -579,8 +584,14 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         // Check book existence (only after Moderato hardfork)
         if self.storage.spec().is_moderato() {
             let book = self.sload_books(book_key)?;
+
             if book.base.is_zero() {
-                return Err(StablecoinExchangeError::pair_does_not_exist().into());
+                //  Post Allegretto hardfork, create the book if it does not already exist
+                if self.storage.spec().is_allegretto() {
+                    self.create_pair(token)?;
+                } else {
+                    return Err(StablecoinExchangeError::pair_does_not_exist().into());
+                }
             }
         }
 
