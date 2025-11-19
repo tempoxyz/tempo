@@ -28,7 +28,27 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@nextest
       - name: Run tests
-        run: cargo nextest run --no-fail-fast -j num-cpus
+        run: cargo nextest run --no-fail-fast -j num-cpus --workspace --exclude tempo-e2e
+
+  e2e-test:
+    name: e2e tests (${{ matrix.partition }})
+    runs-on: depot-ubuntu-latest-16
+    timeout-minutes: 60
+    needs: genesis
+    strategy:
+      matrix:
+        partition: [1, 2, 3]
+        total-partitions: [3]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: taiki-e/install-action@nextest
+      - name: Run e2e tests (partition ${{ matrix.partition }}/${{ matrix.total-partitions }})
+        run: |
+          cargo nextest run --no-fail-fast -j num-cpus -p tempo-e2e \
+            --partition count:${{ matrix.partition }}/${{ matrix.total-partitions }}
 
   msrv:
     name: MSRV
@@ -90,6 +110,7 @@ jobs:
     if: always()
     needs:
       - test
+      - e2e-test
       - msrv
       - genesis
       - snapshot-re-execute
