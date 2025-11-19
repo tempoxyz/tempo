@@ -7,7 +7,7 @@ use reth_db::{Database, DatabaseError, database_metrics::DatabaseMetrics, mdbx::
 use reth_metrics::metrics::Label;
 use std::sync::Weak;
 
-/// Wrapper type over Weak<DatabaseEnv> that implements [`Database`] and [`DatabaseMetrics`].
+/// Wrapper type over `Weak<DatabaseEnv>` that implements [`Database`] and [`DatabaseMetrics`].
 ///
 /// This type is used by TempoFullNode when the test-utils feature is enabled.
 #[derive(Clone, Debug)]
