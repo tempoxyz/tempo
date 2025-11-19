@@ -26,7 +26,7 @@ mod version;
 #[cfg(feature = "weak-db")]
 type TempoNodeAdapter = NodeAdapter<RethFullAdapter<WeakDatabase, TempoNode>>;
 #[cfg(not(feature = "weak-db"))]
-type TempoNodeAdapter = NodeAdapter<RethFullAdapter<Arc<DatabaseEnv>, TempoNode>>;
+type TempoNodeAdapter = NodeAdapter<RethFullAdapter<std::sync::Arc<reth_db::DatabaseEnv>, TempoNode>>;
 
 /// Type alias for a launched tempo node.
 pub type TempoFullNode = FullNode<TempoNodeAdapter, TempoAddOns<TempoNodeAdapter>>;
