@@ -1,8 +1,5 @@
-<<<<<<< HEAD
-pub mod common_errors;
-=======
 pub mod account_keychain;
->>>>>>> 871f550c (chore(precompiles): update keychain precompile correctly)
+pub mod common_errors;
 pub mod linking_usd;
 pub mod nonce;
 pub mod stablecoin_exchange;
