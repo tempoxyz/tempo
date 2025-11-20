@@ -7,7 +7,7 @@
 //! All definitions herein are only intended to support the the tests defined
 //! in tests/.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, time::Duration};
 
 use commonware_cryptography::{
     PrivateKeyExt as _, Signer as _,
