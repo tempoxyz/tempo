@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::signal;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::monitor::prometheus_metrics;
 
@@ -35,6 +35,10 @@ pub struct TxLatencyArgs {
     /// Port to expose Prometheus metrics on.
     #[arg(short, long, required = true)]
     port: u16,
+
+    /// Maximum age (seconds) to track pending transactions before expiring them.
+    #[arg(long, default_value_t = 600)]
+    max_pending_age_secs: u64,
 }
 
 #[derive(Serialize)]
@@ -49,17 +53,25 @@ struct TransactionLatencyMonitor {
     rpc_url: Url,
     client: reqwest::Client,
     poll_interval: Duration,
+    max_pending_age: Duration,
     pending: HashMap<B256, Instant>,
 }
 
 impl TransactionLatencyMonitor {
-    fn new(rpc_url: Url, poll_interval: Duration) -> Self {
+    fn new(rpc_url: Url, poll_interval: Duration, max_pending_age: Duration) -> Self {
         Self {
             rpc_url,
             client: reqwest::Client::new(),
             poll_interval,
+            max_pending_age,
             pending: HashMap::new(),
         }
+    }
+
+    async fn create_pending_filter(&self) -> Result<String> {
+        self.rpc_call("eth_newPendingTransactionFilter", json!([]))
+            .await
+            .context("failed to create pending transaction filter")
     }
 
     async fn rpc_call<R, P>(&self, method: &str, params: P) -> Result<R>
@@ -100,10 +112,7 @@ impl TransactionLatencyMonitor {
     }
 
     async fn watch_transactions(&mut self) -> Result<()> {
-        let filter_id: String = self
-            .rpc_call("eth_newPendingTransactionFilter", json!([]))
-            .await
-            .context("failed to create pending transaction filter")?;
+        let mut filter_id = self.create_pending_filter().await?;
 
         loop {
             let pending_hashes: Vec<String> = match self
@@ -113,6 +122,15 @@ impl TransactionLatencyMonitor {
                 Ok(hashes) => hashes,
                 Err(err) => {
                     error!(err = %err, "failed to fetch filter changes");
+                    match self.create_pending_filter().await {
+                        Ok(new_filter) => {
+                            warn!("recreated pending transaction filter after error");
+                            filter_id = new_filter;
+                        }
+                        Err(create_err) => {
+                            error!(err = %create_err, "failed to recreate pending filter");
+                        }
+                    }
                     tokio::time::sleep(self.poll_interval).await;
                     continue;
                 }
@@ -148,6 +166,18 @@ impl TransactionLatencyMonitor {
                             .record(latency.as_secs_f64());
                     }
                 }
+            }
+
+            let now = Instant::now();
+            let before_cleanup = self.pending.len();
+            self.pending
+                .retain(|_, seen_at| now.duration_since(*seen_at) <= self.max_pending_age);
+
+            if self.pending.len() < before_cleanup {
+                debug!(
+                    removed = before_cleanup - self.pending.len(),
+                    "dropped stale pending transactions"
+                );
             }
 
             tokio::time::sleep(self.poll_interval).await;
@@ -192,6 +222,7 @@ impl TxLatencyArgs {
         let mut monitor = TransactionLatencyMonitor::new(
             self.rpc_url,
             Duration::from_millis(self.poll_interval_ms),
+            Duration::from_secs(self.max_pending_age_secs),
         );
 
         let monitor_handle = tokio::spawn(async move {
