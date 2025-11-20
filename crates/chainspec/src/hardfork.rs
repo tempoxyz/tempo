@@ -154,5 +154,7 @@ mod tests {
         assert!(!TempoHardfork::Moderato.is_allegretto());
 
         assert!(TempoHardfork::Allegretto.is_allegretto());
+       
+        assert!(TempoHardfork::Allegretto.is_moderato());
     }
 }
