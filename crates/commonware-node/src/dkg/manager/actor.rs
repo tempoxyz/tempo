@@ -459,6 +459,19 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
+        let block_epoch = utils::epoch(self.config.epoch_length, block.height());
+        // Replay protection: if the node shuts down right after the last block
+        // of the outgoing epoch was processed, but before the first block of
+        // the incoming epoch was processed, then we do not want to update the
+        // epoch state again.
+        if block_epoch != self.current_epoch_state().epoch() {
+            info!(
+                block_epoch,
+                actor_epoch = self.current_epoch_state().epoch(),
+                "block was for an epoch other than what the actor is currently tracking; ignoring",
+            );
+        }
+
         // Special case --- boundary block: report that a new epoch should be
         // entered, start a new ceremony.
         //
