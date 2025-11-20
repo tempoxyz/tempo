@@ -20,6 +20,9 @@ pub struct TempoTransactionReceipt {
     /// None if the transaction was free.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fee_token: Option<Address>,
+
+    /// Address that paid the fees for the transaction.
+    pub fee_payer: Address,
 }
 
 impl ReceiptResponse for TempoTransactionReceipt {

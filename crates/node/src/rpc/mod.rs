@@ -334,16 +334,22 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
         &self,
         receipts: Vec<ConvertReceiptInput<'_, TempoPrimitives>>,
     ) -> Result<Vec<Self::RpcReceipt>, Self::Error> {
-        let receipts = self.inner.convert_receipts(receipts)?;
-        Ok(receipts
+        let txs = receipts.iter().map(|r| r.tx).collect::<Vec<_>>();
+        self.inner
+            .convert_receipts(receipts)?
             .into_iter()
-            .map(|inner| {
+            .zip(txs)
+            .map(|(inner, tx)| {
                 let mut receipt = TempoTransactionReceipt {
                     inner,
                     fee_token: None,
+                    // should never fail, we only deal with valid transactions here
+                    fee_payer: tx
+                        .fee_payer(tx.signer())
+                        .map_err(|_| EthApiError::InvalidTransactionSignature)?,
                 };
                 if receipt.effective_gas_price == 0 || receipt.gas_used == 0 {
-                    return receipt;
+                    return Ok(receipt);
                 }
 
                 // Set fee token to the address that emitted the last log.
@@ -351,9 +357,9 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
                 // Assumption is that every non-free transaction will end with a
                 // fee token transfer to TIPFeeManager.
                 receipt.fee_token = receipt.logs().last().map(|log| log.address());
-                receipt
+                Ok(receipt)
             })
-            .collect())
+            .collect()
     }
 }
 
