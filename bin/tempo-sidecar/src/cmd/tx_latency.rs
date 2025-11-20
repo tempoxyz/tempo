@@ -3,7 +3,7 @@ use clap::Parser;
 use eyre::{Context, Result, eyre};
 use metrics::{describe_gauge, describe_histogram, gauge, histogram};
 use metrics_exporter_prometheus::PrometheusBuilder;
-use poem::{EndpointExt, Route, Server, get, handler, listener::TcpListener};
+use poem::{EndpointExt, Route, Server, get, listener::TcpListener};
 use reqwest::Url;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -185,13 +185,6 @@ impl TransactionLatencyMonitor {
     }
 }
 
-#[handler]
-async fn metrics_handler(
-    handle: poem::web::Data<&metrics_exporter_prometheus::PrometheusHandle>,
-) -> poem::Response {
-    prometheus_metrics(handle).await
-}
-
 impl TxLatencyArgs {
     pub async fn run(self) -> Result<()> {
         tracing_subscriber::FmtSubscriber::builder()
@@ -214,7 +207,7 @@ impl TxLatencyArgs {
 
         let app = Route::new().at(
             "/metrics",
-            get(metrics_handler).data(metrics_handle.clone()),
+            get(prometheus_metrics).data(metrics_handle.clone()),
         );
 
         let addr = format!("0.0.0.0:{}", self.port);

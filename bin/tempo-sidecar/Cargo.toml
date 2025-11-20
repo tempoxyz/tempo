@@ -32,6 +32,8 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
     "rustls-tls-native-roots",
 ] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 metrics-exporter-prometheus = { version = "0.17.2", default-features = false }
 metrics = "0.24.2"
 poem = "3.1.12"
