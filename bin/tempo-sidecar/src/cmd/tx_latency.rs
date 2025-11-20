@@ -1,5 +1,7 @@
-use alloy::primitives::B256;
-use alloy::providers::{Provider, ProviderBuilder, WsConnect};
+use alloy::{
+    primitives::B256,
+    providers::{Provider, ProviderBuilder, WsConnect},
+};
 use clap::Parser;
 use eyre::{Context, Result};
 use futures::StreamExt;
@@ -9,7 +11,7 @@ use poem::{EndpointExt, Route, Server, get, listener::TcpListener};
 use reqwest::Url;
 use std::{
     collections::HashMap,
-    time::{Duration, Instant},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::signal;
 use tokio::time::MissedTickBehavior;
@@ -45,7 +47,7 @@ struct TransactionLatencyMonitor {
     rpc_url: Url,
     poll_interval: Duration,
     max_pending_age: Duration,
-    pending: HashMap<B256, Instant>,
+    pending: HashMap<B256, u128>,
 }
 
 impl TransactionLatencyMonitor {
@@ -77,7 +79,7 @@ impl TransactionLatencyMonitor {
             tokio::select! {
                 maybe_hash = stream.next() => {
                     match maybe_hash {
-                        Some(hash) => { self.pending.entry(hash).or_insert_with(Instant::now); }
+                        Some(hash) => { self.pending.entry(hash).or_insert_with(Self::now_millis); }
                         None => {
                             warn!("pending transaction stream ended; reconnecting");
                             provider = ProviderBuilder::new()
@@ -110,11 +112,29 @@ impl TransactionLatencyMonitor {
 
         for hash in tracked_hashes {
             match provider.get_transaction_receipt(hash).await {
-                Ok(Some(_)) => {
-                    if let Some(seen_at) = self.pending.remove(&hash) {
-                        let latency = seen_at.elapsed();
-                        histogram!("tempo_tx_landing_latency_seconds")
-                            .record(latency.as_secs_f64());
+                Ok(Some(receipt)) => {
+                    if let Some(seen_at) = self.pending.get(&hash).copied() {
+                        match receipt.block_hash {
+                            Some(block_hash) => {
+                                match provider.get_block_by_hash(block_hash).await {
+                                    Ok(Some(block)) => {
+                                        let landing_millis =
+                                            Self::header_timestamp_millis(&block.header);
+                                        let latency_secs =
+                                            Self::latency_seconds(seen_at, landing_millis);
+
+                                        histogram!("tempo_tx_landing_latency_seconds")
+                                            .record(latency_secs);
+                                        self.pending.remove(&hash);
+                                    }
+                                    Ok(None) => debug!("block not found for confirmed transaction"),
+                                    Err(err) => {
+                                        debug!(err = %err, "failed to fetch block for receipt")
+                                    }
+                                }
+                            }
+                            None => debug!("receipt missing block hash"),
+                        }
                     }
                 }
                 Ok(None) => continue,
@@ -122,10 +142,11 @@ impl TransactionLatencyMonitor {
             }
         }
 
-        let now = Instant::now();
+        let now = Self::now_millis();
+        let max_age_millis = self.max_pending_age.as_millis() as u128;
         let before_cleanup = self.pending.len();
         self.pending
-            .retain(|_, seen_at| now.duration_since(*seen_at) <= self.max_pending_age);
+            .retain(|_, seen_at| now.saturating_sub(*seen_at) <= max_age_millis);
 
         if self.pending.len() < before_cleanup {
             debug!(
@@ -135,6 +156,21 @@ impl TransactionLatencyMonitor {
         }
 
         Ok(())
+    }
+
+    fn now_millis() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or_default()
+    }
+
+    fn header_timestamp_millis(header: &impl alloy::consensus::BlockHeader) -> u128 {
+        header.timestamp().saturating_mul(1000) as u128
+    }
+
+    fn latency_seconds(seen_at_millis: u128, landing_millis: u128) -> f64 {
+        landing_millis.saturating_sub(seen_at_millis) as f64 / 1000.0
     }
 }
 
