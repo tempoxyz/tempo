@@ -5,6 +5,7 @@ use metrics::{describe_counter, describe_gauge};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use poem::{EndpointExt, Route, Server, get, listener::TcpListener};
 use reqwest::Url;
+use tokio::signal;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
@@ -57,13 +58,28 @@ impl MonitorArgs {
 
         let addr = format!("0.0.0.0:{}", self.port);
 
-        tokio::spawn(async move {
+        let monitor_handle = tokio::spawn(async move {
             monitor.worker().await;
         });
 
-        Server::new(TcpListener::bind(addr))
-            .run(app)
-            .await
-            .context("failed to run poem server")
+        let server = Server::new(TcpListener::bind(addr));
+        let server_handle = tokio::spawn(async move { server.run(app).await });
+
+        let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
+            .context("failed to install SIGTERM handler")?;
+        let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())
+            .context("failed to install SIGINT handler")?;
+
+        tokio::select! {
+            _ = sigterm.recv() => tracing::info!("Received SIGTERM, shutting down gracefully"),
+            _ = sigint.recv() => tracing::info!("Received SIGINT, shutting down gracefully"),
+        }
+
+        // Abort tasks
+        monitor_handle.abort();
+        server_handle.abort();
+
+        tracing::info!("Shutdown complete");
+        Ok(())
     }
 }
