@@ -11729,8 +11729,6 @@ dependencies = [
  "poem",
  "rand_distr 0.5.1",
  "reqwest",
- "serde",
- "serde_json",
  "tempo-precompiles",
  "tempo-telemetry-util",
  "tokio",

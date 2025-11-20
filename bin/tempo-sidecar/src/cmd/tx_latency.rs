@@ -1,18 +1,18 @@
 use alloy::primitives::B256;
+use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use clap::Parser;
-use eyre::{Context, Result, eyre};
+use eyre::{Context, Result};
+use futures::StreamExt;
 use metrics::{describe_gauge, describe_histogram, gauge, histogram};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use poem::{EndpointExt, Route, Server, get, listener::TcpListener};
 use reqwest::Url;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     time::{Duration, Instant},
 };
 use tokio::signal;
+use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, warn};
 
 use crate::monitor::prometheus_metrics;
@@ -41,17 +41,8 @@ pub struct TxLatencyArgs {
     max_pending_age_secs: u64,
 }
 
-#[derive(Serialize)]
-struct RpcRequest<'a, P> {
-    jsonrpc: &'a str,
-    id: u64,
-    method: &'a str,
-    params: P,
-}
-
 struct TransactionLatencyMonitor {
     rpc_url: Url,
-    client: reqwest::Client,
     poll_interval: Duration,
     max_pending_age: Duration,
     pending: HashMap<B256, Instant>,
@@ -61,127 +52,89 @@ impl TransactionLatencyMonitor {
     fn new(rpc_url: Url, poll_interval: Duration, max_pending_age: Duration) -> Self {
         Self {
             rpc_url,
-            client: reqwest::Client::new(),
             poll_interval,
             max_pending_age,
             pending: HashMap::new(),
         }
     }
 
-    async fn create_pending_filter(&self) -> Result<String> {
-        self.rpc_call("eth_newPendingTransactionFilter", json!([]))
-            .await
-            .context("failed to create pending transaction filter")
-    }
-
-    async fn rpc_call<R, P>(&self, method: &str, params: P) -> Result<R>
-    where
-        R: DeserializeOwned,
-        P: Serialize,
-    {
-        let body = RpcRequest {
-            jsonrpc: "2.0",
-            id: 1,
-            method,
-            params,
-        };
-
-        let response: Value = self
-            .client
-            .post(self.rpc_url.clone())
-            .json(&body)
-            .send()
-            .await
-            .context("failed to send rpc request")?
-            .error_for_status()
-            .context("rpc response had an error status")?
-            .json()
-            .await
-            .context("failed to deserialize rpc response")?;
-
-        if let Some(error) = response.get("error") {
-            return Err(eyre!("rpc error: {error}"));
-        }
-
-        let result = response
-            .get("result")
-            .ok_or_else(|| eyre!("missing result in rpc response"))?
-            .clone();
-
-        Ok(serde_json::from_value(result).context("failed to parse rpc response result")?)
-    }
-
     async fn watch_transactions(&mut self) -> Result<()> {
-        let mut filter_id = self.create_pending_filter().await?;
+        let rpc_url = self.rpc_url.to_string();
+        let mut provider = ProviderBuilder::new()
+            .connect_ws(WsConnect::new(rpc_url.clone()))
+            .await
+            .context("failed to connect websocket provider")?;
+        let mut subscription = provider
+            .subscribe_pending_transactions()
+            .await
+            .context("failed to subscribe to pending transactions")?;
+        let mut stream = subscription.into_stream();
+
+        let mut receipt_interval = tokio::time::interval(self.poll_interval);
+        receipt_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
-            let pending_hashes: Vec<String> = match self
-                .rpc_call("eth_getFilterChanges", json!([filter_id]))
-                .await
-            {
-                Ok(hashes) => hashes,
-                Err(err) => {
-                    error!(err = %err, "failed to fetch filter changes");
-                    match self.create_pending_filter().await {
-                        Ok(new_filter) => {
-                            warn!("recreated pending transaction filter after error");
-                            filter_id = new_filter;
-                        }
-                        Err(create_err) => {
-                            error!(err = %create_err, "failed to recreate pending filter");
+            tokio::select! {
+                maybe_hash = stream.next() => {
+                    match maybe_hash {
+                        Some(hash) => { self.pending.entry(hash).or_insert_with(Instant::now); }
+                        None => {
+                            warn!("pending transaction stream ended; reconnecting");
+                            provider = ProviderBuilder::new()
+                                .connect_ws(WsConnect::new(rpc_url.clone()))
+                                .await
+                                .context("failed to reconnect websocket provider")?;
+                            subscription = provider
+                                .subscribe_pending_transactions()
+                                .await
+                                .context("failed to resubscribe to pending transactions")?;
+                            stream = subscription.into_stream();
+                            continue;
                         }
                     }
-                    tokio::time::sleep(self.poll_interval).await;
-                    continue;
                 }
-            };
-
-            for hash in pending_hashes {
-                if let Ok(parsed_hash) = hash.parse::<B256>() {
-                    self.pending.entry(parsed_hash).or_insert_with(Instant::now);
+                _ = receipt_interval.tick() => {
+                    self.observe_pending(&provider).await?;
                 }
             }
+        }
+    }
 
-            gauge!("tempo_tx_latency_pending_observed").set(self.pending.len() as f64);
+    async fn observe_pending<P>(&mut self, provider: &P) -> Result<()>
+    where
+        P: Provider,
+    {
+        gauge!("tempo_tx_latency_pending_observed").set(self.pending.len() as f64);
 
-            let tracked_hashes: Vec<B256> = self.pending.keys().cloned().collect();
+        let tracked_hashes: Vec<B256> = self.pending.keys().cloned().collect();
 
-            for hash in tracked_hashes {
-                let hash_hex = format!("{hash:#x}");
-                let receipt: Option<Value> = match self
-                    .rpc_call("eth_getTransactionReceipt", json!([hash_hex]))
-                    .await
-                {
-                    Ok(receipt) => receipt,
-                    Err(err) => {
-                        debug!(err = %err, "failed to fetch transaction receipt");
-                        continue;
-                    }
-                };
-
-                if receipt.is_some() {
+        for hash in tracked_hashes {
+            match provider.get_transaction_receipt(hash).await {
+                Ok(Some(_)) => {
                     if let Some(seen_at) = self.pending.remove(&hash) {
                         let latency = seen_at.elapsed();
                         histogram!("tempo_tx_landing_latency_seconds")
                             .record(latency.as_secs_f64());
                     }
                 }
+                Ok(None) => continue,
+                Err(err) => debug!(err = %err, "failed to fetch transaction receipt"),
             }
-
-            let now = Instant::now();
-            let before_cleanup = self.pending.len();
-            self.pending
-                .retain(|_, seen_at| now.duration_since(*seen_at) <= self.max_pending_age);
-
-            if self.pending.len() < before_cleanup {
-                debug!(
-                    removed = before_cleanup - self.pending.len(),
-                    "dropped stale pending transactions"
-                );
-            }
-
-            tokio::time::sleep(self.poll_interval).await;
         }
+
+        let now = Instant::now();
+        let before_cleanup = self.pending.len();
+        self.pending
+            .retain(|_, seen_at| now.duration_since(*seen_at) <= self.max_pending_age);
+
+        if self.pending.len() < before_cleanup {
+            debug!(
+                removed = before_cleanup - self.pending.len(),
+                "dropped stale pending transactions"
+            );
+        }
+
+        Ok(())
     }
 }
 
