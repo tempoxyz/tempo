@@ -49,6 +49,8 @@ const PREVIOUS_EPOCH_KEY: u64 = 1;
 
 const DKG_OUTCOME_KEY: u64 = 0;
 
+mod postmoderato;
+
 pub(crate) struct Actor<TContext, TPeerManager>
 where
     TContext: Clock + commonware_runtime::Metrics + Storage,
@@ -76,7 +78,7 @@ where
     /// become signers on conclusion of the next ceremony), and the syncing
     /// players (these have time to catch up and will become players once
     /// the next ceremony is done).
-    epoch_metadata: Metadata<ContextCell<TContext>, U64, EpochState>,
+    epoch_metadata: Metadata<ContextCell<TContext>, U64, postmoderato::EpochState>,
 
     /// The persisted DKG outcome. This is the result of latest DKG ceremony,
     /// constructed one height before the boundary height b (on b-1).
@@ -263,7 +265,7 @@ where
             epoch_metadata
                 .put_sync(
                     CURRENT_EPOCH_KEY.into(),
-                    EpochState {
+                    postmoderato::EpochState {
                         dkg_outcome: DkgOutcome {
                             dkg_successful: true,
                             epoch: 0,
@@ -818,7 +820,7 @@ where
 
         self.epoch_metadata.put(
             CURRENT_EPOCH_KEY.into(),
-            EpochState {
+            postmoderato::EpochState {
                 dkg_outcome,
                 validator_state: new_validator_state.clone(),
             },
@@ -834,13 +836,13 @@ where
         self.register_current_epoch_state().await;
     }
 
-    fn current_epoch_state(&self) -> &EpochState {
+    fn current_epoch_state(&self) -> &postmoderato::EpochState {
         self.epoch_metadata
             .get(&CURRENT_EPOCH_KEY.into())
             .expect("current epoch state must be set at all times")
     }
 
-    fn previous_epoch_state(&self) -> Option<&EpochState> {
+    fn previous_epoch_state(&self) -> Option<&postmoderato::EpochState> {
         self.epoch_metadata.get(&PREVIOUS_EPOCH_KEY.into())
     }
 }
@@ -941,74 +943,6 @@ impl Read for DkgOutcome {
             participants,
             public,
             share,
-        })
-    }
-}
-
-/// All state for an epoch:
-///
-/// + the DKG outcome containing the public key, the private key share, and the
-///   participants fo the epoch
-/// + the validator state, containing the dealers of the epoch (corresponds to
-///   the participants in the DKG outcome), the players of the next ceremony,
-///   and the syncing players, who will be players in the ceremony thereafter.
-#[derive(Clone, Debug)]
-struct EpochState {
-    dkg_outcome: DkgOutcome,
-    validator_state: ValidatorState,
-}
-
-impl EpochState {
-    fn epoch(&self) -> Epoch {
-        self.dkg_outcome.epoch
-    }
-
-    fn participants(&self) -> &Ordered<PublicKey> {
-        &self.dkg_outcome.participants
-    }
-
-    fn public_polynomial(&self) -> &Public<MinSig> {
-        &self.dkg_outcome.public
-    }
-
-    fn private_share(&self) -> &Option<Share> {
-        &self.dkg_outcome.share
-    }
-
-    fn dealer_pubkeys(&self) -> Ordered<PublicKey> {
-        self.validator_state.dealer_pubkeys()
-    }
-
-    fn player_pubkeys(&self) -> Ordered<PublicKey> {
-        self.validator_state.player_pubkeys()
-    }
-}
-
-impl Write for EpochState {
-    fn write(&self, buf: &mut impl bytes::BufMut) {
-        self.dkg_outcome.write(buf);
-        self.validator_state.write(buf);
-    }
-}
-
-impl EncodeSize for EpochState {
-    fn encode_size(&self) -> usize {
-        self.dkg_outcome.encode_size() + self.validator_state.encode_size()
-    }
-}
-
-impl Read for EpochState {
-    type Cfg = ();
-
-    fn read_cfg(
-        buf: &mut impl bytes::Buf,
-        _cfg: &Self::Cfg,
-    ) -> Result<Self, commonware_codec::Error> {
-        let dkg_outcome = DkgOutcome::read_cfg(buf, &())?;
-        let validator_state = ValidatorState::read_cfg(buf, &())?;
-        Ok(Self {
-            dkg_outcome,
-            validator_state,
         })
     }
 }
