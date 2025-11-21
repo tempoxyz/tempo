@@ -172,4 +172,3 @@ impl<T> IntoPrecompileResult<T> for TempoPrecompileError {
         Ok(PrecompileOutput::new_reverted(gas, bytes))
     }
 }
-

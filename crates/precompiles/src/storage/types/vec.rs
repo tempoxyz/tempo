@@ -918,10 +918,9 @@ mod tests {
         }
 
         // Verify there's no data in slot 3 (should be empty)
-        let no_slot_value =
-            U256::handle(data_start + U256::from(3), LayoutCtx::FULL, address)
-                .read()
-                .unwrap();
+        let no_slot_value = U256::handle(data_start + U256::from(3), LayoutCtx::FULL, address)
+            .read()
+            .unwrap();
         assert_eq!(no_slot_value, U256::ZERO, "Slot 3 should be empty");
     }
 

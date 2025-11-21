@@ -123,9 +123,7 @@ impl StorageKey for Address {
 mod tests {
     use super::*;
     use crate::storage::{
-        PrecompileStorageProvider,
-        hashmap::HashMapStorageProvider,
-        packing::gen_word_from,
+        PrecompileStorageProvider, hashmap::HashMapStorageProvider, packing::gen_word_from,
     };
     use proptest::prelude::*;
 
