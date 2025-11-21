@@ -1,5 +1,6 @@
 use crate::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
 use alloy_consensus::Transaction;
+use alloy_primitives::{Address, U256};
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
@@ -9,6 +10,7 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
+use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, AuthorizedKey, compute_keys_slot};
 use tempo_revm::TempoStateAccess;
 
 /// Validator for Tempo transactions.
@@ -26,6 +28,51 @@ where
         Self { inner }
     }
 
+    /// Validate that an access key is authorized in the keychain precompile
+    ///
+    /// Note: This only checks if the key exists and is active.
+    /// Expiry checking is skipped here as accessing the block timestamp is complex
+    /// in the pool validator context. Expiry is validated in the EVM handler.
+    fn validate_keychain_authorization(
+        &self,
+        state_provider: &impl StateProvider,
+        user_address: Address,
+        access_key_addr: Address,
+    ) -> Result<(), TempoPoolTransactionError> {
+        // If using main key (zero address), always valid
+        if access_key_addr == Address::ZERO {
+            return Ok(());
+        }
+
+        // Compute storage slot using helper function
+        let storage_slot = compute_keys_slot(user_address, access_key_addr);
+
+        // Read storage slot from state provider
+        let slot_value = state_provider
+            .storage(ACCOUNT_KEYCHAIN_ADDRESS, storage_slot.into())
+            .map_err(|e| {
+                TempoPoolTransactionError::KeychainValidationFailed(format!(
+                    "Failed to read keychain storage: {e:?}"
+                ))
+            })?
+            .unwrap_or(U256::ZERO);
+
+        // Decode AuthorizedKey using helper
+        let authorized_key = AuthorizedKey::decode_from_slot(slot_value);
+
+        // Validate - only check if key is active
+        // Expiry validation is done in the EVM handler where block timestamp is readily available
+        if !authorized_key.is_active {
+            return Err(TempoPoolTransactionError::KeychainValidationFailed(
+                format!(
+                    "Access key {access_key_addr} is not authorized for account {user_address}"
+                ),
+            ));
+        }
+
+        Ok(())
+    }
+
     fn validate_one(
         &self,
         origin: TransactionOrigin,
@@ -38,6 +85,116 @@ where
                 *transaction.hash(),
                 InvalidTransactionError::TxTypeNotSupported.into(),
             );
+        }
+
+        // For AA transactions with Keychain signatures, validate authorization
+        enum ValidationResult {
+            ValidateKeychain(Address, Address),
+            Skip,
+            Reject(String),
+        }
+
+        match (|| -> ValidationResult {
+            let aa_signed = match transaction.inner().as_ref() {
+                tempo_primitives::TempoTxEnvelope::AA(aa) => aa,
+                _ => return ValidationResult::Skip,
+            };
+
+            if !aa_signed.signature().is_keychain() {
+                return ValidationResult::Skip;
+            }
+
+            let sender = transaction.sender();
+            let sig_hash = aa_signed.signature_hash();
+
+            // Recover and validate the access key ID
+            let access_key_addr = match aa_signed.signature().key_id(&sig_hash).ok().flatten() {
+                Some(addr) => addr,
+                None => return ValidationResult::Skip,
+            };
+
+            // Sanity check: user_address should match transaction sender
+            if let tempo_primitives::AASignature::Keychain(keychain_sig) = aa_signed.signature() {
+                if keychain_sig.user_address != sender {
+                    return ValidationResult::Reject(
+                        "Keychain signature user_address does not match sender".to_string(),
+                    );
+                }
+            }
+
+            // Check if this is same-tx auth+use (transaction includes KeyAuthorization for this key)
+            let is_same_tx_auth_use = aa_signed
+                .tx()
+                .key_authorization
+                .as_ref()
+                .map(|key_auth| key_auth.key_id == access_key_addr)
+                .unwrap_or(false);
+
+            if is_same_tx_auth_use {
+                // Same-tx auth+use: Validate the KeyAuthorization signature (not the keychain state)
+                // The KeyAuthorization MUST be signed by the root account
+                if let Some(key_auth) = aa_signed.tx().key_authorization.as_ref() {
+                    // Compute the message hash for the KeyAuthorization
+                    let auth_message_hash =
+                        tempo_primitives::transaction::KeyAuthorization::authorization_message_hash(
+                            key_auth.key_type.clone(),
+                            key_auth.key_id,
+                            key_auth.expiry,
+                            &key_auth.limits,
+                        );
+
+                    // Recover the signer of the KeyAuthorization
+                    match key_auth.signature.recover_signer(&auth_message_hash) {
+                        Ok(auth_signer) => {
+                            // Verify it's signed by the root account (sender)
+                            if auth_signer != sender {
+                                // KeyAuthorization must be signed by root account, not by the access key
+                                return ValidationResult::Reject(format!(
+                                    "Invalid KeyAuthorization signature: signed by {}, expected root account {}",
+                                    auth_signer, sender
+                                ));
+                            }
+                            // KeyAuthorization is valid - skip keychain storage check (key will be authorized during execution)
+                            return ValidationResult::Skip;
+                        }
+                        Err(e) => {
+                            // KeyAuthorization signature is invalid
+                            return ValidationResult::Reject(format!(
+                                "Invalid KeyAuthorization signature: failed to recover signer: {}",
+                                e
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // Not same-tx auth+use - validate keychain authorization
+            ValidationResult::ValidateKeychain(sender, access_key_addr)
+        })() {
+            ValidationResult::ValidateKeychain(user_address, access_key_addr) => {
+                // Validate keychain authorization in precompile storage
+                if let Err(e) = self.validate_keychain_authorization(
+                    &state_provider,
+                    user_address,
+                    access_key_addr,
+                ) {
+                    return TransactionValidationOutcome::Invalid(
+                        transaction,
+                        InvalidPoolTransactionError::other(e),
+                    );
+                }
+            }
+            ValidationResult::Skip => {
+                // No validation needed
+            }
+            ValidationResult::Reject(reason) => {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(
+                        TempoPoolTransactionError::KeychainValidationFailed(reason),
+                    ),
+                );
+            }
         }
 
         // Balance transfer is not allowed as there is no balances in accounts yet.

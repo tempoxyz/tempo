@@ -73,6 +73,9 @@ pub enum TempoPoolTransactionError {
 
     #[error("No fee token preference configured")]
     MissingFeeToken,
+
+    #[error("Keychain signature validation failed: {0}")]
+    KeychainValidationFailed(String),
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -81,6 +84,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             Self::ExceedsNonPaymentLimit => false,
             Self::InvalidFeeToken(_) => false,
             Self::MissingFeeToken => false,
+            Self::KeychainValidationFailed(_) => true, // Bad transaction - invalid signature
         }
     }
 

@@ -594,10 +594,7 @@ fn sign_aa_tx_with_p256_access_key(
     });
 
     Ok(AASignature::Keychain(
-        tempo_primitives::transaction::KeychainSignature {
-            user_address: root_key_addr,
-            signature: inner_signature,
-        },
+        tempo_primitives::transaction::KeychainSignature::new(root_key_addr, inner_signature),
     ))
 }
 
@@ -2398,10 +2395,11 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     });
 
     // Wrap it in a Keychain signature with the root key address
-    let aa_signature = AASignature::Keychain(tempo_primitives::transaction::KeychainSignature {
-        user_address: root_key_addr, // The root account this transaction is for
-        signature: inner_signature,
-    });
+    let aa_signature =
+        AASignature::Keychain(tempo_primitives::transaction::KeychainSignature::new(
+            root_key_addr, // The root account this transaction is for
+            inner_signature,
+        ));
 
     println!("✓ Transaction signed with access key P256 signature (wrapped in Keychain)");
 
@@ -2939,31 +2937,27 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
     let signature =
         sign_aa_tx_with_p256_access_key(&tx4, &access_key_1, &pub_x_1, &pub_y_1, root_addr)?;
 
-    // Submit and mine - transaction should be rejected during validation
+    // Submit - transaction MUST be rejected at RPC/pool level
+    // The access_key_1 is authorized, so it can sign transactions, but the transaction
+    // is trying to authorize ANOTHER key, which should be rejected at pool level
     let signed_tx4 = AASigned::new_unhashed(tx4, signature);
     let envelope4: TempoTxEnvelope = signed_tx4.into();
     let mut encoded4 = Vec::new();
     envelope4.encode_2718(&mut encoded4);
-    let tx_hash4 = envelope4.tx_hash();
 
-    setup.node.rpc.inject_tx(encoded4.into()).await?;
-    let block_payload = setup.node.advance_block().await?;
+    let inject_result = setup.node.rpc.inject_tx(encoded4.into()).await.expect_err(
+        "Transaction signed by access key trying to authorize another key \
+             MUST be rejected at RPC/pool level",
+    );
 
-    // Check if transaction was included in the block - it should NOT be
-    let block = block_payload.block();
-    let tx_included = block.body().transactions.iter().any(|tx| {
-        let mut tx_encoded = Vec::new();
-        tx.encode_2718(&mut tx_encoded);
-        keccak256(&tx_encoded) == *tx_hash4
-    });
+    let error_msg = inject_result.to_string();
 
-    if tx_included {
-        return Err(eyre::eyre!(
-            "Access key should not be able to authorize another key, but transaction was included in block"
-        ));
-    }
+    // Verify the error mentions keychain validation failure
+    assert!(
+        error_msg.contains("Keychain") || error_msg.contains("is not authorized"),
+        "Error must mention keychain or authorization failure. Got: {error_msg}"
+    );
 
-    println!("  ✓ Unauthorized authorize rejected (transaction not included in block)");
     println!("✓ Unauthorized authorize rejected\n");
 
     println!("=== All Keychain Negative Tests Passed ===");
@@ -3227,6 +3221,404 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
     assert_eq!(
         recipient_balance, safe_transfer_amount,
         "Recipient must receive exactly the transferred amount"
+    );
+
+    Ok(())
+}
+
+/// Test RPC validation of Keychain signatures - ensures proper validation in transaction pool
+/// Tests both positive (authorized key) and negative (unauthorized key) cases in a single test
+#[tokio::test]
+async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
+    use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
+    use tempo_primitives::transaction::TokenLimit;
+
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing RPC Validation of Keychain Signatures ===\n");
+
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let http_url = setup.node.rpc_url();
+
+    // Generate TWO P256 access keys
+    let authorized_key_signing_key = SigningKey::random(&mut OsRng);
+    let authorized_key_verifying_key = authorized_key_signing_key.verifying_key();
+    let authorized_encoded_point = authorized_key_verifying_key.to_encoded_point(false);
+    let authorized_pub_key_x = B256::from_slice(authorized_encoded_point.x().unwrap().as_slice());
+    let authorized_pub_key_y = B256::from_slice(authorized_encoded_point.y().unwrap().as_slice());
+    let authorized_key_addr = tempo_primitives::transaction::aa_signature::derive_p256_address(
+        &authorized_pub_key_x,
+        &authorized_pub_key_y,
+    );
+
+    let unauthorized_key_signing_key = SigningKey::random(&mut OsRng);
+    let unauthorized_key_verifying_key = unauthorized_key_signing_key.verifying_key();
+    let unauthorized_encoded_point = unauthorized_key_verifying_key.to_encoded_point(false);
+    let unauthorized_pub_key_x =
+        B256::from_slice(unauthorized_encoded_point.x().unwrap().as_slice());
+    let unauthorized_pub_key_y =
+        B256::from_slice(unauthorized_encoded_point.y().unwrap().as_slice());
+    let unauthorized_key_addr = tempo_primitives::transaction::aa_signature::derive_p256_address(
+        &unauthorized_pub_key_x,
+        &unauthorized_pub_key_y,
+    );
+
+    println!("Authorized access key address: {authorized_key_addr}");
+    println!("Unauthorized access key address: {unauthorized_key_addr}");
+
+    // Setup root key (funded account)
+    let root_key_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_key_addr = root_key_signer.address();
+    let root_wallet = EthereumWallet::from(root_key_signer.clone());
+    let provider = ProviderBuilder::new()
+        .wallet(root_wallet)
+        .connect_http(http_url.clone());
+
+    let chain_id = provider.get_chain_id().await?;
+    let mut nonce = provider.get_transaction_count(root_key_addr).await?;
+
+    println!("Root key address: {root_key_addr}");
+    println!("Chain ID: {chain_id}\n");
+
+    // STEP 1: Authorize the first access key (same-tx auth+use)
+    println!("=== STEP 1: Authorize Access Key (same-tx auth+use) ===");
+
+    let spending_limits = vec![TokenLimit {
+        token: DEFAULT_FEE_TOKEN,
+        limit: U256::from(10u64) * U256::from(10).pow(U256::from(18)), // 10 tokens
+    }];
+
+    let mock_p256_sig = AASignature::P256(P256SignatureWithPreHash {
+        r: B256::ZERO,
+        s: B256::ZERO,
+        pub_key_x: authorized_pub_key_x,
+        pub_key_y: authorized_pub_key_y,
+        pre_hash: false,
+    });
+
+    let key_auth = create_key_authorization(
+        &root_key_signer,
+        authorized_key_addr,
+        mock_p256_sig,
+        u64::MAX,
+        spending_limits.clone(),
+    )?;
+
+    let recipient1 = Address::random();
+    let transfer_amount = U256::from(2u64) * U256::from(10).pow(U256::from(18)); // 2 tokens
+
+    let auth_tx = TxAA {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        gas_limit: 500_000,
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: transferCall {
+                to: recipient1,
+                amount: transfer_amount,
+            }
+            .abi_encode()
+            .into(),
+        }],
+        nonce_key: U256::ZERO,
+        nonce,
+        fee_token: None,
+        fee_payer_signature: None,
+        valid_before: Some(u64::MAX),
+        valid_after: None,
+        access_list: Default::default(),
+        key_authorization: Some(key_auth),
+        aa_authorization_list: vec![],
+    };
+
+    let auth_sig = sign_aa_tx_with_p256_access_key(
+        &auth_tx,
+        &authorized_key_signing_key,
+        &authorized_pub_key_x,
+        &authorized_pub_key_y,
+        root_key_addr,
+    )?;
+
+    let signed_auth_tx = AASigned::new_unhashed(auth_tx, auth_sig);
+    let auth_envelope: TempoTxEnvelope = signed_auth_tx.into();
+    let auth_tx_hash = *auth_envelope.tx_hash();
+    let mut auth_encoded = Vec::new();
+    auth_envelope.encode_2718(&mut auth_encoded);
+
+    setup.node.rpc.inject_tx(auth_encoded.into()).await?;
+    setup.node.advance_block().await?;
+    nonce += 1;
+
+    // Verify transaction succeeded
+    let receipt1: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [auth_tx_hash])
+        .await?;
+    let receipt1_json = receipt1.expect("Receipt must exist");
+    let status1 = receipt1_json
+        .get("status")
+        .and_then(|v| v.as_str())
+        .expect("Receipt must have status");
+    assert_eq!(status1, "0x1", "Authorization transaction must succeed");
+    println!("✓ Access key authorized and used successfully\n");
+
+    // STEP 2: POSITIVE TEST - Use the authorized key (should succeed)
+    println!("=== STEP 2: POSITIVE TEST - Use Authorized Key ===");
+
+    let recipient2 = Address::random();
+
+    let positive_tx = TxAA {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        gas_limit: 300_000,
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: transferCall {
+                to: recipient2,
+                amount: transfer_amount,
+            }
+            .abi_encode()
+            .into(),
+        }],
+        nonce_key: U256::ZERO,
+        nonce,
+        fee_token: None,
+        fee_payer_signature: None,
+        valid_before: Some(u64::MAX),
+        valid_after: None,
+        access_list: Default::default(),
+        key_authorization: None, // No auth needed - key already authorized
+        aa_authorization_list: vec![],
+    };
+
+    let positive_sig = sign_aa_tx_with_p256_access_key(
+        &positive_tx,
+        &authorized_key_signing_key,
+        &authorized_pub_key_x,
+        &authorized_pub_key_y,
+        root_key_addr,
+    )?;
+
+    let signed_positive_tx = AASigned::new_unhashed(positive_tx, positive_sig);
+    let positive_envelope: TempoTxEnvelope = signed_positive_tx.into();
+    let positive_tx_hash = *positive_envelope.tx_hash();
+    let mut positive_encoded = Vec::new();
+    positive_envelope.encode_2718(&mut positive_encoded);
+
+    // This should succeed - authorized key is used
+    setup.node.rpc.inject_tx(positive_encoded.into()).await?;
+    setup.node.advance_block().await?;
+    nonce += 1;
+
+    // Verify transaction succeeded
+    let receipt2: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [positive_tx_hash])
+        .await?;
+    let receipt2_json = receipt2.expect("Receipt must exist");
+    let status2 = receipt2_json
+        .get("status")
+        .and_then(|v| v.as_str())
+        .expect("Receipt must have status");
+    assert_eq!(status2, "0x1", "Positive test transaction must succeed");
+
+    let recipient2_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(recipient2)
+        .call()
+        .await?;
+
+    assert_eq!(
+        recipient2_balance, transfer_amount,
+        "Recipient should receive tokens from authorized key"
+    );
+
+    println!("✓ POSITIVE TEST PASSED: Authorized key transaction succeeded\n");
+
+    // STEP 3: NEGATIVE TEST - Use an unauthorized key (should be rejected at pool level)
+    println!("=== STEP 3: NEGATIVE TEST - Use Unauthorized Key ===");
+
+    let recipient3 = Address::random();
+
+    let negative_tx = TxAA {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        gas_limit: 300_000,
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: transferCall {
+                to: recipient3,
+                amount: transfer_amount,
+            }
+            .abi_encode()
+            .into(),
+        }],
+        nonce_key: U256::ZERO,
+        nonce,
+        fee_token: None,
+        fee_payer_signature: None,
+        valid_before: Some(u64::MAX),
+        valid_after: None,
+        access_list: Default::default(),
+        key_authorization: None,
+        aa_authorization_list: vec![],
+    };
+
+    // Sign with UNAUTHORIZED key
+    let negative_sig = sign_aa_tx_with_p256_access_key(
+        &negative_tx,
+        &unauthorized_key_signing_key,
+        &unauthorized_pub_key_x,
+        &unauthorized_pub_key_y,
+        root_key_addr,
+    )?;
+
+    let signed_negative_tx = AASigned::new_unhashed(negative_tx, negative_sig);
+    let negative_envelope: TempoTxEnvelope = signed_negative_tx.into();
+    let mut negative_encoded = Vec::new();
+    negative_envelope.encode_2718(&mut negative_encoded);
+
+    println!("Attempting to inject transaction signed with unauthorized key...");
+
+    // This MUST be REJECTED at the RPC/pool level
+    let inject_result = setup
+        .node
+        .rpc
+        .inject_tx(negative_encoded.into())
+        .await
+        .expect_err("Unauthorized key transaction MUST be rejected at RPC/pool level");
+
+    let error_msg = inject_result.to_string();
+
+    // Verify the error message contains the expected validation failure details
+    assert!(
+        error_msg.contains("Keychain signature validation failed"),
+        "Error must mention 'Keychain signature validation failed'. Got: {error_msg}"
+    );
+    assert!(
+        error_msg.contains(&format!("{}", unauthorized_key_addr)),
+        "Error must contain unauthorized key address {}. Got: {error_msg}",
+        unauthorized_key_addr
+    );
+    assert!(
+        error_msg.contains(&format!("{}", root_key_addr)),
+        "Error must contain root account address {}. Got: {error_msg}",
+        root_key_addr
+    );
+    assert!(
+        error_msg.contains("is not authorized for account"),
+        "Error must specify key is not authorized. Got: {error_msg}"
+    );
+
+    // Verify recipient3 received NO tokens
+    let recipient3_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(recipient3)
+        .call()
+        .await?;
+
+    assert_eq!(
+        recipient3_balance,
+        U256::ZERO,
+        "Recipient should NOT receive tokens from unauthorized key"
+    );
+
+    // STEP 4: NEGATIVE TEST - Invalid KeyAuthorization signature (wrong signer)
+    println!("\n=== STEP 4: NEGATIVE TEST - Invalid KeyAuthorization (wrong signer) ===");
+
+    let (another_unauthorized_key, pub_x_3, pub_y_3, addr_3) = generate_p256_access_key();
+
+    // Create KeyAuthorization but sign it with unauthorized_key_signer instead of root_key_signer
+    let wrong_signer = &unauthorized_key_signing_key;
+
+    // Try to create a KeyAuthorization signed by the WRONG signer (not root key)
+    // This simulates someone trying to authorize a key without root key permission
+    let auth_message_hash = KeyAuthorization::authorization_message_hash(
+        tempo_primitives::transaction::SignatureType::P256,
+        addr_3,
+        u64::MAX,
+        &spending_limits,
+    );
+
+    // Sign with wrong key (should be root_key_signer)
+    use sha2::{Digest, Sha256};
+    let wrong_sig_hash = B256::from_slice(&Sha256::digest(auth_message_hash.as_slice()));
+    let wrong_signature: p256::ecdsa::Signature =
+        wrong_signer.sign_prehash(wrong_sig_hash.as_slice())?;
+    let wrong_sig_bytes = wrong_signature.to_bytes();
+
+    let invalid_key_auth = KeyAuthorization {
+        key_type: tempo_primitives::transaction::SignatureType::P256,
+        expiry: u64::MAX,
+        limits: spending_limits.clone(),
+        key_id: addr_3,
+        signature: AASignature::P256(P256SignatureWithPreHash {
+            r: B256::from_slice(&wrong_sig_bytes[0..32]),
+            s: B256::from_slice(&wrong_sig_bytes[32..64]),
+            pub_key_x: unauthorized_pub_key_x, // pub key of wrong signer
+            pub_key_y: unauthorized_pub_key_y,
+            pre_hash: true,
+        }),
+    };
+
+    let invalid_auth_tx = TxAA {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        gas_limit: 500_000,
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        nonce_key: U256::ZERO,
+        nonce,
+        fee_token: None,
+        fee_payer_signature: None,
+        valid_before: Some(u64::MAX),
+        valid_after: None,
+        access_list: Default::default(),
+        key_authorization: Some(invalid_key_auth),
+        aa_authorization_list: vec![],
+    };
+
+    // Sign the transaction with the new key we're trying to authorize
+    let invalid_auth_sig = sign_aa_tx_with_p256_access_key(
+        &invalid_auth_tx,
+        &another_unauthorized_key,
+        &pub_x_3,
+        &pub_y_3,
+        root_key_addr,
+    )?;
+
+    let signed_invalid_auth_tx = AASigned::new_unhashed(invalid_auth_tx, invalid_auth_sig);
+    let invalid_auth_envelope: TempoTxEnvelope = signed_invalid_auth_tx.into();
+    let mut invalid_auth_encoded = Vec::new();
+    invalid_auth_envelope.encode_2718(&mut invalid_auth_encoded);
+
+    println!("Attempting to inject transaction with invalid KeyAuthorization signature...");
+
+    // This is a same-tx auth+use case: the transaction includes a KeyAuthorization for addr_3,
+    // and is signed by another_unauthorized_key (which will become addr_3 after authorization).
+    // The KeyAuthorization signature is invalid (signed by wrong_signer, not root_key_signer).
+    // This MUST be REJECTED at the RPC/pool level.
+    let inject_result_invalid_auth = setup
+        .node
+        .rpc
+        .inject_tx(invalid_auth_encoded.into())
+        .await
+        .expect_err(
+            "Transaction with invalid KeyAuthorization signature MUST be rejected at RPC/pool level"
+        );
+
+    let error_msg = inject_result_invalid_auth.to_string();
+
+    // Verify the error message contains the expected validation failure details
+    assert!(
+        error_msg.contains("Invalid KeyAuthorization signature"),
+        "Error must mention 'Invalid KeyAuthorization signature'. Got: {error_msg}"
     );
 
     Ok(())

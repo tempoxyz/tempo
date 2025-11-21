@@ -57,6 +57,9 @@ pub use tempo_contracts::precompiles::{
     VALIDATOR_CONFIG_ADDRESS,
 };
 
+// Re-export storage layout helpers for read-only contexts (e.g., pool validation)
+pub use account_keychain::{AuthorizedKey, compute_keys_slot};
+
 /// Input per word cost. It covers abi decoding and cloning of input into call data.
 ///
 /// Being careful and pricing it twice as COPY_COST to mitigate different abi decodings.

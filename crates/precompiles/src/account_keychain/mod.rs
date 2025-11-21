@@ -18,11 +18,40 @@ use revm::{
 use tempo_precompiles_macros::{Storable, contract};
 
 /// Key information stored in the precompile
+///
+/// Storage layout (packed into single slot, right-aligned):
+/// - byte 0: signature_type (u8)
+/// - bytes 1-8: expiry (u64, little-endian)
+/// - byte 9: is_active (bool)
 #[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
 pub struct AuthorizedKey {
     pub signature_type: u8, // 0: secp256k1, 1: P256, 2: WebAuthn
     pub expiry: u64,        // Block timestamp when key expires
     pub is_active: bool,    // Whether key is active
+}
+
+// TODO: Can we get some precompile macro utilities for this, which are compatible with read-only contexts?
+impl AuthorizedKey {
+    /// Decode AuthorizedKey from a storage slot value
+    ///
+    /// This is useful for read-only contexts (like pool validation) that don't have
+    /// access to PrecompileStorageProvider but need to decode the packed struct.
+    pub fn decode_from_slot(slot_value: U256) -> Self {
+        Self {
+            signature_type: slot_value.byte(0),
+            expiry: u64::from_le_bytes([
+                slot_value.byte(1),
+                slot_value.byte(2),
+                slot_value.byte(3),
+                slot_value.byte(4),
+                slot_value.byte(5),
+                slot_value.byte(6),
+                slot_value.byte(7),
+                slot_value.byte(8),
+            ]),
+            is_active: slot_value.byte(9) != 0,
+        }
+    }
 }
 
 /// Account Keychain contract for managing authorized keys
@@ -38,6 +67,33 @@ pub struct AccountKeychain {
 /// Transient storage slot for the transaction key
 /// Using slot 0 since there's only one transaction key at a time
 const TRANSACTION_KEY_SLOT: U256 = U256::ZERO;
+
+/// Compute the storage slot for keys[account][key_id]
+///
+/// This is useful for read-only contexts (like pool validation) that need to
+/// directly read the keychain state using StateProvider without going through
+/// the precompile abstraction.
+///
+/// The keys mapping is at slot 0 (first field in the contract).
+pub fn compute_keys_slot(account: Address, key_id: Address) -> B256 {
+    use alloy::primitives::keccak256;
+
+    const KEYS_BASE_SLOT: U256 = U256::ZERO; // keys is the first field
+
+    // Step 1: Intermediate slot = keccak256(left_pad_32(account) || base_slot)
+    let intermediate_slot = {
+        let mut buf = [0u8; 64];
+        buf[12..32].copy_from_slice(account.as_slice()); // Left-pad 20-byte address
+        buf[32..64].copy_from_slice(&KEYS_BASE_SLOT.to_be_bytes::<32>());
+        U256::from_be_bytes(keccak256(buf).0)
+    };
+
+    // Step 2: Final slot = keccak256(left_pad_32(key_id) || intermediate_slot)
+    let mut buf = [0u8; 64];
+    buf[12..32].copy_from_slice(key_id.as_slice()); // Left-pad 20-byte address
+    buf[32..64].copy_from_slice(&intermediate_slot.to_be_bytes::<32>());
+    B256::from(keccak256(buf).0)
+}
 
 impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
     /// Creates an instance of the precompile.
