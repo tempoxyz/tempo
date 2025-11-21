@@ -452,7 +452,7 @@ where
 
     fn retain_unknown<A>(&self, announcement: &mut A)
     where
-        A: reth_eth_wire_types::HandleMempoolData,
+        A: reth_eth_wire_types::broadcast::HandleMempoolData,
     {
         self.protocol_pool.retain_unknown(announcement);
         // 2D pool doesn't participate in P2P announcement filtering for now
