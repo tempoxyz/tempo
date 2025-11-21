@@ -82,7 +82,7 @@ jobs:
       - name: Get latest filename from API
         id: latest
         run: |
-          RESPONSE=$(curl -s https://snapshots.tempoxyz.dev/42429/latest.txt)
+          FILENAME=$(curl -s https://snapshots.tempoxyz.dev/42429/latest.txt)
           echo "Latest filename: $FILENAME"
           echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
 
