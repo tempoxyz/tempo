@@ -27,7 +27,7 @@ use tempo_contracts::{
 };
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS,
+    PATH_USD_ADDRESS,
     linking_usd::{LinkingUSD, TRANSFER_ROLE},
     nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
@@ -187,7 +187,7 @@ impl GenesisArgs {
         println!("Minting pairwise FeeAMM liquidity");
         mint_pairwise_liquidity(
             alpha_token_address,
-            vec![LINKING_USD_ADDRESS, beta_token_address, theta_token_address],
+            vec![PATH_USD_ADDRESS, beta_token_address, theta_token_address],
             U256::from(10u64.pow(10)),
             admin,
             &mut evm,
@@ -354,7 +354,7 @@ fn create_and_mint_token(
                     name: name.into(),
                     symbol: symbol.into(),
                     currency: currency.into(),
-                    quoteToken: LINKING_USD_ADDRESS,
+                    quoteToken: PATH_USD_ADDRESS,
                     admin,
                 },
             )
@@ -479,7 +479,7 @@ fn initialize_fee_manager(
             .set_validator_token(
                 validator,
                 IFeeManager::setValidatorTokenCall {
-                    token: LINKING_USD_ADDRESS,
+                    token: PATH_USD_ADDRESS,
                 },
                 // use random address to avoid `CannotChangeWithinBlock` error
                 Address::random(),

@@ -250,6 +250,7 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 mod tests {
 
     use alloy_primitives::uint;
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::RolesAuthError;
 
     use super::*;
@@ -1166,6 +1167,154 @@ mod tests {
             result.unwrap_err(),
             TempoPrecompileError::RolesAuthError(RolesAuthError::unauthorized())
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Allegretto);
+        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let admin = Address::random();
+        let sender = Address::random();
+        let recipient = Address::random();
+        let amount = U256::from(1000);
+
+        linking_usd.initialize(admin)?;
+        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        // Mint to sender without any special roles
+        linking_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
+
+        // Post-Allegretto: transfer should work without TRANSFER_ROLE
+        let result = linking_usd.transfer(
+            sender,
+            ITIP20::transferCall {
+                to: recipient,
+                amount,
+            },
+        )?;
+
+        assert!(result);
+
+        let sender_balance = linking_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
+        let recipient_balance =
+            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+
+        assert_eq!(sender_balance, U256::ZERO);
+        assert_eq!(recipient_balance, amount);
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_from_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Allegretto);
+        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let admin = Address::random();
+        let owner = Address::random();
+        let spender = Address::random();
+        let recipient = Address::random();
+        let amount = U256::from(1000);
+
+        linking_usd.initialize(admin)?;
+        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        // Mint to owner and approve spender
+        linking_usd.mint(admin, ITIP20::mintCall { to: owner, amount })?;
+        linking_usd.approve(owner, ITIP20::approveCall { spender, amount })?;
+
+        // Post-Allegretto: transfer_from should work without TRANSFER_ROLE
+        let result = linking_usd.transfer_from(
+            spender,
+            ITIP20::transferFromCall {
+                from: owner,
+                to: recipient,
+                amount,
+            },
+        )?;
+
+        assert!(result);
+
+        let owner_balance = linking_usd.balance_of(ITIP20::balanceOfCall { account: owner })?;
+        let recipient_balance =
+            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+
+        assert_eq!(owner_balance, U256::ZERO);
+        assert_eq!(recipient_balance, amount);
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_with_memo_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Allegretto);
+        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let admin = Address::random();
+        let sender = Address::random();
+        let recipient = Address::random();
+        let amount = U256::from(1000);
+        let memo = [1u8; 32];
+
+        linking_usd.initialize(admin)?;
+        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        // Mint to sender without any special roles
+        linking_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
+
+        // Post-Allegretto: transfer_with_memo should work without TRANSFER_ROLE or RECEIVE_WITH_MEMO_ROLE
+        linking_usd.transfer_with_memo(
+            sender,
+            ITIP20::transferWithMemoCall {
+                to: recipient,
+                amount,
+                memo: memo.into(),
+            },
+        )?;
+
+        let sender_balance = linking_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
+        let recipient_balance =
+            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+
+        assert_eq!(sender_balance, U256::ZERO);
+        assert_eq!(recipient_balance, amount);
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_from_with_memo_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Allegretto);
+        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let admin = Address::random();
+        let owner = Address::random();
+        let spender = Address::random();
+        let recipient = Address::random();
+        let amount = U256::from(1000);
+        let memo = [1u8; 32];
+
+        linking_usd.initialize(admin)?;
+        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        // Mint to owner and approve spender
+        linking_usd.mint(admin, ITIP20::mintCall { to: owner, amount })?;
+        linking_usd.approve(owner, ITIP20::approveCall { spender, amount })?;
+
+        // Post-Allegretto: transfer_from_with_memo should work without any special roles
+        let result = linking_usd.transfer_from_with_memo(
+            spender,
+            ITIP20::transferFromWithMemoCall {
+                from: owner,
+                to: recipient,
+                amount,
+                memo: memo.into(),
+            },
+        )?;
+
+        assert!(result);
+
+        let owner_balance = linking_usd.balance_of(ITIP20::balanceOfCall { account: owner })?;
+        let recipient_balance =
+            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+
+        assert_eq!(owner_balance, U256::ZERO);
+        assert_eq!(recipient_balance, amount);
         Ok(())
     }
 }
