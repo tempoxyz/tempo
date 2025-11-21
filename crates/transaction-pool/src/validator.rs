@@ -50,17 +50,6 @@ where
             );
         }
 
-        // Reject AA transactions with non-zero nonce keys, we don't have
-        // a nice way to track them in the pool yet.
-        if let Some(tx) = transaction.inner().as_aa()
-            && !tx.tx().nonce_key.is_zero()
-        {
-            return TransactionValidationOutcome::Error(
-                *transaction.hash(),
-                InvalidTransactionError::TxTypeNotSupported.into(),
-            );
-        }
-
         let fee_payer = match transaction.inner().fee_payer(transaction.sender()) {
             Ok(fee_payer) => fee_payer,
             Err(err) => {
