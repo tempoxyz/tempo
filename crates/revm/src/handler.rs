@@ -25,7 +25,7 @@ use revm::{
         },
         interpreter::EthInterpreter,
     },
-    primitives::{eip7702, hardfork::SpecId as RevmSpecId},
+    primitives::eip7702,
     state::Bytecode,
 };
 use tempo_contracts::{
@@ -43,8 +43,7 @@ use tempo_precompiles::{
     tip20::{self},
 };
 use tempo_primitives::transaction::{
-    AASignature, PrimitiveSignature, SignatureType, account_abstraction::KeyAuthorization,
-    calc_gas_balance_spending,
+    AASignature, KeyAuthorization, PrimitiveSignature, SignatureType, calc_gas_balance_spending,
 };
 
 use crate::{TempoEvm, TempoInvalidTransaction, common::TempoStateAccess, evm::TempoContext};
@@ -64,12 +63,12 @@ const DEFAULT_7702_DELEGATE_CODE_HASH: B256 =
 /// - P256: 5000 gas
 /// - WebAuthn: 5000 gas + calldata cost for webauthn_data
 #[inline]
-fn primitive_signature_verification_gas(signature: &PrimitiveSignature, is_istanbul: bool) -> u64 {
+fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
     match signature {
         PrimitiveSignature::Secp256k1(_) => 0,
         PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
         PrimitiveSignature::WebAuthn(webauthn_sig) => {
-            let tokens = get_tokens_in_calldata(&webauthn_sig.webauthn_data, is_istanbul);
+            let tokens = get_tokens_in_calldata(&webauthn_sig.webauthn_data, true);
             P256_VERIFY_GAS + tokens * STANDARD_TOKEN_COST
         }
     }
@@ -80,17 +79,17 @@ fn primitive_signature_verification_gas(signature: &PrimitiveSignature, is_istan
 /// For Keychain signatures, unwraps to the inner primitive signature for gas calculation.
 /// Returns the additional gas required beyond the base transaction cost.
 #[inline]
-fn aa_signature_verification_gas(signature: &AASignature, is_istanbul: bool) -> u64 {
+fn aa_signature_verification_gas(signature: &AASignature) -> u64 {
     match signature {
         AASignature::Secp256k1(_) => 0,
         AASignature::P256(_) => P256_VERIFY_GAS,
         AASignature::WebAuthn(webauthn_sig) => {
-            let tokens = get_tokens_in_calldata(&webauthn_sig.webauthn_data, is_istanbul);
+            let tokens = get_tokens_in_calldata(&webauthn_sig.webauthn_data, true);
             P256_VERIFY_GAS + tokens * STANDARD_TOKEN_COST
         }
         AASignature::Keychain(keychain_sig) => {
             // Keychain wraps a primitive signature - calculate gas for the inner signature
-            primitive_signature_verification_gas(&keychain_sig.signature, is_istanbul)
+            primitive_signature_verification_gas(&keychain_sig.signature)
         }
     }
 }
@@ -623,7 +622,7 @@ where
                 // Recover the access key address from the inner signature
                 let access_key_addr = keychain_sig
                     .signature
-                    .recover_signer(&aa_tx_env.tx_hash)
+                    .recover_signer(&aa_tx_env.signature_hash)
                     .map_err(|_| {
                         EVMError::Transaction(
                             TempoInvalidTransaction::AccessKeyAuthorizationFailed {
@@ -753,7 +752,7 @@ where
             // Recover the access key address from the inner signature
             let access_key_addr = keychain_sig
                 .signature
-                .recover_signer(&aa_tx_env.tx_hash)
+                .recover_signer(&aa_tx_env.signature_hash)
                 .map_err(|_| {
                     EVMError::Transaction(TempoInvalidTransaction::AccessKeyAuthorizationFailed {
                         reason: "Failed to recover access key address from inner signature"
@@ -996,7 +995,7 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     signature: &AASignature,
     access_list: Option<impl Iterator<Item = &'a AccessListItem>>,
     aa_authorization_list: &[tempo_primitives::transaction::AASignedAuthorization],
-    spec: &tempo_chainspec::hardfork::TempoHardfork,
+    _spec: &tempo_chainspec::hardfork::TempoHardfork,
 ) -> Result<InitialAndFloorGas, TempoInvalidTransaction> {
     let mut gas = InitialAndFloorGas::default();
 
@@ -1004,9 +1003,7 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     gas.initial_gas += 21_000;
 
     // 2. Signature verification gas
-    let spec_id: RevmSpecId = (*spec).into();
-    gas.initial_gas +=
-        aa_signature_verification_gas(signature, spec_id.is_enabled_in(RevmSpecId::ISTANBUL));
+    gas.initial_gas += aa_signature_verification_gas(signature);
 
     // 3. Per-call overhead: cold account access
     // if the `to` address has not appeared in the call batch before.
@@ -1016,10 +1013,7 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     gas.initial_gas += aa_authorization_list.len() as u64 * eip7702::PER_EMPTY_ACCOUNT_COST;
     // Add signature verification costs for each authorization
     for aa_auth in aa_authorization_list {
-        gas.initial_gas += aa_signature_verification_gas(
-            aa_auth.signature(),
-            spec_id.is_enabled_in(RevmSpecId::ISTANBUL),
-        );
+        gas.initial_gas += aa_signature_verification_gas(aa_auth.signature());
     }
 
     // 4. Per-call costs

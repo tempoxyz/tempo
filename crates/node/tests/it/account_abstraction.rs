@@ -17,12 +17,12 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{
-        TxAA,
+        KeyAuthorization, TxAA,
         aa_signature::{
             AASignature, P256SignatureWithPreHash, PrimitiveSignature, WebAuthnSignature,
         },
         aa_signed::AASigned,
-        account_abstraction::{Call, KeyAuthorization},
+        account_abstraction::Call,
     },
 };
 
@@ -524,7 +524,7 @@ fn create_key_authorization(
     access_key_addr: Address,
     access_key_signature: AASignature,
     expiry: u64,
-    spending_limits: Vec<tempo_primitives::transaction::account_abstraction::TokenLimit>,
+    spending_limits: Vec<tempo_primitives::transaction::TokenLimit>,
 ) -> eyre::Result<KeyAuthorization> {
     // Infer key_type from the access key signature
     let key_type = access_key_signature.signature_type();
@@ -2235,8 +2235,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
     use sha2::{Digest, Sha256};
     use tempo_primitives::transaction::{
-        aa_signature::P256SignatureWithPreHash,
-        account_abstraction::{KeyAuthorization, TokenLimit},
+        KeyAuthorization, TokenLimit, aa_signature::P256SignatureWithPreHash,
     };
 
     reth_tracing::init_test_tracing();
@@ -2682,7 +2681,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
 #[tokio::test]
 async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
     use tempo_precompiles::account_keychain::{SignatureType, authorizeKeyCall};
-    use tempo_primitives::transaction::account_abstraction::TokenLimit;
+    use tempo_primitives::transaction::TokenLimit;
 
     reth_tracing::init_test_tracing();
 
@@ -2778,7 +2777,8 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
     };
     let sig_hash = tx1.signature_hash();
     let signature = root_signer.sign_hash_sync(&sig_hash)?;
-    let _tx_hash = submit_and_mine_aa_tx(&mut setup, tx1, AASignature::Secp256k1(signature)).await?;
+    let _tx_hash =
+        submit_and_mine_aa_tx(&mut setup, tx1, AASignature::Secp256k1(signature)).await?;
     nonce += 1;
     println!("  ✓ First authorization succeeded");
 
@@ -2893,7 +2893,8 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
     };
     let sig_hash = tx3.signature_hash();
     let signature = root_signer.sign_hash_sync(&sig_hash)?;
-    let _tx_hash = submit_and_mine_aa_tx(&mut setup, tx3, AASignature::Secp256k1(signature)).await?;
+    let _tx_hash =
+        submit_and_mine_aa_tx(&mut setup, tx3, AASignature::Secp256k1(signature)).await?;
     nonce += 1;
 
     // Try to authorize second key using first access key (should fail)
@@ -2972,9 +2973,9 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
 #[tokio::test]
 async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Result<()> {
     use alloy::sol_types::SolCall;
-    use tempo_precompiles::account_keychain::updateSpendingLimitCall;
     use tempo_contracts::precompiles::ITIP20::{balanceOfCall, transferCall};
-    use tempo_primitives::transaction::account_abstraction::TokenLimit;
+    use tempo_precompiles::account_keychain::updateSpendingLimitCall;
+    use tempo_primitives::transaction::TokenLimit;
 
     reth_tracing::init_test_tracing();
 
@@ -3019,13 +3020,11 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 400_000,
-        calls: vec![
-            Call {
-                to: DEFAULT_FEE_TOKEN.into(),
-                value: U256::ZERO,
-                input: balanceOfCall { account: root_addr }.abi_encode().into(),
-            },
-        ],
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: balanceOfCall { account: root_addr }.abi_encode().into(),
+        }],
         nonce_key: U256::ZERO,
         nonce,
         fee_token: None,
@@ -3047,17 +3046,17 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 300_000,
-        calls: vec![
-            Call {
-                to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
-                value: U256::ZERO,
-                input: updateSpendingLimitCall {
-                    keyId: access_key_addr,
-                    token: DEFAULT_FEE_TOKEN,
-                    newLimit: U256::from(20u64) * U256::from(10).pow(U256::from(18)),
-                }.abi_encode().into(),
-            },
-        ],
+        calls: vec![Call {
+            to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
+            value: U256::ZERO,
+            input: updateSpendingLimitCall {
+                keyId: access_key_addr,
+                token: DEFAULT_FEE_TOKEN,
+                newLimit: U256::from(20u64) * U256::from(10).pow(U256::from(18)),
+            }
+            .abi_encode()
+            .into(),
+        }],
         nonce_key: U256::ZERO,
         nonce,
         fee_token: None,
@@ -3096,7 +3095,10 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         .and_then(|v| v.as_str())
         .expect("Receipt must have status field");
 
-    assert_eq!(status, "0x0", "Access keys cannot call admin functions - transaction must revert");
+    assert_eq!(
+        status, "0x0",
+        "Access keys cannot call admin functions - transaction must revert"
+    );
     nonce += 1;
 
     // Test 3: Try to transfer more than spending limit using access key (must revert)
@@ -3106,16 +3108,16 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 300_000,
-        calls: vec![
-            Call {
-                to: DEFAULT_FEE_TOKEN.into(),
-                value: U256::ZERO,
-                input: transferCall {
-                    to: recipient,
-                    amount: over_limit_amount,
-                }.abi_encode().into(),
-            },
-        ],
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: transferCall {
+                to: recipient,
+                amount: over_limit_amount,
+            }
+            .abi_encode()
+            .into(),
+        }],
         nonce_key: U256::ZERO,
         nonce,
         fee_token: None,
@@ -3154,7 +3156,10 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         .and_then(|v| v.as_str())
         .expect("Receipt must have status field");
 
-    assert_eq!(status, "0x0", "Transfer exceeding spending limit must revert");
+    assert_eq!(
+        status, "0x0",
+        "Transfer exceeding spending limit must revert"
+    );
     nonce += 1;
 
     // Test 4: Transfer within spending limit using access key (must succeed)
@@ -3164,16 +3169,16 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 300_000,
-        calls: vec![
-            Call {
-                to: DEFAULT_FEE_TOKEN.into(),
-                value: U256::ZERO,
-                input: transferCall {
-                    to: recipient,
-                    amount: safe_transfer_amount,
-                }.abi_encode().into(),
-            },
-        ],
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: transferCall {
+                to: recipient,
+                amount: safe_transfer_amount,
+            }
+            .abi_encode()
+            .into(),
+        }],
         nonce_key: U256::ZERO,
         nonce,
         fee_token: None,
@@ -3220,8 +3225,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         .await?;
 
     assert_eq!(
-        recipient_balance,
-        safe_transfer_amount,
+        recipient_balance, safe_transfer_amount,
         "Recipient must receive exactly the transferred amount"
     );
 
