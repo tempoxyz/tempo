@@ -21,13 +21,12 @@ reth-chainspec.workspace = true
 reth-primitives-traits.workspace = true
 reth-storage-api.workspace = true
 reth-provider.workspace = true
-reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", rev = "63409fe" }
+reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", rev = "b0494a1" }
 
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
 
-async-trait.workspace = true
 parking_lot.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 thiserror.workspace = true

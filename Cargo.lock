@@ -11751,7 +11751,6 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
- "async-trait",
  "parking_lot",
  "reth-chainspec",
  "reth-eth-wire-types",
