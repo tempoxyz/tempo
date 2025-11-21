@@ -82,7 +82,7 @@ jobs:
       - name: Download snapshot
         run: cargo run --release --bin tempo download --datadir snap-rexec
       - name: Re-execute snapshot
-        run: cargo run --release --bin tempo re-execute --datadir snap-rexec/data/tempo
+        run: cargo run --release --bin tempo re-execute --datadir snap-rexec
 
   test-success:
     name: test success
