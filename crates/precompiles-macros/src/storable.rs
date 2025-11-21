@@ -204,7 +204,7 @@ fn gen_handler_struct(
 ) -> TokenStream {
     let handler_name = format_ident!("{}Handler", struct_name);
 
-    // Generate public handler fields (reusing shared function)
+    // Generate public handler fields
     let handler_fields = fields.iter().map(gen_handler_field_decl);
 
     // Generate field initializations for constructor using the shared helper
@@ -216,10 +216,11 @@ fn gen_handler_struct(
     quote! {
         /// Type-safe handler for accessing `#struct_name` in storage.
         ///
-        /// Provides individual field access via public fields.
+        /// Provides individual field access via public fields and whole-struct operations.
         pub struct #handler_name {
-            #(#handler_fields,)*
             address: ::std::rc::Rc<::alloy::primitives::Address>,
+            base_slot: ::alloy::primitives::U256,
+            #(#handler_fields,)*
         }
 
         impl #handler_name {
@@ -229,9 +230,49 @@ fn gen_handler_struct(
                 let address_rc = address;
 
                 Self {
+                    base_slot,
                     #(#field_inits,)*
                     address: address_rc,
                 }
+            }
+
+            /// Returns the base storage slot where this struct's data is stored.
+            ///
+            /// Single-slot structs pack all fields into this slot.
+            /// Multi-slot structs use consecutive slots starting from this base.
+            #[inline]
+            pub fn base_slot(&self) -> ::alloy::primitives::U256 {
+                self.base_slot
+            }
+
+            /// Reads the entire struct from storage.
+            #[inline]
+            pub fn read(&self) -> crate::error::Result<#struct_name> {
+                let mut slot = crate::storage::Slot::<#struct_name>::new(
+                    self.base_slot,
+                    ::std::rc::Rc::clone(&self.address)
+                );
+                slot.read()
+            }
+
+            /// Writes the entire struct to storage.
+            #[inline]
+            pub fn write(&mut self, value: #struct_name) -> crate::error::Result<()> {
+                let mut slot = crate::storage::Slot::<#struct_name>::new(
+                    self.base_slot,
+                    ::std::rc::Rc::clone(&self.address)
+                );
+                slot.write(value)
+            }
+
+            /// Deletes the entire struct from storage (sets all slots to zero).
+            #[inline]
+            pub fn delete(&mut self) -> crate::error::Result<()> {
+                let mut slot = crate::storage::Slot::<#struct_name>::new(
+                    self.base_slot,
+                    ::std::rc::Rc::clone(&self.address)
+                );
+                slot.delete()
             }
         }
     }

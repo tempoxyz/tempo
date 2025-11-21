@@ -1,4 +1,4 @@
-pub mod evm;
+// pub mod evm;
 pub mod hashmap;
 
 pub mod thread_local;

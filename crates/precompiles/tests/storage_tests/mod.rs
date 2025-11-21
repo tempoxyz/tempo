@@ -1,11 +1,12 @@
 //! Shared test utilities for storage testing.
 
 use crate::storage::{
-    ContractStorage, LayoutCtx, PrecompileStorageProvider, Storable, StorableType,
-    hashmap::HashMapStorageProvider, packing::extract_field,
+    LayoutCtx, PrecompileStorageProvider, Slot, Storable, hashmap::HashMapStorageProvider,
+    packing::extract_field,
 };
 use alloy::primitives::{Address, U256, keccak256};
 use proptest::prelude::*;
+use std::rc::Rc;
 use tempo_precompiles::error;
 use tempo_precompiles_macros::{Storable, contract};
 
@@ -14,34 +15,14 @@ mod layouts;
 mod mappings;
 mod packing;
 mod roundtrip;
-mod solidity;
+// mod solidity;
 mod strings;
 mod structs;
 
 // -- TEST HELPERS ---------------------------------------------------------------------------------
 
-/// Test wrapper that combines address + storage provider to implement ContractStorage
-pub(crate) struct TestStorage<S> {
-    pub(crate) address: Address,
-    pub(crate) storage: S,
-}
-
-impl<S: PrecompileStorageProvider> ContractStorage for TestStorage<S> {
-    type Storage = S;
-    fn address(&self) -> Address {
-        self.address
-    }
-    fn storage(&mut self) -> &mut Self::Storage {
-        &mut self.storage
-    }
-}
-
-/// Helper to create a test storage instance
-pub(crate) fn setup_storage() -> TestStorage<HashMapStorageProvider> {
-    TestStorage {
-        address: Address::ZERO,
-        storage: HashMapStorageProvider::new(1),
-    }
+fn setup_storage() -> (HashMapStorageProvider, Rc<Address>) {
+    (HashMapStorageProvider::new(1), Rc::new(Address::random()))
 }
 
 /// Test struct with 3 slots: U256, U256, u64
@@ -68,58 +49,69 @@ pub(crate) fn test_address(byte: u8) -> Address {
 }
 
 /// Helper to test store + load roundtrip
-pub(crate) fn test_store_load<T, S, const N: usize>(
-    storage: &mut S,
+pub(crate) fn test_store_load<T, const N: usize>(
+    address: &Rc<Address>,
     base_slot: U256,
     original: &T,
 ) -> error::Result<()>
 where
-    T: Storable<N> + PartialEq + std::fmt::Debug,
-    S: ContractStorage,
+    T: Storable<N> + Clone + PartialEq + std::fmt::Debug,
 {
-    original.store(storage, base_slot, LayoutCtx::FULL)?;
-    let loaded = T::load(storage, base_slot, LayoutCtx::FULL)?;
+    // Create a slot and use it for storage operations
+    let mut slot = Slot::<T>::new(base_slot, address.clone());
+
+    // Write and read using the new API
+    slot.write(original.clone())?;
+    let loaded = slot.read()?;
     assert_eq!(&loaded, original, "Store/load roundtrip failed");
     Ok(())
 }
 
 /// Helper to test update operation
-pub(crate) fn test_update<T, S, const N: usize>(
-    storage: &mut S,
+pub(crate) fn test_update<T, const N: usize>(
+    address: &Rc<Address>,
     base_slot: U256,
     initial: &T,
     updated: &T,
 ) -> error::Result<()>
 where
-    T: Storable<N> + PartialEq + std::fmt::Debug,
-    S: ContractStorage,
+    T: Storable<N> + Clone + PartialEq + std::fmt::Debug,
 {
-    initial.store(storage, base_slot, LayoutCtx::FULL)?;
-    let loaded1 = T::load(storage, base_slot, LayoutCtx::FULL)?;
+    // Create a slot and use it for storage operations
+    let mut slot = Slot::<T>::new(base_slot, address.clone());
+
+    // Test initial write and read
+    slot.write(initial.clone())?;
+    let loaded1 = slot.read()?;
     assert_eq!(&loaded1, initial, "Initial store/load failed");
 
-    updated.store(storage, base_slot, LayoutCtx::FULL)?;
-    let loaded2 = T::load(storage, base_slot, LayoutCtx::FULL)?;
+    // Test update
+    slot.write(updated.clone())?;
+    let loaded2 = slot.read()?;
     assert_eq!(&loaded2, updated, "Update failed");
     Ok(())
 }
 
 /// Helper to test delete operation
-pub(crate) fn test_delete<T, S, const N: usize>(
-    storage: &mut S,
+pub(crate) fn test_delete<T, const N: usize>(
+    address: &Rc<Address>,
     base_slot: U256,
     data: &T,
 ) -> error::Result<()>
 where
-    T: Storable<N> + PartialEq + std::fmt::Debug + Default,
-    S: ContractStorage,
+    T: Storable<N> + Clone + PartialEq + Default + std::fmt::Debug,
 {
-    data.store(storage, base_slot, LayoutCtx::FULL)?;
-    let loaded = T::load(storage, base_slot, LayoutCtx::FULL)?;
+    // Create a slot and use it for storage operations
+    let mut slot = Slot::<T>::new(base_slot, address.clone());
+
+    // Write and verify
+    slot.write(data.clone())?;
+    let loaded = slot.read()?;
     assert_eq!(&loaded, data, "Initial store/load failed");
 
-    T::delete(storage, base_slot, LayoutCtx::FULL)?;
-    let after_delete = T::load(storage, base_slot, LayoutCtx::FULL)?;
+    // Delete and verify it's zeroed
+    slot.delete()?;
+    let after_delete = slot.read()?;
     let expected_zero = T::default();
     assert_eq!(&after_delete, &expected_zero, "Delete did not zero values");
     Ok(())

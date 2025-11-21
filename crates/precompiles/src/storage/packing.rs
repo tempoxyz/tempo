@@ -42,7 +42,10 @@ impl FieldLocation {
     }
 }
 
-/// Whether a given amount of bytes should be packed, or not.
+/// Whether a given amount of bytes can be packed with other types, or not.
+///
+/// NOTE: this doesn't necessarily mean that the type can be packed in array.
+/// For that to happen, the type must be packable AND its bytes <= 16.
 #[inline]
 pub fn is_packable(bytes: usize) -> bool {
     bytes < 32 && 32 % bytes == 0
@@ -197,21 +200,21 @@ pub fn extract_field<T: Storable<1>>(slot_value: U256, offset: usize, bytes: usi
     extract_packed_value(slot_value, offset, bytes)
 }
 
-/// Test helper function for constructing U256 slot values from hex string literals.
+/// Test helper function for constructing EVM words from hex string literals.
 ///
 /// Takes an array of hex strings (with or without "0x" prefix), concatenates
 /// them left-to-right, left-pads with zeros to 32 bytes, and returns a U256.
 ///
 /// # Example
 /// ```ignore
-/// let slot = gen_slot_from(&[
+/// let word = gen_word_from(&[
 ///     "0x2a",                                        // 1 byte
 ///     "0x1111111111111111111111111111111111111111",  // 20 bytes
 ///     "0x01",                                        // 1 byte
 /// ]);
 /// // Produces: [10 zeros] [0x2a] [20 bytes of 0x11] [0x01]
 /// ```
-pub fn gen_slot_from(values: &[&str]) -> U256 {
+pub fn gen_word_from(values: &[&str]) -> U256 {
     let mut bytes = Vec::new();
 
     for value in values {

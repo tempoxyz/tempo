@@ -17,7 +17,7 @@ use tempo_precompiles_macros;
 
 use crate::{
     error::Result,
-    storage::{Storable, StorableType, StorageOps, packing::calc_element_loc, types::Slot},
+    storage::{Storable, StorableType, packing, types::Slot},
 };
 
 // fixed-size arrays: [T; N] for primitive types T and sizes 1-32
@@ -75,44 +75,55 @@ where
         }
     }
 
+    /// Returns a `Slot` accessor for full-array operations.
+    #[inline]
+    fn as_slot(&self) -> Slot<[T; N]> {
+        Slot::new(self.base_slot, Rc::clone(&self.address))
+    }
+
+    /// Returns the base storage slot where this array's data is stored.
+    ///
+    /// Single-slot arrays pack all fields into this slot.
+    /// Multi-slot arrays use consecutive slots starting from this base.
+    #[inline]
+    pub fn base_slot(&self) -> ::alloy::primitives::U256 {
+        self.base_slot
+    }
+
     /// Reads the entire array from storage.
     ///
     /// The `SLOTS` parameter must match the array's actual slot count.
     #[inline]
-    pub fn read<S: StorageOps, const SLOTS: usize>(&self, storage: &mut S) -> Result<[T; N]>
+    pub fn read<const SLOTS: usize>(&self) -> Result<[T; N]>
     where
-        T: Storable<1>,
+        T: Storable<1> + StorableType,
         [T; N]: Storable<SLOTS>,
     {
-        <[T; N]>::load(storage, self.base_slot, crate::storage::LayoutCtx::FULL)
+        self.as_slot().read()
     }
 
     /// Writes the entire array to storage.
     ///
     /// The `SLOTS` parameter must match the array's actual slot count.
     #[inline]
-    pub fn write<S: StorageOps, const SLOTS: usize>(
-        &self,
-        storage: &mut S,
-        value: [T; N],
-    ) -> Result<()>
+    pub fn write<const SLOTS: usize>(&mut self, value: [T; N]) -> Result<()>
     where
         T: Storable<1>,
         [T; N]: Storable<SLOTS>,
     {
-        value.store(storage, self.base_slot, crate::storage::LayoutCtx::FULL)
+        self.as_slot().write(value)
     }
 
     /// Deletes the entire array from storage (clears all elements).
     ///
     /// The `SLOTS` parameter must match the array's actual slot count.
     #[inline]
-    pub fn delete<S: StorageOps, const SLOTS: usize>(&self, storage: &mut S) -> Result<()>
+    pub fn delete<const SLOTS: usize>(&mut self) -> Result<()>
     where
         T: Storable<1>,
         [T; N]: Storable<SLOTS>,
     {
-        <[T; N]>::delete(storage, self.base_slot, crate::storage::LayoutCtx::FULL)
+        self.as_slot().delete()
     }
 
     /// Returns the array size (known at compile time).
@@ -145,7 +156,7 @@ where
         if T::BYTES <= 16 {
             Some(Slot::<T>::new_at_loc(
                 self.base_slot,
-                calc_element_loc(index, T::BYTES),
+                packing::calc_element_loc(index, T::BYTES),
                 Rc::clone(&self.address),
             ))
         } else {
@@ -160,7 +171,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{Layout, PrecompileStorageProvider, hashmap::HashMapStorageProvider};
+    use crate::storage::{
+        Layout, LayoutCtx, PrecompileStorageProvider, hashmap::HashMapStorageProvider,
+    };
     use proptest::prelude::*;
 
     // Strategy for generating random U256 slot values that won't overflow
@@ -192,7 +205,7 @@ mod tests {
 
         // Store and load
         let guard = storage.enter().unwrap();
-        let mut slot = Slot::<[u8; 32]>::new(base_slot, Rc::clone(&address));
+        let mut slot = <[u8; 32]>::handle(base_slot, LayoutCtx::FULL, Rc::clone(&address));
         slot.write(data).unwrap();
         let loaded = slot.read().unwrap();
         assert_eq!(loaded, data, "[u8; 32] roundtrip failed");
@@ -224,7 +237,7 @@ mod tests {
 
         // Store and load
         let guard = storage.enter().unwrap();
-        let mut slot = Slot::<[u64; 5]>::new(base_slot, Rc::clone(&address));
+        let mut slot = <[u64; 5]>::handle(base_slot, LayoutCtx::FULL, Rc::clone(&address));
         slot.write(data).unwrap();
         let loaded = slot.read().unwrap();
         assert_eq!(loaded, data, "[u64; 5] roundtrip failed");
@@ -260,7 +273,7 @@ mod tests {
 
         // Store and load
         let _guard = storage.enter().unwrap();
-        let mut slot = Slot::<[u16; 16]>::new(base_slot, Rc::clone(&address));
+        let mut slot = <[u16; 16]>::handle(base_slot, LayoutCtx::FULL, Rc::clone(&address));
         slot.write(data).unwrap();
         let loaded = slot.read().unwrap();
         assert_eq!(loaded, data, "[u16; 16] roundtrip failed");
@@ -280,7 +293,7 @@ mod tests {
 
         // Store and load
         let guard = storage.enter().unwrap();
-        let mut slot = Slot::<[U256; 3]>::new(base_slot, Rc::clone(&address));
+        let mut slot = <[U256; 3]>::handle(base_slot, LayoutCtx::FULL, Rc::clone(&address));
         slot.write(data).unwrap();
         let loaded = slot.read().unwrap();
         assert_eq!(loaded, data, "[U256; 3] roundtrip failed");
@@ -311,7 +324,7 @@ mod tests {
 
         // Store and load
         let _guard = storage.enter().unwrap();
-        let mut slot = Slot::<[Address; 3]>::new(base_slot, Rc::clone(&address));
+        let mut slot = <[Address; 3]>::handle(base_slot, LayoutCtx::FULL, Rc::clone(&address));
         slot.write(data).unwrap();
         let loaded = slot.read().unwrap();
         assert_eq!(loaded, data, "[Address; 3] roundtrip failed");
@@ -331,7 +344,7 @@ mod tests {
 
         // Store and load
         let _guard = storage.enter().unwrap();
-        let mut slot = Slot::<[u8; 1]>::new(base_slot, Rc::clone(&address));
+        let mut slot = <[u8; 1]>::handle(base_slot, LayoutCtx::FULL, Rc::clone(&address));
         slot.write(data).unwrap();
         let loaded = slot.read().unwrap();
         assert_eq!(loaded, data, "[u8; 1] roundtrip failed");
@@ -362,7 +375,7 @@ mod tests {
 
         // Store and load
         let guard = storage.enter().unwrap();
-        let mut slot = Slot::<[[u8; 4]; 8]>::new(base_slot, Rc::clone(&address));
+        let mut slot = <[[u8; 4]; 8]>::handle(base_slot, LayoutCtx::FULL, Rc::clone(&address));
         slot.write(data).unwrap();
         let loaded = slot.read().unwrap();
         assert_eq!(loaded, data, "[[u8; 4]; 8] roundtrip failed");
@@ -408,7 +421,7 @@ mod tests {
 
         // Store and load
         let guard = storage.enter().unwrap();
-        let mut slot = Slot::<[[u16; 2]; 8]>::new(base_slot, Rc::clone(&address));
+        let mut slot = <[[u16; 2]; 8]>::handle(base_slot, LayoutCtx::FULL, Rc::clone(&address));
         slot.write(data).unwrap();
         let loaded = slot.read().unwrap();
         assert_eq!(loaded, data, "[[u16; 2]; 8] roundtrip failed");
@@ -440,7 +453,7 @@ mod tests {
 
             // Store and load
             let guard = storage.enter().unwrap();
-            let mut slot = Slot::<[u8; 32]>::new(base_slot, Rc::clone(&address));
+            let mut slot = <[u8; 32]>::handle(base_slot, LayoutCtx::FULL, Rc::clone(&address));
             slot.write(data).unwrap();
             let loaded = slot.read().unwrap();
             prop_assert_eq!(&loaded, &data, "[u8; 32] roundtrip failed");
@@ -466,7 +479,7 @@ mod tests {
 
             // Store and load
             let _guard = storage.enter().unwrap();
-            let mut slot = Slot::<[u16; 16]>::new(base_slot, Rc::clone(&address));
+            let mut slot = <[u16; 16]>::handle(base_slot, LayoutCtx::FULL, Rc::clone(&address));
             slot.write(data).unwrap();
             let loaded = slot.read().unwrap();
             prop_assert_eq!(&loaded, &data, "[u16; 16] roundtrip failed");
@@ -486,7 +499,7 @@ mod tests {
 
             // Store and load
             let guard = storage.enter().unwrap();
-            let mut slot = Slot::<[U256; 5]>::new(base_slot, Rc::clone(&address));
+            let mut slot = <[U256; 5]>::handle(base_slot, LayoutCtx::FULL, Rc::clone(&address));
             slot.write(data).unwrap();
             let loaded = slot.read().unwrap();
             prop_assert_eq!(&loaded, &data, "[U256; 5] roundtrip failed");

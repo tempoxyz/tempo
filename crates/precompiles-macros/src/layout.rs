@@ -42,26 +42,26 @@ pub(crate) fn gen_handler_field_init(
 ) -> proc_macro2::TokenStream {
     let field_name = field.name;
     let consts = PackingConstants::new(field_name);
-    let (loc_const, slot_const) = (consts.location(), consts.slot());
+    let (loc_const, (slot_const, offset_const)) = (consts.location(), consts.into_tuple());
 
     let is_contract = packing_mod.is_none();
 
     // Create slots_module identifier based on context
-    let slots_ident = format_ident!("slots");
-    let slots_module = packing_mod.unwrap_or(&slots_ident);
+    let slots_mod = format_ident!("slots");
+    let const_mod = packing_mod.unwrap_or(&slots_mod);
 
     // Calculate `Slot` based on context
     let slot_expr = if is_contract {
-        quote! { #slots_module::#slot_const }
+        quote! { #const_mod::#slot_const }
     } else {
-        quote! { base_slot.saturating_add(U256::from_limbs([#slots_module::#loc_const.offset_slots as u64, 0, 0, 0])) }
+        quote! { base_slot.saturating_add(U256::from_limbs([#const_mod::#loc_const.offset_slots as u64, 0, 0, 0])) }
     };
 
     match &field.kind {
         FieldKind::Direct(ty) => {
             // Calculate neighbor slot references for packing detection
             let (prev_slot_const_ref, next_slot_const_ref) =
-                packing::get_neighbor_slot_refs(field_idx, all_fields, slots_module, |f| f.name);
+                packing::get_neighbor_slot_refs(field_idx, all_fields, const_mod, |f| f.name);
 
             // Calculate `LayoutCtx` based on context
             let layout_ctx = if is_contract {
@@ -72,8 +72,8 @@ pub(crate) fn gen_handler_field_init(
                 packing::gen_layout_ctx_expr_inefficient(
                     ty,
                     matches!(field.assigned_slot, SlotAssignment::Manual(_)),
-                    quote! { #slots_module::#slot_const },
-                    quote! { #slots_module::#loc_const.offset_bytes },
+                    quote! { #const_mod::#slot_const },
+                    quote! { #const_mod::#offset_const },
                     prev_slot_const_ref,
                     next_slot_const_ref,
                 )
@@ -81,8 +81,8 @@ pub(crate) fn gen_handler_field_init(
                 packing::gen_layout_ctx_expr(
                     ty,
                     false, // storable fields are always auto-allocated
-                    quote! { #slots_module::#loc_const.offset_slots },
-                    quote! { #slots_module::#loc_const.offset_bytes },
+                    quote! { #const_mod::#loc_const.offset_slots },
+                    quote! { #const_mod::#loc_const.offset_bytes },
                     prev_slot_const_ref,
                     next_slot_const_ref,
                 )

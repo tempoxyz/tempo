@@ -107,7 +107,9 @@ impl<T> Slot<T> {
         }
     }
 
-    /// Returns the U256 storage slot number.
+    /// Returns the storage slot number where the underlying type is stored.
+    ///
+    /// Multi-slot types use consecutive slots from this base slot.
     #[inline]
     pub const fn slot(&self) -> U256 {
         self.slot
@@ -234,7 +236,7 @@ mod tests {
 
         let slot_0 = Slot::<U256>::new(U256::ZERO, address.clone());
         let slot_1 = Slot::<Address>::new(U256::ONE, address.clone());
-        let slot_max = Slot::<bool>::new(U256::MAX, address.clone());
+        let slot_max = Slot::<bool>::new(U256::MAX, address);
         assert_eq!(slot_0.slot(), U256::ZERO);
         assert_eq!(slot_1.slot(), U256::ONE);
         assert_eq!(slot_max.slot(), U256::MAX);
@@ -246,7 +248,7 @@ mod tests {
         let _guard = storage.enter().unwrap();
 
         // Explicit test for U256::ZERO slot
-        let mut slot = Slot::<U256>::new(U256::ZERO, address.clone());
+        let mut slot = Slot::<U256>::new(U256::ZERO, address);
         assert_eq!(slot.slot(), U256::ZERO);
 
         let value = U256::random();
@@ -261,7 +263,7 @@ mod tests {
         let _guard = storage.enter().unwrap();
 
         // Explicit test for U256::MAX slot
-        let mut slot = Slot::<U256>::new(U256::MAX, address.clone());
+        let mut slot = Slot::<U256>::new(U256::MAX, address);
         assert_eq!(slot.slot(), U256::MAX);
 
         let value = U256::random();
@@ -297,7 +299,7 @@ mod tests {
         let _guard = storage.enter().unwrap();
 
         let test_addr = Address::random();
-        let mut slot = Slot::<Address>::new(U256::random(), address.clone());
+        let mut slot = Slot::<Address>::new(U256::random(), address);
 
         // Write
         slot.write(test_addr).unwrap();
@@ -312,7 +314,7 @@ mod tests {
         let (mut storage, address) = setup_storage();
         let _guard = storage.enter().unwrap();
 
-        let mut slot = Slot::<bool>::new(U256::random(), address.clone());
+        let mut slot = Slot::<bool>::new(U256::random(), address);
 
         // Write true
         slot.write(true).unwrap();
@@ -342,7 +344,7 @@ mod tests {
         let (mut storage, address) = setup_storage();
         let _guard = storage.enter().unwrap();
 
-        let slot = Slot::<U256>::new(U256::random(), address.clone());
+        let slot = Slot::<U256>::new(U256::random(), address);
 
         // Reading uninitialized storage should return zero
         let value = slot.read().unwrap();
@@ -354,7 +356,7 @@ mod tests {
         let (mut storage, address) = setup_storage();
         let _guard = storage.enter().unwrap();
 
-        let mut slot = Slot::<u64>::new(U256::random(), address.clone());
+        let mut slot = Slot::<u64>::new(U256::random(), address);
 
         // Write initial value
         slot.write(100).unwrap();
@@ -373,7 +375,7 @@ mod tests {
             let (mut storage, address) = setup_storage();
         let _guard = storage.enter().unwrap();
 
-                let mut slot = Slot::<U256>::new(slot, address.clone());
+                let mut slot = Slot::<U256>::new(slot, address);
 
                 // Write and read back
                 slot.write(value).unwrap();
@@ -391,7 +393,7 @@ mod tests {
             let (mut storage, address) = setup_storage();
         let _guard = storage.enter().unwrap();
 
-                let mut slot = Slot::<Address>::new(slot, address.clone());
+                let mut slot = Slot::<Address>::new(slot, address);
 
                 // Write and read back
                 slot.write(addr_value).unwrap();
@@ -405,7 +407,7 @@ mod tests {
         let _guard = storage.enter().unwrap();
 
                 let mut slot1 = Slot::<U256>::new(slot1, address.clone());
-                let mut slot2 = Slot::<U256>::new(slot2, address.clone());
+                let mut slot2 = Slot::<U256>::new(slot2, address);
 
                 slot1.write(value1).unwrap();
                 slot2.write(value2).unwrap();
@@ -440,7 +442,7 @@ mod tests {
         let base_address = Address::random();
 
         // Write to orderbook.base using runtime offset
-        let mut slot = Slot::<Address>::new_at_offset(orderbook_base_slot, 0, address.clone());
+        let mut slot = Slot::<Address>::new_at_offset(orderbook_base_slot, 0, address);
         slot.write(base_address).unwrap();
 
         // Read back
@@ -505,7 +507,7 @@ mod tests {
         let read_1 = Slot::<u64>::new_at_offset(base, 1, address.clone())
             .read()
             .unwrap();
-        let read_2 = Slot::<U256>::new_at_offset(base, 2, address.clone())
+        let read_2 = Slot::<U256>::new_at_offset(base, 2, address)
             .read()
             .unwrap();
 

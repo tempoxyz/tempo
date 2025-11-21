@@ -125,7 +125,7 @@ mod tests {
     use crate::storage::{
         PrecompileStorageProvider,
         hashmap::HashMapStorageProvider,
-        packing::{FieldLocation, gen_slot_from},
+        packing::gen_word_from,
     };
     use proptest::prelude::*;
 
@@ -161,7 +161,7 @@ mod tests {
         fn test_address(addr in arb_address(), base_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
             let _guard = storage.enter().unwrap();
-            let mut slot = Slot::<Address>::new(base_slot, Rc::clone(&address));
+            let mut slot = Address::handle(base_slot, LayoutCtx::FULL, Rc::clone(&address));
 
             // Verify store → load roundtrip
             slot.write(addr).unwrap();
@@ -183,7 +183,7 @@ mod tests {
         fn test_bool_values(b in any::<bool>(), base_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
             let _guard = storage.enter().unwrap();
-            let mut slot = Slot::<bool>::new(base_slot, Rc::clone(&address));
+            let mut slot = bool::handle(base_slot, LayoutCtx::FULL, Rc::clone(&address));
 
             // Verify store → load roundtrip
             slot.write(b).unwrap();
@@ -212,8 +212,7 @@ mod tests {
         // Test u8 at offset 0
         let val0: u8 = 0x42;
         let guard = storage.enter().unwrap();
-        let mut slot0 =
-            Slot::<u8>::new_at_loc(base_slot, FieldLocation::new(0, 0, 1), Rc::clone(&address));
+        let mut slot0 = u8::handle(base_slot, LayoutCtx::packed(0), Rc::clone(&address));
         slot0.write(val0).unwrap();
 
         // Verify with Slot read
@@ -223,7 +222,7 @@ mod tests {
         // Verify with low-level read
         std::mem::drop(guard);
         let loaded_slot = storage.sload(*address, base_slot).unwrap();
-        let expected = gen_slot_from(&["0x42"]);
+        let expected = gen_word_from(&["0x42"]);
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
@@ -238,9 +237,9 @@ mod tests {
         // Test u8 at offset 15 (middle)
         let val15: u8 = 0xAB;
         let guard = storage.enter().unwrap();
-        let mut slot15 = Slot::<u8>::new_at_loc(
+        let mut slot15 = u8::handle(
             base_slot + U256::ONE,
-            FieldLocation::new(0, 15, 1),
+            LayoutCtx::packed(15),
             Rc::clone(&address),
         );
         slot15.write(val15).unwrap();
@@ -252,7 +251,7 @@ mod tests {
         // Verify with low-level read
         std::mem::drop(guard);
         let loaded_slot = storage.sload(*address, base_slot + U256::ONE).unwrap();
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0xAB",                             // offset 15 (1 byte)
             "0x000000000000000000000000000000", // padding (15 bytes)
         ]);
@@ -272,9 +271,9 @@ mod tests {
         // Test u8 at offset 31 (last byte)
         let val31: u8 = 0xFF;
         let guard = storage.enter().unwrap();
-        let mut slot31 = Slot::<u8>::new_at_loc(
+        let mut slot31 = u8::handle(
             base_slot + U256::from(2),
-            FieldLocation::new(0, 31, 1),
+            LayoutCtx::packed(31),
             Rc::clone(&address),
         );
         slot31.write(val31).unwrap();
@@ -286,7 +285,7 @@ mod tests {
         // Verify with low-level read
         std::mem::drop(guard);
         let loaded_slot = storage.sload(*address, base_slot + U256::from(2)).unwrap();
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0xFF",                                                             // offset 31 (1 byte)
             "0x00000000000000000000000000000000000000000000000000000000000000", // padding (31 bytes)
         ]);
@@ -311,8 +310,7 @@ mod tests {
         // Test u16 at offset 0
         let val0: u16 = 0x1234;
         let guard = storage.enter().unwrap();
-        let mut slot0 =
-            Slot::<u16>::new_at_loc(base_slot, FieldLocation::new(0, 0, 2), Rc::clone(&address));
+        let mut slot0 = u16::handle(base_slot, LayoutCtx::packed(0), Rc::clone(&address));
         slot0.write(val0).unwrap();
 
         // Verify with Slot read
@@ -322,7 +320,7 @@ mod tests {
         // Verify with low-level read
         std::mem::drop(guard);
         let loaded_slot = storage.sload(*address, base_slot).unwrap();
-        let expected = gen_slot_from(&["0x1234"]);
+        let expected = gen_word_from(&["0x1234"]);
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
@@ -337,9 +335,9 @@ mod tests {
         // Test u16 at offset 15 (middle)
         let val15: u16 = 0xABCD;
         let guard = storage.enter().unwrap();
-        let mut slot15 = Slot::<u16>::new_at_loc(
+        let mut slot15 = u16::handle(
             base_slot + U256::ONE,
-            FieldLocation::new(0, 15, 2),
+            LayoutCtx::packed(15),
             Rc::clone(&address),
         );
         slot15.write(val15).unwrap();
@@ -351,7 +349,7 @@ mod tests {
         // Verify with low-level read
         std::mem::drop(guard);
         let loaded_slot = storage.sload(*address, base_slot + U256::ONE).unwrap();
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0xABCD",                           // offset 15 (2 bytes)
             "0x000000000000000000000000000000", // padding (15 bytes)
         ]);
@@ -371,9 +369,9 @@ mod tests {
         // Test u16 at offset 30 (last 2 bytes)
         let val30: u16 = 0xFFEE;
         let guard = storage.enter().unwrap();
-        let mut slot30 = Slot::<u16>::new_at_loc(
+        let mut slot30 = u16::handle(
             base_slot + U256::from(2),
-            FieldLocation::new(0, 30, 2),
+            LayoutCtx::packed(30),
             Rc::clone(&address),
         );
         slot30.write(val30).unwrap();
@@ -385,7 +383,7 @@ mod tests {
         // Verify with low-level read
         std::mem::drop(guard);
         let loaded_slot = storage.sload(*address, base_slot + U256::from(2)).unwrap();
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0xFFEE",                                                         // offset 30 (2 bytes)
             "0x000000000000000000000000000000000000000000000000000000000000", // padding (30 bytes)
         ]);
@@ -410,8 +408,7 @@ mod tests {
         // Test u32 at offset 0
         let val0: u32 = 0x12345678;
         let guard = storage.enter().unwrap();
-        let mut slot0 =
-            Slot::<u32>::new_at_loc(base_slot, FieldLocation::new(0, 0, 4), Rc::clone(&address));
+        let mut slot0 = u32::handle(base_slot, LayoutCtx::packed(0), Rc::clone(&address));
         slot0.write(val0).unwrap();
 
         // Verify with Slot read
@@ -421,7 +418,7 @@ mod tests {
         // Verify with low-level read
         std::mem::drop(guard);
         let loaded_slot = storage.sload(*address, base_slot).unwrap();
-        let expected = gen_slot_from(&["0x12345678"]);
+        let expected = gen_word_from(&["0x12345678"]);
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
@@ -436,9 +433,9 @@ mod tests {
         // Test u32 at offset 14
         let val14: u32 = 0xABCDEF01;
         let guard = storage.enter().unwrap();
-        let mut slot14 = Slot::<u32>::new_at_loc(
+        let mut slot14 = u32::handle(
             base_slot + U256::ONE,
-            FieldLocation::new(0, 14, 4),
+            LayoutCtx::packed(14),
             Rc::clone(&address),
         );
         slot14.write(val14).unwrap();
@@ -450,7 +447,7 @@ mod tests {
         // Verify with low-level read
         std::mem::drop(guard);
         let loaded_slot = storage.sload(*address, base_slot + U256::ONE).unwrap();
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0xABCDEF01",                     // offset 14 (4 bytes)
             "0x0000000000000000000000000000", // padding (14 bytes)
         ]);
@@ -470,9 +467,9 @@ mod tests {
         // Test u32 at offset 28 (last 4 bytes)
         let val28: u32 = 0xFFEEDDCC;
         let guard = storage.enter().unwrap();
-        let mut slot28 = Slot::<u32>::new_at_loc(
+        let mut slot28 = u32::handle(
             base_slot + U256::from(2),
-            FieldLocation::new(0, 28, 4),
+            LayoutCtx::packed(28),
             Rc::clone(&address),
         );
         slot28.write(val28).unwrap();
@@ -484,7 +481,7 @@ mod tests {
         // Verify with low-level read
         std::mem::drop(guard);
         let loaded_slot = storage.sload(*address, base_slot + U256::from(2)).unwrap();
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0xFFEEDDCC",                                                 // offset 28 (4 bytes)
             "0x00000000000000000000000000000000000000000000000000000000", // padding (28 bytes)
         ]);
@@ -509,8 +506,7 @@ mod tests {
         // Test u64 at offset 0
         let val0: u64 = 0x123456789ABCDEF0;
         let guard = storage.enter().unwrap();
-        let mut slot0 =
-            Slot::<u64>::new_at_loc(base_slot, FieldLocation::new(0, 0, 8), Rc::clone(&address));
+        let mut slot0 = u64::handle(base_slot, LayoutCtx::packed(0), Rc::clone(&address));
         slot0.write(val0).unwrap();
 
         // Verify with Slot read
@@ -520,7 +516,7 @@ mod tests {
         // Verify with low-level read
         std::mem::drop(guard);
         let loaded_slot = storage.sload(*address, base_slot).unwrap();
-        let expected = gen_slot_from(&["0x123456789ABCDEF0"]);
+        let expected = gen_word_from(&["0x123456789ABCDEF0"]);
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
@@ -535,9 +531,9 @@ mod tests {
         // Test u64 at offset 12 (middle)
         let val12: u64 = 0xFEDCBA9876543210;
         let guard = storage.enter().unwrap();
-        let mut slot12 = Slot::<u64>::new_at_loc(
+        let mut slot12 = u64::handle(
             base_slot + U256::ONE,
-            FieldLocation::new(0, 12, 8),
+            LayoutCtx::packed(12),
             Rc::clone(&address),
         );
         slot12.write(val12).unwrap();
@@ -549,7 +545,7 @@ mod tests {
         // Verify with low-level read
         std::mem::drop(guard);
         let loaded_slot = storage.sload(*address, base_slot + U256::ONE).unwrap();
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0xFEDCBA9876543210",         // offset 12 (8 bytes)
             "0x000000000000000000000000", // padding (12 bytes)
         ]);
@@ -569,9 +565,9 @@ mod tests {
         // Test u64 at offset 24 (last 8 bytes)
         let val24: u64 = 0xAAAABBBBCCCCDDDD;
         let guard = storage.enter().unwrap();
-        let mut slot24 = Slot::<u64>::new_at_loc(
+        let mut slot24 = u64::handle(
             base_slot + U256::from(2),
-            FieldLocation::new(0, 24, 8),
+            LayoutCtx::packed(24),
             Rc::clone(&address),
         );
         slot24.write(val24).unwrap();
@@ -583,7 +579,7 @@ mod tests {
         // Verify with low-level read
         std::mem::drop(guard);
         let loaded_slot = storage.sload(*address, base_slot + U256::from(2)).unwrap();
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0xAAAABBBBCCCCDDDD",                                 // offset 24 (8 bytes)
             "0x000000000000000000000000000000000000000000000000", // padding (24 bytes)
         ]);
@@ -608,8 +604,7 @@ mod tests {
         // Test u128 at offset 0
         let val0: u128 = 0x123456789ABCDEF0_FEDCBA9876543210;
         let guard = storage.enter().unwrap();
-        let mut slot0 =
-            Slot::<u128>::new_at_loc(base_slot, FieldLocation::new(0, 0, 16), Rc::clone(&address));
+        let mut slot0 = u128::handle(base_slot, LayoutCtx::packed(0), Rc::clone(&address));
         slot0.write(val0).unwrap();
 
         // Verify with Slot read
@@ -619,7 +614,7 @@ mod tests {
         // Verify with low-level read
         std::mem::drop(guard);
         let loaded_slot = storage.sload(*address, base_slot).unwrap();
-        let expected = gen_slot_from(&["0x123456789ABCDEF0FEDCBA9876543210"]);
+        let expected = gen_word_from(&["0x123456789ABCDEF0FEDCBA9876543210"]);
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
@@ -634,9 +629,9 @@ mod tests {
         // Test u128 at offset 16 (second half of slot)
         let val16: u128 = 0xAAAABBBBCCCCDDDD_1111222233334444;
         let guard = storage.enter().unwrap();
-        let mut slot16 = Slot::<u128>::new_at_loc(
+        let mut slot16 = u128::handle(
             base_slot + U256::ONE,
-            FieldLocation::new(0, 16, 16),
+            LayoutCtx::packed(16),
             Rc::clone(&address),
         );
         slot16.write(val16).unwrap();
@@ -648,7 +643,7 @@ mod tests {
         // Verify with low-level read
         std::mem::drop(guard);
         let loaded_slot = storage.sload(*address, base_slot + U256::ONE).unwrap();
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0xAAAABBBBCCCCDDDD1111222233334444", // offset 16 (16 bytes)
             "0x00000000000000000000000000000000", // padding (16 bytes)
         ]);
@@ -673,11 +668,7 @@ mod tests {
         // Test Address at offset 0
         let addr0 = Address::from([0x12; 20]);
         let guard = storage.enter().unwrap();
-        let mut slot0 = Slot::<Address>::new_at_loc(
-            base_slot,
-            FieldLocation::new(0, 0, 20),
-            Rc::clone(&address),
-        );
+        let mut slot0 = Address::handle(base_slot, LayoutCtx::packed(0), Rc::clone(&address));
         slot0.write(addr0).unwrap();
 
         // Verify with Slot read
@@ -687,7 +678,7 @@ mod tests {
         // Verify with low-level read
         std::mem::drop(guard);
         let loaded_slot = storage.sload(*address, base_slot).unwrap();
-        let expected = gen_slot_from(&["0x1212121212121212121212121212121212121212"]);
+        let expected = gen_word_from(&["0x1212121212121212121212121212121212121212"]);
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
@@ -702,9 +693,9 @@ mod tests {
         // Test Address at offset 12 (fits in one slot: 12 + 20 = 32)
         let addr12 = Address::from([0xAB; 20]);
         let guard = storage.enter().unwrap();
-        let mut slot12 = Slot::<Address>::new_at_loc(
+        let mut slot12 = Address::handle(
             base_slot + U256::ONE,
-            FieldLocation::new(0, 12, 20),
+            LayoutCtx::packed(12),
             Rc::clone(&address),
         );
         slot12.write(addr12).unwrap();
@@ -716,7 +707,7 @@ mod tests {
         // Verify with low-level read
         std::mem::drop(guard);
         let loaded_slot = storage.sload(*address, base_slot + U256::ONE).unwrap();
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0xABABABABABABABABABABABABABABABABABABABAB", // offset 12 (20 bytes)
             "0x000000000000000000000000",                 // padding (12 bytes)
         ]);
@@ -741,8 +732,7 @@ mod tests {
         // Test bool at offset 0
         let val0 = true;
         let guard = storage.enter().unwrap();
-        let mut slot0 =
-            Slot::<bool>::new_at_loc(base_slot, FieldLocation::new(0, 0, 1), Rc::clone(&address));
+        let mut slot0 = bool::handle(base_slot, LayoutCtx::packed(0), Rc::clone(&address));
         slot0.write(val0).unwrap();
 
         // Verify with Slot read
@@ -752,7 +742,7 @@ mod tests {
         // Verify with low-level read
         std::mem::drop(guard);
         let loaded_slot = storage.sload(*address, base_slot).unwrap();
-        let expected = gen_slot_from(&["0x01"]);
+        let expected = gen_word_from(&["0x01"]);
         assert_eq!(loaded_slot, expected);
 
         // Clear with low-level write
@@ -761,15 +751,15 @@ mod tests {
         // Verify with Slot read
         let guard = storage.enter().unwrap();
         let cleared_val = slot0.read().unwrap();
-        assert_eq!(cleared_val, false);
+        assert!(!cleared_val);
         std::mem::drop(guard);
 
         // Test bool at offset 31
         let val31 = false;
         let guard = storage.enter().unwrap();
-        let mut slot31 = Slot::<bool>::new_at_loc(
+        let mut slot31 = bool::handle(
             base_slot + U256::ONE,
-            FieldLocation::new(0, 31, 1),
+            LayoutCtx::packed(31),
             Rc::clone(&address),
         );
         slot31.write(val31).unwrap();
@@ -781,7 +771,7 @@ mod tests {
         // Verify with low-level read
         std::mem::drop(guard);
         let loaded_slot = storage.sload(*address, base_slot + U256::ONE).unwrap();
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0x00",                                                             // offset 31 (1 byte)
             "0x00000000000000000000000000000000000000000000000000000000000000", // padding (31 bytes)
         ]);
@@ -795,7 +785,7 @@ mod tests {
         // Verify with Slot read
         let _guard = storage.enter().unwrap();
         let cleared_val = slot31.read().unwrap();
-        assert_eq!(cleared_val, false);
+        assert!(!cleared_val);
     }
 
     #[test]

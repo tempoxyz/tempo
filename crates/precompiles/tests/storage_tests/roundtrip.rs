@@ -14,7 +14,9 @@ fn test_round_trip_operations_in_contract() {
         pub profile: UserProfile,
     }
 
-    let mut s = setup_storage();
+    let (mut storage, address) = setup_storage();
+    let mut layout = Layout::_new(*address);
+    let _guard = storage.enter().unwrap();
 
     let original_block = TestBlock {
         field1: U256::from(789),
@@ -28,44 +30,17 @@ fn test_round_trip_operations_in_contract() {
     };
 
     // Round 1: Store and load
-    {
-        let mut layout = Layout::_new(s.address, s.storage());
-        layout.sstore_block(original_block.clone()).unwrap();
-        layout.sstore_profile(original_profile.clone()).unwrap();
-    }
-
-    {
-        let mut layout = Layout::_new(s.address, s.storage());
-        assert_eq!(layout.sload_block().unwrap(), original_block);
-        assert_eq!(layout.sload_profile().unwrap(), original_profile);
-    }
+    layout.block.write(original_block.clone()).unwrap();
+    layout.profile.write(original_profile.clone()).unwrap();
+    assert_eq!(layout.block.read().unwrap(), original_block);
+    assert_eq!(layout.profile.read().unwrap(), original_profile);
 
     // Round 2: Delete and verify defaults
-    {
-        let mut layout = Layout::_new(s.address, s.storage());
-        layout.clear_block().unwrap();
-        layout.clear_profile().unwrap();
-    }
+    layout.block.delete().unwrap();
+    layout.profile.delete().unwrap();
 
-    {
-        let mut layout = Layout::_new(s.address, s.storage());
-        assert_eq!(
-            layout.sload_block().unwrap(),
-            TestBlock {
-                field1: U256::ZERO,
-                field2: U256::ZERO,
-                field3: 0,
-            }
-        );
-        assert_eq!(
-            layout.sload_profile().unwrap(),
-            UserProfile {
-                owner: Address::ZERO,
-                active: false,
-                balance: U256::ZERO,
-            }
-        );
-    }
+    assert_eq!(layout.block.read().unwrap(), TestBlock::default());
+    assert_eq!(layout.profile.read().unwrap(), UserProfile::default());
 
     // Round 3: Store new values
     let new_block = TestBlock {
@@ -79,17 +54,21 @@ fn test_round_trip_operations_in_contract() {
         balance: U256::from(54321),
     };
 
-    {
-        let mut layout = Layout::_new(s.address, s.storage());
-        layout.sstore_block(new_block.clone()).unwrap();
-        layout.sstore_profile(new_profile.clone()).unwrap();
-    }
+    layout.block.write(new_block.clone()).unwrap();
+    layout.profile.write(new_profile.clone()).unwrap();
 
-    {
-        let mut layout = Layout::_new(s.address, s.storage());
-        assert_eq!(layout.sload_block().unwrap(), new_block);
-        assert_eq!(layout.sload_profile().unwrap(), new_profile);
-    }
+    assert_eq!(layout.block.read().unwrap(), new_block);
+    assert_eq!(layout.profile.read().unwrap(), new_profile);
+
+    // Round 4: Individual field operations
+    let modified_owner = test_address(77);
+    layout.profile.owner.write(modified_owner).unwrap();
+    layout.profile.active.delete().unwrap();
+
+    // Verify individual field reads
+    assert_eq!(layout.profile.owner.read().unwrap(), modified_owner);
+    assert_eq!(layout.profile.active.read().unwrap(), bool::default());
+    assert_eq!(layout.profile.balance.read().unwrap(), new_profile.balance);
 }
 
 proptest! {
@@ -109,43 +88,23 @@ proptest! {
             pub profile: UserProfile,
         }
 
-        let mut s = setup_storage();
+        let (mut storage, address) = setup_storage();
+        let mut layout = Layout::_new(*address);
+        let _guard = storage.enter().unwrap();
 
         // Round 1: Store and load
-        {
-            let mut layout = Layout::_new(s.address, s.storage());
-            layout.sstore_block(block_val.clone())?;
-            layout.sstore_profile(profile_val.clone())?;
-        }
+        layout.block.write(block_val.clone())?;
+        layout.profile.write(profile_val.clone())?;
 
-        {
-            let mut layout = Layout::_new(s.address, s.storage());
-            prop_assert_eq!(layout.sload_block()?, block_val);
-            prop_assert_eq!(layout.sload_profile()?, profile_val);
-        }
+        prop_assert_eq!(layout.block.read()?, block_val);
+        prop_assert_eq!(layout.profile.read()?, profile_val);
 
         // Round 2: Delete and verify defaults
-        {
-            let mut layout = Layout::_new(s.address, s.storage());
-            layout.clear_block()?;
-            layout.clear_profile()?;
-        }
+        layout.block.delete()?;
+        layout.profile.delete()?;
 
-        {
-            let mut layout = Layout::_new(s.address, s.storage());
-            let default_block = TestBlock {
-                field1: U256::ZERO,
-                field2: U256::ZERO,
-                field3: 0,
-            };
-            let default_profile = UserProfile {
-                owner: Address::ZERO,
-                active: false,
-                balance: U256::ZERO,
-            };
-            prop_assert_eq!(layout.sload_block()?, default_block);
-            prop_assert_eq!(layout.sload_profile()?, default_profile);
-        }
+        prop_assert_eq!(layout.block.read()?, TestBlock::default());
+        prop_assert_eq!(layout.profile.read()?, UserProfile::default());
 
         // Round 3: Store new values (different from original)
         let new_block = TestBlock {
@@ -159,16 +118,20 @@ proptest! {
             balance: U256::from(54321),
         };
 
-        {
-            let mut layout = Layout::_new(s.address, s.storage());
-            layout.sstore_block(new_block.clone())?;
-            layout.sstore_profile(new_profile.clone())?;
-        }
+        layout.block.write(new_block.clone())?;
+        layout.profile.write(new_profile.clone())?;
+        prop_assert_eq!(layout.block.read()?, new_block);
 
-        {
-            let mut layout = Layout::_new(s.address, s.storage());
-            prop_assert_eq!(layout.sload_block()?, new_block);
-            prop_assert_eq!(layout.sload_profile()?, new_profile);
-        }
+        // Round 4: Individual field operations
+        let expected_balance = new_profile.balance;
+        prop_assert_eq!(layout.profile.read()?, new_profile);
+        let modified_owner = test_address(77);
+        layout.profile.owner.write(modified_owner)?;
+        layout.profile.active.delete()?;
+
+        // Verify individual field reads
+        prop_assert_eq!(layout.profile.owner.read()?, modified_owner);
+        prop_assert_eq!(layout.profile.active.read()?, bool::default());
+        prop_assert_eq!(layout.profile.balance.read()?, expected_balance);
     }
 }

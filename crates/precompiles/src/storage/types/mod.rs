@@ -88,7 +88,7 @@ impl Layout {
 pub struct LayoutCtx(usize);
 
 impl LayoutCtx {
-    /// Load/store the entire value at `base_slot`.
+    /// Load/store the entire value at a given slot.
     ///
     /// For writes, this directly overwrites the entire slot without needing SLOAD.
     /// All `Storable` types support this context.

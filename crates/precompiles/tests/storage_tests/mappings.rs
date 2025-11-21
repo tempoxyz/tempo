@@ -11,7 +11,9 @@ fn test_mapping() {
         pub profile_mapping: Mapping<Address, UserProfile>, // Auto: slot 1
     }
 
-    let mut s = setup_storage();
+    let (mut storage, address) = setup_storage();
+    let layout = Layout::_new(*address);
+    let _guard = storage.enter().unwrap();
 
     let block1 = TestBlock {
         field1: U256::from(111),
@@ -36,64 +38,63 @@ fn test_mapping() {
     };
 
     // Store multiple entries
-    {
-        let mut layout = Layout::_new(s.address, s.storage());
-        layout.sstore_block_mapping(1u64, block1.clone()).unwrap();
-        layout.sstore_block_mapping(2u64, block2.clone()).unwrap();
-        layout
-            .sstore_profile_mapping(test_address(10), profile1.clone())
-            .unwrap();
-        layout
-            .sstore_profile_mapping(test_address(20), profile2.clone())
-            .unwrap();
+    layout.block_mapping.at(1u64).write(block1.clone()).unwrap();
+    layout.block_mapping.at(2u64).write(block2.clone()).unwrap();
+    layout
+        .profile_mapping
+        .at(test_address(10))
+        .write(profile1.clone())
+        .unwrap();
+    layout
+        .profile_mapping
+        .at(test_address(20))
+        .write(profile2.clone())
+        .unwrap();
 
-        // Verify all entries
-        assert_eq!(layout.sload_block_mapping(1u64).unwrap(), block1);
-        assert_eq!(layout.sload_block_mapping(2u64).unwrap(), block2);
-        assert_eq!(
-            layout.sload_profile_mapping(test_address(10)).unwrap(),
-            profile1
-        );
-        assert_eq!(
-            layout.sload_profile_mapping(test_address(20)).unwrap(),
-            profile2
-        );
-    }
+    // Verify all entries
+    assert_eq!(layout.block_mapping.at(1u64).read().unwrap(), block1);
+    assert_eq!(layout.block_mapping.at(2u64).read().unwrap(), block2);
+    assert_eq!(
+        layout.profile_mapping.at(test_address(10)).read().unwrap(),
+        profile1
+    );
+    assert_eq!(
+        layout.profile_mapping.at(test_address(20)).read().unwrap(),
+        profile2
+    );
 
     // Delete specific entries
-    {
-        let mut layout = Layout::_new(s.address, s.storage());
-        layout.clear_block_mapping(1u64).unwrap();
-        layout.clear_profile_mapping(test_address(10)).unwrap();
-    }
+    layout.block_mapping.at(1u64).delete().unwrap();
+    layout
+        .profile_mapping
+        .at(test_address(10))
+        .delete()
+        .unwrap();
 
     // Verify deleted entries return defaults
-    {
-        let mut layout = Layout::_new(s.address, s.storage());
-        assert_eq!(
-            layout.sload_block_mapping(1u64).unwrap(),
-            TestBlock {
-                field1: U256::ZERO,
-                field2: U256::ZERO,
-                field3: 0,
-            }
-        );
-        assert_eq!(
-            layout.sload_profile_mapping(test_address(10)).unwrap(),
-            UserProfile {
-                owner: Address::ZERO,
-                active: false,
-                balance: U256::ZERO,
-            }
-        );
+    assert_eq!(
+        layout.block_mapping.at(1u64).read().unwrap(),
+        TestBlock {
+            field1: U256::ZERO,
+            field2: U256::ZERO,
+            field3: 0,
+        }
+    );
+    assert_eq!(
+        layout.profile_mapping.at(test_address(10)).read().unwrap(),
+        UserProfile {
+            owner: Address::ZERO,
+            active: false,
+            balance: U256::ZERO,
+        }
+    );
 
-        // Verify non-deleted entries are intact
-        assert_eq!(layout.sload_block_mapping(2u64).unwrap(), block2);
-        assert_eq!(
-            layout.sload_profile_mapping(test_address(20)).unwrap(),
-            profile2
-        );
-    }
+    // Verify non-deleted entries are intact
+    assert_eq!(layout.block_mapping.at(2u64).read().unwrap(), block2);
+    assert_eq!(
+        layout.profile_mapping.at(test_address(20)).read().unwrap(),
+        profile2
+    );
 }
 
 proptest! {
@@ -115,40 +116,38 @@ proptest! {
 
         #[contract]
         pub struct Layout {
-            pub address_mapping: crate::storage::Mapping<Address, U256>, // Auto: slot 0
-            pub block_mapping: crate::storage::Mapping<u64, TestBlock>, // Auto: slot 1
+            pub address_mapping: Mapping<Address, U256>, // Auto: slot 0
+            pub block_mapping: Mapping<u64, TestBlock>, // Auto: slot 1
         }
 
-        let mut s = setup_storage();
+        let (mut storage, address) = setup_storage();
+        let layout = Layout::_new(*address);
+        let _guard = storage.enter().unwrap();
 
-        {
-            let mut layout = Layout::_new(s.address, s.storage());
+        // Store to different keys
+        layout.address_mapping.at(addr1).write(val1)?;
+        layout.address_mapping.at(addr2).write(val2)?;
+        layout.block_mapping.at(100u64).write(block1.clone())?;
+        layout.block_mapping.at(200u64).write(block2.clone())?;
 
-            // Store to different keys
-            layout.sstore_address_mapping(addr1, val1)?;
-            layout.sstore_address_mapping(addr2, val2)?;
-            layout.sstore_block_mapping(100u64, block1.clone())?;
-            layout.sstore_block_mapping(200u64, block2.clone())?;
+        // Isolation property: each key has independent storage
+        prop_assert_eq!(layout.address_mapping.at(addr1).read()?, val1);
+        prop_assert_eq!(layout.address_mapping.at(addr2).read()?, val2);
+        prop_assert_eq!(layout.block_mapping.at(100u64).read()?, block1);
+        prop_assert_eq!(layout.block_mapping.at(200u64).read()?, block2.clone());
 
-            // Isolation property: each key has independent storage
-            prop_assert_eq!(layout.sload_address_mapping(addr1)?, val1);
-            prop_assert_eq!(layout.sload_address_mapping(addr2)?, val2);
-            prop_assert_eq!(layout.sload_block_mapping(100u64)?, block1);
-            prop_assert_eq!(layout.sload_block_mapping(200u64)?, block2.clone());
+        // Delete one key doesn't affect others
+        layout.address_mapping.at(addr1).delete()?;
+        prop_assert_eq!(layout.address_mapping.at(addr1).read()?, U256::ZERO);
+        prop_assert_eq!(layout.address_mapping.at(addr2).read()?, val2);
 
-            // Delete one key doesn't affect others
-            layout.clear_address_mapping(addr1)?;
-            prop_assert_eq!(layout.sload_address_mapping(addr1)?, U256::ZERO);
-            prop_assert_eq!(layout.sload_address_mapping(addr2)?, val2);
-
-            layout.clear_block_mapping(100u64)?;
-            let default_block = TestBlock {
-                field1: U256::ZERO,
-                field2: U256::ZERO,
-                field3: 0,
-            };
-            prop_assert_eq!(layout.sload_block_mapping(100u64)?, default_block);
-            prop_assert_eq!(layout.sload_block_mapping(200u64)?, block2.clone());
-        }
+        layout.block_mapping.at(100u64).delete()?;
+        let default_block = TestBlock {
+            field1: U256::ZERO,
+            field2: U256::ZERO,
+            field3: 0,
+        };
+        prop_assert_eq!(layout.block_mapping.at(100u64).read()?, default_block);
+        prop_assert_eq!(layout.block_mapping.at(200u64).read()?, block2.clone());
     }
 }
