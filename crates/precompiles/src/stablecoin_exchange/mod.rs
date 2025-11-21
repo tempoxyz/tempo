@@ -4702,8 +4702,9 @@ mod tests {
             ITIP20::transferCall {
                 to: exchange.address,
                 amount: U256::from(MIN_ORDER_AMOUNT),
-            }
-        ).expect("Base token transfer failed");
+            },
+        )
+        .expect("Base token transfer failed");
 
         // Place a order which should also create the pair
         exchange.place(user, base_token, MIN_ORDER_AMOUNT, true, 0)?;
@@ -4752,8 +4753,9 @@ mod tests {
             ITIP20::transferCall {
                 to: exchange.address,
                 amount: U256::from(MIN_ORDER_AMOUNT),
-            }
-        ).expect("Base token transfer failed");
+            },
+        )
+        .expect("Base token transfer failed");
 
         // Place a flip order which should also create the pair
         exchange.place_flip(user, base_token, MIN_ORDER_AMOUNT, true, 0, 10)?;
