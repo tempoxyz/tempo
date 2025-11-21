@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use commonware_codec::{
-    DecodeExt as _, Encode as _, EncodeSize, RangeCfg, Read, ReadExt as _, Write, varint::UInt,
+    Encode as _, EncodeSize, RangeCfg, Read, ReadExt as _, Write, varint::UInt,
 };
 use commonware_consensus::{Block as _, Reporter, types::Epoch, utils};
 use commonware_cryptography::{
@@ -16,24 +16,24 @@ use commonware_p2p::{
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics as _, Spawner, Storage, spawn_cell};
 use commonware_storage::metadata::Metadata;
 use commonware_utils::{
-    Acknowledgement as _, quorum,
+    Acknowledgement, quorum,
     sequence::U64,
     set::{Ordered, OrderedAssociated},
 };
 
-use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
+use eyre::{OptionExt as _, eyre};
 use futures::{StreamExt as _, channel::mpsc, lock::Mutex};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
-use reth_chainspec::EthChainSpec as _;
-use tempo_dkg_onchain_artifacts::PublicOutcome;
+use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_node::TempoFullNode;
 use tracing::{Span, info, instrument, warn};
 
 use crate::{
+    consensus::block::Block,
     dkg::{
         CeremonyState,
-        ceremony::{self, Ceremony},
+        ceremony::Ceremony,
         manager::{
             DecodedValidator,
             ingress::{Finalize, GetIntermediateDealing, GetOutcome},
@@ -41,15 +41,10 @@ use crate::{
         },
     },
     epoch,
-    epoch::is_first_block_in_epoch,
 };
 
-const CURRENT_EPOCH_KEY: u64 = 0;
-const PREVIOUS_EPOCH_KEY: u64 = 1;
-
-const DKG_OUTCOME_KEY: u64 = 0;
-
-mod postmoderato;
+mod post_moderato;
+mod pre_moderato;
 
 pub(crate) struct Actor<TContext, TPeerManager>
 where
@@ -71,18 +66,13 @@ where
     /// next epoch will be started).
     ceremony_metadata: Arc<Mutex<Metadata<ContextCell<TContext>, U64, CeremonyState>>>,
 
-    /// Persisted information on the current epoch. This includes the DKG outcome
-    /// of the ceremony that lead to the current epoch, as well as the validators
-    /// that make up this epoch. The validators include the dealers (these are
-    /// the actual participants/signers of the epoch), the players (these should
-    /// become signers on conclusion of the next ceremony), and the syncing
-    /// players (these have time to catch up and will become players once
-    /// the next ceremony is done).
-    epoch_metadata: Metadata<ContextCell<TContext>, U64, postmoderato::EpochState>,
+    /// Persisted information on the current epoch for DKG ceremonies that were
+    /// started after the moderato hardfork.
+    post_moderato_metadatas: post_moderato::Metadatas<ContextCell<TContext>>,
 
-    /// The persisted DKG outcome. This is the result of latest DKG ceremony,
-    /// constructed one height before the boundary height b (on b-1).
-    dkg_outcome_metadata: Metadata<ContextCell<TContext>, U64, DkgOutcome>,
+    /// Persisted information on the current epoch for DKG ceremonies that were
+    /// started before the moderato hardfork.
+    pre_moderato_metadatas: pre_moderato::Metadatas<ContextCell<TContext>>,
 
     /// Information on the peers registered on the p2p peer mamnager for a given
     /// epoch i and its precursors i-1 and i-2. Peer information is persisted
@@ -107,7 +97,7 @@ where
             Peers = OrderedAssociated<PublicKey, SocketAddr>,
         >,
 {
-    pub(super) async fn init(
+    pub(super) async fn new(
         config: super::Config<TPeerManager>,
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
@@ -124,25 +114,11 @@ where
         .await
         .expect("must be able to initialize metadata on disk to function");
 
-        let mut epoch_metadata = Metadata::init(
-            context.with_label("epoch_metadata"),
-            commonware_storage::metadata::Config {
-                partition: format!("{}_current_epoch", config.partition_prefix),
-                codec_config: (),
-            },
-        )
-        .await
-        .expect("must be able to initialize metadata on disk to function");
+        let post_moderato_metadatas =
+            post_moderato::Metadatas::init(&context, &config.partition_prefix).await;
 
-        let dkg_outcome_metadata = Metadata::init(
-            context.with_label("dkg_outcome_metadata"),
-            commonware_storage::metadata::Config {
-                partition: format!("{}_next_dkg_outcome", config.partition_prefix),
-                codec_config: (),
-            },
-        )
-        .await
-        .expect("must be able to initialize metadata on disk to function");
+        let pre_moderato_metadatas =
+            pre_moderato::Metadatas::init(&context, &config.partition_prefix).await;
 
         let validators_metadata = Metadata::init(
             context.with_label("validators__metadata"),
@@ -166,6 +142,9 @@ where
         let how_often_player = Counter::default();
 
         let peers = Gauge::default();
+
+        let pre_moderato_ceremonies = Counter::default();
+        let post_moderato_ceremonies = Counter::default();
 
         context.register(
             "ceremony_failures",
@@ -211,6 +190,17 @@ where
             peers.clone(),
         );
 
+        context.register(
+            "pre_moderato_ceremonies",
+            "how many ceremonies the node ran pre-moderato",
+            pre_moderato_ceremonies.clone(),
+        );
+        context.register(
+            "post_moderato_ceremonies",
+            "how many ceremonies the node ran post-moderato",
+            post_moderato_ceremonies.clone(),
+        );
+
         let metrics = Metrics {
             how_often_dealer,
             how_often_player,
@@ -220,64 +210,8 @@ where
             ceremony_players,
             peers,
             syncing_players,
-        };
-
-        // If no epoch state is stored on disk, this must be fresh node starting
-        // at genesis.
-        if epoch_metadata.get(&CURRENT_EPOCH_KEY.into()).is_none() {
-            let spec = config.execution_node.chain_spec();
-            let outcome =
-                PublicOutcome::decode(spec.genesis().extra_data.as_ref()).wrap_err_with(|| {
-                    format!(
-                        "failed decoding the genesis.extra_data field as an \
-                        initial DKG outcome; this field must be set and it \
-                        must be decodable; bytes = {}",
-                        spec.genesis().extra_data.len(),
-                    )
-                })?;
-
-            ensure!(
-                outcome.epoch == 0,
-                "at genesis, the epoch must be zero, but genesis reported `{}`",
-                outcome.epoch
-            );
-            let initial =
-                validators::read_from_contract(0, &config.execution_node, 0, config.epoch_length)
-                    .await
-                    .wrap_err("validator config could not be read from contract for genesis")?;
-            let validator_state = ValidatorState::new(initial);
-
-            // ensure, just on genesis, that the peerset we'd get out of the
-            // on-chain contract would result in what we see in the initial
-            // outcome.
-            let peers_as_per_contract = validator_state.resolve_addresses_and_merge_peers();
-            ensure!(
-                peers_as_per_contract.keys() == &outcome.participants,
-                "the DKG participants stored in the genesis extraData header \
-                don't match the peers determined from the onchain contract of \
-                the genesis block; \
-                extraData.participants = `{:?}; \
-                contract.peers = `{:?}",
-                outcome.participants,
-                peers_as_per_contract.keys(),
-            );
-
-            epoch_metadata
-                .put_sync(
-                    CURRENT_EPOCH_KEY.into(),
-                    postmoderato::EpochState {
-                        dkg_outcome: DkgOutcome {
-                            dkg_successful: true,
-                            epoch: 0,
-                            participants: outcome.participants,
-                            public: outcome.public,
-                            share: config.initial_share.clone(),
-                        },
-                        validator_state,
-                    },
-                )
-                .await
-                .expect("persisting epoch state must always work");
+            pre_moderato_ceremonies,
+            post_moderato_ceremonies,
         };
 
         Ok(Self {
@@ -285,11 +219,17 @@ where
             context,
             mailbox,
             ceremony_metadata: Arc::new(Mutex::new(ceremony_metadata)),
-            dkg_outcome_metadata,
-            epoch_metadata,
+            post_moderato_metadatas,
+            pre_moderato_metadatas,
             validators_metadata,
             metrics,
         })
+    }
+
+    #[instrument(skip_all)]
+    async fn init(&mut self) {
+        self.pre_moderato_init().await;
+        // self.post_moderato_init().await;
     }
 
     async fn run(
@@ -299,6 +239,7 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
+        self.init().await;
         let (mux, mut ceremony_mux) = mux::Muxer::new(
             self.context.with_label("ceremony_mux"),
             sender,
@@ -307,7 +248,7 @@ where
         );
         mux.start();
 
-        self.report_previous_epoch_state_and_validators().await;
+        self.register_previous_epoch_state().await;
         self.register_current_epoch_state().await;
         let mut ceremony = Some(
             self.start_ceremony_for_current_epoch_state(&mut ceremony_mux)
@@ -397,18 +338,18 @@ where
         cause: Span,
         GetOutcome { response }: GetOutcome,
     ) -> eyre::Result<()> {
-        let Some(dkg_outcome) = self
-            .dkg_outcome_metadata
-            .get(&DKG_OUTCOME_KEY.into())
-            .cloned()
-        else {
-            return Ok(());
+        let outcome = if let Some(outcome) = self.post_moderato_metadatas.dkg_outcome() {
+            outcome
+        } else if let Some(outcome) = self.pre_moderato_metadatas.dkg_outcome() {
+            outcome
+        } else {
+            return Err(eyre!(
+                "no DKG outcome was found in state, even though it must exist \
+                - derived from the epoch state from either the pre- or \
+                post-moderato logic"
+            ));
         };
-        let outcome = PublicOutcome {
-            epoch: dkg_outcome.epoch,
-            public: dkg_outcome.public,
-            participants: dkg_outcome.participants,
-        };
+
         response
             .send(outcome)
             .map_err(|_| eyre!("failed returning outcome because requester went away"))
@@ -461,134 +402,13 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let block_epoch = utils::epoch(self.config.epoch_length, block.height());
-        // Replay protection: if the node shuts down right after the last block
-        // of the outgoing epoch was processed, but before the first block of
-        // the incoming epoch was processed, then we do not want to update the
-        // epoch state again.
-        if block_epoch != self.current_epoch_state().epoch() {
-            info!(
-                block_epoch,
-                actor_epoch = self.current_epoch_state().epoch(),
-                "block was for an epoch other than what the actor is currently tracking; ignoring",
-            );
+        if self.is_running_post_moderato(&block) {
+            self.handle_finalized_post_moderato(cause, *block, maybe_ceremony, ceremony_mux)
+                .await;
+        } else {
+            self.handle_finalized_pre_moderato(cause, *block, maybe_ceremony, ceremony_mux)
+                .await;
         }
-
-        // Special case --- boundary block: report that a new epoch should be
-        // entered, start a new ceremony.
-        //
-        // Recall, for some epoch length E, the boundary heights are
-        // 1E-1, 2E-1, 3E-1, ... for epochs 0, 1, 2.
-        //
-        // So for E = 100, the boundary heights would be 99, 199, 299, ...
-        if utils::is_last_block_in_epoch(self.config.epoch_length, block.height()).is_some() {
-            self.update_and_register_current_epoch_state().await;
-
-            maybe_ceremony.replace(
-                self.start_ceremony_for_current_epoch_state(ceremony_mux)
-                    .await,
-            );
-            // Early return: start driving the ceremony on the first height of
-            // the next epoch.
-            acknowledgment.acknowledge();
-            return;
-        }
-
-        // Recall, for an epoch length E the first heights are 0E, 1E, 2E, ...
-        //
-        // So for E = 100, the first heights are 0, 100, 200, ...
-        if is_first_block_in_epoch(self.config.epoch_length, block.height()).is_some() {
-            self.enter_current_epoch_and_register_peers().await;
-
-            // Similar for the validators: we only need to track the current
-            // and last two epochs.
-            if let Some(epoch) = self.current_epoch_state().epoch().checked_sub(3) {
-                self.validators_metadata.remove(&epoch.into());
-                self.validators_metadata
-                    .sync()
-                    .await
-                    .expect("metadata must always be writable");
-            }
-        }
-
-        let mut ceremony = maybe_ceremony.take().expect(
-            "past this point a ceremony must always be defined; the only \
-                time a ceremony is not permitted to exist is exactly on the \
-                boundary; did the code after ensure that the ceremony is \
-                returned to its Option?",
-        );
-
-        match epoch::relative_position(block.height(), self.config.epoch_length) {
-            epoch::RelativePosition::FirstHalf => {
-                let _ = ceremony.distribute_shares().await;
-                let _ = ceremony.process_messages().await;
-            }
-            epoch::RelativePosition::Middle => {
-                let _ = ceremony.process_messages().await;
-                let _ = ceremony.construct_intermediate_outcome().await;
-            }
-            epoch::RelativePosition::SecondHalf => {
-                let _ = ceremony.process_dealings_in_block(&block).await;
-            }
-        }
-
-        // XXX: Need to finalize on the pre-to-last height of the epoch so that
-        // the information becomes available on the last height and can be
-        // stored on chain.
-        let is_one_before_boundary =
-            utils::is_last_block_in_epoch(self.config.epoch_length, block.height() + 1).is_some();
-        if !is_one_before_boundary {
-            assert!(
-                maybe_ceremony.replace(ceremony).is_none(),
-                "putting back the ceremony we just took out",
-            );
-            acknowledgment.acknowledge();
-            return;
-        }
-
-        info!("on pre-to-last height of epoch; finalizing ceremony");
-
-        let current_epoch = ceremony.epoch();
-
-        let (ceremony_outcome, dkg_successful) = match ceremony.finalize() {
-            Ok(outcome) => {
-                self.metrics.ceremony_successes.inc();
-                info!(
-                    "ceremony was successful; using the new participants, polynomial and secret key"
-                );
-                (outcome, true)
-            }
-            Err(outcome) => {
-                self.metrics.ceremony_failures.inc();
-                warn!(
-                    "ceremony was a failure; using the old participants, polynomial and secret key"
-                );
-                (outcome, false)
-            }
-        };
-        let (public, share) = ceremony_outcome.role.into_key_pair();
-
-        self.dkg_outcome_metadata
-            .put_sync(
-                DKG_OUTCOME_KEY.into(),
-                DkgOutcome {
-                    dkg_successful,
-                    epoch: current_epoch + 1,
-                    participants: ceremony_outcome.participants,
-                    public,
-                    share,
-                },
-            )
-            .await
-            .expect("must always be able to persist the DKG outcome");
-
-        // Prune older ceremony.
-        if let Some(epoch) = current_epoch.checked_sub(1) {
-            let mut ceremony_metadata = self.ceremony_metadata.lock().await;
-            ceremony_metadata.remove(&epoch.into());
-            ceremony_metadata.sync().await.expect("metadata must sync");
-        }
-
         acknowledgment.acknowledge();
     }
 
@@ -608,84 +428,47 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let epoch_state = self.current_epoch_state().clone();
-        let config = ceremony::Config {
-            namespace: self.config.namespace.clone(),
-            me: self.config.me.clone(),
-            public: epoch_state.public_polynomial().clone(),
-            share: epoch_state.private_share().clone(),
-            epoch: epoch_state.epoch(),
-            dealers: epoch_state.dealer_pubkeys(),
-            players: epoch_state.player_pubkeys(),
-        };
-        let ceremony = ceremony::Ceremony::init(
-            &mut self.context,
-            mux,
-            self.ceremony_metadata.clone(),
-            config,
-        )
-        .await
-        .expect("must always be able to initialize ceremony");
-
-        info!(
-            n_dealers = ceremony.dealers().len(),
-            dealers = ?ceremony.dealers(),
-            n_players = ceremony.players().len(),
-            players = ?ceremony.players(),
-            as_player = ceremony.is_player(),
-            as_dealer = ceremony.is_dealer(),
-            n_syncing_players = epoch_state.validator_state.syncing_players().len(),
-            syncing_players = ?epoch_state.validator_state.syncing_players(),
-            "started a ceremony",
-        );
-
-        self.metrics
-            .ceremony_dealers
-            .set(ceremony.dealers().len() as i64);
-        self.metrics
-            .ceremony_players
-            .set(ceremony.players().len() as i64);
-        self.metrics
-            .syncing_players
-            .set(epoch_state.validator_state.syncing_players().len() as i64);
-        self.metrics
-            .how_often_dealer
-            .inc_by(ceremony.is_dealer() as u64);
-        self.metrics
-            .how_often_player
-            .inc_by(ceremony.is_player() as u64);
-
-        ceremony
-    }
-
-    #[instrument(skip_all, fields(epoch))]
-    async fn register_validators(&mut self, epoch: Epoch, validator_state: ValidatorState) {
-        let peers_to_register = validator_state.resolve_addresses_and_merge_peers();
-        self.metrics.peers.set(peers_to_register.len() as i64);
-        self.config
-            .peer_manager
-            .update(epoch, peers_to_register.clone())
-            .await;
-
-        info!(
-            peers_registered = ?peers_to_register,
-            "registered p2p peers by merging dealers, players, syncing players",
-        );
+        if self.post_moderato_metadatas.exists() {
+            self.start_post_moderato_ceremony(mux).await
+        } else {
+            self.start_pre_moderato_ceremony(mux).await
+        }
     }
 
     /// Registers the new epoch by reporting to the epoch manager that it should
     /// be entered and registering its peers on the peers manager.
     #[instrument(skip_all, fields(epoch = self.current_epoch_state().epoch()))]
     async fn register_current_epoch_state(&mut self) {
-        let epoch_state = self.current_epoch_state().clone();
+        let epoch_state = self.current_epoch_state();
+
+        if let Some(previous_epoch) = epoch_state.epoch().checked_sub(1)
+            && let boundary_height =
+                utils::last_block_in_epoch(self.config.epoch_length, previous_epoch)
+            && let None = self.config.marshal.get_info(boundary_height).await
+        {
+            info!(
+                boundary_height,
+                previous_epoch,
+                "don't have the finalized boundary block of the previous epoch; \
+                this usually happens if the node restarted right after processing \
+                the the pre-to-last block; not starting a consensus engine backing \
+                the current epoch because the boundary block is its \"genesis\""
+            );
+            return;
+        }
+
+        let new_validator_state = match &epoch_state {
+            // pre moderato, the validators are always the once known passed in at init.
+            EpochState::PreModerato(_) => {
+                ValidatorState::with_unknown_contract_state(self.config.initial_validators.clone())
+            }
+            EpochState::PostModerato(epoch_state) => epoch_state.validator_state.clone(),
+        };
 
         self.validators_metadata
-            .put_sync(
-                epoch_state.epoch().into(),
-                epoch_state.validator_state.clone(),
-            )
+            .put_sync(epoch_state.epoch().into(), new_validator_state.clone())
             .await
-            .expect("must always be able to persist validator metadata");
+            .expect("must always be able to sync state");
 
         self.config
             .epoch_manager
@@ -705,7 +488,7 @@ where
             public = alloy_primitives::hex::encode(epoch_state.public_polynomial().encode()),
             "reported epoch state to epoch manager",
         );
-        self.register_validators(epoch_state.epoch(), epoch_state.validator_state)
+        self.register_validators(epoch_state.epoch(), new_validator_state)
             .await;
     }
 
@@ -715,10 +498,12 @@ where
     /// the previous epoch i-1 is started in case the node went down before the
     /// new epoch i was firmly locked in.
     ///
-    /// This method also registers the validators for the epochs i-1 and i-2.
-    #[instrument(skip_all, fields(previous_epoch = self.previous_epoch_state().map(|s| s.epoch())))]
-    async fn report_previous_epoch_state_and_validators(&mut self) {
-        if let Some(epoch_state) = self.previous_epoch_state().cloned() {
+    /// This method also registers the validators for epochs i-1 and i-2.
+    #[instrument(
+        skip_all,
+        fields(previous_epoch = self.previous_epoch_state().map(|s| s.epoch())))]
+    async fn register_previous_epoch_state(&mut self) {
+        if let Some(epoch_state) = self.previous_epoch_state() {
             self.config
                 .epoch_manager
                 .report(
@@ -751,99 +536,108 @@ where
         }
     }
 
-    /// Reports that a new epoch was entered, that the previous epoch can be ended.
-    async fn enter_current_epoch_and_register_peers(&mut self) {
-        let old_epoch_state = self
-            .epoch_metadata
-            .remove(&PREVIOUS_EPOCH_KEY.into())
-            .expect("there must always be a current epoch state");
+    /// Registers peers derived from `validator_state` for `epoch` on the peer manager.
+    #[instrument(skip_all, fields(epoch))]
+    async fn register_validators(&mut self, epoch: Epoch, validator_state: ValidatorState) {
+        let peers_to_register = validator_state.resolve_addresses_and_merge_peers();
+        self.metrics.peers.set(peers_to_register.len() as i64);
         self.config
-            .epoch_manager
-            .report(
-                epoch::Exit {
-                    epoch: old_epoch_state.epoch(),
-                }
-                .into(),
-            )
+            .peer_manager
+            .update(epoch, peers_to_register.clone())
             .await;
-        self.epoch_metadata
-            .sync()
-            .await
-            .expect("must always be able to persist state");
 
-        if let Some(epoch) = old_epoch_state.epoch().checked_sub(2) {
-            self.validators_metadata.remove(&epoch.into());
-            self.validators_metadata
-                .sync()
-                .await
-                .expect("must always be able to persist data");
-        }
+        info!(
+            peers_registered = ?peers_to_register,
+            "registered p2p peers by merging dealers, players, syncing players",
+        );
     }
 
-    #[instrument(skip_all)]
-    async fn update_and_register_current_epoch_state(&mut self) {
-        let old_epoch_state = self
-            .epoch_metadata
-            .remove(&CURRENT_EPOCH_KEY.into())
-            .expect("there must always exist an epoch state");
+    /// Returns if the DKG manager is running a post-moderato ceremony.
+    ///
+    /// The DKG manager is running a post-moderato ceremony if block.timestamp
+    /// is after the moderato timestamp, and if the post-moderato epoch state
+    /// is set.
+    ///
+    /// This is to account for ceremonies that are started pre-moderato, and
+    /// are running past the hardfork timestamp: we need to run the ceremony to
+    /// its conclusion and then start a new post-moderato cermony at the epoch
+    /// boundary.
+    fn is_running_post_moderato(&self, block: &Block) -> bool {
+        self.config
+            .execution_node
+            .chain_spec()
+            .is_moderato_active_at_timestamp(block.timestamp())
+            && self.post_moderato_metadatas.exists()
+    }
 
-        // Remove it?
-        let dkg_outcome = self
-            .dkg_outcome_metadata
-            .get(&DKG_OUTCOME_KEY.into())
-            .cloned()
-            .expect(
-                "when updating the current epoch state, there must be a DKG \
-                outcome of some ceremomny",
-            );
-
-        assert_eq!(
-            old_epoch_state.epoch() + 1,
-            dkg_outcome.epoch,
-            "sanity check: old outcome must be new outcome - 1"
-        );
-
-        let syncing_players = read_validator_config_with_retry(
-            &self.context,
-            &self.config.execution_node,
-            dkg_outcome.epoch,
-            self.config.epoch_length,
-        )
-        .await;
-
-        let mut new_validator_state = old_epoch_state.validator_state.clone();
-        if dkg_outcome.dkg_successful {
-            new_validator_state.push_on_success(syncing_players);
+    /// Returns the previous epoch state.
+    ///
+    /// Always prefers the post moderato state, if it exists.
+    fn previous_epoch_state(&self) -> Option<EpochState> {
+        if let Some(epoch_state) = self.post_moderato_metadatas.previous_epoch_state().cloned() {
+            Some(EpochState::PostModerato(epoch_state))
+        } else if let Some(epoch_state) =
+            self.pre_moderato_metadatas.previous_epoch_state().cloned()
+        {
+            Some(EpochState::PreModerato(epoch_state))
         } else {
-            new_validator_state.push_on_failure(syncing_players);
+            None
         }
-
-        self.epoch_metadata.put(
-            CURRENT_EPOCH_KEY.into(),
-            postmoderato::EpochState {
-                dkg_outcome,
-                validator_state: new_validator_state.clone(),
-            },
-        );
-        self.epoch_metadata
-            .put(PREVIOUS_EPOCH_KEY.into(), old_epoch_state);
-
-        self.epoch_metadata
-            .sync()
-            .await
-            .expect("must always be able to persists epoch state");
-
-        self.register_current_epoch_state().await;
     }
 
-    fn current_epoch_state(&self) -> &postmoderato::EpochState {
-        self.epoch_metadata
-            .get(&CURRENT_EPOCH_KEY.into())
-            .expect("current epoch state must be set at all times")
+    /// Returns the current epoch state.
+    ///
+    /// Always prefers the post moderato state, if it exists.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no epoch state exists, neither for the pre- nor post-moderato
+    /// regime. There must always be an epoch state.
+    fn current_epoch_state(&self) -> EpochState {
+        if let Some(epoch_state) = self.post_moderato_metadatas.current_epoch_state().cloned() {
+            EpochState::PostModerato(epoch_state)
+        } else if let Some(epoch_state) = self.pre_moderato_metadatas.current_epoch_state().cloned()
+        {
+            EpochState::PreModerato(epoch_state)
+        } else {
+            panic!("either pre- or post-moderato current-epoch-state should exist")
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum EpochState {
+    PreModerato(pre_moderato::EpochState),
+    PostModerato(post_moderato::EpochState),
+}
+
+impl EpochState {
+    fn epoch(&self) -> Epoch {
+        match self {
+            EpochState::PreModerato(epoch_state) => epoch_state.epoch(),
+            EpochState::PostModerato(epoch_state) => epoch_state.epoch(),
+        }
     }
 
-    fn previous_epoch_state(&self) -> Option<&postmoderato::EpochState> {
-        self.epoch_metadata.get(&PREVIOUS_EPOCH_KEY.into())
+    fn participants(&self) -> &Ordered<PublicKey> {
+        match self {
+            EpochState::PreModerato(epoch_state) => epoch_state.participants(),
+            EpochState::PostModerato(epoch_state) => epoch_state.participants(),
+        }
+    }
+
+    fn public_polynomial(&self) -> &Public<MinSig> {
+        match self {
+            EpochState::PreModerato(epoch_state) => epoch_state.public_polynomial(),
+            EpochState::PostModerato(epoch_state) => epoch_state.public_polynomial(),
+        }
+    }
+
+    fn private_share(&self) -> &Option<Share> {
+        match self {
+            EpochState::PreModerato(epoch_state) => epoch_state.private_share(),
+            EpochState::PostModerato(epoch_state) => epoch_state.private_share(),
+        }
     }
 }
 
@@ -856,6 +650,8 @@ struct Metrics {
     ceremony_dealers: Gauge,
     ceremony_players: Gauge,
     peers: Gauge,
+    pre_moderato_ceremonies: Counter,
+    post_moderato_ceremonies: Counter,
     syncing_players: Gauge,
 }
 

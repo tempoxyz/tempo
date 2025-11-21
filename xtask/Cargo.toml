@@ -31,10 +31,7 @@ commonware-cryptography.workspace = true
 commonware-utils.workspace = true
 const-hex.workspace = true
 eyre.workspace = true
-fqdn = { workspace = true, features = [
-  "domain-label-length-limited-to-63",
-  "domain-name-length-limited-to-255",
-] }
+fqdn.workspace = true
 indexmap.workspace = true
 indicatif = { workspace = true, features = ["rayon"] }
 itertools.workspace = true

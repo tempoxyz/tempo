@@ -1,0 +1,420 @@
+//! Definitions to read and write a tempo consensus configuration.
+
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
+use std::{net::SocketAddr, path::Path};
+
+use commonware_codec::{Decode, DecodeExt as _, Encode as _};
+use commonware_cryptography::{
+    bls12381::primitives::{
+        group::Share,
+        poly::{Poly, Public},
+        variant::{MinSig, Variant},
+    },
+    ed25519::{PrivateKey, PublicKey},
+};
+use commonware_utils::{quorum, set::OrderedAssociated};
+use indexmap::IndexMap;
+
+#[cfg(test)]
+mod tests;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SigningKey {
+    inner: PrivateKey,
+}
+
+impl SigningKey {
+    pub fn into_inner(self) -> PrivateKey {
+        self.inner
+    }
+
+    pub fn read_from_file<P: AsRef<Path>>(path: P) -> Result<Self, SigningKeyError> {
+        let hex = std::fs::read_to_string(path).map_err(SigningKeyErrorKind::Read)?;
+        Self::from_str(&hex)
+    }
+
+    pub fn from_str(hex: &str) -> Result<Self, SigningKeyError> {
+        let bytes = const_hex::decode(hex).map_err(SigningKeyErrorKind::Hex)?;
+        let inner = PrivateKey::decode(&bytes[..]).map_err(SigningKeyErrorKind::Parse)?;
+        Ok(Self { inner })
+    }
+
+    pub fn to_string(&self) -> String {
+        const_hex::encode_prefixed(self.inner.encode().as_ref())
+    }
+
+    pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), SigningKeyError> {
+        std::fs::write(path, &self.to_string()).map_err(SigningKeyErrorKind::Write)?;
+        Ok(())
+    }
+}
+
+impl From<PrivateKey> for SigningKey {
+    fn from(inner: PrivateKey) -> Self {
+        Self { inner }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct SigningKeyError {
+    #[from]
+    inner: SigningKeyErrorKind,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum SigningKeyErrorKind {
+    #[error("failed decoding file contents as hex-encoded bytes")]
+    Hex(#[source] const_hex::FromHexError),
+    #[error("failed parsing hex-decoded bytes as ed25519 private key")]
+    Parse(#[source] commonware_codec::Error),
+    #[error("failed reading file")]
+    Read(#[source] std::io::Error),
+    #[error("failed writing to file")]
+    Write(#[source] std::io::Error),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SigningShare {
+    inner: Share,
+}
+
+impl SigningShare {
+    pub fn into_inner(self) -> Share {
+        self.inner
+    }
+
+    pub fn read_from_file<P: AsRef<Path>>(path: P) -> Result<Self, SigningShareError> {
+        let hex = std::fs::read_to_string(path).map_err(SigningShareErrorKind::Read)?;
+        Self::from_str(&hex)
+    }
+
+    pub fn from_str(hex: &str) -> Result<Self, SigningShareError> {
+        let bytes = const_hex::decode(hex).map_err(SigningShareErrorKind::Hex)?;
+        let inner = Share::decode(&bytes[..]).map_err(SigningShareErrorKind::Parse)?;
+        Ok(Self { inner })
+    }
+
+    pub fn to_string(&self) -> String {
+        const_hex::encode_prefixed(self.inner.encode().as_ref())
+    }
+
+    pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), SigningShareError> {
+        std::fs::write(path, &self.to_string()).map_err(SigningShareErrorKind::Write)?;
+        Ok(())
+    }
+}
+
+impl From<Share> for SigningShare {
+    fn from(inner: Share) -> Self {
+        Self { inner }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct SigningShareError {
+    #[from]
+    inner: SigningShareErrorKind,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum SigningShareErrorKind {
+    #[error("failed decoding file contents as hex-encoded bytes")]
+    Hex(#[source] const_hex::FromHexError),
+    #[error("failed parsing hex-decoded bytes as bls12381 private share")]
+    Parse(#[source] commonware_codec::Error),
+    #[error("failed reading file")]
+    Read(#[source] std::io::Error),
+    #[error("failed writing to file")]
+    Write(#[source] std::io::Error),
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(try_from = "DeserPeersAndPublicPolynomial")]
+pub struct PeersAndPublicPolynomial {
+    #[serde(serialize_with = "crate::_serde::polynomial::serialize")]
+    public_polynomial: Public<MinSig>,
+
+    #[serde(with = "crate::_serde::peers")]
+    peers: OrderedAssociated<PublicKey, SocketAddrOrFqdnPort>,
+}
+
+impl PeersAndPublicPolynomial {
+    pub fn read_from_file<P: AsRef<Path>>(path: P) -> Result<Self, PeersAndPublicPolynomialError> {
+        let file_contents =
+            std::fs::read_to_string(path).map_err(PeersAndPublicPolynomialErrorKind::Read)?;
+        Self::from_str(&file_contents)
+    }
+
+    pub fn from_str(s: &str) -> Result<Self, PeersAndPublicPolynomialError> {
+        let this = toml::from_str(s).map_err(PeersAndPublicPolynomialErrorKind::Parse)?;
+        Ok(this)
+    }
+
+    pub fn write_to_file<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> Result<(), PeersAndPublicPolynomialError> {
+        let s = self.to_string()?;
+        std::fs::write(path, &s).map_err(PeersAndPublicPolynomialErrorKind::Write)?;
+        Ok(())
+    }
+
+    pub fn to_string(&self) -> Result<String, PeersAndPublicPolynomialError> {
+        let s = toml::to_string_pretty(&self).map_err(PeersAndPublicPolynomialErrorKind::Format)?;
+        Ok(s)
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        Public<MinSig>,
+        OrderedAssociated<PublicKey, SocketAddrOrFqdnPort>,
+    ) {
+        (self.public_polynomial, self.peers)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct PeersAndPublicPolynomialError {
+    #[from]
+    kind: PeersAndPublicPolynomialErrorKind,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum PeersAndPublicPolynomialErrorKind {
+    #[error("failed formatting as TOML")]
+    Format(#[source] toml::ser::Error),
+    #[error("failed parsing file contents")]
+    Parse(#[source] toml::de::Error),
+    #[error("failed decoding provided hex encoded bytes as a public polynomial")]
+    Polynomial(#[source] commonware_codec::Error),
+    #[error("failed readig file contents")]
+    Read(#[source] std::io::Error),
+    #[error("failed writing TOML formatting to file")]
+    Write(#[source] std::io::Error),
+}
+
+/// The deserialization target that will be turned into a [`Config`].
+///
+/// The reason this exists is that there are fields in [`Config`] that
+/// require an extrastrep during deserialization that depends on the
+/// value of other fields.
+#[derive(Debug, serde::Deserialize)]
+struct DeserPeersAndPublicPolynomial {
+    #[serde(deserialize_with = "const_hex::serde::deserialize")]
+    public_polynomial: Vec<u8>,
+
+    #[serde(deserialize_with = "crate::_serde::peers::deserialize")]
+    peers: IndexMap<PublicKey, SocketAddrOrFqdnPort>,
+}
+
+impl TryFrom<DeserPeersAndPublicPolynomial> for PeersAndPublicPolynomial {
+    type Error = PeersAndPublicPolynomialError;
+
+    fn try_from(value: DeserPeersAndPublicPolynomial) -> Result<Self, Self::Error> {
+        let DeserPeersAndPublicPolynomial {
+            public_polynomial,
+            peers,
+        } = value;
+
+        let threshold = quorum(peers.len() as u32);
+
+        Ok(Self {
+            public_polynomial: Poly::decode_cfg(&public_polynomial[..], &(threshold as usize))
+                .map_err(PeersAndPublicPolynomialErrorKind::Polynomial)?,
+            peers: peers.into_iter().collect(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SocketAddrOrFqdnPort {
+    Addr(SocketAddr),
+    HostPort { host: fqdn::FQDN, port: u16 },
+}
+
+impl SocketAddrOrFqdnPort {
+    pub fn port(&self) -> u16 {
+        match self {
+            Self::Addr(socket_addr) => socket_addr.port(),
+            Self::HostPort { port, .. } => *port,
+        }
+    }
+
+    pub fn with_port(self, port: u16) -> Self {
+        match self {
+            Self::Addr(mut socket_addr) => Self::Addr({
+                socket_addr.set_port(port);
+                socket_addr
+            }),
+            Self::HostPort { host, .. } => Self::HostPort { host, port },
+        }
+    }
+}
+
+impl std::fmt::Display for SocketAddrOrFqdnPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Addr(socket_addr) => socket_addr.fmt(f),
+            Self::HostPort { host, port } => write!(f, "{host}:{port}"),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("input is not of the form `<host>:<port>` or `<ip>:<port>`")]
+pub struct NotAddrOrHostPort;
+
+impl std::str::FromStr for SocketAddrOrFqdnPort {
+    type Err = NotAddrOrHostPort;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        if let Ok(addr) = s.parse::<SocketAddr>() {
+            return Ok(Self::Addr(addr));
+        }
+
+        if let Some((maybe_host, maybe_port)) = s.rsplit_once(':')
+            && let Ok(host) = maybe_host.parse::<fqdn::FQDN>()
+            && let Ok(port) = maybe_port.parse::<u16>()
+        {
+            return Ok(Self::HostPort { host, port });
+        }
+
+        Err(NotAddrOrHostPort)
+    }
+}
+
+impl serde::ser::Serialize for SocketAddrOrFqdnPort {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> serde::de::Deserialize<'de> for SocketAddrOrFqdnPort {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+mod _serde {
+    use commonware_codec::DecodeExt as _;
+    use serde::{Deserialize, Serialize};
+
+    /// Serialization target for public keys.
+    struct PublicKeySer<'a>(&'a super::PublicKey);
+    impl<'a> Serialize for PublicKeySer<'a> {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            use commonware_codec::Encode as _;
+
+            let bytes = self.0.encode();
+            const_hex::serde::serialize(&bytes, serializer)
+        }
+    }
+    // Deserialization target for public keys.
+    struct PublicKeyDe(super::PublicKey);
+    impl<'de> Deserialize<'de> for PublicKeyDe {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let bytes: Vec<u8> = const_hex::serde::deserialize(deserializer)?;
+            let key = super::PublicKey::decode(&bytes[..]).map_err(|err| {
+                serde::de::Error::custom(format!(
+                    "failed decoding hex-formatted bytes as public key: {err:?}"
+                ))
+            })?;
+            Ok(Self(key))
+        }
+    }
+
+    pub(crate) mod polynomial {
+        use commonware_codec::Encode as _;
+        use serde::Serializer;
+
+        pub(crate) fn serialize<S>(
+            polynomial: &crate::Poly<<crate::MinSig as crate::Variant>::Public>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let bytes = polynomial.encode();
+            const_hex::serde::serialize(&bytes, serializer)
+        }
+    }
+
+    pub(crate) mod peers {
+        use commonware_utils::set::OrderedAssociated;
+        use indexmap::IndexMap;
+        use serde::{Deserializer, Serializer, de::Visitor, ser::SerializeMap}; // # codespell:ignore ser
+
+        use crate::SocketAddrOrFqdnPort;
+
+        use super::PublicKeyDe;
+
+        struct PeersVisitor;
+
+        impl<'de> Visitor<'de> for PeersVisitor {
+            type Value = IndexMap<crate::PublicKey, SocketAddrOrFqdnPort>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a map of hex-formatted ed25519 public keys to <ip>:<port> or <fqdn>:<port> values")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut peers = IndexMap::with_capacity(map.size_hint().unwrap_or(0));
+                while let Some((key, addr)) = map.next_entry::<PublicKeyDe, _>()? {
+                    let key = key.0;
+                    if peers.insert(key.clone(), addr).is_some() {
+                        return Err(serde::de::Error::custom(format!(
+                            "peers must not have duplicate entries; duplicate key: `{key}`",
+                        )))?;
+                    }
+                }
+                Ok(peers)
+            }
+        }
+
+        pub(crate) fn serialize<S>(
+            peers: &OrderedAssociated<crate::PublicKey, SocketAddrOrFqdnPort>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let mut map = serializer.serialize_map(Some(peers.len()))?;
+            for (key, addr) in peers {
+                map.serialize_entry(&super::PublicKeySer(key), addr)?;
+            }
+            map.end()
+        }
+
+        pub(crate) fn deserialize<'de, D>(
+            deserializer: D,
+        ) -> Result<IndexMap<crate::PublicKey, SocketAddrOrFqdnPort>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_seq(PeersVisitor)
+        }
+    }
+}

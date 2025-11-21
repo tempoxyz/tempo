@@ -11366,7 +11366,6 @@ dependencies = [
  "prometheus-client",
  "rand 0.8.5",
  "rand_core 0.6.4",
- "reth-chainspec",
  "reth-consensus-common",
  "reth-ethereum",
  "reth-evm",
@@ -11375,6 +11374,8 @@ dependencies = [
  "reth-primitives-traits",
  "reth-provider",
  "reth-revm",
+ "tempo-chainspec",
+ "tempo-commonware-node-config",
  "tempo-dkg-onchain-artifacts",
  "tempo-node",
  "tempo-payload-types",
@@ -11383,6 +11384,23 @@ dependencies = [
  "tempo-telemetry-util",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "tempo-commonware-node-config"
+version = "0.5.2"
+dependencies = [
+ "commonware-codec",
+ "commonware-cryptography",
+ "commonware-utils",
+ "const-hex",
+ "fqdn",
+ "indexmap 2.12.1",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "toml",
 ]
 
 [[package]]

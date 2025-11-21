@@ -13,6 +13,7 @@ use eyre::{OptionExt as _, WrapErr as _, ensure};
 use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
 use reth_node_builder::{Block as _, ConfigureEvm as _};
 use reth_provider::{BlockReader as _, StateProviderFactory as _};
+use tempo_commonware_node_config::SocketAddrOrFqdnPort;
 use tempo_node::TempoFullNode;
 use tempo_precompiles::{
     storage::evm::EvmPrecompileStorageProvider,
@@ -125,6 +126,30 @@ impl ValidatorState {
             players: validators.clone(),
             syncing_players: validators,
         }
+    }
+
+    /// Returns a validator state with the on-chain addresses and on-chain index set to 0.
+    ///
+    /// The contract inbound and outbound addresses are set to the values of the
+    /// validators.
+    pub(super) fn with_unknown_contract_state(
+        validators: OrderedAssociated<PublicKey, SocketAddrOrFqdnPort>,
+    ) -> Self {
+        let validators = validators
+            .iter_pairs()
+            .map(|(key, addr)| {
+                let key = key.clone();
+                let validator = DecodedValidator {
+                    public_key: key.clone(),
+                    inbound: addr.to_string(),
+                    outbound: addr.to_string(),
+                    index: 0,
+                    address: Address::ZERO,
+                };
+                (key, validator)
+            })
+            .collect();
+        Self::new(validators)
     }
 
     pub(super) fn dealers(&self) -> &OrderedAssociated<PublicKey, DecodedValidator> {

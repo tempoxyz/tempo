@@ -11,6 +11,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tempo-chainspec.workspace = true
+tempo-commonware-node-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-node.workspace = true
 tempo-primitives.workspace = true
@@ -47,7 +49,6 @@ parking_lot.workspace = true
 prometheus-client.workspace = true
 rand.workspace = true
 
-reth-chainspec.workspace = true
 reth-consensus-common.workspace = true
 rand_core.workspace = true
 reth-ethereum.workspace = true

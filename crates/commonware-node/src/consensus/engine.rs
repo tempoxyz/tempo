@@ -12,7 +12,7 @@ use commonware_broadcast::buffered;
 use commonware_consensus::{Reporters, marshal};
 use commonware_cryptography::{
     Signer as _,
-    bls12381::primitives::group::Share,
+    bls12381::primitives::{group::Share, poly::Public, variant::MinSig},
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::{Blocker, Receiver, Sender};
@@ -24,6 +24,7 @@ use commonware_utils::set::OrderedAssociated;
 use eyre::WrapErr as _;
 use futures::future::try_join_all;
 use rand::{CryptoRng, Rng};
+use tempo_commonware_node_config::SocketAddrOrFqdnPort;
 use tempo_node::TempoFullNode;
 use tracing::info;
 
@@ -73,6 +74,8 @@ pub struct Builder<TBlocker, TContext, TPeerManager> {
 
     pub partition_prefix: String,
     pub signer: PrivateKey,
+    pub validators: OrderedAssociated<PublicKey, SocketAddrOrFqdnPort>,
+    pub public_polynomial: Public<MinSig>,
     pub share: Option<Share>,
     pub mailbox_size: usize,
     pub deque_size: usize,
@@ -207,7 +210,7 @@ where
                 time_to_propose: self.time_to_propose,
                 mailbox_size: self.mailbox_size,
                 subblocks: subblocks.mailbox(),
-                marshal: marshal_mailbox,
+                marshal: marshal_mailbox.clone(),
                 scheme_provider: scheme_provider.clone(),
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
@@ -224,8 +227,11 @@ where
                 epoch_manager: epoch_manager_mailbox,
                 epoch_length,
                 execution_node: self.execution_node.clone(),
+                initial_public_polynomial: self.public_polynomial,
                 initial_share: self.share.clone(),
+                initial_validators: self.validators,
                 mailbox_size: self.mailbox_size,
+                marshal: marshal_mailbox,
                 me: self.signer.clone(),
                 namespace: crate::config::NAMESPACE.to_vec(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),

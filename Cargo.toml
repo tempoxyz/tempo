@@ -13,6 +13,7 @@ members = [
   "crates/alloy",
   "crates/chainspec",
   "crates/commonware-node",
+  "crates/commonware-node-config",
   "crates/dkg-onchain-artifacts",
   "crates/consensus",
   "crates/eyre",
@@ -99,6 +100,7 @@ tempo-node = { path = "crates/node" }
 
 tempo-chainspec = { path = "crates/chainspec", default-features = false }
 tempo-commonware-node = { path = "crates/commonware-node", default-features = false }
+tempo-commonware-node-config = { path = "crates/commonware-node-config", default-features = false }
 tempo-consensus = { path = "crates/consensus", default-features = false }
 tempo-dkg-onchain-artifacts = { path = "crates/dkg-onchain-artifacts", default-features = false }
 tempo-e2e = { path = "crates/e2e" }
@@ -210,7 +212,8 @@ const-hex = { version = "1.15.0" }
 derive_more = { version = "2.0.0" }
 test-fuzz = "7"
 eyre = "0.6.12"
-fqdn = { version = "0.4.6", default-features = false }
+# XXX: Features dictate what constitutes a FQDN.
+fqdn = { version = "0.4.6", features = [ "domain-label-length-limited-to-63", "domain-name-length-limited-to-255"] }
 futures = "0.3.31"
 governor = "0.10.2"
 hex = "0.4"

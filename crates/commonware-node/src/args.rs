@@ -16,6 +16,14 @@ pub struct Args {
     #[arg(long = "consensus.signing-share")]
     pub signing_share: Option<PathBuf>,
 
+    /// The TOML formatted file containing the bls12-381 threshold public key
+    /// polynomial and the list of peers.
+    #[arg(
+        long = "consensus.peers-and-public-polynomial",
+        required_unless_present_any = ["follow", "dev"],
+    )]
+    pub peers_and_public_polynomial: Option<PathBuf>,
+
     /// The socket address that will be bound to listen for consensus communication from
     /// other nodes.
     #[arg(long = "consensus.listen-address", default_value = "127.0.0.1:8000")]

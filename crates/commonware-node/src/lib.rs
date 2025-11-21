@@ -13,16 +13,13 @@ pub mod metrics;
 
 pub(crate) mod subblocks;
 
-use std::{net::SocketAddr, path::Path};
+use std::net::SocketAddr;
 
-use commonware_codec::{DecodeExt, IsUnit};
-use commonware_cryptography::{
-    bls12381::primitives::group::Share,
-    ed25519::{PrivateKey, PublicKey},
-};
+use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Metrics as _;
 use eyre::{OptionExt, WrapErr as _, eyre};
+use tempo_commonware_node_config::{PeersAndPublicPolynomial, SigningKey, SigningShare};
 use tempo_node::TempoFullNode;
 
 use crate::config::{
@@ -43,26 +40,41 @@ pub async fn run_consensus_stack(
         .signing_share
         .as_ref()
         .map(|share| {
-            read_from_file::<Share, _, _>(share).wrap_err_with(|| {
+            SigningShare::read_from_file(&share).wrap_err_with(|| {
                 format!(
                     "failed reading private bls12-381 key share from file `{}`",
                     share.display()
                 )
             })
         })
-        .transpose()?;
+        .transpose()?
+        .map(|signing_share| signing_share.into_inner());
 
     let signing_key = config
         .signing_key
-        .ok_or_eyre("required option `consensus.signing_key` not set")
+        .ok_or_eyre("required option `consensus.signing-key` not set")
         .and_then(|signing_key| {
-            read_from_file::<PrivateKey, _, _>(&signing_key).wrap_err_with(|| {
+            SigningKey::read_from_file(&signing_key).wrap_err_with(|| {
                 format!(
                     "failed reading private ed25519 signing key share from file `{}`",
                     signing_key.display()
                 )
             })
-        })?;
+        })?
+        .into_inner();
+
+    let (public_polynomial, peers) = config
+        .peers_and_public_polynomial
+        .ok_or_eyre("required option `consensus.peers-and-public-polynomial` not set")
+        .and_then(|peers_and_public_key| {
+            PeersAndPublicPolynomial::read_from_file(&peers_and_public_key).wrap_err_with(|| {
+                format!(
+                    "failed reading peers and public bls12-381 polynomial from file `{}`",
+                    peers_and_public_key.display()
+                )
+            })
+        })?
+        .into_parts();
 
     let (mut network, oracle) = instantiate_network(
         context,
@@ -107,6 +119,8 @@ pub async fn run_consensus_stack(
         // TODO: Set this through config?
         partition_prefix: "engine".into(),
         signer: signing_key,
+        public_polynomial,
+        validators: peers,
         share,
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
@@ -191,12 +205,4 @@ async fn instantiate_network(
     };
 
     Ok(lookup::Network::new(context.with_label("network"), p2p_cfg))
-}
-
-fn read_from_file<T: DecodeExt<X>, X: IsUnit, P: AsRef<Path>>(path: P) -> eyre::Result<T> {
-    let raw_bytes = std::fs::read(path).wrap_err("failed reading file")?;
-    let decoded = alloy_primitives::hex::decode(&raw_bytes)
-        .wrap_err("failed decoding file contents as hex")?;
-    let obj = T::decode(&decoded[..]).wrap_err("failed parsing hex-decoded file contents")?;
-    Ok(obj)
 }
