@@ -1065,6 +1065,218 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
 
     Ok(())
 }
+// Helper to send transaction
+async fn send_tx(
+    setup: &mut crate::utils::SingleNodeSetup,
+    alice_signer: &impl SignerSync,
+    chain_id: u64,
+    recipient: Address,
+    nonce_key: u64,
+    nonce: u64,
+    priority_fee: u128,
+) -> eyre::Result<()> {
+    let tx = TxAA {
+        chain_id,
+        max_priority_fee_per_gas: priority_fee,
+        max_fee_per_gas: TEMPO_BASE_FEE as u128 + priority_fee,
+        gas_limit: 100_000,
+        calls: vec![Call {
+            to: recipient.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        nonce_key: U256::from(nonce_key),
+        nonce,
+        fee_token: None,
+        fee_payer_signature: None,
+        valid_before: Some(u64::MAX),
+        ..Default::default()
+    };
+
+    let sig_hash = tx.signature_hash();
+    let signature = alice_signer.sign_hash_sync(&sig_hash)?;
+    let signed_tx = AASigned::new_unhashed(tx, AASignature::Secp256k1(signature));
+    let envelope: TempoTxEnvelope = signed_tx.into();
+    let mut encoded = Vec::new();
+    envelope.encode_2718(&mut encoded);
+
+    setup.node.rpc.inject_tx(encoded.into()).await?;
+    println!(
+        "  ✓ Sent nonce={}, priority_fee={} gwei",
+        nonce,
+        priority_fee / 1_000_000_000
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_2d_nonce_out_of_order_arrival() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let (mut setup, provider, alice_signer, _alice_addr) = setup_test_with_funded_account().await?;
+
+    let chain_id = provider.get_chain_id().await?;
+    let recipient = Address::random();
+
+    println!("\n=== Out-of-Order Nonce Arrival Test ===");
+    println!("Testing nonce_key=4 with nonces arriving as: [5, 0, 2]");
+    println!("Expected: Only execute in order, queue out-of-order txs\n");
+
+    // Step 1: Send nonce=5 (should be queued - large gap)
+    println!("Step 1: Send nonce=5 (should be queued - gap at 0,1,2,3,4)");
+    send_tx(
+        &mut setup,
+        &alice_signer,
+        chain_id,
+        recipient,
+        4,
+        5,
+        10_000_000_000,
+    )
+    .await?;
+
+    // Step 2: Send nonce=0 (should be pending - ready to execute)
+    println!("\nStep 2: Send nonce=0 (should be pending - ready to execute)");
+    send_tx(
+        &mut setup,
+        &alice_signer,
+        chain_id,
+        recipient,
+        4,
+        0,
+        10_000_000_000,
+    )
+    .await?;
+
+    // Step 3: Send nonce=2 (should be queued - gap at 1)
+    println!("\nStep 3: Send nonce=2 (should be queued - gap at 1)");
+    send_tx(
+        &mut setup,
+        &alice_signer,
+        chain_id,
+        recipient,
+        4,
+        2,
+        10_000_000_000,
+    )
+    .await?;
+
+    // Mine block - only nonce=0 should execute
+    println!("\nMining block (should only include nonce=0)...");
+    let payload1 = setup.node.advance_block().await?;
+    let block1_txs = &payload1.block().body().transactions;
+
+    let executed_nonces: Vec<u64> = block1_txs
+        .iter()
+        .filter_map(|tx| {
+            if let TempoTxEnvelope::AA(aa_tx) = tx {
+                if aa_tx.tx().nonce_key == U256::from(4) {
+                    Some(aa_tx.tx().nonce)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(executed_nonces, vec![0], "Only nonce=0 should execute");
+    println!("  ✓ Block 1: Only nonce=0 executed (nonce=2 and nonce=5 correctly queued)");
+
+    // Step 4: Send nonce=1 (fills first gap)
+    println!("\nStep 4: Send nonce=1 (fills gap before nonce=2)");
+    send_tx(
+        &mut setup,
+        &alice_signer,
+        chain_id,
+        recipient,
+        4,
+        1,
+        10_000_000_000,
+    )
+    .await?;
+
+    // Mine block - nonce=1 and nonce=2 should both execute (promotion!)
+    println!("\nMining block (should include nonce=1 AND nonce=2 via promotion)...");
+    let payload2 = setup.node.advance_block().await?;
+    let block2_txs = &payload2.block().body().transactions;
+
+    let mut executed_nonces: Vec<u64> = block2_txs
+        .iter()
+        .filter_map(|tx| {
+            if let TempoTxEnvelope::AA(aa_tx) = tx {
+                if aa_tx.tx().nonce_key == U256::from(4) {
+                    Some(aa_tx.tx().nonce)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .collect();
+    executed_nonces.sort();
+
+    assert!(executed_nonces.contains(&1), "nonce=1 should execute");
+    assert!(
+        executed_nonces.contains(&2),
+        "nonce=2 should promote and execute"
+    );
+    println!("  ✓ Block 2: nonce=1 and nonce=2 executed (promotion worked!)");
+
+    // Step 5: Send nonces 3 and 4 (fills remaining gaps)
+    println!("\nStep 5: Send nonces 3 and 4 (fills gaps before nonce=5)");
+    send_tx(
+        &mut setup,
+        &alice_signer,
+        chain_id,
+        recipient,
+        4,
+        3,
+        10_000_000_000,
+    )
+    .await?;
+    send_tx(
+        &mut setup,
+        &alice_signer,
+        chain_id,
+        recipient,
+        4,
+        4,
+        10_000_000_000,
+    )
+    .await?;
+
+    // Mine block - nonces 3, 4, and 5 should all execute
+    println!("\nMining block (should include nonces 3, 4, AND 5 via promotion)...");
+    let payload3 = setup.node.advance_block().await?;
+    let block3_txs = &payload3.block().body().transactions;
+
+    let mut executed_nonces: Vec<u64> = block3_txs
+        .iter()
+        .filter_map(|tx| {
+            if let TempoTxEnvelope::AA(aa_tx) = tx {
+                if aa_tx.tx().nonce_key == U256::from(4) {
+                    Some(aa_tx.tx().nonce)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .collect();
+    executed_nonces.sort();
+
+    assert!(executed_nonces.contains(&3), "nonce=3 should execute");
+    assert!(executed_nonces.contains(&4), "nonce=4 should execute");
+    assert!(
+        executed_nonces.contains(&5),
+        "nonce=5 should finally promote and execute"
+    );
+    Ok(())
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {

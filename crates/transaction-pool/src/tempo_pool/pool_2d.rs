@@ -1,5 +1,40 @@
 // Minimal 2D nonce pool for user nonces (nonce_key > 0)
 // Follows Reth's pool patterns but simplified for 2D nonce use case
+//
+// NONCE TRACKING STRATEGY:
+// @mattse: Does this make sense? I am a bit shaky on if this is handles negative cases correctly
+// This pool uses optimistic nonce tracking to handle the fact that StateProvider.latest()
+// returns stale data for precompile storage (2D nonces).
+//
+// 1. Cached State Nonces:
+//    - Each (address, nonce_key) pair has a cached `state_nonce` representing the expected next nonce
+//    - Initialized from on-chain state when first transaction is added
+//    - Protected from stale state queries by only updating when queried value is HIGHER
+//
+// 2. Optimistic Advancement:
+//    - When the iterator returns a transaction via `next()`, it immediately advances the cached nonce
+//    - This allows subsequent calls to return the next transaction in sequence
+//    - Works because state queries are stale and can't be relied upon during block building
+//
+// 3. Rollback on Failure:
+//    - If payload builder calls `mark_invalid()` on a transaction, we roll back the nonce
+//    - This prevents losing valid transactions when execution fails
+//
+// 4. Dynamic Iterator (Gap Handling):
+//    - Unlike snapshot-based iterators, BestTransactions2D queries ready state on EACH call to `next()`
+//    - When a transaction is executed and nonce advances, queued transactions automatically promote
+//    - Example: Have [0, 2], state_nonce=0
+//      * First `next()` returns 0, advances to 1
+//      * Second `next()` sees no tx at nonce=1, returns None
+//      * User sends nonce=1
+//      * Next `next()` returns 1, advances to 2
+//      * Next `next()` returns 2 (was queued, now promoted!)
+//
+// Why this approach:
+// - StateProvider.latest() returns stale data (doesn't immediately reflect newly mined blocks)
+// - 2D nonces are stored in precompile storage which updates during execution but queries are cached
+// - We don't have access to Reth's internal maintenance task that updates the protocol pool
+// - Optimistic tracking works perfectly for sequential block building with successful transactions
 
 use crate::transaction::TempoPooledTransaction;
 use alloy_consensus::Transaction;
@@ -247,8 +282,13 @@ impl<S: StateProviderFactory> Pool2D<S> {
                 .entry(sender_key)
                 .or_insert_with(|| SenderTransactions::new(state_nonce));
 
-            // Always update to latest state nonce (fixes bug where cached nonce was stale)
-            sender_txs.state_nonce = state_nonce;
+            // Update state nonce, but only if the queried value is HIGHER than our cached value
+            // Our cached value might be ahead if we've been tracking executions locally
+            // @mattse: Does this look correct to you? Do we need some per block maintenance service,
+            // which updates the optimistically cached nonces?
+            if state_nonce > sender_txs.state_nonce {
+                sender_txs.state_nonce = state_nonce;
+            }
 
             if let Some(replaced) =
                 sender_txs
@@ -350,8 +390,7 @@ impl<S: StateProviderFactory> Pool2D<S> {
     pub(super) fn best_transactions(
         &self,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
-        let ready = self.ready_transactions();
-        Box::new(BestTransactions2D::new(ready))
+        Box::new(BestTransactions2D::new(Arc::clone(&self.by_sender), None))
     }
 
     /// Get best transactions with base fee filter
@@ -359,23 +398,45 @@ impl<S: StateProviderFactory> Pool2D<S> {
         &self,
         base_fee: u64,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
-        let ready = self
-            .ready_transactions()
-            .into_iter()
-            .filter(|tx| tx.max_fee_per_gas() >= base_fee as u128)
-            .collect();
-        Box::new(BestTransactions2D::new(ready))
+        Box::new(BestTransactions2D::new(
+            Arc::clone(&self.by_sender),
+            Some(base_fee),
+        ))
     }
 
     /// Get all ready transactions (nonce matches state)
+    /// Returns transactions that are ready to be executed based on the current nonce state
     fn ready_transactions(&self) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let by_sender = self.by_sender.read();
+        let mut by_sender = self.by_sender.write();
         let mut ready = vec![];
+        let mut to_remove_hashes = Vec::new();
 
-        for sender_txs in by_sender.values() {
-            if let Some(tx) = sender_txs.next_ready() {
-                ready.push(tx);
+        for (_sender_key, sender_txs) in by_sender.iter_mut() {
+            // Remove any transactions with nonce < cached state_nonce (they were executed in previous blocks)
+            let nonces_to_remove: Vec<u64> = sender_txs
+                .transactions
+                .keys()
+                .filter(|&&n| n < sender_txs.state_nonce)
+                .copied()
+                .collect();
+
+            for nonce in nonces_to_remove {
+                if let Some(tx) = sender_txs.transactions.remove(&nonce) {
+                    to_remove_hashes.push(*tx.hash());
+                }
             }
+
+            // Return the transaction only if its nonce matches the expected state_nonce
+            // This ensures we don't execute transactions out of order (respecting nonce gaps)
+            if let Some(tx) = sender_txs.transactions.get(&sender_txs.state_nonce) {
+                ready.push(tx.clone());
+            }
+        }
+
+        // Clean up removed transaction hashes from indices
+        for hash in to_remove_hashes {
+            self.by_hash.write().remove(&hash);
+            self.tx_origin.write().remove(&hash);
         }
 
         // Sort by gas price descending
@@ -398,10 +459,15 @@ impl<S: StateProviderFactory> Pool2D<S> {
         let by_sender = self.by_sender.read();
         let mut queued = vec![];
 
-        for sender_txs in by_sender.values() {
-            for (nonce, tx) in &sender_txs.transactions {
-                if !sender_txs.is_ready(*nonce) {
-                    queued.push(tx.clone());
+        for (sender_key, sender_txs) in by_sender.iter() {
+            // Fetch fresh state nonce to determine if transactions are queued
+            if let Ok(current_state_nonce) =
+                self.get_state_nonce(sender_key.address, sender_key.nonce_key)
+            {
+                for (nonce, tx) in &sender_txs.transactions {
+                    if *nonce != current_state_nonce {
+                        queued.push(tx.clone());
+                    }
                 }
             }
         }
@@ -694,19 +760,49 @@ impl<S: StateProviderFactory> Pool2D<S> {
     }
 }
 
-/// Simple best transactions iterator for 2D pool
+/// Best transactions iterator for 2D pool with proper state tracking
+///
+/// Unlike a simple snapshot-based iterator, this dynamically queries for ready transactions
+/// as nonces advance, allowing queued transactions to automatically promote when gaps are filled.
+/// This follows Reth's pattern of re-evaluating ready state after each transaction.
 struct BestTransactions2D {
-    transactions: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-    position: usize,
+    /// Shared access to sender transactions for nonce tracking and querying
+    by_sender: Arc<RwLock<HashMap<SenderKey, SenderTransactions>>>,
+    /// Base fee filter
+    base_fee: Option<u64>,
 }
 
 impl BestTransactions2D {
-    fn new(transactions: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>) -> Self {
-        // Already sorted by gas price in ready_transactions()
+    fn new(
+        by_sender: Arc<RwLock<HashMap<SenderKey, SenderTransactions>>>,
+        base_fee: Option<u64>,
+    ) -> Self {
         Self {
-            transactions,
-            position: 0,
+            by_sender,
+            base_fee,
         }
+    }
+
+    /// Get the next ready transaction across all senders, sorted by gas price
+    fn next_ready(&self) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let by_sender = self.by_sender.read();
+        let mut candidates = Vec::new();
+
+        // Collect one ready transaction from each sender
+        for sender_txs in by_sender.values() {
+            if let Some(tx) = sender_txs.transactions.get(&sender_txs.state_nonce) {
+                // Apply base fee filter if set
+                if let Some(min_fee) = self.base_fee {
+                    if tx.max_fee_per_gas() < min_fee as u128 {
+                        continue;
+                    }
+                }
+                candidates.push(tx.clone());
+            }
+        }
+
+        // Return the one with highest gas price
+        candidates.into_iter().max_by_key(|tx| tx.max_fee_per_gas())
     }
 }
 
@@ -715,20 +811,37 @@ impl Iterator for BestTransactions2D {
     type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.position < self.transactions.len() {
-            let tx = self.transactions[self.position].clone();
-            self.position += 1;
-            Some(tx)
-        } else {
-            None
-        }
+        // Dynamically query for the next ready transaction
+        let tx = self.next_ready()?;
+
+        // Optimistically mark as executed to advance nonce tracking
+        // This will be rolled back by mark_invalid if the transaction fails
+        self.mark_executed_internal(&tx);
+
+        Some(tx)
     }
 }
 
 // Then implement BestTransactions
 impl BestTransactions for BestTransactions2D {
-    fn mark_invalid(&mut self, _tx: &Self::Item, _error: InvalidPoolTransactionError) {
-        // In a full implementation, would track invalid transactions
+    fn mark_invalid(&mut self, tx: &Self::Item, _error: InvalidPoolTransactionError) {
+        // Transaction failed - rollback the nonce advancement
+        if let Some(aa) = tx.transaction.inner().as_aa() {
+            let nonce_key = aa.tx().nonce_key;
+            if !nonce_key.is_zero() {
+                let sender_key = SenderKey {
+                    address: tx.sender(),
+                    nonce_key,
+                };
+
+                if let Some(sender_txs) = self.by_sender.write().get_mut(&sender_key) {
+                    // Roll back the nonce to where this transaction should be
+                    if sender_txs.state_nonce > tx.nonce() {
+                        sender_txs.state_nonce = tx.nonce();
+                    }
+                }
+            }
+        }
     }
 
     fn no_updates(&mut self) {
@@ -741,5 +854,27 @@ impl BestTransactions for BestTransactions2D {
 
     fn set_skip_blobs(&mut self, _skip: bool) {
         // 2D pool doesn't handle blob transactions
+    }
+}
+
+impl BestTransactions2D {
+    /// Mark a transaction as executed (advance nonce)
+    fn mark_executed_internal(&self, tx: &ValidPoolTransaction<TempoPooledTransaction>) {
+        if let Some(aa) = tx.transaction.inner().as_aa() {
+            let nonce_key = aa.tx().nonce_key;
+            if nonce_key.is_zero() {
+                return; // Protocol nonces are handled by the protocol pool
+            }
+
+            let sender_key = SenderKey {
+                address: tx.sender(),
+                nonce_key,
+            };
+
+            if let Some(sender_txs) = self.by_sender.write().get_mut(&sender_key) {
+                // Advance the expected nonce
+                sender_txs.state_nonce = tx.nonce() + 1;
+            }
+        }
     }
 }

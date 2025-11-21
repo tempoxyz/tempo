@@ -738,20 +738,26 @@ struct TempoBestTransactions {
         Box<dyn Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send>,
     user_nonce_iter:
         Box<dyn Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send>,
+    protocol_peek: Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    user_nonce_peek: Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
 }
 
 impl TempoBestTransactions {
     fn new(
-        protocol: Box<
+        mut protocol: Box<
             dyn Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
         >,
-        user_nonce: Box<
+        mut user_nonce: Box<
             dyn Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
         >,
     ) -> Self {
+        let protocol_peek = protocol.next();
+        let user_nonce_peek = user_nonce.next();
         Self {
             protocol_iter: protocol,
             user_nonce_iter: user_nonce,
+            protocol_peek,
+            user_nonce_peek,
         }
     }
 }
@@ -760,12 +766,35 @@ impl Iterator for TempoBestTransactions {
     type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Simple strategy: alternate or prioritize by gas price
-        // For now, prioritize protocol pool
-        if let Some(tx) = self.protocol_iter.next() {
-            return Some(tx);
+        // Properly interleave transactions from both pools by comparing gas prices
+        match (&self.protocol_peek, &self.user_nonce_peek) {
+            (Some(protocol_tx), Some(user_tx)) => {
+                // Both pools have transactions, pick higher gas price
+                // @mattse: Is this the correct gas number to compare, or should we use priority fee here?
+                if protocol_tx.max_fee_per_gas() >= user_tx.max_fee_per_gas() {
+                    let tx = self.protocol_peek.take();
+                    self.protocol_peek = self.protocol_iter.next();
+                    tx
+                } else {
+                    let tx = self.user_nonce_peek.take();
+                    self.user_nonce_peek = self.user_nonce_iter.next();
+                    tx
+                }
+            }
+            (Some(_), None) => {
+                // Only protocol pool has transactions
+                let tx = self.protocol_peek.take();
+                self.protocol_peek = self.protocol_iter.next();
+                tx
+            }
+            (None, Some(_)) => {
+                // Only user nonce pool has transactions
+                let tx = self.user_nonce_peek.take();
+                self.user_nonce_peek = self.user_nonce_iter.next();
+                tx
+            }
+            (None, None) => None,
         }
-        self.user_nonce_iter.next()
     }
 }
 
