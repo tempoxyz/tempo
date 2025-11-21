@@ -5,6 +5,7 @@
 use crate::{transaction::TempoPooledTransaction, validator::TempoTransactionValidator};
 use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
+use reth_eth_wire_types::HandleMempoolData;
 use reth_provider::StateProviderFactory;
 use reth_transaction_pool::{
     AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
@@ -452,7 +453,7 @@ where
 
     fn retain_unknown<A>(&self, announcement: &mut A)
     where
-        A: reth_eth_wire_types::broadcast::HandleMempoolData,
+        A: HandleMempoolData,
     {
         self.protocol_pool.retain_unknown(announcement);
         // 2D pool doesn't participate in P2P announcement filtering for now
