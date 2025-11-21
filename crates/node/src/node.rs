@@ -321,7 +321,8 @@ impl<Node> PoolBuilder<Node> for TempoPoolBuilder
 where
     Node: FullNodeTypes<Types = TempoNode>,
 {
-    type Pool = TempoTransactionPool<Node::Provider>;
+    type Pool =
+        TempoTransactionPool<Node::Provider, reth_transaction_pool::blobstore::DiskFileBlobStore>;
 
     async fn build_pool(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Pool> {
         let mut pool_config = ctx.pool_config();
@@ -375,9 +376,12 @@ where
         }
 
         let validator = validator.map(TempoTransactionValidator::new);
-        let transaction_pool = TxPoolBuilder::new(ctx)
+        let protocol_pool = TxPoolBuilder::new(ctx)
             .with_validator(validator)
             .build_and_spawn_maintenance_task(blob_store, pool_config)?;
+
+        // Wrap the protocol pool in our hybrid TempoTransactionPool
+        let transaction_pool = TempoTransactionPool::new(protocol_pool, ctx.provider().clone());
 
         info!(target: "reth::cli", "Transaction pool initialized");
         debug!(target: "reth::cli", "Spawned txpool maintenance task");
@@ -390,17 +394,27 @@ where
 #[non_exhaustive]
 pub struct TempoPayloadBuilderBuilder;
 
-impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, TempoEvmConfig>
-    for TempoPayloadBuilderBuilder
+impl<Node>
+    PayloadBuilderBuilder<
+        Node,
+        TempoTransactionPool<Node::Provider, reth_transaction_pool::blobstore::DiskFileBlobStore>,
+        TempoEvmConfig,
+    > for TempoPayloadBuilderBuilder
 where
     Node: FullNodeTypes<Types = TempoNode>,
 {
-    type PayloadBuilder = TempoPayloadBuilder<Node::Provider>;
+    type PayloadBuilder = TempoPayloadBuilder<
+        Node::Provider,
+        TempoTransactionPool<Node::Provider, reth_transaction_pool::blobstore::DiskFileBlobStore>,
+    >;
 
     async fn build_payload_builder(
         self,
         ctx: &BuilderContext<Node>,
-        pool: TempoTransactionPool<Node::Provider>,
+        pool: TempoTransactionPool<
+            Node::Provider,
+            reth_transaction_pool::blobstore::DiskFileBlobStore,
+        >,
         evm_config: TempoEvmConfig,
     ) -> eyre::Result<Self::PayloadBuilder> {
         Ok(TempoPayloadBuilder::new(

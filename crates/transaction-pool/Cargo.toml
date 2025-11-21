@@ -14,20 +14,28 @@ workspace = true
 [dependencies]
 tempo-primitives = { workspace = true, features = ["serde", "reth-codec"] }
 tempo-revm = { workspace = true, features = ["reth"] }
+tempo-precompiles.workspace = true
 
 reth-transaction-pool.workspace = true
 reth-chainspec.workspace = true
 reth-primitives-traits.workspace = true
 reth-storage-api.workspace = true
+reth-provider.workspace = true
+reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", rev = "63409fe" }
 
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
 
+async-trait.workspace = true
+parking_lot.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 thiserror.workspace = true
 
 [dev-dependencies]
 reth-transaction-pool.workspace = true
 reth-provider = { workspace = true, features = ["test-utils"] }
 alloy-eips.workspace = true
+alloy-consensus.workspace = true
+alloy-rlp.workspace = true
 tokio.workspace = true

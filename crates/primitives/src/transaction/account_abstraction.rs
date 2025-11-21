@@ -975,7 +975,7 @@ mod tests {
             input: Bytes::new(),
         };
 
-        // Protocol nonce (key 0) - should be accepted
+        // Test 1: Protocol nonce (key 0)
         let tx1 = TxAA {
             nonce_key: U256::ZERO,
             nonce: 1,
@@ -984,15 +984,48 @@ mod tests {
         };
         assert!(tx1.validate().is_ok());
         assert_eq!(tx1.nonce(), 1);
+        assert_eq!(tx1.nonce_key, U256::ZERO);
 
-        // User parallel nonce (key > 0) - should be rejected for now
+        // Test 2: User nonce (key 1, nonce 0) - first transaction in parallel sequence
         let tx2 = TxAA {
             nonce_key: U256::from(1),
             nonce: 0,
+            calls: vec![dummy_call.clone()],
+            ..Default::default()
+        };
+        assert!(tx2.validate().is_ok());
+        assert_eq!(tx2.nonce(), 0);
+        assert_eq!(tx2.nonce_key, U256::from(1));
+
+        // Test 3: Different nonce key (key 42) - independent parallel sequence
+        let tx3 = TxAA {
+            nonce_key: U256::from(42),
+            nonce: 10,
+            calls: vec![dummy_call.clone()],
+            ..Default::default()
+        };
+        assert!(tx3.validate().is_ok());
+        assert_eq!(tx3.nonce(), 10);
+        assert_eq!(tx3.nonce_key, U256::from(42));
+
+        // Test 4: Verify nonce independence between different keys
+        // Transactions with same nonce but different keys are independent
+        let tx4a = TxAA {
+            nonce_key: U256::from(1),
+            nonce: 100,
+            calls: vec![dummy_call.clone()],
+            ..Default::default()
+        };
+        let tx4b = TxAA {
+            nonce_key: U256::from(2),
+            nonce: 100,
             calls: vec![dummy_call],
             ..Default::default()
         };
-        assert_eq!(tx2.nonce(), 0);
+        assert!(tx4a.validate().is_ok());
+        assert!(tx4b.validate().is_ok());
+        assert_eq!(tx4a.nonce(), tx4b.nonce()); // Same nonce value
+        assert_ne!(tx4a.nonce_key, tx4b.nonce_key); // Different keys = independent
     }
 
     #[test]
