@@ -4688,12 +4688,22 @@ mod tests {
 
         // Setup tokens
         let (base_token, quote_token) =
-            setup_test_tokens(exchange.storage, admin, user, exchange.address, 1_000_000);
+            setup_test_tokens(exchange.storage, admin, user, exchange.address, 100_000_000);
 
         // Before placing order, verify pair doesn't exist
         let book_key = compute_book_key(base_token, quote_token);
         let book_before = exchange.sload_books(book_key)?;
         assert!(book_before.base.is_zero(),);
+
+        // Transfer tokens to exchange first
+        let mut base = TIP20Token::new(1, exchange.storage);
+        base.transfer(
+            user,
+            ITIP20::transferCall {
+                to: exchange.address,
+                amount: U256::from(MIN_ORDER_AMOUNT),
+            }
+        ).expect("Base token transfer failed");
 
         // Place a order which should also create the pair
         exchange.place(user, base_token, MIN_ORDER_AMOUNT, true, 0)?;
@@ -4703,7 +4713,7 @@ mod tests {
 
         // Verify PairCreated event was emitted (along with OrderPlaced)
         let events = &exchange.storage.events[&exchange.address];
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         assert_eq!(
             events[0],
             StablecoinExchangeEvents::PairCreated(IStablecoinExchange::PairCreated {
@@ -4728,12 +4738,22 @@ mod tests {
 
         // Setup tokens
         let (base_token, quote_token) =
-            setup_test_tokens(exchange.storage, admin, user, exchange.address, 1_000_000);
+            setup_test_tokens(exchange.storage, admin, user, exchange.address, 100_000_000);
 
         // Before placing flip order, verify pair doesn't exist
         let book_key = compute_book_key(base_token, quote_token);
         let book_before = exchange.sload_books(book_key)?;
         assert!(book_before.base.is_zero(),);
+
+        // Transfer tokens to exchange first
+        let mut base = TIP20Token::new(1, exchange.storage);
+        base.transfer(
+            user,
+            ITIP20::transferCall {
+                to: exchange.address,
+                amount: U256::from(MIN_ORDER_AMOUNT),
+            }
+        ).expect("Base token transfer failed");
 
         // Place a flip order which should also create the pair
         exchange.place_flip(user, base_token, MIN_ORDER_AMOUNT, true, 0, 10)?;
@@ -4743,7 +4763,7 @@ mod tests {
 
         // Verify PairCreated event was emitted (along with FlipOrderPlaced)
         let events = &exchange.storage.events[&exchange.address];
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         assert_eq!(
             events[0],
             StablecoinExchangeEvents::PairCreated(IStablecoinExchange::PairCreated {
