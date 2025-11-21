@@ -56,7 +56,7 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
 
         let present_timestamp = std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap()
+            .expect("system time should never be before UNIX EPOCH")
             .as_secs();
 
         if header.timestamp() > present_timestamp + ALLOWED_FUTURE_BLOCK_TIME_SECONDS {
