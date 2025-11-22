@@ -18,6 +18,7 @@ reth-node-api.workspace = true
 reth-primitives-traits.workspace = true
 
 alloy-primitives.workspace = true
+alloy-serde.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-rpc-types-engine.workspace = true
 

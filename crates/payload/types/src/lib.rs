@@ -6,7 +6,7 @@
 mod attrs;
 
 use alloy_primitives::B256;
-pub use attrs::{InterruptHandle, TempoPayloadBuilderAttributes};
+pub use attrs::{InterruptHandle, TempoPayloadAttributes, TempoPayloadBuilderAttributes};
 
 use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthBuiltPayload;

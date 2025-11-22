@@ -1,8 +1,9 @@
 use alloy_primitives::{Address, B256, Bytes};
-use alloy_rpc_types_engine::{PayloadAttributes, PayloadId};
+use alloy_rpc_types_engine::PayloadId;
 use alloy_rpc_types_eth::Withdrawals;
-use reth_ethereum_engine_primitives::EthPayloadBuilderAttributes;
-use reth_node_api::PayloadBuilderAttributes;
+use reth_ethereum_engine_primitives::{EthPayloadAttributes, EthPayloadBuilderAttributes};
+use reth_node_api::{PayloadAttributes, PayloadBuilderAttributes};
+use serde::{Deserialize, Serialize};
 use std::{
     convert::Infallible,
     sync::{Arc, atomic, atomic::Ordering},
@@ -117,7 +118,7 @@ impl From<EthPayloadBuilderAttributes> for TempoPayloadBuilderAttributes {
 }
 
 impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
-    type RpcPayloadAttributes = PayloadAttributes;
+    type RpcPayloadAttributes = TempoPayloadAttributes;
     type Error = Infallible;
 
     fn try_new(
@@ -128,10 +129,14 @@ impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
     where
         Self: Sized,
     {
+        let TempoPayloadAttributes {
+            inner,
+            timestamp_millis_part,
+        } = rpc_payload_attributes;
         Ok(Self {
-            inner: EthPayloadBuilderAttributes::try_new(parent, rpc_payload_attributes, version)?,
+            inner: EthPayloadBuilderAttributes::try_new(parent, inner, version)?,
             interrupt: InterruptHandle::default(),
-            timestamp_millis_part: 0,
+            timestamp_millis_part,
             extra_data: Bytes::default(),
             subblocks: Arc::new(Vec::new),
         })
@@ -163,6 +168,35 @@ impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
 
     fn withdrawals(&self) -> &Withdrawals {
         self.inner.withdrawals()
+    }
+}
+
+/// Tempo RPC payload attributes configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, derive_more::Deref, derive_more::DerefMut)]
+#[serde(rename_all = "camelCase")]
+pub struct TempoPayloadAttributes {
+    /// Inner [`EthPayloadAttributes`].
+    #[serde(flatten)]
+    #[deref]
+    #[deref_mut]
+    pub inner: EthPayloadAttributes,
+
+    /// Milliseconds portion of the timestamp.
+    #[serde(with = "alloy_serde::quantity")]
+    pub timestamp_millis_part: u64,
+}
+
+impl PayloadAttributes for TempoPayloadAttributes {
+    fn timestamp(&self) -> u64 {
+        self.inner.timestamp()
+    }
+
+    fn withdrawals(&self) -> Option<&Vec<alloy_rpc_types_eth::Withdrawal>> {
+        self.inner.withdrawals()
+    }
+
+    fn parent_beacon_block_root(&self) -> Option<B256> {
+        self.inner.parent_beacon_block_root()
     }
 }
 

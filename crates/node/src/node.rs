@@ -7,9 +7,8 @@ use crate::{
     },
 };
 use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
-use reth_chainspec::{EthChainSpec, EthereumHardforks};
+use reth_chainspec::EthChainSpec;
 use reth_engine_local::LocalPayloadAttributesBuilder;
-use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_evm::revm::primitives::Address;
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodePrimitives, NodeTypes,
@@ -27,6 +26,7 @@ use reth_node_builder::{
     },
 };
 use reth_node_ethereum::EthereumNetworkBuilder;
+use reth_primitives_traits::SealedHeader;
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::Identity;
 use reth_rpc_eth_api::RpcNodeCore;
@@ -37,6 +37,7 @@ use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_consensus::TempoConsensus;
 use tempo_evm::{TempoEvmConfig, evm::TempoEvmFactory};
 use tempo_payload_builder::TempoPayloadBuilder;
+use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{TempoTransactionPool, validator::TempoTransactionValidator};
 
@@ -226,7 +227,8 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TempoNode {
 
     fn local_payload_attributes_builder(
         chain_spec: &Self::ChainSpec,
-    ) -> impl PayloadAttributesBuilder<<Self::Payload as PayloadTypes>::PayloadAttributes> {
+    ) -> impl PayloadAttributesBuilder<<Self::Payload as PayloadTypes>::PayloadAttributes, TempoHeader>
+    {
         TempoPayloadAttributesBuilder::new(Arc::new(chain_spec.clone()))
     }
 }
@@ -234,29 +236,37 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TempoNode {
 /// The attributes builder with a restricted set of validators
 #[derive(Debug)]
 #[non_exhaustive]
-pub struct TempoPayloadAttributesBuilder<ChainSpec> {
+pub struct TempoPayloadAttributesBuilder {
     /// The vanilla eth payload attributes builder
-    inner: LocalPayloadAttributesBuilder<ChainSpec>,
+    inner: LocalPayloadAttributesBuilder<TempoChainSpec>,
 }
 
-impl<ChainSpec> TempoPayloadAttributesBuilder<ChainSpec> {
+impl TempoPayloadAttributesBuilder {
     /// Creates a new instance of the builder.
-    pub const fn new(chain_spec: Arc<ChainSpec>) -> Self {
+    pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
         Self {
-            inner: LocalPayloadAttributesBuilder::new(chain_spec),
+            inner: LocalPayloadAttributesBuilder::new(chain_spec).without_increasing_timestamp(),
         }
     }
 }
 
-impl<ChainSpec> PayloadAttributesBuilder<EthPayloadAttributes>
-    for TempoPayloadAttributesBuilder<ChainSpec>
-where
-    ChainSpec: Send + Sync + EthereumHardforks + 'static,
+impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
+    for TempoPayloadAttributesBuilder
 {
-    fn build(&self, timestamp: u64) -> EthPayloadAttributes {
-        let mut attributes = self.inner.build(timestamp);
-        attributes.suggested_fee_recipient = Address::ZERO;
-        attributes
+    fn build(&self, parent: &SealedHeader<TempoHeader>) -> TempoPayloadAttributes {
+        let mut inner = self.inner.build(parent);
+        inner.suggested_fee_recipient = Address::ZERO;
+
+        let timestamp_millis_part = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+            % 1000;
+
+        TempoPayloadAttributes {
+            inner,
+            timestamp_millis_part,
+        }
     }
 }
 
