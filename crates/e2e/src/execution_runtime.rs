@@ -256,7 +256,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             ..DatadirArgs::default()
         })
         .with_payload_builder(PayloadBuilderArgs {
-            interval: Duration::from_millis(100),
+            interval: Duration::from_millis(50),
             ..Default::default()
         })
         .apply(|mut c| {
