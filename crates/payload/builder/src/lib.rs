@@ -381,6 +381,8 @@ where
             attributes.subblocks()
         };
 
+        println!("subblocks: {}", subblocks.len());
+
         subblocks.retain(|subblock| {
             // Edge case: remove subblocks with expired transactions
             //
