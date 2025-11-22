@@ -33,7 +33,7 @@ pub struct TempoEvm<DB: Database, I> {
     >,
     /// Preserved logs from the last transaction
     pub logs: Vec<Log>,
-    /// Subblock fee recipient, if we executing a subblock transaction.
+    /// Subblock fee recipient, if executing a subblock transaction.
     pub subblock_fee_recipient: Option<Address>,
 }
 
