@@ -1,6 +1,9 @@
+use std::collections::HashMap;
+
 use alloy_evm::eth::EthBlockExecutionCtx;
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::{Address, B256, Bytes};
 use reth_evm::NextBlockEnvAttributes;
+use tempo_primitives::subblock::PartialValidatorKey;
 
 /// Execution context for Tempo block.
 #[derive(Debug, Clone, derive_more::Deref)]
@@ -16,8 +19,15 @@ pub struct TempoBlockExecutionCtx<'a> {
     pub shared_gas_limit: u64,
     /// Validator set for the block.
     ///
-    /// Only set for blocks requiring
+    /// Only set for un-finalized blocks coming from consensus layer.
+    ///
+    /// When this is set to `None`, no validation of subblock signatures is performed.
+    /// Make sure to always set this field when executing blocks from untrusted sources
     pub validator_set: Option<Vec<B256>>,
+    /// Mapping from a subblock validator public key to the fee recipient configured.
+    ///
+    /// Used to provide EVM with the fee recipient context when executing subblock transactions.
+    pub subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
 }
 
 /// Context required for next block environment.
@@ -34,6 +44,8 @@ pub struct TempoNextBlockEnvAttributes {
     pub timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
     pub extra_data: Bytes,
+    /// Mapping from a subblock validator public key to the fee recipient configured.
+    pub subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
 }
 
 #[cfg(feature = "rpc")]
@@ -53,6 +65,7 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<tempo_primitives:
             shared_gas_limit,
             timestamp_millis_part: parent.timestamp_millis_part,
             extra_data: Bytes::default(),
+            subblock_fee_recipients: Default::default(),
         }
     }
 }
