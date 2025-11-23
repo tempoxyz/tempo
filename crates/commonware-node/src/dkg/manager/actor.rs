@@ -177,6 +177,9 @@ where
         }
 
         if let Some(epoch_state) = self.epoch_metadata.get(&PREVIOUS_EPOCH_KEY) {
+            // NOTE: PREVIOUS_EPOCH_KEY is only set if the node was shut down
+            // before the first height of the incoming epoch was observed (which
+            // would have subsequently deleted PREVIOUS_EPOCH_KEY).
             self.config
                 .epoch_manager
                 .report(

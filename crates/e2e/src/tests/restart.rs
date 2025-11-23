@@ -259,8 +259,10 @@ fn node_recovers_after_finalizing_ceremony() {
         let mut running = join_all(nodes.into_iter().map(|node| node.start())).await;
         link_validators(&mut oracle, &running, setup.linkage.clone(), None).await;
 
-        // Do a hot-loop every 100ms on a best-effort basis to try and catch
-        // one node right after it processed a the pre-to-boundary height.
+        // Catch a node right after it processed the pre-to-boundary height.
+        // Best-effort: we hot-loop in 100ms steps, but if processing is too
+        // fast we might miss the window and the test will succeed no matter
+        // what.
         let (metric, height) = 'wait_to_boundary: loop {
             let metrics = context.encode();
             'lines: for line in metrics.lines() {
