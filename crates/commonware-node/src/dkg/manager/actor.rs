@@ -415,7 +415,6 @@ where
         //
         // Recall, for an epoch length E the first heights are 0E, 1E, 2E, ...
         if block.height().is_multiple_of(self.config.epoch_length) {
-            // Special case epoch == 0
             if let Some(old_epoch_state) = self.epoch_metadata.remove(&PREVIOUS_EPOCH_KEY) {
                 self.config
                     .epoch_manager
