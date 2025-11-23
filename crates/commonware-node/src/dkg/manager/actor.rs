@@ -469,7 +469,7 @@ where
                 share,
             };
             self.epoch_metadata
-                .put(CURRENT_EPOCH_KEY.into(), new_epoch_state.clone());
+                .put(CURRENT_EPOCH_KEY, new_epoch_state.clone());
 
             self.epoch_metadata
                 .sync()
