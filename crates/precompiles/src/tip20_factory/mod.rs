@@ -374,4 +374,48 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_token_id_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut factory = TIP20Factory::new(&mut storage);
+        factory.initialize()?;
+
+        let current_token_id = factory.token_id_counter()?;
+        assert_eq!(current_token_id, U256::ZERO);
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_token_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let sender = Address::random();
+        let mut factory = TIP20Factory::new(&mut storage);
+        factory.initialize()?;
+
+        let call_fail = ITIP20Factory::createTokenCall {
+            name: "Test".to_string(),
+            symbol: "Test".to_string(),
+            currency: "USD".to_string(),
+            quoteToken: token_id_to_address(0),
+            admin: sender,
+        };
+
+        let result = factory.create_token(sender, call_fail);
+        assert_eq!(
+            result.unwrap_err(),
+            TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
+        );
+
+        let call = ITIP20Factory::createTokenCall {
+            name: "Test".to_string(),
+            symbol: "Test".to_string(),
+            currency: "USD".to_string(),
+            quoteToken: Address::ZERO,
+            admin: sender,
+        };
+
+        factory.create_token(sender, call)?;
+        Ok(())
+    }
 }
