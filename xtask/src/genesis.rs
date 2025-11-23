@@ -414,14 +414,6 @@ fn initialize_linking_usd(
         .expect("LinkingUSD initialization should succeed");
 
     linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-    linking_usd
-        .token
-        .grant_role_internal(admin, *TRANSFER_ROLE)?;
-    for recipient in recipients.iter().progress() {
-        linking_usd
-            .token
-            .grant_role_internal(*recipient, *TRANSFER_ROLE)?;
-    }
 
     for recipient in recipients.iter().progress() {
         linking_usd

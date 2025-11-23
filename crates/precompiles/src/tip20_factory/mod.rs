@@ -58,7 +58,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
 
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
         // Note that the token Id increments on each deployment.
-        if self.storage.spec().is_moderato() {
+        // NOTE: start counter at 0
+
+        // Post-Allegretto, require that the first TIP20 deployed has a quote token of address(0)
+        if self.storage.spec().is_allegretto() && token_id == 0 {
+            if !call.quoteToken.is_zero() {
+                return Err(TIP20Error::invalid_quote_token().into());
+            }
+        } else if self.storage.spec().is_moderato() {
             // Post-Moderato: Fixed validation - quote token id must be < current token_id (strictly less than).
             if !is_tip20(call.quoteToken)
                 || address_to_token_id_unchecked(call.quoteToken) >= token_id
@@ -112,7 +119,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
     pub fn token_id_counter(&mut self) -> Result<U256> {
         let counter = self.sload_token_id_counter()?;
 
-        if counter.is_zero() {
+        // Pre Allegreto, start the counter at 1
+        if !self.storage.spec().is_allegretto() && counter.is_zero() {
             Ok(U256::ONE)
         } else {
             Ok(counter)
