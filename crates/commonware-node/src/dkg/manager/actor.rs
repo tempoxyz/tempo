@@ -414,22 +414,22 @@ where
         // was entered and the previous epoch can be exited.
         //
         // Recall, for an epoch length E the first heights are 0E, 1E, 2E, ...
-        if block.height().is_multiple_of(self.config.epoch_length) {
-            if let Some(old_epoch_state) = self.epoch_metadata.remove(&PREVIOUS_EPOCH_KEY) {
-                self.config
-                    .epoch_manager
-                    .report(
-                        epoch::Exit {
-                            epoch: old_epoch_state.epoch,
-                        }
-                        .into(),
-                    )
-                    .await;
-                self.epoch_metadata
-                    .sync()
-                    .await
-                    .expect("must always be able to sync state");
-            }
+        if block.height().is_multiple_of(self.config.epoch_length)
+            && let Some(old_epoch_state) = self.epoch_metadata.remove(&PREVIOUS_EPOCH_KEY)
+        {
+            self.config
+                .epoch_manager
+                .report(
+                    epoch::Exit {
+                        epoch: old_epoch_state.epoch,
+                    }
+                    .into(),
+                )
+                .await;
+            self.epoch_metadata
+                .sync()
+                .await
+                .expect("must always be able to sync state");
         }
 
         match epoch::relative_position(block.height(), self.config.epoch_length) {
