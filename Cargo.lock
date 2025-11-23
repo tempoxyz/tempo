@@ -11427,6 +11427,7 @@ dependencies = [
  "alloy-network",
  "alloy-primitives",
  "commonware-codec",
+ "commonware-consensus",
  "commonware-cryptography",
  "commonware-macros",
  "commonware-p2p",

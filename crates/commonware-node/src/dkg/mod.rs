@@ -11,7 +11,7 @@ pub(crate) mod manager;
 use ceremony::State as CeremonyState;
 
 /// The state with all participants, public and private key share for an epoch.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct EpochState {
     epoch: u64,
     participants: Ordered<PublicKey>,

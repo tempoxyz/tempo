@@ -146,18 +146,35 @@ where
             .await
             .expect("must always be able to persist state");
 
-        self.config
-            .epoch_manager
-            .report(
-                epoch::Enter {
-                    epoch: epoch_state.epoch,
-                    public: epoch_state.public.clone(),
-                    share: epoch_state.share.clone(),
-                    participants: epoch_state.participants.clone(),
-                }
-                .into(),
-            )
-            .await;
+        // Only start the current epoch if the marshal actor has the "genesis"
+        // block for it.
+        let has_genesis_block_for_epoch =
+            if let Some(previous_epoch) = epoch_state.epoch.checked_sub(1) {
+                self.config
+                    .marshal
+                    .get_info(utils::last_block_in_epoch(
+                        self.config.epoch_length,
+                        previous_epoch,
+                    ))
+                    .await
+                    .is_some()
+            } else {
+                true
+            };
+        if has_genesis_block_for_epoch {
+            self.config
+                .epoch_manager
+                .report(
+                    epoch::Enter {
+                        epoch: epoch_state.epoch,
+                        public: epoch_state.public.clone(),
+                        share: epoch_state.share.clone(),
+                        participants: epoch_state.participants.clone(),
+                    }
+                    .into(),
+                )
+                .await;
+        }
 
         if let Some(epoch_state) = self.epoch_metadata.get(&PREVIOUS_EPOCH_KEY) {
             self.config
@@ -357,7 +374,7 @@ where
         let block_epoch = utils::epoch(self.config.epoch_length, block.height());
 
         // Special case the last height of the previous epoch: remember that we
-        // can only enter the a new epoch once the last height of outgoing was
+        // can only enter the new epoch once the last height of outgoing was
         // reached, because that's what provides the genesis.
         if ceremony.epoch().saturating_sub(1) == block_epoch
             && utils::is_last_block_in_epoch(self.config.epoch_length, block.height())
