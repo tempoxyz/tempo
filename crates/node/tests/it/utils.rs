@@ -30,9 +30,9 @@ use tempo_contracts::precompiles::{
     ITIP20Factory,
 };
 use tempo_node::node::TempoNode;
-use tempo_payload_types::TempoPayloadBuilderAttributes;
+use tempo_payload_types::{TempoPayloadAttributes, TempoPayloadBuilderAttributes};
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     tip20::{ISSUER_ROLE, token_id_to_address},
 };
 
@@ -50,7 +50,7 @@ where
             "Test".to_string(),
             "TEST".to_string(),
             "USD".to_string(),
-            LINKING_USD_ADDRESS,
+            PATH_USD_ADDRESS,
             caller,
         )
         .send()
@@ -351,12 +351,15 @@ impl TestNodeBuilder {
 
 /// Default attributes generator for payload building
 fn default_attributes_generator(timestamp: u64) -> TempoPayloadBuilderAttributes {
-    let attributes = PayloadAttributes {
-        timestamp,
-        prev_randao: alloy::primitives::B256::ZERO,
-        suggested_fee_recipient: alloy::primitives::Address::ZERO,
-        withdrawals: Some(vec![]),
-        parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
+    let attributes = TempoPayloadAttributes {
+        inner: PayloadAttributes {
+            timestamp,
+            prev_randao: alloy::primitives::B256::ZERO,
+            suggested_fee_recipient: alloy::primitives::Address::ZERO,
+            withdrawals: Some(vec![]),
+            parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
+        },
+        timestamp_millis_part: 0,
     };
 
     TempoPayloadBuilderAttributes::try_new(B256::ZERO, attributes, 0).unwrap()
