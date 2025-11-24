@@ -8,7 +8,7 @@ use revm::{
 };
 use tempo_contracts::precompiles::IFeeManager;
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     storage::slots::mapping_slot,
     tip_fee_manager,
     tip20::{self, is_tip20},
@@ -163,7 +163,7 @@ pub trait TempoStateAccess<T> {
     /// Checks if the given token can be used as a fee token.
     fn is_valid_fee_token(&mut self, fee_token: Address) -> Result<bool, Self::Error> {
         // Ensure it's a TIP20
-        if !is_tip20(fee_token) || fee_token == LINKING_USD_ADDRESS {
+        if !is_tip20(fee_token) || fee_token == PATH_USD_ADDRESS {
             return Ok(false);
         }
 

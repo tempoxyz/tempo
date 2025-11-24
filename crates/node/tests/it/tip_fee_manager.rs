@@ -16,7 +16,7 @@ use tempo_contracts::precompiles::{
     IFeeManager, ITIP20,
     ITIPFeeAMM::{self},
 };
-use tempo_precompiles::{DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
+use tempo_precompiles::{DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_primitives::{TxFeeToken, transaction::calc_gas_balance_spending};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -37,7 +37,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let user_token = setup_test_token(provider.clone(), user_address).await?;
-    let validator_token = ITIP20::new(LINKING_USD_ADDRESS, &provider);
+    let validator_token = ITIP20::new(PATH_USD_ADDRESS, &provider);
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     user_token
@@ -232,7 +232,7 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
         fee_amm
             .mint(
                 *user_token.address(),
-                LINKING_USD_ADDRESS,
+                PATH_USD_ADDRESS,
                 U256::from(1e18),
                 U256::from(1e18),
                 signers[1].address(),
