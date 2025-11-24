@@ -42,10 +42,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         )
     }
 
+    // TODO: add clippy ignore too many args
     pub fn create_token(
         &mut self,
         sender: Address,
-        call: ITIP20Factory::createTokenCall,
+        name: String,
+        symbol: String,
+        currency: String,
+        quote_token: Address,
+        admin: Address,
+        fee_recipient: Address,
     ) -> Result<Address> {
         // TODO: We should update `token_id_counter` to be u64 in storage if we assume we can cast
         // to u64 here. Or we should update `token_id_to_address` to take a larger value
@@ -54,7 +60,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
             .try_into()
             .map_err(|_| TempoPrecompileError::under_overflow())?;
 
-        trace!(%sender, %token_id, ?call, "Create token");
+        trace!(%sender, %token_id, %name, %symbol, %currency, %quote_token, %admin, %fee_recipient, "Create token");
 
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
         // Note that the token Id increments on each deployment.
@@ -62,32 +68,29 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
 
         // Post-Allegretto, require that the first TIP20 deployed has a quote token of address(0)
         if self.storage.spec().is_allegretto() && token_id == 0 {
-            if !call.quoteToken.is_zero() {
+            if !quote_token.is_zero() {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
         } else if self.storage.spec().is_moderato() {
             // Post-Moderato: Fixed validation - quote token id must be < current token_id (strictly less than).
-            if !is_tip20(call.quoteToken)
-                || address_to_token_id_unchecked(call.quoteToken) >= token_id
-            {
+            if !is_tip20(quote_token) || address_to_token_id_unchecked(quote_token) >= token_id {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
         } else {
             // Pre-Moderato: Original validation with off-by-one bug for consensus compatibility.
             // The buggy check allowed quote_token_id == token_id to pass.
-            if !is_tip20(call.quoteToken)
-                || address_to_token_id_unchecked(call.quoteToken) > token_id
-            {
+            if !is_tip20(quote_token) || address_to_token_id_unchecked(quote_token) > token_id {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
         }
 
         TIP20Token::new(token_id, self.storage).initialize(
-            &call.name,
-            &call.symbol,
-            &call.currency,
-            call.quoteToken,
-            call.admin,
+            &name,
+            &symbol,
+            &currency,
+            quote_token,
+            admin,
+            fee_recipient,
         )?;
 
         let token_address = token_id_to_address(token_id);
@@ -97,11 +100,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
             TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
                 token: token_address,
                 tokenId: token_id,
-                name: call.name,
-                symbol: call.symbol,
-                currency: call.currency,
-                quoteToken: call.quoteToken,
-                admin: call.admin,
+                name,
+                symbol,
+                currency,
+                quoteToken: quote_token,
+                admin,
+                feeRecipient: fee_recipient,
             })
             .into_log_data(),
         )?;

@@ -62,6 +62,8 @@ sol! {
         function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
         function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external returns (bool);
 
+// TODO: set fee recipient function
+
         // Admin Functions
         function changeTransferPolicyId(uint64 newPolicyId) external;
         function setSupplyCap(uint256 newSupplyCap) external;

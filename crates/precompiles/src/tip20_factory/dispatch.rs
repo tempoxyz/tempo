@@ -1,4 +1,7 @@
-use crate::{Precompile, input_cost, mutate, tip20::is_tip20, unknown_selector, view};
+use crate::{
+    Precompile, error::TempoPrecompileError, input_cost, mutate, tip20::is_tip20, unknown_selector,
+    view,
+};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -25,11 +28,46 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Factory<'a, S> {
             ITIP20Factory::tokenIdCounterCall::SELECTOR => {
                 view::<ITIP20Factory::tokenIdCounterCall>(calldata, |_call| self.token_id_counter())
             }
-            ITIP20Factory::createTokenCall::SELECTOR => {
-                mutate::<ITIP20Factory::createTokenCall>(calldata, msg_sender, |s, call| {
-                    self.create_token(s, call)
+            ITIP20Factory::createToken_0Call::SELECTOR => {
+                mutate::<ITIP20Factory::createToken_0Call>(calldata, msg_sender, |s, call| {
+                    if self.storage.spec().is_allegretto() {
+                        return Err(TempoPrecompileError::UnknownFunctionSelector(
+                            ITIP20Factory::createToken_0Call::SELECTOR,
+                        ));
+                    }
+
+                    self.create_token(
+                        s,
+                        call.name,
+                        call.symbol,
+                        call.currency,
+                        call.quoteToken,
+                        call.admin,
+                        Address::ZERO,
+                    )
                 })
             }
+
+            ITIP20Factory::createToken_0Call::SELECTOR => {
+                mutate::<ITIP20Factory::createToken_1Call>(calldata, msg_sender, |s, call| {
+                    if !self.storage.spec().is_allegretto() {
+                        return Err(TempoPrecompileError::UnknownFunctionSelector(
+                            ITIP20Factory::createToken_1Call::SELECTOR,
+                        ));
+                    }
+
+                    self.create_token(
+                        s,
+                        call.name,
+                        call.symbol,
+                        call.currency,
+                        call.quoteToken,
+                        call.admin,
+                        call.feeRecipient,
+                    )
+                })
+            }
+
             ITIP20Factory::isTIP20Call::SELECTOR => {
                 view::<ITIP20Factory::isTIP20Call>(calldata, |call| Ok(is_tip20(call.token)))
             }
