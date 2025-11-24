@@ -100,30 +100,16 @@ pub trait TempoStateAccess<T> {
             return Ok(fee_token);
         }
 
-        // If the fee payer is also the msg.sender and the transaction is a direct call (not AA),
-        // check for special contract calls that should override fee token preference
+        // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
+        // new preference, the newly set preference should be used immediately instead of the
+        // previously stored one
         if !tx.is_aa()
             && fee_payer == tx.caller()
             && let Some((kind, input)) = tx.calls().next()
+            && kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
+            && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
         {
-            // If calling FeeManager to set a new preference, use the newly set preference immediately
-            if kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
-                && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
-            {
-                return Ok(call.token);
-            }
-
-            // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin Exchange,
-            // use the input token as the fee token (the token that will be pulled from the user)
-            if kind.to() == Some(&STABLECOIN_EXCHANGE_ADDRESS) {
-                if let Ok(call) = IStablecoinExchange::swapExactAmountInCall::abi_decode(input) {
-                    return Ok(call.tokenIn);
-                } else if let Ok(call) =
-                    IStablecoinExchange::swapExactAmountOutCall::abi_decode(input)
-                {
-                    return Ok(call.tokenIn);
-                }
-            }
+            return Ok(call.token);
         }
 
         let user_slot = mapping_slot(fee_payer, tip_fee_manager::slots::USER_TOKENS);
@@ -143,6 +129,23 @@ pub trait TempoStateAccess<T> {
             && self.is_valid_fee_token(to)?
         {
             return Ok(to);
+        }
+
+        // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin Exchange,
+        // use the input token as the fee token (the token that will be pulled from the user)
+        if !tx.is_aa()
+            && let Some((kind, input)) = tx.calls().next()
+            && kind.to() == Some(&STABLECOIN_EXCHANGE_ADDRESS)
+        {
+            if let Ok(call) = IStablecoinExchange::swapExactAmountInCall::abi_decode(input)
+                && self.is_valid_fee_token(call.tokenIn)?
+            {
+                return Ok(call.tokenIn);
+            } else if let Ok(call) = IStablecoinExchange::swapExactAmountOutCall::abi_decode(input)
+                && self.is_valid_fee_token(call.tokenIn)?
+            {
+                return Ok(call.tokenIn);
+            }
         }
 
         Ok(DEFAULT_FEE_TOKEN)
