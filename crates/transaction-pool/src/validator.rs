@@ -1,27 +1,17 @@
 use crate::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
 use alloy_consensus::Transaction;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::U256;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
 };
-use reth_storage_api::{StateProvider, StateProviderFactory};
+use reth_storage_api::{StateProvider, StateProviderFactory, errors::ProviderError};
 use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
 use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, AuthorizedKey, compute_keys_slot};
 use tempo_revm::TempoStateAccess;
-
-/// Result of keychain validation check
-enum ValidationResult {
-    /// Need to validate keychain authorization with the given user address and access key
-    ValidateKeychain(Address, Address),
-    /// Skip validation (not a keychain signature, or same-tx auth is valid)
-    Skip,
-    /// Reject the transaction with the given reason
-    Reject(String),
-}
 
 /// Validator for Tempo transactions.
 #[derive(Debug)]
@@ -38,33 +28,70 @@ where
         Self { inner }
     }
 
-    /// Validate that an access key is authorized in the keychain precompile
+    /// Check if a transaction requires keychain validation
     ///
-    /// Note: This only checks if the key exists and is active.
-    /// Expiry checking is skipped here as accessing the block timestamp is complex
-    /// in the pool validator context. Expiry is validated in the EVM handler.
-    fn validate_keychain_authorization(
+    /// Returns the validation result indicating what action to take:
+    /// - ValidateKeychain: Need to validate the keychain authorization
+    /// - Skip: No validation needed (not a keychain signature, or same-tx auth is valid)
+    /// - Reject: Transaction should be rejected with the given reason
+    fn validate_against_keychain(
         &self,
+        transaction: &TempoPooledTransaction,
         state_provider: &impl StateProvider,
-        user_address: Address,
-        access_key_addr: Address,
-    ) -> Result<(), TempoPoolTransactionError> {
-        // If using main key (zero address), always valid
-        if access_key_addr == Address::ZERO {
-            return Ok(());
+    ) -> Result<Result<(), &'static str>, ProviderError> {
+        let Some(tx) = transaction.inner().as_aa() else {
+            return Ok(Ok(()));
+        };
+
+        let auth = tx.tx().key_authorization.as_ref();
+
+        // Ensure that key auth is valid if present.
+        if let Some(auth) = auth {
+            if let Ok(auth_signer) = auth.recover_signer() {
+                if auth_signer != transaction.sender() {
+                    return Ok(Err("KeyAuthorization signature does not match sender"));
+                }
+            } else {
+                return Ok(Err(
+                    "Failed to recover signer from KeyAuthorization signature",
+                ));
+            }
+        }
+
+        let Some(sig) = tx.signature().as_keychain() else {
+            return Ok(Ok(()));
+        };
+
+        // This should never fail because we set sender based on the sig.
+        if sig.user_address != transaction.sender() {
+            return Ok(Err("Keychain signature user_address does not match sender"));
+        }
+
+        // This should fail happen because we validate the signature validity in `recover_signer`.
+        let Ok(key_id) = sig.key_id(&tx.signature_hash()) else {
+            return Ok(Err(
+                "Failed to recover access key ID from Keychain signature",
+            ));
+        };
+
+        // Ensure that if key auth is present, it is for the same key as the keychain signature.
+        if let Some(auth) = auth {
+            if auth.key_id != key_id {
+                return Ok(Err(
+                    "KeyAuthorization key_id does not match Keychain signature key_id",
+                ));
+            }
+
+            // KeyAuthorization is valid - skip keychain storage check (key will be authorized during execution)
+            return Ok(Ok(()));
         }
 
         // Compute storage slot using helper function
-        let storage_slot = compute_keys_slot(user_address, access_key_addr);
+        let storage_slot = compute_keys_slot(transaction.sender(), key_id);
 
         // Read storage slot from state provider
         let slot_value = state_provider
-            .storage(ACCOUNT_KEYCHAIN_ADDRESS, storage_slot)
-            .map_err(|e| {
-                TempoPoolTransactionError::KeychainValidationFailed(format!(
-                    "Failed to read keychain storage: {e:?}"
-                ))
-            })?
+            .storage(ACCOUNT_KEYCHAIN_ADDRESS, storage_slot)?
             .unwrap_or(U256::ZERO);
 
         // Decode AuthorizedKey using helper
@@ -73,86 +100,10 @@ where
         // Validate - only check if key is active
         // Expiry validation is done in the EVM handler where block timestamp is readily available
         if !authorized_key.is_active {
-            return Err(TempoPoolTransactionError::KeychainValidationFailed(
-                format!(
-                    "Access key {access_key_addr} is not authorized for account {user_address}"
-                ),
-            ));
+            return Ok(Err("access key is not active"));
         }
 
-        Ok(())
-    }
-
-    /// Check if a transaction requires keychain validation
-    ///
-    /// Returns the validation result indicating what action to take:
-    /// - ValidateKeychain: Need to validate the keychain authorization
-    /// - Skip: No validation needed (not a keychain signature, or same-tx auth is valid)
-    /// - Reject: Transaction should be rejected with the given reason
-    fn check_keychain_validation(&self, transaction: &TempoPooledTransaction) -> ValidationResult {
-        let Some(tx) = transaction.inner().as_aa() else {
-            return ValidationResult::Skip;
-        };
-
-        let Some(sig) = tx.signature().as_keychain() else {
-            return ValidationResult::Skip;
-        };
-
-        let sender = transaction.sender();
-        let sig_hash = tx.signature_hash();
-
-        // This should never happen because we validate the signature validity in `recover_signer`.
-        let Ok(key_id) = sig.key_id(&sig_hash) else {
-            return ValidationResult::Reject(
-                "Failed to recover access key ID from Keychain signature".to_string(),
-            );
-        };
-
-        // This should never happen because we set sender based on the sig.
-        if sig.user_address != sender {
-            return ValidationResult::Reject(
-                "Keychain signature user_address does not match sender".to_string(),
-            );
-        }
-
-        // Check if this is same-tx auth+use (transaction includes KeyAuthorization for this key)
-        let is_same_tx_auth_use = tx
-            .tx()
-            .key_authorization
-            .as_ref()
-            .map(|key_auth| key_auth.key_id == key_id)
-            .unwrap_or(false);
-
-        if is_same_tx_auth_use {
-            // Same-tx auth+use: Validate the KeyAuthorization signature (not the keychain state)
-            // The KeyAuthorization MUST be signed by the root account
-            if let Some(key_auth) = tx.tx().key_authorization.as_ref() {
-                // Compute the message hash for the KeyAuthorization
-                let auth_message_hash = key_auth.sig_hash();
-
-                // Recover the signer of the KeyAuthorization
-                let Ok(auth_signer) = key_auth.signature.recover_signer(&auth_message_hash) else {
-                    // KeyAuthorization signature is invalid
-                    return ValidationResult::Reject(
-                        "Invalid KeyAuthorization signature: failed to recover signer".to_string(),
-                    );
-                };
-
-                // Verify it's signed by the root account (sender)
-                if auth_signer != sender {
-                    // KeyAuthorization must be signed by root account, not by the access key
-                    return ValidationResult::Reject(format!(
-                        "Invalid KeyAuthorization signature: signed by {auth_signer}, expected root account {sender}"
-                    ));
-                }
-
-                // KeyAuthorization is valid - skip keychain storage check (key will be authorized during execution)
-                return ValidationResult::Skip;
-            }
-        }
-
-        // Not same-tx auth+use - validate keychain authorization
-        ValidationResult::ValidateKeychain(sender, key_id)
+        Ok(Ok(()))
     }
 
     fn validate_one(
@@ -169,31 +120,17 @@ where
             );
         }
 
-        // For AA transactions with Keychain signatures, validate authorization
-        match self.check_keychain_validation(&transaction) {
-            ValidationResult::ValidateKeychain(user_address, access_key_addr) => {
-                // Validate keychain authorization in precompile storage
-                if let Err(e) = self.validate_keychain_authorization(
-                    &state_provider,
-                    user_address,
-                    access_key_addr,
-                ) {
-                    return TransactionValidationOutcome::Invalid(
-                        transaction,
-                        InvalidPoolTransactionError::other(e),
-                    );
-                }
-            }
-            ValidationResult::Skip => {
-                // No validation needed
-            }
-            ValidationResult::Reject(reason) => {
+        // Validate transactions that involve keychain keys
+        match self.validate_against_keychain(&transaction, &state_provider) {
+            Ok(Ok(())) => {}
+            Ok(Err(reason)) => {
                 return TransactionValidationOutcome::Invalid(
                     transaction,
-                    InvalidPoolTransactionError::other(
-                        TempoPoolTransactionError::KeychainValidationFailed(reason),
-                    ),
+                    InvalidPoolTransactionError::other(TempoPoolTransactionError::Keychain(reason)),
                 );
+            }
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
             }
         }
 

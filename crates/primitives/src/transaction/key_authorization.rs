@@ -1,4 +1,5 @@
 use super::{AASignature, SignatureType};
+use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{Encodable, encode_list, list_length};
 use core::mem;
@@ -87,6 +88,11 @@ impl KeyAuthorization {
         encode_list(limits, &mut auth_message);
 
         keccak256(&auth_message)
+    }
+
+    /// Recover the signer of the [`KeyAuthorization`].
+    pub fn recover_signer(&self) -> Result<Address, RecoveryError> {
+        self.signature.recover_signer(&self.sig_hash())
     }
 }
 

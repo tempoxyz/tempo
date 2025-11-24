@@ -336,11 +336,6 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
         key_id: Address,
         current_timestamp: u64,
     ) -> Result<()> {
-        // If using main key (zero address), always valid
-        if key_id == Address::ZERO {
-            return Ok(());
-        }
-
         let key = self.sload_keys(account, key_id)?;
 
         if !key.is_active {
