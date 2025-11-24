@@ -34,7 +34,7 @@ async fn test_create_token() -> eyre::Result<()> {
     let balance = provider.get_account_info(caller).await?.balance;
     assert_eq!(balance, U256::ZERO);
     let receipt = factory
-        .createToken(
+        .createToken_1(
             "Test".to_string(),
             "TEST".to_string(),
             "USD".to_string(),

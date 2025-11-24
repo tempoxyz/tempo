@@ -53,7 +53,7 @@ where
     };
 
     // Create token
-    let create_tx = factory.createToken(
+    let create_tx = factory.createToken_1(
         "Test".to_string(),
         "TEST".to_string(),
         "USD".to_string(),
