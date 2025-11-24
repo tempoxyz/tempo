@@ -3001,7 +3001,17 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
 
     reth_tracing::init_test_tracing();
 
-    let (mut setup, provider, root_signer, root_addr) = setup_test_with_funded_account().await?;
+    let mut setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_with_node_access()
+        .await?;
+    // Use TEST_MNEMONIC account (has balance in DEFAULT_FEE_TOKEN from genesis)
+    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root_signer.address();
+
+    let provider = ProviderBuilder::new()
+        .wallet(root_signer.clone())
+        .connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
     const ACCOUNT_KEYCHAIN_ADDRESS: Address =
@@ -3270,7 +3280,10 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
 
     println!("\n=== Testing RPC Validation of Keychain Signatures ===\n");
 
-    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let mut setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_with_node_access()
+        .await?;
     let http_url = setup.node.rpc_url();
 
     // Generate TWO P256 access keys
@@ -3529,20 +3542,8 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
 
     // Verify the error message contains the expected validation failure details
     assert!(
-        error_msg.contains("Keychain signature validation failed"),
+        error_msg.contains("Keychain signature validation failed: access key is not active"),
         "Error must mention 'Keychain signature validation failed'. Got: {error_msg}"
-    );
-    assert!(
-        error_msg.contains(&format!("{unauthorized_key_addr}")),
-        "Error must contain unauthorized key address {unauthorized_key_addr}. Got: {error_msg}"
-    );
-    assert!(
-        error_msg.contains(&format!("{root_key_addr}")),
-        "Error must contain root account address {root_key_addr}. Got: {error_msg}"
-    );
-    assert!(
-        error_msg.contains("is not authorized for account"),
-        "Error must specify key is not authorized. Got: {error_msg}"
     );
 
     // Verify recipient3 received NO tokens

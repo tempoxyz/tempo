@@ -47,14 +47,11 @@ where
 
         // Ensure that key auth is valid if present.
         if let Some(auth) = auth {
-            if let Ok(auth_signer) = auth.recover_signer() {
-                if auth_signer != transaction.sender() {
-                    return Ok(Err("KeyAuthorization signature does not match sender"));
-                }
-            } else {
-                return Ok(Err(
-                    "Failed to recover signer from KeyAuthorization signature",
-                ));
+            if !auth
+                .recover_signer()
+                .is_ok_and(|signer| signer == transaction.sender())
+            {
+                return Ok(Err("Invalid KeyAuthorization signature"));
             }
         }
 
