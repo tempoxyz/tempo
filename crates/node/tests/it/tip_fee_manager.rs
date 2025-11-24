@@ -312,7 +312,7 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
             .is_zero()
     );
 
-    let balance_before = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, provider)
+    let balance_before = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, provider.clone())
         .balanceOf(fee_payer.address())
         .call()
         .await?;
