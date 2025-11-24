@@ -1573,7 +1573,7 @@ mod tests {
 
         // Initialize base token  and mint amount
         let mut base = TIP20Token::new(1, quote.token.storage());
-        base.initialize("BASE", "BASE", "USD", quote_address, admin)
+        base.initialize("BASE", "BASE", "USD", quote_address, admin, Address::ZERO)
             .expect("Base token initialization failed");
 
         base.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
@@ -2832,7 +2832,7 @@ mod tests {
 
         let usdc_addr = {
             let mut usdc = TIP20Token::new(2, exchange.storage);
-            usdc.initialize("USDC", "USDC", "USD", path_usd_addr, admin)
+            usdc.initialize("USDC", "USDC", "USD", path_usd_addr, admin, Address::ZERO)
                 .expect("Failed to initialize USDC");
             usdc.address()
         };
@@ -2840,7 +2840,7 @@ mod tests {
         let token_a_addr = {
             let mut token_a = TIP20Token::new(3, exchange.storage);
             token_a
-                .initialize("TokenA", "TKA", "USD", usdc_addr, admin)
+                .initialize("TokenA", "TKA", "USD", usdc_addr, admin, Address::ZERO)
                 .expect("Failed to initialize TokenA");
             token_a.address()
         };
@@ -2989,14 +2989,14 @@ mod tests {
 
         let usdc_addr = {
             let mut usdc = TIP20Token::new(2, exchange.storage);
-            usdc.initialize("USDC", "USDC", "USD", path_usd_addr, admin)
+            usdc.initialize("USDC", "USDC", "USD", path_usd_addr, admin, Address::ZERO)
                 .expect("Failed to initialize USDC");
             usdc.address()
         };
 
         let eurc_addr = {
             let mut eurc = TIP20Token::new(3, exchange.storage);
-            eurc.initialize("EURC", "EURC", "USD", path_usd_addr, admin)
+            eurc.initialize("EURC", "EURC", "USD", path_usd_addr, admin, Address::ZERO)
                 .expect("Failed to initialize EURC");
             eurc.address()
         };
@@ -3056,14 +3056,14 @@ mod tests {
 
         let usdc_addr = {
             let mut usdc = TIP20Token::new(2, exchange.storage);
-            usdc.initialize("USDC", "USDC", "USD", path_usd_addr, admin)
+            usdc.initialize("USDC", "USDC", "USD", path_usd_addr, admin, Address::ZERO)
                 .expect("Failed to initialize USDC");
             usdc.address()
         };
 
         let eurc_addr = {
             let mut eurc = TIP20Token::new(3, exchange.storage);
-            eurc.initialize("EURC", "EURC", "USD", path_usd_addr, admin)
+            eurc.initialize("EURC", "EURC", "USD", path_usd_addr, admin, Address::ZERO)
                 .expect("Failed to initialize EURC");
             eurc.address()
         };
@@ -3213,14 +3213,14 @@ mod tests {
 
         let usdc_addr = {
             let mut usdc = TIP20Token::new(2, exchange.storage);
-            usdc.initialize("USDC", "USDC", "USD", path_usd_addr, admin)
+            usdc.initialize("USDC", "USDC", "USD", path_usd_addr, admin, Address::ZERO)
                 .expect("Failed to initialize USDC");
             usdc.address()
         };
 
         let eurc_addr = {
             let mut eurc = TIP20Token::new(3, exchange.storage);
-            eurc.initialize("EURC", "EURC", "USD", path_usd_addr, admin)
+            eurc.initialize("EURC", "EURC", "USD", path_usd_addr, admin, Address::ZERO)
                 .expect("Failed to initialize EURC");
             eurc.address()
         };
@@ -3349,14 +3349,14 @@ mod tests {
 
         let usdc_addr = {
             let mut usdc = TIP20Token::new(2, exchange.storage);
-            usdc.initialize("USDC", "USDC", "USD", path_usd_addr, admin)
+            usdc.initialize("USDC", "USDC", "USD", path_usd_addr, admin, Address::ZERO)
                 .expect("Failed to initialize USDC");
             usdc.address()
         };
 
         let eurc_addr = {
             let mut eurc = TIP20Token::new(3, exchange.storage);
-            eurc.initialize("EURC", "EURC", "USD", path_usd_addr, admin)
+            eurc.initialize("EURC", "EURC", "USD", path_usd_addr, admin, Address::ZERO)
                 .expect("Failed to initialize EURC");
             eurc.address()
         };
@@ -3548,14 +3548,14 @@ mod tests {
 
         let usdc_addr = {
             let mut usdc = TIP20Token::new(2, exchange.storage);
-            usdc.initialize("USDC", "USDC", "USD", path_usd_addr, admin)
+            usdc.initialize("USDC", "USDC", "USD", path_usd_addr, admin, Address::ZERO)
                 .expect("Failed to initialize USDC");
             usdc.address()
         };
 
         let eurc_addr = {
             let mut eurc = TIP20Token::new(3, exchange.storage);
-            eurc.initialize("EURC", "EURC", "USD", path_usd_addr, admin)
+            eurc.initialize("EURC", "EURC", "USD", path_usd_addr, admin, Address::ZERO)
                 .expect("Failed to initialize EURC");
             eurc.address()
         };
@@ -3741,13 +3741,27 @@ mod tests {
         // Init Linking USD
         let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
         path_usd
-            .initialize("PathUSD", "LUSD", "USD", Address::ZERO, admin)
+            .initialize(
+                "PathUSD",
+                "LUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         // Create EUR token with LINKING_USD as quote (valid non-USD token)
         let mut token_0 = TIP20Token::new(1, path_usd.storage());
         token_0
-            .initialize("EuroToken", "EURO", "EUR", PATH_USD_ADDRESS, admin)
+            .initialize(
+                "EuroToken",
+                "EURO",
+                "EUR",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
         let token_0_address = token_0.address();
 
@@ -3818,7 +3832,14 @@ mod tests {
         // Init Linking USD
         let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
         path_usd
-            .initialize("PathUSD", "LUSD", "USD", Address::ZERO, admin)
+            .initialize(
+                "PathUSD",
+                "LUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let mut exchange = StablecoinExchange::new(path_usd.storage());
@@ -3893,7 +3914,14 @@ mod tests {
         // Init Linking USD
         let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
         path_usd
-            .initialize("PathUSD", "LUSD", "USD", Address::ZERO, admin)
+            .initialize(
+                "PathUSD",
+                "LUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let mut exchange = StablecoinExchange::new(path_usd.storage());

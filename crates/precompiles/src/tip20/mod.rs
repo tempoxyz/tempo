@@ -1036,13 +1036,12 @@ pub(crate) mod tests {
         let token_address = factory
             .create_token(
                 admin,
-                ITIP20Factory::createTokenCall {
-                    name: name.to_string(),
-                    symbol: symbol.to_string(),
-                    currency: "USD".to_string(),
-                    quoteToken: PATH_USD_ADDRESS,
-                    admin,
-                },
+                name.to_string(),
+                symbol.to_string(),
+                "USD".to_string(),
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
             )
             .unwrap();
 
@@ -1060,7 +1059,7 @@ pub(crate) mod tests {
         let token_address = factory
             .create_token(
                 admin,
-                ITIP20Factory::createTokenCall {
+                ITIP20Factory::createToken_0Call {
                     name: name.to_string(),
                     symbol: symbol.to_string(),
                     currency: "USD".to_string(),
@@ -2268,7 +2267,7 @@ pub(crate) mod tests {
         factory
             .initialize()
             .expect("Factory initialization should succeed");
-        let call = ITIP20Factory::createTokenCall {
+        let call = ITIP20Factory::createToken_0Call {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
             currency: "USD".to_string(),

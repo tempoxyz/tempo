@@ -685,7 +685,7 @@ mod tests {
 
         initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -735,7 +735,7 @@ mod tests {
 
         initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -771,7 +771,7 @@ mod tests {
 
         initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -822,7 +822,7 @@ mod tests {
 
         initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -872,7 +872,7 @@ mod tests {
 
         initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -935,7 +935,7 @@ mod tests {
 
         initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -1000,7 +1000,7 @@ mod tests {
 
         initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -1051,7 +1051,7 @@ mod tests {
 
         initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -1123,7 +1123,7 @@ mod tests {
 
         initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -1186,7 +1186,7 @@ mod tests {
         // Setup and start stream in a scope to release the borrow
         let (stream_id, end_time) = {
             let mut token = TIP20Token::new(1, &mut storage);
-            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
+            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
             token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
             let mint_amount = U256::from(1000e18);
@@ -1253,7 +1253,7 @@ mod tests {
         // Setup and start stream in a scope to release the borrow
         let (stream_id, end_time) = {
             let mut token = TIP20Token::new(1, &mut storage);
-            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
+            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
             token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
             let mint_amount = U256::from(1000e18);
@@ -1314,7 +1314,14 @@ mod tests {
         initialize_path_usd(&mut storage, admin)?;
 
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)?;
+        token.initialize(
+            "TestToken",
+            "TEST",
+            "USD",
+            PATH_USD_ADDRESS,
+            admin,
+            Address::ZERO,
+        )?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
