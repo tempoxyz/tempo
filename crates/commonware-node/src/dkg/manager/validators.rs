@@ -17,9 +17,7 @@ use tempo_commonware_node_config::SocketAddrOrFqdnPort;
 use tempo_node::TempoFullNode;
 use tempo_precompiles::{
     storage::evm::EvmPrecompileStorageProvider,
-    validator_config::{
-        IValidatorConfig, ValidatorConfig, ensure_inbound_is_host_port, ensure_outbound_is_ip_port,
-    },
+    validator_config::{IValidatorConfig, ValidatorConfig},
 };
 
 use tracing::{Level, info, instrument, warn};
@@ -128,10 +126,9 @@ impl ValidatorState {
         }
     }
 
-    /// Returns a validator state with the on-chain addresses and on-chain index set to 0.
+    /// Returns a validator state with only public key and inbound address set.
     ///
-    /// The contract inbound and outbound addresses are set to the values of the
-    /// validators.
+    /// All other values take default values.
     pub(super) fn with_unknown_contract_state(
         validators: OrderedAssociated<PublicKey, SocketAddrOrFqdnPort>,
     ) -> Self {
@@ -141,8 +138,8 @@ impl ValidatorState {
                 let key = key.clone();
                 let validator = DecodedValidator {
                     public_key: key.clone(),
-                    inbound: addr.to_string(),
-                    outbound: addr.to_string(),
+                    inbound: addr.clone(),
+                    outbound: SocketAddr::from(([0, 0, 0, 0], 0)),
                     index: 0,
                     address: Address::ZERO,
                 };
@@ -277,8 +274,8 @@ impl Read for ValidatorState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct DecodedValidator {
     pub(super) public_key: PublicKey,
-    pub(super) inbound: String,
-    pub(super) outbound: String,
+    pub(super) inbound: SocketAddrOrFqdnPort,
+    pub(super) outbound: SocketAddr,
     pub(super) index: u64,
     pub(super) address: Address,
 }
@@ -308,12 +305,16 @@ impl DecodedValidator {
         );
         let public_key = PublicKey::decode(publicKey.as_ref())
             .wrap_err("failed decoding publicKey field as ed25519 public key")?;
-        ensure_inbound_is_host_port(&inboundAddress).wrap_err("inboundAddress was not valid")?;
-        ensure_outbound_is_ip_port(&outboundAddress).wrap_err("outboundAddress was not valid")?;
+        let inbound = inboundAddress
+            .parse()
+            .wrap_err("inboundAddress was not valid")?;
+        let outbound = outboundAddress
+            .parse()
+            .wrap_err("outboundAddress was not valid")?;
         Ok(Self {
             public_key,
-            inbound: inboundAddress,
-            outbound: outboundAddress,
+            inbound,
+            outbound,
             index,
             address: validatorAddress,
         })
@@ -326,10 +327,11 @@ impl DecodedValidator {
     /// socket address, then the conversion is immediate. If is a domain name,
     /// the domain name is resolved. If DNS resolution returns more than 1 value,
     /// the last one is taken.
-    #[instrument(skip_all, fields(public_key = %self.public_key, inbound = self.inbound), err)]
+    #[instrument(skip_all, fields(public_key = %self.public_key, inbound = %self.inbound), err)]
     fn inbound_to_socket_addr(&self) -> eyre::Result<SocketAddr> {
         let all_addrs = self
             .inbound
+            .to_string()
             .to_socket_addrs()
             .wrap_err_with(|| format!("failed resolving inbound address `{}`", self.inbound))?
             .collect::<Vec<_>>();
@@ -361,8 +363,8 @@ impl std::fmt::Display for DecodedValidator {
 impl Write for DecodedValidator {
     fn write(&self, buf: &mut impl bytes::BufMut) {
         self.public_key.write(buf);
-        self.inbound.as_bytes().write(buf);
-        self.outbound.as_bytes().write(buf);
+        self.inbound.to_string().as_bytes().write(buf);
+        self.outbound.to_string().as_bytes().write(buf);
         UInt(self.index).write(buf);
         self.address.0.write(buf);
     }
@@ -371,8 +373,8 @@ impl Write for DecodedValidator {
 impl EncodeSize for DecodedValidator {
     fn encode_size(&self) -> usize {
         self.public_key.encode_size()
-            + self.inbound.as_bytes().encode_size()
-            + self.outbound.as_bytes().encode_size()
+            + self.inbound.to_string().as_bytes().encode_size()
+            + self.outbound.to_string().as_bytes().encode_size()
             + UInt(self.index).encode_size()
             + self.address.0.encode_size()
     }
@@ -392,14 +394,25 @@ impl Read for DecodedValidator {
             String::from_utf8(bytes).map_err(|_| {
                 commonware_codec::Error::Invalid("decode inbound address", "not utf8")
             })?
-        };
+        }
+        .parse()
+        .map_err(|_| {
+            commonware_codec::Error::Invalid(
+                "decode inbound address",
+                "not <ip>:<port> or <fqdn>:<port>",
+            )
+        })?;
         let outbound = {
             // 253 is the maximum length of a fqdn.
             let bytes = Vec::<u8>::read_cfg(buf, &(RangeCfg::new(0..=253usize), ()))?;
             String::from_utf8(bytes).map_err(|_| {
                 commonware_codec::Error::Invalid("decode outbound address", "not utf8")
             })?
-        };
+        }
+        .parse()
+        .map_err(|_| {
+            commonware_codec::Error::Invalid("decode outbound address", "not <ip>:<port>")
+        })?;
         let index = UInt::read_cfg(&mut buf, &())?.into();
         let address = Address::new(<[u8; 20]>::read_cfg(&mut buf, &())?);
         Ok(Self {
@@ -430,8 +443,8 @@ mod tests {
         let private_key = PrivateKey::from_seed(42);
         let decoded_validator = DecodedValidator {
             public_key: private_key.public_key(),
-            inbound: "localhost:1234".into(),
-            outbound: "localhost:4321".into(),
+            inbound: "localhost:1234".parse().unwrap(),
+            outbound: "127.0.0.1:4321".parse().unwrap(),
             index: 42,
             address: alloy_primitives::Address::ZERO,
         };
