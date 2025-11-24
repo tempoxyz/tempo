@@ -8,7 +8,7 @@ pub use tempo_contracts::precompiles::{
 };
 
 use crate::{
-    LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::PrecompileStorageProvider,
     tip20::{
@@ -322,9 +322,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let next_quote_token = self.next_quote_token()?;
 
         // Check that this does not create a loop
-        // Loop through quote tokens until we reach the root (LinkingUSD)
+        // Loop through quote tokens until we reach the root (PathUSD)
         let mut current = next_quote_token;
-        while current != LINKING_USD_ADDRESS {
+        while current != PATH_USD_ADDRESS {
             if current == self.address {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
@@ -932,18 +932,18 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::{
-        DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, error::TempoPrecompileError,
+        DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, error::TempoPrecompileError,
         storage::hashmap::HashMapStorageProvider, tip20_factory::ITIP20Factory,
     };
     use rand::{Rng, distributions::Alphanumeric, thread_rng};
 
-    /// Initialize LinkingUSD token (required before creating other USD tokens)
-    pub(crate) fn initialize_linking_usd(
+    /// Initialize PathUSD token
+    pub(crate) fn initialize_path_usd(
         storage: &mut HashMapStorageProvider,
         admin: Address,
     ) -> Result<()> {
-        let mut linking_usd = TIP20Token::from_address(LINKING_USD_ADDRESS, storage);
-        linking_usd.initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, storage);
+        path_usd.initialize("PathUSD", "PUSD", "USD", Address::ZERO, admin)
     }
 
     /// Helper to setup a token with rewards for testing fee transfer functions
@@ -955,7 +955,7 @@ pub(crate) mod tests {
         mint_amount: U256,
         reward_amount: U256,
     ) -> Result<(u64, u128)> {
-        initialize_linking_usd(storage, admin)?;
+        initialize_path_usd(storage, admin)?;
         let token_id = setup_factory_with_token(storage, admin, "Test", "TST");
 
         let initial_opted_in = {
@@ -1015,7 +1015,7 @@ pub(crate) mod tests {
         name: &str,
         symbol: &str,
     ) -> u64 {
-        initialize_linking_usd(storage, admin).unwrap();
+        initialize_path_usd(storage, admin).unwrap();
         let mut factory = TIP20Factory::new(storage);
         factory.initialize().unwrap();
 
@@ -1026,7 +1026,7 @@ pub(crate) mod tests {
                     name: name.to_string(),
                     symbol: symbol.to_string(),
                     currency: "USD".to_string(),
-                    quoteToken: LINKING_USD_ADDRESS,
+                    quoteToken: PATH_USD_ADDRESS,
                     admin,
                 },
             )
@@ -1064,14 +1064,14 @@ pub(crate) mod tests {
         storage: &mut HashMapStorageProvider,
         admin: Address,
     ) -> (u64, u64) {
-        initialize_linking_usd(storage, admin).unwrap();
+        initialize_path_usd(storage, admin).unwrap();
         let mut factory = TIP20Factory::new(storage);
         factory.initialize().unwrap();
 
         let token_id =
-            create_token_via_factory(&mut factory, admin, "Test", "TST", LINKING_USD_ADDRESS);
+            create_token_via_factory(&mut factory, admin, "Test", "TST", PATH_USD_ADDRESS);
         let quote_token_id =
-            create_token_via_factory(&mut factory, admin, "Quote", "QUOTE", LINKING_USD_ADDRESS);
+            create_token_via_factory(&mut factory, admin, "Quote", "QUOTE", PATH_USD_ADDRESS);
 
         (token_id, quote_token_id)
     }
@@ -1084,11 +1084,11 @@ pub(crate) mod tests {
         let amount = U256::from(100);
         let token_id = 1;
         {
-            initialize_linking_usd(&mut storage, admin).unwrap();
+            initialize_path_usd(&mut storage, admin).unwrap();
             let mut token = TIP20Token::new(token_id, &mut storage);
             // Initialize with admin
             token
-                .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+                .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
 
             // Grant issuer role to admin
@@ -1128,10 +1128,10 @@ pub(crate) mod tests {
         let amount = U256::from(100);
         let token_id = 1;
         {
-            initialize_linking_usd(&mut storage, admin).unwrap();
+            initialize_path_usd(&mut storage, admin).unwrap();
             let mut token = TIP20Token::new(token_id, &mut storage);
             token
-                .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+                .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
             token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -1172,10 +1172,10 @@ pub(crate) mod tests {
     fn test_transfer_insufficient_balance_fails() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::from([0u8; 20]);
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
             .unwrap();
         let from = Address::from([1u8; 20]);
         let to = Address::from([2u8; 20]);
@@ -1197,10 +1197,10 @@ pub(crate) mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let token_id = 1;
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1249,10 +1249,10 @@ pub(crate) mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let admin = Address::random();
         let token_id = 1;
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1287,10 +1287,10 @@ pub(crate) mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let admin = Address::random();
         let token_id = 1;
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1325,10 +1325,10 @@ pub(crate) mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let token_id = 1;
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1384,10 +1384,10 @@ pub(crate) mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let token_id = 1;
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1451,10 +1451,10 @@ pub(crate) mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let admin = Address::random();
         let token_id = 1;
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1507,10 +1507,10 @@ pub(crate) mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let admin = Address::random();
         let token_id = 1;
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1564,10 +1564,10 @@ pub(crate) mod tests {
         let admin = Address::random();
         let user = Address::random();
         let token_id = 1;
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1594,10 +1594,10 @@ pub(crate) mod tests {
         let admin = Address::random();
         let user = Address::random();
         let token_id = 1;
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         let fee_amount = U256::from(50);
@@ -1616,10 +1616,10 @@ pub(crate) mod tests {
         let admin = Address::random();
         let user = Address::random();
         let token_id = 1;
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         let initial_fee = U256::from(100);
@@ -1657,10 +1657,10 @@ pub(crate) mod tests {
         let to = Address::random();
         let amount = U256::from(100);
         let token_id = 1;
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1688,10 +1688,10 @@ pub(crate) mod tests {
         let to = Address::random();
         let amount = U256::from(100);
         let token_id = 1;
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1720,8 +1720,8 @@ pub(crate) mod tests {
         let mut token = TIP20Token::new(token_id, &mut storage);
 
         // Verify both quoteToken and nextQuoteToken are set to the same value
-        assert_eq!(token.quote_token()?, LINKING_USD_ADDRESS);
-        assert_eq!(token.next_quote_token()?, LINKING_USD_ADDRESS);
+        assert_eq!(token.quote_token()?, PATH_USD_ADDRESS);
+        assert_eq!(token.next_quote_token()?, PATH_USD_ADDRESS);
 
         Ok(())
     }
@@ -1769,10 +1769,10 @@ pub(crate) mod tests {
         let admin = Address::random();
         let non_admin = Address::random();
         let token_id = 1;
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         let quote_token_address = token_id_to_address(2);
@@ -1897,13 +1897,13 @@ pub(crate) mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut factory = TIP20Factory::new(&mut storage);
         factory.initialize().unwrap();
 
         // Create token_b first (links to LINKING_USD)
         let token_b_id =
-            create_token_via_factory(&mut factory, admin, "Token B", "TKB", LINKING_USD_ADDRESS);
+            create_token_via_factory(&mut factory, admin, "Token B", "TKB", PATH_USD_ADDRESS);
         let token_b_address = token_id_to_address(token_b_id);
 
         // Create token_a (links to token_b)
@@ -1995,7 +1995,7 @@ pub(crate) mod tests {
                 .collect();
 
             // Initialize token with the random currency
-            token.initialize("Test", "TST", &currency, LINKING_USD_ADDRESS, admin)?;
+            token.initialize("Test", "TST", &currency, PATH_USD_ADDRESS, admin)?;
 
             // Verify the currency was stored and can be retrieved correctly
             let stored_currency = token.currency()?;
@@ -2021,7 +2021,7 @@ pub(crate) mod tests {
                 .map(char::from)
                 .collect();
 
-            let result = token.initialize("Test", "TST", &currency, LINKING_USD_ADDRESS, admin);
+            let result = token.initialize("Test", "TST", &currency, PATH_USD_ADDRESS, admin);
             assert!(matches!(
                 result,
                 Err(TempoPrecompileError::TIP20(TIP20Error::StringTooLong(_)))
@@ -2073,7 +2073,7 @@ pub(crate) mod tests {
             .collect();
 
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Token", "T", &currency, LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Token", "T", &currency, PATH_USD_ADDRESS, admin)?;
 
         // Try to create a new USD token with the arbitrary token as the quote token, this should fail
         let token_address = token.address;
@@ -2095,15 +2095,9 @@ pub(crate) mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut usd_token1 = TIP20Token::new(1, &mut storage);
-        usd_token1.initialize(
-            "USD Token",
-            "USDT",
-            USD_CURRENCY,
-            LINKING_USD_ADDRESS,
-            admin,
-        )?;
+        usd_token1.initialize("USD Token", "USDT", USD_CURRENCY, PATH_USD_ADDRESS, admin)?;
 
         // USD token with USD token as quote
         let usd_token1_address = token_id_to_address(1);
@@ -2125,7 +2119,7 @@ pub(crate) mod tests {
             .collect();
 
         let mut token_1 = TIP20Token::new(3, &mut storage);
-        token_1.initialize("Token 1", "TK1", &currency_1, LINKING_USD_ADDRESS, admin)?;
+        token_1.initialize("Token 1", "TK1", &currency_1, PATH_USD_ADDRESS, admin)?;
 
         // Create a non USD token with non USD quote token
         let currency_2: String = thread_rng()
@@ -2147,7 +2141,7 @@ pub(crate) mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
 
         let currency: String = thread_rng()
             .sample_iter(&Alphanumeric)
@@ -2156,17 +2150,11 @@ pub(crate) mod tests {
             .collect();
 
         let mut token_1 = TIP20Token::new(1, &mut storage);
-        token_1.initialize("Token 1", "TK1", &currency, LINKING_USD_ADDRESS, admin)?;
+        token_1.initialize("Token 1", "TK1", &currency, PATH_USD_ADDRESS, admin)?;
 
         // Create a new USD token
         let mut usd_token = TIP20Token::new(2, &mut storage);
-        usd_token.initialize(
-            "USD Token",
-            "USDT",
-            USD_CURRENCY,
-            LINKING_USD_ADDRESS,
-            admin,
-        )?;
+        usd_token.initialize("USD Token", "USDT", USD_CURRENCY, PATH_USD_ADDRESS, admin)?;
 
         // Try to update the USD token's quote token to the arbitrary currency token, this should fail
         let token_1_address = token_id_to_address(1);
@@ -2191,7 +2179,7 @@ pub(crate) mod tests {
     fn test_is_tip20() {
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
-        initialize_linking_usd(&mut storage, sender).unwrap();
+        initialize_path_usd(&mut storage, sender).unwrap();
 
         let mut factory = TIP20Factory::new(&mut storage);
 
@@ -2206,7 +2194,7 @@ pub(crate) mod tests {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
             currency: "USD".to_string(),
-            quoteToken: crate::LINKING_USD_ADDRESS,
+            quoteToken: crate::PATH_USD_ADDRESS,
             admin: sender,
         };
 
@@ -2215,7 +2203,7 @@ pub(crate) mod tests {
             .expect("Token creation should succeed");
         let non_tip20 = Address::random();
 
-        assert!(is_tip20(LINKING_USD_ADDRESS));
+        assert!(is_tip20(PATH_USD_ADDRESS));
         assert!(is_tip20(created_tip20));
         assert!(!is_tip20(non_tip20));
     }
