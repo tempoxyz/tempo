@@ -59,7 +59,6 @@ pub enum TempoPrecompileError {
 
     /// Error from account keychain precompile
     #[error("Account keychain error: {0:?}")]
-    #[from(skip)]
     AccountKeychainError(AccountKeychainError),
 
     #[error("Gas limit exceeded")]
@@ -79,12 +78,6 @@ pub type Result<T> = std::result::Result<T, TempoPrecompileError>;
 impl TempoPrecompileError {
     pub fn under_overflow() -> Self {
         Self::Panic(PanicKind::UnderOverflow)
-    }
-}
-
-impl From<AccountKeychainError> for TempoPrecompileError {
-    fn from(err: AccountKeychainError) -> Self {
-        Self::AccountKeychainError(err)
     }
 }
 
