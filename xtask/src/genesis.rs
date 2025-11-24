@@ -34,7 +34,7 @@ use tempo_precompiles::{
     storage::{ContractStorage, evm::EvmPrecompileStorageProvider},
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token, address_to_token_id_unchecked},
-    tip20_factory::{ITIP20Factory, TIP20Factory},
+    tip20_factory::TIP20Factory,
     tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
     validator_config::{IValidatorConfig, ValidatorConfig},
@@ -348,13 +348,12 @@ fn create_and_mint_token(
         let token_address = factory
             .create_token(
                 admin,
-                ITIP20Factory::createTokenCall {
-                    name: name.into(),
-                    symbol: symbol.into(),
-                    currency: currency.into(),
-                    quoteToken: PATH_USD_ADDRESS,
-                    admin,
-                },
+                name.into(),
+                symbol.into(),
+                currency.into(),
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
             )
             .expect("Could not create token");
 

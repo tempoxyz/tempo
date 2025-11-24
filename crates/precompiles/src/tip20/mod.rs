@@ -940,7 +940,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::{
         DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, error::TempoPrecompileError,
-        storage::hashmap::HashMapStorageProvider, tip20_factory::ITIP20Factory,
+        storage::hashmap::HashMapStorageProvider,
     };
     use rand::{Rng, distributions::Alphanumeric, thread_rng};
 
@@ -1059,13 +1059,12 @@ pub(crate) mod tests {
         let token_address = factory
             .create_token(
                 admin,
-                ITIP20Factory::createToken_0Call {
-                    name: name.to_string(),
-                    symbol: symbol.to_string(),
-                    currency: "USD".to_string(),
-                    quoteToken: quote_token,
-                    admin,
-                },
+                name.to_string(),
+                symbol.to_string(),
+                "USD".to_string(),
+                quote_token,
+                admin,
+                Address::ZERO,
             )
             .unwrap();
 
@@ -2267,16 +2266,16 @@ pub(crate) mod tests {
         factory
             .initialize()
             .expect("Factory initialization should succeed");
-        let call = ITIP20Factory::createToken_0Call {
-            name: "Test Token".to_string(),
-            symbol: "TEST".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: crate::PATH_USD_ADDRESS,
-            admin: sender,
-        };
-
         let created_tip20 = factory
-            .create_token(sender, call)
+            .create_token(
+                sender,
+                "Test Token".to_string(),
+                "TEST".to_string(),
+                "USD".to_string(),
+                crate::PATH_USD_ADDRESS,
+                sender,
+                Address::ZERO,
+            )
             .expect("Token creation should succeed");
         let non_tip20 = Address::random();
 

@@ -42,7 +42,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         )
     }
 
-    // TODO: add clippy ignore too many args
+    #[allow(clippy::too_many_arguments)]
     pub fn create_token(
         &mut self,
         sender: Address,

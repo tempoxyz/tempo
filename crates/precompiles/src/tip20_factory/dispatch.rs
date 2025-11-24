@@ -48,7 +48,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Factory<'a, S> {
                 })
             }
 
-            ITIP20Factory::createToken_0Call::SELECTOR => {
+            ITIP20Factory::createToken_1Call::SELECTOR => {
                 mutate::<ITIP20Factory::createToken_1Call>(calldata, msg_sender, |s, call| {
                     if !self.storage.spec().is_allegretto() {
                         return Err(TempoPrecompileError::UnknownFunctionSelector(

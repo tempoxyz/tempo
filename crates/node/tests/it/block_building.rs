@@ -59,6 +59,7 @@ where
         "USD".to_string(),
         PATH_USD_ADDRESS,
         sender_address,
+        Address::ZERO,
     );
     let create_bytes = sign_and_encode(create_tx.into_transaction_request(), 0).await?;
     node.rpc.inject_tx(create_bytes).await?;
