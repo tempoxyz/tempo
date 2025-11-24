@@ -1,5 +1,6 @@
 use crate::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
 use alloy_consensus::Transaction;
+use alloy_primitives::U256;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
@@ -7,8 +8,9 @@ use reth_primitives_traits::{
 use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
-    TransactionValidator, error::InvalidPoolTransactionError,
+    TransactionValidator, error::InvalidPoolTransactionError, validate::ValidTransaction,
 };
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, storage::slots::mapping_slot};
 use tempo_revm::TempoStateAccess;
 
 /// Validator for Tempo transactions.
@@ -24,6 +26,25 @@ where
 {
     pub fn new(inner: EthTransactionValidator<Client, TempoPooledTransaction>) -> Self {
         Self { inner }
+    }
+
+    /// Get the 2D nonce from state for (address, nonce_key)
+    /// TODO: This needs to be moved to the nonce precompile logic.
+    fn get_2d_nonce(
+        &self,
+        state_provider: &impl StateProvider,
+        address: alloy_primitives::Address,
+        nonce_key: U256,
+    ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+        // Compute storage slot for 2D nonce
+        // Based on: mapping(address => mapping(uint256 => uint64)) at slot 0
+        let outer_slot = mapping_slot(address.as_slice(), U256::ZERO);
+        let slot = mapping_slot(nonce_key.as_le_bytes(), outer_slot);
+
+        let nonce_value = state_provider.storage(NONCE_PRECOMPILE_ADDRESS, slot.into())?;
+
+        // Storage returns Option<U256>, unwrap to U256 then convert to u64
+        Ok(nonce_value.unwrap_or_default().to::<u64>())
     }
 
     fn validate_one(
@@ -113,6 +134,51 @@ where
             );
         }
 
+        // Check for 2D nonce validation (nonce_key > 0)
+        if let Some(aa) = transaction.inner().as_aa() {
+            let nonce_key = aa.tx().nonce_key;
+            if !nonce_key.is_zero() {
+                // This is a 2D nonce transaction - validate against 2D nonce
+                let expected_nonce =
+                    match self.get_2d_nonce(&state_provider, transaction.sender(), nonce_key) {
+                        Ok(nonce) => nonce,
+                        Err(err) => {
+                            return TransactionValidationOutcome::Error(*transaction.hash(), err);
+                        }
+                    };
+
+                let tx_nonce = transaction.nonce();
+                if tx_nonce < expected_nonce {
+                    return TransactionValidationOutcome::Invalid(
+                        transaction,
+                        InvalidTransactionError::NonceNotConsistent {
+                            tx: tx_nonce,
+                            state: expected_nonce,
+                        }
+                        .into(),
+                    );
+                }
+
+                // For 2D nonces, we've validated the nonce ourselves
+                // Now call inner validator but note that it will also check protocol nonce
+                // Since we're using a different nonce space, we skip the inner validator's
+                // nonce check by not calling it for 2D transactions
+                // Instead, we return Valid directly after our checks
+                return TransactionValidationOutcome::Valid {
+                    balance,
+                    state_nonce: expected_nonce,
+                    transaction: ValidTransaction::Valid(transaction),
+                    propagate: matches!(
+                        origin,
+                        TransactionOrigin::External | TransactionOrigin::Local
+                    ),
+                    authorities: None,
+                    bytecode_hash: None,
+                };
+            }
+        }
+
+        // For protocol nonces (nonce_key=0), use the inner validator
         self.inner.validate_one(origin, transaction)
     }
 }

@@ -36,14 +36,16 @@
 // - We don't have access to Reth's internal maintenance task that updates the protocol pool
 // - Optimistic tracking works perfectly for sequential block building with successful transactions
 
-use crate::transaction::TempoPooledTransaction;
+use crate::{transaction::TempoPooledTransaction, validator::TempoTransactionValidator};
 use alloy_consensus::Transaction;
 use alloy_primitives::{Address, B256, U256};
 use parking_lot::RwLock;
+use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_provider::StateProviderFactory;
 use reth_transaction_pool::{
-    BestTransactions, PoolSize, PoolTransaction, TransactionOrigin, ValidPoolTransaction,
+    BestTransactions, PoolSize, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
+    TransactionValidationTaskExecutor, TransactionValidator, ValidPoolTransaction,
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
     identifier::{SenderId, TransactionId},
 };
@@ -148,9 +150,15 @@ impl SenderTransactions {
 }
 
 /// Minimal 2D nonce pool
-pub(super) struct Pool2D<S: StateProviderFactory> {
+pub(super) struct Pool2D<S>
+where
+    S: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + 'static,
+{
     /// State provider for nonce queries
     state: S,
+
+    /// Transaction validator
+    validator: Arc<TransactionValidationTaskExecutor<TempoTransactionValidator<S>>>,
 
     /// Transactions organized by (address, nonce_key)
     by_sender: Arc<RwLock<HashMap<SenderKey, SenderTransactions>>>,
@@ -165,10 +173,17 @@ pub(super) struct Pool2D<S: StateProviderFactory> {
     tx_origin: Arc<RwLock<HashMap<B256, TransactionOrigin>>>,
 }
 
-impl<S: StateProviderFactory> Pool2D<S> {
-    pub(super) fn new(state: S) -> Self {
+impl<S> Pool2D<S>
+where
+    S: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + 'static,
+{
+    pub(super) fn new(
+        state: S,
+        validator: Arc<TransactionValidationTaskExecutor<TempoTransactionValidator<S>>>,
+    ) -> Self {
         Self {
             state,
+            validator,
             by_sender: Arc::new(RwLock::new(HashMap::new())),
             by_hash: Arc::new(RwLock::new(HashMap::new())),
             address_to_keys: Arc::new(RwLock::new(HashMap::new())),
@@ -210,7 +225,33 @@ impl<S: StateProviderFactory> Pool2D<S> {
         origin: TransactionOrigin,
         transaction: TempoPooledTransaction,
     ) -> Result<B256, PoolError> {
-        self.add_transaction_sync(origin, transaction)
+        // Validate the transaction first
+        let validation_result = self
+            .validator
+            .validate_transaction(origin, transaction)
+            .await;
+
+        match validation_result {
+            TransactionValidationOutcome::Valid {
+                balance: _,
+                state_nonce: _,
+                transaction: validated_tx,
+                propagate: _,
+                ..
+            } => {
+                // Extract the inner transaction from ValidTransaction
+                let inner_tx = validated_tx.into_transaction();
+                self.add_transaction_sync(origin, inner_tx)
+            }
+            TransactionValidationOutcome::Invalid(tx, err) => Err(PoolError {
+                hash: *tx.hash(),
+                kind: PoolErrorKind::InvalidTransaction(err),
+            }),
+            TransactionValidationOutcome::Error(hash, err) => Err(PoolError {
+                hash,
+                kind: PoolErrorKind::Other(err),
+            }),
+        }
     }
 
     /// Synchronous version of add_transaction
@@ -644,36 +685,6 @@ impl<S: StateProviderFactory> Pool2D<S> {
         }
 
         queued
-    }
-
-    /// Get highest nonce transaction for address
-    pub(super) fn get_highest_nonce_tx(
-        &self,
-        address: &Address,
-    ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let nonce_keys = self.address_to_keys.read().get(address).cloned()?;
-
-        let by_sender = self.by_sender.read();
-        let mut highest = None;
-        let mut highest_nonce = 0;
-
-        for nonce_key in nonce_keys {
-            let sender_key = SenderKey {
-                address: *address,
-                nonce_key,
-            };
-
-            if let Some(sender_txs) = by_sender.get(&sender_key) {
-                if let Some((&nonce, tx)) = sender_txs.transactions.last_key_value() {
-                    if highest.is_none() || nonce > highest_nonce {
-                        highest = Some(tx.clone());
-                        highest_nonce = nonce;
-                    }
-                }
-            }
-        }
-
-        highest
     }
 
     /// Get transaction by sender and nonce (any nonce_key)

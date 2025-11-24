@@ -5,13 +5,14 @@
 use crate::{transaction::TempoPooledTransaction, validator::TempoTransactionValidator};
 use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
+use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_provider::StateProviderFactory;
 use reth_transaction_pool::{
     AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
     BlockInfo, CoinbaseTipOrdering, GetPooledTransactionLimit, NewBlobSidecar, Pool, PoolResult,
     PoolSize, PoolTransaction, PropagatedTransactions, TransactionEvents, TransactionOrigin,
-    TransactionPool, TransactionValidationTaskExecutor, ValidPoolTransaction, blobstore::BlobStore,
-    pool::AddedTransactionState,
+    TransactionPool, TransactionValidationTaskExecutor, ValidPoolTransaction,
+    blobstore::DiskFileBlobStore, pool::AddedTransactionState,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -24,16 +25,15 @@ mod pool_2d;
 use pool_2d::Pool2D;
 
 /// Tempo transaction pool that routes based on nonce_key
-pub struct TempoTransactionPool<Client, S>
+pub struct TempoTransactionPool<Client>
 where
-    Client: StateProviderFactory,
-    S: BlobStore,
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + 'static,
 {
     /// Reth pool for protocol nonces (nonce_key = 0)
     protocol_pool: Pool<
         TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
         CoinbaseTipOrdering<TempoPooledTransaction>,
-        S,
+        DiskFileBlobStore,
     >,
 
     /// Minimal pool for 2D nonces (nonce_key > 0)
@@ -53,20 +53,21 @@ enum PoolLocation {
     UserNonce,
 }
 
-impl<Client, S> TempoTransactionPool<Client, S>
+impl<Client> TempoTransactionPool<Client>
 where
-    Client: StateProviderFactory + Clone + 'static,
-    S: BlobStore,
+    Client:
+        StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + Clone + 'static,
 {
     pub fn new(
         protocol_pool: Pool<
             TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
             CoinbaseTipOrdering<TempoPooledTransaction>,
-            S,
+            DiskFileBlobStore,
         >,
         client: Client,
+        validator: TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
     ) -> Self {
-        let user_nonce_pool = Arc::new(Pool2D::new(client));
+        let user_nonce_pool = Arc::new(Pool2D::new(client, Arc::new(validator)));
         let (event_tx, event_rx) = broadcast::channel(1024);
 
         Self {
@@ -90,10 +91,9 @@ where
 }
 
 // Manual Clone implementation
-impl<Client, S> Clone for TempoTransactionPool<Client, S>
+impl<Client> Clone for TempoTransactionPool<Client>
 where
-    Client: StateProviderFactory,
-    S: BlobStore,
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + 'static,
 {
     fn clone(&self) -> Self {
         Self {
@@ -107,10 +107,9 @@ where
 }
 
 // Manual Debug implementation
-impl<Client, S> std::fmt::Debug for TempoTransactionPool<Client, S>
+impl<Client> std::fmt::Debug for TempoTransactionPool<Client>
 where
-    Client: StateProviderFactory,
-    S: BlobStore,
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TempoTransactionPool")
@@ -122,12 +121,14 @@ where
 }
 
 // Implement the TransactionPool trait
-impl<Client, S> TransactionPool for TempoTransactionPool<Client, S>
+impl<Client> TransactionPool for TempoTransactionPool<Client>
 where
-    Client:
-        StateProviderFactory + Clone + Send + Sync + 'static + reth_chainspec::ChainSpecProvider,
-    Client::ChainSpec: reth_chainspec::EthereumHardforks,
-    S: BlobStore + Send + Sync + 'static,
+    Client: StateProviderFactory
+        + ChainSpecProvider<ChainSpec: EthereumHardforks>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     TempoPooledTransaction: reth_transaction_pool::EthPoolTransaction,
 {
     type Transaction = TempoPooledTransaction;
@@ -229,13 +230,70 @@ where
         origin: TransactionOrigin,
         transactions: Vec<Self::Transaction>,
     ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        let mut results = Vec::with_capacity(transactions.len());
+        // Divide transactions into protocol and user nonce pools, tracking order
+        let mut protocol_txs = Vec::new();
+        let mut user_nonce_txs = Vec::new();
+        let mut tx_order = Vec::with_capacity(transactions.len());
 
         for tx in transactions {
-            results.push(self.add_transaction(origin, tx).await);
+            let hash = *tx.hash();
+            let location = self.route_transaction(&tx);
+            tx_order.push((hash, location));
+
+            match location {
+                PoolLocation::Protocol => protocol_txs.push(tx),
+                PoolLocation::UserNonce => user_nonce_txs.push(tx),
+            }
         }
 
-        results
+        // Call both pools in parallel
+        let (protocol_results, user_results) = tokio::join!(
+            async {
+                if protocol_txs.is_empty() {
+                    vec![]
+                } else {
+                    self.protocol_pool
+                        .add_transactions(origin, protocol_txs)
+                        .await
+                }
+            },
+            async {
+                let mut results = Vec::with_capacity(user_nonce_txs.len());
+                for tx in user_nonce_txs {
+                    let result =
+                        self.user_nonce_pool
+                            .add_transaction(origin, tx)
+                            .await
+                            .map(|tx_hash| AddedTransactionOutcome {
+                                hash: tx_hash,
+                                state: AddedTransactionState::Pending,
+                            });
+                    results.push(result);
+                }
+                results
+            }
+        );
+
+        // Merge results maintaining original order
+        let mut protocol_iter = protocol_results.into_iter();
+        let mut user_iter = user_results.into_iter();
+        let mut final_results = Vec::with_capacity(tx_order.len());
+
+        for (hash, location) in tx_order {
+            let result = match location {
+                PoolLocation::Protocol => protocol_iter.next().unwrap(),
+                PoolLocation::UserNonce => user_iter.next().unwrap(),
+            };
+
+            // Track location on success
+            if result.is_ok() {
+                self.tx_location.write().insert(hash, location);
+            }
+
+            final_results.push(result);
+        }
+
+        final_results
     }
 
     fn pending_transactions_listener_for(
@@ -333,9 +391,9 @@ where
     fn best_transactions(
         &self,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
-        let protocol_iter = Box::new(self.protocol_pool.best_transactions())
+        let protocol_iter = self.protocol_pool.best_transactions()
             as Box<dyn Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send>;
-        let user_iter = Box::new(self.user_nonce_pool.best_transactions())
+        let user_iter = self.user_nonce_pool.best_transactions()
             as Box<dyn Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send>;
 
         Box::new(TempoBestTransactions::new(protocol_iter, user_iter))
@@ -345,15 +403,13 @@ where
         &self,
         attributes: BestTransactionsAttributes,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
-        let protocol_iter = Box::new(
-            self.protocol_pool
-                .best_transactions_with_attributes(attributes),
-        )
+        let protocol_iter = self
+            .protocol_pool
+            .best_transactions_with_attributes(attributes)
             as Box<dyn Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send>;
-        let user_iter = Box::new(
-            self.user_nonce_pool
-                .best_transactions_with_base_fee(attributes.basefee),
-        )
+        let user_iter = self
+            .user_nonce_pool
+            .best_transactions_with_base_fee(attributes.basefee)
             as Box<dyn Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send>;
 
         Box::new(TempoBestTransactions::new(protocol_iter, user_iter))
@@ -528,22 +584,9 @@ where
         &self,
         sender: Address,
     ) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        // Get highest from both pools and compare
-        let protocol_highest = self.protocol_pool.get_highest_transaction_by_sender(sender);
-        let user_nonce_highest = self.user_nonce_pool.get_highest_nonce_tx(&sender);
-
-        match (protocol_highest, user_nonce_highest) {
-            (Some(p), Some(u)) => {
-                if p.nonce() >= u.nonce() {
-                    Some(p)
-                } else {
-                    Some(u)
-                }
-            }
-            (Some(p), None) => Some(p),
-            (None, Some(u)) => Some(u),
-            (None, None) => None,
-        }
+        // With 2D nonces, there's no concept of a single "highest" nonce across all nonce_keys
+        // Return the highest protocol nonce (nonce_key=0) only
+        self.protocol_pool.get_highest_transaction_by_sender(sender)
     }
 
     fn get_highest_consecutive_transaction_by_sender(
