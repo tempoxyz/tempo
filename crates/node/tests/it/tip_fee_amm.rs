@@ -14,7 +14,7 @@ use tempo_contracts::precompiles::{
     ITIPFeeAMM,
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey},
 };
 
@@ -280,7 +280,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     // Create different tokens for user and validator
     let user_token = setup_test_token(provider.clone(), user_address).await?;
     // Use default fee token for validator
-    let validator_token = ITIP20Instance::new(LINKING_USD_ADDRESS, provider.clone());
+    let validator_token = ITIP20Instance::new(PATH_USD_ADDRESS, provider.clone());
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Mint initial balances
@@ -615,7 +615,7 @@ async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
     await_receipts(&mut pending).await?;
 
     // Get pool info
-    let pool_key = PoolKey::new(*user_token.address(), LINKING_USD_ADDRESS);
+    let pool_key = PoolKey::new(*user_token.address(), PATH_USD_ADDRESS);
     let pool_id = pool_key.get_id();
 
     // Add liquidity

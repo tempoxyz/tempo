@@ -669,9 +669,9 @@ impl From<UserRewardInfo> for ITIP20::UserRewardInfo {
 mod tests {
     use super::*;
     use crate::{
-        LINKING_USD_ADDRESS,
+        PATH_USD_ADDRESS,
         storage::hashmap::HashMapStorageProvider,
-        tip20::{ISSUER_ROLE, tests::initialize_linking_usd},
+        tip20::{ISSUER_ROLE, tests::initialize_path_usd},
         tip20_rewards_registry::TIP20RewardsRegistry,
     };
     use alloy::primitives::{Address, U256};
@@ -683,9 +683,9 @@ mod tests {
         let current_time = storage.timestamp().to::<u64>();
         let admin = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -733,9 +733,9 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -769,9 +769,9 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -820,9 +820,9 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -870,9 +870,9 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -933,9 +933,9 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -998,9 +998,9 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -1049,9 +1049,9 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -1121,9 +1121,9 @@ mod tests {
         let alice = Address::random();
         let funder = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -1181,12 +1181,12 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
 
         // Setup and start stream in a scope to release the borrow
         let (stream_id, end_time) = {
             let mut token = TIP20Token::new(1, &mut storage);
-            token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
             token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
             let mint_amount = U256::from(1000e18);
@@ -1248,12 +1248,12 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
 
         // Setup and start stream in a scope to release the borrow
         let (stream_id, end_time) = {
             let mut token = TIP20Token::new(1, &mut storage);
-            token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
             token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
             let mint_amount = U256::from(1000e18);
@@ -1311,10 +1311,10 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let admin = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
 
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 

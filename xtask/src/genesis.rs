@@ -27,8 +27,8 @@ use tempo_contracts::{
 };
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS,
-    linking_usd::{LinkingUSD, TRANSFER_ROLE},
+    PATH_USD_ADDRESS,
+    path_usd::PathUSD,
     nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
     storage::{ContractStorage, evm::EvmPrecompileStorageProvider},
@@ -135,8 +135,8 @@ impl GenesisArgs {
         println!("Initializing registry");
         initialize_registry(&mut evm)?;
 
-        println!("Initializing LinkingUSD");
-        initialize_linking_usd(admin, &addresses, &mut evm)?;
+        println!("Initializing PathUSD");
+        initialize_path_usd(admin, &addresses, &mut evm)?;
 
         let (_, alpha_token_address) = create_and_mint_token(
             "AlphaUSD",
@@ -187,7 +187,7 @@ impl GenesisArgs {
         println!("Minting pairwise FeeAMM liquidity");
         mint_pairwise_liquidity(
             alpha_token_address,
-            vec![LINKING_USD_ADDRESS, beta_token_address, theta_token_address],
+            vec![PATH_USD_ADDRESS, beta_token_address, theta_token_address],
             U256::from(10u64.pow(10)),
             admin,
             &mut evm,
@@ -354,7 +354,7 @@ fn create_and_mint_token(
                     name: name.into(),
                     symbol: symbol.into(),
                     currency: currency.into(),
-                    quoteToken: LINKING_USD_ADDRESS,
+                    quoteToken: PATH_USD_ADDRESS,
                     admin,
                 },
             )
@@ -399,7 +399,7 @@ fn create_and_mint_token(
     Ok((token_id, token.address()))
 }
 
-fn initialize_linking_usd(
+fn initialize_path_usd(
     admin: Address,
     recipients: &[Address],
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
@@ -408,15 +408,15 @@ fn initialize_linking_usd(
     let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
     let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
-    let mut linking_usd = LinkingUSD::new(&mut provider);
-    linking_usd
+    let mut path_usd = PathUSD::new(&mut provider);
+    path_usd
         .initialize(admin)
-        .expect("LinkingUSD initialization should succeed");
+        .expect("PathUSD initialization should succeed");
 
-    linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+    path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
     for recipient in recipients.iter().progress() {
-        linking_usd
+        path_usd
             .mint(
                 admin,
                 ITIP20::mintCall {
@@ -424,7 +424,7 @@ fn initialize_linking_usd(
                     amount: U256::from(u64::MAX),
                 },
             )
-            .expect("Could not mint linkingUSD");
+            .expect("Could not mint pathUSD");
     }
 
     Ok(())
@@ -465,13 +465,13 @@ fn initialize_fee_manager(
             .expect("Could not set fee token");
     }
 
-    // Set validator fee tokens to linking USD
+    // Set validator fee tokens to path USD
     for validator in validators {
         fee_manager
             .set_validator_token(
                 validator,
                 IFeeManager::setValidatorTokenCall {
-                    token: LINKING_USD_ADDRESS,
+                    token: PATH_USD_ADDRESS,
                 },
                 // use random address to avoid `CannotChangeWithinBlock` error
                 Address::random(),

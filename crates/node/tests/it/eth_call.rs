@@ -20,7 +20,7 @@ use tempo_contracts::precompiles::{
     ITIPFeeAMM, UnknownFunctionSelector,
 };
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS, TIP_ACCOUNT_REGISTRAR, storage::slots::mapping_slot, tip20,
+    PATH_USD_ADDRESS, TIP_ACCOUNT_REGISTRAR, storage::slots::mapping_slot, tip20,
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -296,7 +296,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
         IFeeManager::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Supply liquidity to enable fee token swapping
-    let validator_token_address = LINKING_USD_ADDRESS;
+    let validator_token_address = PATH_USD_ADDRESS;
 
     let fee_amm = ITIPFeeAMM::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
 

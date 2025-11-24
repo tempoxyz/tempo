@@ -133,7 +133,7 @@ mod tests {
     use super::*;
     use crate::{
         error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
-        tip20::tests::initialize_linking_usd,
+        tip20::tests::initialize_path_usd,
     };
     use tempo_chainspec::hardfork::TempoHardfork;
 
@@ -141,7 +141,7 @@ mod tests {
     fn test_create_token() {
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
-        initialize_linking_usd(&mut storage, sender).unwrap();
+        initialize_path_usd(&mut storage, sender).unwrap();
 
         let mut factory = TIP20Factory::new(&mut storage);
 
@@ -152,7 +152,7 @@ mod tests {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
             currency: "USD".to_string(),
-            quoteToken: crate::LINKING_USD_ADDRESS,
+            quoteToken: crate::PATH_USD_ADDRESS,
             admin: sender,
         };
 
@@ -174,7 +174,7 @@ mod tests {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
             currency: "USD".to_string(),
-            quoteToken: crate::LINKING_USD_ADDRESS,
+            quoteToken: crate::PATH_USD_ADDRESS,
             admin: sender,
         });
         assert_eq!(factory_events[0], expected_event_0.into_log_data());
@@ -186,7 +186,7 @@ mod tests {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
             currency: "USD".to_string(),
-            quoteToken: crate::LINKING_USD_ADDRESS,
+            quoteToken: crate::PATH_USD_ADDRESS,
             admin: sender,
         });
 
@@ -252,7 +252,7 @@ mod tests {
         // Test the off-by-one bug fix: using token_id as quote token should be rejected post-Moderato
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let sender = Address::random();
-        initialize_linking_usd(&mut storage, sender).unwrap();
+        initialize_path_usd(&mut storage, sender).unwrap();
 
         let mut factory = TIP20Factory::new(&mut storage);
         factory
@@ -288,7 +288,7 @@ mod tests {
         // Using a TIP20 address with ID > current token_id should fail (not yet created)
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let sender = Address::random();
-        initialize_linking_usd(&mut storage, sender).unwrap();
+        initialize_path_usd(&mut storage, sender).unwrap();
 
         let mut factory = TIP20Factory::new(&mut storage);
         factory
@@ -331,7 +331,7 @@ mod tests {
         // Test the off-by-one bug: using token_id as quote token is allowed pre-Moderato (buggy behavior)
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let sender = Address::random();
-        initialize_linking_usd(&mut storage, sender).unwrap();
+        initialize_path_usd(&mut storage, sender).unwrap();
 
         let mut factory = TIP20Factory::new(&mut storage);
         factory

@@ -3,8 +3,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod error;
-use std::path::Path;
-
 pub use error::Result;
 use tempo_chainspec::hardfork::TempoHardfork;
 pub mod nonce;
@@ -51,7 +49,7 @@ use revm::{
 };
 
 pub use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, NONCE_PRECOMPILE_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
+    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     TIP20_REWARDS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
 };
