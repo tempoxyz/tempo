@@ -11,6 +11,10 @@ use reth_transaction_pool::{
 };
 use tempo_revm::TempoStateAccess;
 
+// Reject AA transactions where `valid_after` is too far in the future to prevent mempool DOS.
+// ref: <https://github.com/tempoxyz/tempo/issues/1009>
+const MAX_VALID_AFTER_DISTANCE_SECS: u64 = 3600;
+
 /// Validator for Tempo transactions.
 #[derive(Debug)]
 pub struct TempoTransactionValidator<Client> {
@@ -59,6 +63,29 @@ where
                 *transaction.hash(),
                 InvalidTransactionError::TxTypeNotSupported.into(),
             );
+        }
+
+        // Reject AA transactions where `valid_after` is too far in the future to prevent mempool DOS.
+        // ref: <https://github.com/tempoxyz/tempo/issues/1009>
+        if let Some(tx) = transaction.inner().as_aa()
+            && let Some(valid_after) = tx.tx().valid_after
+        {
+            let current_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before UNIX EPOCH")
+                .as_secs();
+            let max_allowed = current_time.saturating_add(MAX_VALID_AFTER_DISTANCE_SECS);
+            if valid_after > max_allowed {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(
+                        TempoPoolTransactionError::InvalidValidAfter {
+                            valid_after,
+                            max_allowed,
+                        },
+                    ),
+                );
+            }
         }
 
         let fee_payer = match transaction.inner().fee_payer(transaction.sender()) {
@@ -242,6 +269,56 @@ mod tests {
         TempoPooledTransaction::new(tx.try_into_recovered().unwrap())
     }
 
+    /// Helper function to create an AA transaction with the given `valid_after` timestamp
+    fn create_aa_transaction(valid_after: Option<u64>) -> TempoPooledTransaction {
+        use alloy_primitives::{Signature, TxKind, address};
+        use tempo_primitives::transaction::{
+            TxAA, aa_signature::AASignature, aa_signed::AASigned, account_abstraction::Call,
+        };
+
+        let tx_aa = TxAA {
+            chain_id: 1,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 2_000_000_000,
+            gas_limit: 100_000,
+            calls: vec![Call {
+                to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
+                value: U256::ZERO,
+                input: alloy_primitives::Bytes::new(),
+            }],
+            nonce_key: U256::ZERO,
+            nonce: 0,
+            fee_token: Some(address!("0000000000000000000000000000000000000002")),
+            fee_payer_signature: None,
+            valid_after,
+            valid_before: None,
+            access_list: Default::default(),
+            aa_authorization_list: vec![],
+        };
+
+        let signed_tx =
+            AASigned::new_unhashed(tx_aa, AASignature::Secp256k1(Signature::test_signature()));
+        let envelope: TempoTxEnvelope = signed_tx.into();
+        let recovered = envelope.try_into_recovered().unwrap();
+        TempoPooledTransaction::new(recovered)
+    }
+
+    /// Helper function to setup validator with the given transaction
+    fn setup_validator(
+        transaction: &TempoPooledTransaction,
+    ) -> TempoTransactionValidator<MockEthProvider> {
+        let provider = MockEthProvider::default();
+        provider.add_account(
+            transaction.sender(),
+            ExtendedAccount::new(transaction.nonce(), alloy_primitives::U256::ZERO),
+        );
+
+        let inner = EthTransactionValidatorBuilder::new(provider)
+            .disable_balance_check()
+            .build(InMemoryBlobStore::default());
+        TempoTransactionValidator::new(inner)
+    }
+
     #[tokio::test]
     async fn test_some_balance() {
         let transaction = get_transaction(Some(U256::from(1)));
@@ -267,6 +344,61 @@ mod tests {
             ),);
         } else {
             panic!("Expected Invalid outcome with InsufficientFunds error");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_aa_valid_after_validation() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Test case 1: No `valid_after`
+        let tx_no_valid_after = create_aa_transaction(None);
+        let validator = setup_validator(&tx_no_valid_after);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_no_valid_after)
+            .await;
+
+        if let TransactionValidationOutcome::Invalid(_, err) = outcome {
+            let error_msg = format!("{}", err);
+            assert!(
+                !error_msg.contains("valid_after timestamp")
+                    || !error_msg.contains("too far in the future")
+            );
+        }
+
+        // Test case 2: `valid_after` within limit (30 minutes)
+        let tx_within_limit = create_aa_transaction(Some(current_time + 1800));
+        let validator = setup_validator(&tx_within_limit);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_within_limit)
+            .await;
+
+        if let TransactionValidationOutcome::Invalid(_, err) = outcome {
+            let error_msg = format!("{}", err);
+            assert!(
+                !error_msg.contains("valid_after timestamp")
+                    || !error_msg.contains("too far in the future")
+            );
+        }
+
+        // Test case 3: `valid_after` beyond limit (2 hours)
+        let tx_too_far = create_aa_transaction(Some(current_time + 7200));
+        let validator = setup_validator(&tx_too_far);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_too_far)
+            .await;
+
+        if let TransactionValidationOutcome::Invalid(_, err) = outcome {
+            let error_msg = format!("{}", err);
+            assert!(
+                error_msg.contains("valid_after timestamp")
+                    && error_msg.contains("too far in the future")
+            );
+        } else {
+            panic!("Expected Invalid outcome with InvalidValidAfter error");
         }
     }
 }
