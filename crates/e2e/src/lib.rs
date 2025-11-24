@@ -189,6 +189,69 @@ pub struct Setup {
     pub epoch_length: u64,
 
     pub connect_execution_layer_nodes: bool,
+
+    pub allegretto_timestamp: Option<u64>,
+}
+
+impl Setup {
+    pub fn new() -> Self {
+        Self {
+            how_many_signers: 4,
+            how_many_verifiers: 0,
+            seed: 0,
+            linkage: Link {
+                latency: Duration::from_millis(10),
+                jitter: Duration::from_millis(1),
+                success_rate: 1.0,
+            },
+            epoch_length: 20,
+            connect_execution_layer_nodes: false,
+            allegretto_timestamp: None,
+        }
+    }
+
+    pub fn how_many_signers(self, how_many_signers: u32) -> Self {
+        Self {
+            how_many_signers,
+            ..self
+        }
+    }
+
+    pub fn how_many_verifiers(self, how_many_verifiers: u32) -> Self {
+        Self {
+            how_many_verifiers,
+            ..self
+        }
+    }
+
+    pub fn seed(self, seed: u64) -> Self {
+        Self { seed, ..self }
+    }
+
+    pub fn linkage(self, linkage: Link) -> Self {
+        Self { linkage, ..self }
+    }
+
+    pub fn epoch_length(self, epoch_length: u64) -> Self {
+        Self {
+            epoch_length,
+            ..self
+        }
+    }
+
+    pub fn connect_execution_layer_nodes(self) -> Self {
+        Self {
+            connect_execution_layer_nodes: true,
+            ..self
+        }
+    }
+
+    pub fn allegretto_timestamp(self, allegretto_timestamp: u64) -> Self {
+        Self {
+            allegretto_timestamp: Some(allegretto_timestamp),
+            ..self
+        }
+    }
 }
 
 pub async fn setup_validators(
@@ -200,6 +263,7 @@ pub async fn setup_validators(
         seed,
         epoch_length,
         connect_execution_layer_nodes,
+        allegretto_timestamp,
         ..
     }: Setup,
 ) -> (Vec<PreparedNode>, Oracle<PublicKey>) {
@@ -246,7 +310,10 @@ pub async fn setup_validators(
         Vec::with_capacity((how_many_signers + how_many_verifiers) as usize);
     for key in &private_keys {
         let execution_node = execution_runtime
-            .spawn_node(&format!("{EXECUTION_NODE_PREFIX}-{}", key.public_key()))
+            .spawn_node(
+                &format!("{EXECUTION_NODE_PREFIX}-{}", key.public_key()),
+                allegretto_timestamp,
+            )
             .await
             .expect("must be able to spawn nodes on the runtime");
 
@@ -278,6 +345,7 @@ pub async fn setup_validators(
 
         let consensus_config = tempo_commonware_node::consensus::Builder {
             context: context.with_label(&uid),
+            epoch_length,
             fee_recipient: alloy_primitives::Address::ZERO,
             execution_node: execution_node.node.clone(),
             blocker: oracle.control(public_key.clone()),
@@ -318,6 +386,7 @@ pub async fn setup_validators(
 
         let consensus_config = tempo_commonware_node::consensus::Builder {
             context: context.with_label(&uid),
+            epoch_length,
             fee_recipient: alloy_primitives::Address::ZERO,
             execution_node: execution_node.node.clone(),
             blocker: oracle.control(public_key.clone()),

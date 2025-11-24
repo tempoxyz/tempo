@@ -29,6 +29,7 @@ fn assert_static_transitions(how_many: u32, epoch_length: u64, transitions: u64)
         linkage,
         epoch_length,
         connect_execution_layer_nodes: false,
+        allegretto_timestamp: None,
     };
 
     let mut epoch_reached = false;
@@ -97,6 +98,7 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
             linkage: linkage.clone(),
             epoch_length,
             connect_execution_layer_nodes: false,
+            allegretto_timestamp: None,
         };
 
         let (mut nodes, mut oracle) =
@@ -240,6 +242,7 @@ fn validator_is_added() {
             linkage: linkage.clone(),
             epoch_length,
             connect_execution_layer_nodes: false,
+            allegretto_timestamp: None,
         };
 
         let (mut nodes, mut oracle) =
@@ -399,6 +402,7 @@ fn validator_is_removed() {
             linkage: linkage.clone(),
             epoch_length,
             connect_execution_layer_nodes: false,
+            allegretto_timestamp: None,
         };
 
         let (nodes, mut oracle) =

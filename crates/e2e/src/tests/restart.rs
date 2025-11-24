@@ -239,6 +239,7 @@ fn node_recovers_after_finalizing_ceremony() {
 
     let setup = Setup {
         how_many_signers: 4,
+        how_many_verifiers: 4,
         seed: 0,
         linkage: Link {
             latency: Duration::from_millis(10),

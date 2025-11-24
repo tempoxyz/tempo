@@ -10,19 +10,13 @@ use alloy::{
     },
     transports::http::reqwest::Url,
 };
-use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::Address;
 use commonware_codec::Encode;
-use commonware_cryptography::{
-    bls12381::primitives::{poly::Public, variant::MinSig},
-    ed25519::PublicKey,
-};
-use commonware_utils::set::OrderedAssociated;
+use commonware_cryptography::ed25519::PublicKey;
 use eyre::WrapErr as _;
 use futures::StreamExt;
 use reth_db::mdbx::DatabaseArguments;
 use reth_ethereum::{
-    evm::revm::inspector::JournalExt as _,
     network::{
         Peers,
         api::{
@@ -46,11 +40,7 @@ use tempfile::TempDir;
 use tempo_chainspec::TempoChainSpec;
 use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
 use tempo_node::{TempoFullNode, node::TempoNode};
-use tempo_precompiles::{
-    VALIDATOR_CONFIG_ADDRESS,
-    storage::evm::EvmPrecompileStorageProvider,
-    validator_config::{IValidatorConfig, ValidatorConfig},
-};
+use tempo_precompiles::{VALIDATOR_CONFIG_ADDRESS, validator_config::IValidatorConfig};
 
 const ADMIN_INDEX: u32 = 0;
 const VALIDATOR_START_INDEX: u32 = 1;
@@ -149,11 +139,18 @@ impl ExecutionRuntime {
                             let _ = response.send(receipt);
                         }
                         Message::SpawnNode(spawn_node) => {
-                            let SpawnNode { name, response } = *spawn_node;
-                            let node =
-                                launch_execution_node(task_manager.executor(), datadir.join(name))
-                                    .await
-                                    .expect("must be able to launch execution nodes");
+                            let SpawnNode {
+                                name,
+                                response,
+                                allegretto_timestamp,
+                            } = *spawn_node;
+                            let node = launch_execution_node(
+                                task_manager.executor(),
+                                allegretto_timestamp,
+                                datadir.join(name),
+                            )
+                            .await
+                            .expect("must be able to launch execution nodes");
                             response.send(node).expect(
                                 "receiver must hold the return channel until the node is returned",
                             );
@@ -170,15 +167,6 @@ impl ExecutionRuntime {
             rt,
             _tempdir: tempdir,
             to_runtime,
-        }
-    }
-
-    /// Returns a handle to this runtime.
-    ///
-    /// Can be used to spawn nodes.
-    pub fn handle(&self) -> ExecutionRuntimeHandle {
-        ExecutionRuntimeHandle {
-            to_runtime: self.to_runtime.clone(),
         }
     }
 
@@ -253,35 +241,23 @@ impl ExecutionRuntime {
     }
 
     /// Requests a new execution node and blocks until its returned.
-    pub async fn spawn_node(&self, name: &str) -> eyre::Result<ExecutionNode> {
+    pub async fn spawn_node(
+        &self,
+        name: &str,
+        allegretto_timestamp: Option<u64>,
+    ) -> eyre::Result<ExecutionNode> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.to_runtime
             .send(
                 SpawnNode {
                     name: name.to_string(),
+                    allegretto_timestamp,
                     response: tx,
                 }
                 .into(),
             )
             .wrap_err("the execution runtime went away")?;
         rx.await.wrap_err(
-            "the execution runtime dropped the response channel before sending an execution node",
-        )
-    }
-
-    /// Requests a new execution node and blocks until its returned.
-    pub fn spawn_node_blocking(&self, name: &str) -> eyre::Result<ExecutionNode> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.to_runtime
-            .send(
-                SpawnNode {
-                    name: name.to_string(),
-                    response: tx,
-                }
-                .into(),
-            )
-            .wrap_err("the execution runtime went away")?;
-        rx.blocking_recv().wrap_err(
             "the execution runtime dropped the response channel before sending an execution node",
         )
     }
@@ -301,49 +277,6 @@ impl ExecutionRuntime {
 impl Default for ExecutionRuntime {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// A handle to the execution runtime.
-///
-/// Can be used to spawn nodes.
-pub struct ExecutionRuntimeHandle {
-    to_runtime: tokio::sync::mpsc::UnboundedSender<Message>,
-}
-
-impl ExecutionRuntimeHandle {
-    /// Requests a new execution node and blocks until its returned.
-    pub async fn spawn_node(&self, name: &str) -> eyre::Result<ExecutionNode> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.to_runtime
-            .send(
-                SpawnNode {
-                    name: name.to_string(),
-                    response: tx,
-                }
-                .into(),
-            )
-            .wrap_err("the execution runtime went away")?;
-        rx.await.wrap_err(
-            "the execution runtime dropped the response channel before sending an execution node",
-        )
-    }
-
-    /// Requests a new execution node and blocks until its returned.
-    pub fn spawn_node_blocking(&self, name: &str) -> eyre::Result<ExecutionNode> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.to_runtime
-            .send(
-                SpawnNode {
-                    name: name.to_string(),
-                    response: tx,
-                }
-                .into(),
-            )
-            .wrap_err("the execution runtime went away")?;
-        rx.blocking_recv().wrap_err(
-            "the execution runtime dropped the response channel before sending an execution node",
-        )
     }
 }
 
@@ -415,6 +348,7 @@ fn chainspec() -> Arc<TempoChainSpec> {
 /// 3. consensus config is not necessary
 pub async fn launch_execution_node<P: AsRef<Path>>(
     executor: TaskExecutor,
+    allegretto_timestamp: Option<u64>,
     datadir: P,
 ) -> eyre::Result<ExecutionNode> {
     let node_config = NodeConfig::new(chainspec())
@@ -486,6 +420,7 @@ impl From<SpawnNode> for Message {
 #[derive(Debug)]
 struct SpawnNode {
     name: String,
+    allegretto_timestamp: Option<u64>,
     response: tokio::sync::oneshot::Sender<ExecutionNode>,
 }
 
