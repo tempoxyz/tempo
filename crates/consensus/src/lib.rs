@@ -31,7 +31,7 @@ const END_OF_BLOCK_SYSTEM_TX_ADDRESSES: [Address; END_OF_BLOCK_SYSTEM_TX_COUNT] 
 ];
 
 /// How far in the future the block timestamp can be.
-pub const ALLOWED_FUTURE_BLOCK_TIME_SECONDS: u64 = 1;
+pub const ALLOWED_FUTURE_BLOCK_TIME_SECONDS: u64 = 3;
 
 /// Tempo consensus implementation.
 #[derive(Debug, Clone)]
