@@ -6,14 +6,9 @@ use alloy::{
         utils::secret_key_to_address,
     },
 };
-use commonware_codec::Encode as _;
-use commonware_cryptography::{
-    PrivateKeyExt as _, Signer as _, bls12381::primitives::group::Share, ed25519,
-};
-use commonware_utils::set::OrderedAssociated;
+use alloy_primitives::Bytes;
 use eyre::WrapErr as _;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
-use rand::SeedableRng as _;
 use rayon::prelude::*;
 use reth_evm::{
     EvmEnv, EvmFactory, EvmInternals,
@@ -29,7 +24,6 @@ use tempo_contracts::{
     MULTICALL_ADDRESS, PERMIT2_ADDRESS, SAFE_DEPLOYER_ADDRESS,
     contracts::ARACHNID_CREATE2_FACTORY_BYTECODE,
 };
-use tempo_dkg_onchain_artifacts::PublicOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     LINKING_USD_ADDRESS,
@@ -42,10 +36,8 @@ use tempo_precompiles::{
     tip20_factory::{ITIP20Factory, TIP20Factory},
     tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
-    validator_config::{IValidatorConfig, ValidatorConfig},
+    validator_config::ValidatorConfig,
 };
-
-use crate::AddrOrFqdn;
 
 /// Generate genesis allocation file for testing
 #[derive(Debug, clap::Args)]
@@ -86,16 +78,6 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value_t = 0)]
     adagio_time: u64,
 
-    /// A list of comma-separated socket addresses or host names with port.
-    /// Example: 127.0.0.1:8000,network-service:9000,0.0.0.0:1024
-    #[arg(long, num_args = 1.., value_delimiter = ',')]
-    validators: Vec<AddrOrFqdn>,
-
-    /// The length of an epoch. The default value of 302_400 blocks is about
-    /// 1 week of blocks, assuming a block time of 2s.
-    #[arg(long, default_value_t = 302_400)]
-    epoch_length: u64,
-
     /// A fixed seed to generate all signing keys and group shares. This is
     /// intended for use in development and testing. Use at your own peril.
     #[arg(long)]
@@ -107,9 +89,7 @@ impl GenesisArgs {
     ///
     /// It creates a new genesis allocation for the configured accounts.
     /// And creates accounts for system contracts.
-    pub(crate) async fn generate_genesis_and_consensus_config(
-        self,
-    ) -> eyre::Result<(Genesis, ConsensusConfig)> {
+    pub(crate) async fn generate_genesis(self) -> eyre::Result<Genesis> {
         println!("Generating {:?} accounts", self.accounts);
 
         let addresses: Vec<Address> = (0..self.accounts)
@@ -172,23 +152,15 @@ impl GenesisArgs {
         println!("Initializing TIP20RewardsRegistry");
         initialize_tip20_rewards_registry(&mut evm)?;
 
-        println!("Initializing consensus config and validator config");
-        let consensus_config = construct_consensus_config_and_initialize_validator_config(
-            admin,
-            &addresses[1..], // skip admin
-            self.validators,
-            self.seed,
-            &mut evm,
-        )?;
+        println!("Initializing validator config");
+        initialize_validator_config(admin, &mut evm)?;
 
         println!("Initializing fee manager");
         initialize_fee_manager(
             alpha_token_address,
             addresses.clone(),
-            consensus_config
-                .chain_addresses()
-                .chain(std::iter::once(self.coinbase))
-                .collect(),
+            // TODO: also populate validators here, once the logic is back.
+            vec![self.coinbase],
             &mut evm,
         );
 
@@ -317,29 +289,18 @@ impl GenesisArgs {
             "adagioTime".to_string(),
             serde_json::json!(self.adagio_time),
         );
-        chain_config.extra_fields.insert(
-            "epochLength".to_string(),
-            serde_json::json!(self.epoch_length),
-        );
 
         let mut genesis = Genesis::default()
             .with_gas_limit(self.gas_limit)
             .with_base_fee(Some(self.base_fee_per_gas))
             .with_nonce(0x42)
-            .with_extra_data(
-                consensus_config
-                    .initial_dkg_outcome
-                    .encode()
-                    .freeze()
-                    .to_vec()
-                    .into(),
-            )
+            .with_extra_data(Bytes::from_static(b"tempo-genesis"))
             .with_coinbase(self.coinbase);
 
         genesis.alloc = genesis_alloc;
         genesis.config = chain_config;
 
-        Ok((genesis, consensus_config))
+        Ok(genesis)
     }
 }
 
@@ -541,48 +502,10 @@ fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
 
 /// Initializes the initial set of validators with the specified validator config.
 /// Returns a vec of the validator public keys
-fn construct_consensus_config_and_initialize_validator_config(
+fn initialize_validator_config(
     admin: Address,
-    chain_addresses: &[Address],
-    net_addresses: Vec<AddrOrFqdn>,
-    seed: Option<u64>,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
-) -> eyre::Result<ConsensusConfig> {
-    println!("Creating data for all validators: `{net_addresses:?}`");
-    let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
-
-    let threshold = commonware_utils::quorum(net_addresses.len() as u32);
-    let (polynomial, shares) = commonware_cryptography::bls12381::dkg::ops::generate_shares::<
-        _,
-        commonware_cryptography::bls12381::primitives::variant::MinSig,
-    >(&mut rng, None, net_addresses.len() as u32, threshold);
-
-    // XXX: This is important: the public key shares must be associated with
-    // the generated public keys exactly according to their partial order.
-    // Commonware's OrderedAssociated enforces this partial order.
-    let keys = std::iter::repeat_with(|| {
-        let private = ed25519::PrivateKey::from_rng(&mut rng);
-        let public = private.public_key();
-        (public, private)
-    })
-    .take(net_addresses.len())
-    .collect::<OrderedAssociated<_, _>>();
-
-    let mut validators = Vec::with_capacity(net_addresses.len());
-    for i in 0..net_addresses.len() {
-        validators.push((
-            keys.keys()[i].clone(),
-            Validator {
-                net_address: net_addresses[i].clone(),
-                chain_address: chain_addresses[i],
-                private_key: keys.values()[i].clone(),
-                public_key: keys.keys()[i].clone(),
-                share: shares[i].clone(),
-            },
-        ));
-    }
-    let validators: OrderedAssociated<_, _> = validators.into();
-
+) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
     let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
@@ -591,37 +514,7 @@ fn construct_consensus_config_and_initialize_validator_config(
     validator_config
         .initialize(admin)
         .wrap_err("failed to initialize validator config contract")?;
-
-    for Validator {
-        net_address,
-        chain_address,
-        public_key,
-        ..
-    } in validators.values().iter().progress()
-    {
-        validator_config
-            .add_validator(
-                admin,
-                IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: *chain_address,
-                    publicKey: public_key.encode().freeze().as_ref().try_into().unwrap(),
-                    active: true,
-                    inboundAddress: net_address.to_string(),
-                    outboundAddress: "127.0.0.1:8000".to_string(),
-                },
-            )
-            .wrap_err("failed to call addValidator smart contract")?;
-    }
-    let initial_dkg_outcome = PublicOutcome {
-        epoch: 0,
-        participants: validators.keys().clone(),
-        public: polynomial,
-    };
-
-    Ok(ConsensusConfig {
-        validators,
-        initial_dkg_outcome,
-    })
+    Ok(())
 }
 
 fn mint_pairwise_liquidity(
@@ -641,34 +534,5 @@ fn mint_pairwise_liquidity(
         fee_manager
             .mint(admin, a_token, b_token_address, amount, amount, admin)
             .expect("Could not mint A -> B Liquidity pool");
-    }
-}
-
-pub(crate) struct ConsensusConfig {
-    pub(crate) validators: OrderedAssociated<ed25519::PublicKey, Validator>,
-    pub(crate) initial_dkg_outcome: PublicOutcome,
-}
-
-impl ConsensusConfig {
-    fn chain_addresses(&self) -> impl Iterator<Item = Address> {
-        self.validators.values().iter().map(|v| v.chain_address)
-    }
-}
-
-pub(crate) struct Validator {
-    pub(crate) net_address: AddrOrFqdn,
-    pub(crate) chain_address: Address,
-    pub(crate) private_key: ed25519::PrivateKey,
-    pub(crate) public_key: ed25519::PublicKey,
-    pub(crate) share: Share,
-}
-
-impl Validator {
-    pub(crate) fn encode_ed25519_private_key(&self) -> String {
-        const_hex::encode(self.private_key.encode())
-    }
-
-    pub(crate) fn encode_bls12381_private_key_share(&self) -> String {
-        const_hex::encode(self.share.encode())
     }
 }

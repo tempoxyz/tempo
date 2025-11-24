@@ -7,7 +7,7 @@ use reth_network_peers::pk2id;
 use secp256k1::SECP256K1;
 use serde::Serialize;
 
-use crate::genesis_args::GenesisArgs;
+use crate::{generate_consensus_config::ConsensusArgs, genesis_args::GenesisArgs};
 
 /// Generates a config file to run a bunch of validators locally.
 ///
@@ -33,7 +33,10 @@ pub(crate) struct GenerateDevnet {
     genesis_url: String,
 
     #[clap(flatten)]
-    genesis_args: GenesisArgs,
+    genesis_args: Option<GenesisArgs>,
+
+    #[clap(flatten)]
+    consensus_args: ConsensusArgs,
 }
 
 impl GenerateDevnet {
@@ -44,15 +47,19 @@ impl GenerateDevnet {
             image_tag,
             genesis_url,
             genesis_args,
+            consensus_args,
         } = self;
 
-        // Copy the seed here before genesis_args are consumed.
-        let seed = genesis_args.seed;
-
-        let (genesis, consensus_config) = genesis_args
-            .generate_genesis_and_consensus_config()
-            .await
-            .wrap_err("failed to generate genesis")?;
+        let genesis = if let Some(genesis_args) = genesis_args {
+            Some(
+                genesis_args
+                    .generate_genesis()
+                    .await
+                    .wrap_err("failed to generate genesis")?,
+            )
+        } else {
+            None
+        };
 
         std::fs::create_dir_all(&output).wrap_err_with(|| {
             format!("failed creating target directory at `{}`", output.display())
@@ -87,37 +94,41 @@ impl GenerateDevnet {
             );
         }
 
+        let seed = consensus_args.seed;
+        let consensus_config = consensus_args
+            .generate_consensus_config()
+            .wrap_err("failed generating consensus config")?;
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
         let mut execution_peers = vec![];
 
         let devmode = consensus_config.validators.len() == 1;
 
         let mut all_configs = vec![];
-        for validator in consensus_config.validators.values() {
+        for validator in consensus_config.validators {
             let (execution_p2p_signing_key, execution_p2p_identity) = {
                 let (sk, pk) = SECP256K1.generate_keypair(&mut rng);
                 (sk, pk2id(&pk))
             };
 
-            let consensus_p2p_port = validator.net_address.port();
+            let consensus_p2p_port = validator.addr.port();
             let execution_p2p_port = consensus_p2p_port + 1;
             let consensus_metrics_port = consensus_p2p_port + 2;
 
             execution_peers.push(format!(
                 "enode://{execution_p2p_identity:x}@{}",
-                validator.net_address.clone().with_port(execution_p2p_port),
+                validator.addr.clone().with_port(execution_p2p_port),
             ));
 
             all_configs.push((
-                validator,
+                validator.clone(),
                 ConfigOutput {
                     execution_genesis_url: genesis_url.clone(),
 
                     devmode,
                     node_image_tag: image_tag.clone(),
 
-                    consensus_on_disk_signing_key: validator.encode_ed25519_private_key(),
-                    consensus_on_disk_signing_share: validator.encode_bls12381_private_key_share(),
+                    consensus_on_disk_signing_key: validator.signing_key.to_string(),
+                    consensus_on_disk_signing_share: validator.signing_share.to_string(),
 
                     // FIXME(janis): this should not be zero
                     consensus_fee_recipient: Address::ZERO,
@@ -133,7 +144,7 @@ impl GenerateDevnet {
                 },
             ));
 
-            println!("created a config for validator `{}`", validator.net_address);
+            println!("created a config for validator `{}`", validator.addr);
         }
 
         for (validator, mut config) in all_configs {
@@ -141,7 +152,7 @@ impl GenerateDevnet {
             let config_json = serde_json::to_string_pretty(&config)
                 .wrap_err("failed to convert config to json")?;
             // TODO: use Path::with_added_extension once we are on 1.91
-            let dst = output.join(format!("{}.json", validator.net_address));
+            let dst = output.join(format!("{}.json", validator.addr));
             std::fs::write(&dst, config_json).wrap_err_with(|| {
                 format!("failed to write deployment config to `{}`", dst.display())
             })?;
@@ -149,12 +160,14 @@ impl GenerateDevnet {
         }
         eprintln!("config files written");
 
-        let genesis_ser = serde_json::to_string_pretty(&genesis)
-            .wrap_err("failed serializing genesis as json")?;
-        let dst = output.join("genesis.json");
-        std::fs::write(&dst, &genesis_ser)
-            .wrap_err_with(|| format!("failed writing genesis to `{}`", dst.display()))?;
-        println!("wrote genesis to `{}`", dst.display());
+        if let Some(genesis) = genesis {
+            let genesis_ser = serde_json::to_string_pretty(&genesis)
+                .wrap_err("failed serializing genesis as json")?;
+            let dst = output.join("genesis.json");
+            std::fs::write(&dst, &genesis_ser)
+                .wrap_err_with(|| format!("failed writing genesis to `{}`", dst.display()))?;
+            println!("wrote genesis to `{}`", dst.display());
+        }
         Ok(())
     }
 }

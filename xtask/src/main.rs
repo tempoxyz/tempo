@@ -2,8 +2,8 @@
 use std::net::SocketAddr;
 
 use crate::{
-    generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
-    generate_localnet::GenerateLocalnet,
+    generate_consensus_config::GenerateConsensusConfig, generate_devnet::GenerateDevnet,
+    generate_genesis::GenerateGenesis, generate_localnet::GenerateLocalnet,
 };
 
 use alloy::signers::{
@@ -15,6 +15,7 @@ use commonware_codec::DecodeExt;
 use commonware_cryptography::Signer;
 use eyre::Context;
 
+mod generate_consensus_config;
 mod generate_devnet;
 mod generate_genesis;
 mod generate_localnet;
@@ -24,7 +25,7 @@ mod genesis_args;
 async fn main() -> eyre::Result<()> {
     let args = Args::parse();
     match args.action {
-        // Action::GenerateConfig(cfg) => generate_config(cfg).wrap_err("failed generating config"),
+        Action::GenerateConsensusConfig(cfg) => cfg.run().wrap_err("failed generating config"),
         Action::GenerateGenesis(args) => args.run().await.wrap_err("failed generating genesis"),
         Action::GenerateDevnet(args) => args
             .run()
@@ -54,6 +55,7 @@ struct Args {
     reason = "the variant names map to actual cli inputs and are desired"
 )]
 enum Action {
+    GenerateConsensusConfig(GenerateConsensusConfig),
     GenerateGenesis(GenerateGenesis),
     GenerateDevnet(GenerateDevnet),
     GenerateLocalnet(GenerateLocalnet),
@@ -115,62 +117,4 @@ fn generate_config_to_add_peer(cfg: GenerateAddPeer) -> eyre::Result<()> {
         \\\n--private-key {admin_key} \
         \\\n-r 127.0.0.1:8545");
     Ok(())
-}
-
-#[derive(Debug, Clone)]
-enum AddrOrFqdn {
-    Addr(SocketAddr),
-    HostPort { host: fqdn::FQDN, port: u16 },
-}
-
-impl AddrOrFqdn {
-    pub(crate) fn port(&self) -> u16 {
-        match self {
-            Self::Addr(socket_addr) => socket_addr.port(),
-            Self::HostPort { port, .. } => *port,
-        }
-    }
-
-    pub(crate) fn with_port(self, port: u16) -> Self {
-        match self {
-            Self::Addr(mut socket_addr) => Self::Addr({
-                socket_addr.set_port(port);
-                socket_addr
-            }),
-            Self::HostPort { host, .. } => Self::HostPort { host, port },
-        }
-    }
-}
-
-impl std::fmt::Display for AddrOrFqdn {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Addr(socket_addr) => socket_addr.fmt(f),
-            Self::HostPort { host, port } => write!(f, "{host}:{port}"),
-        }
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("input is not of the form `<host>:<port>` or `<ip>:<port>`")]
-struct NotAddrOrHostPort;
-
-impl std::str::FromStr for AddrOrFqdn {
-    type Err = NotAddrOrHostPort;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s.trim();
-        if let Ok(addr) = s.parse::<SocketAddr>() {
-            return Ok(Self::Addr(addr));
-        }
-
-        if let Some((maybe_host, maybe_port)) = s.rsplit_once(':')
-            && let Ok(host) = maybe_host.parse::<fqdn::FQDN>()
-            && let Ok(port) = maybe_port.parse::<u16>()
-        {
-            return Ok(Self::HostPort { host, port });
-        }
-
-        Err(NotAddrOrHostPort)
-    }
 }

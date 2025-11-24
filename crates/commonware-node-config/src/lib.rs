@@ -134,12 +134,14 @@ enum SigningShareErrorKind {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(try_from = "DeserPeersAndPublicPolynomial")]
+// NOTE: not enforcing any invariants for now. Can be done through the degree
+// of the polynomial.
 pub struct PeersAndPublicPolynomial {
     #[serde(serialize_with = "crate::_serde::polynomial::serialize")]
-    public_polynomial: Public<MinSig>,
+    pub public_polynomial: Public<MinSig>,
 
     #[serde(with = "crate::_serde::peers")]
-    peers: OrderedAssociated<PublicKey, SocketAddrOrFqdnPort>,
+    pub peers: OrderedAssociated<PublicKey, SocketAddrOrFqdnPort>,
 }
 
 impl PeersAndPublicPolynomial {

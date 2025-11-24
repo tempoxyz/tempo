@@ -7,7 +7,7 @@ use reth_network_peers::pk2id;
 use secp256k1::SECP256K1;
 use serde::Serialize;
 
-use crate::genesis_args::GenesisArgs;
+use crate::{generate_consensus_config::ConsensusArgs, genesis_args::GenesisArgs};
 
 /// Generates a config file to run a bunch of validators locally.
 ///
@@ -27,6 +27,9 @@ pub(crate) struct GenerateLocalnet {
 
     #[clap(flatten)]
     genesis_args: GenesisArgs,
+
+    #[clap(flatten)]
+    consensus_args: ConsensusArgs,
 }
 
 impl GenerateLocalnet {
@@ -35,15 +38,19 @@ impl GenerateLocalnet {
             output,
             force,
             genesis_args,
+            consensus_args,
         } = self;
 
         // Copy the seed here before genesis_args are consumed.
         let seed = genesis_args.seed;
 
-        let (genesis, consensus_config) = genesis_args
-            .generate_genesis_and_consensus_config()
+        let genesis = genesis_args
+            .generate_genesis()
             .await
             .wrap_err("failed to generate genesis")?;
+        let consensus_config = consensus_args
+            .generate_consensus_config()
+            .wrap_err("failed to generate consensus config")?;
 
         std::fs::create_dir_all(&output).wrap_err_with(|| {
             format!("failed creating target directory at `{}`", output.display())
@@ -82,25 +89,25 @@ impl GenerateLocalnet {
         let mut trusted_peers = vec![];
 
         let mut all_configs = vec![];
-        for validator in consensus_config.validators.values() {
+        for validator in &consensus_config.validators {
             let (execution_p2p_signing_key, execution_p2p_identity) = {
                 let (sk, pk) = SECP256K1.generate_keypair(&mut rng);
                 (sk, pk2id(&pk))
             };
 
-            let consensus_p2p_port = validator.net_address.port();
+            let consensus_p2p_port = validator.addr.port();
             let execution_p2p_port = consensus_p2p_port + 1;
 
             trusted_peers.push(format!(
                 "enode://{execution_p2p_identity:x}@{}",
-                validator.net_address.clone().with_port(execution_p2p_port),
+                validator.addr.clone().with_port(execution_p2p_port),
             ));
 
             all_configs.push((
-                validator,
+                validator.clone(),
                 ConfigOutput {
-                    consensus_on_disk_signing_key: validator.encode_ed25519_private_key(),
-                    consensus_on_disk_signing_share: validator.encode_bls12381_private_key_share(),
+                    consensus_on_disk_signing_key: validator.signing_key.to_string(),
+                    consensus_on_disk_signing_share: validator.signing_share.to_string(),
 
                     consensus_p2p_port,
                     execution_p2p_port,
@@ -117,11 +124,15 @@ impl GenerateLocalnet {
             .wrap_err_with(|| format!("failed writing genesis to `{}`", genesis_dst.display()))?;
 
         for (validator, config) in all_configs.into_iter() {
-            let target_dir = output.join(validator.net_address.to_string());
-            std::fs::create_dir_all(&target_dir).wrap_err_with(|| {
-                format!("failed creating target directory at `{}`", output.display())
+            let target_dir = validator.dst_dir(&output);
+            std::fs::create_dir(&target_dir).wrap_err_with(|| {
+                format!(
+                    "failed creating target directory to store validator specifici keys at `{}`",
+                    &target_dir.display()
+                )
             })?;
-            let signing_key_dst = target_dir.join("signing.key");
+
+            let signing_key_dst = validator.dst_signing_key(&output);
             std::fs::write(&signing_key_dst, config.consensus_on_disk_signing_key).wrap_err_with(
                 || {
                     format!(
@@ -130,7 +141,7 @@ impl GenerateLocalnet {
                     )
                 },
             )?;
-            let signing_share_dst = target_dir.join("signing.share");
+            let signing_share_dst = validator.dst_signing_share(&output);
             std::fs::write(&signing_share_dst, config.consensus_on_disk_signing_share)
                 .wrap_err_with(|| {
                     format!(
@@ -138,7 +149,7 @@ impl GenerateLocalnet {
                         signing_share_dst.display()
                     )
                 })?;
-            let enode_key_dst = target_dir.join("enode.key");
+            let enode_key_dst = validator.dst_dir(&output).join("enode.key");
             std::fs::write(&enode_key_dst, config.execution_p2p_disc_key).wrap_err_with(|| {
                 format!(
                     "failed writing signing share to `{}`",

@@ -13,7 +13,7 @@ workspace = true
 [dependencies]
 tempo-chainspec.workspace = true
 tempo-contracts.workspace = true
-tempo-dkg-onchain-artifacts.workspace = true
+tempo-commonware-node-config.workspace = true
 tempo-evm.workspace = true
 tempo-precompiles.workspace = true
 
