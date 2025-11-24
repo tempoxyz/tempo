@@ -71,17 +71,14 @@ where
         };
 
         let spec = TempoHardfork::Allegretto;
-        let fee_token = match state_provider.get_fee_token(
-            transaction.inner(),
-            Address::ZERO,
-            fee_payer,
-            spec,
-        ) {
-            Ok(fee_token) => fee_token,
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-            }
-        };
+        let fee_token =
+            match state_provider.get_fee_token(transaction.inner(), Address::ZERO, fee_payer, spec)
+            {
+                Ok(fee_token) => fee_token,
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                }
+            };
 
         // Ensure that fee token is valid.
         match state_provider.is_valid_fee_token(fee_token) {
