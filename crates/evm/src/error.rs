@@ -12,4 +12,8 @@ pub enum TempoEvmError {
     /// Invalid EVM configuration.
     #[error("invalid EVM configuration: {0}")]
     InvalidEvmConfig(String),
+
+    /// No subblock metadata system transaction is found in the block.
+    #[error("couldn't find subblock metadata transaction in block")]
+    NoSubblockMetadataFound,
 }

@@ -343,6 +343,8 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             subblock.parent_hash
         );
 
+        debug!("validating new subblock");
+
         // Spawn task to validate the subblock.
         let node = self.node.clone();
         let validated_subblocks_tx = self.actions_tx.clone();
