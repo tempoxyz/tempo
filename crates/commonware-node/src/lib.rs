@@ -113,6 +113,8 @@ pub async fn run_consensus_stack(
 
         fee_recipient,
 
+        epoch_length: config.epoch_length,
+
         execution_node,
         blocker: oracle.clone(),
         peer_manager: oracle.clone(),

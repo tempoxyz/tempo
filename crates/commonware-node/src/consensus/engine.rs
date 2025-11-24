@@ -26,7 +26,6 @@ use futures::future::try_join_all;
 use rand::{CryptoRng, Rng};
 use tempo_commonware_node_config::SocketAddrOrFqdnPort;
 use tempo_node::TempoFullNode;
-use tracing::info;
 
 use crate::{
     config::{BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES, MARSHAL_LIMIT},
@@ -71,6 +70,8 @@ pub struct Builder<TBlocker, TContext, TPeerManager> {
 
     pub blocker: TBlocker,
     pub peer_manager: TPeerManager,
+
+    pub epoch_length: u64,
 
     pub partition_prefix: String,
     pub signer: PrivateKey,
@@ -119,10 +120,6 @@ where
             },
         );
 
-        let epoch_length = self.execution_node.chain_spec().info.epoch_length();
-
-        info!(epoch_length, "determined epoch length from genesis info");
-
         // Create the buffer pool
         let buffer_pool = PoolRef::new(BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
 
@@ -149,7 +146,7 @@ where
             self.context.with_label("marshal"),
             marshal::Config {
                 scheme_provider: scheme_provider.clone(),
-                epoch_length,
+                epoch_length: self.epoch_length,
                 partition_prefix: self.partition_prefix.clone(),
                 mailbox_size: self.mailbox_size,
                 view_retention_timeout: self
@@ -182,7 +179,7 @@ where
             node: self.execution_node.clone(),
             fee_recipient: self.fee_recipient,
             time_to_build_subblock: self.time_to_build_subblock,
-            epoch_length,
+            epoch_length: self.epoch_length,
         });
 
         let (application, application_mailbox) = application::init(super::application::Config {
@@ -195,7 +192,7 @@ where
             new_payload_wait_time: self.new_payload_wait_time,
             subblocks: subblocks.mailbox(),
             scheme_provider: scheme_provider.clone(),
-            epoch_length,
+            epoch_length: self.epoch_length,
         })
         .await
         .wrap_err("failed initializing application actor")?;
@@ -205,7 +202,7 @@ where
                 application: application_mailbox.clone(),
                 blocker: self.blocker.clone(),
                 buffer_pool: buffer_pool.clone(),
-                epoch_length,
+                epoch_length: self.epoch_length,
                 time_for_peer_response: self.time_for_peer_response,
                 time_to_propose: self.time_to_propose,
                 mailbox_size: self.mailbox_size,
@@ -225,7 +222,7 @@ where
             self.context.with_label("dkg_manager"),
             dkg::manager::Config {
                 epoch_manager: epoch_manager_mailbox,
-                epoch_length,
+                epoch_length: self.epoch_length,
                 execution_node: self.execution_node.clone(),
                 initial_public_polynomial: self.public_polynomial,
                 initial_share: self.share.clone(),

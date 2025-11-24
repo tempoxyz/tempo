@@ -10,7 +10,7 @@ use reth_chainspec::{
     EthereumHardfork, EthereumHardforks, ForkCondition, ForkFilter, ForkId, Hardfork, Hardforks,
     Head,
 };
-use reth_cli::chainspec::{parse_genesis, ChainSpecParser};
+use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
 use reth_ethereum::evm::primitives::eth::spec::EthExecutorSpec;
 use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
@@ -33,9 +33,6 @@ pub struct TempoGenesisInfo {
     /// Timestamp of Allegretto hardfork activation
     #[serde(skip_serializing_if = "Option::is_none")]
     allegretto_time: Option<u64>,
-
-    /// The length of a Tempo epoch as measured in blocks.
-    epoch_length: u64,
 }
 
 impl TempoGenesisInfo {
@@ -46,10 +43,6 @@ impl TempoGenesisInfo {
             .extra_fields
             .deserialize_as::<Self>()
             .unwrap_or_default()
-    }
-
-    pub fn epoch_length(&self) -> u64 {
-        self.epoch_length
     }
 }
 
@@ -271,45 +264,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn epoch_length_is_inserted_from_extra_fields_into_chainspec() {
-        // Create a genesis with Tempo genesis info extra fields in config
-        // (non-standard fields automatically go into extra_fields)
-        let genesis_json = json!({
-            "config": {
-                "chainId": 1337,
-                "homesteadBlock": 0,
-                "eip150Block": 0,
-                "eip155Block": 0,
-                "eip158Block": 0,
-                "byzantiumBlock": 0,
-                "constantinopleBlock": 0,
-                "petersburgBlock": 0,
-                "istanbulBlock": 0,
-                "berlinBlock": 0,
-                "londonBlock": 0,
-                "mergeNetsplitBlock": 0,
-                "terminalTotalDifficulty": 0,
-                "terminalTotalDifficultyPassed": true,
-                "shanghaiTime": 0,
-                "cancunTime": 0,
-                "adagioTime": 1000,
-                "epochLength": 604_800
-            },
-            "alloc": {}
-        });
-
-        let genesis: alloy_genesis::Genesis =
-            serde_json::from_value(genesis_json).expect("genesis should be valid");
-
-        let chainspec = super::TempoChainSpec::from_genesis(genesis);
-
-        assert_eq!(
-            604_800, chainspec.info.epoch_length,
-            "configured epoch length should be deserialized and available",
-        );
-    }
-
-    #[test]
     fn can_load_testnet() {
         let _ = super::TempoChainSpecParser::parse("testnet")
             .expect("the testnet chainspec must always be well formed");
@@ -385,7 +339,6 @@ mod tests {
                 "adagioTime": 1000,
                 "moderatoTime": 2000,
                 "allegrettoTime": 3000,
-                "epochLength": 604_800
             },
             "alloc": {}
         });
@@ -493,7 +446,6 @@ mod tests {
                 "shanghaiTime": 0,
                 "cancunTime": 2000,
                 "adagioTime": 1000,
-                "epochLength": 604_800
             },
             "alloc": {}
         });

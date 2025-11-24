@@ -268,6 +268,12 @@ impl std::fmt::Display for SocketAddrOrFqdnPort {
     }
 }
 
+impl From<SocketAddr> for SocketAddrOrFqdnPort {
+    fn from(addr: SocketAddr) -> Self {
+        Self::Addr(addr)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("input is not of the form `<host>:<port>` or `<ip>:<port>`")]
 pub struct NotAddrOrHostPort;
