@@ -21,6 +21,9 @@ use parking_lot::RwLock;
 
 type B256 = FixedBytes<32>;
 
+/// Key used to store the node version that last wrote to the database.
+const NODE_VERSION_KEY: &str = "_node_version";
+
 /// A database wrapper around `Metadata<B256, Bytes>` that provides transactional operations.
 ///
 /// The underlying [`Metadata`] storage always keeps all data in memory and persists
@@ -138,6 +141,23 @@ where
         self.write_lock.is_some()
     }
 
+    /// Get raw bytes from the store without deserialization.
+    fn get_raw<K>(&mut self, key: K) -> Result<Option<Bytes>, eyre::Error>
+    where
+        K: AsRef<[u8]>,
+    {
+        let key_hash = key_to_b256(key.as_ref());
+
+        // Check pending writes first
+        if let Some(value_bytes_opt) = self.writes.get(&key_hash) {
+            return Ok(value_bytes_opt.clone());
+        }
+
+        // Check store
+        let store = self.store.read();
+        Ok(store.get(&key_hash).cloned())
+    }
+
     /// Get a value from the store, deserializing it.
     ///
     /// This checks pending writes first, then falls back to the store.
@@ -147,24 +167,11 @@ where
         K: AsRef<[u8]>,
         V: Read<Cfg = ()>,
     {
-        // Convert key to B256
-        let key_hash = key_to_b256(key.as_ref());
-
-        // Check pending writes first
-        let Some(value_bytes_opt) = self.writes.get(&key_hash) else {
-            let store = self.store.read();
-            let Some(value_bytes) = store.get(&key_hash) else {
-                return Ok(None);
-            };
-            return Ok(Some(deserialize_from_bytes::<V>(value_bytes)?));
-        };
-
-        // If it's Some, deserialize the value; if None, this key was deleted
-        let Some(value_bytes) = value_bytes_opt else {
+        let Some(value_bytes) = self.get_raw(key)? else {
             return Ok(None);
         };
 
-        Ok(Some(deserialize_from_bytes::<V>(value_bytes)?))
+        Ok(Some(deserialize_from_bytes::<V>(&value_bytes)?))
     }
 
     /// Insert a key-value pair into the transaction's write buffer.
@@ -206,6 +213,22 @@ where
         let key_hash = key_to_b256(key.as_ref());
         self.writes.insert(key_hash, None);
         Ok(())
+    }
+
+    /// Get the node version that last wrote to this database.
+    ///
+    /// Returns None if no version has been written yet (new database).
+    pub fn get_node_version(&mut self) -> Result<Option<String>, eyre::Error> {
+        self.get_raw(NODE_VERSION_KEY)
+            .map(|opt| opt.and_then(|bytes| String::from_utf8(bytes.to_vec()).ok()))
+    }
+
+    /// Set the current node version in the database.
+    ///
+    /// This should be called when the database schema is initialized or migrated
+    /// to track which node version last modified the database.
+    pub fn set_node_version(&mut self, version: String) -> Result<(), eyre::Error> {
+        self.insert(NODE_VERSION_KEY, version.into_bytes())
     }
 
     /// Commit all buffered writes to the store and sync.
@@ -285,7 +308,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use commonware_runtime::{Runner, tokio, tokio::Context};
+    use commonware_runtime::{
+        ContextCell, Runner,
+        tokio::{self, Context},
+    };
 
     #[test]
     fn test_insert_get_remove_commit() {

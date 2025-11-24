@@ -7,6 +7,7 @@ use commonware_utils::set::Ordered;
 
 mod actor;
 mod ingress;
+mod migrate;
 
 pub(crate) use actor::Actor;
 use futures::channel::mpsc;

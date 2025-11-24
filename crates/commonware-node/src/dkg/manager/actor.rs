@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use commonware_consensus::{Block as _, Reporter, utils};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::{
@@ -8,24 +6,22 @@ use commonware_p2p::{
 };
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics as _, Spawner, Storage, spawn_cell};
 use commonware_storage::metadata::Metadata;
-use commonware_utils::{Acknowledgement as _, sequence::U64};
+use commonware_utils::Acknowledgement as _;
 use eyre::eyre;
-use futures::{StreamExt as _, channel::mpsc, lock::Mutex};
+use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
 use tracing::{Span, debug, info, instrument, warn};
 
 use crate::{
+    db::{CeremonyStore, DkgEpochStore, MetadataDatabase, Tx},
     dkg::{
-        CeremonyState, EpochState,
+        EpochState,
         ceremony::{self, Ceremony, PublicOutcome},
         manager::ingress::{Finalize, GetIntermediateDealing, GetOutcome},
     },
     epoch,
 };
-
-const CURRENT_EPOCH_KEY: U64 = U64::new(0);
-const PREVIOUS_EPOCH_KEY: U64 = U64::new(1);
 
 pub(crate) struct Actor<TContext>
 where
@@ -35,8 +31,8 @@ where
     context: ContextCell<TContext>,
     mailbox: mpsc::UnboundedReceiver<super::Message>,
 
-    ceremony_metadata: Arc<Mutex<Metadata<ContextCell<TContext>, U64, CeremonyState>>>,
-    epoch_metadata: Metadata<ContextCell<TContext>, U64, EpochState>,
+    /// Unified database for storing both ceremony and epoch state.
+    db: MetadataDatabase<ContextCell<TContext>>,
 
     metrics: Metrics,
 }
@@ -52,25 +48,9 @@ where
     ) -> Self {
         let context = ContextCell::new(context);
 
-        let ceremony_metadata = Metadata::init(
-            context.with_label("ceremony_metadata"),
-            commonware_storage::metadata::Config {
-                partition: format!("{}_ceremony", config.partition_prefix),
-                codec_config: (),
-            },
-        )
-        .await
-        .expect("must be able to initialize metadata on disk to function");
-
-        let epoch_metadata = Metadata::init(
-            context.with_label("epoch_metadata"),
-            commonware_storage::metadata::Config {
-                partition: format!("{}_current_epoch", config.partition_prefix),
-                codec_config: (),
-            },
-        )
-        .await
-        .expect("must be able to initialize metadata on disk to function");
+        let db = init_db(&context, &config.partition_prefix)
+            .await
+            .expect("must be able to initialize metadata on disk to function");
 
         let ceremony_failures = Counter::default();
         let ceremony_successes = Counter::default();
@@ -110,8 +90,7 @@ where
             config,
             context,
             mailbox,
-            ceremony_metadata: Arc::new(Mutex::new(ceremony_metadata)),
-            epoch_metadata,
+            db,
             metrics,
         }
     }
@@ -131,20 +110,21 @@ where
         );
         mux.start();
 
-        let epoch_state = self
-            .epoch_metadata
-            .get(&CURRENT_EPOCH_KEY)
-            .cloned()
-            .unwrap_or_else(|| EpochState {
-                epoch: 0,
-                participants: self.config.initial_participants.clone(),
-                public: self.config.initial_public.clone(),
-                share: self.config.initial_share.clone(),
-            });
-        self.epoch_metadata
-            .put_sync(CURRENT_EPOCH_KEY, epoch_state.clone())
-            .await
-            .expect("must always be able to persist state");
+        let mut tx = self.db.read_write().expect("should create tx");
+        let epoch_state = match tx.get_epoch().expect("should be able to query") {
+            Some(state) => state,
+            None => {
+                let state = EpochState {
+                    epoch: 0,
+                    participants: self.config.initial_participants.clone(),
+                    public: self.config.initial_public.clone(),
+                    share: self.config.initial_share.clone(),
+                };
+                tx.set_epoch(state.clone())
+                    .expect("must be able to write epoch");
+                state
+            }
+        };
 
         // Only start the current epoch if the marshal actor has the "genesis"
         // block for it.
@@ -176,7 +156,10 @@ where
                 .await;
         }
 
-        if let Some(epoch_state) = self.epoch_metadata.get(&PREVIOUS_EPOCH_KEY) {
+        if let Some(previous_epoch_state) = tx
+            .get_previous_epoch()
+            .expect("must be able to read previous epoch")
+        {
             // NOTE: PREVIOUS_EPOCH_KEY is only set if the node was shut down
             // before the first height of the incoming epoch was observed (which
             // would have subsequently deleted PREVIOUS_EPOCH_KEY).
@@ -184,10 +167,10 @@ where
                 .epoch_manager
                 .report(
                     epoch::Enter {
-                        epoch: epoch_state.epoch,
-                        public: epoch_state.public.clone(),
-                        share: epoch_state.share.clone(),
-                        participants: epoch_state.participants.clone(),
+                        epoch: previous_epoch_state.epoch,
+                        public: previous_epoch_state.public.clone(),
+                        share: previous_epoch_state.share.clone(),
+                        participants: previous_epoch_state.participants.clone(),
                     }
                     .into(),
                 )
@@ -210,15 +193,11 @@ where
             self.metrics
                 .ceremony_players
                 .set(epoch_state.participants.len() as i64);
-            ceremony::Ceremony::init(
-                &mut self.context,
-                &mut ceremony_mux,
-                self.ceremony_metadata.clone(),
-                config,
-            )
-            .await
-            .expect("must be able to initialize the first dkg ceremony; can't recover if not")
+            ceremony::Ceremony::init(&mut self.context, &mut ceremony_mux, &mut tx, config)
+                .await
+                .expect("must be able to initialize the first dkg ceremony; can't recover if not")
         };
+        tx.commit().await.expect("must be able to commit changes");
 
         while let Some(message) = self.mailbox.next().await {
             let cause = message.cause;
@@ -234,9 +213,14 @@ where
                         .await;
                 }
                 super::Command::Finalize(finalize) => {
+                    let mut tx = self
+                        .db
+                        .read_write()
+                        .expect("must be able to create transaction");
                     ceremony = self
-                        .handle_finalize(cause, finalize, ceremony, &mut ceremony_mux)
+                        .handle_finalize(cause, finalize, ceremony, &mut ceremony_mux, &mut tx)
                         .await;
+                    tx.commit().await.expect("must be able to commit finalize");
                 }
             }
         }
@@ -264,7 +248,7 @@ where
         &mut self,
         cause: Span,
         GetIntermediateDealing { epoch, response }: GetIntermediateDealing,
-        ceremony: &mut Ceremony<ContextCell<TContext>, TReceiver, TSender>,
+        ceremony: &mut Ceremony<TReceiver, TSender>,
     ) -> eyre::Result<()>
     where
         TReceiver: Receiver<PublicKey = PublicKey>,
@@ -301,7 +285,7 @@ where
         &mut self,
         cause: Span,
         GetOutcome { epoch, response }: GetOutcome,
-        ceremony: &mut Ceremony<ContextCell<TContext>, TReceiver, TSender>,
+        ceremony: &mut Ceremony<TReceiver, TSender>,
     ) -> eyre::Result<()>
     where
         TReceiver: Receiver<PublicKey = PublicKey>,
@@ -362,9 +346,10 @@ where
             block,
             acknowledgment,
         }: Finalize,
-        mut ceremony: Ceremony<ContextCell<TContext>, TReceiver, TSender>,
+        mut ceremony: Ceremony<TReceiver, TSender>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
-    ) -> Ceremony<ContextCell<TContext>, TReceiver, TSender>
+        tx: &mut Tx<ContextCell<TContext>>,
+    ) -> Ceremony<TReceiver, TSender>
     where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
@@ -415,7 +400,9 @@ where
         //
         // Recall, for an epoch length E the first heights are 0E, 1E, 2E, ...
         if block.height().is_multiple_of(self.config.epoch_length)
-            && let Some(old_epoch_state) = self.epoch_metadata.remove(&PREVIOUS_EPOCH_KEY)
+            && let Some(old_epoch_state) = tx
+                .get_previous_epoch()
+                .expect("must be able to read previous epoch")
         {
             self.config
                 .epoch_manager
@@ -426,23 +413,21 @@ where
                     .into(),
                 )
                 .await;
-            self.epoch_metadata
-                .sync()
-                .await
-                .expect("must always be able to sync state");
+            tx.remove_previous_epoch()
+                .expect("must be able to remove previous epoch");
         }
 
         match epoch::relative_position(block.height(), self.config.epoch_length) {
             epoch::RelativePosition::FirstHalf => {
-                let _ = ceremony.distribute_shares().await;
-                let _ = ceremony.process_messages().await;
+                let _ = ceremony.distribute_shares(tx).await;
+                let _ = ceremony.process_messages(tx).await;
             }
             epoch::RelativePosition::Middle => {
-                let _ = ceremony.process_messages().await;
-                let _ = ceremony.construct_intermediate_outcome().await;
+                let _ = ceremony.process_messages(tx).await;
+                let _ = ceremony.construct_intermediate_outcome(tx).await;
             }
             epoch::RelativePosition::SecondHalf => {
-                let _ = ceremony.process_dealings_in_block(&block).await;
+                let _ = ceremony.process_dealings_in_block(tx, &block).await;
             }
         }
 
@@ -476,30 +461,29 @@ where
             };
             let (public, share) = ceremony_outcome.role.into_key_pair();
 
-            let old_epoch_state = self
-                .epoch_metadata
-                .remove(&CURRENT_EPOCH_KEY)
+            let old_epoch_state = tx
+                .get_epoch()
+                .expect("must be able to read epoch")
                 .expect("a current epoch state must always exist");
-            self.epoch_metadata.put(PREVIOUS_EPOCH_KEY, old_epoch_state);
+
+            tx.set_previous_epoch(old_epoch_state)
+                .expect("must be able to write previous epoch");
+
             let new_epoch_state = EpochState {
                 epoch: next_epoch,
                 participants: ceremony_outcome.participants,
                 public,
                 share,
             };
-            self.epoch_metadata
-                .put(CURRENT_EPOCH_KEY, new_epoch_state.clone());
 
-            self.epoch_metadata
-                .sync()
-                .await
-                .expect("must always be able to write epoch state to disk");
+            // Update epoch state and prune older ceremony using the provided transaction
+            tx.set_epoch(new_epoch_state.clone())
+                .expect("must be able to write epoch");
 
-            // Prune older ceremony.
+            // Prune older ceremony
             if let Some(epoch) = new_epoch_state.epoch.checked_sub(2) {
-                let mut ceremony_metadata = self.ceremony_metadata.lock().await;
-                ceremony_metadata.remove(&epoch.into());
-                ceremony_metadata.sync().await.expect("metadata must sync");
+                tx.remove_ceremony(epoch)
+                    .expect("must be able to remove ceremony");
             }
 
             let config = ceremony::Config {
@@ -518,14 +502,9 @@ where
                 .ceremony_players
                 .set(new_epoch_state.participants.len() as i64);
 
-            ceremony = ceremony::Ceremony::init(
-                &mut self.context,
-                ceremony_mux,
-                self.ceremony_metadata.clone(),
-                config,
-            )
-            .await
-            .expect("must always be able to initialize ceremony")
+            ceremony = ceremony::Ceremony::init(&mut self.context, ceremony_mux, tx, config)
+                .await
+                .expect("must always be able to initialize ceremony");
         }
 
         acknowledgment.acknowledge();
@@ -540,4 +519,31 @@ struct Metrics {
     ceremony_successes: Counter,
     ceremony_dealers: Gauge,
     ceremony_players: Gauge,
+}
+
+/// Initialize the database and perform migration if needed.
+async fn init_db<TContext>(
+    context: &ContextCell<TContext>,
+    partition_prefix: &str,
+) -> eyre::Result<MetadataDatabase<ContextCell<TContext>>>
+where
+    TContext: Clock + commonware_runtime::Metrics + Storage,
+{
+    let db_metadata = Metadata::init(
+        context.with_label("dkg_db"),
+        commonware_storage::metadata::Config {
+            partition: format!("{}_db", partition_prefix),
+            codec_config: commonware_codec::RangeCfg::from(0..=usize::MAX),
+        },
+    )
+    .await?;
+    let db = MetadataDatabase::new(db_metadata);
+
+    // Migrate data from old stores to new database (if needed)
+    let mut tx = db.read_write()?;
+    super::migrate::maybe_migrate_to_db(context, partition_prefix, &mut tx).await?;
+    tx.set_node_version(env!("CARGO_PKG_VERSION").to_string())?;
+    tx.commit().await?;
+
+    Ok(db)
 }
