@@ -31,8 +31,8 @@ mod on_chain;
 mod payload;
 mod persisted;
 
-pub(crate) use on_chain::{IntermediateOutcome, PublicOutcome};
-pub(super) use persisted::State;
+pub use on_chain::{IntermediateOutcome, PublicOutcome};
+pub use persisted::State;
 
 use payload::{Ack, Message, Payload, Share};
 use persisted::Dealing;

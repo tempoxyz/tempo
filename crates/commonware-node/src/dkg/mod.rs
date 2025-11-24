@@ -1,5 +1,5 @@
-mod ceremony;
-pub(crate) use ceremony::{IntermediateOutcome, PublicOutcome};
+pub mod ceremony;
+pub use ceremony::{IntermediateOutcome, PublicOutcome, State as CeremonyState};
 use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt as _, Write, varint::UInt};
 use commonware_cryptography::{
     bls12381::primitives::{group::Share, poly::Public, variant::MinSig},
@@ -8,11 +8,9 @@ use commonware_cryptography::{
 use commonware_utils::{quorum, set::Ordered};
 pub(crate) mod manager;
 
-use ceremony::State as CeremonyState;
-
 /// The state with all participants, public and private key share for an epoch.
 #[derive(Clone)]
-struct EpochState {
+pub struct EpochState {
     epoch: u64,
     participants: Ordered<PublicKey>,
     public: Public<MinSig>,

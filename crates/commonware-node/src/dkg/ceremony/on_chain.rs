@@ -16,10 +16,10 @@ use crate::dkg::ceremony::Ack;
 ///
 /// Called public because it only contains the public polynomial.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PublicOutcome {
-    pub(crate) epoch: Epoch,
-    pub(crate) participants: Ordered<PublicKey>,
-    pub(crate) public: Public<MinSig>,
+pub struct PublicOutcome {
+    pub epoch: Epoch,
+    pub participants: Ordered<PublicKey>,
+    pub public: Public<MinSig>,
 }
 
 impl Write for PublicOutcome {
@@ -61,7 +61,7 @@ impl EncodeSize for PublicOutcome {
 /// This object is persisted on-chain. Every player collects the intermediate
 /// outcomes of the other dealers to create the overall outcome of the ceremony.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct IntermediateOutcome {
+pub struct IntermediateOutcome {
     /// The number of players in this epoch.
     pub(super) n_players: u64,
 
