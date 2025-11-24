@@ -12,7 +12,7 @@ pub use tempo_contracts::precompiles::{
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
-    storage::{PrecompileStorageProvider, Storable},
+    storage::{PrecompileStorageProvider, Storable, double_mapping_slot},
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::{
@@ -69,24 +69,8 @@ const TRANSACTION_KEY_SLOT: U256 = U256::ZERO;
 /// the precompile abstraction.
 ///
 /// The keys mapping is at slot 0 (first field in the contract).
-pub fn compute_keys_slot(account: Address, key_id: Address) -> B256 {
-    use alloy::primitives::keccak256;
-
-    const KEYS_BASE_SLOT: U256 = U256::ZERO; // keys is the first field
-
-    // Step 1: Intermediate slot = keccak256(left_pad_32(account) || base_slot)
-    let intermediate_slot = {
-        let mut buf = [0u8; 64];
-        buf[12..32].copy_from_slice(account.as_slice()); // Left-pad 20-byte address
-        buf[32..64].copy_from_slice(&KEYS_BASE_SLOT.to_be_bytes::<32>());
-        U256::from_be_bytes(keccak256(buf).0)
-    };
-
-    // Step 2: Final slot = keccak256(left_pad_32(key_id) || intermediate_slot)
-    let mut buf = [0u8; 64];
-    buf[12..32].copy_from_slice(key_id.as_slice()); // Left-pad 20-byte address
-    buf[32..64].copy_from_slice(&intermediate_slot.to_be_bytes::<32>());
-    B256::from(keccak256(buf).0)
+pub fn compute_keys_slot(account: Address, key_id: Address) -> U256 {
+    double_mapping_slot(account, key_id, slots::KEYS)
 }
 
 impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {

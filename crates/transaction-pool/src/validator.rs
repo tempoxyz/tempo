@@ -91,7 +91,7 @@ where
 
         // Read storage slot from state provider
         let slot_value = state_provider
-            .storage(ACCOUNT_KEYCHAIN_ADDRESS, storage_slot)?
+            .storage(ACCOUNT_KEYCHAIN_ADDRESS, storage_slot.into())?
             .unwrap_or(U256::ZERO);
 
         // Decode AuthorizedKey using helper
