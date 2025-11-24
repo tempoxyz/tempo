@@ -976,7 +976,6 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     signature: &AASignature,
     access_list: Option<impl Iterator<Item = &'a AccessListItem>>,
     aa_authorization_list: &[tempo_primitives::transaction::AASignedAuthorization],
-    _spec: &tempo_chainspec::hardfork::TempoHardfork,
 ) -> Result<InitialAndFloorGas, TempoInvalidTransaction> {
     let mut gas = InitialAndFloorGas::default();
 
@@ -1083,13 +1082,11 @@ where
     }
 
     // Calculate batch intrinsic gas using helper
-    let spec = evm.ctx_ref().cfg().spec;
     let mut batch_gas = calculate_aa_batch_intrinsic_gas(
         calls,
         &aa_env.signature,
         tx.access_list(),
         &aa_env.aa_authorization_list,
-        &spec,
     )?;
 
     if evm.ctx.cfg.is_eip7623_disabled() {
@@ -1352,7 +1349,6 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>, // no access list
             &aa_env.aa_authorization_list,
-            &spec,
         )
         .unwrap();
 
@@ -1417,7 +1413,6 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            &spec,
         )
         .unwrap();
 
@@ -1467,13 +1462,11 @@ mod tests {
             ..Default::default()
         };
 
-        let tempo_spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let gas = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            &tempo_spec,
         )
         .unwrap();
 
@@ -1514,13 +1507,11 @@ mod tests {
             ..Default::default()
         };
 
-        let tempo_spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let gas = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            &tempo_spec,
         )
         .unwrap();
 
@@ -1559,13 +1550,11 @@ mod tests {
             ..Default::default()
         };
 
-        let tempo_spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let res = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            &tempo_spec,
         );
 
         assert_eq!(
@@ -1601,13 +1590,11 @@ mod tests {
         };
 
         // Test without access list
-        let tempo_spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let gas = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            &tempo_spec,
         )
         .unwrap();
 
@@ -1679,13 +1666,11 @@ mod tests {
             ..Default::default()
         };
 
-        let tempo_spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let gas = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            &tempo_spec,
         )
         .unwrap();
 
