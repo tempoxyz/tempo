@@ -42,27 +42,27 @@ where
             Peers = OrderedAssociated<PublicKey, SocketAddr>,
         >,
 {
-    /// Runs the pre-moderato initialization routines.
+    /// Runs the pre-allegretto initialization routines.
     ///
-    /// This is a no-op if post-moderato artifacts exists on disk and there no
-    /// pre-moderato artifacts remaining. The assumption is that the last pre-
-    /// moderato ceremony deletes its state from disk.
+    /// This is a no-op if post-allegretto artifacts exists on disk and there no
+    /// pre-allegretto artifacts remaining. The assumption is that the last pre-
+    /// allegretto ceremony deletes its state from disk.
     ///
-    /// If neither pre- nor post-moderato artifacts are found, this method
+    /// If neither pre- nor post-allegretto artifacts are found, this method
     /// assumes that the node is starting from genesis.
-    pub(super) async fn pre_moderato_init(&mut self) {
-        let epoch_state = if self.post_moderato_metadatas.exists() {
-            self.pre_moderato_metadatas
+    pub(super) async fn pre_allegretto_init(&mut self) {
+        let epoch_state = if self.post_allegretto_metadatas.exists() {
+            self.pre_allegretto_metadatas
                 .epoch_metadata
                 .get(&CURRENT_EPOCH_KEY)
         } else {
             if self
-                .pre_moderato_metadatas
+                .pre_allegretto_metadatas
                 .epoch_metadata
                 .get(&CURRENT_EPOCH_KEY)
                 .is_some()
             {
-                self.pre_moderato_metadatas
+                self.pre_allegretto_metadatas
                     .epoch_metadata
                     .put_sync(
                         CURRENT_EPOCH_KEY,
@@ -85,7 +85,7 @@ where
                     .await
                     .expect("must always be able to write state");
             }
-            self.pre_moderato_metadatas
+            self.pre_allegretto_metadatas
                 .epoch_metadata
                 .get(&CURRENT_EPOCH_KEY)
         };
@@ -106,7 +106,7 @@ where
         }
 
         if let Some(epoch_state) = self
-            .pre_moderato_metadatas
+            .pre_allegretto_metadatas
             .epoch_metadata
             .get(&PREVIOUS_EPOCH_KEY)
         {
@@ -152,7 +152,7 @@ where
             latest_epoch = self.current_epoch_state().epoch(),
         ),
     )]
-    pub(super) async fn handle_finalized_pre_moderato<TReceiver, TSender>(
+    pub(super) async fn handle_finalized_pre_allegretto<TReceiver, TSender>(
         &mut self,
         cause: Span,
         block: Block,
@@ -175,10 +175,10 @@ where
                     .config
                     .execution_node
                     .chain_spec()
-                    .is_moderato_active_at_timestamp(block.timestamp())
+                    .is_allegretto_active_at_timestamp(block.timestamp())
                 {
                     info!(
-                        "block timestamp is after moderato hardfork; attempting \
+                        "block timestamp is after allegretto hardfork; attempting \
                         to transition to dynamic validator sets by reading validators \
                         from smart contract",
                     );
@@ -186,10 +186,10 @@ where
                         Ok(()) => {
                             info!(
                                 "transition to dynamic validator sets was sucessful; \
-                                deleting current pre-moderato epoch state and leaving \
+                                deleting current pre-allegretto epoch state and leaving \
                                 DKG logic to the post-hardfork routines",
                             );
-                            self.pre_moderato_metadatas
+                            self.pre_allegretto_metadatas
                                 .delete_current_epoch_state()
                                 .await;
                             return;
@@ -215,7 +215,7 @@ where
                     )
                     .await;
 
-                maybe_ceremony.replace(self.start_pre_moderato_ceremony(ceremony_mux).await);
+                maybe_ceremony.replace(self.start_pre_allegretto_ceremony(ceremony_mux).await);
 
                 self.validators_metadata
                     .put_sync(
@@ -241,7 +241,7 @@ where
         // Recall, for an epoch length E the first heights are 0E, 1E, 2E, ...
         if block.height().is_multiple_of(self.config.epoch_length)
             && let Some(old_epoch_state) = self
-                .pre_moderato_metadatas
+                .pre_allegretto_metadatas
                 .epoch_metadata
                 .remove(&PREVIOUS_EPOCH_KEY)
         {
@@ -254,7 +254,7 @@ where
                     .into(),
                 )
                 .await;
-            self.pre_moderato_metadatas
+            self.pre_allegretto_metadatas
                 .epoch_metadata
                 .sync()
                 .await
@@ -299,7 +299,7 @@ where
 
         let ceremony_outcome = match ceremony.finalize() {
             Ok(outcome) => {
-                self.pre_moderato_metadatas
+                self.pre_allegretto_metadatas
                     .ceremony_success_metadata
                     .put_sync(CEREMONY_SUCCESS_KEY, true)
                     .await
@@ -311,7 +311,7 @@ where
                 outcome
             }
             Err(outcome) => {
-                self.pre_moderato_metadatas
+                self.pre_allegretto_metadatas
                     .ceremony_success_metadata
                     .put_sync(CEREMONY_SUCCESS_KEY, false)
                     .await
@@ -326,12 +326,12 @@ where
         let (public, share) = ceremony_outcome.role.into_key_pair();
 
         let old_epoch_state = self
-            .pre_moderato_metadatas
+            .pre_allegretto_metadatas
             .epoch_metadata
             .remove(&CURRENT_EPOCH_KEY)
             .expect("there must always be a current epoch state");
 
-        self.pre_moderato_metadatas
+        self.pre_allegretto_metadatas
             .epoch_metadata
             .put(PREVIOUS_EPOCH_KEY, old_epoch_state);
 
@@ -341,11 +341,11 @@ where
             public,
             share,
         };
-        self.pre_moderato_metadatas
+        self.pre_allegretto_metadatas
             .epoch_metadata
             .put(CURRENT_EPOCH_KEY, new_epoch_state.clone());
 
-        self.pre_moderato_metadatas
+        self.pre_allegretto_metadatas
             .epoch_metadata
             .sync()
             .await
@@ -360,7 +360,7 @@ where
     }
 
     #[instrument(skip_all)]
-    pub(super) async fn start_pre_moderato_ceremony<TReceiver, TSender>(
+    pub(super) async fn start_pre_allegretto_ceremony<TReceiver, TSender>(
         &mut self,
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> Ceremony<ContextCell<TContext>, TReceiver, TSender>
@@ -369,7 +369,7 @@ where
         TSender: Sender<PublicKey = PublicKey>,
     {
         let epoch_state = self
-            .pre_moderato_metadatas
+            .pre_allegretto_metadatas
             .epoch_metadata
             .get(&CURRENT_EPOCH_KEY)
             .expect("the epoch state must always during the lifetime of the actor");
@@ -420,14 +420,14 @@ where
         self.metrics
             .how_often_player
             .inc_by(ceremony.is_player() as u64);
-        self.metrics.post_moderato_ceremonies.inc();
-        self.metrics.pre_moderato_ceremonies.inc();
+        self.metrics.post_allegretto_ceremonies.inc();
+        self.metrics.pre_allegretto_ceremonies.inc();
         ceremony
     }
 
     async fn transition_to_dynamic_validator_sets(&mut self) -> eyre::Result<()> {
         ensure!(
-            self.pre_moderato_metadatas
+            self.pre_allegretto_metadatas
                 .ceremony_success_metadata
                 .get(&CEREMONY_SUCCESS_KEY)
                 .copied()
@@ -437,13 +437,13 @@ where
         );
 
         let epoch_state = self
-            .pre_moderato_metadatas
+            .pre_allegretto_metadatas
             .epoch_metadata
             .get(&CURRENT_EPOCH_KEY)
             .cloned()
             .expect(
-                "when transitioning from pre-moderato static validator sets to \
-                post-moderato dynamic validator sets the pre-moderato epoch \
+                "when transitioning from pre-allegretto static validator sets to \
+                post-allegretto dynamic validator sets the pre-allegretto epoch \
                 state must exist",
             );
         let validator_state = self
@@ -458,7 +458,7 @@ where
 
         self.transition_from_static_validator_sets(epoch_state, validator_state)
             .await
-            .wrap_err("hand-over to post-moderato dynamic validator set logic failed")?;
+            .wrap_err("hand-over to post-allegretto dynamic validator set logic failed")?;
         Ok(())
     }
 }
@@ -468,7 +468,7 @@ where
     TContext: Clock + Metrics + Storage,
 {
     /// Persisted information on the current epoch for DKG ceremonies that were
-    /// started after the moderato hardfork.
+    /// started after the allegretto hardfork.
     epoch_metadata: Metadata<TContext, U64, EpochState>,
 
     /// Persisted information on whether the last ceremony was successful or not.
@@ -486,10 +486,10 @@ where
         TContext: Metrics,
     {
         let epoch_metadata = Metadata::init(
-            context.with_label("post_moderato_epoch_metadata"),
+            context.with_label("post_allegretto_epoch_metadata"),
             commonware_storage::metadata::Config {
                 // XXX: the prefix of this partition must stay fixed to be
-                // backward compatible with the pre-moderato hardfork.
+                // backward compatible with the pre-allegretto hardfork.
                 partition: format!("{partition_prefix}_current_epoch"),
                 codec_config: (),
             },
@@ -498,10 +498,10 @@ where
         .expect("must be able to initialize metadata on disk to function");
 
         let ceremony_success_metadata = Metadata::init(
-            context.with_label("post_moderato_ceremony_success_metadata"),
+            context.with_label("post_allegretto_ceremony_success_metadata"),
             commonware_storage::metadata::Config {
                 // XXX: the prefix of this partition must stay fixed to be
-                // backward compatible with the pre-moderato hardfork.
+                // backward compatible with the pre-allegretto hardfork.
                 partition: format!("{partition_prefix}_ceremony_success"),
                 codec_config: (),
             },
@@ -532,7 +532,7 @@ where
         self.epoch_metadata.get(&CURRENT_EPOCH_KEY)
     }
 
-    /// Removes all pre-moderato state from disk.
+    /// Removes all pre-allegretto state from disk.
     ///
     /// Returns the current epoch state on the left-hand side, if it exists, and
     /// the previous epoch state on the right.

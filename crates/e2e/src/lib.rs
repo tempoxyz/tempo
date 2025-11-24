@@ -28,10 +28,9 @@ use tempo_commonware_node::consensus;
 use tracing::debug;
 
 pub mod execution_runtime;
-// pub mod genesis;
 pub use execution_runtime::ExecutionRuntime;
 
-use crate::execution_runtime::{ExecutionNode, GenesisSetup};
+use crate::execution_runtime::ExecutionNode;
 
 #[cfg(test)]
 mod tests;
@@ -237,26 +236,17 @@ pub async fn setup_validators(
         .map(|(i, signer)| {
             (
                 signer.public_key(),
-                SocketAddr::from(([127, 0, 0, 1], i as u16 + 1)),
+                SocketAddr::from(([127, 0, 0, 1], i as u16 + 1)).into(),
             )
         })
         .collect::<Vec<_>>()
         .into();
 
-    let genesis_setup = GenesisSetup {
-        epoch_length,
-        polynomial,
-        peers,
-    };
-
     let mut execution_nodes: Vec<ExecutionNode> =
         Vec::with_capacity((how_many_signers + how_many_verifiers) as usize);
     for key in &private_keys {
         let execution_node = execution_runtime
-            .spawn_node(
-                &format!("{EXECUTION_NODE_PREFIX}-{}", key.public_key()),
-                genesis_setup.clone(),
-            )
+            .spawn_node(&format!("{EXECUTION_NODE_PREFIX}-{}", key.public_key()))
             .await
             .expect("must be able to spawn nodes on the runtime");
 
@@ -295,6 +285,8 @@ pub async fn setup_validators(
             partition_prefix: uid.clone(),
             share: Some(share),
             signer: private_key,
+            public_polynomial: polynomial.clone(),
+            validators: peers.clone(),
             mailbox_size: 1024,
             deque_size: 10,
             time_to_propose: Duration::from_secs(2),
@@ -332,6 +324,8 @@ pub async fn setup_validators(
             peer_manager: oracle.socket_manager(),
             partition_prefix: uid.clone(),
             signer: private_key,
+            public_polynomial: polynomial.clone(),
+            validators: peers.clone(),
             share: None,
             mailbox_size: 1024,
             deque_size: 10,

@@ -23,7 +23,7 @@ use crate::{
     dkg::{
         ceremony::{self, Ceremony},
         manager::{
-            actor::{DkgOutcome, pre_moderato},
+            actor::{DkgOutcome, pre_allegretto},
             validators::ValidatorState,
         },
     },
@@ -77,7 +77,7 @@ where
             ceremony.epoch = maybe_ceremony.as_ref().map(|c| c.epoch()),
         ),
     )]
-    pub(super) async fn handle_finalized_post_moderato<TReceiver, TSender>(
+    pub(super) async fn handle_finalized_post_allegretto<TReceiver, TSender>(
         &mut self,
         cause: Span,
         block: Block,
@@ -113,7 +113,7 @@ where
         if utils::is_last_block_in_epoch(self.config.epoch_length, block.height()).is_some() {
             self.update_and_register_current_epoch_state().await;
 
-            maybe_ceremony.replace(self.start_post_moderato_ceremony(ceremony_mux).await);
+            maybe_ceremony.replace(self.start_post_allegretto_ceremony(ceremony_mux).await);
             // Early return: start driving the ceremony on the first height of
             // the next epoch.
             return;
@@ -192,7 +192,7 @@ where
         };
         let (public, share) = ceremony_outcome.role.into_key_pair();
 
-        self.post_moderato_metadatas
+        self.post_allegretto_metadatas
             .dkg_outcome_metadata
             .put_sync(
                 DKG_OUTCOME_KEY,
@@ -218,21 +218,21 @@ where
     #[instrument(skip_all)]
     pub(super) async fn transition_from_static_validator_sets(
         &mut self,
-        pre_moderato_epoch_state: pre_moderato::EpochState,
-        pre_moderato_validator_state: ValidatorState,
+        pre_allegretto_epoch_state: pre_allegretto::EpochState,
+        pre_allegretto_validator_state: ValidatorState,
     ) -> eyre::Result<()> {
         let on_chain_validators = super::read_validator_config_with_retry(
             &self.context,
             &self.config.execution_node,
-            pre_moderato_epoch_state.epoch(),
+            pre_allegretto_epoch_state.epoch(),
             self.config.epoch_length,
         )
         .await;
 
         ensure!(
-            pre_moderato_epoch_state.participants() == on_chain_validators.keys(),
+            pre_allegretto_epoch_state.participants() == on_chain_validators.keys(),
             "ed25519 public keys of validators read from contract do not match \
-            those of the last pre-moderato static DKG ceremony; \
+            those of the last pre-allegretto static DKG ceremony; \
             DKG participants = {:?}; \
             contract = {:?}",
             self.current_epoch_state().participants(),
@@ -240,12 +240,12 @@ where
         );
 
         ensure!(
-            pre_moderato_validator_state.dealers().keys() == on_chain_validators.keys(),
+            pre_allegretto_validator_state.dealers().keys() == on_chain_validators.keys(),
             "ed25519 public keys of validators read from contract do not match \
-            those of validator state persisted by the pre-moderato logic; \
+            those of validator state persisted by the pre-allegretto logic; \
             static validator state dealers = {:?}; \
             contract = {:?}",
-            pre_moderato_validator_state.dealers().keys(),
+            pre_allegretto_validator_state.dealers().keys(),
             on_chain_validators.keys(),
         );
 
@@ -255,24 +255,24 @@ where
         // depending on how they are launched. Only the ed25519 keys are
         // guaranteed to be the same across nodes.
 
-        let mut new_validator_state = pre_moderato_validator_state.clone();
+        let mut new_validator_state = pre_allegretto_validator_state.clone();
         // NOTE: `push_on_failure` ensures that the dealers remain in the
         // validator set. This pushes the on-chain validators into the
         // validator state twice to ensure that the dealers stay around.
         new_validator_state.push_on_failure(on_chain_validators.clone());
         new_validator_state.push_on_failure(on_chain_validators);
 
-        self.post_moderato_metadatas
+        self.post_allegretto_metadatas
             .epoch_metadata
             .put_sync(
                 CURRENT_EPOCH_KEY.into(),
                 EpochState {
                     dkg_outcome: DkgOutcome {
                         dkg_successful: true,
-                        epoch: pre_moderato_epoch_state.epoch(),
-                        participants: pre_moderato_epoch_state.participants().clone(),
-                        public: pre_moderato_epoch_state.public_polynomial().clone(),
-                        share: pre_moderato_epoch_state.private_share().clone(),
+                        epoch: pre_allegretto_epoch_state.epoch(),
+                        participants: pre_allegretto_epoch_state.participants().clone(),
+                        public: pre_allegretto_epoch_state.public_polynomial().clone(),
+                        share: pre_allegretto_epoch_state.private_share().clone(),
                     },
                     validator_state: new_validator_state.clone(),
                 },
@@ -284,7 +284,7 @@ where
     }
 
     #[instrument(skip_all)]
-    pub(super) async fn start_post_moderato_ceremony<TReceiver, TSender>(
+    pub(super) async fn start_post_allegretto_ceremony<TReceiver, TSender>(
         &mut self,
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> Ceremony<ContextCell<TContext>, TReceiver, TSender>
@@ -292,10 +292,9 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let epoch_state = self
-            .post_moderato_metadatas
-            .current_epoch_state()
-            .expect("the post-moderato epoch state must exist in order to start a ceremony for it");
+        let epoch_state = self.post_allegretto_metadatas.current_epoch_state().expect(
+            "the post-allegretto epoch state must exist in order to start a ceremony for it",
+        );
         let config = ceremony::Config {
             namespace: self.config.namespace.clone(),
             me: self.config.me.clone(),
@@ -341,7 +340,7 @@ where
         self.metrics
             .how_often_player
             .inc_by(ceremony.is_player() as u64);
-        self.metrics.post_moderato_ceremonies.inc();
+        self.metrics.post_allegretto_ceremonies.inc();
 
         ceremony
     }
@@ -349,14 +348,14 @@ where
     #[instrument(skip_all)]
     async fn update_and_register_current_epoch_state(&mut self) {
         let old_epoch_state = self
-            .post_moderato_metadatas
+            .post_allegretto_metadatas
             .epoch_metadata
             .remove(&CURRENT_EPOCH_KEY.into())
             .expect("there must always exist an epoch state");
 
         // Remove it?
         let dkg_outcome = self
-            .post_moderato_metadatas
+            .post_allegretto_metadatas
             .dkg_outcome_metadata
             .get(&DKG_OUTCOME_KEY.into())
             .cloned()
@@ -386,18 +385,18 @@ where
             new_validator_state.push_on_failure(syncing_players);
         }
 
-        self.post_moderato_metadatas.epoch_metadata.put(
+        self.post_allegretto_metadatas.epoch_metadata.put(
             CURRENT_EPOCH_KEY.into(),
             EpochState {
                 dkg_outcome,
                 validator_state: new_validator_state.clone(),
             },
         );
-        self.post_moderato_metadatas
+        self.post_allegretto_metadatas
             .epoch_metadata
             .put(PREVIOUS_EPOCH_KEY.into(), old_epoch_state);
 
-        self.post_moderato_metadatas
+        self.post_allegretto_metadatas
             .epoch_metadata
             .sync()
             .await
@@ -409,22 +408,22 @@ where
     /// Reports that a new epoch was fully entered, that the previous epoch can be ended.
     async fn enter_current_epoch_and_remove_old_state(&mut self) {
         let epoch_to_shutdown = if let Some(old_epoch_state) = self
-            .post_moderato_metadatas
+            .post_allegretto_metadatas
             .epoch_metadata
             .remove(&PREVIOUS_EPOCH_KEY.into())
         {
-            self.post_moderato_metadatas
+            self.post_allegretto_metadatas
                 .epoch_metadata
                 .sync()
                 .await
                 .expect("must always be able to persist state");
             Some(old_epoch_state.epoch())
-        } else if let Some(old_pre_moderato_epoch_state) = self
-            .pre_moderato_metadatas
+        } else if let Some(old_pre_allegretto_epoch_state) = self
+            .pre_allegretto_metadatas
             .delete_previous_epoch_state()
             .await
         {
-            Some(old_pre_moderato_epoch_state.epoch())
+            Some(old_pre_allegretto_epoch_state.epoch())
         } else {
             None
         };
@@ -451,7 +450,7 @@ where
     TContext: Clock + Metrics + Storage,
 {
     /// Persisted information on the current epoch for DKG ceremonies that were
-    /// started after the moderato hardfork.
+    /// started after the allegretto hardfork.
     epoch_metadata: Metadata<TContext, U64, EpochState>,
 
     /// The persisted DKG outcome. This is the result of latest DKG ceremony,
@@ -468,9 +467,9 @@ where
         TContext: Metrics,
     {
         let epoch_metadata = Metadata::init(
-            context.with_label("post_moderato_epoch_metadata"),
+            context.with_label("post_allegretto_epoch_metadata"),
             commonware_storage::metadata::Config {
-                partition: format!("{partition_prefix}_post_moderato_current_epoch"),
+                partition: format!("{partition_prefix}_post_allegretto_current_epoch"),
                 codec_config: (),
             },
         )

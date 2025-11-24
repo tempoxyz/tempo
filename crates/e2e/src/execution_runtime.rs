@@ -20,7 +20,6 @@ use commonware_cryptography::{
 use commonware_utils::set::OrderedAssociated;
 use eyre::WrapErr as _;
 use futures::StreamExt;
-// use reth::{revm::inspector::JournalExt, rpc::types::TransactionReceipt};
 use reth_db::mdbx::DatabaseArguments;
 use reth_ethereum::{
     evm::revm::inspector::JournalExt as _,
@@ -34,7 +33,7 @@ use reth_ethereum::{
     tasks::{TaskExecutor, TaskManager},
 };
 use reth_evm::{
-    EvmEnv, EvmFactory, EvmInternals,
+    EvmEnv, EvmFactory,
     revm::database::{CacheDB, EmptyDB},
 };
 use reth_node_builder::{NodeBuilder, NodeConfig};
@@ -45,7 +44,6 @@ use reth_node_core::{
 use reth_rpc_builder::RpcModuleSelection;
 use tempfile::TempDir;
 use tempo_chainspec::TempoChainSpec;
-use tempo_dkg_onchain_artifacts::PublicOutcome;
 use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
 use tempo_node::{TempoFullNode, node::TempoNode};
 use tempo_precompiles::{
@@ -151,18 +149,11 @@ impl ExecutionRuntime {
                             let _ = response.send(receipt);
                         }
                         Message::SpawnNode(spawn_node) => {
-                            let SpawnNode {
-                                name,
-                                genesis_setup,
-                                response,
-                            } = *spawn_node;
-                            let node = launch_execution_node(
-                                task_manager.executor(),
-                                datadir.join(name),
-                                genesis_setup,
-                            )
-                            .await
-                            .expect("must be able to launch execution nodes");
+                            let SpawnNode { name, response } = *spawn_node;
+                            let node =
+                                launch_execution_node(task_manager.executor(), datadir.join(name))
+                                    .await
+                                    .expect("must be able to launch execution nodes");
                             response.send(node).expect(
                                 "receiver must hold the return channel until the node is returned",
                             );
@@ -262,17 +253,12 @@ impl ExecutionRuntime {
     }
 
     /// Requests a new execution node and blocks until its returned.
-    pub async fn spawn_node(
-        &self,
-        name: &str,
-        genesis_setup: GenesisSetup,
-    ) -> eyre::Result<ExecutionNode> {
+    pub async fn spawn_node(&self, name: &str) -> eyre::Result<ExecutionNode> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.to_runtime
             .send(
                 SpawnNode {
                     name: name.to_string(),
-                    genesis_setup,
                     response: tx,
                 }
                 .into(),
@@ -284,17 +270,12 @@ impl ExecutionRuntime {
     }
 
     /// Requests a new execution node and blocks until its returned.
-    pub fn spawn_node_blocking(
-        &self,
-        name: &str,
-        genesis_setup: GenesisSetup,
-    ) -> eyre::Result<ExecutionNode> {
+    pub fn spawn_node_blocking(&self, name: &str) -> eyre::Result<ExecutionNode> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.to_runtime
             .send(
                 SpawnNode {
                     name: name.to_string(),
-                    genesis_setup,
                     response: tx,
                 }
                 .into(),
@@ -332,17 +313,12 @@ pub struct ExecutionRuntimeHandle {
 
 impl ExecutionRuntimeHandle {
     /// Requests a new execution node and blocks until its returned.
-    pub async fn spawn_node(
-        &self,
-        name: &str,
-        genesis_setup: GenesisSetup,
-    ) -> eyre::Result<ExecutionNode> {
+    pub async fn spawn_node(&self, name: &str) -> eyre::Result<ExecutionNode> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.to_runtime
             .send(
                 SpawnNode {
                     name: name.to_string(),
-                    genesis_setup,
                     response: tx,
                 }
                 .into(),
@@ -354,17 +330,12 @@ impl ExecutionRuntimeHandle {
     }
 
     /// Requests a new execution node and blocks until its returned.
-    pub fn spawn_node_blocking(
-        &self,
-        name: &str,
-        genesis_setup: GenesisSetup,
-    ) -> eyre::Result<ExecutionNode> {
+    pub fn spawn_node_blocking(&self, name: &str) -> eyre::Result<ExecutionNode> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.to_runtime
             .send(
                 SpawnNode {
                     name: name.to_string(),
-                    genesis_setup,
                     response: tx,
                 }
                 .into(),
@@ -424,6 +395,16 @@ impl std::fmt::Debug for ExecutionNode {
     }
 }
 
+// TODO(janis): allow configuring this.
+fn chainspec() -> Arc<TempoChainSpec> {
+    Arc::new(TempoChainSpec::from_genesis(
+        serde_json::from_str(include_str!(
+            "../../node/tests/assets/test-genesis-moderato.json"
+        ))
+        .unwrap(),
+    ))
+}
+
 /// Launches a tempo execution node.
 ///
 /// Difference compared to starting the node through the binary:
@@ -435,9 +416,8 @@ impl std::fmt::Debug for ExecutionNode {
 pub async fn launch_execution_node<P: AsRef<Path>>(
     executor: TaskExecutor,
     datadir: P,
-    genesis_setup: GenesisSetup,
 ) -> eyre::Result<ExecutionNode> {
-    let node_config = NodeConfig::new(genesis_setup.into_chainspec())
+    let node_config = NodeConfig::new(chainspec())
         .with_rpc(
             RpcServerArgs::default()
                 .with_unused_ports()
@@ -506,7 +486,6 @@ impl From<SpawnNode> for Message {
 #[derive(Debug)]
 struct SpawnNode {
     name: String,
-    genesis_setup: GenesisSetup,
     response: tokio::sync::oneshot::Sender<ExecutionNode>,
 }
 
@@ -527,103 +506,6 @@ struct ChangeValidatorStatus {
     address: Address,
     active: bool,
     response: tokio::sync::oneshot::Sender<TransactionReceipt>,
-}
-
-#[derive(Debug, Clone)]
-pub struct GenesisSetup {
-    pub epoch_length: u64,
-    pub polynomial: Public<MinSig>,
-    pub peers: OrderedAssociated<PublicKey, SocketAddr>,
-}
-
-impl GenesisSetup {
-    /// Populates the hardcoded `crates/node/tests/assets/test-genesis.json` with
-    /// an initial validator config.
-    ///
-    // TODO(janis): we should generate the entire genesis ad-hoc. Possibly merge
-    // with the gen-genesis tool in xtasks.
-    fn into_chainspec(self) -> Arc<TempoChainSpec> {
-        let Self {
-            epoch_length,
-            polynomial,
-            peers,
-        } = self;
-        let mut genesis: Genesis =
-            serde_json::from_str(include_str!("../../node/tests/assets/test-genesis.json"))
-                .unwrap();
-        genesis
-            .config
-            .extra_fields
-            .insert("epochLength".into(), serde_json::json!(epoch_length));
-
-        let participants = peers.keys().clone();
-
-        genesis.extra_data = PublicOutcome {
-            epoch: 0,
-            participants,
-            public: polynomial,
-        }
-        .encode()
-        .freeze()
-        .to_vec()
-        .into();
-
-        let mut evm = setup_tempo_evm();
-
-        {
-            let ctx = evm.ctx_mut();
-            let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-            let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-
-            // TODO(janis): figure out the owner of the test-genesis.json
-            let mut validator_config = ValidatorConfig::new(&mut provider);
-            validator_config
-                .initialize(admin())
-                .wrap_err("Failed to initialize validator config")
-                .unwrap();
-
-            for (i, (peer, addr)) in peers.iter_pairs().enumerate() {
-                validator_config
-                    .add_validator(
-                        admin(),
-                        IValidatorConfig::addValidatorCall {
-                            newValidatorAddress: validator(i as u32),
-                            publicKey: peer.encode().freeze().as_ref().try_into().unwrap(),
-                            active: true,
-                            inboundAddress: addr.to_string(),
-                            outboundAddress: addr.to_string(),
-                        },
-                    )
-                    .unwrap();
-            }
-        }
-
-        let evm_state = evm.ctx_mut().journaled_state.evm_state();
-        for (address, account) in evm_state.iter() {
-            let storage = if !account.storage.is_empty() {
-                Some(
-                    account
-                        .storage
-                        .iter()
-                        .map(|(key, val)| ((*key).into(), val.present_value.into()))
-                        .collect(),
-                )
-            } else {
-                None
-            };
-            genesis.alloc.insert(
-                *address,
-                GenesisAccount {
-                    nonce: Some(account.info.nonce),
-                    code: account.info.code.as_ref().map(|c| c.original_bytes()),
-                    storage,
-                    ..Default::default()
-                },
-            );
-        }
-
-        Arc::new(TempoChainSpec::from_genesis(genesis))
-    }
 }
 
 pub fn admin() -> Address {

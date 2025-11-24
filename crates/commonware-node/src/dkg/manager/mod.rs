@@ -73,7 +73,7 @@ pub(crate) struct Config<TPeerManager> {
 
     /// The initial participants in the DKG ceremony.
     ///
-    /// Pre the moderato hardfork, this initial set are the dealers and players
+    /// Pre the allegretto hardfork, this initial set are the dealers and players
     /// in a ceremony.
     pub(crate) initial_validators: OrderedAssociated<PublicKey, SocketAddrOrFqdnPort>,
 

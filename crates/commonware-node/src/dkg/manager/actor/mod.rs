@@ -43,8 +43,8 @@ use crate::{
     epoch,
 };
 
-mod post_moderato;
-mod pre_moderato;
+mod post_allegretto;
+mod pre_allegretto;
 
 pub(crate) struct Actor<TContext, TPeerManager>
 where
@@ -67,12 +67,12 @@ where
     ceremony_metadata: Arc<Mutex<Metadata<ContextCell<TContext>, U64, ceremony::State>>>,
 
     /// Persisted information on the current epoch for DKG ceremonies that were
-    /// started after the moderato hardfork.
-    post_moderato_metadatas: post_moderato::Metadatas<ContextCell<TContext>>,
+    /// started after the allegretto hardfork.
+    post_allegretto_metadatas: post_allegretto::Metadatas<ContextCell<TContext>>,
 
     /// Persisted information on the current epoch for DKG ceremonies that were
-    /// started before the moderato hardfork.
-    pre_moderato_metadatas: pre_moderato::Metadatas<ContextCell<TContext>>,
+    /// started before the allegretto hardfork.
+    pre_allegretto_metadatas: pre_allegretto::Metadatas<ContextCell<TContext>>,
 
     /// Information on the peers registered on the p2p peer mamnager for a given
     /// epoch i and its precursors i-1 and i-2. Peer information is persisted
@@ -114,11 +114,11 @@ where
         .await
         .expect("must be able to initialize metadata on disk to function");
 
-        let post_moderato_metadatas =
-            post_moderato::Metadatas::init(&context, &config.partition_prefix).await;
+        let post_allegretto_metadatas =
+            post_allegretto::Metadatas::init(&context, &config.partition_prefix).await;
 
-        let pre_moderato_metadatas =
-            pre_moderato::Metadatas::init(&context, &config.partition_prefix).await;
+        let pre_allegretto_metadatas =
+            pre_allegretto::Metadatas::init(&context, &config.partition_prefix).await;
 
         let validators_metadata = Metadata::init(
             context.with_label("validators__metadata"),
@@ -143,8 +143,8 @@ where
 
         let peers = Gauge::default();
 
-        let pre_moderato_ceremonies = Counter::default();
-        let post_moderato_ceremonies = Counter::default();
+        let pre_allegretto_ceremonies = Counter::default();
+        let post_allegretto_ceremonies = Counter::default();
 
         context.register(
             "ceremony_failures",
@@ -191,14 +191,14 @@ where
         );
 
         context.register(
-            "pre_moderato_ceremonies",
-            "how many ceremonies the node ran pre-moderato",
-            pre_moderato_ceremonies.clone(),
+            "pre_allegretto_ceremonies",
+            "how many ceremonies the node ran pre-allegretto",
+            pre_allegretto_ceremonies.clone(),
         );
         context.register(
-            "post_moderato_ceremonies",
-            "how many ceremonies the node ran post-moderato",
-            post_moderato_ceremonies.clone(),
+            "post_allegretto_ceremonies",
+            "how many ceremonies the node ran post-allegretto",
+            post_allegretto_ceremonies.clone(),
         );
 
         let metrics = Metrics {
@@ -210,8 +210,8 @@ where
             ceremony_players,
             peers,
             syncing_players,
-            pre_moderato_ceremonies,
-            post_moderato_ceremonies,
+            pre_allegretto_ceremonies,
+            post_allegretto_ceremonies,
         };
 
         Ok(Self {
@@ -219,8 +219,8 @@ where
             context,
             mailbox,
             ceremony_metadata: Arc::new(Mutex::new(ceremony_metadata)),
-            post_moderato_metadatas,
-            pre_moderato_metadatas,
+            post_allegretto_metadatas,
+            pre_allegretto_metadatas,
             validators_metadata,
             metrics,
         })
@@ -228,8 +228,8 @@ where
 
     #[instrument(skip_all)]
     async fn init(&mut self) {
-        self.pre_moderato_init().await;
-        // self.post_moderato_init().await;
+        self.pre_allegretto_init().await;
+        // self.post_allegretto_init().await;
     }
 
     async fn run(
@@ -338,15 +338,15 @@ where
         cause: Span,
         GetOutcome { response }: GetOutcome,
     ) -> eyre::Result<()> {
-        let outcome = if let Some(outcome) = self.post_moderato_metadatas.dkg_outcome() {
+        let outcome = if let Some(outcome) = self.post_allegretto_metadatas.dkg_outcome() {
             outcome
-        } else if let Some(outcome) = self.pre_moderato_metadatas.dkg_outcome() {
+        } else if let Some(outcome) = self.pre_allegretto_metadatas.dkg_outcome() {
             outcome
         } else {
             return Err(eyre!(
                 "no DKG outcome was found in state, even though it must exist \
                 - derived from the epoch state from either the pre- or \
-                post-moderato logic"
+                post-allegretto logic"
             ));
         };
 
@@ -402,11 +402,11 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        if self.is_running_post_moderato(&block) {
-            self.handle_finalized_post_moderato(cause, *block, maybe_ceremony, ceremony_mux)
+        if self.is_running_post_allegretto(&block) {
+            self.handle_finalized_post_allegretto(cause, *block, maybe_ceremony, ceremony_mux)
                 .await;
         } else {
-            self.handle_finalized_pre_moderato(cause, *block, maybe_ceremony, ceremony_mux)
+            self.handle_finalized_pre_allegretto(cause, *block, maybe_ceremony, ceremony_mux)
                 .await;
         }
         acknowledgment.acknowledge();
@@ -428,10 +428,10 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        if self.post_moderato_metadatas.exists() {
-            self.start_post_moderato_ceremony(mux).await
+        if self.post_allegretto_metadatas.exists() {
+            self.start_post_allegretto_ceremony(mux).await
         } else {
-            self.start_pre_moderato_ceremony(mux).await
+            self.start_pre_allegretto_ceremony(mux).await
         }
     }
 
@@ -458,7 +458,7 @@ where
         }
 
         let new_validator_state = match &epoch_state {
-            // pre moderato, the validators are always the once known passed in at init.
+            // pre allegretto, the validators are always the once known passed in at init.
             EpochState::PreModerato(_) => {
                 ValidatorState::with_unknown_contract_state(self.config.initial_validators.clone())
             }
@@ -552,32 +552,38 @@ where
         );
     }
 
-    /// Returns if the DKG manager is running a post-moderato ceremony.
+    /// Returns if the DKG manager is running a post-allegretto ceremony.
     ///
-    /// The DKG manager is running a post-moderato ceremony if block.timestamp
-    /// is after the moderato timestamp, and if the post-moderato epoch state
+    /// The DKG manager is running a post-allegretto ceremony if block.timestamp
+    /// is after the allegretto timestamp, and if the post-allegretto epoch state
     /// is set.
     ///
-    /// This is to account for ceremonies that are started pre-moderato, and
+    /// This is to account for ceremonies that are started pre-allegretto, and
     /// are running past the hardfork timestamp: we need to run the ceremony to
-    /// its conclusion and then start a new post-moderato cermony at the epoch
+    /// its conclusion and then start a new post-allegretto cermony at the epoch
     /// boundary.
-    fn is_running_post_moderato(&self, block: &Block) -> bool {
+    fn is_running_post_allegretto(&self, block: &Block) -> bool {
         self.config
             .execution_node
             .chain_spec()
-            .is_moderato_active_at_timestamp(block.timestamp())
-            && self.post_moderato_metadatas.exists()
+            .is_allegretto_active_at_timestamp(block.timestamp())
+            && self.post_allegretto_metadatas.exists()
     }
 
     /// Returns the previous epoch state.
     ///
-    /// Always prefers the post moderato state, if it exists.
+    /// Always prefers the post allegretto state, if it exists.
     fn previous_epoch_state(&self) -> Option<EpochState> {
-        if let Some(epoch_state) = self.post_moderato_metadatas.previous_epoch_state().cloned() {
+        if let Some(epoch_state) = self
+            .post_allegretto_metadatas
+            .previous_epoch_state()
+            .cloned()
+        {
             Some(EpochState::PostModerato(epoch_state))
-        } else if let Some(epoch_state) =
-            self.pre_moderato_metadatas.previous_epoch_state().cloned()
+        } else if let Some(epoch_state) = self
+            .pre_allegretto_metadatas
+            .previous_epoch_state()
+            .cloned()
         {
             Some(EpochState::PreModerato(epoch_state))
         } else {
@@ -587,28 +593,33 @@ where
 
     /// Returns the current epoch state.
     ///
-    /// Always prefers the post moderato state, if it exists.
+    /// Always prefers the post allegretto state, if it exists.
     ///
     /// # Panics
     ///
-    /// Panics if no epoch state exists, neither for the pre- nor post-moderato
+    /// Panics if no epoch state exists, neither for the pre- nor post-allegretto
     /// regime. There must always be an epoch state.
     fn current_epoch_state(&self) -> EpochState {
-        if let Some(epoch_state) = self.post_moderato_metadatas.current_epoch_state().cloned() {
+        if let Some(epoch_state) = self
+            .post_allegretto_metadatas
+            .current_epoch_state()
+            .cloned()
+        {
             EpochState::PostModerato(epoch_state)
-        } else if let Some(epoch_state) = self.pre_moderato_metadatas.current_epoch_state().cloned()
+        } else if let Some(epoch_state) =
+            self.pre_allegretto_metadatas.current_epoch_state().cloned()
         {
             EpochState::PreModerato(epoch_state)
         } else {
-            panic!("either pre- or post-moderato current-epoch-state should exist")
+            panic!("either pre- or post-allegretto current-epoch-state should exist")
         }
     }
 }
 
 #[derive(Clone, Debug)]
 enum EpochState {
-    PreModerato(pre_moderato::EpochState),
-    PostModerato(post_moderato::EpochState),
+    PreModerato(pre_allegretto::EpochState),
+    PostModerato(post_allegretto::EpochState),
 }
 
 impl EpochState {
@@ -650,8 +661,8 @@ struct Metrics {
     ceremony_dealers: Gauge,
     ceremony_players: Gauge,
     peers: Gauge,
-    pre_moderato_ceremonies: Counter,
-    post_moderato_ceremonies: Counter,
+    pre_allegretto_ceremonies: Counter,
+    post_allegretto_ceremonies: Counter,
     syncing_players: Gauge,
 }
 
