@@ -226,12 +226,6 @@ where
         })
     }
 
-    #[instrument(skip_all)]
-    async fn init(&mut self) {
-        self.pre_allegretto_init().await;
-        // self.post_allegretto_init().await;
-    }
-
     async fn run(
         mut self,
         (sender, receiver): (
@@ -239,7 +233,8 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
-        self.init().await;
+        self.pre_allegretto_init().await;
+
         let (mux, mut ceremony_mux) = mux::Muxer::new(
             self.context.with_label("ceremony_mux"),
             sender,
@@ -499,6 +494,10 @@ where
     /// new epoch i was firmly locked in.
     ///
     /// This method also registers the validators for epochs i-1 and i-2.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no current epoch state exists on disk.
     #[instrument(
         skip_all,
         fields(previous_epoch = self.previous_epoch_state().map(|s| s.epoch())))]

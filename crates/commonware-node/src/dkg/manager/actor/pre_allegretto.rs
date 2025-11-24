@@ -51,77 +51,35 @@ where
     /// If neither pre- nor post-allegretto artifacts are found, this method
     /// assumes that the node is starting from genesis.
     pub(super) async fn pre_allegretto_init(&mut self) {
-        let epoch_state = if self.post_allegretto_metadatas.exists() {
-            self.pre_allegretto_metadatas
-                .epoch_metadata
-                .get(&CURRENT_EPOCH_KEY)
-        } else {
-            if self
+        if !self.post_allegretto_metadatas.exists()
+            && self
                 .pre_allegretto_metadatas
                 .epoch_metadata
                 .get(&CURRENT_EPOCH_KEY)
-                .is_some()
-            {
-                self.pre_allegretto_metadatas
-                    .epoch_metadata
-                    .put_sync(
-                        CURRENT_EPOCH_KEY,
-                        EpochState {
-                            epoch: 0,
-                            participants: self.config.initial_validators.keys().clone(),
-                            public: self.config.initial_public_polynomial.clone(),
-                            share: self.config.initial_share.clone(),
-                        },
-                    )
-                    .await
-                    .expect("must always be able to persists state");
-                self.validators_metadata
-                    .put_sync(
-                        0.into(),
-                        ValidatorState::with_unknown_contract_state(
-                            self.config.initial_validators.clone(),
-                        ),
-                    )
-                    .await
-                    .expect("must always be able to write state");
-            }
+                .is_none()
+        {
             self.pre_allegretto_metadatas
                 .epoch_metadata
-                .get(&CURRENT_EPOCH_KEY)
-        };
-
-        if let Some(epoch_state) = epoch_state {
-            self.config
-                .epoch_manager
-                .report(
-                    epoch::Enter {
-                        epoch: epoch_state.epoch,
-                        public: epoch_state.public.clone(),
-                        share: epoch_state.share.clone(),
-                        participants: epoch_state.participants.clone(),
-                    }
-                    .into(),
+                .put_sync(
+                    CURRENT_EPOCH_KEY,
+                    EpochState {
+                        epoch: 0,
+                        participants: self.config.initial_validators.keys().clone(),
+                        public: self.config.initial_public_polynomial.clone(),
+                        share: self.config.initial_share.clone(),
+                    },
                 )
-                .await;
-        }
-
-        if let Some(epoch_state) = self
-            .pre_allegretto_metadatas
-            .epoch_metadata
-            .get(&PREVIOUS_EPOCH_KEY)
-        {
-            self.config
-                .epoch_manager
-                .report(
-                    epoch::Enter {
-                        epoch: epoch_state.epoch,
-                        public: epoch_state.public.clone(),
-                        share: epoch_state.share.clone(),
-                        participants: epoch_state.participants.clone(),
-                    }
-                    .into(),
+                .await
+                .expect("must always be able to persists state");
+            self.validators_metadata
+                .put_sync(
+                    0.into(),
+                    ValidatorState::with_unknown_contract_state(
+                        self.config.initial_validators.clone(),
+                    ),
                 )
-                .await;
+                .await
+                .expect("must always be able to write state");
         }
     }
 
