@@ -45,6 +45,79 @@ use tempo_primitives::{
 use tokio::sync::broadcast;
 use tracing::{Instrument, Level, Span, debug, instrument, warn};
 
+/// Three rotating buckets for subblock transactions.
+///
+/// When a bucket rotation is triggered, the oldest one is cleared,
+/// preserving newer transactions (from the current and previous bucket).
+struct SubBlockTxBuckets {
+    /// Subblock transaction buckets.
+    buckets: [IndexMap<TxHash, Arc<Recovered<TempoTxEnvelope>>>; 3],
+    /// Index of the current active bucket.
+    current_idx: usize,
+    /// Block height of the last rotation.
+    last_rotation_at: u64,
+    /// Number of blocks between rotations.
+    cadence: u64,
+}
+
+impl SubBlockTxBuckets {
+    /// Creates a new rotating bucket structure with the given block cadence.
+    fn new(cadence: u64) -> Self {
+        Self {
+            buckets: Default::default(),
+            current_idx: 0,
+            last_rotation_at: 0,
+            cadence,
+        }
+    }
+
+    /// Inserts a transaction into the current bucket.
+    fn insert(&mut self, tx_hash: TxHash, tx: Arc<Recovered<TempoTxEnvelope>>) {
+        self.buckets[self.current_idx].insert(tx_hash, tx);
+    }
+
+    /// Iterates over all transactions in all three buckets.
+    fn iter_all(&self) -> impl Iterator<Item = (&TxHash, &Arc<Recovered<TempoTxEnvelope>>)> {
+        self.buckets[0]
+            .iter()
+            .chain(self.buckets[1].iter())
+            .chain(self.buckets[2].iter())
+    }
+
+    /// Attempts to remove a transaction from any bucket.
+    ///
+    /// Returns true if the transaction was found and removed.
+    fn try_remove(&mut self, tx_hash: &TxHash) -> bool {
+        for bucket in &mut self.buckets {
+            if bucket.swap_remove(tx_hash).is_some() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Checks if rotation should occur based on block height advancement.
+    ///
+    /// Call this on tip changes to potentially trigger height-based rotation.
+    fn maybe_rotate(&mut self, current_height: u64) {
+        if current_height.saturating_sub(self.last_rotation_at) >= self.cadence {
+            self.buckets[self.oldest_idx()].clear();
+            self.last_rotation_at = current_height;
+            self.current_idx = self.next_idx();
+        }
+    }
+
+    /// Computes the idx of the oldest bucket.
+    fn oldest_idx(&mut self) -> usize {
+        (self.current_idx + 2) % 3
+    }
+
+    /// Computes the idx of the next (newest) bucket.
+    fn next_idx(&mut self) -> usize {
+        (self.current_idx + 1) % 3
+    }
+}
+
 pub(crate) struct Config<TContext> {
     pub(crate) context: TContext,
     pub(crate) signer: PrivateKey,
@@ -96,7 +169,7 @@ pub(crate) struct Actor<TContext> {
     /// Collected subblocks keyed by validator public key.
     subblocks: IndexMap<B256, RecoveredSubBlock>,
     /// Subblock candidate transactions.
-    subblock_transactions: Arc<Mutex<IndexMap<TxHash, Arc<Recovered<TempoTxEnvelope>>>>>,
+    subblock_transactions: Arc<Mutex<SubBlockTxBuckets>>,
 }
 
 impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
@@ -126,7 +199,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             epoch_length,
             consensus_tip: None,
             subblocks: Default::default(),
-            subblock_transactions: Default::default(),
+            subblock_transactions: Arc::new(Mutex::new(SubBlockTxBuckets::new(epoch_length))),
         }
     }
 
@@ -230,9 +303,15 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             if let Some(new_tip) = new_tip
                 && *tip != new_tip
             {
-                // Clear collected subblocks and subblock txs if we have a new tip.
+                // Clear collected subblocks if we have a new tip.
                 self.subblocks.clear();
-                self.subblock_transactions.lock().clear();
+
+                // If necessary, rotate buckets.
+                if let Ok(Some(new_header)) = self.node.provider.header(new_tip) {
+                    let new_height = new_header.number();
+                    self.subblock_transactions.lock().maybe_rotate(new_height);
+                }
+
                 *tip = new_tip;
             }
         } else if self.consensus_tip.is_none()
@@ -500,7 +579,7 @@ fn evm_at_block(
 /// This will include as many valid transactions as possible within the given timeout.
 #[instrument(skip_all, fields(parent_hash = %parent_hash))]
 async fn build_subblock(
-    transactions: Arc<Mutex<IndexMap<TxHash, Arc<Recovered<TempoTxEnvelope>>>>>,
+    transactions: Arc<Mutex<SubBlockTxBuckets>>,
     node: TempoFullNode,
     parent_hash: BlockHash,
     num_validators: usize,
@@ -517,14 +596,19 @@ async fn build_subblock(
             let mut gas_left =
                 evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / num_validators as u64;
 
-            let txs = transactions.lock().clone();
+            let txs: Vec<_> = transactions
+                .lock()
+                .iter_all()
+                .map(|(hash, tx)| (*hash, tx.clone()))
+                .collect();
+
             for (tx_hash, tx) in txs {
                 if tx.gas_limit() > gas_left {
                     continue;
                 }
                 if evm.transact_commit(&*tx).is_err() {
                     // Remove invalid transactions from the set.
-                    transactions.lock().swap_remove(&tx_hash);
+                    transactions.lock().try_remove(&tx_hash);
                     continue;
                 }
                 gas_left -= tx.gas_limit();
