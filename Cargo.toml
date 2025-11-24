@@ -2,7 +2,7 @@
 version = "0.5.2"
 edition = "2024"
 rust-version = "1.88"
-license = ""
+license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace]
