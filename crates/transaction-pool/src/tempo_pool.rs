@@ -604,16 +604,9 @@ where
         sender: Address,
         nonce: u64,
     ) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        // Check protocol pool first (nonce_key=0)
-        if let Some(tx) = self
-            .protocol_pool
+        // Only returns transactions from protocol pool (nonce_key=0)
+        self.protocol_pool
             .get_transaction_by_sender_and_nonce(sender, nonce)
-        {
-            return Some(tx);
-        }
-
-        // Check 2D pool for any nonce_key
-        self.user_nonce_pool.get_by_sender_and_nonce(&sender, nonce)
     }
 
     fn get_transactions_by_origin(

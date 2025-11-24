@@ -687,31 +687,6 @@ where
         queued
     }
 
-    /// Get transaction by sender and nonce (any nonce_key)
-    pub(super) fn get_by_sender_and_nonce(
-        &self,
-        address: &Address,
-        nonce: u64,
-    ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let nonce_keys = self.address_to_keys.read().get(address).cloned()?;
-
-        let by_sender = self.by_sender.read();
-        for nonce_key in nonce_keys {
-            let sender_key = SenderKey {
-                address: *address,
-                nonce_key,
-            };
-
-            if let Some(sender_txs) = by_sender.get(&sender_key) {
-                if let Some(tx) = sender_txs.transactions.get(&nonce) {
-                    return Some(tx.clone());
-                }
-            }
-        }
-
-        None
-    }
-
     /// Get unique senders
     pub(super) fn unique_senders(&self) -> HashSet<Address> {
         self.address_to_keys.read().keys().copied().collect()
