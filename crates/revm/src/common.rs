@@ -213,11 +213,94 @@ impl<T: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for T {
 
 #[cfg(test)]
 mod tests {
-    use alloy_consensus::TxLegacy;
-    use revm::{context::TxEnv, database::EmptyDB};
-    use tempo_primitives::transaction::TempoTypedTransaction;
-
     use super::*;
+    use revm::{context::TxEnv, database::EmptyDB};
+
+    #[test]
+    fn test_get_fee_token_fee_token_set() -> eyre::Result<()> {
+        let caller = Address::random();
+        let fee_token = Address::random();
+
+        let tx_env = TxEnv {
+            data: Bytes::new(),
+            caller,
+            ..Default::default()
+        };
+        let tx = TempoTxEnv {
+            inner: tx_env,
+            fee_token: Some(fee_token),
+            ..Default::default()
+        };
+
+        let mut db = EmptyDB::default();
+        let token = db.user_or_tx_fee_token(tx, caller)?;
+        assert_eq!(token, fee_token);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_fee_token_fee_manager() -> eyre::Result<()> {
+        let caller = Address::random();
+        let token = Address::random();
+
+        let call = IFeeManager::setUserTokenCall { token };
+        let tx_env = TxEnv {
+            data: call.abi_encode().into(),
+            kind: TxKind::Call(TIP_FEE_MANAGER_ADDRESS),
+            caller,
+            ..Default::default()
+        };
+        let tx = TempoTxEnv {
+            inner: tx_env,
+            ..Default::default()
+        };
+
+        let mut db = EmptyDB::default();
+        let result_token = db.user_or_tx_fee_token(tx, caller)?;
+        assert_eq!(result_token, token);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_fee_token_tip20() -> eyre::Result<()> {
+        let caller = Address::random();
+        let tip20_token = Address::random();
+
+        let tx_env = TxEnv {
+            data: Bytes::from_static(b"transfer_data"),
+            kind: TxKind::Call(tip20_token),
+            caller,
+            ..Default::default()
+        };
+        let tx = TempoTxEnv {
+            inner: tx_env,
+            ..Default::default()
+        };
+
+        let mut db = EmptyDB::default();
+        let result_token = db.user_or_tx_fee_token(tx, caller)?;
+        assert_eq!(result_token, DEFAULT_FEE_TOKEN);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_fee_token_fallback() -> eyre::Result<()> {
+        let caller = Address::random();
+        let tx_env = TxEnv {
+            caller,
+            ..Default::default()
+        };
+        let tx = TempoTxEnv {
+            inner: tx_env,
+            ..Default::default()
+        };
+
+        let mut db = EmptyDB::default();
+        let result_token = db.user_or_tx_fee_token(tx, caller)?;
+        // Should fallback to DEFAULT_FEE_TOKEN when no preferences are found
+        assert_eq!(result_token, DEFAULT_FEE_TOKEN);
+        Ok(())
+    }
 
     #[test]
     fn test_get_fee_token_stablecoin_exchange() -> eyre::Result<()> {
