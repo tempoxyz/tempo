@@ -54,7 +54,6 @@ use std::{
     sync::Arc,
     time::Instant,
 };
-use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, storage::slots::mapping_slot};
 
 /// Key for identifying a unique sender in 2D nonce system
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -154,10 +153,7 @@ pub(super) struct Pool2D<S>
 where
     S: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + 'static,
 {
-    /// State provider for nonce queries
-    state: S,
-
-    /// Transaction validator
+    /// Transaction validator (handles all I/O including nonce queries)
     validator: Arc<TransactionValidationTaskExecutor<TempoTransactionValidator<S>>>,
 
     /// Transactions organized by (address, nonce_key)
@@ -178,45 +174,15 @@ where
     S: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + 'static,
 {
     pub(super) fn new(
-        state: S,
         validator: Arc<TransactionValidationTaskExecutor<TempoTransactionValidator<S>>>,
     ) -> Self {
         Self {
-            state,
             validator,
             by_sender: Arc::new(RwLock::new(HashMap::new())),
             by_hash: Arc::new(RwLock::new(HashMap::new())),
             address_to_keys: Arc::new(RwLock::new(HashMap::new())),
             tx_origin: Arc::new(RwLock::new(HashMap::new())),
         }
-    }
-
-    /// Get the current nonce from state for (address, nonce_key)
-    fn get_state_nonce(&self, address: Address, nonce_key: U256) -> Result<u64, PoolError> {
-        // Query from NonceManager precompile
-        let state = self.state.latest().map_err(|_e| PoolError {
-            hash: B256::ZERO,
-            kind: PoolErrorKind::InvalidTransaction(InvalidPoolTransactionError::Consensus(
-                InvalidTransactionError::TxTypeNotSupported,
-            )),
-        })?;
-
-        // Compute storage slot for 2D nonce
-        // Based on: mapping(address => mapping(uint256 => uint64)) at slot 0
-        let outer_slot = mapping_slot(address.as_slice(), U256::ZERO);
-        let slot = mapping_slot(nonce_key.as_le_bytes(), outer_slot);
-
-        let nonce_value = state
-            .storage(NONCE_PRECOMPILE_ADDRESS, slot.into())
-            .map_err(|_e| PoolError {
-                hash: B256::ZERO,
-                kind: PoolErrorKind::InvalidTransaction(InvalidPoolTransactionError::Consensus(
-                    InvalidTransactionError::TxTypeNotSupported,
-                )),
-            })?;
-
-        // Storage returns Option<U256>, unwrap to U256 then convert to u64
-        Ok(nonce_value.unwrap_or_default().to::<u64>())
     }
 
     /// Add a transaction to the pool
@@ -234,14 +200,15 @@ where
         match validation_result {
             TransactionValidationOutcome::Valid {
                 balance: _,
-                state_nonce: _,
+                state_nonce,
                 transaction: validated_tx,
                 propagate: _,
                 ..
             } => {
                 // Extract the inner transaction from ValidTransaction
                 let inner_tx = validated_tx.into_transaction();
-                self.add_transaction_sync(origin, inner_tx)
+                // Use the state_nonce from validator
+                self.add_transaction_sync(origin, inner_tx, state_nonce)
             }
             TransactionValidationOutcome::Invalid(tx, err) => Err(PoolError {
                 hash: *tx.hash(),
@@ -255,10 +222,12 @@ where
     }
 
     /// Synchronous version of add_transaction
+
     pub(super) fn add_transaction_sync(
         &self,
         origin: TransactionOrigin,
         transaction: TempoPooledTransaction,
+        state_nonce: u64,
     ) -> Result<B256, PoolError> {
         let hash = *transaction.hash();
 
@@ -297,9 +266,6 @@ where
             address: sender,
             nonce_key,
         };
-
-        // Get state nonce
-        let state_nonce = self.get_state_nonce(sender, nonce_key)?;
 
         // Create valid pool transaction manually
         // We need to assign a SenderId - for 2D nonces, we'll use a simple hash-based approach
@@ -500,15 +466,11 @@ where
         let by_sender = self.by_sender.read();
         let mut queued = vec![];
 
-        for (sender_key, sender_txs) in by_sender.iter() {
-            // Fetch fresh state nonce to determine if transactions are queued
-            if let Ok(current_state_nonce) =
-                self.get_state_nonce(sender_key.address, sender_key.nonce_key)
-            {
-                for (nonce, tx) in &sender_txs.transactions {
-                    if *nonce != current_state_nonce {
-                        queued.push(tx.clone());
-                    }
+        for (_sender_key, sender_txs) in by_sender.iter() {
+            // Transactions are queued if their nonce doesn't match the expected state_nonce
+            for (nonce, tx) in &sender_txs.transactions {
+                if !sender_txs.is_ready(*nonce) {
+                    queued.push(tx.clone());
                 }
             }
         }

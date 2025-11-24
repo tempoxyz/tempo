@@ -64,10 +64,9 @@ where
             CoinbaseTipOrdering<TempoPooledTransaction>,
             DiskFileBlobStore,
         >,
-        client: Client,
         validator: TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
     ) -> Self {
-        let user_nonce_pool = Arc::new(Pool2D::new(client, Arc::new(validator)));
+        let user_nonce_pool = Arc::new(Pool2D::new(Arc::new(validator)));
         let (event_tx, event_rx) = broadcast::channel(1024);
 
         Self {

@@ -135,6 +135,7 @@ where
         }
 
         // Check for 2D nonce validation (nonce_key > 0)
+        // TODO: Figure out how to nicely add inner validation checks for 2d nonces.
         if let Some(aa) = transaction.inner().as_aa() {
             let nonce_key = aa.tx().nonce_key;
             if !nonce_key.is_zero() {

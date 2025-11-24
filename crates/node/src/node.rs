@@ -383,8 +383,7 @@ where
             .build_and_spawn_maintenance_task(blob_store, pool_config)?;
 
         // Wrap the protocol pool in our hybrid TempoTransactionPool
-        let transaction_pool =
-            TempoTransactionPool::new(protocol_pool, ctx.provider().clone(), validator_clone);
+        let transaction_pool = TempoTransactionPool::new(protocol_pool, validator_clone);
 
         info!(target: "reth::cli", "Transaction pool initialized");
         debug!(target: "reth::cli", "Spawned txpool maintenance task");
