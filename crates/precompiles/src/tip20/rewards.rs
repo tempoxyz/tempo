@@ -673,9 +673,11 @@ mod tests {
         storage::hashmap::HashMapStorageProvider,
         tip20::{ISSUER_ROLE, tests::initialize_linking_usd},
         tip20_rewards_registry::TIP20RewardsRegistry,
+        tip403_registry::TIP403Registry,
     };
     use alloy::primitives::{Address, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::ITIP403Registry;
 
     #[test]
     fn test_start_reward() -> eyre::Result<()> {
@@ -1342,6 +1344,80 @@ mod tests {
             error,
             TempoPrecompileError::TIP20(TIP20Error::ScheduledRewardsDisabled(_))
         ));
+
+        Ok(())
+    }
+
+    #[test]
+    // https://github.com/tempoxyz/tempo/issues/997
+    fn test_audit_issue_997() -> eyre::Result<()> {
+        const STREAM_DURATION: u32 = 10;
+
+        let mut storage = HashMapStorageProvider::new(1);
+        let current_timestamp = storage.timestamp();
+        let admin = Address::random();
+
+        initialize_linking_usd(&mut storage, admin)?;
+
+        // create a blacklist policy before token setup
+        let policy_id = {
+            let mut tip403_registry = TIP403Registry::new(&mut storage);
+            tip403_registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?
+        };
+
+        // setup token with the blacklist policy and start a reward stream
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        token.change_transfer_policy_id(
+            admin,
+            ITIP20::changeTransferPolicyIdCall {
+                newPolicyId: policy_id,
+            },
+        )?;
+
+        let mint_amount = U256::from(1000e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: admin,
+                amount: mint_amount,
+            },
+        )?;
+
+        let reward_amount = U256::from(100e18);
+        let stream_id = token.start_reward(
+            admin,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                secs: STREAM_DURATION,
+            },
+        )?;
+
+        // blacklist the token address
+        {
+            let mut tip403_registry = TIP403Registry::new(token.storage);
+            tip403_registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: token.address,
+                    restricted: true,
+                },
+            )?;
+        }
+
+        // attempt to cancel the rewards
+        storage.set_timestamp(current_timestamp + U256::from(STREAM_DURATION - 1));
+        let mut token = TIP20Token::new(1, &mut storage);
+        let refund = token.cancel_reward(admin, ITIP20::cancelRewardCall { id: stream_id })?;
+        assert!(matches!(refund, U256::ZERO), "non-zero refund: {refund}");
 
         Ok(())
     }
