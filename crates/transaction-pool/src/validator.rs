@@ -1,5 +1,6 @@
 use crate::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
 use alloy_consensus::Transaction;
+use alloy_primitives::Address;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
@@ -9,6 +10,7 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_revm::TempoStateAccess;
 
 /// Validator for Tempo transactions.

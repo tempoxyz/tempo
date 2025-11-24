@@ -6,9 +6,13 @@ use revm::{
     Database, context::JournalTr, interpreter::instructions::utility::IntoAddress,
     state::AccountInfo,
 };
-use tempo_contracts::precompiles::{IFeeManager, IStablecoinExchange, STABLECOIN_EXCHANGE_ADDRESS};
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_contracts::precompiles::{
+    DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, IFeeManager,
+    IStablecoinExchange, STABLECOIN_EXCHANGE_ADDRESS,
+};
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     storage::slots::mapping_slot,
     tip_fee_manager,
     tip20::{self, is_tip20},
@@ -93,7 +97,9 @@ pub trait TempoStateAccess<T> {
     fn user_or_tx_fee_token(
         &mut self,
         tx: impl TempoTx,
+        validator: Address,
         fee_payer: Address,
+        spec: TempoHardfork,
     ) -> Result<Address, Self::Error> {
         // If there is a fee token explicitly set on the tx type, use that.
         if let Some(fee_token) = tx.fee_token() {
@@ -133,7 +139,8 @@ pub trait TempoStateAccess<T> {
 
         // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin Exchange,
         // use the input token as the fee token (the token that will be pulled from the user)
-        if !tx.is_aa()
+        if spec.is_allegretto()
+            && !tx.is_aa()
             && let Some((kind, input)) = tx.calls().next()
             && kind.to() == Some(&STABLECOIN_EXCHANGE_ADDRESS)
         {
@@ -148,7 +155,23 @@ pub trait TempoStateAccess<T> {
             }
         }
 
-        Ok(DEFAULT_FEE_TOKEN)
+        // Post-allegretto, if no fee token is found, default to the first deployed TIP20
+        if spec.is_allegretto() {
+            Ok(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO)
+        } else {
+            // Pre-allegretto fall back to the validator fee token preference or the default to the
+            // first TIP20 deployed after PathUSD
+            let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
+            let validator_fee_token = self
+                .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
+                .into_address();
+
+            if validator_fee_token.is_zero() {
+                Ok(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)
+            } else {
+                return Ok(validator_fee_token);
+            }
+        }
     }
 
     /// Checks if the given token can be used as a fee token.
@@ -236,7 +259,7 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let token = db.user_or_tx_fee_token(tx, caller)?;
+        let token = db.user_or_tx_fee_token(tx, Address::ZERO, caller, TempoHardfork::default())?;
         assert_eq!(token, fee_token);
         Ok(())
     }
@@ -259,7 +282,8 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let result_token = db.user_or_tx_fee_token(tx, caller)?;
+        let result_token =
+            db.user_or_tx_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
         assert_eq!(result_token, token);
         Ok(())
     }
@@ -281,8 +305,9 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let result_token = db.user_or_tx_fee_token(tx, caller)?;
-        assert_eq!(result_token, DEFAULT_FEE_TOKEN);
+        let result_token =
+            db.user_or_tx_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
+        assert_eq!(result_token, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO);
         Ok(())
     }
 
@@ -299,9 +324,10 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let result_token = db.user_or_tx_fee_token(tx, caller)?;
+        let result_token =
+            db.user_or_tx_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
         // Should fallback to DEFAULT_FEE_TOKEN when no preferences are found
-        assert_eq!(result_token, DEFAULT_FEE_TOKEN);
+        assert_eq!(result_token, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO);
         Ok(())
     }
 
@@ -331,7 +357,7 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let token = db.user_or_tx_fee_token(tx, caller)?;
+        let token = db.user_or_tx_fee_token(tx, Address::ZERO, caller, TempoHardfork::default())?;
         assert_eq!(token, token_in);
 
         // Test swapExactAmountOut
@@ -354,7 +380,7 @@ mod tests {
             ..Default::default()
         };
 
-        let token = db.user_or_tx_fee_token(tx, caller)?;
+        let token = db.user_or_tx_fee_token(tx, Address::ZERO, caller, TempoHardfork::default())?;
         assert_eq!(token, token_in);
 
         Ok(())

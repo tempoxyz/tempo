@@ -103,7 +103,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         self.fee_payer = ctx.tx.fee_payer()?;
         self.fee_token = ctx
             .journaled_state
-            .user_or_tx_fee_token(&ctx.tx, self.fee_payer)?;
+            .user_or_tx_fee_token(&ctx.tx, ctx.block.beneficiary, self.fee_payer, ctx.cfg.spec)?;
 
         // Skip fee token validity check for cases when the transaction is free and is not a part of a subblock.
         if (!ctx.tx.max_balance_spending()?.is_zero() || ctx.tx.is_subblock_transaction())

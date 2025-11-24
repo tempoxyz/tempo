@@ -8,7 +8,7 @@ pub use tempo_contracts::precompiles::{
 };
 
 use crate::{
-    DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS,
+    DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, PATH_USD_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{PrecompileStorageProvider, Slot, Storable, VecSlotExt},
     tip_fee_manager::amm::Pool,
@@ -63,8 +63,8 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     pub fn get_validator_token(&mut self, beneficiary: Address) -> Result<Address> {
         let token = self.sload_validator_tokens(beneficiary)?;
 
-        if token.is_zero() {
-            Ok(DEFAULT_FEE_TOKEN)
+        if self.storage.spec().is_allegretto() && token.is_zero() {
+            Ok(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)
         } else {
             Ok(token)
         }
@@ -300,8 +300,8 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     pub fn validator_tokens(&mut self, call: IFeeManager::validatorTokensCall) -> Result<Address> {
         let token = self.sload_validator_tokens(call.validator)?;
 
-        if token.is_zero() {
-            Ok(DEFAULT_FEE_TOKEN)
+        if self.storage.spec().is_allegretto() && token.is_zero() {
+            Ok(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)
         } else {
             Ok(token)
         }
