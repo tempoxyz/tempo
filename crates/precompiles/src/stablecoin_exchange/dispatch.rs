@@ -196,7 +196,7 @@ mod tests {
     use super::*;
     use crate::{
         Precompile,
-        linking_usd::{LinkingUSD, TRANSFER_ROLE},
+        path_usd::{PathUSD, TRANSFER_ROLE},
         stablecoin_exchange::{IStablecoinExchange, MIN_ORDER_AMOUNT, StablecoinExchange},
         storage::{ContractStorage, PrecompileStorageProvider, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
@@ -220,8 +220,8 @@ mod tests {
         let user = Address::random();
         let amount = 200_000_000u128;
 
-        // Initialize quote token (LinkingUSD)
-        let mut quote = LinkingUSD::new(exchange.storage);
+        // Initialize quote token (PathUSD)
+        let mut quote = PathUSD::new(exchange.storage);
         quote.initialize(admin).unwrap();
 
         quote

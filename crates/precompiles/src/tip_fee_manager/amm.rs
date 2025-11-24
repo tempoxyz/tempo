@@ -770,7 +770,7 @@ mod tests {
         let storage = Box::leak(Box::new(HashMapStorageProvider::new(1)));
         let admin = Address::random();
 
-        // Initialize LinkingUSD first
+        // Initialize PathUSD first
         initialize_path_usd(storage, admin).unwrap();
 
         // Create USD tokens for user and validator
@@ -1137,7 +1137,7 @@ mod tests {
         // Init Linking USD, user token and validator tokens
         let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
         path_usd
-            .initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+            .initialize("PathUSD", "LUSD", "USD", Address::ZERO, admin)
             .unwrap();
 
         let mut user_token = TIP20Token::new(1, &mut storage);
@@ -1194,7 +1194,7 @@ mod tests {
         // Init Linking USD, user token and validator tokens
         let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
         path_usd
-            .initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+            .initialize("PathUSD", "LUSD", "USD", Address::ZERO, admin)
             .unwrap();
 
         let mut user_token = TIP20Token::new(1, &mut storage);
@@ -1249,7 +1249,7 @@ mod tests {
         // Init Linking USD, user token and validator tokens
         let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
         path_usd
-            .initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+            .initialize("PathUSD", "LUSD", "USD", Address::ZERO, admin)
             .unwrap();
 
         let mut user_token = TIP20Token::new(1, &mut storage);

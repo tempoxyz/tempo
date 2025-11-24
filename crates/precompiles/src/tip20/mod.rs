@@ -322,7 +322,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let next_quote_token = self.next_quote_token()?;
 
         // Check that this does not create a loop
-        // Loop through quote tokens until we reach the root (LinkingUSD)
+        // Loop through quote tokens until we reach the root (PathUSD)
         let mut current = next_quote_token;
         while current != PATH_USD_ADDRESS {
             if current == self.address {
@@ -942,8 +942,8 @@ pub(crate) mod tests {
         storage: &mut HashMapStorageProvider,
         admin: Address,
     ) -> Result<()> {
-        let mut linking_usd = TIP20Token::from_address(PATH_USD_ADDRESS, storage);
-        linking_usd.initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, storage);
+        path_usd.initialize("PathUSD", "PUSD", "USD", Address::ZERO, admin)
     }
 
     /// Helper to setup a token with rewards for testing fee transfer functions
