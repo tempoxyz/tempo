@@ -1,11 +1,11 @@
-pub use pools::{Pool, PoolsFilters};
-
-use crate::rpc::{amm::pools::PoolsResponse, pagination::PaginationParams};
+use crate::rpc::amm::pools::PoolsResponse;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_node_core::rpc::result::internal_rpc_err;
 use reth_rpc_eth_api::RpcNodeCore;
+use tempo_alloy::rpc::pagination::PaginationParams;
 
 pub mod pools;
+pub use pools::{Pool, PoolsFilters};
 
 #[rpc(server, namespace = "amm")]
 pub trait TempoAmmApi {

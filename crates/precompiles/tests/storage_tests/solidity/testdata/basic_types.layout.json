@@ -1,0 +1,65 @@
+{
+  "contracts": {
+    "tests/storage_tests/solidity/testdata/basic_types.sol:BasicTypes": {
+      "storage-layout": {
+        "storage": [
+          {
+            "astId": 4,
+            "contract": "tests/storage_tests/solidity/testdata/basic_types.sol:BasicTypes",
+            "label": "fieldA",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_uint256"
+          },
+          {
+            "astId": 6,
+            "contract": "tests/storage_tests/solidity/testdata/basic_types.sol:BasicTypes",
+            "label": "fieldB",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_address"
+          },
+          {
+            "astId": 8,
+            "contract": "tests/storage_tests/solidity/testdata/basic_types.sol:BasicTypes",
+            "label": "fieldC",
+            "offset": 20,
+            "slot": "1",
+            "type": "t_bool"
+          },
+          {
+            "astId": 10,
+            "contract": "tests/storage_tests/solidity/testdata/basic_types.sol:BasicTypes",
+            "label": "fieldD",
+            "offset": 21,
+            "slot": "1",
+            "type": "t_uint64"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "encoding": "inplace",
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_bool": {
+            "encoding": "inplace",
+            "label": "bool",
+            "numberOfBytes": "1"
+          },
+          "t_uint256": {
+            "encoding": "inplace",
+            "label": "uint256",
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "encoding": "inplace",
+            "label": "uint64",
+            "numberOfBytes": "8"
+          }
+        }
+      }
+    }
+  },
+  "version": "0.8.30+commit.73712a01.Darwin.appleclang"
+}

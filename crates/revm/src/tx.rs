@@ -81,6 +81,34 @@ impl TempoTxEnv {
             .as_ref()
             .is_some_and(|aa| aa.subblock_transaction)
     }
+
+    /// Returns the first top-level call in the transaction.
+    pub fn first_call(&self) -> Option<(&TxKind, &[u8])> {
+        if let Some(aa) = self.aa_tx_env.as_ref() {
+            aa.aa_calls
+                .first()
+                .map(|call| (&call.to, call.input.as_ref()))
+        } else {
+            Some((&self.inner.kind, &self.inner.data))
+        }
+    }
+
+    /// Invokes the given closure for each top-level call in the transaction and
+    /// returns true if all calls returned true.
+    pub fn calls(&self) -> impl Iterator<Item = (&TxKind, &[u8])> {
+        if let Some(aa) = self.aa_tx_env.as_ref() {
+            Either::Left(
+                aa.aa_calls
+                    .iter()
+                    .map(|call| (&call.to, call.input.as_ref())),
+            )
+        } else {
+            Either::Right(core::iter::once((
+                &self.inner.kind,
+                self.inner.input().as_ref(),
+            )))
+        }
+    }
 }
 
 impl From<TxEnv> for TempoTxEnv {

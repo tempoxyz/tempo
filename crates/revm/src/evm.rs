@@ -1,6 +1,6 @@
 use crate::{TempoBlockEnv, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
-use alloy_primitives::Log;
+use alloy_primitives::{Address, Log};
 use revm::{
     Context, Inspector,
     context::{CfgEnv, ContextError, Evm, FrameStack},
@@ -11,10 +11,11 @@ use revm::{
     inspector::InspectorEvmTr,
     interpreter::interpreter::EthInterpreter,
 };
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::extend_tempo_precompiles;
 
 /// The Tempo EVM context type.
-pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv, DB>;
+pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
 
 /// TempoEvm extends the Evm with Tempo specific types and logic.
 #[derive(Debug, derive_more::Deref, derive_more::DerefMut)]
@@ -32,13 +33,15 @@ pub struct TempoEvm<DB: Database, I> {
     >,
     /// Preserved logs from the last transaction
     pub logs: Vec<Log>,
+    /// Subblock fee recipient, if executing a subblock transaction.
+    pub subblock_fee_recipient: Option<Address>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
         let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::default().precompiles);
-        extend_tempo_precompiles(&mut precompiles, ctx.cfg.chain_id);
+        extend_tempo_precompiles(&mut precompiles, &ctx.cfg);
 
         Self::new_inner(Evm {
             ctx,
@@ -64,6 +67,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         Self {
             inner,
             logs: Vec::new(),
+            subblock_fee_recipient: None,
         }
     }
 }
@@ -184,17 +188,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use alloy_evm::{Evm, EvmFactory};
     use alloy_primitives::{Address, U256, bytes};
     use reth_evm::EvmInternals;
     use revm::{
-        ExecuteEvm,
         context::{ContextTr, TxEnv},
         database::{CacheDB, EmptyDB},
-        primitives::hardfork::SpecId,
         state::{AccountInfo, Bytecode},
     };
     use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
+    use tempo_evm::TempoEvmFactory;
     use tempo_precompiles::{
         LINKING_USD_ADDRESS, storage::evm::EvmPrecompileStorageProvider, tip20::TIP20Token,
     };
@@ -202,12 +205,13 @@ mod tests {
     #[test]
     fn test_auto_7702_delegation() -> eyre::Result<()> {
         let db = CacheDB::new(EmptyDB::new());
-        let mut ctx = TempoContext::new(db, SpecId::default());
+        let mut tempo_evm = TempoEvmFactory::default().create_evm(db, Default::default());
 
         // HACK: initialize default fee token and linkingUSD so that fee token validation passes
+        let ctx = tempo_evm.ctx_mut();
         let mut storage = EvmPrecompileStorageProvider::new_max_gas(
             EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
-            ctx.cfg.chain_id,
+            &ctx.cfg,
         );
         TIP20Token::new(0, &mut storage)
             .initialize("USD", "USD", "USD", Address::ZERO, Address::ZERO)
@@ -217,19 +221,16 @@ mod tests {
             .unwrap();
         drop(storage);
 
-        let mut tempo_evm = TempoEvm::new(ctx, ());
-
         let caller_0 = Address::random();
         let tx_env = TxEnv {
             caller: caller_0,
             nonce: 0,
             ..Default::default()
         };
-        let res = tempo_evm.transact_one(tx_env.into())?;
-        assert!(res.is_success());
+        let mut res = tempo_evm.transact_raw(tx_env.into())?;
+        assert!(res.result.is_success());
 
-        let ctx = tempo_evm.ctx();
-        let account = ctx.journal().account(caller_0).to_owned();
+        let account = res.state.remove(&caller_0).unwrap();
         assert_eq!(
             account.info.code.unwrap(),
             Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS),
@@ -241,16 +242,13 @@ mod tests {
     #[test]
     fn test_access_millis_timestamp() -> eyre::Result<()> {
         let db = CacheDB::new(EmptyDB::new());
-        let mut ctx = TempoContext::new(db, SpecId::default()).modify_block_chained(|block| {
-            block.timestamp = U256::from(1000);
-            block.timestamp_millis_part = 100;
-        });
-        let contract = Address::random();
-
-        // HACK: initialize default fee token and linkingUSD so that fee token validation passes
+        let mut tempo_evm = TempoEvmFactory::default().create_evm(db, Default::default());
+        let ctx = tempo_evm.ctx_mut();
+        ctx.block.timestamp = U256::from(1000);
+        ctx.block.timestamp_millis_part = 100;
         let mut storage = EvmPrecompileStorageProvider::new_max_gas(
             EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
-            ctx.cfg.chain_id,
+            &ctx.cfg,
         );
         TIP20Token::new(0, &mut storage)
             .initialize("USD", "USD", "USD", Address::ZERO, Address::ZERO)
@@ -259,6 +257,8 @@ mod tests {
             .initialize("USD", "USD", "USD", LINKING_USD_ADDRESS, Address::ZERO)
             .unwrap();
         drop(storage);
+
+        let contract = Address::random();
 
         // Create a simple contract that returns output of the opcode.
         ctx.db_mut().insert_account_info(
@@ -269,16 +269,15 @@ mod tests {
                 ..Default::default()
             },
         );
-        let mut tempo_evm = TempoEvm::new(ctx, ());
 
         let tx_env = TxEnv {
             kind: contract.into(),
             ..Default::default()
         };
-        let res = tempo_evm.transact_one(tx_env.into())?;
-        assert!(res.is_success());
+        let res = tempo_evm.transact_raw(tx_env.into())?;
+        assert!(res.result.is_success());
         assert_eq!(
-            U256::from_be_slice(res.output().unwrap()),
+            U256::from_be_slice(res.result.output().unwrap()),
             U256::from(1000100)
         );
 

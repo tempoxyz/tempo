@@ -55,12 +55,13 @@ const REPLAY_BUFFER: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).expect("v
 const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(1024 * 1024).expect("value is not zero"); // 1MB
 const BUFFER_POOL_PAGE_SIZE: NonZeroUsize = NonZeroUsize::new(4_096).expect("value is not zero"); // 4KB
 const BUFFER_POOL_CAPACITY: NonZeroUsize = NonZeroUsize::new(8_192).expect("value is not zero"); // 32MB
-const MAX_REPAIR: u64 = 20;
+const MAX_REPAIR: NonZeroU64 = NonZeroU64::new(20).expect("value is not zero");
 
 /// Settings for [`Engine`].
 ///
 // XXX: Mostly a one-to-one copy of alto for now. We also put the context in here
 // because there doesn't really seem to be a point putting it into an extra initializer.
+#[derive(Clone)]
 pub struct Builder<
     TBlocker,
     TContext,
@@ -134,6 +135,7 @@ where
             public_key: self.signer.public_key(),
             manager: self.peer_manager,
             mailbox_size: self.mailbox_size,
+            blocker: self.blocker.clone(),
             requester_config: commonware_p2p::utils::requester::Config {
                 me: Some(self.signer.public_key()),
                 rate_limit: MARSHAL_LIMIT,
@@ -211,7 +213,7 @@ where
                 time_to_propose: self.time_to_propose,
                 mailbox_size: self.mailbox_size,
                 subblocks: subblocks.mailbox(),
-                marshal: marshal_mailbox,
+                marshal: marshal_mailbox.clone(),
                 scheme_provider: scheme_provider.clone(),
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
@@ -231,6 +233,7 @@ where
                 initial_public: self.polynomial.clone(),
                 initial_share: Some(self.share.clone()),
                 mailbox_size: self.mailbox_size,
+                marshal: marshal_mailbox,
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
@@ -292,7 +295,7 @@ where
     application_mailbox: application::Mailbox,
 
     /// Resolver config that will be passed to the marshal actor upon start.
-    resolver_config: marshal::resolver::p2p::Config<PublicKey, TPeerManager>,
+    resolver_config: marshal::resolver::p2p::Config<PublicKey, TPeerManager, TBlocker>,
 
     /// Listens to consensus events and syncs blocks from the network to the
     /// local node.
@@ -449,10 +452,5 @@ where
         // TODO: look into adding error context so that we know which
         // component failed.
         .wrap_err("one of the consensus engine's actors failed")
-    }
-
-    /// Returns a handle to the subblocks service.
-    pub fn subblocks_mailbox(&self) -> subblocks::Mailbox {
-        self.subblocks.mailbox()
     }
 }

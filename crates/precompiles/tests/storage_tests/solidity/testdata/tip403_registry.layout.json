@@ -1,0 +1,101 @@
+{
+  "contracts": {
+    "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry": {
+      "storage-layout": {
+        "storage": [
+          {
+            "astId": 10,
+            "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
+            "label": "policyIdCounter",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_uint64"
+          },
+          {
+            "astId": 16,
+            "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
+            "label": "policyData",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_mapping(t_uint64,t_struct(PolicyData)7_storage)"
+          },
+          {
+            "astId": 23,
+            "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
+            "label": "policySet",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_mapping(t_uint64,t_mapping(t_address,t_bool))"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "encoding": "inplace",
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_bool": {
+            "encoding": "inplace",
+            "label": "bool",
+            "numberOfBytes": "1"
+          },
+          "t_mapping(t_address,t_bool)": {
+            "encoding": "mapping",
+            "key": "t_address",
+            "label": "mapping(address => bool)",
+            "numberOfBytes": "32",
+            "value": "t_bool"
+          },
+          "t_mapping(t_uint64,t_mapping(t_address,t_bool))": {
+            "encoding": "mapping",
+            "key": "t_uint64",
+            "label": "mapping(uint64 => mapping(address => bool))",
+            "numberOfBytes": "32",
+            "value": "t_mapping(t_address,t_bool)"
+          },
+          "t_mapping(t_uint64,t_struct(PolicyData)7_storage)": {
+            "encoding": "mapping",
+            "key": "t_uint64",
+            "label": "mapping(uint64 => struct TIP403Registry.PolicyData)",
+            "numberOfBytes": "32",
+            "value": "t_struct(PolicyData)7_storage"
+          },
+          "t_struct(PolicyData)7_storage": {
+            "encoding": "inplace",
+            "label": "struct TIP403Registry.PolicyData",
+            "members": [
+              {
+                "astId": 4,
+                "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
+                "label": "policyType",
+                "offset": 0,
+                "slot": "0",
+                "type": "t_uint8"
+              },
+              {
+                "astId": 6,
+                "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
+                "label": "admin",
+                "offset": 1,
+                "slot": "0",
+                "type": "t_address"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "encoding": "inplace",
+            "label": "uint64",
+            "numberOfBytes": "8"
+          },
+          "t_uint8": {
+            "encoding": "inplace",
+            "label": "uint8",
+            "numberOfBytes": "1"
+          }
+        }
+      }
+    }
+  },
+  "version": "0.8.30+commit.73712a01.Darwin.appleclang"
+}

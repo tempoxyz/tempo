@@ -13,7 +13,8 @@ workspace = true
 
 [dependencies]
 tempo-contracts.workspace = true
-reth-storage-api = { workspace = true, optional = true }
+tempo-chainspec.workspace = true
+tempo-precompiles-macros.workspace = true
 alloy = { workspace = true, features = ["contract", "sol-types", "rpc"] }
 alloy-evm.workspace = true
 revm.workspace = true
@@ -33,9 +34,10 @@ alloy-signer-local.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
 eyre.workspace = true
 rand.workspace = true
-
-[features]
-reth = ["dep:reth-storage-api"]
+proptest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempo-evm.workspace = true
 
 [[bench]]
 name = "tempo_precompiles"

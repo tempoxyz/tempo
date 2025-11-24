@@ -5,12 +5,12 @@ use alloy_evm::{
         Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
         context::result::{EVMError, HaltReason, ResultAndState},
         inspector::NoOpInspector,
-        primitives::hardfork::SpecId,
     },
 };
 use alloy_primitives::{Address, Bytes, Log, TxKind};
 use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
 use std::ops::{Deref, DerefMut};
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv, evm::TempoContext};
 
 use crate::TempoBlockEnv;
@@ -26,7 +26,7 @@ impl EvmFactory for TempoEvmFactory {
     type Error<DBError: std::error::Error + Send + Sync + 'static> =
         EVMError<DBError, TempoInvalidTransaction>;
     type HaltReason = HaltReason;
-    type Spec = SpecId;
+    type Spec = TempoHardfork;
     type BlockEnv = TempoBlockEnv;
     type Precompiles = PrecompilesMap;
 
@@ -61,7 +61,7 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
 
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
-    pub fn new(db: DB, input: EvmEnv<SpecId, TempoBlockEnv>) -> Self {
+    pub fn new(db: DB, input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
@@ -105,6 +105,20 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     pub fn take_revert_logs(&mut self) -> Vec<Log> {
         std::mem::take(&mut self.inner.logs)
     }
+
+    /// Sets the subblock fee recipient for the next transaction.
+    ///
+    /// This is used by block executor to configure context before executing a subblock transaction.
+    pub fn set_subblock_fee_recipient(&mut self, fee_recipient: Address) {
+        self.inner.subblock_fee_recipient = Some(fee_recipient);
+    }
+
+    /// Unsets the subblock fee recipient for the next transaction.
+    ///
+    /// This must be invoked after a subblock transaction was executed.
+    pub fn unset_subblock_fee_recipient(&mut self) {
+        self.inner.subblock_fee_recipient = None;
+    }
 }
 
 impl<DB: Database, I> Deref for TempoEvm<DB, I>
@@ -140,7 +154,7 @@ where
     type Tx = TempoTxEnv;
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
     type HaltReason = HaltReason;
-    type Spec = SpecId;
+    type Spec = TempoHardfork;
     type BlockEnv = TempoBlockEnv;
     type Precompiles = PrecompilesMap;
     type Inspector = I;

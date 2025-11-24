@@ -20,6 +20,7 @@ jobs:
     name: test
     runs-on: depot-ubuntu-latest-16
     timeout-minutes: 30
+    needs: genesis
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -57,7 +58,31 @@ jobs:
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Generate genesis
-        run: cargo run --bin tempo-xtask -- generate-genesis --accounts 100 --base-fee-per-gas 44 --chain-id 42427 --output andante-temp.json --gas-limit 500000000
+        run: cargo run --bin tempo-xtask -- generate-genesis --accounts 100 --output generated-test-genesis.json --coinbase 0xbba20Bb99dA4E103721B754b25071Fc85e7028A1
+      - name: Compare with existing test genesis
+        run: |
+          # Compare the generated genesis with the existing test-genesis.json
+          if ! diff -u crates/node/tests/assets/test-genesis.json generated-test-genesis.json; then
+            echo "Generated genesis differs from existing test-genesis.json"
+            echo "Please update the test-genesis.json file with the generated content"
+            exit 1
+          else
+            echo "Generated genesis matches test-genesis.json"
+          fi
+
+  snapshot-re-execute:
+    name: Snapshot re-execution
+    runs-on: depot-ubuntu-latest-16
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Download snapshot
+        run: cargo run --release --bin tempo download --datadir snap-rexec
+      - name: Re-execute snapshot
+        run: cargo run --release --bin tempo re-execute --datadir snap-rexec
 
   test-success:
     name: test success
@@ -67,6 +92,7 @@ jobs:
       - test
       - msrv
       - genesis
+      - snapshot-re-execute
     timeout-minutes: 30
     steps:
       - name: Decide whether the needed jobs succeeded or failed

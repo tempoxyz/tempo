@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use alloy_network::TxSignerSync;
+use alloy::signers::local::PrivateKeySigner;
+use alloy_network::{TxSignerSync, eip2718::Encodable2718};
 use alloy_primitives::{Address, TxHash, U256};
-use alloy_signer_local::PrivateKeySigner;
 use commonware_macros::test_traced;
 use commonware_p2p::simulated::Link;
 use commonware_runtime::{
@@ -14,39 +14,60 @@ use reth_ethereum::{
     chainspec::{ChainSpecProvider, EthChainSpec},
     primitives::AlloyBlockHeader,
     provider::{CanonStateNotification, CanonStateSubscriptions},
+    rpc::eth::EthApiServer,
 };
-use reth_node_core::primitives::{SignerRecoverable, transaction::TxHashRef};
+use reth_node_core::primitives::transaction::TxHashRef;
 use tempo_node::primitives::{
     TempoTxEnvelope, TxAA, subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX, transaction::Call,
 };
 
-use crate::{ExecutionRuntime, Setup, ValidatorNode, setup_validators};
+use crate::{ExecutionRuntime, RunningNode, Setup, link_validators, setup_validators};
 
 #[test_traced]
 fn subblocks_are_included() {
     let _ = tempo_eyre::install();
 
     Runner::from(deterministic::Config::default().with_seed(0)).start(|context| async move {
-        let num_nodes = 5;
+        let how_many_signers = 5;
 
+        let linkage = Link {
+            latency: Duration::from_millis(10),
+            jitter: Duration::from_millis(1),
+            success_rate: 1.0,
+        };
         let setup = Setup {
-            how_many: num_nodes,
+            how_many_signers,
             seed: 0,
-            linkage: Link {
-                latency: Duration::from_millis(10),
-                jitter: Duration::from_millis(1),
-                success_rate: 1.0,
-            },
+            linkage: linkage.clone(),
             epoch_length: 10,
+            connect_execution_layer_nodes: false,
         };
 
         // Setup and start all nodes.
         let execution_runtime = ExecutionRuntime::new();
-        let (mut nodes, _network_handle) =
+        let (nodes, mut oracle) =
             setup_validators(context.clone(), &execution_runtime, setup).await;
-        join_all(nodes.iter_mut().map(|node| node.start())).await;
 
-        let mut stream = nodes[0].node.node.provider.canonical_state_stream();
+        let running = join_all(
+            nodes
+                .into_iter()
+                .map(|mut node| {
+                    // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
+                    // to ensure that payload builder has enough time to accumulate subblocks.
+                    node.consensus_config.new_payload_wait_time = Duration::from_millis(500);
+                    node.start()
+                })
+                .collect::<Vec<_>>(),
+        )
+        .await;
+
+        link_validators(&mut oracle, &running, linkage.clone(), None).await;
+
+        let mut stream = running[0]
+            .execution_node
+            .node
+            .provider
+            .canonical_state_stream();
 
         let mut expected_transactions: Vec<TxHash> = Vec::new();
         while let Some(update) = stream.next().await {
@@ -74,16 +95,16 @@ fn subblocks_are_included() {
             }
 
             // Send subblock transactions to all nodes.
-            for node in nodes.iter() {
+            for node in running.iter() {
                 for _ in 0..5 {
-                    expected_transactions.push(submit_subblock_tx(node));
+                    expected_transactions.push(submit_subblock_tx(node).await);
                 }
             }
         }
     });
 }
 
-fn submit_subblock_tx(node: &ValidatorNode) -> TxHash {
+async fn submit_subblock_tx(node: &RunningNode) -> TxHash {
     let wallet = PrivateKeySigner::random();
 
     let mut nonce_bytes = [0; 32];
@@ -91,7 +112,7 @@ fn submit_subblock_tx(node: &ValidatorNode) -> TxHash {
     nonce_bytes[1..16].copy_from_slice(&node.public_key.as_ref()[..15]);
 
     let mut tx = TxAA {
-        chain_id: node.node.node.provider.chain_spec().chain_id(),
+        chain_id: node.execution_node.node.provider.chain_spec().chain_id(),
         calls: vec![Call {
             to: Address::ZERO.into(),
             input: Default::default(),
@@ -106,8 +127,12 @@ fn submit_subblock_tx(node: &ValidatorNode) -> TxHash {
 
     let tx = TempoTxEnvelope::AA(tx.into_signed(signature.into()));
     let tx_hash = *tx.tx_hash();
-    node.subblocks
-        .add_transaction(tx.try_into_recovered().unwrap());
+    node.execution_node
+        .node
+        .eth_api()
+        .send_raw_transaction(tx.encoded_2718().into())
+        .await
+        .unwrap();
 
     tx_hash
 }

@@ -23,6 +23,7 @@ tempo-primitives = { workspace = true, features = ["default"] }
 
 thiserror.workspace = true
 
+reth-errors.workspace = true
 reth-ethereum-engine-primitives.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }
 reth-primitives-traits = { workspace = true, features = ["secp256k1", "rayon"] }
@@ -49,6 +50,7 @@ alloy-primitives.workspace = true
 
 async-trait.workspace = true
 eyre.workspace = true
+futures.workspace = true
 tokio.workspace = true
 serde.workspace = true
 jsonrpsee.workspace = true
@@ -91,4 +93,38 @@ asm-keccak = [
     "reth-node-core/asm-keccak",
     "reth-node-ethereum/asm-keccak",
     "tempo-alloy/asm-keccak"
+]
+otlp = [
+	"reth-ethereum/otlp",
+	"reth-node-core/otlp"
+]
+js-tracer = [
+	"reth-ethereum/js-tracer",
+	"reth-node-builder/js-tracer",
+	"reth-node-ethereum/js-tracer",
+	"reth-rpc/js-tracer",
+	"reth-rpc-eth-api/js-tracer",
+	"reth-rpc-eth-types/js-tracer"
+]
+jemalloc = [
+	"reth-ethereum/jemalloc",
+	"reth-node-core/jemalloc",
+	"reth-node-metrics/jemalloc"
+]
+jemalloc-prof = []
+
+min-error-logs = [
+	"reth-node-core/min-error-logs"
+]
+min-warn-logs = [
+	"reth-node-core/min-warn-logs"
+]
+min-info-logs = [
+	"reth-node-core/min-info-logs"
+]
+min-debug-logs = [
+	"reth-node-core/min-debug-logs"
+]
+min-trace-logs = [
+	"reth-node-core/min-trace-logs"
 ]

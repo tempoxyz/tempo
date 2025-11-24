@@ -1,11 +1,12 @@
 use commonware_consensus::{
-    Automaton, Epochable, Relay, Reporter,
+    Automaton, Relay, Reporter,
     marshal::Update,
     simplex::types::Context,
     types::{Epoch, Round, View},
 };
 
 use commonware_cryptography::ed25519::PublicKey;
+use commonware_utils::acknowledgement::Exact;
 use futures::{
     SinkExt as _,
     channel::{mpsc, oneshot},
@@ -91,15 +92,8 @@ impl From<Verify> for Message {
 ///
 /// Updated tips on the other hand are fire-and-forget.
 #[derive(Debug)]
-pub(super) enum Finalized {
-    Block {
-        block: Box<Block>,
-        response: oneshot::Sender<()>,
-    },
-    Tip {
-        digest: Digest,
-        height: u64,
-    },
+pub(super) struct Finalized {
+    pub(super) inner: Update<Block, Exact>,
 }
 
 impl From<Finalized> for Message {
@@ -113,7 +107,7 @@ impl Automaton for Mailbox {
 
     type Digest = Digest;
 
-    async fn genesis(&mut self, epoch: <Self::Context as Epochable>::Epoch) -> Self::Digest {
+    async fn genesis(&mut self, epoch: Epoch) -> Self::Digest {
         let (tx, rx) = oneshot::channel();
         // TODO: panicking here really is not good. there's actually no requirement on `Self::Context` nor `Self::Digest` to fulfill
         // any invariants, so we could just turn them into `Result<Context, Error>` and be happy.
@@ -197,35 +191,10 @@ impl Reporter for Mailbox {
     type Activity = Update<Block>;
 
     async fn report(&mut self, update: Self::Activity) {
-        let (msg, rx) = match update {
-            Update::Tip(height, digest) => {
-                let msg = Finalized::Tip { digest, height }.into();
-                (msg, None)
-            }
-            Update::Block(block) => {
-                let (response, rx) = oneshot::channel();
-                let msg = Finalized::Block {
-                    block: Box::new(block),
-                    response,
-                }
-                .into();
-                (msg, Some(rx))
-            }
-        };
         // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
         self.inner
-            .send(msg)
+            .send(Finalized { inner: update }.into())
             .await
             .expect("application is present and ready to receive broadcasts");
-
-        // XXX: This is used as an acknowledgement that the application
-        // finalized the block:
-        // Response on this channel -> future returns -> marshaller gets an ack
-        if let Some(rx) = rx {
-            // TODO(janis): commonware does not distinguish between the channel
-            // getting dropped or receiving a response. But this is something
-            // that needs be handled by them.
-            let _ = rx.await;
-        }
     }
 }

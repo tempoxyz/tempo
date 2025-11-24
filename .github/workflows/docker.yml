@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*.*.*"
   pull_request:
   workflow_dispatch:
   workflow_call:
@@ -22,7 +24,16 @@ jobs:
     runs-on: depot-ubuntu-latest-16
     strategy:
       matrix:
-        binary: [tempo, tempo-xtask, tempo-bench, tempo-sidecar]
+        binary: 
+          - name: tempo
+            features: "asm-keccak,jemalloc,otlp"
+          - name: tempo-bench
+            features: ""
+            dockerfile: "Dockerfile.bench"
+          - name: tempo-sidecar
+            features: ""
+          - name: tempo-xtask
+            features: ""
     permissions:
       contents: read
       packages: write
@@ -35,7 +46,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ matrix.binary }}
+          images: ${{ env.REGISTRY }}/${{ matrix.binary.name }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -56,12 +67,14 @@ jobs:
         uses: depot/build-push-action@v1
         with:
           build-args: |
-            RUST_BINARY=${{ matrix.binary }}
+            RUST_BINARY=${{ matrix.binary.name }}
+            RUST_FEATURES=${{ matrix.binary.features }}
             RUST_PROFILE=release
             VERGEN_GIT_SHA=${{ github.sha }}
             VERGEN_GIT_SHA_SHORT=${{ steps.shortsha.outputs.shortsha }}
           project: 0c6tg19qsp
           context: .
+          file: ${{ matrix.binary.dockerfile || 'Dockerfile' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64

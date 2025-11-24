@@ -1,0 +1,78 @@
+{
+  "contracts": {
+    "tests/storage_tests/solidity/testdata/structs.sol:Structs": {
+      "storage-layout": {
+        "storage": [
+          {
+            "astId": 11,
+            "contract": "tests/storage_tests/solidity/testdata/structs.sol:Structs",
+            "label": "fieldA",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_uint256"
+          },
+          {
+            "astId": 14,
+            "contract": "tests/storage_tests/solidity/testdata/structs.sol:Structs",
+            "label": "blockData",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_struct(TestBlock)9_storage"
+          },
+          {
+            "astId": 16,
+            "contract": "tests/storage_tests/solidity/testdata/structs.sol:Structs",
+            "label": "fieldB",
+            "offset": 0,
+            "slot": "4",
+            "type": "t_uint256"
+          }
+        ],
+        "types": {
+          "t_struct(TestBlock)9_storage": {
+            "encoding": "inplace",
+            "label": "struct Structs.TestBlock",
+            "members": [
+              {
+                "astId": 4,
+                "contract": "tests/storage_tests/solidity/testdata/structs.sol:Structs",
+                "label": "field1",
+                "offset": 0,
+                "slot": "0",
+                "type": "t_uint256"
+              },
+              {
+                "astId": 6,
+                "contract": "tests/storage_tests/solidity/testdata/structs.sol:Structs",
+                "label": "field2",
+                "offset": 0,
+                "slot": "1",
+                "type": "t_uint256"
+              },
+              {
+                "astId": 8,
+                "contract": "tests/storage_tests/solidity/testdata/structs.sol:Structs",
+                "label": "field3",
+                "offset": 0,
+                "slot": "2",
+                "type": "t_uint64"
+              }
+            ],
+            "numberOfBytes": "96"
+          },
+          "t_uint256": {
+            "encoding": "inplace",
+            "label": "uint256",
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "encoding": "inplace",
+            "label": "uint64",
+            "numberOfBytes": "8"
+          }
+        }
+      }
+    }
+  },
+  "version": "0.8.30+commit.73712a01.Darwin.appleclang"
+}

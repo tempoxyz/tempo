@@ -7,16 +7,28 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+alloy = { workspace = true, features = [
+  "genesis",
+  "rpc-types",
+  "signers",
+  "signer-local",
+  "signer-mnemonic",
+] }
+alloy-genesis.workspace = true
 alloy-primitives.workspace = true
 
+commonware-codec.workspace = true
 commonware-cryptography.workspace = true
 commonware-p2p.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 commonware-utils.workspace = true
 
+itertools.workspace = true
+
 eyre.workspace = true
 reth-db.workspace = true
-reth-ethereum = { workspace = true, features = ["node", "test-utils", "pool"] }
+reth-evm.workspace = true
+reth-ethereum = { workspace = true, features = ["node", "rpc", "test-utils", "pool"] }
 reth-network-peers.workspace = true
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
@@ -26,20 +38,26 @@ reth-rpc-builder.workspace = true
 tempo-chainspec.workspace = true
 tempo-commonware-node.workspace = true
 tempo-eyre.workspace = true
+tempo-evm.workspace = true
 tempo-node.workspace = true
+tempo-precompiles.workspace = true
 
 futures.workspace = true
+rand.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+commonware-consensus.workspace = true
 commonware-macros.workspace = true
+tempo-contracts.workspace = true
 tracing-subscriber.workspace = true
 
-alloy-signer-local.workspace = true
 alloy-network.workspace = true
+
+rand.workspace = true
 
 [lints]
 workspace = true

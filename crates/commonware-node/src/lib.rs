@@ -1,17 +1,16 @@
 //! A Tempo node using commonware's threshold simplex as consensus.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub(crate) mod alias;
 pub(crate) mod config;
 pub mod consensus;
 pub(crate) mod dkg;
 pub(crate) mod epoch;
-pub(crate) mod marshal_utils;
 pub mod metrics;
 
-pub mod subblocks;
+pub(crate) mod subblocks;
 
 use std::net::SocketAddr;
 
@@ -140,7 +139,6 @@ async fn instantiate_network(
             config.signer.clone(),
             &p2p_namespace,
             config.listen_addr,
-            config.dialable_addr,
             config.p2p.max_message_size_bytes,
         )
     };

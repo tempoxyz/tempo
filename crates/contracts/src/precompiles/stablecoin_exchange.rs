@@ -105,6 +105,7 @@ sol! {
         error InsufficientOutput();
         error MaxInputExceeded();
         error BelowMinimumOrderSize(uint128 amount);
+        error InvalidBaseToken();
     }
 }
 
@@ -172,5 +173,10 @@ impl StablecoinExchangeError {
     /// Creates an error for order amount below minimum.
     pub const fn below_minimum_order_size(amount: u128) -> Self {
         Self::BelowMinimumOrderSize(IStablecoinExchange::BelowMinimumOrderSize { amount })
+    }
+
+    /// Creates an error for invalid base token.
+    pub const fn invalid_base_token() -> Self {
+        Self::InvalidBaseToken(IStablecoinExchange::InvalidBaseToken {})
     }
 }

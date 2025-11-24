@@ -11,8 +11,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-precompiles.workspace = true
-
 # Reth
 reth-cli-commands = { workspace = true, optional = true }
 reth-db-api = { workspace = true, optional = true }

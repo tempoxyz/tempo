@@ -3,7 +3,7 @@ use crate::{
     Precompile, input_cost, metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
     tip20::{IRolesAuth, TIP20Token},
-    view,
+    unknown_selector, view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
@@ -17,7 +17,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".to_string())
+                PrecompileError::Other("Invalid input: missing function selector".into())
             })?
             .try_into()
             .unwrap();
@@ -198,39 +198,33 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
 
             // RolesAuth functions
             IRolesAuth::hasRoleCall::SELECTOR => {
-                view::<IRolesAuth::hasRoleCall>(calldata, |call| {
-                    self.get_roles_contract().has_role(call)
-                })
+                view::<IRolesAuth::hasRoleCall>(calldata, |call| self.has_role(call))
             }
             IRolesAuth::getRoleAdminCall::SELECTOR => {
-                view::<IRolesAuth::getRoleAdminCall>(calldata, |call| {
-                    self.get_roles_contract().get_role_admin(call)
-                })
+                view::<IRolesAuth::getRoleAdminCall>(calldata, |call| self.get_role_admin(call))
             }
             IRolesAuth::grantRoleCall::SELECTOR => {
                 mutate_void::<IRolesAuth::grantRoleCall>(calldata, msg_sender, |s, call| {
-                    self.get_roles_contract().grant_role(s, call)
+                    self.grant_role(s, call)
                 })
             }
             IRolesAuth::revokeRoleCall::SELECTOR => {
                 mutate_void::<IRolesAuth::revokeRoleCall>(calldata, msg_sender, |s, call| {
-                    self.get_roles_contract().revoke_role(s, call)
+                    self.revoke_role(s, call)
                 })
             }
             IRolesAuth::renounceRoleCall::SELECTOR => {
                 mutate_void::<IRolesAuth::renounceRoleCall>(calldata, msg_sender, |s, call| {
-                    self.get_roles_contract().renounce_role(s, call)
+                    self.renounce_role(s, call)
                 })
             }
             IRolesAuth::setRoleAdminCall::SELECTOR => {
                 mutate_void::<IRolesAuth::setRoleAdminCall>(calldata, msg_sender, |s, call| {
-                    self.get_roles_contract().set_role_admin(s, call)
+                    self.set_role_admin(s, call)
                 })
             }
 
-            _ => Err(PrecompileError::Other(
-                "Unknown function selector".to_string(),
-            )),
+            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
         result.map(|mut res| {
@@ -258,13 +252,15 @@ mod tests {
 
     #[test]
     fn test_function_selector_dispatch() {
-        let mut storage = HashMapStorageProvider::new(1);
+        use tempo_chainspec::hardfork::TempoHardfork;
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
         let mut token = TIP20Token::new(1, &mut storage);
         let sender = Address::from([1u8; 20]);
 
-        // Test invalid selector
+        // Test invalid selector - should return Ok with reverted status
         let result = token.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), sender);
-        assert!(matches!(result, Err(PrecompileError::Other(_))));
+        assert!(result.is_ok());
+        assert!(result.unwrap().reverted);
 
         // Test insufficient calldata
         let result = token.call(&Bytes::from([0x12, 0x34]), sender);
@@ -288,7 +284,6 @@ mod tests {
         use alloy::primitives::keccak256;
         let issuer_role = keccak256(b"ISSUER_ROLE");
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -342,7 +337,6 @@ mod tests {
         use alloy::primitives::keccak256;
         let issuer_role = keccak256(b"ISSUER_ROLE");
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -395,7 +389,6 @@ mod tests {
         use alloy::primitives::keccak256;
         let issuer_role = keccak256(b"ISSUER_ROLE");
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -477,7 +470,6 @@ mod tests {
         // Grant ISSUER_ROLE to admin
         let issuer_role = keccak256(b"ISSUER_ROLE");
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -564,7 +556,6 @@ mod tests {
         let unpause_role = keccak256(b"UNPAUSE_ROLE");
 
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -575,7 +566,6 @@ mod tests {
             .unwrap();
 
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -631,7 +621,6 @@ mod tests {
         let issuer_role = keccak256(b"ISSUER_ROLE");
 
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -642,7 +631,6 @@ mod tests {
             .unwrap();
 
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -767,7 +755,6 @@ mod tests {
         use alloy::primitives::keccak256;
         let issuer_role = keccak256(b"ISSUER_ROLE");
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -783,6 +770,7 @@ mod tests {
         };
         let calldata = set_cap_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), admin).unwrap();
+
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
 
@@ -889,7 +877,6 @@ mod tests {
         use alloy::primitives::keccak256;
         let issuer_role = keccak256(b"ISSUER_ROLE");
         token
-            .get_roles_contract()
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -970,5 +957,31 @@ mod tests {
         assert_eq!(output.bytes, expected);
 
         Ok(())
+    }
+
+    #[test]
+    fn tip20_test_selector_coverage() {
+        use crate::test_util::{assert_full_coverage, check_selector_coverage};
+        use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
+
+        let mut storage = HashMapStorageProvider::new(1);
+
+        initialize_linking_usd(&mut storage, Address::ZERO).unwrap();
+        let mut token = TIP20Token::new(1, &mut storage);
+        token
+            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, Address::ZERO)
+            .unwrap();
+
+        let itip20_unsupported =
+            check_selector_coverage(&mut token, ITIP20Calls::SELECTORS, "ITIP20", |s| {
+                ITIP20Calls::name_by_selector(s)
+            });
+
+        let roles_unsupported =
+            check_selector_coverage(&mut token, IRolesAuthCalls::SELECTORS, "IRolesAuth", |s| {
+                IRolesAuthCalls::name_by_selector(s)
+            });
+
+        assert_full_coverage([itip20_unsupported, roles_unsupported]);
     }
 }

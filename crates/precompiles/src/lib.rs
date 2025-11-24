@@ -1,12 +1,12 @@
 //! Tempo precompile implementations.
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod error;
 pub use error::Result;
+use tempo_chainspec::hardfork::TempoHardfork;
 pub mod linking_usd;
 pub mod nonce;
-pub mod provider;
 pub mod stablecoin_exchange;
 pub mod storage;
 pub mod tip20;
@@ -17,8 +17,10 @@ pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 pub mod validator_config;
 
+#[cfg(test)]
+pub mod test_util;
+
 use crate::{
-    error::IntoPrecompileResult,
     linking_usd::LinkingUSD,
     nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
@@ -31,6 +33,7 @@ use crate::{
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
 };
+pub use error::IntoPrecompileResult;
 
 #[cfg(test)]
 use alloy::sol_types::SolInterface;
@@ -41,8 +44,8 @@ use alloy::{
 };
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
-    context::Block,
-    precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
+    context::CfgEnv,
+    precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
 pub use tempo_contracts::precompiles::{
@@ -65,31 +68,33 @@ pub trait Precompile {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
 }
 
-pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, chain_id: u64) {
+pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<TempoHardfork>) {
+    let chain_id = cfg.chain_id;
+    let spec = cfg.spec;
     precompiles.set_precompile_lookup(move |address: &Address| {
         if is_tip20(*address) {
             let token_id = address_to_token_id_unchecked(*address);
             if token_id == 0 {
-                Some(LinkingUSDPrecompile::create(chain_id))
+                Some(LinkingUSDPrecompile::create(chain_id, spec))
             } else {
-                Some(TIP20Precompile::create(*address, chain_id))
+                Some(TIP20Precompile::create(*address, chain_id, spec))
             }
         } else if *address == TIP20_FACTORY_ADDRESS {
-            Some(TIP20FactoryPrecompile::create(chain_id))
+            Some(TIP20FactoryPrecompile::create(chain_id, spec))
         } else if *address == TIP20_REWARDS_REGISTRY_ADDRESS {
-            Some(TIP20RewardsRegistryPrecompile::create(chain_id))
+            Some(TIP20RewardsRegistryPrecompile::create(chain_id, spec))
         } else if *address == TIP403_REGISTRY_ADDRESS {
-            Some(TIP403RegistryPrecompile::create(chain_id))
+            Some(TIP403RegistryPrecompile::create(chain_id, spec))
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
-            Some(TipFeeManagerPrecompile::create(chain_id))
+            Some(TipFeeManagerPrecompile::create(chain_id, spec))
         } else if *address == TIP_ACCOUNT_REGISTRAR {
-            Some(TipAccountRegistrarPrecompile::create(chain_id))
+            Some(TipAccountRegistrarPrecompile::create(chain_id, spec))
         } else if *address == STABLECOIN_EXCHANGE_ADDRESS {
-            Some(StablecoinExchangePrecompile::create(chain_id))
+            Some(StablecoinExchangePrecompile::create(chain_id, spec))
         } else if *address == NONCE_PRECOMPILE_ADDRESS {
-            Some(NoncePrecompile::create(chain_id))
+            Some(NoncePrecompile::create(chain_id, spec))
         } else if *address == VALIDATOR_CONFIG_ADDRESS {
-            Some(ValidatorConfigPrecompile::create(chain_id))
+            Some(ValidatorConfigPrecompile::create(chain_id, spec))
         } else {
             None
         }
@@ -116,23 +121,22 @@ macro_rules! tempo_precompile {
 
 pub struct TipFeeManagerPrecompile;
 impl TipFeeManagerPrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
+    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         tempo_precompile!("TipFeeManager", |input| TipFeeManager::new(
-            TIP_FEE_MANAGER_ADDRESS,
-            input.internals.block_env().beneficiary(),
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id)
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec)
         ))
     }
 }
 
 pub struct TipAccountRegistrarPrecompile;
 impl TipAccountRegistrarPrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
+    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         tempo_precompile!("TipAccountRegistrar", |input| TipAccountRegistrar::new(
             &mut crate::storage::evm::EvmPrecompileStorageProvider::new(
                 input.internals,
                 input.gas,
-                chain_id
+                chain_id,
+                spec
             ),
         ))
     }
@@ -140,21 +144,22 @@ impl TipAccountRegistrarPrecompile {
 
 pub struct TIP20RewardsRegistryPrecompile;
 impl TIP20RewardsRegistryPrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
+    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         tempo_precompile!("TIP20RewardsRegistry", |input| TIP20RewardsRegistry::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id),
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec),
         ))
     }
 }
 
 pub struct TIP403RegistryPrecompile;
 impl TIP403RegistryPrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
+    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         tempo_precompile!("TIP403Registry", |input| TIP403Registry::new(
             &mut crate::storage::evm::EvmPrecompileStorageProvider::new(
                 input.internals,
                 input.gas,
-                chain_id
+                chain_id,
+                spec
             ),
         ))
     }
@@ -162,57 +167,56 @@ impl TIP403RegistryPrecompile {
 
 pub struct TIP20FactoryPrecompile;
 impl TIP20FactoryPrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
+    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         tempo_precompile!("TIP20Factory", |input| TIP20Factory::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id)
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec)
         ))
     }
 }
 
 pub struct TIP20Precompile;
 impl TIP20Precompile {
-    pub fn create(address: Address, chain_id: u64) -> DynPrecompile {
+    pub fn create(address: Address, chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         let token_id = address_to_token_id_unchecked(address);
         tempo_precompile!("TIP20Token", |input| TIP20Token::new(
             token_id,
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id),
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec),
         ))
     }
 }
 
 pub struct StablecoinExchangePrecompile;
 impl StablecoinExchangePrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
+    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         tempo_precompile!("StablecoinExchange", |input| StablecoinExchange::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id)
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec)
         ))
     }
 }
 
 pub struct NoncePrecompile;
 impl NoncePrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
+    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         tempo_precompile!("NonceManager", |input| NonceManager::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id)
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec)
         ))
     }
 }
 
 pub struct LinkingUSDPrecompile;
 impl LinkingUSDPrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
+    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         tempo_precompile!("LinkingUSD", |input| LinkingUSD::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id),
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec),
         ))
     }
 }
 
 pub struct ValidatorConfigPrecompile;
 impl ValidatorConfigPrecompile {
-    pub fn create(chain_id: u64) -> DynPrecompile {
+    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         tempo_precompile!("ValidatorConfig", |input| ValidatorConfig::new(
-            VALIDATOR_CONFIG_ADDRESS,
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id),
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec),
         ))
     }
 }
@@ -255,6 +259,20 @@ fn mutate_void<T: SolCall>(
     f(sender, call).into_precompile_result(0, |()| Bytes::new())
 }
 
+/// Helper function to return an unknown function selector error
+///
+/// Before Moderato: Returns a generic PrecompileError::Other
+/// Moderato onwards: Returns an ABI-encoded UnknownFunctionSelector error with the selector
+#[inline]
+pub fn unknown_selector(selector: [u8; 4], gas: u64, spec: TempoHardfork) -> PrecompileResult {
+    if spec.is_moderato() {
+        error::TempoPrecompileError::UnknownFunctionSelector(selector)
+            .into_precompile_result(gas, |_: ()| Bytes::new())
+    } else {
+        Err(PrecompileError::Other("Unknown function selector".into()))
+    }
+}
+
 #[cfg(test)]
 pub fn expect_precompile_revert<E>(result: &PrecompileResult, expected_error: E)
 where
@@ -290,7 +308,12 @@ mod tests {
     fn test_precompile_delegatecall() {
         let precompile = tempo_precompile!("TIP20Token", |input| TIP20Token::new(
             1,
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, 1),
+            &mut EvmPrecompileStorageProvider::new(
+                input.internals,
+                input.gas,
+                1,
+                Default::default()
+            ),
         ));
 
         let db = CacheDB::new(EmptyDB::new());

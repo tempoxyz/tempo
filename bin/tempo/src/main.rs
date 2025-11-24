@@ -13,9 +13,9 @@
 //! Configuration can be provided via command-line arguments or configuration files.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
-mod download;
+mod defaults;
 
 use clap::Parser;
 use commonware_runtime::{Metrics, Runner};
@@ -25,6 +25,7 @@ use futures::{
     future::{FusedFuture, pending},
 };
 use reth_ethereum::cli::{Cli, Commands};
+use reth_ethereum_cli as _;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use std::{net::SocketAddr, sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
@@ -77,7 +78,7 @@ fn main() -> eyre::Result<()> {
     }
 
     tempo_node::init_version_metadata();
-    download::init_download_urls();
+    defaults::init_defaults();
 
     let cli = Cli::<TempoChainSpecParser, TempoArgs>::parse();
     let is_node = matches!(cli.command, Commands::Node(_));
@@ -197,9 +198,7 @@ fn main() -> eyre::Result<()> {
             })
             .extend_rpc_modules(move |ctx| {
                 if faucet_args.enabled {
-                    let txpool = ctx.pool().clone();
                     let ext = TempoFaucetExt::new(
-                        txpool,
                         faucet_args.addresses(),
                         faucet_args.amount(),
                         faucet_args.provider(),

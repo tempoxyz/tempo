@@ -1,0 +1,28 @@
+[package]
+name = "tempo-precompiles-macros"
+description = "Procedural macros for type-safe EVM storage abstractions, and better devex for interacting with EVM contracts"
+
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+proc-macro = true
+
+[lints]
+workspace = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
+alloy = { workspace = true }
+
+[dev-dependencies]
+tempo-precompiles = { path = "../precompiles" }
+tempo-contracts = { path = "../contracts" }
+alloy = { workspace = true }
+revm = { workspace = true }
+proptest.workspace = true

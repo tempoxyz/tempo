@@ -7,10 +7,10 @@
 use crate::{
     error::TempoPrecompileError,
     stablecoin_exchange::{IStablecoinExchange, error::OrderError},
-    storage::{PrecompileStorageProvider, slots::mapping_slot},
+    storage::{DummySlot, Slot, SlotId, StorageOps, slots::mapping_slot},
 };
-use alloy::primitives::{Address, B256, U256, uint};
-use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
+use alloy::primitives::{Address, B256};
+use tempo_precompiles_macros::Storable;
 
 /// Represents an order in the stablecoin DEX orderbook.
 ///
@@ -36,7 +36,7 @@ use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 /// # Onchain Storage
 /// Orders are stored onchain in doubly linked lists organized by tick.
 /// Each tick maintains a FIFO queue of orders using `prev` and `next` pointers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Storable)]
 pub struct Order {
     /// Unique identifier for this order
     pub order_id: u128,
@@ -64,30 +64,12 @@ pub struct Order {
     pub flip_tick: i16,
 }
 
-impl Order {
-    // Order struct field offsets
-    // Matches Solidity Order struct layout
-    /// Maker address field offset
-    pub const MAKER_OFFSET: U256 = uint!(0_U256);
-    /// Orderbook key field offset
-    pub const BOOK_KEY_OFFSET: U256 = uint!(1_U256);
-    /// Is bid boolean field offset
-    pub const IS_BID_OFFSET: U256 = uint!(2_U256);
-    /// Tick field offset
-    pub const TICK_OFFSET: U256 = uint!(3_U256);
-    /// Original amount field offset
-    pub const AMOUNT_OFFSET: U256 = uint!(4_U256);
-    /// Remaining amount field offset
-    pub const REMAINING_OFFSET: U256 = uint!(5_U256);
-    /// Previous order ID field offset
-    pub const PREV_OFFSET: U256 = uint!(6_U256);
-    /// Next order ID field offset
-    pub const NEXT_OFFSET: U256 = uint!(7_U256);
-    /// Is flip order boolean field offset
-    pub const IS_FLIP_OFFSET: U256 = uint!(8_U256);
-    /// Flip tick field offset
-    pub const FLIP_TICK_OFFSET: U256 = uint!(9_U256);
+// Helper type to easily interact with u128 fields (order_id, prev, next)
+type OrderId = Slot<u128, DummySlot>;
+// Helper type to easily interact with u128 fields (amount, remaining)
+type OrderAmount = Slot<u128, DummySlot>;
 
+impl Order {
     /// Creates a new order with `prev` and `next` initialized to 0.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -169,247 +151,56 @@ impl Order {
         ))
     }
 
-    pub fn from_storage<S: PrecompileStorageProvider>(
+    /// Update the order's remaining value in storage
+    pub fn update_remaining<S: StorageOps>(
+        storage: &mut S,
         order_id: u128,
-        storage: &mut S,
-        stablecoin_exchange: Address,
-    ) -> Result<Self, TempoPrecompileError> {
-        let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
-
-        let maker = storage
-            .sload(stablecoin_exchange, order_slot + Self::MAKER_OFFSET)?
-            .into_address();
-
-        let book_key =
-            B256::from(storage.sload(stablecoin_exchange, order_slot + Self::BOOK_KEY_OFFSET)?);
-
-        let is_bid = storage
-            .sload(stablecoin_exchange, order_slot + Self::IS_BID_OFFSET)?
-            .to::<bool>();
-
-        let tick = storage
-            .sload(stablecoin_exchange, order_slot + Self::TICK_OFFSET)?
-            .to::<u16>() as i16;
-
-        let amount = storage
-            .sload(stablecoin_exchange, order_slot + Self::AMOUNT_OFFSET)?
-            .to::<u128>();
-
-        let remaining = storage
-            .sload(stablecoin_exchange, order_slot + Self::REMAINING_OFFSET)?
-            .to::<u128>();
-
-        let prev = storage
-            .sload(stablecoin_exchange, order_slot + Self::PREV_OFFSET)?
-            .to::<u128>();
-
-        let next = storage
-            .sload(stablecoin_exchange, order_slot + Self::NEXT_OFFSET)?
-            .to::<u128>();
-
-        let is_flip = storage
-            .sload(stablecoin_exchange, order_slot + Self::IS_FLIP_OFFSET)?
-            .to::<bool>();
-
-        let flip_tick = storage
-            .sload(stablecoin_exchange, order_slot + Self::FLIP_TICK_OFFSET)?
-            .to::<u16>() as i16;
-
-        Ok(Self {
-            order_id,
-            maker,
-            book_key,
-            is_bid,
-            tick,
-            amount,
-            remaining,
-            prev,
-            next,
-            is_flip,
-            flip_tick,
-        })
-    }
-
-    pub fn store<S: PrecompileStorageProvider>(
-        &self,
-        storage: &mut S,
-        stablecoin_exchange: Address,
-    ) -> Result<(), TempoPrecompileError> {
-        let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
-
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::MAKER_OFFSET,
-            self.maker().into_u256(),
-        )?;
-
-        // Store book_key
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::BOOK_KEY_OFFSET,
-            U256::from_be_bytes(self.book_key().0),
-        )?;
-
-        // Store is_bid boolean
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::IS_BID_OFFSET,
-            U256::from(self.is_bid() as u8),
-        )?;
-
-        // Store tick
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::TICK_OFFSET,
-            U256::from(self.tick() as u16),
-        )?;
-
-        // Store original amount
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::AMOUNT_OFFSET,
-            U256::from(self.amount()),
-        )?;
-
-        // Store remaining amount
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::REMAINING_OFFSET,
-            U256::from(self.remaining()),
-        )?;
-
-        // Store is_flip boolean
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::IS_FLIP_OFFSET,
-            U256::from(self.is_flip() as u8),
-        )?;
-
-        // Store flip_tick
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::FLIP_TICK_OFFSET,
-            U256::from(self.flip_tick() as u16),
-        )?;
-
-        Ok(())
-    }
-
-    pub fn delete<S: PrecompileStorageProvider>(
-        &self,
-        storage: &mut S,
-        stablecoin_exchange: Address,
-    ) -> Result<(), TempoPrecompileError> {
-        let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
-
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::MAKER_OFFSET,
-            U256::ZERO,
-        )?;
-
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::BOOK_KEY_OFFSET,
-            U256::ZERO,
-        )?;
-
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::IS_BID_OFFSET,
-            U256::ZERO,
-        )?;
-
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::TICK_OFFSET,
-            U256::ZERO,
-        )?;
-
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::AMOUNT_OFFSET,
-            U256::ZERO,
-        )?;
-
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::REMAINING_OFFSET,
-            U256::ZERO,
-        )?;
-
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::PREV_OFFSET,
-            U256::ZERO,
-        )?;
-
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::NEXT_OFFSET,
-            U256::ZERO,
-        )?;
-
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::IS_FLIP_OFFSET,
-            U256::ZERO,
-        )?;
-
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::FLIP_TICK_OFFSET,
-            U256::ZERO,
-        )?;
-
-        Ok(())
-    }
-
-    /// Update the order's remaining value in memory and storage
-    pub fn update_remaining<S: PrecompileStorageProvider>(
-        &mut self,
         new_remaining: u128,
-        storage: &mut S,
-        stablecoin_exchange: Address,
     ) -> Result<(), TempoPrecompileError> {
-        self.remaining = new_remaining;
-
-        let order_slot = mapping_slot(self.order_id.to_be_bytes(), super::slots::ORDERS);
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::REMAINING_OFFSET,
-            U256::from(new_remaining),
-        )
+        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::OrdersSlot::SLOT);
+        OrderAmount::write_at_offset_packed(
+            storage,
+            order_base_slot,
+            __packing_order::REMAINING_SLOT,
+            __packing_order::REMAINING_OFFSET,
+            __packing_order::REMAINING_BYTES,
+            new_remaining,
+        )?;
+        Ok(())
     }
 
-    pub fn update_next_order<S: PrecompileStorageProvider>(
+    pub fn update_next_order<S: StorageOps>(
+        storage: &mut S,
         order_id: u128,
         new_next: u128,
-        storage: &mut S,
-        stablecoin_exchange: Address,
     ) -> Result<(), TempoPrecompileError> {
-        let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
-
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::NEXT_OFFSET,
-            U256::from(new_next),
-        )
+        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::OrdersSlot::SLOT);
+        OrderId::write_at_offset_packed(
+            storage,
+            order_base_slot,
+            __packing_order::NEXT_SLOT,
+            __packing_order::NEXT_OFFSET,
+            __packing_order::NEXT_BYTES,
+            new_next,
+        )?;
+        Ok(())
     }
 
-    pub fn update_prev_order<S: PrecompileStorageProvider>(
+    pub fn update_prev_order<S: StorageOps>(
+        storage: &mut S,
         order_id: u128,
         new_prev: u128,
-        storage: &mut S,
-        stablecoin_exchange: Address,
     ) -> Result<(), TempoPrecompileError> {
-        let order_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
-
-        storage.sstore(
-            stablecoin_exchange,
-            order_slot + Self::PREV_OFFSET,
-            U256::from(new_prev),
-        )
+        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::OrdersSlot::SLOT);
+        OrderId::write_at_offset_packed(
+            storage,
+            order_base_slot,
+            __packing_order::PREV_SLOT,
+            __packing_order::PREV_OFFSET,
+            __packing_order::PREV_BYTES,
+            new_prev,
+        )?;
+        Ok(())
     }
 
     /// Returns the order ID.
@@ -571,7 +362,9 @@ impl From<Order> for IStablecoinExchange::Order {
 
 #[cfg(test)]
 mod tests {
-    use crate::storage::hashmap::HashMapStorageProvider;
+    use crate::{
+        stablecoin_exchange::StablecoinExchange, storage::hashmap::HashMapStorageProvider,
+    };
 
     use super::*;
     use alloy::primitives::{address, b256};
@@ -830,12 +623,13 @@ mod tests {
     #[test]
     fn test_store_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let exchange_address = Address::random();
+        let mut exchange = StablecoinExchange::new(&mut storage);
 
-        let order = Order::new_flip(42, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
-        order.store(&mut storage, exchange_address)?;
+        let id = 42;
+        let order = Order::new_flip(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
+        exchange.sstore_orders(id, order)?;
 
-        let loaded_order = Order::from_storage(42, &mut storage, exchange_address)?;
+        let loaded_order = exchange.sload_orders(id)?;
         assert_eq!(loaded_order.order_id(), 42);
         assert_eq!(loaded_order.maker(), TEST_MAKER);
         assert_eq!(loaded_order.book_key(), TEST_BOOK_KEY);
@@ -854,14 +648,15 @@ mod tests {
     #[test]
     fn test_delete_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let exchange_address = Address::random();
+        let mut exchange = StablecoinExchange::new(&mut storage);
 
-        let order = Order::new_flip(42, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
-        order.store(&mut storage, exchange_address)?;
-        order.delete(&mut storage, exchange_address)?;
+        let id = 42;
+        let order = Order::new_flip(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
+        exchange.sstore_orders(id, order)?;
+        exchange.clear_orders(id)?;
 
-        let deleted_order = Order::from_storage(42, &mut storage, exchange_address)?;
-        assert_eq!(deleted_order.order_id(), 42);
+        let deleted_order = exchange.sload_orders(id)?;
+        assert_eq!(deleted_order.order_id(), 0);
         assert_eq!(deleted_order.maker(), Address::ZERO);
         assert_eq!(deleted_order.book_key(), B256::ZERO);
         assert_eq!(deleted_order.amount(), 0);

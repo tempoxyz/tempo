@@ -1,11 +1,11 @@
-pub use transactions::TransactionsFilter;
-
-use crate::rpc::{eth_ext::transactions::TransactionsResponse, pagination::PaginationParams};
+use crate::rpc::eth_ext::transactions::TransactionsResponse;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use reth_node_core::rpc::result::internal_rpc_err;
 use reth_rpc_eth_api::RpcNodeCore;
+use tempo_alloy::rpc::pagination::PaginationParams;
 
 pub mod transactions;
+pub use transactions::TransactionsFilter;
 
 #[rpc(server, namespace = "eth")]
 pub trait TempoEthExtApi {

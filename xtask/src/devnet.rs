@@ -208,7 +208,6 @@ fn generate_consensus_configs(
             epoch_length: 302_400,
             metrics_port: Some(8002),
             listen_addr: SocketAddr::from(([127, 0, 0, 1], url.port)),
-            dialable_addr: SocketAddr::from(([127, 0, 0, 1], url.port)),
             p2p: Default::default(),
             storage_directory: storage_directory.clone(),
             worker_threads: 3,

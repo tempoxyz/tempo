@@ -51,7 +51,7 @@ impl TempoPooledTransaction {
     }
 
     /// Returns a reference to inner [`TempoTxEnvelope`].
-    pub fn inner(&self) -> &TempoTxEnvelope {
+    pub fn inner(&self) -> &Recovered<TempoTxEnvelope> {
         &self.inner.transaction
     }
 
@@ -70,6 +70,9 @@ pub enum TempoPoolTransactionError {
 
     #[error("Invalid fee token: {0}")]
     InvalidFeeToken(Address),
+
+    #[error("No fee token preference configured")]
+    MissingFeeToken,
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -77,6 +80,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
         match self {
             Self::ExceedsNonPaymentLimit => false,
             Self::InvalidFeeToken(_) => false,
+            Self::MissingFeeToken => false,
         }
     }
 

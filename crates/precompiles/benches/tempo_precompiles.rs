@@ -78,8 +78,7 @@ fn tip20_metadata(c: &mut Criterion) {
         token
             .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
-        let mut roles = token.get_roles_contract();
-        let _ = roles.grant_role_internal(admin, *ISSUER_ROLE);
+        let _ = token.grant_role_internal(admin, *ISSUER_ROLE);
         token
             .mint(
                 admin,
@@ -107,8 +106,7 @@ fn tip20_view(c: &mut Criterion) {
         token
             .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
-        let mut roles = token.get_roles_contract();
-        let _ = roles.grant_role_internal(admin, *ISSUER_ROLE);
+        let _ = token.grant_role_internal(admin, *ISSUER_ROLE);
         token
             .mint(
                 admin,
@@ -209,8 +207,7 @@ fn tip20_mutate(c: &mut Criterion) {
         token
             .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
-        let mut roles = token.get_roles_contract();
-        let _ = roles.grant_role_internal(admin, *ISSUER_ROLE);
+        let _ = token.grant_role_internal(admin, *ISSUER_ROLE);
 
         let amount = U256::from(100);
         b.iter(|| {
@@ -228,8 +225,7 @@ fn tip20_mutate(c: &mut Criterion) {
         token
             .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
-        let mut roles = token.get_roles_contract();
-        let _ = roles.grant_role_internal(admin, *ISSUER_ROLE);
+        let _ = token.grant_role_internal(admin, *ISSUER_ROLE);
         // Pre-mint tokens for burning
         token
             .mint(
@@ -241,7 +237,7 @@ fn tip20_mutate(c: &mut Criterion) {
             )
             .unwrap();
 
-        let amount = U256::from(1);
+        let amount = U256::ONE;
         b.iter(|| {
             let token = black_box(&mut token);
             let admin = black_box(admin);
@@ -279,8 +275,7 @@ fn tip20_mutate(c: &mut Criterion) {
         token
             .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
-        let mut roles = token.get_roles_contract();
-        let _ = roles.grant_role_internal(admin, *ISSUER_ROLE);
+        let _ = token.grant_role_internal(admin, *ISSUER_ROLE);
         // Pre-mint tokens for transfers
         token
             .mint(
@@ -292,7 +287,7 @@ fn tip20_mutate(c: &mut Criterion) {
             )
             .unwrap();
 
-        let amount = U256::from(1);
+        let amount = U256::ONE;
         b.iter(|| {
             let token = black_box(&mut token);
             let from = black_box(from);
@@ -312,8 +307,7 @@ fn tip20_mutate(c: &mut Criterion) {
         token
             .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
-        let mut roles = token.get_roles_contract();
-        let _ = roles.grant_role_internal(admin, *ISSUER_ROLE);
+        let _ = token.grant_role_internal(admin, *ISSUER_ROLE);
         // Pre-mint tokens and set allowance
         token
             .mint(
@@ -334,7 +328,7 @@ fn tip20_mutate(c: &mut Criterion) {
             )
             .unwrap();
 
-        let amount = U256::from(1);
+        let amount = U256::ONE;
 
         b.iter(|| {
             let token = black_box(&mut token);
@@ -359,8 +353,7 @@ fn tip20_mutate(c: &mut Criterion) {
         token
             .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
-        let mut roles = token.get_roles_contract();
-        let _ = roles.grant_role_internal(admin, *ISSUER_ROLE);
+        let _ = token.grant_role_internal(admin, *ISSUER_ROLE);
         // Pre-mint tokens for transfers
         token
             .mint(
@@ -372,7 +365,7 @@ fn tip20_mutate(c: &mut Criterion) {
             )
             .unwrap();
 
-        let amount = U256::from(1);
+        let amount = U256::ONE;
         b.iter(|| {
             let token = black_box(&mut token);
             let from = black_box(from);
@@ -388,8 +381,7 @@ fn tip20_mutate(c: &mut Criterion) {
         token
             .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
-        let mut roles = token.get_roles_contract();
-        let _ = roles.grant_role_internal(admin, *PAUSE_ROLE);
+        let _ = token.grant_role_internal(admin, *PAUSE_ROLE);
 
         b.iter(|| {
             let token = black_box(&mut token);
@@ -406,8 +398,7 @@ fn tip20_mutate(c: &mut Criterion) {
         token
             .initialize("TestToken", "T", "USD", LINKING_USD_ADDRESS, admin)
             .unwrap();
-        let mut roles = token.get_roles_contract();
-        let _ = roles.grant_role_internal(admin, *UNPAUSE_ROLE);
+        let _ = token.grant_role_internal(admin, *UNPAUSE_ROLE);
 
         b.iter(|| {
             let token = black_box(&mut token);

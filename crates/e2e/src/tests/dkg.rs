@@ -7,8 +7,7 @@ use commonware_p2p::simulated::Link;
 
 use crate::{Setup, run};
 
-#[test_traced]
-fn transitions_with_perfect_links() {
+fn assert_static_transitions(how_many: u32, epoch_length: u64, transitions: u64) {
     let _ = tempo_eyre::install();
     let linkage = Link {
         latency: Duration::from_millis(10),
@@ -16,16 +15,15 @@ fn transitions_with_perfect_links() {
         success_rate: 1.0,
     };
 
-    let epoch_length = 30;
     let setup = Setup {
-        how_many: 4,
+        how_many_signers: how_many,
         seed: 0,
         linkage,
         epoch_length,
+        connect_execution_layer_nodes: false,
     };
 
     let mut epoch_reached = false;
-    let mut height_reached = false;
     let mut dkg_successful = false;
     let _first = run(setup, move |metric, value| {
         if metric.ends_with("_dkg_manager_ceremony_failures_total") {
@@ -35,18 +33,34 @@ fn transitions_with_perfect_links() {
 
         if metric.ends_with("_epoch_manager_latest_epoch") {
             let value = value.parse::<u64>().unwrap();
-            epoch_reached |= value >= 1;
-        }
-        if metric.ends_with("_marshal_processed_height") {
-            let value = value.parse::<u64>().unwrap();
-            height_reached |= value >= epoch_length;
+            epoch_reached |= value >= transitions;
         }
         if metric.ends_with("_dkg_manager_ceremony_successes_total") {
             let value = value.parse::<u64>().unwrap();
-            dkg_successful |= value >= 1;
+            dkg_successful |= value >= transitions;
         }
-        epoch_reached && height_reached && dkg_successful
+        epoch_reached && dkg_successful
     });
+}
+
+#[test_traced]
+fn two_validators_can_transition_once() {
+    assert_static_transitions(2, 20, 1);
+}
+
+#[test_traced]
+fn two_validators_can_transition_twice() {
+    assert_static_transitions(2, 20, 2);
+}
+
+#[test_traced]
+fn four_validators_can_transition_once() {
+    assert_static_transitions(4, 20, 1);
+}
+
+#[test_traced]
+fn four_validators_can_transition_twice() {
+    assert_static_transitions(4, 20, 2);
 }
 
 // #[test_traced]

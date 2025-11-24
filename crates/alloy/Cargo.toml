@@ -11,6 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tempo-contracts.workspace = true
 tempo-primitives = { workspace = true, features = ["serde"] }
 tempo-evm = { workspace = true, optional = true }
 tempo-revm = { workspace = true, optional = true }
@@ -26,6 +27,7 @@ alloy-serde.workspace = true
 reth-evm = { workspace = true, optional = true }
 reth-primitives-traits = { workspace = true, optional = true }
 reth-rpc-convert = { workspace = true, optional = true }
+reth-rpc-eth-types = { workspace = true, optional = true }
 
 derive_more.workspace = true
 serde.workspace = true
@@ -42,6 +44,7 @@ tempo-compat = [
     "dep:reth-evm",
     "dep:reth-rpc-convert",
     "dep:reth-primitives-traits",
+    "dep:reth-rpc-eth-types",
     "dep:tempo-evm",
     "dep:tempo-revm"
 ]

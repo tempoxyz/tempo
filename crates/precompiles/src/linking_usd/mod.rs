@@ -4,7 +4,7 @@ use crate::{
     STABLECOIN_EXCHANGE_ADDRESS,
     error::Result,
     storage::PrecompileStorageProvider,
-    tip20::{ITIP20, TIP20Token, roles::RolesAuthContract},
+    tip20::{ITIP20, TIP20Token},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use std::sync::LazyLock;
@@ -36,15 +36,15 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
     }
 
     fn is_transfer_authorized(&mut self, sender: Address) -> Result<bool> {
-        let authorized =
-            sender == STABLECOIN_EXCHANGE_ADDRESS || self.token.has_role(sender, *TRANSFER_ROLE)?;
+        let authorized = sender == STABLECOIN_EXCHANGE_ADDRESS
+            || self.token.has_role_internal(sender, *TRANSFER_ROLE)?;
 
         Ok(authorized)
     }
 
     fn is_transfer_from_authorized(&mut self, sender: Address, from: Address) -> Result<bool> {
-        let authorized =
-            sender == STABLECOIN_EXCHANGE_ADDRESS || self.token.has_role(from, *TRANSFER_ROLE)?;
+        let authorized = sender == STABLECOIN_EXCHANGE_ADDRESS
+            || self.token.has_role_internal(from, *TRANSFER_ROLE)?;
         Ok(authorized)
     }
 
@@ -54,8 +54,10 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         recipient: Address,
     ) -> Result<bool> {
         let authorized = sender == STABLECOIN_EXCHANGE_ADDRESS
-            || self.token.has_role(sender, *TRANSFER_ROLE)?
-            || self.token.has_role(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
+            || self.token.has_role_internal(sender, *TRANSFER_ROLE)?
+            || self
+                .token
+                .has_role_internal(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
 
         Ok(authorized)
     }
@@ -67,8 +69,10 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         recipient: Address,
     ) -> Result<bool> {
         let authorized = sender == STABLECOIN_EXCHANGE_ADDRESS
-            || self.token.has_role(from, *TRANSFER_ROLE)?
-            || self.token.has_role(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
+            || self.token.has_role_internal(from, *TRANSFER_ROLE)?
+            || self
+                .token
+                .has_role_internal(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
 
         Ok(authorized)
     }
@@ -161,10 +165,6 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         self.token.burn(sender, call)
     }
 
-    pub fn get_roles_contract(&mut self) -> RolesAuthContract<'_, S> {
-        self.token.get_roles_contract()
-    }
-
     pub fn pause(&mut self, sender: Address, call: ITIP20::pauseCall) -> Result<()> {
         self.token.pause(sender, call)
     }
@@ -249,8 +249,10 @@ mod tests {
             .initialize(admin)
             .expect("Could not initialize linking usd");
 
-        let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
+        linking_usd
+            .token
+            .grant_role_internal(admin, *ISSUER_ROLE)
+            .unwrap();
 
         (linking_usd, admin)
     }
@@ -375,8 +377,7 @@ mod tests {
         let amount = U256::from(1000);
 
         linking_usd.initialize(admin)?;
-        let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         linking_usd.mint(admin, ITIP20::mintCall { to: admin, amount })?;
 
@@ -418,8 +419,7 @@ mod tests {
         let amount = U256::from(1000);
 
         linking_usd.initialize(admin)?;
-        let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         linking_usd.mint(
             admin,
@@ -467,8 +467,7 @@ mod tests {
         let amount = U256::from(1000);
 
         linking_usd.initialize(admin)?;
-        let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
@@ -522,9 +521,10 @@ mod tests {
         let amount = U256::from(1000);
 
         linking_usd.initialize(admin)?;
-        let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(sender, *TRANSFER_ROLE)?;
+        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        linking_usd
+            .token
+            .grant_role_internal(sender, *TRANSFER_ROLE)?;
 
         linking_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
@@ -563,9 +563,11 @@ mod tests {
         let amount = U256::from(1000);
 
         linking_usd.initialize(admin)?;
-        let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
+
+        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        linking_usd
+            .token
+            .grant_role_internal(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
 
         linking_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
@@ -596,9 +598,10 @@ mod tests {
         let amount = U256::from(1000);
 
         linking_usd.initialize(admin)?;
-        let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(from, *TRANSFER_ROLE)?;
+        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        linking_usd
+            .token
+            .grant_role_internal(from, *TRANSFER_ROLE)?;
 
         linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
@@ -643,9 +646,10 @@ mod tests {
         let amount = U256::from(1000);
 
         linking_usd.initialize(admin)?;
-        let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(to, *RECEIVE_WITH_MEMO_ROLE)?;
+        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        linking_usd
+            .token
+            .grant_role_internal(to, *RECEIVE_WITH_MEMO_ROLE)?;
 
         linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
@@ -673,10 +677,10 @@ mod tests {
         let memo = [1u8; 32];
 
         linking_usd.initialize(admin)?;
-        let mut roles = linking_usd.token.get_roles_contract();
-
-        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(sender, *TRANSFER_ROLE)?;
+        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        linking_usd
+            .token
+            .grant_role_internal(sender, *TRANSFER_ROLE)?;
 
         linking_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
@@ -715,9 +719,10 @@ mod tests {
         let memo = [1u8; 32];
 
         linking_usd.initialize(admin)?;
-        let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
+        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        linking_usd
+            .token
+            .grant_role_internal(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
 
         linking_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
@@ -756,8 +761,7 @@ mod tests {
         let memo = [1u8; 32];
 
         linking_usd.initialize(admin)?;
-        let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
@@ -814,9 +818,10 @@ mod tests {
         let memo = [1u8; 32];
 
         linking_usd.initialize(admin)?;
-        let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(from, *TRANSFER_ROLE)?;
+        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        linking_usd
+            .token
+            .grant_role_internal(from, *TRANSFER_ROLE)?;
 
         linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
@@ -867,9 +872,10 @@ mod tests {
         let memo = [1u8; 32];
 
         linking_usd.initialize(admin)?;
-        let mut roles = linking_usd.token.get_roles_contract();
-        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
-        roles.grant_role_internal(to, *RECEIVE_WITH_MEMO_ROLE)?;
+        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        linking_usd
+            .token
+            .grant_role_internal(to, *RECEIVE_WITH_MEMO_ROLE)?;
 
         linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
@@ -919,9 +925,10 @@ mod tests {
         linking_usd.initialize(admin).unwrap();
 
         // Grant PAUSE_ROLE and UNPAUSE_ROLE
-        let mut roles = linking_usd.get_roles_contract();
-        roles.grant_role_internal(pauser, *PAUSE_ROLE)?;
-        roles.grant_role_internal(unpauser, *UNPAUSE_ROLE)?;
+        linking_usd.token.grant_role_internal(pauser, *PAUSE_ROLE)?;
+        linking_usd
+            .token
+            .grant_role_internal(unpauser, *UNPAUSE_ROLE)?;
 
         // Verify initial state (not paused)
         assert!(!linking_usd.paused().unwrap());
@@ -948,8 +955,8 @@ mod tests {
         linking_usd.initialize(admin).unwrap();
 
         // Grant ISSUER_ROLE to user
-        let mut roles = linking_usd.get_roles_contract();
-        roles
+        linking_usd
+            .token
             .grant_role(
                 admin,
                 IRolesAuth::grantRoleCall {
@@ -961,7 +968,8 @@ mod tests {
 
         // Check that user has the role
         assert!(
-            roles
+            linking_usd
+                .token
                 .has_role(IRolesAuth::hasRoleCall {
                     role: *ISSUER_ROLE,
                     account: user,
@@ -970,7 +978,8 @@ mod tests {
         );
 
         // Revoke the role
-        roles
+        linking_usd
+            .token
             .revoke_role(
                 admin,
                 IRolesAuth::revokeRoleCall {
@@ -982,7 +991,8 @@ mod tests {
 
         // Check that user no longer has the role
         assert!(
-            !roles
+            !linking_usd
+                .token
                 .has_role(IRolesAuth::hasRoleCall {
                     role: *ISSUER_ROLE,
                     account: user,
@@ -1002,8 +1012,7 @@ mod tests {
 
         linking_usd.initialize(admin).unwrap();
 
-        let mut roles = linking_usd.get_roles_contract();
-        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         // Set supply cap
         linking_usd
@@ -1045,8 +1054,7 @@ mod tests {
 
         linking_usd.initialize(admin).unwrap();
 
-        let mut roles = linking_usd.get_roles_contract();
-        roles.grant_role_internal(admin, *ISSUER_ROLE)?;
+        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         // Set supply cap to u128 max plus one
         let result = linking_usd.token.set_supply_cap(

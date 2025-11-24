@@ -10,13 +10,13 @@ use alloy::{
 use alloy_eips::{BlockId, Encodable2718};
 use alloy_network::{AnyReceiptEnvelope, EthereumWallet, TxSignerSync};
 use alloy_primitives::{Address, Signature, U256};
-use alloy_rpc_types_eth::TransactionTrait;
+use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
 use std::env;
 use tempo_contracts::precompiles::{
     IFeeManager, ITIP20,
     ITIPFeeAMM::{self},
 };
-use tempo_precompiles::{DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS};
+use tempo_precompiles::{DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_primitives::{TxFeeToken, transaction::calc_gas_balance_spending};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -26,7 +26,9 @@ async fn test_set_user_token() -> eyre::Result<()> {
     let source = if let Ok(rpc_url) = env::var("RPC_URL") {
         crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
+        crate::utils::NodeSource::LocalNode(
+            include_str!("../assets/test-genesis-moderato.json").to_string(),
+        )
     };
     let (http_url, _local_node) = setup_test_node(source).await?;
 
@@ -35,6 +37,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let user_token = setup_test_token(provider.clone(), user_address).await?;
+    let validator_token = ITIP20::new(LINKING_USD_ADDRESS, &provider);
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     user_token
@@ -44,9 +47,11 @@ async fn test_set_user_token() -> eyre::Result<()> {
         .watch()
         .await?;
 
-    let initial_token = fee_manager.userTokens(user_address).call().await?;
     // Initial token should be predeployed token
-    assert_eq!(initial_token, DEFAULT_FEE_TOKEN);
+    assert_eq!(
+        fee_manager.userTokens(user_address).call().await?,
+        DEFAULT_FEE_TOKEN
+    );
 
     let validator = provider
         .get_block(BlockId::latest())
@@ -55,18 +60,14 @@ async fn test_set_user_token() -> eyre::Result<()> {
         .header
         .beneficiary;
 
-    let validator_balance_before = ITIP20::new(initial_token, &provider)
-        .balanceOf(validator)
-        .call()
-        .await?;
+    let validator_balance_before = validator_token.balanceOf(validator).call().await?;
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     let receipt = fee_amm
-        .mint(
+        .mintWithValidatorToken(
             *user_token.address(),
-            DEFAULT_FEE_TOKEN,
-            U256::from(1e8),
+            *validator_token.address(),
             U256::from(1e8),
             user_address,
         )
@@ -78,13 +79,10 @@ async fn test_set_user_token() -> eyre::Result<()> {
 
     let expected_cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price);
 
-    let validator_balance_after = ITIP20::new(initial_token, &provider)
-        .balanceOf(validator)
-        .call()
-        .await?;
+    let validator_balance_after = validator_token.balanceOf(validator).call().await?;
     assert_eq!(
         validator_balance_after,
-        validator_balance_before + expected_cost
+        validator_balance_before + expected_cost * U256::from(9970) / U256::from(10000)
     );
 
     let set_receipt = fee_manager
@@ -97,6 +95,28 @@ async fn test_set_user_token() -> eyre::Result<()> {
 
     let current_token = fee_manager.userTokens(user_address).call().await?;
     assert_eq!(current_token, *user_token.address());
+
+    assert!(validator_token.balanceOf(validator).call().await? > validator_balance_after);
+
+    // send a dummy transaction
+    let receipt = provider
+        .send_transaction(TransactionRequest::default().to(Address::random()))
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Assert transaction fee was paid in the newly configured token.
+    assert!(receipt.logs().last().unwrap().address() == *user_token.address());
+
+    // Ensure the validator was paid for it (or wasn't due to pre-moderato bug)
+    let validator_balance_before = validator_token
+        .balanceOf(validator)
+        .block((receipt.block_number.unwrap() - 1).into())
+        .call()
+        .await?;
+    let validator_balance_after = validator_token.balanceOf(validator).call().await?;
+
+    assert!(validator_balance_after > validator_balance_before);
 
     Ok(())
 }
@@ -212,7 +232,7 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
         fee_amm
             .mint(
                 *user_token.address(),
-                DEFAULT_FEE_TOKEN,
+                LINKING_USD_ADDRESS,
                 U256::from(1e18),
                 U256::from(1e18),
                 signers[1].address(),

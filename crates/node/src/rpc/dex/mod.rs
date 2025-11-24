@@ -1,8 +1,4 @@
-pub use books::{Orderbook, OrderbooksFilter, OrderbooksResponse};
-pub use error::DexApiError;
-pub use orders::{Order, OrdersFilters, OrdersSort, OrdersSortOrder, Tick};
-
-use crate::rpc::{TempoDexApiServer, dex::orders::OrdersResponse, pagination::PaginationParams};
+use crate::rpc::{TempoDexApiServer, dex::orders::OrdersResponse};
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_primitives::{Address, B256, Sealable};
 use jsonrpsee::core::RpcResult;
@@ -12,21 +8,27 @@ use reth_node_api::{ConfigureEvm, NodePrimitives};
 use reth_provider::{BlockReaderIdExt, StateProviderFactory};
 use reth_rpc_eth_api::{RpcNodeCore, helpers::SpawnBlocking};
 use reth_rpc_eth_types::{EthApiError, error::FromEthApiError};
+use tempo_alloy::rpc::pagination::PaginationParams;
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
     stablecoin_exchange::{
-        Order as PrecompileOrder, Orderbook as PrecompileOrderbook, PriceLevel, StablecoinExchange,
-        TickBitmap, orderbook::compute_book_key,
+        Order as PrecompileOrder, Orderbook as PrecompileOrderbook, StablecoinExchange, TickLevel,
+        orderbook::compute_book_key,
     },
-    storage::evm::EvmPrecompileStorageProvider,
+    storage::{ContractStorage, evm::EvmPrecompileStorageProvider},
 };
 use tempo_primitives::TempoHeader;
 
 pub mod api;
+
 pub mod orders;
+pub use orders::{Order, OrdersFilters, Tick};
 
 mod books;
+pub use books::{Orderbook, OrderbooksFilter, OrderbooksResponse};
+
 mod error;
+pub use error::DexApiError;
 
 /// Default limit for pagination
 const DEFAULT_LIMIT: usize = 10;
@@ -85,8 +87,7 @@ impl<
 
             // Iterate through books collecting orders until we reach the limit
             for book_key in book_keys {
-                let orderbook =
-                    PrecompileOrderbook::from_storage(book_key, storage, exchange_address)?;
+                let orderbook = exchange.books(book_key)?;
 
                 // Check if this book matches the base/quote filter
                 if !orderbook.matches_tokens(base_token, quote_token) {
@@ -100,7 +101,7 @@ impl<
                 };
 
                 let book_iterator = BookIterator::new(
-                    storage,
+                    exchange.storage(),
                     &orderbook,
                     exchange_address,
                     is_bid,
@@ -192,7 +193,7 @@ impl<
 
         let ctx = evm.ctx_mut();
         let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-        let mut storage = EvmPrecompileStorageProvider::new_max_gas(internals, ctx.cfg.chain_id);
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
 
         f(&mut storage)
     }
@@ -439,6 +440,17 @@ pub struct BookIterator<'a, 'b> {
     storage: &'b mut EvmPrecompileStorageProvider<'a>,
 }
 
+impl<'a, 'b> ContractStorage for BookIterator<'a, 'b> {
+    type Storage = EvmPrecompileStorageProvider<'a>;
+
+    fn address(&self) -> Address {
+        self.exchange_address
+    }
+    fn storage(&mut self) -> &mut Self::Storage {
+        self.storage
+    }
+}
+
 impl<'a, 'b> BookIterator<'a, 'b> {
     /// Create a new book iterator, optionally with the given order ID as the starting order.
     fn new(
@@ -474,32 +486,25 @@ impl<'a, 'b> BookIterator<'a, 'b> {
 
     /// Get a PrecompileOrder from an order ID
     pub fn get_order(&mut self, order_id: u128) -> Result<PrecompileOrder, DexApiError> {
-        PrecompileOrder::from_storage(order_id, self.storage, self.exchange_address)
+        let mut exchange = StablecoinExchange::new(self.storage);
+        exchange
+            .get_order(order_id)
             .map_err(DexApiError::Precompile)
     }
 
-    /// Get a PriceLevel from a tick
-    pub fn get_price_level(&mut self, tick: i16) -> Result<PriceLevel, DexApiError> {
-        PriceLevel::from_storage(
-            self.storage,
-            self.exchange_address,
-            self.book_key,
-            tick,
-            self.bids,
-        )
-        .map_err(DexApiError::Precompile)
+    /// Get a TickLevel from a tick
+    pub fn get_price_level(&mut self, tick: i16) -> Result<TickLevel, DexApiError> {
+        let mut exchange = StablecoinExchange::new(self.storage);
+        exchange
+            .get_price_level(self.orderbook.base, tick, self.bids)
+            .map_err(DexApiError::Precompile)
     }
 
     /// Get the next initialized tick after the given tick
     /// Returns None if there are no more ticks
     pub fn get_next_tick(&mut self, tick: i16) -> Option<i16> {
-        let mut bitmap = TickBitmap::new(self.storage, self.exchange_address, self.book_key);
-
-        let (next_tick, more_ticks) = if self.bids {
-            bitmap.next_initialized_bid_tick(tick)
-        } else {
-            bitmap.next_initialized_ask_tick(tick)
-        };
+        let (next_tick, more_ticks) =
+            PrecompileOrderbook::next_initialized_tick(self, self.book_key, self.bids, tick);
 
         if more_ticks { Some(next_tick) } else { None }
     }

@@ -1,3 +1,5 @@
+//! Tempo RPC types.
+
 mod header;
 pub use header::TempoHeaderResponse;
 
@@ -9,3 +11,6 @@ pub use receipt::TempoTransactionReceipt;
 
 #[cfg(feature = "tempo-compat")]
 mod compat;
+
+/// Various helper types for paginated queries.
+pub mod pagination;

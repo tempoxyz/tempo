@@ -1,4 +1,4 @@
-use crate::{Precompile, input_cost, mutate, tip20::is_tip20, view};
+use crate::{Precompile, input_cost, mutate, tip20::is_tip20, unknown_selector, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -16,10 +16,10 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Factory<'a, S> {
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".to_string())
+                PrecompileError::Other("Invalid input: missing function selector".into())
             })?
             .try_into()
-            .map_err(|_| PrecompileError::Other("Invalid function selector length".to_string()))?;
+            .map_err(|_| PrecompileError::Other("Invalid function selector length".into()))?;
 
         let result = match selector {
             ITIP20Factory::tokenIdCounterCall::SELECTOR => {
@@ -33,14 +33,37 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Factory<'a, S> {
             ITIP20Factory::isTIP20Call::SELECTOR => {
                 view::<ITIP20Factory::isTIP20Call>(calldata, |call| Ok(is_tip20(call.token)))
             }
-            _ => Err(PrecompileError::Other(
-                "Unknown function selector".to_string(),
-            )),
+            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
         result.map(|mut res| {
             res.gas_used = self.storage.gas_used();
             res
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        storage::hashmap::HashMapStorageProvider,
+        test_util::{assert_full_coverage, check_selector_coverage},
+    };
+    use tempo_contracts::precompiles::ITIP20Factory::ITIP20FactoryCalls;
+
+    #[test]
+    fn tip20_factory_test_selector_coverage() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut factory = TIP20Factory::new(&mut storage);
+
+        let unsupported = check_selector_coverage(
+            &mut factory,
+            ITIP20FactoryCalls::SELECTORS,
+            "ITIP20Factory",
+            ITIP20FactoryCalls::name_by_selector,
+        );
+
+        assert_full_coverage([unsupported]);
     }
 }

@@ -67,7 +67,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        binary: [tempo, tempo-bench, tempo-sidecar]
+        binary: 
+          - name: tempo
+            features: "asm-keccak,jemalloc,otlp"
+          - name: tempo-bench
+            features: ""
+          - name: tempo-sidecar
+            features: ""
         platform:
           - os: depot-ubuntu-latest-16
             target: x86_64-unknown-linux-gnu
@@ -102,7 +108,7 @@ jobs:
         shell: bash
 
       - name: Build binary
-        run: cargo build --bin ${{ matrix.binary }} --profile ${{ steps.profile.outputs.profile }} --target ${{ matrix.platform.target }}
+        run: cargo build --bin ${{ matrix.binary.name }} --features "${{ matrix.binary.features }}" --profile ${{ steps.profile.outputs.profile }} --target ${{ matrix.platform.target }}
         env:
           CARGO_TARGET_DIR: target
 
@@ -117,9 +123,9 @@ jobs:
             PROFILE_DIR="$PROFILE"
           fi
 
-          BINARY_PATH="target/${{ matrix.platform.target }}/${PROFILE_DIR}/${{ matrix.binary }}"
-          BINARY_NAME="${{ matrix.binary }}-${{ needs.get-version.outputs.version }}-${{ matrix.platform.target }}"
-          ARCHIVE_NAME="${{ matrix.binary }}-${{ needs.get-version.outputs.version }}-${{ matrix.platform.target }}.tar.gz"
+          BINARY_PATH="target/${{ matrix.platform.target }}/${PROFILE_DIR}/${{ matrix.binary.name }}"
+          BINARY_NAME="${{ matrix.binary.name }}-${{ needs.get-version.outputs.version }}-${{ matrix.platform.target }}"
+          ARCHIVE_NAME="${{ matrix.binary.name }}-${{ needs.get-version.outputs.version }}-${{ matrix.platform.target }}.tar.gz"
 
           cp "$BINARY_PATH" "$BINARY_NAME"
           tar czf "$ARCHIVE_NAME" "$BINARY_NAME"
@@ -135,7 +141,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.binary }}-${{ matrix.platform.target }}
+          name: ${{ matrix.binary.name }}-${{ matrix.platform.target }}
           path: |
             ${{ steps.prepare.outputs.archive_path }}
             ${{ steps.prepare.outputs.archive_name }}.sha256
@@ -161,15 +167,6 @@ jobs:
         with:
           path: artifacts
 
-      - name: Generate full changelog
-        id: changelog
-        env:
-          VERSION: ${{ needs.get-version.outputs.version }}
-        run: |
-          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
-          echo "$(git log --pretty=format:"- %s" $(git describe --tags --abbrev=0 ${{ env.VERSION }}^)..${{ env.VERSION }})" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
       - name: Create Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -186,6 +183,37 @@ jobs:
             --repo ${{ github.repository }} \
             --title "Release $VERSION" \
             --draft \
-            --notes "${{ steps.changelog.outputs.CHANGELOG }}" \
+            --notes "" \
             $PRERELEASE \
             artifacts/**/*
+  upload-cloudflare:
+    name: Upload to R2 bucket
+    needs: [get-version, build-release]
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
+    runs-on: depot-ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create binary directory
+        env:
+          VERSION: ${{ needs.get-version.outputs.version }}
+        run: |
+          mkdir $VERSION
+          mv artifacts/**/* $VERSION/
+
+      - uses: shallwefootball/s3-upload-action@master
+        with:
+          aws_key_id: ${{ secrets.R2_BINARIES_KEY_ID }}
+          aws_secret_access_key: ${{ secrets.R2_BINARIES_SECRET_KEY }}
+          aws_bucket: ${{ secrets.R2_BINARIES_BUCKET }}
+          endpoint: ${{ secrets.R2_BINARIES_ENDPOINT }}
+          source_dir: '${{ needs.get-version.outputs.version }}'
+          destination_dir: 'binaries/${{ needs.get-version.outputs.version }}'

@@ -1,5 +1,7 @@
 use super::{IValidatorConfig, ValidatorConfig};
-use crate::{Precompile, input_cost, mutate_void, storage::PrecompileStorageProvider, view};
+use crate::{
+    Precompile, input_cost, mutate_void, storage::PrecompileStorageProvider, unknown_selector, view,
+};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -12,10 +14,10 @@ impl<'a, S: PrecompileStorageProvider> Precompile for ValidatorConfig<'a, S> {
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".to_string())
+                PrecompileError::Other("Invalid input: missing function selector".into())
             })?
             .try_into()
-            .map_err(|_| PrecompileError::Other("Invalid function selector length".to_string()))?;
+            .map_err(|_| PrecompileError::Other("Invalid function selector length".into()))?;
 
         let result = match selector {
             // View functions
@@ -33,32 +35,30 @@ impl<'a, S: PrecompileStorageProvider> Precompile for ValidatorConfig<'a, S> {
                 mutate_void::<IValidatorConfig::addValidatorCall>(
                     calldata,
                     msg_sender,
-                    |s, call| self.add_validator(&s, call),
+                    |s, call| self.add_validator(s, call),
                 )
             }
             IValidatorConfig::updateValidatorCall::SELECTOR => {
                 mutate_void::<IValidatorConfig::updateValidatorCall>(
                     calldata,
                     msg_sender,
-                    |s, call| self.update_validator(&s, call),
+                    |s, call| self.update_validator(s, call),
                 )
             }
             IValidatorConfig::changeValidatorStatusCall::SELECTOR => {
                 mutate_void::<IValidatorConfig::changeValidatorStatusCall>(
                     calldata,
                     msg_sender,
-                    |s, call| self.change_validator_status(&s, call),
+                    |s, call| self.change_validator_status(s, call),
                 )
             }
             IValidatorConfig::changeOwnerCall::SELECTOR => {
                 mutate_void::<IValidatorConfig::changeOwnerCall>(calldata, msg_sender, |s, call| {
-                    self.change_owner(&s, call)
+                    self.change_owner(s, call)
                 })
             }
 
-            _ => Err(PrecompileError::Other(
-                "Unknown function selector".to_string(),
-            )),
+            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
         result.map(|mut res| {
@@ -71,27 +71,34 @@ impl<'a, S: PrecompileStorageProvider> Precompile for ValidatorConfig<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{expect_precompile_revert, storage::hashmap::HashMapStorageProvider};
+    use crate::{
+        expect_precompile_revert,
+        storage::hashmap::HashMapStorageProvider,
+        test_util::{assert_full_coverage, check_selector_coverage},
+    };
     use alloy::{
         primitives::{Bytes, FixedBytes},
         sol_types::SolValue,
     };
-    use tempo_contracts::precompiles::ValidatorConfigError;
+    use tempo_contracts::precompiles::{
+        IValidatorConfig::IValidatorConfigCalls, ValidatorConfigError,
+    };
 
     #[test]
     fn test_function_selector_dispatch() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let precompile_address = Address::from([0xAA; 20]);
-        let mut validator_config = ValidatorConfig::new(precompile_address, &mut storage);
+        use tempo_chainspec::hardfork::TempoHardfork;
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
         // Initialize with owner
         let owner = Address::from([0u8; 20]);
         validator_config.initialize(owner).unwrap();
 
-        // Test invalid selector
+        // Test invalid selector - should return Ok with reverted status
         let result = validator_config.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), sender);
-        assert!(matches!(result, Err(PrecompileError::Other(_))));
+        assert!(result.is_ok());
+        assert!(result.unwrap().reverted);
 
         // Test insufficient calldata
         let result = validator_config.call(&Bytes::from([0x12, 0x34]), sender);
@@ -101,8 +108,7 @@ mod tests {
     #[test]
     fn test_owner_view_dispatch() {
         let mut storage = HashMapStorageProvider::new(1);
-        let precompile_address = Address::from([0xAA; 20]);
-        let mut validator_config = ValidatorConfig::new(precompile_address, &mut storage);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
         // Initialize with owner
@@ -127,8 +133,7 @@ mod tests {
     #[test]
     fn test_add_validator_dispatch() {
         let mut storage = HashMapStorageProvider::new(1);
-        let precompile_address = Address::from([0xAA; 20]);
-        let mut validator_config = ValidatorConfig::new(precompile_address, &mut storage);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
 
         // Initialize with owner
         let owner = Address::from([0u8; 20]);
@@ -167,8 +172,7 @@ mod tests {
     #[test]
     fn test_unauthorized_add_validator_dispatch() {
         let mut storage = HashMapStorageProvider::new(1);
-        let precompile_address = Address::from([0xAA; 20]);
-        let mut validator_config = ValidatorConfig::new(precompile_address, &mut storage);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
 
         // Initialize with owner
         let owner = Address::from([0u8; 20]);
@@ -189,5 +193,20 @@ mod tests {
 
         let result = validator_config.call(&Bytes::from(calldata), non_owner);
         expect_precompile_revert(&result, ValidatorConfigError::unauthorized());
+    }
+
+    #[test]
+    fn validator_config_test_selector_coverage() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut validator_config = ValidatorConfig::new(&mut storage);
+
+        let unsupported = check_selector_coverage(
+            &mut validator_config,
+            IValidatorConfigCalls::SELECTORS,
+            "IValidatorConfig",
+            IValidatorConfigCalls::name_by_selector,
+        );
+
+        assert_full_coverage([unsupported]);
     }
 }

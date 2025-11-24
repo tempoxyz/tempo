@@ -4,11 +4,10 @@ use std::{cmp::Ordering, fmt::Debug};
 
 use alloy_evm::EvmInternals;
 use alloy_primitives::{Address, B256, U256, b256};
-use alloy_sol_types::SolCall;
 use revm::{
     Database,
     context::{
-        Block, Cfg, ContextTr, Host, JournalTr, Transaction,
+        Block, Cfg, ContextTr, JournalTr, Transaction,
         result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction},
         transaction::{AccessListItem, AccessListItemTr},
     },
@@ -24,27 +23,25 @@ use revm::{
             ACCESS_LIST_ADDRESS, ACCESS_LIST_STORAGE_KEY, CALLVALUE, COLD_ACCOUNT_ACCESS_COST,
             CREATE, STANDARD_TOKEN_COST, calc_tx_floor_cost, get_tokens_in_calldata, initcode_cost,
         },
-        instructions::utility::IntoAddress,
         interpreter::EthInterpreter,
     },
-    primitives::{eip7702, hardfork::SpecId as RevmSpecId},
+    primitives::eip7702,
     state::Bytecode,
 };
 use tempo_contracts::{
     DEFAULT_7702_DELEGATE_ADDRESS,
-    precompiles::{FeeManagerError, IFeeManager},
+    precompiles::{FeeManagerError, TIPFeeAMMError},
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{evm::EvmPrecompileStorageProvider, slots::mapping_slot},
-    tip_fee_manager::{self, TipFeeManager},
-    tip20::{self, TIP20Token, USD_CURRENCY, address_to_token_id_unchecked, is_tip20},
+    tip_fee_manager::TipFeeManager,
+    tip20::{self},
 };
 use tempo_primitives::transaction::{AASignature, calc_gas_balance_spending};
 
-use crate::{TempoEvm, TempoInvalidTransaction, evm::TempoContext};
+use crate::{TempoEvm, TempoInvalidTransaction, common::TempoStateAccess, evm::TempoContext};
 
 /// Additional gas for P256 signature verification
 /// P256 precompile cost (6900 from EIP-7951) + 1100 for 129 bytes extra signature size - ecrecover savings (3000)
@@ -101,13 +98,19 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         &mut self,
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
-        self.fee_token = get_fee_token(evm.ctx_mut())?;
+        let ctx = evm.ctx_mut();
 
-        // Skip fee token validity check for cases when the transaction is free and is not a part of subblock.
-        if !evm.ctx.tx.max_balance_spending()?.is_zero() || evm.ctx.tx.is_subblock_transaction() {
-            validate_fee_token(evm.ctx_mut(), self.fee_token)?;
+        self.fee_payer = ctx.tx.fee_payer()?;
+        self.fee_token =
+            ctx.journaled_state
+                .get_fee_token(&ctx.tx, ctx.block.beneficiary, self.fee_payer)?;
+
+        // Skip fee token validity check for cases when the transaction is free and is not a part of a subblock.
+        if (!ctx.tx.max_balance_spending()?.is_zero() || ctx.tx.is_subblock_transaction())
+            && !ctx.journaled_state.is_valid_fee_token(self.fee_token)?
+        {
+            return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
         }
-        self.fee_payer = evm.ctx().tx().fee_payer()?;
 
         Ok(())
     }
@@ -521,8 +524,7 @@ where
 
         if !nonce_key.is_zero() {
             let internals = EvmInternals::new(journal, block);
-            let mut storage_provider =
-                EvmPrecompileStorageProvider::new_max_gas(internals, cfg.chain_id);
+            let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
             let mut nonce_manager = NonceManager::new(&mut storage_provider);
 
             if !cfg.is_nonce_check_disabled() {
@@ -587,15 +589,11 @@ where
 
         // Create storage provider wrapper around journal
         let internals = EvmInternals::new(journal, &block);
-        let mut storage_provider =
-            EvmPrecompileStorageProvider::new_max_gas(internals, cfg.chain_id());
-        let mut fee_manager = TipFeeManager::new(
-            TIP_FEE_MANAGER_ADDRESS,
-            block.beneficiary(),
-            &mut storage_provider,
-        );
+        let beneficiary = internals.block_env().beneficiary();
+        let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
+        let mut fee_manager = TipFeeManager::new(&mut storage_provider);
 
-        if tx.max_balance_spending().ok() == Some(U256::ZERO) {
+        if gas_balance_spending.is_zero() {
             return Ok(());
         }
 
@@ -610,14 +608,15 @@ where
                 self.fee_token,
                 to_addr,
                 gas_balance_spending,
+                beneficiary,
             )
             .map_err(|e| {
                 // Map fee collection errors to transaction validation errors since they
                 // indicate the transaction cannot be included (e.g., insufficient liquidity
                 // in FeeAMM pool for fee swaps)
                 match e {
-                    TempoPrecompileError::FeeManagerError(
-                        FeeManagerError::InsufficientLiquidity(_),
+                    TempoPrecompileError::TIPFeeAMMError(
+                        TIPFeeAMMError::InsufficientLiquidity(_),
                     ) => EVMError::Transaction(TempoInvalidTransaction::InsufficientAmmLiquidity {
                         fee: Box::new(gas_balance_spending),
                     }),
@@ -652,7 +651,6 @@ where
         let basefee = context.block().basefee() as u128;
         let effective_gas_price = tx.effective_gas_price(basefee);
         let gas = exec_result.gas();
-        let chain_id = context.cfg().chain_id;
 
         // Calculate actual used and refund amounts
         let actual_spending = calc_gas_balance_spending(gas.used(), effective_gas_price);
@@ -665,12 +663,10 @@ where
         // Create storage provider and fee manager
         let (journal, block) = (&mut context.journaled_state, &context.block);
         let internals = EvmInternals::new(journal, block);
-        let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, chain_id);
-        let mut fee_manager = TipFeeManager::new(
-            TIP_FEE_MANAGER_ADDRESS,
-            block.beneficiary,
-            &mut storage_provider,
-        );
+        let beneficiary = internals.block_env().beneficiary();
+        let mut storage_provider =
+            EvmPrecompileStorageProvider::new_max_gas(internals, &context.cfg);
+        let mut fee_manager = TipFeeManager::new(&mut storage_provider);
 
         if !actual_spending.is_zero() || !refund_amount.is_zero() {
             // Call collectFeePostTx (handles both refund and fee queuing)
@@ -680,6 +676,7 @@ where
                     actual_spending,
                     refund_amount,
                     self.fee_token,
+                    beneficiary,
                 )
                 .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
         }
@@ -704,6 +701,12 @@ where
     /// - Time window validation (validAfter/validBefore)
     #[inline]
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
+        // All accounts have zero balance so transfer of value is not possible.
+        // Check added in https://github.com/tempoxyz/tempo/pull/759
+        if !evm.ctx.tx.value().is_zero() {
+            return Err(TempoInvalidTransaction::ValueTransferNotAllowed.into());
+        }
+
         // First perform standard validation (header + transaction environment)
         // This validates: prevrandao, excess_blob_gas, chain_id, gas limits, tx type support, etc.
         validation::validate_env::<_, Self::Error>(evm.ctx())?;
@@ -758,7 +761,7 @@ where
             validate_aa_initial_tx_gas(evm)
         } else {
             // Standard transaction - use default revm validation
-            let spec = evm.ctx_ref().cfg().spec();
+            let spec = evm.ctx_ref().cfg().spec().into();
             Ok(
                 validation::validate_initial_tx_gas(tx, spec, evm.ctx.cfg.is_eip7623_disabled())
                     .map_err(TempoInvalidTransaction::EthInvalidTransaction)?,
@@ -777,7 +780,7 @@ where
 /// - Per-call CREATE costs (if applicable):
 ///   - Additional 32k base (CREATE constant)
 ///   - Initcode analysis gas (2 per 32-byte chunk, Shanghai+)
-/// - Per-call value transfer cost (9k if value > 0 and TxKind::Call)
+/// - Check that value transfer is zero.
 /// - Access list costs (shared across batch)
 /// - Floor gas calculation (EIP-7623, Prague+)
 fn calculate_aa_batch_intrinsic_gas<'a>(
@@ -785,8 +788,7 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     signature: &AASignature,
     access_list: Option<impl Iterator<Item = &'a AccessListItem>>,
     aa_authorization_list: &[tempo_primitives::transaction::AASignedAuthorization],
-    spec: RevmSpecId,
-) -> InitialAndFloorGas {
+) -> Result<InitialAndFloorGas, TempoInvalidTransaction> {
     let mut gas = InitialAndFloorGas::default();
 
     // 1. Base stipend (21k, once per transaction)
@@ -811,7 +813,7 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
 
     for call in calls {
         // 4a. Calldata gas using revm helper
-        let tokens = get_tokens_in_calldata(&call.input, spec.is_enabled_in(RevmSpecId::ISTANBUL));
+        let tokens = get_tokens_in_calldata(&call.input, true);
         total_tokens += tokens;
 
         // 4b. CREATE-specific costs
@@ -823,7 +825,14 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
             gas.initial_gas += initcode_cost(call.input.len());
         }
 
+        // Note: Transaction value is not allowed in AA transactions as there is no balances in accounts yet.
+        // Check added in https://github.com/tempoxyz/tempo/pull/759
+        if !call.value.is_zero() {
+            return Err(TempoInvalidTransaction::ValueTransferNotAllowedInAATx);
+        }
+
         // 4c. Value transfer cost using revm constant
+        // left here for future reference.
         if !call.value.is_zero() && call.to.is_call() {
             gas.initial_gas += CALLVALUE; // 9000 gas
         }
@@ -847,7 +856,7 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     // 6. Floor gas  using revm helper
     gas.floor_gas = calc_tx_floor_cost(total_tokens); // tokens * 10 + 21000
 
-    gas
+    Ok(gas)
 }
 
 /// Validates and calculates initial transaction gas for AA transactions.
@@ -861,7 +870,6 @@ fn validate_aa_initial_tx_gas<DB, I>(
 where
     DB: alloy_evm::Database,
 {
-    let spec = evm.ctx_ref().cfg().spec();
     let tx = evm.ctx_ref().tx();
 
     // This function should only be called for AA transactions
@@ -874,16 +882,14 @@ where
     let gas_limit = tx.gas_limit();
 
     // Validate all CREATE calls' initcode size upfront (EIP-3860)
-    if spec.is_enabled_in(RevmSpecId::SHANGHAI) {
-        let max_initcode_size = evm.ctx_ref().cfg().max_initcode_size();
-        for call in calls {
-            if call.to.is_create() && call.input.len() > max_initcode_size {
-                return Err(EVMError::Transaction(
-                    TempoInvalidTransaction::EthInvalidTransaction(
-                        InvalidTransaction::CreateInitCodeSizeLimit,
-                    ),
-                ));
-            }
+    let max_initcode_size = evm.ctx_ref().cfg().max_initcode_size();
+    for call in calls {
+        if call.to.is_create() && call.input.len() > max_initcode_size {
+            return Err(EVMError::Transaction(
+                TempoInvalidTransaction::EthInvalidTransaction(
+                    InvalidTransaction::CreateInitCodeSizeLimit,
+                ),
+            ));
         }
     }
 
@@ -893,8 +899,7 @@ where
         &aa_env.signature,
         tx.access_list(),
         &aa_env.aa_authorization_list,
-        spec,
-    );
+    )?;
 
     if evm.ctx.cfg.is_eip7623_disabled() {
         batch_gas.floor_gas = 0u64;
@@ -921,106 +926,6 @@ where
     Ok(batch_gas)
 }
 
-/// Validates that token can be used for fee payments.
-pub fn validate_fee_token<DB>(
-    ctx: &mut TempoContext<DB>,
-    fee_token: Address,
-) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>>
-where
-    DB: alloy_evm::Database,
-{
-    if !is_tip20(fee_token) || fee_token == LINKING_USD_ADDRESS {
-        return Err(TempoInvalidTransaction::InvalidFeeToken(fee_token).into());
-    }
-
-    // Ensure that token is initialized
-    if ctx
-        .journaled_state
-        .load_account(fee_token)?
-        .data
-        .info
-        .is_empty_code_hash()
-    {
-        return Err(TempoInvalidTransaction::InvalidFeeToken(fee_token).into());
-    }
-
-    let token_id = address_to_token_id_unchecked(fee_token);
-
-    let mut storage = EvmPrecompileStorageProvider::new_max_gas(
-        EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
-        ctx.cfg.chain_id,
-    );
-
-    let currency = TIP20Token::new(token_id, &mut storage)
-        .currency()
-        .map_err(|e| EVMError::Custom(e.to_string()))?;
-    if currency != USD_CURRENCY {
-        return Err(TempoInvalidTransaction::InvalidFeeToken(fee_token).into());
-    }
-    Ok(())
-}
-
-/// Looks up the user's fee token in the `TIPFeemanager` contract.
-///
-/// If no fee token is set for the user, or the fee token is the zero address, the returned fee token will be the validator's fee token.
-pub fn get_fee_token<DB>(
-    ctx: &mut TempoContext<DB>,
-) -> Result<Address, EVMError<DB::Error, TempoInvalidTransaction>>
-where
-    DB: Database,
-{
-    // If there is a fee token explicitly set on the tx type, use that.
-    if let Some(fee_token) = ctx.tx().fee_token {
-        return Ok(fee_token);
-    }
-
-    // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
-    // new preference, the newly set preference should be used immediately instead of the
-    // previously stored one
-    if ctx.tx().aa_tx_env.is_none()
-        && ctx.tx().fee_payer()? == ctx.tx().caller()
-        && ctx.tx().kind().to() == Some(&TIP_FEE_MANAGER_ADDRESS)
-        && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(ctx.tx().input())
-    {
-        return Ok(call.token);
-    }
-
-    let user_slot = mapping_slot(ctx.tx().fee_payer()?, tip_fee_manager::slots::USER_TOKENS);
-    // ensure TIP_FEE_MANAGER_ADDRESS is loaded
-    ctx.journal_mut().load_account(TIP_FEE_MANAGER_ADDRESS)?;
-    let stored_user_token = ctx
-        .journal_mut()
-        .sload(TIP_FEE_MANAGER_ADDRESS, user_slot)?
-        .data
-        .into_address();
-
-    if !stored_user_token.is_zero() {
-        return Ok(stored_user_token);
-    }
-
-    // If tx.to() is a TIP-20 token, use that token as the fee token
-    if ctx.tx().aa_tx_env.is_none()
-        && let Some(&to_addr) = ctx.tx().kind().to()
-        && is_tip20(to_addr)
-    {
-        return Ok(to_addr);
-    }
-
-    // Otherwise fall back to the validator fee token preference
-    let validator_slot = mapping_slot(ctx.beneficiary(), tip_fee_manager::slots::VALIDATOR_TOKENS);
-    let validator_fee_token = ctx
-        .journal_mut()
-        .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
-        .data
-        .into_address();
-
-    if !validator_fee_token.is_zero() {
-        return Ok(validator_fee_token);
-    }
-
-    Ok(DEFAULT_FEE_TOKEN)
-}
-
 pub fn get_token_balance<JOURNAL>(
     journal: &mut JOURNAL,
     token: Address,
@@ -1034,51 +939,6 @@ where
     let balance = journal.sload(token, balance_slot)?.data;
 
     Ok(balance)
-}
-
-/// Transfers `amount` from the sender's to the receivers balance inside the token contract.
-///
-/// Caution: assumes the `token` address is already loaded
-pub fn transfer_token<JOURNAL>(
-    journal: &mut JOURNAL,
-    token: Address,
-    sender: Address,
-    recipient: Address,
-    amount: U256,
-) -> Result<(), <JOURNAL::Database as Database>::Error>
-where
-    JOURNAL: JournalTr,
-{
-    // Ensure the token account is touched
-    journal.touch_account(token);
-    // Load sender's current balance
-    // NOTE: it is important to note that this expects the token to be a tip20 token with BALANCES
-    // slot at slot 10
-    let sender_slot = mapping_slot(sender, tip20::slots::BALANCES);
-    let sender_balance = journal.sload(token, sender_slot)?.data;
-
-    // Check sender has sufficient balance
-    if amount > sender_balance {
-        todo!()
-    }
-
-    // Update sender balance
-    let new_sender_balance = sender_balance
-        .checked_sub(amount)
-        .expect("TODO: handle err");
-    journal.sstore(token, sender_slot, new_sender_balance)?;
-
-    // Update recipient balance or burn
-    if recipient != Address::ZERO {
-        let recipient_slot = mapping_slot(recipient, tip20::slots::BALANCES);
-        let recipient_balance = journal.sload(token, recipient_slot)?.data;
-        let new_recipient_balance = recipient_balance
-            .checked_add(amount)
-            .expect("TODO: handle error");
-        journal.sstore(token, recipient_slot, new_recipient_balance)?;
-    }
-
-    Ok(())
 }
 
 impl<DB, I> InspectorHandler for TempoEvmHandler<DB, I>
@@ -1163,14 +1023,16 @@ pub fn validate_time_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{TempoBlockEnv, TempoTxEnv};
     use alloy_primitives::{Address, U256};
     use revm::{
-        Journal,
+        Context, Journal, MainContext,
         database::{CacheDB, EmptyDB},
         interpreter::instructions::utility::IntoU256,
         primitives::hardfork::SpecId,
         state::Account,
     };
+    use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, tip_fee_manager};
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
         let db = CacheDB::new(EmptyDB::default());
@@ -1198,35 +1060,13 @@ mod tests {
     }
 
     #[test]
-    fn test_transfer_token() -> eyre::Result<()> {
-        let mut journal = create_test_journal();
-        let token = Address::random();
-        let sender = Address::random();
-        let recipient = Address::random();
-        let initial_balance = U256::random();
-
-        let sender_slot = mapping_slot(sender, tip20::slots::BALANCES);
-        journal.load_account(token)?;
-        journal.sstore(token, sender_slot, initial_balance).unwrap();
-        let sender_balance = get_token_balance(&mut journal, token, sender).unwrap();
-        assert_eq!(sender_balance, initial_balance);
-
-        transfer_token(&mut journal, token, sender, recipient, initial_balance).unwrap();
-
-        // Verify balances after transfer
-        let sender_balance = get_token_balance(&mut journal, token, sender).unwrap();
-        let recipient_balance = get_token_balance(&mut journal, token, recipient).unwrap();
-
-        assert_eq!(sender_balance, 0);
-        assert_eq!(recipient_balance, initial_balance);
-
-        Ok(())
-    }
-
-    #[test]
     fn test_get_fee_token() -> eyre::Result<()> {
         let journal = create_test_journal();
-        let mut ctx = TempoContext::new(CacheDB::new(EmptyDB::default()), SpecId::default())
+        let mut ctx: TempoContext<_> = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(Default::default())
+            .with_tx(TempoTxEnv::default())
             .with_new_journal(journal);
         let user = Address::random();
         ctx.tx.inner.caller = user;
@@ -1247,7 +1087,9 @@ mod tests {
             )
             .unwrap();
 
-        let fee_token = get_fee_token(&mut ctx).unwrap();
+        let fee_token = ctx
+            .journaled_state
+            .get_fee_token(&ctx.tx, validator, user)?;
         assert_eq!(validator_fee_token, fee_token);
 
         // Set user token
@@ -1260,12 +1102,16 @@ mod tests {
             )
             .unwrap();
 
-        let fee_token = get_fee_token(&mut ctx).unwrap();
+        let fee_token = ctx
+            .journaled_state
+            .get_fee_token(&ctx.tx, validator, user)?;
         assert_eq!(user_fee_token, fee_token);
 
         // Set tx fee token
         ctx.tx.fee_token = Some(tx_fee_token);
-        let fee_token = get_fee_token(&mut ctx).unwrap();
+        let fee_token = ctx
+            .journaled_state
+            .get_fee_token(&ctx.tx, validator, user)?;
         assert_eq!(tx_fee_token, fee_token);
 
         Ok(())
@@ -1288,7 +1134,7 @@ mod tests {
         use tempo_primitives::transaction::{AASignature, Call};
 
         // Test that AA tx with secp256k1 and single call matches normal tx + per-call overhead
-        let spec = RevmSpecId::CANCUN;
+        let spec = SpecId::CANCUN;
         let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
         let to = Address::random();
 
@@ -1311,8 +1157,8 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>, // no access list
             &aa_env.aa_authorization_list,
-            spec,
-        );
+        )
+        .unwrap();
 
         // Calculate expected gas using revm's function for equivalent normal tx
         let normal_tx_gas = calculate_initial_tx_gas(
@@ -1337,7 +1183,7 @@ mod tests {
         use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
-        let spec = RevmSpecId::CANCUN;
+        let spec = SpecId::CANCUN;
         let calldata = Bytes::from(vec![1, 2, 3]); // 3 non-zero bytes
 
         let calls = vec![
@@ -1369,8 +1215,8 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            spec,
-        );
+        )
+        .unwrap();
 
         // Calculate base gas for a single normal tx
         let base_tx_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
@@ -1395,7 +1241,7 @@ mod tests {
             AASignature, Call, aa_signature::P256SignatureWithPreHash,
         };
 
-        let spec = RevmSpecId::CANCUN;
+        let spec = SpecId::CANCUN;
         let calldata = Bytes::from(vec![1, 2]);
 
         let call = Call {
@@ -1421,8 +1267,8 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            spec,
-        );
+        )
+        .unwrap();
 
         // Calculate base gas for normal tx
         let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
@@ -1442,7 +1288,7 @@ mod tests {
         use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
-        let spec = RevmSpecId::CANCUN; // Post-Shanghai
+        let spec = SpecId::CANCUN; // Post-Shanghai
         let initcode = Bytes::from(vec![0x60, 0x80]); // 2 bytes
 
         let call = Call {
@@ -1462,8 +1308,8 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            spec,
-        );
+        )
+        .unwrap();
 
         // Calculate expected using revm's function for CREATE tx
         let base_gas = calculate_initial_tx_gas(
@@ -1480,16 +1326,14 @@ mod tests {
     fn test_aa_gas_value_transfer() {
         use crate::AATxEnv;
         use alloy_primitives::{Bytes, TxKind};
-        use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
-        let spec = RevmSpecId::CANCUN;
         let calldata = Bytes::from(vec![1]);
 
         let call = Call {
             to: TxKind::Call(Address::random()),
             value: U256::from(1000), // Non-zero value
-            input: calldata.clone(),
+            input: calldata,
         };
 
         let aa_env = AATxEnv {
@@ -1498,23 +1342,16 @@ mod tests {
             ..Default::default()
         };
 
-        let gas = calculate_aa_batch_intrinsic_gas(
+        let res = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            spec,
         );
 
-        // Calculate base gas for normal tx (without value cost in intrinsic)
-        let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
-
-        // Expected: normal tx + CALLVALUE + per-call overhead
-        // Note: intrinsic gas includes CALLVALUE cost
-        let expected = base_gas.initial_gas + CALLVALUE + COLD_ACCOUNT_ACCESS_COST;
         assert_eq!(
-            gas.initial_gas, expected,
-            "Should include value transfer cost"
+            res.unwrap_err(),
+            TempoInvalidTransaction::ValueTransferNotAllowedInAATx
         );
     }
 
@@ -1525,7 +1362,7 @@ mod tests {
         use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
-        let spec = RevmSpecId::CANCUN;
+        let spec = SpecId::CANCUN;
         let calldata = Bytes::from(vec![]);
 
         let call = Call {
@@ -1546,8 +1383,8 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            spec,
-        );
+        )
+        .unwrap();
 
         // Calculate expected using revm's function
         let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
@@ -1567,7 +1404,7 @@ mod tests {
         use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
-        let spec = RevmSpecId::PRAGUE;
+        let spec = SpecId::PRAGUE;
         let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
 
         let call = Call {
@@ -1587,8 +1424,8 @@ mod tests {
             &aa_env.signature,
             None::<std::iter::Empty<&AccessListItem>>,
             &aa_env.aa_authorization_list,
-            spec,
-        );
+        )
+        .unwrap();
 
         // Calculate expected floor gas using revm's function
         let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
@@ -1598,5 +1435,37 @@ mod tests {
             gas.floor_gas, base_gas.floor_gas,
             "Should calculate floor gas for Prague matching revm"
         );
+    }
+
+    /// This test will start failing once we get the balance transfer enabled
+    /// PR that introduced [`TempoInvalidTransaction::ValueTransferNotAllowed`] https://github.com/tempoxyz/tempo/pull/759
+    #[test]
+    fn test_zero_value_transfer() -> eyre::Result<()> {
+        use crate::TempoEvm;
+
+        // Create a test context with a transaction that has a non-zero value
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(Default::default())
+            .with_cfg(Default::default())
+            .with_tx(TempoTxEnv::default());
+        let mut evm = TempoEvm::new(ctx, ());
+
+        // Set a non-zero value on the transaction
+        evm.ctx.tx.inner.value = U256::from(1000);
+
+        // Create the handler
+        let handler = TempoEvmHandler::<_, ()>::new();
+
+        // Call validate_env and expect it to fail with ValueTransferNotAllowed
+        let result = handler.validate_env(&mut evm);
+
+        if let Err(EVMError::Transaction(err)) = result {
+            assert_eq!(err, TempoInvalidTransaction::ValueTransferNotAllowed);
+        } else {
+            panic!("Expected ValueTransferNotAllowed error");
+        }
+
+        Ok(())
     }
 }

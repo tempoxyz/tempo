@@ -2,14 +2,18 @@ use crate::subblock::PartialValidatorKey;
 
 use super::{aa_signed::AASigned, fee_token::TxFeeToken};
 use alloy_consensus::{
-    EthereumTxEnvelope, Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
+    EthereumTxEnvelope, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
     TypedTransaction,
     error::{UnsupportedTransactionType, ValueError},
+    transaction::Either,
 };
-use alloy_primitives::{Address, B256, Signature, SignatureError, U256};
+use alloy_primitives::{Address, B256, Bytes, Signature, SignatureError, TxKind, U256, hex};
 use core::fmt;
 use reth_primitives_traits::InMemorySize;
-use tempo_precompiles::tip20::TIP20_PAYMENT_PREFIX;
+
+/// TIP20 payment address prefix (14 bytes for payment classification)
+/// Same as TIP20_TOKEN_PREFIX but extended to 14 bytes for payment classification
+pub const TIP20_PAYMENT_PREFIX: [u8; 14] = hex!("20C0000000000000000000000000");
 
 /// Fake signature for Tempo system transactions.
 pub const TEMPO_SYSTEM_TX_SIGNATURE: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
@@ -164,6 +168,15 @@ impl TempoTxEnvelope {
         matches!(self, Self::Legacy(tx) if tx.signature() == &TEMPO_SYSTEM_TX_SIGNATURE)
     }
 
+    /// Returns true if this is a valid Tempo system transaction, i.e all gas fields and nonce are zero.
+    pub fn is_valid_system_tx(&self, chain_id: u64) -> bool {
+        self.max_fee_per_gas() == 0
+            && self.gas_limit() == 0
+            && self.value().is_zero()
+            && self.chain_id() == Some(chain_id)
+            && self.nonce() == 0
+    }
+
     /// Classify a transaction as payment or non-payment.
     ///
     /// Currently uses classifier v1: transaction is a payment if the `to` address has the TIP20 prefix.
@@ -215,6 +228,15 @@ impl TempoTxEnvelope {
     /// Returns true if this is an AA transaction
     pub fn is_aa(&self) -> bool {
         matches!(self, Self::AA(_))
+    }
+
+    /// Returns iterator over the calls in the transaction.
+    pub fn calls(&self) -> impl Iterator<Item = (TxKind, &Bytes)> {
+        if let Some(aa) = self.as_aa() {
+            Either::Left(aa.tx().calls.iter().map(|call| (call.to, &call.input)))
+        } else {
+            Either::Right(core::iter::once((self.kind(), self.input())))
+        }
     }
 }
 

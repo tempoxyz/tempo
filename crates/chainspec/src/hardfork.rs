@@ -18,15 +18,34 @@
 
 use alloy_hardforks::hardfork;
 use reth_chainspec::{EthereumHardforks, ForkCondition};
+use reth_ethereum::evm::revm::primitives::hardfork::SpecId;
 
 hardfork!(
     /// Tempo-specific hardforks for network upgrades.
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[derive(Default)]
     TempoHardfork {
         /// Placeholder representing the baseline (pre-hardfork) state.
+        #[default]
         Adagio,
+        /// Testnet hardfork for Andantino. To be removed before mainnet launch.
+        Moderato,
+        /// Allegretto hardfork.
+        Allegretto,
     }
 );
+
+impl TempoHardfork {
+    /// Returns `true` if this hardfork is Moderato or later.
+    pub fn is_moderato(self) -> bool {
+        self >= Self::Moderato
+    }
+
+    /// Returns `true` if this hardfork is Allegretto or later.
+    pub fn is_allegretto(self) -> bool {
+        self >= Self::Allegretto
+    }
+}
 
 /// Trait for querying Tempo-specific hardfork activations.
 pub trait TempoHardforks: EthereumHardforks {
@@ -37,6 +56,56 @@ pub trait TempoHardforks: EthereumHardforks {
     fn is_adagio_active_at_timestamp(&self, timestamp: u64) -> bool {
         self.tempo_fork_activation(TempoHardfork::Adagio)
             .active_at_timestamp(timestamp)
+    }
+
+    /// Convenience method to check if Andantino hardfork is active at a given timestamp
+    fn is_moderato_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.tempo_fork_activation(TempoHardfork::Moderato)
+            .active_at_timestamp(timestamp)
+    }
+
+    /// Convenience method to check if Allegretto hardfork is active at a given timestamp
+    fn is_allegretto_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.tempo_fork_activation(TempoHardfork::Allegretto)
+            .active_at_timestamp(timestamp)
+    }
+
+    /// Retrieves the latest Tempo hardfork active at a given timestamp.
+    fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
+        if self.is_allegretto_active_at_timestamp(timestamp) {
+            TempoHardfork::Allegretto
+        } else if self.is_moderato_active_at_timestamp(timestamp) {
+            TempoHardfork::Moderato
+        } else {
+            TempoHardfork::Adagio
+        }
+    }
+}
+
+impl From<TempoHardfork> for SpecId {
+    fn from(value: TempoHardfork) -> Self {
+        match value {
+            TempoHardfork::Adagio => Self::OSAKA,
+            TempoHardfork::Moderato => Self::OSAKA,
+            TempoHardfork::Allegretto => Self::OSAKA,
+        }
+    }
+}
+
+impl From<SpecId> for TempoHardfork {
+    /// Maps a [`SpecId`] to the *latest compatible* [`TempoHardfork`].
+    ///
+    /// Note: this is intentionally not a strict inverse of
+    /// `From<TempoHardfork> for SpecId`, because multiple Tempo
+    /// hardforks may share the same underlying EVM spec.
+    fn from(spec: SpecId) -> Self {
+        if spec.is_enabled_in(SpecId::from(Self::Allegretto)) {
+            Self::Allegretto
+        } else if spec.is_enabled_in(SpecId::from(Self::Moderato)) {
+            Self::Moderato
+        } else {
+            Self::Adagio
+        }
     }
 }
 
@@ -70,5 +139,22 @@ mod tests {
         // Deserialize from JSON
         let deserialized: TempoHardfork = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, fork);
+    }
+
+    #[test]
+    fn test_is_moderato() {
+        assert!(!TempoHardfork::Adagio.is_moderato());
+
+        assert!(TempoHardfork::Moderato.is_moderato());
+    }
+
+    #[test]
+    fn test_is_allegretto() {
+        assert!(!TempoHardfork::Adagio.is_allegretto());
+        assert!(!TempoHardfork::Moderato.is_allegretto());
+
+        assert!(TempoHardfork::Allegretto.is_allegretto());
+
+        assert!(TempoHardfork::Allegretto.is_moderato());
     }
 }

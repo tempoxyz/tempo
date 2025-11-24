@@ -756,9 +756,9 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: U256::ZERO, // Protocol nonce
-        nonce: 0,              // First transaction
-        fee_token: None,       // Will use DEFAULT_FEE_TOKEN from genesis
+        nonce_key: U256::ZERO,              // Protocol nonce
+        nonce: 0,                           // First transaction
+        fee_token: Some(DEFAULT_FEE_TOKEN), // Will use DEFAULT_FEE_TOKEN from genesis
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         ..Default::default()

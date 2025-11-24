@@ -353,7 +353,6 @@ where
                 activity_timeout: self.config.views_to_track,
                 skip_timeout: self.config.views_until_leader_skip,
 
-                max_fetch_count: crate::config::NUMBER_MAX_FETCHES,
                 fetch_concurrent: crate::config::NUMBER_CONCURRENT_FETCHES,
                 fetch_rate_per_peer: crate::config::RESOLVER_LIMIT,
             },

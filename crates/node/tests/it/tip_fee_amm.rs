@@ -7,13 +7,14 @@ use alloy::{
 use alloy_eips::BlockId;
 use alloy_primitives::{Address, uint};
 use std::env;
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{
     IFeeManager,
     ITIP20::{self, ITIP20Instance},
     ITIPFeeAMM,
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey},
 };
 
@@ -253,7 +254,9 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let source = if let Ok(rpc_url) = env::var("RPC_URL") {
         crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
     } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
+        crate::utils::NodeSource::LocalNode(
+            include_str!("../assets/test-genesis-moderato.json").to_string(),
+        )
     };
     let (http_url, _local_node) = setup_test_node(source).await?;
 
@@ -277,7 +280,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     // Create different tokens for user and validator
     let user_token = setup_test_token(provider.clone(), user_address).await?;
     // Use default fee token for validator
-    let validator_token = ITIP20Instance::new(DEFAULT_FEE_TOKEN, provider.clone());
+    let validator_token = ITIP20Instance::new(LINKING_USD_ADDRESS, provider.clone());
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Mint initial balances
@@ -296,10 +299,9 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let liquidity = U256::from(u16::MAX) + uint!(1_000_000_000_U256);
     pending.push(
         fee_amm
-            .mint(
+            .mintWithValidatorToken(
                 *user_token.address(),
                 *validator_token.address(),
-                liquidity,
                 liquidity,
                 user_address,
             )
@@ -310,12 +312,12 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
 
     // Verify liquidity was added
     let pool = fee_amm.pools(pool_id).call().await?;
-    assert_eq!(pool.reserveUserToken, liquidity.to::<u128>());
+    assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, liquidity.to::<u128>());
 
     // Check total supply and individual LP balances
     let total_supply = fee_amm.totalSupply(pool_id).call().await?;
-    let expected_initial_liquidity = (liquidity * liquidity) / U256::from(2) - MIN_LIQUIDITY;
+    let expected_initial_liquidity = liquidity / U256::from(2) - MIN_LIQUIDITY;
     assert_eq!(total_supply, expected_initial_liquidity + MIN_LIQUIDITY);
 
     let user_lp_balance = fee_amm
@@ -323,6 +325,13 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
         .call()
         .await?;
     assert_eq!(user_lp_balance, expected_initial_liquidity);
+
+    // Cache pool balances before setting tokens (to avoid any fee swaps affecting the baseline)
+    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let pool_before = fee_amm
+        .getPool(*user_token.address(), *validator_token.address())
+        .call()
+        .await?;
 
     // Set different tokens for user and validator, validator is already set to predeployed fee
     // token
@@ -346,18 +355,11 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let _initial_validator_balance = validator_token.balanceOf(validator_address).call().await?;
     let initial_user_balance = user_token.balanceOf(user_address).call().await?;
 
-    // Cache pool balances before
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-    let pool_before = fee_amm
-        .getPool(user_fee_token, val_fee_token)
-        .call()
-        .await?;
-
     // Transfer using predeployed TIP20
     let transfer_token = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone());
 
     let transfer_receipt = transfer_token
-        .transfer(Address::random(), U256::ZERO)
+        .transfer(Address::random(), U256::from(1))
         .send()
         .await?
         .get_receipt()
@@ -379,6 +381,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
         .getPool(user_fee_token, val_fee_token)
         .call()
         .await?;
+
     assert!(pool_before.reserveUserToken < pool_after.reserveUserToken);
     assert!(pool_before.reserveValidatorToken > pool_after.reserveValidatorToken);
 
@@ -580,6 +583,81 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
         pool_after.reserveValidatorToken,
         pool_before.reserveValidatorToken - expected_amount1.to::<u128>()
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
+    } else {
+        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
+    };
+    let (http_url, _local_node) = setup_test_node(source).await?;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let alice = wallet.address();
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    // Setup test tokens and fee AMM
+    let user_token = setup_test_token(provider.clone(), alice).await?;
+    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+
+    // Define amounts (100000 * 1e18)
+    let amount0 = uint!(100000_000000000000000000_U256);
+
+    // Mint tokens to alice
+    let mut pending = vec![];
+    pending.push(user_token.mint(alice, amount0).send().await?);
+    await_receipts(&mut pending).await?;
+
+    // Get pool info
+    let pool_key = PoolKey::new(*user_token.address(), LINKING_USD_ADDRESS);
+    let pool_id = pool_key.get_id();
+
+    // Add liquidity
+    let mint_receipt = fee_amm
+        .mintWithValidatorToken(
+            pool_key.user_token,
+            pool_key.validator_token,
+            uint!(100000000_U256),
+            alice,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(mint_receipt.status());
+
+    // Get liquidity balance
+    let liquidity = fee_amm.liquidityBalances(pool_id, alice).call().await?;
+
+    IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone())
+        .setUserToken(*user_token.address())
+        .send()
+        .await?
+        .get_receipt()
+        .await?
+        .status();
+
+    // Burn entire liquidity
+    let burn_receipt = fee_amm
+        .burn(
+            pool_key.user_token,
+            pool_key.validator_token,
+            liquidity,
+            alice,
+        )
+        .max_fee_per_gas(TEMPO_BASE_FEE as u128 * 100)
+        .gas(1000000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(!burn_receipt.status());
 
     Ok(())
 }

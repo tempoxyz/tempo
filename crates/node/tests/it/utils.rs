@@ -268,6 +268,7 @@ impl TestNodeBuilder {
 
         let tasks = TaskManager::current();
         let chain_spec = self.build_chain_spec()?;
+        let validator = chain_spec.inner.genesis.coinbase;
 
         let mut node_config = NodeConfig::new(Arc::new(chain_spec))
             .with_unused_ports()
@@ -279,9 +280,6 @@ impl TestNodeBuilder {
                     .with_http_api(RpcModuleSelection::All),
             );
         node_config.txpool.max_account_slots = usize::MAX;
-
-        // Configure random non-zero validator address
-        let validator = Address::random();
 
         let node_handle = NodeBuilder::new(node_config.clone())
             .testing_node(tasks.executor())

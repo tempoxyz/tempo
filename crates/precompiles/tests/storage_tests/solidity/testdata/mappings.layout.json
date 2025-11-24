@@ -1,0 +1,66 @@
+{
+  "contracts": {
+    "tests/storage_tests/solidity/testdata/mappings.sol:Mappings": {
+      "storage-layout": {
+        "storage": [
+          {
+            "astId": 4,
+            "contract": "tests/storage_tests/solidity/testdata/mappings.sol:Mappings",
+            "label": "fieldA",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_uint256"
+          },
+          {
+            "astId": 8,
+            "contract": "tests/storage_tests/solidity/testdata/mappings.sol:Mappings",
+            "label": "addressMapping",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_mapping(t_address,t_uint256)"
+          },
+          {
+            "astId": 12,
+            "contract": "tests/storage_tests/solidity/testdata/mappings.sol:Mappings",
+            "label": "uintMapping",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_mapping(t_uint64,t_uint256)"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "encoding": "inplace",
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_mapping(t_address,t_uint256)": {
+            "encoding": "mapping",
+            "key": "t_address",
+            "label": "mapping(address => uint256)",
+            "numberOfBytes": "32",
+            "value": "t_uint256"
+          },
+          "t_mapping(t_uint64,t_uint256)": {
+            "encoding": "mapping",
+            "key": "t_uint64",
+            "label": "mapping(uint64 => uint256)",
+            "numberOfBytes": "32",
+            "value": "t_uint256"
+          },
+          "t_uint256": {
+            "encoding": "inplace",
+            "label": "uint256",
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "encoding": "inplace",
+            "label": "uint64",
+            "numberOfBytes": "8"
+          }
+        }
+      }
+    }
+  },
+  "version": "0.8.30+commit.73712a01.Darwin.appleclang"
+}

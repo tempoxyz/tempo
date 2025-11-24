@@ -1,0 +1,374 @@
+{
+  "contracts": {
+    "tests/storage_tests/solidity/testdata/tip20.sol:TIP20": {
+      "storage-layout": {
+        "storage": [
+          {
+            "astId": 27,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "roles",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_mapping(t_address,t_mapping(t_bytes32,t_bool))"
+          },
+          {
+            "astId": 32,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "roleAdmins",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_mapping(t_bytes32,t_bytes32)"
+          },
+          {
+            "astId": 34,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "name",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_string_storage"
+          },
+          {
+            "astId": 36,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "symbol",
+            "offset": 0,
+            "slot": "3",
+            "type": "t_string_storage"
+          },
+          {
+            "astId": 38,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "currency",
+            "offset": 0,
+            "slot": "4",
+            "type": "t_string_storage"
+          },
+          {
+            "astId": 40,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "domainSeparator",
+            "offset": 0,
+            "slot": "5",
+            "type": "t_bytes32"
+          },
+          {
+            "astId": 42,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "quoteToken",
+            "offset": 0,
+            "slot": "6",
+            "type": "t_address"
+          },
+          {
+            "astId": 44,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "nextQuoteToken",
+            "offset": 0,
+            "slot": "7",
+            "type": "t_address"
+          },
+          {
+            "astId": 46,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "transferPolicyId",
+            "offset": 20,
+            "slot": "7",
+            "type": "t_uint64"
+          },
+          {
+            "astId": 48,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "totalSupply",
+            "offset": 0,
+            "slot": "8",
+            "type": "t_uint256"
+          },
+          {
+            "astId": 52,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "balances",
+            "offset": 0,
+            "slot": "9",
+            "type": "t_mapping(t_address,t_uint256)"
+          },
+          {
+            "astId": 58,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "allowances",
+            "offset": 0,
+            "slot": "10",
+            "type": "t_mapping(t_address,t_mapping(t_address,t_uint256))"
+          },
+          {
+            "astId": 62,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "nonces",
+            "offset": 0,
+            "slot": "11",
+            "type": "t_mapping(t_address,t_uint256)"
+          },
+          {
+            "astId": 64,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "paused",
+            "offset": 0,
+            "slot": "12",
+            "type": "t_bool"
+          },
+          {
+            "astId": 66,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "supplyCap",
+            "offset": 0,
+            "slot": "13",
+            "type": "t_uint256"
+          },
+          {
+            "astId": 70,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "salts",
+            "offset": 0,
+            "slot": "14",
+            "type": "t_mapping(t_bytes32,t_bool)"
+          },
+          {
+            "astId": 72,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "globalRewardPerToken",
+            "offset": 0,
+            "slot": "15",
+            "type": "t_uint256"
+          },
+          {
+            "astId": 74,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "lastUpdateTime",
+            "offset": 0,
+            "slot": "16",
+            "type": "t_uint64"
+          },
+          {
+            "astId": 76,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "totalRewardPerSecond",
+            "offset": 0,
+            "slot": "17",
+            "type": "t_uint256"
+          },
+          {
+            "astId": 78,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "optedInSupply",
+            "offset": 0,
+            "slot": "18",
+            "type": "t_uint128"
+          },
+          {
+            "astId": 80,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "nextStreamId",
+            "offset": 16,
+            "slot": "18",
+            "type": "t_uint64"
+          },
+          {
+            "astId": 86,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "streams",
+            "offset": 0,
+            "slot": "19",
+            "type": "t_mapping(t_uint64,t_struct(RewardStream)13_storage)"
+          },
+          {
+            "astId": 91,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "scheduledRateDecrease",
+            "offset": 0,
+            "slot": "20",
+            "type": "t_mapping(t_uint128,t_uint256)"
+          },
+          {
+            "astId": 97,
+            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+            "label": "userRewardInfo",
+            "offset": 0,
+            "slot": "21",
+            "type": "t_mapping(t_address,t_struct(UserRewardInfo)20_storage)"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "encoding": "inplace",
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_bool": {
+            "encoding": "inplace",
+            "label": "bool",
+            "numberOfBytes": "1"
+          },
+          "t_bytes32": {
+            "encoding": "inplace",
+            "label": "bytes32",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_mapping(t_address,t_uint256))": {
+            "encoding": "mapping",
+            "key": "t_address",
+            "label": "mapping(address => mapping(address => uint256))",
+            "numberOfBytes": "32",
+            "value": "t_mapping(t_address,t_uint256)"
+          },
+          "t_mapping(t_address,t_mapping(t_bytes32,t_bool))": {
+            "encoding": "mapping",
+            "key": "t_address",
+            "label": "mapping(address => mapping(bytes32 => bool))",
+            "numberOfBytes": "32",
+            "value": "t_mapping(t_bytes32,t_bool)"
+          },
+          "t_mapping(t_address,t_struct(UserRewardInfo)20_storage)": {
+            "encoding": "mapping",
+            "key": "t_address",
+            "label": "mapping(address => struct TIP20.UserRewardInfo)",
+            "numberOfBytes": "32",
+            "value": "t_struct(UserRewardInfo)20_storage"
+          },
+          "t_mapping(t_address,t_uint256)": {
+            "encoding": "mapping",
+            "key": "t_address",
+            "label": "mapping(address => uint256)",
+            "numberOfBytes": "32",
+            "value": "t_uint256"
+          },
+          "t_mapping(t_bytes32,t_bool)": {
+            "encoding": "mapping",
+            "key": "t_bytes32",
+            "label": "mapping(bytes32 => bool)",
+            "numberOfBytes": "32",
+            "value": "t_bool"
+          },
+          "t_mapping(t_bytes32,t_bytes32)": {
+            "encoding": "mapping",
+            "key": "t_bytes32",
+            "label": "mapping(bytes32 => bytes32)",
+            "numberOfBytes": "32",
+            "value": "t_bytes32"
+          },
+          "t_mapping(t_uint128,t_uint256)": {
+            "encoding": "mapping",
+            "key": "t_uint128",
+            "label": "mapping(uint128 => uint256)",
+            "numberOfBytes": "32",
+            "value": "t_uint256"
+          },
+          "t_mapping(t_uint64,t_struct(RewardStream)13_storage)": {
+            "encoding": "mapping",
+            "key": "t_uint64",
+            "label": "mapping(uint64 => struct TIP20.RewardStream)",
+            "numberOfBytes": "32",
+            "value": "t_struct(RewardStream)13_storage"
+          },
+          "t_string_storage": {
+            "encoding": "bytes",
+            "label": "string",
+            "numberOfBytes": "32"
+          },
+          "t_struct(RewardStream)13_storage": {
+            "encoding": "inplace",
+            "label": "struct TIP20.RewardStream",
+            "members": [
+              {
+                "astId": 4,
+                "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+                "label": "funder",
+                "offset": 0,
+                "slot": "0",
+                "type": "t_address"
+              },
+              {
+                "astId": 6,
+                "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+                "label": "startTime",
+                "offset": 20,
+                "slot": "0",
+                "type": "t_uint64"
+              },
+              {
+                "astId": 8,
+                "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+                "label": "endTime",
+                "offset": 0,
+                "slot": "1",
+                "type": "t_uint64"
+              },
+              {
+                "astId": 10,
+                "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+                "label": "ratePerSecondScaled",
+                "offset": 0,
+                "slot": "2",
+                "type": "t_uint256"
+              },
+              {
+                "astId": 12,
+                "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+                "label": "amountTotal",
+                "offset": 0,
+                "slot": "3",
+                "type": "t_uint256"
+              }
+            ],
+            "numberOfBytes": "128"
+          },
+          "t_struct(UserRewardInfo)20_storage": {
+            "encoding": "inplace",
+            "label": "struct TIP20.UserRewardInfo",
+            "members": [
+              {
+                "astId": 15,
+                "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+                "label": "rewardRecipient",
+                "offset": 0,
+                "slot": "0",
+                "type": "t_address"
+              },
+              {
+                "astId": 17,
+                "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+                "label": "rewardPerToken",
+                "offset": 0,
+                "slot": "1",
+                "type": "t_uint256"
+              },
+              {
+                "astId": 19,
+                "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
+                "label": "rewardBalance",
+                "offset": 0,
+                "slot": "2",
+                "type": "t_uint256"
+              }
+            ],
+            "numberOfBytes": "96"
+          },
+          "t_uint128": {
+            "encoding": "inplace",
+            "label": "uint128",
+            "numberOfBytes": "16"
+          },
+          "t_uint256": {
+            "encoding": "inplace",
+            "label": "uint256",
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "encoding": "inplace",
+            "label": "uint64",
+            "numberOfBytes": "8"
+          }
+        }
+      }
+    }
+  },
+  "version": "0.8.30+commit.73712a01.Darwin.appleclang"
+}

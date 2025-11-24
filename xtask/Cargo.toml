@@ -25,7 +25,6 @@ commonware-utils.workspace = true
 eyre.workspace = true
 indexmap.workspace = true
 rand.workspace = true
-reth.workspace = true
 reth-evm.workspace = true
 reth-network-peers.workspace = true
 serde.workspace = true
@@ -40,7 +39,7 @@ alloy = { workspace = true, features = [
   "signer-mnemonic",
   "sol-types",
 ] }
+indicatif = { workspace = true, features = ["rayon"] }
 itertools = "0.14.0"
 rayon = "1.10"
 secp256k1 = "0.30.0"
-simple-tqdm = { version = "0.2.0", features = ["rayon"] }

@@ -2,6 +2,7 @@
 pub mod dispatch;
 
 pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryEvent};
+use tempo_precompiles_macros::contract;
 
 use crate::{
     TIP20_FACTORY_ADDRESS,
@@ -13,24 +14,20 @@ use alloy::primitives::{Address, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
 use tracing::trace;
 
-mod slots {
-    use alloy::primitives::U256;
-
-    pub(super) const TOKEN_ID_COUNTER: U256 = U256::ZERO;
-}
-
-#[derive(Debug)]
-pub struct TIP20Factory<'a, S: PrecompileStorageProvider> {
-    pub storage: &'a mut S,
+#[contract]
+pub struct TIP20Factory {
+    // TODO: It would be nice to have a `#[initial_value=`n`]` macro
+    // to mimic setting an initial value in solidity
+    token_id_counter: U256,
 }
 
 // Precompile functions
 impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
-    /// Creates an instance of the factory account.
+    /// Creates an instance of the precompile.
     ///
     /// Caution: This does not initialize the account, see [`Self::initialize`].
     pub fn new(storage: &'a mut S) -> Self {
-        Self { storage }
+        Self::_new(TIP20_FACTORY_ADDRESS, storage)
     }
 
     /// Initializes the TIP20 factory contract.
@@ -50,14 +47,32 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         sender: Address,
         call: ITIP20Factory::createTokenCall,
     ) -> Result<Address> {
-        let token_id = self.token_id_counter()?.to::<u64>();
+        // TODO: We should update `token_id_counter` to be u64 in storage if we assume we can cast
+        // to u64 here. Or we should update `token_id_to_address` to take a larger value
+        let token_id = self
+            .token_id_counter()?
+            .try_into()
+            .map_err(|_| TempoPrecompileError::under_overflow())?;
+
         trace!(%sender, %token_id, ?call, "Create token");
 
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
-        // Note that the token Id increments on each deployment which ensures that the quote
-        // token id must always be <= the current token_id
-        if !is_tip20(call.quoteToken) || address_to_token_id_unchecked(call.quoteToken) > token_id {
-            return Err(TIP20Error::invalid_quote_token().into());
+        // Note that the token Id increments on each deployment.
+        if self.storage.spec().is_moderato() {
+            // Post-Moderato: Fixed validation - quote token id must be < current token_id (strictly less than).
+            if !is_tip20(call.quoteToken)
+                || address_to_token_id_unchecked(call.quoteToken) >= token_id
+            {
+                return Err(TIP20Error::invalid_quote_token().into());
+            }
+        } else {
+            // Pre-Moderato: Original validation with off-by-one bug for consensus compatibility.
+            // The buggy check allowed quote_token_id == token_id to pass.
+            if !is_tip20(call.quoteToken)
+                || address_to_token_id_unchecked(call.quoteToken) > token_id
+            {
+                return Err(TIP20Error::invalid_quote_token().into());
+            }
         }
 
         TIP20Token::new(token_id, self.storage).initialize(
@@ -85,9 +100,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         )?;
 
         // increase the token counter
-        self.storage.sstore(
-            TIP20_FACTORY_ADDRESS,
-            slots::TOKEN_ID_COUNTER,
+        self.sstore_token_id_counter(
             token_id
                 .checked_add(U256::ONE)
                 .ok_or(TempoPrecompileError::under_overflow())?,
@@ -97,9 +110,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
     }
 
     pub fn token_id_counter(&mut self) -> Result<U256> {
-        let counter = self
-            .storage
-            .sload(TIP20_FACTORY_ADDRESS, slots::TOKEN_ID_COUNTER)?;
+        let counter = self.sload_token_id_counter()?;
 
         if counter.is_zero() {
             Ok(U256::ONE)
@@ -116,6 +127,7 @@ mod tests {
         error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
         tip20::tests::initialize_linking_usd,
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
     fn test_create_token() {
@@ -174,8 +186,9 @@ mod tests {
     }
 
     #[test]
-    fn test_create_token_invalid_quote_token() {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_create_token_invalid_quote_token_post_moderato() {
+        // Test with Moderato hardfork (validation should be enforced)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut factory = TIP20Factory::new(&mut storage);
 
         factory
@@ -200,8 +213,9 @@ mod tests {
     }
 
     #[test]
-    fn test_create_token_quote_token_not_deployed() {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_create_token_quote_token_not_deployed_post_moderato() {
+        // Test with Moderato hardfork (validation should be enforced)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut factory = TIP20Factory::new(&mut storage);
 
         factory
@@ -223,5 +237,133 @@ mod tests {
             result.unwrap_err(),
             TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
         );
+    }
+
+    #[test]
+    fn test_create_token_off_by_one_rejected_post_moderato() {
+        // Test the off-by-one bug fix: using token_id as quote token should be rejected post-Moderato
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let sender = Address::random();
+        initialize_linking_usd(&mut storage, sender).unwrap();
+
+        let mut factory = TIP20Factory::new(&mut storage);
+        factory
+            .initialize()
+            .expect("Factory initialization should succeed");
+
+        // Get the current token_id (should be 1)
+        let current_token_id = factory.token_id_counter().unwrap();
+        assert_eq!(current_token_id, U256::from(1));
+
+        // Try to use token_id 1 (the token being created) as the quote token
+        // This should be rejected because token 1 doesn't exist yet
+        let same_id_quote_token = token_id_to_address(1);
+        let call = ITIP20Factory::createTokenCall {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            currency: "USD".to_string(),
+            quoteToken: same_id_quote_token,
+            admin: sender,
+        };
+
+        let result = factory.create_token(sender, call);
+        // Should fail with InvalidQuoteToken error because token 1 doesn't exist yet (off-by-one)
+        assert_eq!(
+            result.unwrap_err(),
+            TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
+        );
+    }
+
+    #[test]
+    fn test_create_token_future_quote_token_pre_moderato() {
+        // Test that pre-Moderato SHOULD still validate that quote tokens exist
+        // Using a TIP20 address with ID > current token_id should fail (not yet created)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let sender = Address::random();
+        initialize_linking_usd(&mut storage, sender).unwrap();
+
+        let mut factory = TIP20Factory::new(&mut storage);
+        factory
+            .initialize()
+            .expect("Factory initialization should succeed");
+
+        // Current token_id should be 1
+        assert_eq!(factory.token_id_counter().unwrap(), U256::from(1));
+
+        // Try to use token ID 5 as quote token (doesn't exist yet)
+        // This should fail factory validation even pre-Moderato
+        let future_quote_token = token_id_to_address(5);
+        let call = ITIP20Factory::createTokenCall {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            currency: "EUR".to_string(), // Use non-USD to avoid TIP20Token::initialize validation
+            quoteToken: future_quote_token,
+            admin: sender,
+        };
+
+        let result = factory.create_token(sender, call);
+
+        // This should fail with InvalidQuoteToken from factory validation
+        // Currently this test will PASS (not fail) because factory validation is skipped pre-Moderato
+        assert!(
+            result.is_err(),
+            "Should fail when using a not-yet-created token as quote token"
+        );
+        if let Err(e) = result {
+            assert_eq!(
+                e,
+                TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token()),
+                "Should fail with InvalidQuoteToken from factory validation"
+            );
+        }
+    }
+
+    #[test]
+    fn test_create_token_off_by_one_allowed_pre_moderato() {
+        // Test the off-by-one bug: using token_id as quote token is allowed pre-Moderato (buggy behavior)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let sender = Address::random();
+        initialize_linking_usd(&mut storage, sender).unwrap();
+
+        let mut factory = TIP20Factory::new(&mut storage);
+        factory
+            .initialize()
+            .expect("Factory initialization should succeed");
+
+        // Get the current token_id (should be 1)
+        let current_token_id = factory.token_id_counter().unwrap();
+        assert_eq!(current_token_id, U256::from(1));
+
+        // Try to use token_id 1 (the token being created) as the quote token
+        // Pre-Moderato, the old buggy validation (> instead of >=) allows this to pass
+        let same_id_quote_token = token_id_to_address(1);
+        let call = ITIP20Factory::createTokenCall {
+            name: "Test Token".to_string(),
+            symbol: "TEST".to_string(),
+            currency: "USD".to_string(),
+            quoteToken: same_id_quote_token,
+            admin: sender,
+        };
+
+        let result = factory.create_token(sender, call);
+
+        // Pre-Moderato: the old buggy validation (> token_id) allows quote_token_id == token_id
+        // The operation may succeed or fail with a different error later, but it should NOT
+        // fail with InvalidQuoteToken from validation
+        match result {
+            Ok(_) => {
+                // Operation succeeded - the buggy validation allowed it through
+            }
+            Err(e) => {
+                // If it fails, it should NOT be due to InvalidQuoteToken validation
+                assert!(
+                    !matches!(
+                        e,
+                        TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(_))
+                    ),
+                    "Pre-Moderato should not reject with InvalidQuoteToken when quote_token_id == token_id (buggy > logic)"
+                );
+            }
+        }
     }
 }

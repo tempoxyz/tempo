@@ -1,10 +1,12 @@
 //! Tempo EVM implementation.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod assemble;
-use alloy_consensus::BlockHeader as _;
+use alloy_consensus::{BlockHeader as _, Transaction};
+use alloy_primitives::Address;
+use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
 mod block;
 mod context;
@@ -27,14 +29,17 @@ use reth_evm::{
 };
 use reth_primitives_traits::{SealedBlock, SealedHeader, SignedTransaction};
 use tempo_payload_types::TempoExecutionData;
-use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
+use tempo_primitives::{
+    Block, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
+    subblock::PartialValidatorKey,
+};
 
 use crate::{block::TempoBlockExecutor, evm::TempoEvm};
 use reth_evm_ethereum::EthEvmConfig;
-use tempo_chainspec::TempoChainSpec;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_revm::evm::TempoContext;
 
-pub use tempo_revm::TempoBlockEnv;
+pub use tempo_revm::{TempoBlockEnv, TempoStateAccess};
 
 /// Tempo-related EVM configuration.
 #[derive(Debug, Clone)]
@@ -111,17 +116,23 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
-        Ok(EvmEnv::for_eth_block(
+        let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_block(
             header,
             self.chain_spec(),
             self.chain_spec().chain().id(),
             self.chain_spec()
                 .blob_params_at_timestamp(header.timestamp()),
-        )
-        .map_block_env(|inner| TempoBlockEnv {
-            inner,
-            timestamp_millis_part: header.timestamp_millis_part,
-        }))
+        );
+
+        let spec = self.chain_spec().tempo_hardfork_at(header.timestamp());
+
+        Ok(EvmEnv {
+            cfg_env: cfg_env.with_spec(spec),
+            block_env: TempoBlockEnv {
+                inner: block_env,
+                timestamp_millis_part: header.timestamp_millis_part,
+            },
+        })
     }
 
     fn next_evm_env(
@@ -129,7 +140,7 @@ impl ConfigureEvm for TempoEvmConfig {
         parent: &TempoHeader,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        Ok(EvmEnv::for_eth_next_block(
+        let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_next_block(
             parent,
             NextEvmEnvAttributes {
                 timestamp: attributes.timestamp,
@@ -144,17 +155,41 @@ impl ConfigureEvm for TempoEvmConfig {
             self.chain_spec().chain().id(),
             self.chain_spec()
                 .blob_params_at_timestamp(attributes.timestamp),
-        )
-        .map_block_env(|inner| TempoBlockEnv {
-            inner,
-            timestamp_millis_part: attributes.timestamp_millis_part,
-        }))
+        );
+
+        let spec = self.chain_spec().tempo_hardfork_at(attributes.timestamp);
+
+        Ok(EvmEnv {
+            cfg_env: cfg_env.with_spec(spec),
+            block_env: TempoBlockEnv {
+                inner: block_env,
+                timestamp_millis_part: attributes.timestamp_millis_part,
+            },
+        })
     }
 
     fn context_for_block<'a>(
         &self,
         block: &'a SealedBlock<Block>,
     ) -> Result<TempoBlockExecutionCtx<'a>, Self::Error> {
+        // Decode validator -> fee_recipient mapping from the subblock metadata system transaction.
+        let subblock_fee_recipients = block
+            .body()
+            .transactions
+            .iter()
+            .rev()
+            .filter(|tx| (*tx).to() == Some(Address::ZERO))
+            .find_map(|tx| Vec::<SubBlockMetadata>::decode(&mut tx.input().as_ref()).ok())
+            .ok_or(TempoEvmError::NoSubblockMetadataFound)?
+            .into_iter()
+            .map(|metadata| {
+                (
+                    PartialValidatorKey::from_slice(&metadata.validator[..15]),
+                    metadata.fee_recipient,
+                )
+            })
+            .collect();
+
         Ok(TempoBlockExecutionCtx {
             inner: EthBlockExecutionCtx {
                 parent_hash: block.header().parent_hash(),
@@ -169,6 +204,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
             // Not available when we only have a block body.
             validator_set: None,
+            subblock_fee_recipients,
         })
     }
 
@@ -190,6 +226,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
             // Fine to not validate during block building.
             validator_set: None,
+            subblock_fee_recipients: attributes.subblock_fee_recipients,
         })
     }
 }

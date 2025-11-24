@@ -44,7 +44,6 @@ sol! {
         error OnlySystemContract();
         error InvalidToken();
         error PoolDoesNotExist();
-        error InsufficientLiquidity();
         error InsufficientFeeTokenBalance();
         error InternalError();
         error CannotChangeWithinBlock();
@@ -148,11 +147,6 @@ impl FeeManagerError {
     /// Creates an error when pool does not exist.
     pub const fn pool_does_not_exist() -> Self {
         Self::PoolDoesNotExist(IFeeManager::PoolDoesNotExist {})
-    }
-
-    /// Creates an error for insufficient liquidity.
-    pub const fn insufficient_liquidity() -> Self {
-        Self::InsufficientLiquidity(IFeeManager::InsufficientLiquidity {})
     }
 
     /// Creates an error for insufficient fee token balance.

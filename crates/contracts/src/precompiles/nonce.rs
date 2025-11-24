@@ -1,4 +1,4 @@
-pub use INonce::INonceErrors as NonceError;
+pub use INonce::{INonceErrors as NonceError, INonceEvents as NonceEvent};
 
 use alloy::sol;
 

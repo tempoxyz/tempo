@@ -1,7 +1,7 @@
 //! Definitions to read and write a tempo consensus configuration.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 use std::{net::SocketAddr, path::Path};
 
@@ -60,9 +60,6 @@ pub struct Config {
     /// Address on which the node listens. Supply `0.0.0.0:<port>` to listen
     /// on all addresses.
     pub listen_addr: SocketAddr,
-
-    /// Address on which other nodes can reach this node.
-    pub dialable_addr: SocketAddr,
 
     pub metrics_port: Option<u16>,
 
@@ -136,7 +133,6 @@ struct DeserConfig {
     polynomial: Vec<u8>,
 
     listen_addr: SocketAddr,
-    dialable_addr: SocketAddr,
 
     metrics_port: Option<u16>,
 
@@ -177,7 +173,6 @@ impl TryFrom<DeserConfig> for Config {
             share,
             polynomial,
             listen_addr,
-            dialable_addr,
             metrics_port,
             p2p,
             storage_directory,
@@ -199,7 +194,6 @@ impl TryFrom<DeserConfig> for Config {
             polynomial: Poly::decode_cfg(&polynomial[..], &(threshold as usize))
                 .map_err(Error::Polynomial)?,
             listen_addr,
-            dialable_addr,
             metrics_port,
             p2p,
             storage_directory,

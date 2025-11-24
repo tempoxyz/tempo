@@ -8,7 +8,7 @@ use crate::{
     Precompile, input_cost, mutate, mutate_void,
     stablecoin_exchange::{IStablecoinExchange, StablecoinExchange},
     storage::PrecompileStorageProvider,
-    view,
+    unknown_selector, view,
 };
 
 impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> {
@@ -20,10 +20,10 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".to_string())
+                PrecompileError::Other("Invalid input: missing function selector".into())
             })?
             .try_into()
-            .map_err(|_| PrecompileError::Other("Invalid function selector length".to_string()))?;
+            .map_err(|_| PrecompileError::Other("Invalid function selector length".into()))?;
 
         let result = match selector {
             IStablecoinExchange::placeCall::SELECTOR => {
@@ -164,14 +164,10 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                 })
             }
             IStablecoinExchange::MIN_PRICECall::SELECTOR => {
-                view::<IStablecoinExchange::MIN_PRICECall>(calldata, |_call| {
-                    Ok(crate::stablecoin_exchange::MIN_PRICE)
-                })
+                view::<IStablecoinExchange::MIN_PRICECall>(calldata, |_call| Ok(self.min_price()))
             }
             IStablecoinExchange::MAX_PRICECall::SELECTOR => {
-                view::<IStablecoinExchange::MAX_PRICECall>(calldata, |_call| {
-                    Ok(crate::stablecoin_exchange::MAX_PRICE)
-                })
+                view::<IStablecoinExchange::MAX_PRICECall>(calldata, |_call| Ok(self.max_price()))
             }
             IStablecoinExchange::tickToPriceCall::SELECTOR => {
                 view::<IStablecoinExchange::tickToPriceCall>(calldata, |call| {
@@ -180,13 +176,11 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
             }
             IStablecoinExchange::priceToTickCall::SELECTOR => {
                 view::<IStablecoinExchange::priceToTickCall>(calldata, |call| {
-                    Ok(crate::stablecoin_exchange::price_to_tick(call.price))
+                    self.price_to_tick(call.price)
                 })
             }
 
-            _ => Err(PrecompileError::Other(
-                "Unknown function selector".to_string(),
-            )),
+            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
         result.map(|mut res| {
@@ -198,18 +192,22 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::{
         Precompile,
         linking_usd::{LinkingUSD, TRANSFER_ROLE},
         stablecoin_exchange::{IStablecoinExchange, MIN_ORDER_AMOUNT, StablecoinExchange},
-        storage::{PrecompileStorageProvider, hashmap::HashMapStorageProvider},
+        storage::{ContractStorage, PrecompileStorageProvider, hashmap::HashMapStorageProvider},
+        test_util::{assert_full_coverage, check_selector_coverage},
         tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     };
     use alloy::{
         primitives::{Address, Bytes, U256},
         sol_types::{SolCall, SolValue},
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::IStablecoinExchange::IStablecoinExchangeCalls;
 
     /// Setup a basic exchange with tokens and liquidity for swap tests
     fn setup_exchange_with_liquidity<S: PrecompileStorageProvider>(
@@ -226,11 +224,12 @@ mod tests {
         let mut quote = LinkingUSD::new(exchange.storage);
         quote.initialize(admin).unwrap();
 
-        let mut quote_roles = quote.get_roles_contract();
-        quote_roles
+        quote
+            .token
             .grant_role_internal(admin, *ISSUER_ROLE)
             .unwrap();
-        quote_roles
+        quote
+            .token
             .grant_role_internal(user, *TRANSFER_ROLE)
             .unwrap();
 
@@ -255,12 +254,12 @@ mod tests {
             .unwrap();
 
         // Initialize base token
-        let mut base = TIP20Token::new(1, quote.token.storage);
-        base.initialize("BASE", "BASE", "USD", quote.token.token_address, admin)
+        let quote_address = quote.token.address();
+        let mut base = TIP20Token::new(1, quote.token.storage());
+        base.initialize("BASE", "BASE", "USD", quote_address, admin)
             .unwrap();
 
-        let mut base_roles = base.get_roles_contract();
-        base_roles.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
+        base.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
 
         base.approve(
             user,
@@ -280,8 +279,8 @@ mod tests {
         )
         .unwrap();
 
-        let base_token = base.token_address;
-        let quote_token = quote.token.token_address;
+        let base_token = base.address();
+        let quote_token = quote.token.address();
 
         // Create pair and add liquidity
         exchange.create_pair(base_token).unwrap();
@@ -360,6 +359,94 @@ mod tests {
         // Should dispatch to balance_of function and succeed (returns 0 for uninitialized)
         let result = exchange.call(&Bytes::from(calldata), sender);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_min_price_pre_moderato() {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize().unwrap();
+
+        let sender = Address::ZERO;
+        let call = IStablecoinExchange::MIN_PRICECall {};
+        let calldata = call.abi_encode();
+
+        let result = exchange.call(&Bytes::from(calldata), sender);
+        assert!(result.is_ok());
+
+        let output = result.unwrap().bytes;
+        let returned_value = u32::abi_decode(&output).unwrap();
+
+        assert_eq!(
+            returned_value, 67_232,
+            "Pre-moderato MIN_PRICE should be 67_232"
+        );
+    }
+
+    #[test]
+    fn test_min_price_post_moderato() {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize().unwrap();
+
+        let sender = Address::ZERO;
+        let call = IStablecoinExchange::MIN_PRICECall {};
+        let calldata = call.abi_encode();
+
+        let result = exchange.call(&Bytes::from(calldata), sender);
+        assert!(result.is_ok());
+
+        let output = result.unwrap().bytes;
+        let returned_value = u32::abi_decode(&output).unwrap();
+
+        assert_eq!(
+            returned_value, 98_000,
+            "Post-moderato MIN_PRICE should be 98_000"
+        );
+    }
+
+    #[test]
+    fn test_max_price_pre_moderato() {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize().unwrap();
+
+        let sender = Address::ZERO;
+        let call = IStablecoinExchange::MAX_PRICECall {};
+        let calldata = call.abi_encode();
+
+        let result = exchange.call(&Bytes::from(calldata), sender);
+        assert!(result.is_ok());
+
+        let output = result.unwrap().bytes;
+        let returned_value = u32::abi_decode(&output).unwrap();
+
+        assert_eq!(
+            returned_value, 132_767,
+            "Pre-moderato MAX_PRICE should be 132_767"
+        );
+    }
+
+    #[test]
+    fn test_max_price_post_moderato() {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize().unwrap();
+
+        let sender = Address::ZERO;
+        let call = IStablecoinExchange::MAX_PRICECall {};
+        let calldata = call.abi_encode();
+
+        let result = exchange.call(&Bytes::from(calldata), sender);
+        assert!(result.is_ok());
+
+        let output = result.unwrap().bytes;
+        let returned_value = u32::abi_decode(&output).unwrap();
+
+        assert_eq!(
+            returned_value, 102_000,
+            "Post-moderato MAX_PRICE should be 102_000"
+        );
     }
 
     #[test]
@@ -558,17 +645,19 @@ mod tests {
 
     #[test]
     fn test_invalid_selector() {
-        let mut storage = HashMapStorageProvider::new(1);
+        use tempo_chainspec::hardfork::TempoHardfork;
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize().unwrap();
 
         let sender = Address::from([1u8; 20]);
 
-        // Use an invalid selector that doesn't match any function
+        // Use an invalid selector that doesn't match any function - should return Ok with reverted status
         let calldata = Bytes::from([0x12, 0x34, 0x56, 0x78]);
 
         let result = exchange.call(&calldata, sender);
-        assert!(matches!(result, Err(PrecompileError::Other(_))));
+        assert!(result.is_ok());
+        assert!(result.unwrap().reverted);
     }
 
     #[test]
@@ -584,5 +673,20 @@ mod tests {
 
         let result = exchange.call(&calldata, sender);
         assert!(matches!(result, Err(PrecompileError::Other(_))));
+    }
+
+    #[test]
+    fn stablecoin_exchange_test_selector_coverage() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+
+        let unsupported = check_selector_coverage(
+            &mut exchange,
+            IStablecoinExchangeCalls::SELECTORS,
+            "IStablecoinExchange",
+            IStablecoinExchangeCalls::name_by_selector,
+        );
+
+        assert_full_coverage([unsupported]);
     }
 }

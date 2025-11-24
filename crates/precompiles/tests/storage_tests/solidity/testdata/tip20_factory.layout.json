@@ -1,0 +1,26 @@
+{
+  "contracts": {
+    "tests/storage_tests/solidity/testdata/tip20_factory.sol:TIP20Factory": {
+      "storage-layout": {
+        "storage": [
+          {
+            "astId": 5,
+            "contract": "tests/storage_tests/solidity/testdata/tip20_factory.sol:TIP20Factory",
+            "label": "tokenIdCounter",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_uint256"
+          }
+        ],
+        "types": {
+          "t_uint256": {
+            "encoding": "inplace",
+            "label": "uint256",
+            "numberOfBytes": "32"
+          }
+        }
+      }
+    }
+  },
+  "version": "0.8.30+commit.73712a01.Darwin.appleclang"
+}

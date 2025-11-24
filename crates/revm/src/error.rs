@@ -123,6 +123,14 @@ pub enum TempoInvalidTransaction {
     /// Invalid fee token.
     #[error("invalid fee token: {0}")]
     InvalidFeeToken(Address),
+
+    /// Value transfer not allowed.
+    #[error("value transfer not allowed")]
+    ValueTransferNotAllowed,
+
+    /// Value transfer in AA transaction not allowed.
+    #[error("value transfer in AA transaction not allowed")]
+    ValueTransferNotAllowedInAATx,
 }
 
 impl InvalidTxError for TempoInvalidTransaction {
