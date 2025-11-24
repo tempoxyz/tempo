@@ -94,10 +94,10 @@ pub trait TempoStateAccess<T> {
         &mut self,
         tx: impl TempoTx,
         fee_payer: Address,
-    ) -> Result<Option<Address>, Self::Error> {
+    ) -> Result<Address, Self::Error> {
         // If there is a fee token explicitly set on the tx type, use that.
         if let Some(fee_token) = tx.fee_token() {
-            return Ok(Some(fee_token));
+            return Ok(fee_token);
         }
 
         // If the fee payer is also the msg.sender and the transaction is a direct call (not AA),
@@ -110,18 +110,18 @@ pub trait TempoStateAccess<T> {
             if kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
                 && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
             {
-                return Ok(Some(call.token));
+                return Ok(call.token);
             }
 
             // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin Exchange,
             // use the input token as the fee token (the token that will be pulled from the user)
             if kind.to() == Some(&STABLECOIN_EXCHANGE_ADDRESS) {
                 if let Ok(call) = IStablecoinExchange::swapExactAmountInCall::abi_decode(input) {
-                    return Ok(Some(call.tokenIn));
+                    return Ok(call.tokenIn);
                 } else if let Ok(call) =
                     IStablecoinExchange::swapExactAmountOutCall::abi_decode(input)
                 {
-                    return Ok(Some(call.tokenIn));
+                    return Ok(call.tokenIn);
                 }
             }
         }
@@ -134,7 +134,7 @@ pub trait TempoStateAccess<T> {
             .into_address();
 
         if !stored_user_token.is_zero() {
-            return Ok(Some(stored_user_token));
+            return Ok(stored_user_token);
         }
 
         // If tx.to() is a TIP-20 token, use that token as the fee token
@@ -142,35 +142,7 @@ pub trait TempoStateAccess<T> {
             && tx.calls().all(|(kind, _)| kind.to() == Some(&to))
             && self.is_valid_fee_token(to)?
         {
-            return Ok(Some(to));
-        }
-
-        // TODO: return DEFAULT_FEE_TOKEN
-        Ok(None)
-    }
-
-    // FIXME: remove this fucntion and call the above function directly
-    /// Resolves fee token for the given transaction. Same as `user_or_tx_fee_token`, but also
-    /// falls back to the validator fee token preference.
-    fn get_fee_token(
-        &mut self,
-        tx: impl TempoTx,
-        validator: Address,
-        fee_payer: Address,
-    ) -> Result<Address, Self::Error> {
-        // First check transaction or user preference
-        if let Some(fee_token) = self.user_or_tx_fee_token(tx, fee_payer)? {
-            return Ok(fee_token);
-        }
-
-        // Otherwise fall back to the validator fee token preference
-        let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
-        let validator_fee_token = self
-            .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
-            .into_address();
-
-        if !validator_fee_token.is_zero() {
-            return Ok(validator_fee_token);
+            return Ok(to);
         }
 
         Ok(DEFAULT_FEE_TOKEN)
