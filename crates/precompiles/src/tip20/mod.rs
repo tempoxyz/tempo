@@ -2097,13 +2097,7 @@ pub(crate) mod tests {
 
         initialize_path_usd(&mut storage, admin)?;
         let mut usd_token1 = TIP20Token::new(1, &mut storage);
-        usd_token1.initialize(
-            "USD Token",
-            "USDT",
-            USD_CURRENCY,
-            PATH_USD_ADDRESS,
-            admin,
-        )?;
+        usd_token1.initialize("USD Token", "USDT", USD_CURRENCY, PATH_USD_ADDRESS, admin)?;
 
         // USD token with USD token as quote
         let usd_token1_address = token_id_to_address(1);
@@ -2160,13 +2154,7 @@ pub(crate) mod tests {
 
         // Create a new USD token
         let mut usd_token = TIP20Token::new(2, &mut storage);
-        usd_token.initialize(
-            "USD Token",
-            "USDT",
-            USD_CURRENCY,
-            PATH_USD_ADDRESS,
-            admin,
-        )?;
+        usd_token.initialize("USD Token", "USDT", USD_CURRENCY, PATH_USD_ADDRESS, admin)?;
 
         // Try to update the USD token's quote token to the arbitrary currency token, this should fail
         let token_1_address = token_id_to_address(1);

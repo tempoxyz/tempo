@@ -389,8 +389,7 @@ mod tests {
         let recipient = Address::random();
         let amount = U256::from(1000);
 
-        let balance_before =
-            path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+        let balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
         path_usd.mint(
             admin,
@@ -516,8 +515,7 @@ mod tests {
             },
         )?;
 
-        let from_balance_before =
-            path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
+        let from_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
 
         let to_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
 
@@ -559,9 +557,7 @@ mod tests {
 
         path_usd.initialize(admin)?;
         path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        path_usd
-            .token
-            .grant_role_internal(sender, *TRANSFER_ROLE)?;
+        path_usd.token.grant_role_internal(sender, *TRANSFER_ROLE)?;
 
         path_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
@@ -636,16 +632,13 @@ mod tests {
 
         path_usd.initialize(admin)?;
         path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        path_usd
-            .token
-            .grant_role_internal(from, *TRANSFER_ROLE)?;
+        path_usd.token.grant_role_internal(from, *TRANSFER_ROLE)?;
 
         path_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
         path_usd.approve(from, ITIP20::approveCall { spender, amount })?;
 
-        let from_balance_before =
-            path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
+        let from_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
 
         let to_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
 
@@ -692,8 +685,7 @@ mod tests {
 
         path_usd.approve(from, ITIP20::approveCall { spender, amount })?;
 
-        let result =
-            path_usd.transfer_from(spender, ITIP20::transferFromCall { from, to, amount });
+        let result = path_usd.transfer_from(spender, ITIP20::transferFromCall { from, to, amount });
 
         assert_eq!(
             result.unwrap_err(),
@@ -715,9 +707,7 @@ mod tests {
 
         path_usd.initialize(admin)?;
         path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        path_usd
-            .token
-            .grant_role_internal(sender, *TRANSFER_ROLE)?;
+        path_usd.token.grant_role_internal(sender, *TRANSFER_ROLE)?;
 
         path_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
@@ -810,8 +800,7 @@ mod tests {
             },
         )?;
 
-        let from_balance_before =
-            path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
+        let from_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
         let to_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
         let allowance_before = path_usd.allowance(ITIP20::allowanceCall {
             owner: from,
@@ -856,16 +845,13 @@ mod tests {
 
         path_usd.initialize(admin)?;
         path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        path_usd
-            .token
-            .grant_role_internal(from, *TRANSFER_ROLE)?;
+        path_usd.token.grant_role_internal(from, *TRANSFER_ROLE)?;
 
         path_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
         path_usd.approve(from, ITIP20::approveCall { spender, amount })?;
 
-        let from_balance_before =
-            path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
+        let from_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
         let to_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
         let allowance_before = path_usd.allowance(ITIP20::allowanceCall {
             owner: from,
@@ -918,8 +904,7 @@ mod tests {
 
         path_usd.approve(from, ITIP20::approveCall { spender, amount })?;
 
-        let from_balance_before =
-            path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
+        let from_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
         let to_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
         let allowance_before = path_usd.allowance(ITIP20::allowanceCall {
             owner: from,
@@ -975,9 +960,7 @@ mod tests {
         assert!(path_usd.paused().unwrap());
 
         // Unpause the token
-        path_usd
-            .unpause(unpauser, ITIP20::unpauseCall {})
-            .unwrap();
+        path_usd.unpause(unpauser, ITIP20::unpauseCall {}).unwrap();
         assert!(!path_usd.paused().unwrap());
         Ok(())
     }
