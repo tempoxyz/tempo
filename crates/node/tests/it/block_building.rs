@@ -14,7 +14,7 @@ use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{IRolesAuth, ITIP20, ITIP20Factory};
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     tip20::{ISSUER_ROLE, token_id_to_address},
 };
 use tempo_primitives::TempoTxEnvelope;
@@ -57,7 +57,7 @@ where
         "Test".to_string(),
         "TEST".to_string(),
         "USD".to_string(),
-        LINKING_USD_ADDRESS,
+        PATH_USD_ADDRESS,
         sender_address,
     );
     let create_bytes = sign_and_encode(create_tx.into_transaction_request(), 0).await?;

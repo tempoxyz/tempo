@@ -467,7 +467,7 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
         .wallet(wallet)
         .connect_http(http_url.clone());
 
-    // Setup tokens: LinkingUSD (token_id=0) <- USDC (token_id=2) and LinkingUSD <- EURC (token_id=3)
+    // Setup tokens: PathUSD (token_id=0) <- USDC (token_id=2) and PathUSD <- EURC (token_id=3)
     let linking_usd = ITIP20Instance::new(token_id_to_address(0), provider.clone());
     let usdc = setup_test_token(provider.clone(), caller).await?; // This will be token_id=2
     let eurc = setup_test_token(provider.clone(), caller).await?; // This will be token_id=3
@@ -540,14 +540,14 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
     let alice_exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, alice_provider);
     let liquidity_amount = 5_000_000_000u128;
 
-    // For USDC -> LinkingUSD: need bid on USDC (buying USDC with LinkingUSD)
+    // For USDC -> PathUSD: need bid on USDC (buying USDC with PathUSD)
     let tx = alice_exchange
         .place(*usdc.address(), liquidity_amount, true, 0)
         .send()
         .await?;
     tx.get_receipt().await?;
 
-    // For LinkingUSD -> EURC: need ask on EURC (selling EURC for LinkingUSD)
+    // For PathUSD -> EURC: need ask on EURC (selling EURC for PathUSD)
     let tx = alice_exchange
         .place(*eurc.address(), liquidity_amount, false, 0)
         .send()
@@ -577,7 +577,7 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
         .call()
         .await?;
 
-    // Execute multi-hop swap: USDC -> LinkingUSD -> EURC
+    // Execute multi-hop swap: USDC -> PathUSD -> EURC
     let amount_in = 1_000_000_000u128;
     let amount_out = bob_exchange
         .quoteSwapExactAmountIn(*usdc.address(), *eurc.address(), amount_in)
@@ -616,22 +616,22 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
     // Verify Bob's linking USD balance has not changed
     assert_eq!(
         bob_linking_usd_wallet_before, bob_linking_usd_wallet_after,
-        "Bob's LinkingUSD wallet balance should not change (transitory)"
+        "Bob's PathUSD wallet balance should not change (transitory)"
     );
 
     assert_eq!(
         bob_linking_usd_wallet_before - bob_linking_usd_wallet_after,
         U256::ZERO,
-        "Bob should have ZERO LinkingUSD in wallet (transitory)"
+        "Bob should have ZERO PathUSD in wallet (transitory)"
     );
 
     assert_eq!(
         bob_linking_usd_exchange_before, bob_linking_usd_exchange_after,
-        "Bob's LinkingUSD exchange balance should not change (transitory)"
+        "Bob's PathUSD exchange balance should not change (transitory)"
     );
     assert_eq!(
         bob_linking_usd_exchange_after, 0,
-        "Bob should have ZERO LinkingUSD on exchange (transitory)"
+        "Bob should have ZERO PathUSD on exchange (transitory)"
     );
 
     Ok(())
