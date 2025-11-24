@@ -2252,7 +2252,10 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     println!("\n=== Testing AA Transaction with Key Authorization and P256 Spending Limits ===\n");
 
     // Setup test node
-    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let mut setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_with_node_access()
+        .await?;
 
     let http_url = setup.node.rpc_url();
 
@@ -2695,7 +2698,15 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
 
     reth_tracing::init_test_tracing();
 
-    let (mut setup, provider, root_signer, root_addr) = setup_test_with_funded_account().await?;
+    let mut setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_with_node_access()
+        .await?;
+    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root_signer.address();
+    let provider = ProviderBuilder::new()
+        .wallet(root_signer.clone())
+        .connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
     const ACCOUNT_KEYCHAIN_ADDRESS: Address =

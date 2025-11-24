@@ -11755,6 +11755,7 @@ dependencies = [
  "reth-provider",
  "reth-storage-api",
  "reth-transaction-pool",
+ "tempo-chainspec",
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",

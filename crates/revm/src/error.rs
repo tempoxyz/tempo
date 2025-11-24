@@ -141,6 +141,10 @@ pub enum TempoInvalidTransaction {
         /// Specific reason for failure.
         reason: String,
     },
+
+    /// Keychain operations are only supported after Allegretto.
+    #[error("keychain operations are only supported after Allegretto")]
+    KeychainOpBeforeAllegretto,
 }
 
 impl InvalidTxError for TempoInvalidTransaction {

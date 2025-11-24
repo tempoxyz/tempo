@@ -928,6 +928,13 @@ where
             // Validate time window for AA transactions
             let block_timestamp = evm.ctx_ref().block().timestamp().saturating_to();
             validate_time_window(aa_env.valid_after, aa_env.valid_before, block_timestamp)?;
+
+            // Validate that keychain operations are only supported after Allegretto
+            if (aa_env.key_authorization.is_some() || aa_env.signature.is_keychain())
+                && !cfg.spec.is_allegretto()
+            {
+                return Err(TempoInvalidTransaction::KeychainOpBeforeAllegretto.into());
+            }
         }
 
         Ok(())
