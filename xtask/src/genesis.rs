@@ -174,7 +174,7 @@ impl GenesisArgs {
         validators.push(self.coinbase);
 
         println!("Initializing fee manager");
-        initialize_fee_manager(alpha_token_address, addresses.clone(), validators, &mut evm);
+        initialize_fee_manager(alpha_token_address, addresses.clone(), &mut evm);
 
         println!("Initializing stablecoin exchange");
         initialize_stablecoin_exchange(&mut evm)?;
@@ -439,10 +439,8 @@ fn initialize_tip20_rewards_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> ey
 fn initialize_fee_manager(
     default_fee_address: Address,
     initial_accounts: Vec<Address>,
-    validators: Vec<Address>,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) {
-    // Update the beneficiary since the validator cant set the validator fee token for themselves
     let ctx = evm.ctx_mut();
     let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
     let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
@@ -460,20 +458,6 @@ fn initialize_fee_manager(
                 },
             )
             .expect("Could not set fee token");
-    }
-
-    // Set validator fee tokens to path USD
-    for validator in validators {
-        fee_manager
-            .set_validator_token(
-                validator,
-                IFeeManager::setValidatorTokenCall {
-                    token: PATH_USD_ADDRESS,
-                },
-                // use random address to avoid `CannotChangeWithinBlock` error
-                Address::random(),
-            )
-            .expect("Could not set validator fee token");
     }
 }
 
