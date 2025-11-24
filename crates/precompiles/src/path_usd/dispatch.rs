@@ -8,7 +8,7 @@ use crate::{
 
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
-use tempo_contracts::precompiles::{ILinkingUSD, TIP20Error};
+use tempo_contracts::precompiles::{IPathUSD, TIP20Error};
 
 impl<S: PrecompileStorageProvider> Precompile for PathUSD<'_, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -69,11 +69,11 @@ impl<S: PrecompileStorageProvider> Precompile for PathUSD<'_, S> {
             ITIP20::BURN_BLOCKED_ROLECall::SELECTOR => {
                 view::<ITIP20::BURN_BLOCKED_ROLECall>(calldata, |_| Ok(Self::burn_blocked_role()))
             }
-            ILinkingUSD::TRANSFER_ROLECall::SELECTOR => {
-                view::<ILinkingUSD::TRANSFER_ROLECall>(calldata, |_| Ok(Self::transfer_role()))
+            IPathUSD::TRANSFER_ROLECall::SELECTOR => {
+                view::<IPathUSD::TRANSFER_ROLECall>(calldata, |_| Ok(Self::transfer_role()))
             }
-            ILinkingUSD::RECEIVE_WITH_MEMO_ROLECall::SELECTOR => {
-                view::<ILinkingUSD::RECEIVE_WITH_MEMO_ROLECall>(calldata, |_| {
+            IPathUSD::RECEIVE_WITH_MEMO_ROLECall::SELECTOR => {
+                view::<IPathUSD::RECEIVE_WITH_MEMO_ROLECall>(calldata, |_| {
                     Ok(Self::receive_with_memo_role())
                 })
             }
@@ -132,7 +132,7 @@ impl<S: PrecompileStorageProvider> Precompile for PathUSD<'_, S> {
                 })
             }
 
-            // Transfer functions that are disabled for LinkingUSD
+            // Transfer functions that are disabled for PathUSD
             ITIP20::transferCall::SELECTOR => {
                 mutate::<ITIP20::transferCall>(calldata, msg_sender, |sender, call| {
                     self.transfer(sender, call)

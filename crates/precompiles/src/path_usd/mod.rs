@@ -8,7 +8,7 @@ use crate::{
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use std::sync::LazyLock;
-pub use tempo_contracts::precompiles::ILinkingUSD;
+pub use tempo_contracts::precompiles::IPathUSD;
 use tempo_contracts::precompiles::TIP20Error;
 
 pub static TRANSFER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"TRANSFER_ROLE"));
@@ -247,7 +247,7 @@ impl<'a, S: PrecompileStorageProvider> PathUSD<'a, S> {
 
     /// Returns the TRANSFER_ROLE constant
     ///
-    /// This role identifier grants permission to transfer linkingUSD tokens.
+    /// This role identifier grants permission to transfer pathUSD tokens.
     /// The role is computed as `keccak256("TRANSFER_ROLE")`.
     pub fn transfer_role() -> B256 {
         *TRANSFER_ROLE
@@ -255,7 +255,7 @@ impl<'a, S: PrecompileStorageProvider> PathUSD<'a, S> {
 
     /// Returns the RECEIVE_WITH_MEMO_ROLE constant
     ///
-    /// This role identifier grants permission to receive linkingUSD tokens.
+    /// This role identifier grants permission to receive pathUSD tokens.
     /// The role is computed as `keccak256("RECEIVE_WITH_MEMO_ROLE")`.
     pub fn receive_with_memo_role() -> B256 {
         *RECEIVE_WITH_MEMO_ROLE
@@ -299,8 +299,19 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let (mut path_usd, _admin) = transfer_test_setup(&mut storage);
 
-        assert_eq!(path_usd.name()?, "linkingUSD");
-        assert_eq!(path_usd.symbol()?, "linkingUSD");
+        assert_eq!(path_usd.name()?, NAME_PRE_ALLEGRETTO);
+        assert_eq!(path_usd.symbol()?, NAME_PRE_ALLEGRETTO);
+        assert_eq!(path_usd.currency()?, "USD");
+        Ok(())
+    }
+
+    #[test]
+    fn test_metadata_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let (mut path_usd, _admin) = transfer_test_setup(&mut storage);
+
+        assert_eq!(path_usd.name()?, NAME_POST_ALLEGRETTO);
+        assert_eq!(path_usd.symbol()?, NAME_POST_ALLEGRETTO);
         assert_eq!(path_usd.currency()?, "USD");
         Ok(())
     }

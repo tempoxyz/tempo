@@ -316,7 +316,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
         .await?;
 
     // Set different fee tokens for user and validator
-    // Note that the validator defaults to the LinkingUSD
+    // Note that the validator defaults to the PathUSD
     fee_manager
         .setUserToken(*user_fee_token.address())
         .send()

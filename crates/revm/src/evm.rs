@@ -204,7 +204,7 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut tempo_evm = TempoEvmFactory::default().create_evm(db, Default::default());
 
-        // HACK: initialize default fee token and linkingUSD so that fee token validation passes
+        // HACK: initialize default fee token and pathUSD so that fee token validation passes
         let ctx = tempo_evm.ctx_mut();
         let mut storage = EvmPrecompileStorageProvider::new_max_gas(
             EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
