@@ -1679,9 +1679,7 @@ mod tests {
                 limit: U256::from(10000),
             }],
             key_id: address!("0000000000000000000000000000000000000004"),
-            signature: AASignature::Primitive(PrimitiveSignature::Secp256k1(
-                Signature::test_signature(),
-            )),
+            signature: PrimitiveSignature::Secp256k1(Signature::test_signature()),
         };
 
         let tx_with = TxAA {

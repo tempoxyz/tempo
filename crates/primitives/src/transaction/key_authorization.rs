@@ -1,4 +1,5 @@
-use super::{AASignature, SignatureType};
+use super::SignatureType;
+use crate::transaction::PrimitiveSignature;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{Encodable, encode_list, list_length};
@@ -44,7 +45,7 @@ pub struct KeyAuthorization {
     pub key_id: Address,
 
     /// Signature authorizing this key (signed by root key)
-    pub signature: AASignature,
+    pub signature: PrimitiveSignature,
 }
 
 impl KeyAuthorization {

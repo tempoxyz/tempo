@@ -641,20 +641,12 @@ where
             // Validate that the KeyAuthorization is signed by the root account
             let root_account = &tx.caller;
 
-            // Compute the message hash for the KeyAuthorization
-            // Message format: keccak256(rlp([key_type, key_id, expiry, limits]))
-            let auth_message_hash = key_auth.sig_hash();
-
             // Recover the signer of the KeyAuthorization
-            let auth_signer = key_auth
-                .signature
-                .recover_signer(&auth_message_hash)
-                .map_err(|_| {
-                    EVMError::Transaction(TempoInvalidTransaction::AccessKeyAuthorizationFailed {
-                        reason: "Failed to recover signer from KeyAuthorization signature"
-                            .to_string(),
-                    })
-                })?;
+            let auth_signer = key_auth.recover_signer().map_err(|_| {
+                EVMError::Transaction(TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                    reason: "Failed to recover signer from KeyAuthorization signature".to_string(),
+                })
+            })?;
 
             // Verify the KeyAuthorization is signed by the root account
             if auth_signer != *root_account {

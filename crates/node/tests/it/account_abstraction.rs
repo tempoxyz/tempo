@@ -548,7 +548,7 @@ fn create_key_authorization(
         expiry,
         limits: spending_limits,
         key_id: access_key_addr,
-        signature: AASignature::Primitive(PrimitiveSignature::Secp256k1(root_auth_signature)),
+        signature: PrimitiveSignature::Secp256k1(root_auth_signature),
     })
 }
 
@@ -2338,7 +2338,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
         expiry: key_expiry,
         limits: spending_limits,
         key_id: access_key_addr, // Address derived from P256 public key
-        signature: AASignature::Primitive(PrimitiveSignature::Secp256k1(root_auth_signature)), // Root key signature (secp256k1)
+        signature: PrimitiveSignature::Secp256k1(root_auth_signature), // Root key signature (secp256k1)
     };
 
     println!("✓ Key authorization created (expiry: {key_expiry})");
@@ -3586,13 +3586,13 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         expiry: u64::MAX,
         limits: spending_limits.clone(),
         key_id: addr_3,
-        signature: AASignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
+        signature: PrimitiveSignature::P256(P256SignatureWithPreHash {
             r: B256::from_slice(&wrong_sig_bytes[0..32]),
             s: B256::from_slice(&wrong_sig_bytes[32..64]),
             pub_key_x: unauthorized_pub_key_x, // pub key of wrong signer
             pub_key_y: unauthorized_pub_key_y,
             pre_hash: true,
-        })),
+        }),
     };
 
     let invalid_auth_tx = TxAA {
