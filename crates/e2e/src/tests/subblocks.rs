@@ -52,6 +52,8 @@ fn subblocks_are_included() {
             nodes
                 .into_iter()
                 .map(|mut node| {
+                    // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
+                    // to ensure that payload builder has enough time to accumulate subblocks.
                     node.consensus_config.new_payload_wait_time = Duration::from_millis(500);
                     node.start()
                 })
