@@ -173,7 +173,20 @@ where
                     )
                     .await;
 
-                maybe_ceremony.replace(self.start_pre_allegretto_ceremony(ceremony_mux).await);
+                // NOTE: This acts as restart protection: on pre-allegretto,
+                // CURRENT_EPOCH_KEY is updated on the block *last height - 1*.
+                // If a node restarts, it immediately starts a ceremony for
+                // CURRENT_EPOCH_KEY, and then starts processing *last height*.
+                //
+                // This attempt to create a cermony with the same mux subchannel
+                // and fail.
+                if maybe_ceremony.is_none()
+                    || maybe_ceremony
+                        .as_ref()
+                        .is_some_and(|ceremony| ceremony.epoch() != epoch_state.epoch())
+                {
+                    maybe_ceremony.replace(self.start_pre_allegretto_ceremony(ceremony_mux).await);
+                }
 
                 self.validators_metadata
                     .put_sync(
