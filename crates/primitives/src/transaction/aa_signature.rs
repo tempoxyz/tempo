@@ -60,6 +60,7 @@ pub struct WebAuthnSignature {
     all(test, feature = "reth-codec"),
     reth_codecs::add_arbitrary_tests(compact, rlp)
 )]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub enum PrimitiveSignature {
     /// Standard secp256k1 ECDSA signature (65 bytes: r, s, v)
     Secp256k1(Signature),
@@ -322,6 +323,7 @@ impl reth_codecs::Compact for PrimitiveSignature {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact))]
 pub struct KeychainSignature {
     /// Root account address that this transaction is being executed for
     pub user_address: Address,
@@ -434,6 +436,8 @@ impl<'a> arbitrary::Arbitrary<'a> for KeychainSignature {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(untagged, rename_all = "camelCase"))]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
 pub enum AASignature {
     /// Primitive signature types: Secp256k1, P256, or WebAuthn
     Primitive(PrimitiveSignature),
@@ -767,37 +771,6 @@ fn verify_webauthn_data_internal(
     let message_hash = final_hasher.finalize();
 
     Ok(B256::from_slice(&message_hash))
-}
-
-// ============================================================================
-// Arbitrary Implementations for Property Testing
-// ============================================================================
-
-#[cfg(any(test, feature = "arbitrary"))]
-impl<'a> arbitrary::Arbitrary<'a> for PrimitiveSignature {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        // Generate diverse signature types for comprehensive testing
-        let choice = u.int_in_range(0..=2)?;
-        match choice {
-            0 => Ok(Self::Secp256k1(Signature::test_signature())),
-            1 => Ok(Self::P256(u.arbitrary()?)),
-            2 => Ok(Self::WebAuthn(u.arbitrary()?)),
-            _ => unreachable!(),
-        }
-    }
-}
-
-#[cfg(any(test, feature = "arbitrary"))]
-impl<'a> arbitrary::Arbitrary<'a> for AASignature {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        // Generate diverse data across Primitive and Keychain signature types for property-based testing
-        let choice = u.int_in_range(0..=1)?;
-        match choice {
-            0 => Ok(Self::Primitive(u.arbitrary()?)),
-            1 => Ok(Self::Keychain(u.arbitrary()?)),
-            _ => unreachable!(),
-        }
-    }
 }
 
 #[cfg(test)]

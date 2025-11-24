@@ -31,6 +31,7 @@ pub struct TokenLimit {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub struct KeyAuthorization {
     /// Type of key being authorized (Secp256k1, P256, or WebAuthn)
     pub key_type: SignatureType,
@@ -124,24 +125,5 @@ impl reth_primitives_traits::InMemorySize for KeyAuthorization {
         self.limits.iter().map(|_limit| {
             mem::size_of::<Address>() + mem::size_of::<U256>()
         }).sum::<usize>()
-    }
-}
-
-#[cfg(any(test, feature = "arbitrary"))]
-impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        // Generate key_type independently - this is the type of KEY being authorized,
-        // not the type of the authorization signature
-        let key_type = u.arbitrary()?;
-
-        let signature = u.arbitrary()?;
-
-        Ok(Self {
-            key_type,
-            expiry: u.arbitrary()?,
-            limits: u.arbitrary()?,
-            key_id: u.arbitrary()?,
-            signature,
-        })
     }
 }
