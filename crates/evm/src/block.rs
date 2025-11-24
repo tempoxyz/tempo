@@ -11,7 +11,7 @@ use alloy_evm::{
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
-use alloy_primitives::{B256, Bytes, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
 use commonware_codec::DecodeExt;
@@ -20,7 +20,7 @@ use commonware_cryptography::{
     ed25519::{PublicKey, Signature},
 };
 use reth_revm::{Inspector, State, context::result::ResultAndState};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_precompiles::{
     STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
@@ -96,6 +96,7 @@ pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
     seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
     validator_set: Option<Vec<B256>>,
     shared_gas_limit: u64,
+    subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
 
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
@@ -128,6 +129,7 @@ where
                 seen_tip20_rewards_registry: false,
             },
             seen_subblocks: Vec::new(),
+            subblock_fee_recipients: ctx.subblock_fee_recipients,
         }
     }
 
@@ -454,7 +456,20 @@ where
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<ResultAndState, BlockExecutionError> {
-        self.inner.execute_transaction_without_commit(tx)
+        // If we are dealing with a subblock transaction, configure the fee recipient context.
+        if let Some(validator) = tx.tx().subblock_proposer() {
+            let fee_recipient = *self
+                .subblock_fee_recipients
+                .get(&validator)
+                .ok_or(BlockExecutionError::msg("invalid subblock transaction"))?;
+
+            self.evm_mut().set_subblock_fee_recipient(fee_recipient);
+        }
+        let result = self.inner.execute_transaction_without_commit(tx);
+
+        self.evm_mut().unset_subblock_fee_recipient();
+
+        result
     }
 
     fn commit_transaction(
