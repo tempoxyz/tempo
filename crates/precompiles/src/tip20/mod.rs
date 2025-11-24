@@ -2520,4 +2520,27 @@ pub(crate) mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_set_fee_recipient() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::random();
+
+        let token_id = setup_factory_with_token(&mut storage, admin, "Test", "TST");
+        let mut token = TIP20Token::new(token_id, &mut storage);
+
+        let fee_recipient = token.sload_fee_recipient()?;
+        assert_eq!(fee_recipient, Address::ZERO);
+
+        let expected_recipient = Address::random();
+        token.set_fee_recipient(admin, expected_recipient)?;
+
+        let fee_recipient = token.sload_fee_recipient()?;
+        assert_eq!(fee_recipient, expected_recipient);
+
+        let result = token.set_fee_recipient(Address::random(), expected_recipient);
+        assert!(result.is_err());
+
+        Ok(())
+    }
 }
