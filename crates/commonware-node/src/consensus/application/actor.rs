@@ -271,7 +271,8 @@ impl Inner<Init> {
                 // TODO(janis): should we panic instead?
                 bail!(
                     "no information on the source block at height `{height}` \
-                    exists yet; this is a problem and will likely cause the consensus engine to not start"
+                    exists yet; this is a problem and will likely cause the \
+                    consensus engine to not start"
                 );
             };
             digest
