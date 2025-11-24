@@ -15,15 +15,17 @@ pub static TRANSFER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"TRANSFER
 pub static RECEIVE_WITH_MEMO_ROLE: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"RECEIVE_WITH_MEMO_ROLE"));
 
-const NAME: &str = "linkingUSD";
-const SYMBOL: &str = "linkingUSD";
+/// Name of TIP20 post allegretto. Note that the name and symbol are the same value
+const NAME_POST_ALLEGRETTO: &str = "pathUSD";
+/// Name of TIP20 pre allegretto. Note that the name and symbol are the same value
+const NAME_PRE_ALLEGRETTO: &str = "linkingUSD";
 const CURRENCY: &str = "USD";
 
-pub struct LinkingUSD<'a, S: PrecompileStorageProvider> {
+pub struct PathUSD<'a, S: PrecompileStorageProvider> {
     pub token: TIP20Token<'a, S>,
 }
 
-impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
+impl<'a, S: PrecompileStorageProvider> PathUSD<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
         Self {
             token: TIP20Token::new(0, storage),
@@ -31,8 +33,14 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
     }
 
     pub fn initialize(&mut self, admin: Address) -> Result<()> {
+        let (name, symbol) = if self.token.storage().spec().is_allegretto() {
+            (NAME_POST_ALLEGRETTO, NAME_POST_ALLEGRETTO)
+        } else {
+            (NAME_PRE_ALLEGRETTO, NAME_PRE_ALLEGRETTO)
+        };
+
         self.token
-            .initialize(NAME, SYMBOL, CURRENCY, Address::ZERO, admin)
+            .initialize(name, symbol, CURRENCY, Address::ZERO, admin)
     }
 
     fn is_transfer_authorized(&mut self, sender: Address) -> Result<bool> {
@@ -146,11 +154,19 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
     }
 
     pub fn name(&mut self) -> Result<String> {
-        self.token.name()
+        if self.token.storage().spec().is_allegretto() {
+            Ok(NAME_POST_ALLEGRETTO.to_string())
+        } else {
+            self.token.name()
+        }
     }
 
     pub fn symbol(&mut self) -> Result<String> {
-        self.token.symbol()
+        if self.token.storage().spec().is_allegretto() {
+            Ok(NAME_POST_ALLEGRETTO.to_string())
+        } else {
+            self.token.symbol()
+        }
     }
 
     pub fn currency(&mut self) -> Result<String> {

@@ -1,6 +1,8 @@
+pub mod dispatch;
+
 use crate::{
     Precompile, input_cost,
-    linking_usd::LinkingUSD,
+    linking_usd::{LinkingUSD, NAME},
     metadata, mutate, mutate_void,
     storage::{ContractStorage, PrecompileStorageProvider},
     tip20::{IRolesAuth, ITIP20},
@@ -10,6 +12,9 @@ use crate::{
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::{ILinkingUSD, TIP20Error};
+
+const PATH_USD_NAME: &str = "pathUSD";
+const PATH_USD_SYMBOL: &str = "pathUSD";
 
 impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
