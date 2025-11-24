@@ -341,7 +341,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.clear_streams(stream_id)?;
 
         let mut actual_refund = U256::ZERO;
-        if refund > U256::ZERO && self.is_transfer_authorized(stream.funder, stream.funder)? {
+        if refund > U256::ZERO && self.is_transfer_authorized(stream.funder, self.address)? {
             let funder_delegate = self.update_rewards(stream.funder)?;
             if funder_delegate != Address::ZERO {
                 let opted_in_supply = U256::from(self.get_opted_in_supply()?)
