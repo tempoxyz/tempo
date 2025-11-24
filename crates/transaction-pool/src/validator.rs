@@ -362,7 +362,7 @@ mod tests {
             .await;
 
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
-            let error_msg = format!("{}", err);
+            let error_msg = format!("{err}");
             assert!(
                 !error_msg.contains("valid_after timestamp")
                     || !error_msg.contains("too far in the future")
@@ -377,7 +377,7 @@ mod tests {
             .await;
 
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
-            let error_msg = format!("{}", err);
+            let error_msg = format!("{err}");
             assert!(
                 !error_msg.contains("valid_after timestamp")
                     || !error_msg.contains("too far in the future")
@@ -392,10 +392,9 @@ mod tests {
             .await;
 
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
-            let error_msg = format!("{}", err);
+            let error_msg = format!("{err}");
             assert!(
-                error_msg.contains("valid_after timestamp")
-                    && error_msg.contains("too far in the future")
+                error_msg.contains("'valid_after'") && error_msg.contains("too far in the future")
             );
         } else {
             panic!("Expected Invalid outcome with InvalidValidAfter error");
