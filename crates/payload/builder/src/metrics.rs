@@ -9,6 +9,8 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) payment_transactions: Histogram,
     /// The time it took to prepare system transactions in seconds.
     pub(crate) prepare_system_transactions_duration_seconds: Histogram,
+    /// The time it took to execute start-of-block system transactions in seconds.
+    pub(crate) start_block_txs_execution_duration_seconds: Histogram,
     /// The time it took to execute one transaction in seconds.
     pub(crate) transaction_execution_duration_seconds: Histogram,
     /// The time it took to execute all transactions in seconds.

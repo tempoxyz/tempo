@@ -437,6 +437,7 @@ where
         ));
 
         // Execute start-of-block system transactions (rewards registry finalize)
+        let start_block_txs_execution_start = Instant::now();
         for tx in self.build_start_block_txs(builder.evm()) {
             block_size_used += tx.inner().length();
 
@@ -444,6 +445,10 @@ where
                 .execute_transaction(tx)
                 .map_err(PayloadBuilderError::evm)?;
         }
+        let start_block_txs_execution_elapsed = start_block_txs_execution_start.elapsed();
+        self.metrics
+            .start_block_txs_execution_duration_seconds
+            .record(start_block_txs_execution_elapsed);
 
         let execution_start = Instant::now();
         while let Some(pool_tx) = best_txs.next() {
