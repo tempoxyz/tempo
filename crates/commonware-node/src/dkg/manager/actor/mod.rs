@@ -32,7 +32,7 @@ use tracing::{Span, info, instrument, warn};
 use crate::{
     consensus::block::Block,
     dkg::{
-        CeremonyState,
+        ceremony,
         ceremony::Ceremony,
         manager::{
             DecodedValidator,
@@ -64,7 +64,7 @@ where
     /// predecessor (epochs i and i-1). This ceremony metadata is updated on
     /// the last height of en epoch (the height on which the ceremony for the
     /// next epoch will be started).
-    ceremony_metadata: Arc<Mutex<Metadata<ContextCell<TContext>, U64, CeremonyState>>>,
+    ceremony_metadata: Arc<Mutex<Metadata<ContextCell<TContext>, U64, ceremony::State>>>,
 
     /// Persisted information on the current epoch for DKG ceremonies that were
     /// started after the moderato hardfork.

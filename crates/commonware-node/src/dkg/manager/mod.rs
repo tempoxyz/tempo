@@ -59,6 +59,8 @@ pub(crate) struct Config<TPeerManager> {
 
     pub(crate) mailbox_size: usize,
 
+    /// The mailbox to the marshal actor. Used to determine if an epoch
+    /// can be started at startup.
     pub(crate) marshal: crate::alias::marshal::Mailbox,
 
     /// The partition prefix to use when persisting ceremony metadata during

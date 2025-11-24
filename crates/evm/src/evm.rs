@@ -105,6 +105,20 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     pub fn take_revert_logs(&mut self) -> Vec<Log> {
         std::mem::take(&mut self.inner.logs)
     }
+
+    /// Sets the subblock fee recipient for the next transaction.
+    ///
+    /// This is used by block executor to configure context before executing a subblock transaction.
+    pub fn set_subblock_fee_recipient(&mut self, fee_recipient: Address) {
+        self.inner.subblock_fee_recipient = Some(fee_recipient);
+    }
+
+    /// Unsets the subblock fee recipient for the next transaction.
+    ///
+    /// This must be invoked after a subblock transaction was executed.
+    pub fn unset_subblock_fee_recipient(&mut self) {
+        self.inner.subblock_fee_recipient = None;
+    }
 }
 
 impl<DB: Database, I> Deref for TempoEvm<DB, I>
