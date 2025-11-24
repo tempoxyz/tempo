@@ -32,7 +32,7 @@ use tempo_contracts::precompiles::{
 use tempo_node::node::TempoNode;
 use tempo_payload_types::{TempoPayloadAttributes, TempoPayloadBuilderAttributes};
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     tip20::{ISSUER_ROLE, token_id_to_address},
 };
 
@@ -50,7 +50,7 @@ where
             "Test".to_string(),
             "TEST".to_string(),
             "USD".to_string(),
-            LINKING_USD_ADDRESS,
+            PATH_USD_ADDRESS,
             caller,
         )
         .send()

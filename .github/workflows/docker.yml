@@ -9,6 +9,9 @@ on:
   pull_request:
   workflow_dispatch:
   workflow_call:
+  schedule:
+    - cron: "5 9 * * *"
+    - cron: "30 20 * **"
 
 env:
   REGISTRY: ghcr.io/tempoxyz
@@ -48,6 +51,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ matrix.binary.name }}
           tags: |
+            type=schedule,pattern=nightly
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
