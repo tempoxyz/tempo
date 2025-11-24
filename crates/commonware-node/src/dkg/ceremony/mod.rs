@@ -22,6 +22,7 @@ use commonware_utils::{max_faults, sequence::U64, set::Ordered, union};
 use eyre::{WrapErr as _, bail, ensure};
 use futures::{FutureExt as _, lock::Mutex};
 use indexmap::IndexSet;
+use prometheus_client::metrics::counter::Counter;
 use rand_core::CryptoRngCore;
 use tracing::{Level, debug, error, info, instrument, warn};
 
@@ -67,6 +68,14 @@ pub(super) struct Config {
     pub(super) players: Ordered<PublicKey>,
 }
 
+#[derive(Clone)]
+pub(super) struct CeremonyMetrics {
+    pub(super) shares_distributed: Counter,
+    pub(super) acks_received: Counter,
+    pub(super) acks_sent: Counter,
+    pub(super) dealings_read: Counter,
+}
+
 pub(super) struct Ceremony<TContext, TReceiver, TSender>
 where
     TContext: Clock + Metrics + Storage,
@@ -101,6 +110,7 @@ where
     ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, State>>>,
     receiver: SubReceiver<TReceiver>,
     sender: SubSender<TSender>,
+    metrics: CeremonyMetrics,
 }
 
 impl<TContext, TReceiver, TSender> Ceremony<TContext, TReceiver, TSender>
@@ -116,6 +126,7 @@ where
         mux: &mut MuxHandle<TSender, TReceiver>,
         ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, State>>>,
         config: Config,
+        metrics: CeremonyMetrics,
     ) -> eyre::Result<Self> {
         let (sender, receiver) = mux
             .register(config.epoch)
@@ -280,6 +291,7 @@ where
             ceremony_metadata,
             receiver,
             sender,
+            metrics,
         })
     }
 
@@ -360,6 +372,7 @@ where
                     })
                     .await
                     .expect("must be able to persists acks");
+                self.metrics.shares_distributed.inc();
                 continue;
             }
 
@@ -387,6 +400,7 @@ where
                 warn!(%player, "failed to send share to player");
             } else {
                 info!(%player, "sent share to player");
+                self.metrics.shares_distributed.inc();
             }
         }
         Ok(())
@@ -489,6 +503,7 @@ where
             .await
             .expect("must always be able to persist tracked acks to disk");
 
+        self.metrics.acks_received.inc();
         Ok("ack recorded")
     }
 
@@ -548,6 +563,7 @@ where
             .await
             .wrap_err("failed returning ack to peer")?;
 
+        self.metrics.acks_sent.inc();
         Ok("recorded share and returned signed ack to peer")
     }
 
@@ -669,6 +685,7 @@ where
             );
         }
 
+        self.metrics.dealings_read.inc();
         Ok(())
     }
 

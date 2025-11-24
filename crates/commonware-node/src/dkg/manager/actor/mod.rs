@@ -33,7 +33,7 @@ use crate::{
     consensus::block::Block,
     dkg::{
         ceremony,
-        ceremony::Ceremony,
+        ceremony::{Ceremony, CeremonyMetrics},
         manager::{
             DecodedValidator,
             ingress::{Finalize, GetIntermediateDealing, GetOutcome},
@@ -147,6 +147,11 @@ where
         let post_allegretto_ceremonies = Counter::default();
         let failed_allegretto_transitions = Counter::default();
 
+        let shares_distributed = Counter::default();
+        let acks_received = Counter::default();
+        let acks_sent = Counter::default();
+        let dealings_read = Counter::default();
+
         context.register(
             "ceremony_failures",
             "the number of failed ceremonies a node participated in",
@@ -207,6 +212,26 @@ where
             "how many transitions from pre- to post-allegretto failed",
             failed_allegretto_transitions.clone(),
         );
+        context.register(
+            "shares_distributed",
+            "the number of shares distributed by this node as a dealer",
+            shares_distributed.clone(),
+        );
+        context.register(
+            "acks_received",
+            "the number of acknowledgments received by this node as a dealer",
+            acks_received.clone(),
+        );
+        context.register(
+            "acks_sent",
+            "the number of acknowledgments sent by this node as a player",
+            acks_sent.clone(),
+        );
+        context.register(
+            "dealings_read",
+            "the number of dealings read from the blockchain",
+            dealings_read.clone(),
+        );
 
         let metrics = Metrics {
             how_often_dealer,
@@ -220,6 +245,10 @@ where
             pre_allegretto_ceremonies,
             post_allegretto_ceremonies,
             failed_allegretto_transitions,
+            shares_distributed,
+            acks_received,
+            acks_sent,
+            dealings_read,
         };
 
         Ok(Self {
@@ -669,6 +698,21 @@ struct Metrics {
     post_allegretto_ceremonies: Counter,
     failed_allegretto_transitions: Counter,
     syncing_players: Gauge,
+    shares_distributed: Counter,
+    acks_received: Counter,
+    acks_sent: Counter,
+    dealings_read: Counter,
+}
+
+impl Metrics {
+    fn ceremony_metrics(&self) -> CeremonyMetrics {
+        CeremonyMetrics {
+            shares_distributed: self.shares_distributed.clone(),
+            acks_received: self.acks_received.clone(),
+            acks_sent: self.acks_sent.clone(),
+            dealings_read: self.dealings_read.clone(),
+        }
+    }
 }
 
 /// Attempts to read the validator config from the smart contract until it becomes available.

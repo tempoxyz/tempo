@@ -108,6 +108,10 @@ fn assert_static_transitions(how_many: u32, epoch_length: u64, transitions: u64)
 
     let mut epoch_reached = false;
     let mut dkg_successful = false;
+    let mut shares_distributed_seen = false;
+    let mut acks_received_seen = false;
+    let mut acks_sent_seen = false;
+    let mut dealings_read_seen = false;
     let _first = run(setup, move |metric, value| {
         if metric.ends_with("_dkg_manager_ceremony_failures_total") {
             let value = value.parse::<u64>().unwrap();
@@ -122,7 +126,31 @@ fn assert_static_transitions(how_many: u32, epoch_length: u64, transitions: u64)
             let value = value.parse::<u64>().unwrap();
             dkg_successful |= value >= transitions;
         }
-        epoch_reached && dkg_successful
+
+        // Verify new DKG ceremony metrics are exposed and incremented
+        if metric.ends_with("_dkg_manager_shares_distributed_total") {
+            let value = value.parse::<u64>().unwrap();
+            shares_distributed_seen |= value > 0;
+        }
+        if metric.ends_with("_dkg_manager_acks_received_total") {
+            let value = value.parse::<u64>().unwrap();
+            acks_received_seen |= value > 0;
+        }
+        if metric.ends_with("_dkg_manager_acks_sent_total") {
+            let value = value.parse::<u64>().unwrap();
+            acks_sent_seen |= value > 0;
+        }
+        if metric.ends_with("_dkg_manager_dealings_read_total") {
+            let value = value.parse::<u64>().unwrap();
+            dealings_read_seen |= value > 0;
+        }
+
+        epoch_reached
+            && dkg_successful
+            && shares_distributed_seen
+            && acks_received_seen
+            && acks_sent_seen
+            && dealings_read_seen
     });
 }
 

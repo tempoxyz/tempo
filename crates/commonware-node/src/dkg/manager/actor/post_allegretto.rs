@@ -326,6 +326,7 @@ where
             mux,
             self.ceremony_metadata.clone(),
             config,
+            self.metrics.ceremony_metrics(),
         )
         .await
         .expect("must always be able to initialize ceremony");
