@@ -200,6 +200,7 @@ commonware-storage = "0.0.63"
 commonware-utils = "0.0.63"
 
 auto_impl = "1"
+async-lock = "3"
 async-trait = "0.1"
 axum = "0.8.4"
 base64 = "0.22"

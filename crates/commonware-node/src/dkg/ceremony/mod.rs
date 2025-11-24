@@ -144,7 +144,7 @@ where
         let mut dealer_me = None;
 
         // TODO(janis): move this "recovery" logic to a function.
-        let recovered = tx.get_ceremony(config.epoch)?;
+        let recovered = tx.get_ceremony(config.epoch).await?;
 
         if let Some(recovered) = recovered {
             info!("found a previous ceremony state written to disk; recovering it");
@@ -338,7 +338,8 @@ where
                         dealer_me.commitment.clone(),
                         share.clone(),
                     ));
-                })?;
+                })
+                .await?;
                 continue;
             }
 
@@ -474,7 +475,8 @@ where
                     acks: BTreeMap::from([(peer.clone(), ack.clone())]),
                 });
             }
-        })?;
+        })
+        .await?;
 
         Ok("ack recorded")
     }
@@ -509,7 +511,8 @@ where
         tx.update_ceremony(self.epoch(), |info| {
             info.received_shares
                 .push((peer.clone(), commitment.clone(), share.clone()));
-        })?;
+        })
+        .await?;
 
         let payload = Ack::new(
             &union(&self.config.namespace, ACK_NAMESPACE),
@@ -620,7 +623,8 @@ where
             } else {
                 info.outcomes.push(block_outcome.clone());
             }
-        })?;
+        })
+        .await?;
 
         if let Some(dealer_me) = &mut self.dealer_me
             && block_dealer == self.config.me.public_key()
@@ -629,7 +633,8 @@ where
 
             tx.update_ceremony(self.epoch(), |info| {
                 let _ = info.dealing_outcome.take();
-            })?;
+            })
+            .await?;
 
             info!(
                 "found own dealing in a block; removed it from ceremony to \
@@ -683,7 +688,8 @@ where
 
         tx.update_ceremony(self.config.epoch, |info| {
             info.dealing_outcome = dealing_outcome.clone();
-        })?;
+        })
+        .await?;
 
         dealer_me.outcome = dealing_outcome;
 

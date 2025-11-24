@@ -33,7 +33,7 @@ where
     TContext: Clock + Metrics + Storage,
 {
     // Check if already migrated
-    if tx.get_node_version()?.is_some() {
+    if tx.get_node_version().await?.is_some() {
         return Ok(());
     }
     // Initialize ceremony metadata

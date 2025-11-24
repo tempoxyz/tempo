@@ -11344,6 +11344,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-engine",
+ "async-lock",
  "axum",
  "bytes",
  "commonware-broadcast",

@@ -111,7 +111,7 @@ where
         mux.start();
 
         let mut tx = self.db.read_write().expect("should create tx");
-        let epoch_state = match tx.get_epoch().expect("should be able to query") {
+        let epoch_state = match tx.get_epoch().await.expect("should be able to query") {
             Some(state) => state,
             None => {
                 let state = EpochState {
@@ -158,6 +158,7 @@ where
 
         if let Some(previous_epoch_state) = tx
             .get_previous_epoch()
+            .await
             .expect("must be able to read previous epoch")
         {
             // NOTE: PREVIOUS_EPOCH_KEY is only set if the node was shut down
@@ -402,6 +403,7 @@ where
         if block.height().is_multiple_of(self.config.epoch_length)
             && let Some(old_epoch_state) = tx
                 .get_previous_epoch()
+                .await
                 .expect("must be able to read previous epoch")
         {
             self.config
@@ -463,6 +465,7 @@ where
 
             let old_epoch_state = tx
                 .get_epoch()
+                .await
                 .expect("must be able to read epoch")
                 .expect("a current epoch state must always exist");
 
@@ -532,7 +535,7 @@ where
     let db_metadata = Metadata::init(
         context.with_label("dkg_db"),
         commonware_storage::metadata::Config {
-            partition: format!("{}_db", partition_prefix),
+            partition: format!("{partition_prefix}_db"),
             codec_config: commonware_codec::RangeCfg::from(0..=usize::MAX),
         },
     )

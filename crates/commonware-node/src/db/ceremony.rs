@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use super::Tx;
 use crate::dkg::CeremonyState;
 use commonware_runtime::{Clock, Metrics, Storage};
@@ -13,7 +15,10 @@ where
     TContext: Clock + Metrics + Storage,
 {
     /// Get ceremony state for a specific epoch.
-    fn get_ceremony(&mut self, epoch: u64) -> Result<Option<CeremonyState>>;
+    fn get_ceremony(
+        &mut self,
+        epoch: u64,
+    ) -> impl Future<Output = Result<Option<CeremonyState>>> + Send;
 
     /// Set ceremony state for a specific epoch.
     fn set_ceremony(&mut self, epoch: u64, state: CeremonyState) -> Result<()>;
@@ -25,17 +30,21 @@ where
     ///
     /// This reads the current state (or creates a default if none exists),
     /// applies the provided function to modify it, and writes it back atomically.
-    fn update_ceremony<F>(&mut self, epoch: u64, f: F) -> Result<()>
+    fn update_ceremony<F>(
+        &mut self,
+        epoch: u64,
+        f: F,
+    ) -> impl Future<Output = Result<()>> + Send
     where
-        F: FnOnce(&mut CeremonyState);
+        F: FnOnce(&mut CeremonyState) + Send;
 }
 
 impl<TContext> CeremonyStore<TContext> for Tx<TContext>
 where
     TContext: Clock + Metrics + Storage,
 {
-    fn get_ceremony(&mut self, epoch: u64) -> Result<Option<CeremonyState>> {
-        self.get(ceremony_key(epoch))
+    async fn get_ceremony(&mut self, epoch: u64) -> Result<Option<CeremonyState>> {
+        self.get(ceremony_key(epoch)).await
     }
 
     fn set_ceremony(&mut self, epoch: u64, state: CeremonyState) -> Result<()> {
@@ -46,11 +55,11 @@ where
         self.remove(ceremony_key(epoch))
     }
 
-    fn update_ceremony<F>(&mut self, epoch: u64, f: F) -> Result<()>
+    async fn update_ceremony<F>(&mut self, epoch: u64, f: F) -> Result<()>
     where
-        F: FnOnce(&mut CeremonyState),
+        F: FnOnce(&mut CeremonyState) + Send,
     {
-        let mut state = self.get_ceremony(epoch)?.unwrap_or_default();
+        let mut state = self.get_ceremony(epoch).await?.unwrap_or_default();
         f(&mut state);
         self.set_ceremony(epoch, state)
     }

@@ -12,12 +12,12 @@ use std::{
 };
 
 use alloy_primitives::keccak256;
+use async_lock::RwLock;
 use bytes::Bytes;
 use commonware_codec::{EncodeSize, Read, Write as CodecWrite};
 use commonware_runtime::{Clock, Metrics, Storage};
 use commonware_storage::metadata::Metadata;
 use commonware_utils::sequence::FixedBytes;
-use parking_lot::RwLock;
 
 type B256 = FixedBytes<32>;
 
@@ -142,7 +142,7 @@ where
     }
 
     /// Get raw bytes from the store without deserialization.
-    fn get_raw<K>(&mut self, key: K) -> Result<Option<Bytes>, eyre::Error>
+    async fn get_raw<K>(&mut self, key: K) -> Result<Option<Bytes>, eyre::Error>
     where
         K: AsRef<[u8]>,
     {
@@ -154,7 +154,7 @@ where
         }
 
         // Check store
-        let store = self.store.read();
+        let store = self.store.read().await;
         Ok(store.get(&key_hash).cloned())
     }
 
@@ -162,12 +162,12 @@ where
     ///
     /// This checks pending writes first, then falls back to the store.
     /// Keys can be any type that can be converted to bytes.
-    pub fn get<K, V>(&mut self, key: K) -> Result<Option<V>, eyre::Error>
+    pub async fn get<K, V>(&mut self, key: K) -> Result<Option<V>, eyre::Error>
     where
         K: AsRef<[u8]>,
         V: Read<Cfg = ()>,
     {
-        let Some(value_bytes) = self.get_raw(key)? else {
+        let Some(value_bytes) = self.get_raw(key).await? else {
             return Ok(None);
         };
 
@@ -218,9 +218,11 @@ where
     /// Get the node version that last wrote to this database.
     ///
     /// Returns None if no version has been written yet (new database).
-    pub fn get_node_version(&mut self) -> Result<Option<String>, eyre::Error> {
-        self.get_raw(NODE_VERSION_KEY)
-            .map(|opt| opt.and_then(|bytes| String::from_utf8(bytes.to_vec()).ok()))
+    pub async fn get_node_version(&mut self) -> Result<Option<String>, eyre::Error> {
+        Ok(self
+            .get_raw(NODE_VERSION_KEY)
+            .await?
+            .and_then(|bytes| String::from_utf8(bytes.to_vec()).ok()))
     }
 
     /// Set the current node version in the database.
@@ -235,10 +237,9 @@ where
     ///
     /// Holds the write lock across the async sync operation to ensure atomicity - all writes
     /// are applied and flushed to disk without other transactions interleaving.
-    #[allow(clippy::await_holding_lock)]
     pub async fn commit(mut self) -> Result<(), eyre::Error> {
         // Acquire write lock and apply all buffered writes and deletions
-        let mut store = self.store.write();
+        let mut store = self.store.write().await;
 
         for (key, value_opt) in self.writes.drain() {
             match value_opt {
@@ -340,31 +341,31 @@ mod tests {
                 let mut tx = db.read_write().unwrap();
                 tx.insert("key1", 100u64).unwrap();
                 tx.insert("key2", 200u64).unwrap();
-                assert_eq!(tx.get::<_, u64>(&"key1").unwrap(), Some(100));
-                assert_eq!(tx.get::<_, u64>(&"key2").unwrap(), Some(200));
+                assert_eq!(tx.get::<_, u64>(&"key1").await.unwrap(), Some(100));
+                assert_eq!(tx.get::<_, u64>(&"key2").await.unwrap(), Some(200));
                 tx.commit().await.unwrap();
 
                 // Verify persisted to underlying store
                 {
-                    let store = db.inner.read();
+                    let store = db.inner.read().await;
                     assert!(store.get(&key1_hash).is_some());
                     assert!(store.get(&key2_hash).is_some());
                 }
 
                 // Test get reads from underlying store after commit
                 let mut tx = db.read_write().unwrap();
-                assert_eq!(tx.get::<_, u64>(&"key1").unwrap(), Some(100));
-                assert_eq!(tx.get::<_, u64>(&"key2").unwrap(), Some(200));
+                assert_eq!(tx.get::<_, u64>(&"key1").await.unwrap(), Some(100));
+                assert_eq!(tx.get::<_, u64>(&"key2").await.unwrap(), Some(200));
 
                 // Remove and verify in transaction buffer before commit
                 tx.remove("key1").unwrap();
-                assert_eq!(tx.get::<_, u64>(&"key1").unwrap(), None);
-                assert_eq!(tx.get::<_, u64>(&"key2").unwrap(), Some(200));
+                assert_eq!(tx.get::<_, u64>(&"key1").await.unwrap(), None);
+                assert_eq!(tx.get::<_, u64>(&"key2").await.unwrap(), Some(200));
                 tx.commit().await.unwrap();
 
                 // Verify removal persisted to underlying store
                 {
-                    let store = db.inner.read();
+                    let store = db.inner.read().await;
                     assert!(store.get(&key1_hash).is_none());
                     assert!(store.get(&key2_hash).is_some());
                 }
