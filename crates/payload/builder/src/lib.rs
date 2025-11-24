@@ -416,10 +416,15 @@ where
         debug!("building new payload");
 
         // Prepare system transactions before actual block building and account for their size.
+        let prepare_system_txs_start = Instant::now();
         let system_txs = self.build_seal_block_txs(builder.evm().block(), &subblocks);
         for tx in &system_txs {
             block_size_used += tx.inner().length();
         }
+        let prepare_system_txs_elapsed = prepare_system_txs_start.elapsed();
+        self.metrics
+            .prepare_system_transactions_duration_seconds
+            .record(prepare_system_txs_elapsed);
 
         let base_fee = builder.evm_mut().block().basefee;
         let mut best_txs = best_txs(BestTransactionsAttributes::new(
@@ -595,11 +600,16 @@ where
             .record(payment_transactions);
 
         // Apply system transactions
+        let system_txs_execution_start = Instant::now();
         for system_tx in system_txs {
             builder
                 .execute_transaction(system_tx)
                 .map_err(PayloadBuilderError::evm)?;
         }
+        let system_txs_execution_elapsed = system_txs_execution_start.elapsed();
+        self.metrics
+            .system_transactions_execution_duration_seconds
+            .record(system_txs_execution_elapsed);
 
         let builder_finish_start = Instant::now();
         let BlockBuilderOutcome {
