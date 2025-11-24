@@ -329,7 +329,7 @@ where
 {
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
     let receipt = factory
-        .createToken(
+        .createToken_0(
             "Test".to_owned(),
             "TEST".to_owned(),
             "USD".to_owned(),
