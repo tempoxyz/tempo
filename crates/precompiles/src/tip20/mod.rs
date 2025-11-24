@@ -348,11 +348,18 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         )
     }
 
-    // TODO: set fee recipient function
+    /// Sets a new fee recipient
+    pub fn set_fee_recipient(&mut self, msg_sender: Address, new_recipient: Address) -> Result<()> {
+        self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
+        self.sstore_fee_recipient(new_recipient)?;
+
+        Ok(())
+    }
 
     // Token operations
     /// Mints new tokens to specified address
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
+        self.check_role(msg_sender, *ISSUER_ROLE)?;
         self._mint(msg_sender, call.to, call.amount)
     }
 

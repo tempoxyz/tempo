@@ -113,6 +113,16 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                     |s, call| self.complete_quote_token_update(s, call),
                 )
             }
+
+            ITIP20::feeRecipientCall::SELECTOR => {
+                view::<ITIP20::feeRecipientCall>(calldata, |_call| self.sload_fee_recipient())
+            }
+            ITIP20::setFeeRecipientCall::SELECTOR => {
+                mutate_void::<ITIP20::setFeeRecipientCall>(calldata, msg_sender, |s, call| {
+                    self.set_fee_recipient(s, call.newRecipient)
+                })
+            }
+
             ITIP20::mintCall::SELECTOR => {
                 mutate_void::<ITIP20::mintCall>(calldata, msg_sender, |s, call| self.mint(s, call))
             }

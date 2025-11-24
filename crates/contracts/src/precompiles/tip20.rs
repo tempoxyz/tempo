@@ -61,8 +61,8 @@ sol! {
         function burnWithMemo(uint256 amount, bytes32 memo) external;
         function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
         function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external returns (bool);
-
-// TODO: set fee recipient function
+        function feeRecipient() external view returns (address);
+        function setFeeRecipient(address newRecipient) external view returns (address);
 
         // Admin Functions
         function changeTransferPolicyId(uint64 newPolicyId) external;
