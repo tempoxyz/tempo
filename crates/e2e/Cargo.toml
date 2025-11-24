@@ -50,6 +50,7 @@ tracing.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+commonware-consensus.workspace = true
 commonware-macros.workspace = true
 tempo-contracts.workspace = true
 tracing-subscriber.workspace = true
