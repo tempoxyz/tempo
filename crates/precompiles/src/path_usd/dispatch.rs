@@ -12,16 +12,6 @@ use tempo_contracts::precompiles::{IPathUSD, TIP20Error};
 
 impl<S: PrecompileStorageProvider> Precompile for PathUSD<'_, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        // Post allegretto hardfork, treat linkingUSD as a default TIP20 without extra permissions
-        if self.token.storage().spec().is_allegretto() {
-            return self.token.call(calldata, msg_sender);
-        }
-
-        self.token
-            .storage()
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
-
         let selector: [u8; 4] = calldata
             .get(..4)
             .ok_or_else(|| {
@@ -29,6 +19,24 @@ impl<S: PrecompileStorageProvider> Precompile for PathUSD<'_, S> {
             })?
             .try_into()
             .unwrap();
+
+        // Post allegretto hardfork, treat linkingUSD as a default TIP20 without extra permissions
+        if self.token.storage().spec().is_allegretto() {
+            let result = match selector {
+                // Post Allegretto since this contract is already deployed, we override name/symbol
+                // to PathUSD rather than treating these calls with default TIP20 logic
+                ITIP20::nameCall::SELECTOR => metadata::<ITIP20::nameCall>(|| self.name()),
+                ITIP20::symbolCall::SELECTOR => metadata::<ITIP20::symbolCall>(|| self.symbol()),
+                _ => self.token.call(calldata, msg_sender),
+            };
+
+            return result;
+        }
+
+        self.token
+            .storage()
+            .deduct_gas(input_cost(calldata.len()))
+            .map_err(|_| PrecompileError::OutOfGas)?;
 
         let result = match selector {
             // Metadata
