@@ -12,19 +12,25 @@ use tempo_contracts::precompiles::{IPathUSD, TIP20Error};
 
 impl<S: PrecompileStorageProvider> Precompile for PathUSD<'_, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        let selector: [u8; 4] = calldata
-            .get(..4)
-            .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".into())
-            })?
-            .try_into()
-            .unwrap();
+        let selector: [u8; 4] = if let Some(bytes) = calldata.get(..4) {
+            bytes.try_into().unwrap()
+        } else {
+            self.token
+                .storage()
+                .deduct_gas(input_cost(calldata.len()))
+                .map_err(|_| PrecompileError::OutOfGas)?;
+
+            return Err(PrecompileError::Other(
+                "Invalid input: missing function selector".into(),
+            ));
+        };
 
         // Post allegretto hardfork, treat pathUSD as a default TIP20 without extra permissions
         // For calls to name() or symbol(), since this contract is already deployed pre hardfork,
         // we override name/symbol to PathUSD rather than treating these calls with default TIP20 logic
-        if self.token.storage().spec().is_allegretto() && selector != ITIP20::nameCall::SELECTOR
-            || selector != ITIP20::symbolCall::SELECTOR
+        if self.token.storage().spec().is_allegretto()
+            && selector != ITIP20::nameCall::SELECTOR
+            && selector != ITIP20::symbolCall::SELECTOR
         {
             return self.token.call(calldata, msg_sender);
         }
