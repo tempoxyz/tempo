@@ -145,6 +145,7 @@ where
 
         let pre_allegretto_ceremonies = Counter::default();
         let post_allegretto_ceremonies = Counter::default();
+        let failed_allegretto_transitions = Counter::default();
 
         context.register(
             "ceremony_failures",
@@ -201,6 +202,12 @@ where
             post_allegretto_ceremonies.clone(),
         );
 
+        context.register(
+            "failed_allegretto_transitions",
+            "how many transitions from pre- to post-allegretto failed",
+            failed_allegretto_transitions.clone(),
+        );
+
         let metrics = Metrics {
             how_often_dealer,
             how_often_player,
@@ -212,6 +219,7 @@ where
             syncing_players,
             pre_allegretto_ceremonies,
             post_allegretto_ceremonies,
+            failed_allegretto_transitions,
         };
 
         Ok(Self {
@@ -662,6 +670,7 @@ struct Metrics {
     peers: Gauge,
     pre_allegretto_ceremonies: Counter,
     post_allegretto_ceremonies: Counter,
+    failed_allegretto_transitions: Counter,
     syncing_players: Gauge,
 }
 

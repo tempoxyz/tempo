@@ -6,7 +6,6 @@
 use std::time::Duration;
 
 use commonware_macros::test_traced;
-use commonware_p2p::simulated::Link;
 use commonware_runtime::{
     Clock, Metrics as _, Runner as _,
     deterministic::{self, Context, Runner},
@@ -15,7 +14,7 @@ use futures::future::join_all;
 use rand::Rng;
 use tracing::debug;
 
-use crate::{CONSENSUS_NODE_PREFIX, ExecutionRuntime, Setup, link_validators, setup_validators};
+use crate::{CONSENSUS_NODE_PREFIX, ExecutionRuntime, Setup, setup_validators};
 
 /// Test configuration for restart scenarios
 #[derive(Clone)]
@@ -45,11 +44,9 @@ fn run_restart_test(
     executor.start(|mut context| async move {
         let execution_runtime = ExecutionRuntime::new();
 
-        let (nodes, mut oracle) =
-            setup_validators(context.clone(), &execution_runtime, node_setup.clone()).await;
+        let nodes = setup_validators(context.clone(), &execution_runtime, node_setup.clone()).await;
 
         let mut running = join_all(nodes.into_iter().map(|node| node.start())).await;
-        link_validators(&mut oracle, &running, node_setup.linkage.clone(), None).await;
 
         debug!(
             height = shutdown_height,
@@ -174,20 +171,11 @@ fn network_resumes_after_restart() {
     let _ = tempo_eyre::install();
 
     for seed in 0..3 {
-        let linkage = Link {
-            latency: Duration::from_millis(10),
-            jitter: Duration::from_millis(1),
-            success_rate: 1.0,
-        };
+        let setup = Setup::new()
+            .how_many_signers(3) // quorum for 3 validators is 3.
+            .seed(seed)
+            .epoch_length(100);
 
-        let setup = Setup {
-            how_many_signers: 3, // quorum for 3 validators is 3.
-            how_many_verifiers: 0,
-            seed,
-            linkage,
-            epoch_length: 100,
-            connect_execution_layer_nodes: false,
-        };
         let shutdown_height = 5;
         let final_height = 10;
 
@@ -197,11 +185,9 @@ fn network_resumes_after_restart() {
         executor.start(|mut context| async move {
             let execution_runtime = ExecutionRuntime::new();
 
-            let (nodes, mut oracle) =
-                setup_validators(context.clone(), &execution_runtime, setup.clone()).await;
+            let nodes = setup_validators(context.clone(), &execution_runtime, setup.clone()).await;
 
             let mut running = join_all(nodes.into_iter().map(|node| node.start())).await;
-            link_validators(&mut oracle, &running, setup.linkage.clone(), None).await;
 
             debug!(
                 height = shutdown_height,
@@ -237,29 +223,17 @@ fn network_resumes_after_restart() {
 fn node_recovers_after_finalizing_ceremony() {
     let prefix = format!("{CONSENSUS_NODE_PREFIX}-");
 
-    let setup = Setup {
-        how_many_signers: 4,
-        how_many_verifiers: 4,
-        seed: 0,
-        linkage: Link {
-            latency: Duration::from_millis(10),
-            jitter: Duration::from_millis(1),
-            success_rate: 1.0,
-        },
-        epoch_length: 20,
-        connect_execution_layer_nodes: false,
-    };
+    let setup = Setup::new();
+
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
         let execution_runtime = ExecutionRuntime::new();
 
-        let (nodes, mut oracle) =
-            setup_validators(context.clone(), &execution_runtime, setup.clone()).await;
+        let nodes = setup_validators(context.clone(), &execution_runtime, setup.clone()).await;
 
         let mut running = join_all(nodes.into_iter().map(|node| node.start())).await;
-        link_validators(&mut oracle, &running, setup.linkage.clone(), None).await;
 
         // Catch a node right after it processed the pre-to-boundary height.
         // Best-effort: we hot-loop in 100ms steps, but if processing is too
@@ -330,21 +304,8 @@ fn node_recovers_after_finalizing_ceremony() {
 fn validator_catches_up_to_network_during_epoch() {
     let _ = tempo_eyre::install();
 
-    let linkage = Link {
-        latency: Duration::from_millis(10),
-        jitter: Duration::from_millis(1),
-        success_rate: 1.0,
-    };
-
     let setup = RestartSetup {
-        node_setup: Setup {
-            how_many_signers: 4,
-            how_many_verifiers: 0,
-            seed: 0,
-            linkage,
-            epoch_length: 100,
-            connect_execution_layer_nodes: false,
-        },
+        node_setup: Setup::new().epoch_length(100),
         shutdown_height: 5,
         restart_height: 10,
         final_height: 15,
@@ -357,22 +318,9 @@ fn validator_catches_up_to_network_during_epoch() {
 fn validator_catches_up_across_epochs() {
     let _ = tempo_eyre::install();
 
-    let linkage = Link {
-        latency: Duration::from_millis(10),
-        jitter: Duration::from_millis(1),
-        success_rate: 1.0,
-    };
-
     let epoch_length = 30;
     let setup = RestartSetup {
-        node_setup: Setup {
-            how_many_signers: 4,
-            how_many_verifiers: 0,
-            seed: 0,
-            linkage,
-            epoch_length,
-            connect_execution_layer_nodes: false,
-        },
+        node_setup: Setup::new().epoch_length(epoch_length),
         shutdown_height: epoch_length + 1,
         restart_height: 2 * epoch_length + 1,
         final_height: 3 * epoch_length + 1,

@@ -29,10 +29,9 @@ fn spawning_execution_node_works() {
     // <rest>
 
     let runtime = ExecutionRuntime::new();
-    let handle = runtime.handle();
 
-    futures::executor::block_on(async move {
-        let node = handle
+    let runtime = futures::executor::block_on(async move {
+        let node = runtime
             .spawn_node("node-1")
             .await
             .expect("a running execution runtime must be able to spawn nodes");
@@ -59,6 +58,7 @@ fn spawning_execution_node_works() {
             updated.is_valid(),
             "setting the forkchoice state to genesis should always work; response\n{updated:?}"
         );
+        runtime
     });
 
     runtime.stop().expect("runtime must stop");

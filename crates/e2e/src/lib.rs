@@ -189,8 +189,6 @@ pub struct Setup {
     pub epoch_length: u64,
 
     pub connect_execution_layer_nodes: bool,
-
-    pub allegretto_timestamp: Option<u64>,
 }
 
 impl Setup {
@@ -206,7 +204,6 @@ impl Setup {
             },
             epoch_length: 20,
             connect_execution_layer_nodes: false,
-            allegretto_timestamp: None,
         }
     }
 
@@ -239,16 +236,9 @@ impl Setup {
         }
     }
 
-    pub fn connect_execution_layer_nodes(self) -> Self {
+    pub fn connect_execution_layer_nodes(self, connect_execution_layer_nodes: bool) -> Self {
         Self {
-            connect_execution_layer_nodes: true,
-            ..self
-        }
-    }
-
-    pub fn allegretto_timestamp(self, allegretto_timestamp: u64) -> Self {
-        Self {
-            allegretto_timestamp: Some(allegretto_timestamp),
+            connect_execution_layer_nodes,
             ..self
         }
     }
@@ -263,11 +253,11 @@ pub async fn setup_validators(
         seed,
         epoch_length,
         connect_execution_layer_nodes,
-        allegretto_timestamp,
+        linkage,
         ..
     }: Setup,
-) -> (Vec<PreparedNode>, Oracle<PublicKey>) {
-    let (network, oracle) = Network::new(
+) -> Vec<PreparedNode> {
+    let (network, mut oracle) = Network::new(
         context.with_label("network"),
         simulated::Config {
             max_size: 1024 * 1024,
@@ -284,6 +274,17 @@ pub async fn setup_validators(
         private_keys.push(signer);
     }
     private_keys.sort_by_key(|s| s.public_key());
+
+    link_validators(
+        &mut oracle,
+        &private_keys
+            .iter()
+            .map(|key| key.public_key())
+            .collect::<Vec<_>>(),
+        linkage,
+        None,
+    )
+    .await;
 
     let threshold = quorum(how_many_signers);
     let (polynomial, shares) =
@@ -310,10 +311,7 @@ pub async fn setup_validators(
         Vec::with_capacity((how_many_signers + how_many_verifiers) as usize);
     for key in &private_keys {
         let execution_node = execution_runtime
-            .spawn_node(
-                &format!("{EXECUTION_NODE_PREFIX}-{}", key.public_key()),
-                allegretto_timestamp,
-            )
+            .spawn_node(&format!("{EXECUTION_NODE_PREFIX}-{}", key.public_key()))
             .await
             .expect("must be able to spawn nodes on the runtime");
 
@@ -417,7 +415,7 @@ pub async fn setup_validators(
         });
     }
 
-    (nodes, oracle)
+    nodes
 }
 
 /// Runs a test configured by [`Setup`].
@@ -428,12 +426,9 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
     executor.start(|context| async move {
         let execution_runtime = ExecutionRuntime::new();
 
-        let linkage = setup.linkage.clone();
         // Setup and run all validators.
-        let (nodes, mut oracle) =
-            setup_validators(context.clone(), &execution_runtime, setup).await;
-        let running = join_all(nodes.into_iter().map(|node| node.start())).await;
-        link_validators(&mut oracle, &running, linkage, None).await;
+        let nodes = setup_validators(context.clone(), &execution_runtime, setup).await;
+        let _running = join_all(nodes.into_iter().map(|node| node.start())).await;
 
         let pat = format!("{CONSENSUS_NODE_PREFIX}-");
         loop {
@@ -478,14 +473,14 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
 /// otherwise all validators will be linked to all other validators.
 pub async fn link_validators(
     oracle: &mut Oracle<PublicKey>,
-    validators: &[RunningNode],
+    validators: &[PublicKey],
     link: Link,
     restrict_to: Option<fn(usize, usize, usize) -> bool>,
 ) {
     for (i1, v1) in validators.iter().enumerate() {
         for (i2, v2) in validators.iter().enumerate() {
             // Ignore self
-            if v1.public_key == v2.public_key {
+            if v1 == v2 {
                 continue;
             }
 
@@ -497,10 +492,7 @@ pub async fn link_validators(
             }
 
             // Add link
-            match oracle
-                .add_link(v1.public_key.clone(), v2.public_key.clone(), link.clone())
-                .await
-            {
+            match oracle.add_link(v1.clone(), v2.clone(), link.clone()).await {
                 Ok(()) => (),
                 // TODO: it should be possible to remove the below if Commonware simulated network exposes list of registered peers.
                 //

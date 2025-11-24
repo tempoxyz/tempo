@@ -28,7 +28,7 @@ use commonware_runtime::{
 };
 
 use commonware_utils::SystemTimeExt;
-use eyre::{OptionExt, WrapErr as _, bail, ensure, eyre};
+use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{
     StreamExt as _, TryFutureExt as _,
     channel::{mpsc, oneshot},

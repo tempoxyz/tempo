@@ -14,7 +14,7 @@ use commonware_utils::{
     sequence::U64,
     set::{Ordered, OrderedAssociated},
 };
-use eyre::{OptionExt as _, WrapErr as _, ensure};
+use eyre::{WrapErr as _, ensure};
 use rand_core::CryptoRngCore;
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_dkg_onchain_artifacts::PublicOutcome;
@@ -97,9 +97,10 @@ where
     /// ceremony.
     /// + second half of an epoch: read intermediate outcomes from blocks.
     /// + pre-to-last height of an epoch: generate the overall ceremony outcome,
-    /// start a new ceremony with the outcome of the last ceremony.
+    /// update CURRENT_EPOCH_KEY.
     /// + last height of an epoch: notify the epoch manager that a new epoch can
-    /// be started, using the outcome of the last epoch.
+    /// be started, using the outcome of the last epoch. Start a new ceremony
+    /// for the next epoch.
     #[instrument(
         parent = &cause,
         skip_all,
@@ -140,10 +141,14 @@ where
                         to transition to dynamic validator sets by reading validators \
                         from smart contract",
                     );
-                    match self.transition_to_dynamic_validator_sets().await {
-                        Ok(()) => {
+                    match self
+                        .transition_to_dynamic_validator_sets(ceremony_mux)
+                        .await
+                    {
+                        Ok(ceremony) => {
+                            maybe_ceremony.replace(ceremony);
                             info!(
-                                "transition to dynamic validator sets was sucessful; \
+                                "transitioning to dynamic validator sets was sucessful; \
                                 deleting current pre-allegretto epoch state and leaving \
                                 DKG logic to the post-hardfork routines",
                             );
@@ -152,11 +157,14 @@ where
                                 .await;
                             return;
                         }
-                        Err(error) => warn!(
-                            %error,
-                            "transitioning to dynamic validator sets was not succesful; address \
-                            wait until the errors are resolved and try again next epoch"
-                        ),
+                        Err(error) => {
+                            self.metrics.failed_allegretto_transitions.inc();
+                            warn!(
+                                %error,
+                                "transitioning to dynamic validator sets was not \
+                                succesful; will attempt again next epoch"
+                            );
+                        }
                     }
                 }
 
@@ -391,12 +399,18 @@ where
         self.metrics
             .how_often_player
             .inc_by(ceremony.is_player() as u64);
-        self.metrics.post_allegretto_ceremonies.inc();
         self.metrics.pre_allegretto_ceremonies.inc();
         ceremony
     }
 
-    async fn transition_to_dynamic_validator_sets(&mut self) -> eyre::Result<()> {
+    async fn transition_to_dynamic_validator_sets<TReceiver, TSender>(
+        &mut self,
+        mux: &mut MuxHandle<TSender, TReceiver>,
+    ) -> eyre::Result<Ceremony<ContextCell<TContext>, TReceiver, TSender>>
+    where
+        TReceiver: Receiver<PublicKey = PublicKey>,
+        TSender: Sender<PublicKey = PublicKey>,
+    {
         ensure!(
             self.pre_allegretto_metadatas
                 .ceremony_success_metadata
@@ -417,20 +431,12 @@ where
                 post-allegretto dynamic validator sets the pre-allegretto epoch \
                 state must exist",
             );
-        let validator_state = self
-            .validators_metadata
-            .get(&epoch_state.epoch().into())
-            .cloned()
-            .ok_or_eyre(
-                "did not write a static validator set to disk yet; waiting \
-                another epoch to ensure it exists before attempting a new \
-                handover",
-            )?;
+        let validator_state =
+            ValidatorState::with_unknown_contract_state(self.config.initial_validators.clone());
 
-        self.transition_from_static_validator_sets(epoch_state, validator_state)
+        self.transition_from_static_validator_sets(epoch_state, validator_state, mux)
             .await
-            .wrap_err("hand-over to post-allegretto dynamic validator set logic failed")?;
-        Ok(())
+            .wrap_err("hand-over to post-allegretto dynamic validator set logic failed")
     }
 }
 

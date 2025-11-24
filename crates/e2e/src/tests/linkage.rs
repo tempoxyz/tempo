@@ -8,12 +8,6 @@ use commonware_p2p::simulated::Link;
 fn only_good_links() {
     let _ = tempo_eyre::install();
 
-    let link = Link {
-        latency: Duration::from_millis(10),
-        jitter: Duration::from_millis(1),
-        success_rate: 1.0,
-    };
-
     // FIXME(janis): figure out how to run this test in a loop.
     //
     // Opening too many databases in a row leads to errors like:
@@ -25,14 +19,7 @@ fn only_good_links() {
     //
     // for seed in 0..5 {
     for seed in 0..1 {
-        let setup = Setup {
-            how_many_signers: 4,
-            how_many_verifiers: 0,
-            seed,
-            linkage: link.clone(),
-            epoch_length: 100,
-            connect_execution_layer_nodes: false,
-        };
+        let setup = Setup::new().epoch_length(100).seed(seed);
         let _first = run(setup.clone(), |metric, value| {
             // // TODO(janis): commonware calls this marshal, we call this sync.
             // // We should rename this to marshal (the actor, that is).
@@ -95,14 +82,11 @@ fn many_bad_links() {
     //
     // for seed in 0..5 {
     for seed in 0..1 {
-        let setup = Setup {
-            how_many_signers: 4,
-            how_many_verifiers: 0,
-            seed,
-            linkage: link.clone(),
-            epoch_length: 100,
-            connect_execution_layer_nodes: false,
-        };
+        let setup = Setup::new()
+            .seed(seed)
+            .linkage(link.clone())
+            .epoch_length(100);
+
         let _first = run(setup.clone(), |metric, value| {
             // // TODO(janis): commonware calls this marshal, we call this sync.
             // // We should rename this to marshal (the actor, that is).
@@ -138,14 +122,11 @@ fn reach_height_20_with_a_few_bad_links() {
         success_rate: 0.98,
     };
 
-    let setup = Setup {
-        how_many_signers: 10,
-        how_many_verifiers: 0,
-        seed: 0,
-        linkage: link,
-        epoch_length: 100,
-        connect_execution_layer_nodes: false,
-    };
+    let setup = Setup::new()
+        .how_many_signers(10)
+        .epoch_length(100)
+        .linkage(link);
+
     let _first = run(setup, |metric, value| {
         // // TODO(janis): commonware calls this marshal, we call this sync.
         // // We should rename this to marshal (the actor, that is).

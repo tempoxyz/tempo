@@ -216,11 +216,16 @@ where
     }
 
     #[instrument(skip_all)]
-    pub(super) async fn transition_from_static_validator_sets(
+    pub(super) async fn transition_from_static_validator_sets<TReceiver, TSender>(
         &mut self,
         pre_allegretto_epoch_state: pre_allegretto::EpochState,
         pre_allegretto_validator_state: ValidatorState,
-    ) -> eyre::Result<()> {
+        mux: &mut MuxHandle<TSender, TReceiver>,
+    ) -> eyre::Result<Ceremony<ContextCell<TContext>, TReceiver, TSender>>
+    where
+        TReceiver: Receiver<PublicKey = PublicKey>,
+        TSender: Sender<PublicKey = PublicKey>,
+    {
         let on_chain_validators = super::read_validator_config_with_retry(
             &self.context,
             &self.config.execution_node,
@@ -280,7 +285,8 @@ where
             .await
             .expect("syncing state must always work");
         self.register_current_epoch_state().await;
-        Ok(())
+
+        Ok(self.start_post_allegretto_ceremony(mux).await)
     }
 
     #[instrument(skip_all)]
@@ -340,6 +346,7 @@ where
         self.metrics
             .how_often_player
             .inc_by(ceremony.is_player() as u64);
+
         self.metrics.post_allegretto_ceremonies.inc();
 
         ceremony

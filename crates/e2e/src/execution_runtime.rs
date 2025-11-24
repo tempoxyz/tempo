@@ -10,6 +10,7 @@ use alloy::{
     },
     transports::http::reqwest::Url,
 };
+use alloy_genesis::Genesis;
 use alloy_primitives::Address;
 use commonware_codec::Encode;
 use commonware_cryptography::ed25519::PublicKey;
@@ -68,6 +69,10 @@ pub struct ExecutionRuntime {
 impl ExecutionRuntime {
     /// Constructs a new execution runtime to launch execution nodes.
     pub fn new() -> Self {
+        Self::with_chain_spec(chainspec())
+    }
+
+    pub fn with_chain_spec(chain_spec: TempoChainSpec) -> Self {
         let tempdir = tempfile::Builder::new()
             // TODO(janis): cargo manifest prefix?
             .prefix("tempo_e2e_test")
@@ -139,14 +144,10 @@ impl ExecutionRuntime {
                             let _ = response.send(receipt);
                         }
                         Message::SpawnNode(spawn_node) => {
-                            let SpawnNode {
-                                name,
-                                response,
-                                allegretto_timestamp,
-                            } = *spawn_node;
+                            let SpawnNode { name, response } = *spawn_node;
                             let node = launch_execution_node(
                                 task_manager.executor(),
-                                allegretto_timestamp,
+                                chain_spec.clone(),
                                 datadir.join(name),
                             )
                             .await
@@ -241,17 +242,12 @@ impl ExecutionRuntime {
     }
 
     /// Requests a new execution node and blocks until its returned.
-    pub async fn spawn_node(
-        &self,
-        name: &str,
-        allegretto_timestamp: Option<u64>,
-    ) -> eyre::Result<ExecutionNode> {
+    pub async fn spawn_node(&self, name: &str) -> eyre::Result<ExecutionNode> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.to_runtime
             .send(
                 SpawnNode {
                     name: name.to_string(),
-                    allegretto_timestamp,
                     response: tx,
                 }
                 .into(),
@@ -328,14 +324,26 @@ impl std::fmt::Debug for ExecutionNode {
     }
 }
 
-// TODO(janis): allow configuring this.
-fn chainspec() -> Arc<TempoChainSpec> {
-    Arc::new(TempoChainSpec::from_genesis(
-        serde_json::from_str(include_str!(
-            "../../node/tests/assets/test-genesis-moderato.json"
-        ))
-        .unwrap(),
+fn genesis() -> Genesis {
+    serde_json::from_str(include_str!(
+        "../../node/tests/assets/test-genesis-moderato.json"
     ))
+    .unwrap()
+}
+
+// TODO(janis): allow configuring this.
+pub fn chainspec() -> TempoChainSpec {
+    TempoChainSpec::from_genesis(genesis())
+}
+
+pub fn chainspec_with_allegretto(timestamp: u64) -> TempoChainSpec {
+    let mut genesis = genesis();
+    genesis
+        .config
+        .extra_fields
+        .insert_value("allegrettoTime".to_string(), timestamp)
+        .unwrap();
+    TempoChainSpec::from_genesis(genesis)
 }
 
 /// Launches a tempo execution node.
@@ -348,10 +356,10 @@ fn chainspec() -> Arc<TempoChainSpec> {
 /// 3. consensus config is not necessary
 pub async fn launch_execution_node<P: AsRef<Path>>(
     executor: TaskExecutor,
-    allegretto_timestamp: Option<u64>,
+    chain_spec: TempoChainSpec,
     datadir: P,
 ) -> eyre::Result<ExecutionNode> {
-    let node_config = NodeConfig::new(chainspec())
+    let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_rpc(
             RpcServerArgs::default()
                 .with_unused_ports()
@@ -420,7 +428,6 @@ impl From<SpawnNode> for Message {
 #[derive(Debug)]
 struct SpawnNode {
     name: String,
-    allegretto_timestamp: Option<u64>,
     response: tokio::sync::oneshot::Sender<ExecutionNode>,
 }
 
