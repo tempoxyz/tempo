@@ -9,6 +9,7 @@ pub use tempo_contracts::precompiles::{
 
 use crate::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
     storage::PrecompileStorageProvider,
     tip20::{
@@ -515,6 +516,17 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
     // Standard token functions
     pub fn approve(&mut self, msg_sender: Address, call: ITIP20::approveCall) -> Result<bool> {
+        // Only check access keys after Allegretto hardfork
+        if self.storage.spec().is_allegretto() {
+            // Get the old allowance
+            let old_allowance = self.get_allowance(msg_sender, call.spender)?;
+
+            // Check and update spending limits for access keys
+            let mut keychain = AccountKeychain::new(self.storage);
+            keychain.authorize_approve(msg_sender, self.address, old_allowance, call.amount)?;
+        }
+
+        // Set the new allowance
         self.set_allowance(msg_sender, call.spender, call.amount)?;
 
         self.storage.emit_event(
@@ -535,6 +547,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.check_not_paused()?;
         self.check_not_token_address(call.to)?;
         self.ensure_transfer_authorized(msg_sender, call.to)?;
+
+        // Only check access keys after Allegretto hardfork
+        if self.storage.spec().is_allegretto() {
+            // Check and update spending limits for access keys
+            let mut keychain = AccountKeychain::new(self.storage);
+            keychain.authorize_transfer(msg_sender, self.address, call.amount)?;
+        }
+
         self._transfer(msg_sender, call.to, call.amount)?;
         Ok(true)
     }

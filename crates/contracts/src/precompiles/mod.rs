@@ -1,3 +1,4 @@
+pub mod account_keychain;
 pub mod common_errors;
 pub mod nonce;
 pub mod path_usd;
@@ -10,6 +11,7 @@ pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 pub mod validator_config;
 
+pub use account_keychain::*;
 use alloy::primitives::{Address, address};
 pub use common_errors::*;
 pub use nonce::*;
@@ -37,3 +39,5 @@ pub const NONCE_PRECOMPILE_ADDRESS: Address =
     address!("0x4E4F4E4345000000000000000000000000000000");
 pub const VALIDATOR_CONFIG_ADDRESS: Address =
     address!("0xCCCCCCCC00000000000000000000000000000000");
+pub const ACCOUNT_KEYCHAIN_ADDRESS: Address =
+    address!("0xAAAAAAAA00000000000000000000000000000000");
