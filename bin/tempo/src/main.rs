@@ -42,22 +42,6 @@ use tempo_node::{
 use tokio::sync::oneshot;
 use tokio_util::either::Either;
 
-/// Transaction pool validator CLI arguments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::Args)]
-struct ValidatorArgs {
-    /// Maximum allowed `valid_after` offset for AA txs.
-    #[arg(long, default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
-    pub aa_valid_after_max_secs: u64,
-}
-
-impl From<ValidatorArgs> for ValidatorConfig {
-    fn from(args: ValidatorArgs) -> Self {
-        Self {
-            aa_valid_after_max_secs: args.aa_valid_after_max_secs,
-        }
-    }
-}
-
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 struct TempoArgs {
@@ -77,7 +61,24 @@ struct TempoArgs {
     pub faucet_args: FaucetArgs,
 
     #[command(flatten)]
-    pub validator_args: ValidatorArgs,
+    pub tx_pool_args: TempoTxPoolArgs,
+}
+
+/// Tempo transaction pool CLI arguments.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::Args)]
+#[command(next_help_heading = "TxPool")]
+pub struct TempoTxPoolArgs {
+    /// Maximum allowed `valid_after` offset for AA txs.
+    #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
+    pub aa_valid_after_max_secs: u64,
+}
+
+impl From<TempoTxPoolArgs> for ValidatorConfig {
+    fn from(args: TempoTxPoolArgs) -> Self {
+        Self {
+            aa_valid_after_max_secs: args.aa_valid_after_max_secs,
+        }
+    }
 }
 
 fn main() -> eyre::Result<()> {
@@ -209,7 +210,7 @@ fn main() -> eyre::Result<()> {
             node,
             node_exit_future,
         } = builder
-            .node(TempoNode::new(args.validator_args.into()))
+            .node(TempoNode::new(args.tx_pool_args.into()))
             .apply(|mut builder: WithLaunchContext<_>| {
                 if let Some(follow_url) = &args.follow {
                     builder.config_mut().debug.rpc_consensus_url = Some(follow_url.clone());
