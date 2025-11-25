@@ -70,16 +70,15 @@ pub(super) async fn setup(
 
     let nonce = nonce + base.len() as u64;
 
-    for (i, signer) in signers.iter().enumerate() {
+    for (i, recipient) in signers.iter().enumerate() {
         for (j, token) in tokens.iter().enumerate() {
             let provider = provider.clone();
-            let recipient = signer.address();
             let tx = mint(
                 token,
-                signer,
+                &signer,
                 nonce + (i as u64 * tokens.len() as u64) + j as u64,
                 chain_id,
-                recipient,
+                recipient.address(),
                 mint_amount,
             )?;
             futures.push(Box::pin(async move {
