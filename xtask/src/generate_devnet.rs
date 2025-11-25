@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{net::SocketAddr, path::PathBuf};
 
 use alloy_primitives::Address;
 use eyre::{Context, ensure};
@@ -116,7 +116,7 @@ impl GenerateDevnet {
 
             execution_peers.push(format!(
                 "enode://{execution_p2p_identity:x}@{}",
-                validator.addr.clone().with_port(execution_p2p_port),
+                SocketAddr::new(validator.addr.ip(), execution_p2p_port),
             ));
 
             all_configs.push((
