@@ -21,7 +21,6 @@ use commonware_runtime::Metrics as _;
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_commonware_node_config::{SigningKey, SigningShare};
 use tempo_node::TempoFullNode;
-use tracing::info;
 
 use crate::config::{
     BOUNDARY_CERT_CHANNEL_IDENT, BOUNDARY_CERT_LIMIT, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
@@ -37,35 +36,6 @@ pub async fn run_consensus_stack(
     config: Args,
     execution_node: TempoFullNode,
 ) -> eyre::Result<()> {
-    let epoch_length = execution_node
-        .chain_spec()
-        .info
-        .epoch_length()
-        .ok_or_eyre("chainspec did not contain epochLength; cannot go on without it")?;
-
-    let public_polynomial = execution_node
-        .chain_spec()
-        .info
-        .public_polynomial()
-        .clone()
-        .ok_or_eyre("chainspec did not contain publicPolynomial; cannot go on without it")?
-        .into_inner();
-
-    let validators = execution_node
-        .chain_spec()
-        .info
-        .validators()
-        .clone()
-        .ok_or_eyre("chainspec did not contain validators; cannot go on without them")?
-        .into_inner();
-
-    info!(
-        epoch_length,
-        ?validators,
-        ?public_polynomial,
-        "using values found in chainspec"
-    );
-
     let share = config
         .signing_share
         .as_ref()
@@ -130,16 +100,12 @@ pub async fn run_consensus_stack(
 
         fee_recipient,
 
-        epoch_length,
-
         execution_node,
         blocker: oracle.clone(),
         peer_manager: oracle.clone(),
         // TODO: Set this through config?
         partition_prefix: "engine".into(),
         signer: signing_key,
-        public_polynomial,
-        validators,
         share,
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
