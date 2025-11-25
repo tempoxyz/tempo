@@ -10,7 +10,10 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::{TempoHardfork, TempoHardforks}};
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
 use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, AuthorizedKey, compute_keys_slot};
 use tempo_revm::TempoStateAccess;
 
