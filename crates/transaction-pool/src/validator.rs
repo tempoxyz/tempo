@@ -175,10 +175,7 @@ where
         if let Some(tx) = transaction.inner().as_aa()
             && let Some(valid_after) = tx.tx().valid_after
         {
-            let current_time = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time before UNIX EPOCH")
-                .as_secs();
+            let current_time = self.inner.fork_tracker().tip_timestamp();
             let max_allowed = current_time.saturating_add(self.aa_valid_after_max_secs);
             if valid_after > max_allowed {
                 return TransactionValidationOutcome::Invalid(
