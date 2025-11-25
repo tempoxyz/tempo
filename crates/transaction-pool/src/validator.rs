@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use crate::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
 use alloy_consensus::Transaction;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
@@ -11,8 +13,13 @@ use reth_transaction_pool::{
 };
 use tempo_revm::TempoStateAccess;
 
-// Reject AA transactions where `valid_after` is too far in the future to prevent mempool DOS.
-const AA_VALID_AFTER_MAX_SECS: u64 = 3600;
+/// Maximum allowed `valid_after` offset for AA transactions (in seconds).
+static AA_VALID_AFTER_MAX_SECS: LazyLock<u64> = LazyLock::new(|| {
+    std::env::var("AA_VALID_AFTER_MAX_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3600)
+});
 
 /// Validator for Tempo transactions.
 #[derive(Debug)]
@@ -72,7 +79,7 @@ where
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("system time before UNIX EPOCH")
                 .as_secs();
-            let max_allowed = current_time.saturating_add(AA_VALID_AFTER_MAX_SECS);
+            let max_allowed = current_time.saturating_add(*AA_VALID_AFTER_MAX_SECS);
             if valid_after > max_allowed {
                 return TransactionValidationOutcome::Invalid(
                     transaction,
