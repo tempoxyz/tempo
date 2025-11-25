@@ -37,7 +37,7 @@ use tempo_faucet::{
     faucet::{TempoFaucetExt, TempoFaucetExtApiServer},
 };
 use tempo_node::{
-    DEFAULT_AA_VALID_AFTER_MAX_SECS, TempoFullNode, ValidatorConfig, node::TempoNode,
+    DEFAULT_AA_VALID_AFTER_MAX_SECS, TempoFullNode, TempoPoolBuilder, node::TempoNode,
 };
 use tokio::sync::oneshot;
 use tokio_util::either::Either;
@@ -73,11 +73,9 @@ pub struct TempoTxPoolArgs {
     pub aa_valid_after_max_secs: u64,
 }
 
-impl From<TempoTxPoolArgs> for ValidatorConfig {
+impl From<TempoTxPoolArgs> for TempoPoolBuilder {
     fn from(args: TempoTxPoolArgs) -> Self {
-        Self {
-            aa_valid_after_max_secs: args.aa_valid_after_max_secs,
-        }
+        Self::default().with_aa_tx_valid_after_max_secs(args.aa_valid_after_max_secs)
     }
 }
 

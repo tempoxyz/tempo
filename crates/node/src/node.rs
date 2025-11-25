@@ -44,38 +44,23 @@ use tempo_transaction_pool::{TempoTransactionPool, validator::TempoTransactionVa
 /// Default maximum allowed `valid_after` offset for AA txs (1 hour).
 pub const DEFAULT_AA_VALID_AFTER_MAX_SECS: u64 = 3600;
 
-/// Validator configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ValidatorConfig {
-    /// Maximum allowed `valid_after` offset for AA txs.
-    pub aa_valid_after_max_secs: u64,
-}
-
-impl Default for ValidatorConfig {
-    fn default() -> Self {
-        Self {
-            aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
-        }
-    }
-}
-
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct TempoNode {
-    /// Validator configuration.
-    validator_config: ValidatorConfig,
+    /// Transaction pool configuration.
+    tx_pool_config: TempoPoolBuilder,
 }
 
 impl TempoNode {
     /// Create new instance of a Tempo node
-    pub fn new(validator_config: ValidatorConfig) -> Self {
-        Self { validator_config }
+    pub fn new(tx_pool_config: TempoPoolBuilder) -> Self {
+        Self { tx_pool_config }
     }
 
     /// Returns a [`ComponentsBuilder`] configured for a regular Tempo node.
     pub fn components<Node>(
-        validator_config: ValidatorConfig,
+        tx_pool_config: TempoPoolBuilder,
     ) -> ComponentsBuilder<
         Node,
         TempoPoolBuilder,
@@ -89,7 +74,7 @@ impl TempoNode {
     {
         ComponentsBuilder::default()
             .node_types::<Node>()
-            .pool(TempoPoolBuilder { validator_config })
+            .pool(tx_pool_config)
             .executor(TempoExecutorBuilder::default())
             .payload(BasicPayloadServiceBuilder::default())
             .network(EthereumNetworkBuilder::default())
@@ -230,7 +215,7 @@ where
     type AddOns = TempoAddOns<NodeAdapter<N>>;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
-        Self::components(self.validator_config)
+        Self::components(self.tx_pool_config)
     }
 
     fn add_ons(&self) -> Self::AddOns {
@@ -346,11 +331,27 @@ where
 ///
 /// This contains various settings that can be configured and take precedence over the node's
 /// config.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct TempoPoolBuilder {
-    /// Validator configuration.
-    pub validator_config: ValidatorConfig,
+    /// Maximum allowed `valid_after` offset for AA txs.
+    pub aa_valid_after_max_secs: u64,
+}
+
+impl TempoPoolBuilder {
+    /// Sets the maximum allowed `valid_after` offset for AA txs.
+    pub const fn with_aa_tx_valid_after_max_secs(mut self, secs: u64) -> Self {
+        self.aa_valid_after_max_secs = secs;
+        self
+    }
+}
+
+impl Default for TempoPoolBuilder {
+    fn default() -> Self {
+        Self {
+            aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
+        }
+    }
 }
 
 impl<Node> PoolBuilder<Node> for TempoPoolBuilder
@@ -410,9 +411,8 @@ where
             });
         }
 
-        let validator = validator.map(move |v| {
-            TempoTransactionValidator::new(v, self.validator_config.aa_valid_after_max_secs)
-        });
+        let validator =
+            validator.map(move |v| TempoTransactionValidator::new(v, self.aa_valid_after_max_secs));
         let transaction_pool = TxPoolBuilder::new(ctx)
             .with_validator(validator)
             .build_and_spawn_maintenance_task(blob_store, pool_config)?;
