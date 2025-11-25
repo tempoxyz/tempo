@@ -1,6 +1,8 @@
 //! Command line arguments for configuring the consensus layer of a tempo node.
 use std::{net::SocketAddr, path::PathBuf};
 
+const DEFAULT_MAX_MESSAGE_SIZE_BYTES: usize = reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
+
 /// Arguments for configuring the consensus layer of a tempo node.
 /// Command line arguments for configuring the consensus layer of a tempo node.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
@@ -26,7 +28,7 @@ pub struct Args {
     #[arg(long = "consensus.metrics-address", default_value = "127.0.0.1:8001")]
     pub metrics_address: SocketAddr,
 
-    #[arg(long = "consensus.max-message-size-bytes", default_value_t = 1024 * 1024)]
+    #[arg(long = "consensus.max-message-size-bytes", default_value_t = DEFAULT_MAX_MESSAGE_SIZE_BYTES)]
     pub max_message_size_bytes: usize,
 
     // pub storage_directory: camino::Utf8PathBuf,

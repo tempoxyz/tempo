@@ -490,10 +490,3 @@ pub fn address(index: u32) -> Address {
         .unwrap();
     secret_key_to_address(signer.credential())
 }
-
-fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>> {
-    let db = CacheDB::default();
-    let env = EvmEnv::default();
-    let factory = TempoEvmFactory::default();
-    factory.create_evm(db, env)
-}
