@@ -949,17 +949,15 @@ pub(crate) mod tests {
     }
 
     /// Helper to setup a token with rewards for testing fee transfer functions
-    /// Returns (token_id, initial_opted_in_supply)
+    /// Returns initial_opted_in_supply
     fn setup_token_with_rewards(
         storage: &mut HashMapStorageProvider,
+        token_id: u64,
         admin: Address,
         user: Address,
         mint_amount: U256,
         reward_amount: U256,
-    ) -> Result<(u64, u128)> {
-        initialize_path_usd(storage, admin)?;
-        let token_id = setup_factory_with_token(storage, admin, "Test", "TST");
-
+    ) -> Result<u128> {
         let initial_opted_in = {
             let mut token = TIP20Token::new(token_id, storage);
             token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -991,7 +989,7 @@ pub(crate) mod tests {
             initial_opted_in
         };
 
-        // Start a reward stream
+        // Start a reward stream.
         {
             let mut token = TIP20Token::new(token_id, storage);
             token.start_reward(
@@ -1007,7 +1005,7 @@ pub(crate) mod tests {
         let initial_time = storage.timestamp();
         storage.set_timestamp(initial_time + U256::from(50));
 
-        Ok((token_id, initial_opted_in))
+        Ok(initial_opted_in)
     }
 
     /// Initialize a factory and create a single token
@@ -2263,9 +2261,18 @@ pub(crate) mod tests {
         let mint_amount = U256::from(1000e18);
         let reward_amount = U256::from(100e18);
 
-        // Setup token with rewards enabled
-        let (token_id, initial_opted_in) =
-            setup_token_with_rewards(&mut storage, admin, user, mint_amount, reward_amount)?;
+        let token_id = setup_factory_with_token(&mut storage, admin, "Test", "TST");
+        // Setup token with rewards enabled, to do this we need to set the hardfork to pre-Moderato
+        // to enable scheduled rewards
+        storage.set_spec(TempoHardfork::Adagio);
+        let initial_opted_in = setup_token_with_rewards(
+            &mut storage,
+            token_id,
+            admin,
+            user,
+            mint_amount,
+            reward_amount,
+        )?;
 
         storage.set_spec(TempoHardfork::Moderato);
 
@@ -2302,9 +2309,19 @@ pub(crate) mod tests {
         let mint_amount = U256::from(1000e18);
         let reward_amount = U256::from(100e18);
 
-        // Setup token with rewards enabled
-        let (token_id, initial_opted_in) =
-            setup_token_with_rewards(&mut storage, admin, user, mint_amount, reward_amount)?;
+        let token_id = setup_factory_with_token(&mut storage, admin, "Test", "TST");
+
+        // Setup token with rewards enabled, to do this we need to set the hardfork to pre-Moderato
+        // to enable scheduled rewards
+        storage.set_spec(TempoHardfork::Adagio);
+        let initial_opted_in = setup_token_with_rewards(
+            &mut storage,
+            token_id,
+            admin,
+            user,
+            mint_amount,
+            reward_amount,
+        )?;
 
         // Transfer fee from user
         let fee_amount = U256::from(100e18);
@@ -2339,9 +2356,19 @@ pub(crate) mod tests {
         let mint_amount = U256::from(1000e18);
         let reward_amount = U256::from(100e18);
 
-        // Setup token with rewards enabled
-        let (token_id, _initial_opted_in) =
-            setup_token_with_rewards(&mut storage, admin, user, mint_amount, reward_amount)?;
+        let token_id = setup_factory_with_token(&mut storage, admin, "Test", "TST");
+
+        // Setup token with rewards enabled, to do this we need to set the hardfork to pre-Moderato
+        // to enable scheduled rewards
+        storage.set_spec(TempoHardfork::Adagio);
+        let initial_opted_in = setup_token_with_rewards(
+            &mut storage,
+            token_id,
+            admin,
+            user,
+            mint_amount,
+            reward_amount,
+        )?;
 
         storage.set_spec(TempoHardfork::Moderato);
 
@@ -2394,16 +2421,25 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_fee_post_tx_no_rewards_pre_moderato() -> eyre::Result<()> {
         // Test with Adagio (pre-Moderato) - rewards should NOT be handled
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let user = Address::random();
 
         let mint_amount = U256::from(1000e18);
         let reward_amount = U256::from(100e18);
 
-        // Setup token with rewards enabled
-        let (token_id, initial_opted_in) =
-            setup_token_with_rewards(&mut storage, admin, user, mint_amount, reward_amount)?;
+        let token_id = setup_factory_with_token(&mut storage, admin, "Test", "TST");
+        // Setup token with rewards enabled, to do this we need to set the hardfork to pre-Moderato
+        // to enable scheduled rewards
+        storage.set_spec(TempoHardfork::Adagio);
+        let initial_opted_in = setup_token_with_rewards(
+            &mut storage,
+            token_id,
+            admin,
+            user,
+            mint_amount,
+            reward_amount,
+        )?;
 
         // Simulate fee transfer: first take fee from user
         let fee_amount = U256::from(100e18);
