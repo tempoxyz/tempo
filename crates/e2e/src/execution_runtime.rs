@@ -27,10 +27,6 @@ use reth_ethereum::{
     },
     tasks::{TaskExecutor, TaskManager},
 };
-use reth_evm::{
-    EvmEnv, EvmFactory,
-    revm::database::{CacheDB, EmptyDB},
-};
 use reth_node_builder::{NodeBuilder, NodeConfig};
 use reth_node_core::{
     args::{DatadirArgs, PayloadBuilderArgs, RpcServerArgs},
@@ -38,8 +34,7 @@ use reth_node_core::{
 };
 use reth_rpc_builder::RpcModuleSelection;
 use tempfile::TempDir;
-use tempo_chainspec::TempoChainSpec;
-use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_node::{TempoFullNode, node::TempoNode};
 use tempo_precompiles::{VALIDATOR_CONFIG_ADDRESS, validator_config::IValidatorConfig};
 
@@ -72,7 +67,7 @@ impl ExecutionRuntime {
         Self::with_chain_spec(chainspec())
     }
 
-    pub fn with_chain_spec(chain_spec: TempoChainSpec) -> Self {
+    pub fn with_chain_spec(_chain_spec: TempoChainSpec) -> Self {
         let tempdir = tempfile::Builder::new()
             // TODO(janis): cargo manifest prefix?
             .prefix("tempo_e2e_test")
@@ -144,10 +139,14 @@ impl ExecutionRuntime {
                             let _ = response.send(receipt);
                         }
                         Message::SpawnNode(spawn_node) => {
-                            let SpawnNode { name, response } = *spawn_node;
+                            let SpawnNode {
+                                name,
+                                response,
+                                hardfork,
+                            } = *spawn_node;
                             let node = launch_execution_node(
                                 task_manager.executor(),
-                                chain_spec.clone(),
+                                hardfork,
                                 datadir.join(name),
                             )
                             .await
@@ -242,12 +241,17 @@ impl ExecutionRuntime {
     }
 
     /// Requests a new execution node and blocks until its returned.
-    pub async fn spawn_node(&self, name: &str) -> eyre::Result<ExecutionNode> {
+    pub async fn spawn_node(
+        &self,
+        name: &str,
+        hardfork: TempoHardfork,
+    ) -> eyre::Result<ExecutionNode> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.to_runtime
             .send(
                 SpawnNode {
                     name: name.to_string(),
+                    hardfork,
                     response: tx,
                 }
                 .into(),
@@ -331,6 +335,13 @@ fn genesis() -> Genesis {
     .unwrap()
 }
 
+fn genesis_allegretto() -> Genesis {
+    serde_json::from_str(include_str!(
+        "../../node/tests/assets/test-genesis-allegretto.json"
+    ))
+    .unwrap()
+}
+
 // TODO(janis): allow configuring this.
 pub fn chainspec() -> TempoChainSpec {
     TempoChainSpec::from_genesis(genesis())
@@ -346,6 +357,15 @@ pub fn chainspec_with_allegretto(timestamp: u64) -> TempoChainSpec {
     TempoChainSpec::from_genesis(genesis)
 }
 
+fn chainspec_for_hardfork(hardfork: TempoHardfork) -> Arc<TempoChainSpec> {
+    let genesis = match hardfork {
+        TempoHardfork::Allegretto => genesis_allegretto(),
+        // Default to moderato genesis for earlier hardforks
+        _ => genesis(),
+    };
+    Arc::new(TempoChainSpec::from_genesis(genesis))
+}
+
 /// Launches a tempo execution node.
 ///
 /// Difference compared to starting the node through the binary:
@@ -356,10 +376,10 @@ pub fn chainspec_with_allegretto(timestamp: u64) -> TempoChainSpec {
 /// 3. consensus config is not necessary
 pub async fn launch_execution_node<P: AsRef<Path>>(
     executor: TaskExecutor,
-    chain_spec: TempoChainSpec,
+    hardfork: TempoHardfork,
     datadir: P,
 ) -> eyre::Result<ExecutionNode> {
-    let node_config = NodeConfig::new(Arc::new(chain_spec))
+    let node_config = NodeConfig::new(chainspec_for_hardfork(hardfork))
         .with_rpc(
             RpcServerArgs::default()
                 .with_unused_ports()
@@ -428,6 +448,7 @@ impl From<SpawnNode> for Message {
 #[derive(Debug)]
 struct SpawnNode {
     name: String,
+    hardfork: TempoHardfork,
     response: tokio::sync::oneshot::Sender<ExecutionNode>,
 }
 
@@ -466,11 +487,4 @@ pub fn address(index: u32) -> Address {
         .build()
         .unwrap();
     secret_key_to_address(signer.credential())
-}
-
-fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>> {
-    let db = CacheDB::default();
-    let env = EvmEnv::default();
-    let factory = TempoEvmFactory::default();
-    factory.create_evm(db, env)
 }

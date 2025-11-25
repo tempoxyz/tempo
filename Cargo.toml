@@ -181,7 +181,7 @@ alloy-consensus = "1.1.2"
 alloy-eips = "1.1.2"
 alloy-genesis = "1.1.2"
 alloy-hardforks = "0.4.4"
-alloy-primitives = "1.4.1"
+alloy-primitives = { version = "1.4.1", features = ["rlp"] }
 alloy-provider = { version = "1.1.2", default-features = false }
 alloy-sol-types = "1.4.1"
 alloy-rlp = "0.3.12"

@@ -24,6 +24,7 @@ use commonware_utils::{quorum, set::OrderedAssociated};
 use futures::future::join_all;
 use itertools::Itertools as _;
 use reth_node_metrics::recorder::PrometheusRecorder;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_commonware_node::consensus;
 use tracing::debug;
 
@@ -189,6 +190,15 @@ pub struct Setup {
     pub epoch_length: u64,
 
     pub connect_execution_layer_nodes: bool,
+
+    /// Which hardfork genesis to use (determines which genesis file is loaded).
+    pub hardfork: TempoHardfork,
+}
+
+impl Default for Setup {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Setup {
@@ -204,6 +214,7 @@ impl Setup {
             },
             epoch_length: 20,
             connect_execution_layer_nodes: false,
+            hardfork: TempoHardfork::Moderato,
         }
     }
 
@@ -242,6 +253,10 @@ impl Setup {
             ..self
         }
     }
+
+    pub fn hardfork(self, hardfork: TempoHardfork) -> Self {
+        Self { hardfork, ..self }
+    }
 }
 
 pub async fn setup_validators(
@@ -254,7 +269,7 @@ pub async fn setup_validators(
         epoch_length,
         connect_execution_layer_nodes,
         linkage,
-        ..
+        hardfork,
     }: Setup,
 ) -> Vec<PreparedNode> {
     let (network, mut oracle) = Network::new(
@@ -301,7 +316,7 @@ pub async fn setup_validators(
         .map(|(i, signer)| {
             (
                 signer.public_key(),
-                SocketAddr::from(([127, 0, 0, 1], i as u16 + 1)).into(),
+                SocketAddr::from(([127, 0, 0, 1], i as u16 + 1)),
             )
         })
         .collect::<Vec<_>>()
@@ -311,7 +326,10 @@ pub async fn setup_validators(
         Vec::with_capacity((how_many_signers + how_many_verifiers) as usize);
     for key in &private_keys {
         let execution_node = execution_runtime
-            .spawn_node(&format!("{EXECUTION_NODE_PREFIX}-{}", key.public_key()))
+            .spawn_node(
+                &format!("{EXECUTION_NODE_PREFIX}-{}", key.public_key()),
+                hardfork,
+            )
             .await
             .expect("must be able to spawn nodes on the runtime");
 

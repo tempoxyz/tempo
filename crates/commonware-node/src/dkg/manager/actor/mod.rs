@@ -26,6 +26,7 @@ use futures::{StreamExt as _, channel::mpsc, lock::Mutex};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
 use tempo_chainspec::hardfork::TempoHardforks as _;
+use tempo_dkg_onchain_artifacts::PublicOutcome;
 use tempo_node::TempoFullNode;
 use tracing::{Span, info, instrument, warn};
 
@@ -35,9 +36,10 @@ use crate::{
         ceremony,
         ceremony::Ceremony,
         manager::{
-            DecodedValidator,
             ingress::{Finalize, GetIntermediateDealing, GetOutcome},
-            validators::{self, ValidatorState},
+            validators::{
+                self, DecodedValidator, ValidatorState, validator_state_with_unknown_contract_state,
+            },
         },
     },
     epoch,
@@ -341,10 +343,54 @@ where
         cause: Span,
         GetOutcome { response }: GetOutcome,
     ) -> eyre::Result<()> {
-        let outcome = if let Some(outcome) = self.post_allegretto_metadatas.dkg_outcome() {
+        // Check for pending DKG outcome first (set at pre-to-last block of epoch).
+        // If it exists, we need to read syncing_players from the contract to
+        // construct the full PublicOutcome for the next epoch.
+        let outcome = if let Some(pending) = self.post_allegretto_metadatas.pending_dkg_outcome() {
+            // Read syncing_players from the contract for the next epoch
+            let syncing_players = read_validator_config_with_retry(
+                &self.context,
+                &self.config.execution_node,
+                pending.epoch,
+                self.config.epoch_length,
+            )
+            .await;
+            self.post_allegretto_metadatas
+                .dkg_outcome_with_syncing_players(syncing_players)
+                .expect("pending_dkg_outcome returned Some, so dkg_outcome_with_syncing_players should too")
+        } else if let Some(outcome) = self.post_allegretto_metadatas.dkg_outcome() {
             outcome
         } else if let Some(outcome) = self.pre_allegretto_metadatas.dkg_outcome() {
-            outcome
+            // For pre-allegretto outcomes, we need to determine if we should
+            // enrich with validator addresses from the contract.
+            //
+            // During the first epoch transition with Allegretto active (epoch 0 → 1),
+            // the pre-allegretto code path is still used because post_allegretto_metadatas
+            // hasn't been initialized yet. In this case, we read validators from the
+            // contract to get proper addresses.
+            //
+            // For actual pre-allegretto (Moderato) behavior, we return the outcome as-is
+            // with empty addresses since the contract doesn't have validators registered.
+            if self.is_post_allegretto_by_epoch(outcome.epoch) {
+                // Allegretto is active: read validators from the contract
+                // Use read_from_latest_block to avoid the deadlock of trying to read
+                // from the block we're about to produce.
+                match validators::read_from_latest_block(&self.config.execution_node).await {
+                    Ok(syncing_players) if !syncing_players.is_empty() => PublicOutcome {
+                        epoch: outcome.epoch,
+                        validator_state: ValidatorState::new(syncing_players),
+                        public: outcome.public,
+                    },
+                    _ => {
+                        // Fallback to outcome with empty addresses if contract read fails
+                        // or returns empty (shouldn't happen for properly configured Allegretto)
+                        outcome
+                    }
+                }
+            } else {
+                // Pre-allegretto (Moderato): return outcome with empty addresses
+                outcome
+            }
         } else {
             return Err(eyre!(
                 "no DKG outcome was found in state, even though it must exist \
@@ -463,7 +509,7 @@ where
         let new_validator_state = match &epoch_state {
             // pre allegretto, the validators are always the once known passed in at init.
             EpochState::PreModerato(_) => {
-                ValidatorState::with_unknown_contract_state(self.config.initial_validators.clone())
+                validator_state_with_unknown_contract_state(self.config.initial_validators.clone())
             }
             EpochState::PostModerato(epoch_state) => epoch_state.validator_state.clone(),
         };
@@ -577,6 +623,22 @@ where
             && self.post_allegretto_metadatas.exists()
     }
 
+    /// Checks if Allegretto is active for the given epoch.
+    ///
+    /// This is determined by checking if the first block of the epoch
+    /// would be after the Allegretto activation timestamp.
+    fn is_post_allegretto_by_epoch(&self, epoch: Epoch) -> bool {
+        // Calculate the first block height of the epoch
+        let first_block_height = epoch * self.config.epoch_length;
+        // Estimate timestamp: assuming ~1 second per block from genesis
+        // This is a rough approximation but sufficient for hardfork detection
+        let estimated_timestamp = first_block_height;
+        self.config
+            .execution_node
+            .chain_spec()
+            .is_allegretto_active_at_timestamp(estimated_timestamp)
+    }
+
     /// Returns the previous epoch state.
     ///
     /// Always prefers the post allegretto state, if it exists.
@@ -587,14 +649,11 @@ where
             .cloned()
         {
             Some(EpochState::PostModerato(epoch_state))
-        } else if let Some(epoch_state) = self
-            .pre_allegretto_metadatas
-            .previous_epoch_state()
-            .cloned()
-        {
-            Some(EpochState::PreModerato(epoch_state))
         } else {
-            None
+            self.pre_allegretto_metadatas
+                .previous_epoch_state()
+                .cloned()
+                .map(EpochState::PreModerato)
         }
     }
 
@@ -632,29 +691,29 @@ enum EpochState {
 impl EpochState {
     fn epoch(&self) -> Epoch {
         match self {
-            EpochState::PreModerato(epoch_state) => epoch_state.epoch(),
-            EpochState::PostModerato(epoch_state) => epoch_state.epoch(),
+            Self::PreModerato(epoch_state) => epoch_state.epoch(),
+            Self::PostModerato(epoch_state) => epoch_state.epoch(),
         }
     }
 
     fn participants(&self) -> &Ordered<PublicKey> {
         match self {
-            EpochState::PreModerato(epoch_state) => epoch_state.participants(),
-            EpochState::PostModerato(epoch_state) => epoch_state.participants(),
+            Self::PreModerato(epoch_state) => epoch_state.participants(),
+            Self::PostModerato(epoch_state) => epoch_state.participants(),
         }
     }
 
     fn public_polynomial(&self) -> &Public<MinSig> {
         match self {
-            EpochState::PreModerato(epoch_state) => epoch_state.public_polynomial(),
-            EpochState::PostModerato(epoch_state) => epoch_state.public_polynomial(),
+            Self::PreModerato(epoch_state) => epoch_state.public_polynomial(),
+            Self::PostModerato(epoch_state) => epoch_state.public_polynomial(),
         }
     }
 
     fn private_share(&self) -> &Option<Share> {
         match self {
-            EpochState::PreModerato(epoch_state) => epoch_state.private_share(),
-            EpochState::PostModerato(epoch_state) => epoch_state.private_share(),
+            Self::PreModerato(epoch_state) => epoch_state.private_share(),
+            Self::PostModerato(epoch_state) => epoch_state.private_share(),
         }
     }
 }

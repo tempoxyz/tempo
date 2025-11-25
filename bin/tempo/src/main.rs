@@ -117,7 +117,7 @@ fn main() -> eyre::Result<()> {
             let runtime_config = commonware_runtime::tokio::Config::default()
                 .with_tcp_nodelay(Some(true))
                 .with_worker_threads(args.consensus.worker_threads)
-                .with_storage_directory(&consensus_storage)
+                .with_storage_directory(consensus_storage)
                 .with_catch_panics(true);
 
             info_span!("prepare_consensus").in_scope(|| {

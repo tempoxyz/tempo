@@ -17,14 +17,14 @@ use commonware_utils::{
 use eyre::{WrapErr as _, ensure};
 use rand_core::CryptoRngCore;
 use tempo_chainspec::hardfork::TempoHardforks;
-use tempo_dkg_onchain_artifacts::PublicOutcome;
+use tempo_dkg_onchain_artifacts::{DecodedValidator, PublicOutcome, ValidatorState};
 use tracing::{Span, info, instrument, warn};
 
 use crate::{
     consensus::block::Block,
     dkg::{
         ceremony::{self, Ceremony},
-        manager::validators::ValidatorState,
+        manager::validators::validator_state_with_unknown_contract_state,
     },
     epoch,
 };
@@ -74,7 +74,7 @@ where
             self.validators_metadata
                 .put_sync(
                     0.into(),
-                    ValidatorState::with_unknown_contract_state(
+                    validator_state_with_unknown_contract_state(
                         self.config.initial_validators.clone(),
                     ),
                 )
@@ -199,7 +199,7 @@ where
                 self.validators_metadata
                     .put_sync(
                         epoch_state.epoch().into(),
-                        ValidatorState::with_unknown_contract_state(
+                        validator_state_with_unknown_contract_state(
                             self.config.initial_validators.clone(),
                         ),
                     )
@@ -433,7 +433,7 @@ where
                 state must exist",
             );
         let validator_state =
-            ValidatorState::with_unknown_contract_state(self.config.initial_validators.clone());
+            validator_state_with_unknown_contract_state(self.config.initial_validators.clone());
 
         self.transition_from_static_validator_sets(epoch_state, validator_state, mux)
             .await
@@ -495,9 +495,27 @@ where
 
     pub(super) fn dkg_outcome(&self) -> Option<PublicOutcome> {
         let epoch_state = self.current_epoch_state()?;
+        // Create a ValidatorState from the participants (pre-allegretto only has pubkeys)
+        let validators: OrderedAssociated<_, _> = epoch_state
+            .participants()
+            .iter()
+            .enumerate()
+            .map(|(i, pk)| {
+                (
+                    pk.clone(),
+                    DecodedValidator {
+                        public_key: pk.clone(),
+                        inbound: String::new(),
+                        outbound: String::new(),
+                        index: i as u64,
+                        address: alloy_primitives::Address::ZERO,
+                    },
+                )
+            })
+            .collect();
         Some(PublicOutcome {
             epoch: epoch_state.epoch(),
-            participants: epoch_state.participants().clone(),
+            validator_state: ValidatorState::new(validators),
             public: epoch_state.public_polynomial().clone(),
         })
     }

@@ -1,6 +1,6 @@
 //! Tests on chain DKG and epoch transition
 
-use std::{net::SocketAddr, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, time::Duration};
 
 use alloy::transports::http::reqwest::Url;
 use commonware_macros::test_traced;
@@ -10,6 +10,10 @@ use commonware_runtime::{
 };
 use commonware_utils::time::SystemTimeExt as _;
 use futures::future::join_all;
+use reth_ethereum::storage::BlockReader as _;
+use tempo_dkg_onchain_artifacts::PublicOutcome;
+
+use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{
     CONSENSUS_NODE_PREFIX, ExecutionRuntime, PreparedNode, Setup, execution_runtime::validator,
@@ -932,3 +936,376 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
         }
     });
 }
+
+#[test_traced]
+fn validator_is_added() {
+    let _ = tempo_eyre::install();
+
+    let seed = 0;
+
+    let cfg = Config::default().with_seed(seed);
+    let executor = Runner::from(cfg);
+
+    executor.start(|context| async move {
+        let execution_runtime = ExecutionRuntime::new();
+
+        let epoch_length = 30;
+        // Use Allegretto since we're testing contract-based validator management
+        // and verifying peer addresses from PublicOutcome
+        let setup = Setup::new()
+            .how_many_signers(3)
+            .how_many_verifiers(1)
+            .seed(seed)
+            .epoch_length(epoch_length)
+            .hardfork(TempoHardfork::Allegretto);
+
+        let mut nodes = setup_validators(context.clone(), &execution_runtime, setup).await;
+
+        let new_node = {
+            let idx = nodes
+                .iter()
+                .position(|node| node.consensus_config.share.is_none())
+                .expect("at least one node must be a verifier, i.e. not have a share");
+            nodes.remove(idx)
+        };
+
+        assert!(
+            nodes
+                .iter()
+                .all(|node| node.consensus_config.share.is_some()),
+            "must have removed the one non-signer node; must be left with only signers",
+        );
+
+        let mut running = join_all(nodes.into_iter().map(|node| node.start())).await;
+
+        // We will send an arbitrary node of the initial validator set the smart
+        // contract call.
+        let http_url: Url = running[0]
+            .execution_node
+            .node
+            .rpc_server_handle()
+            .http_url()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        // Register the initial 3 validators on the contract (required for Allegretto)
+        for (i, node) in running.iter().enumerate() {
+            let addr: SocketAddr = format!("127.0.0.1:{}", i + 1).parse().unwrap();
+            execution_runtime
+                .add_validator(
+                    http_url.clone(),
+                    validator(i as u32),
+                    node.public_key.clone(),
+                    addr,
+                )
+                .await
+                .expect("should register initial validator on contract");
+        }
+
+        // Now add the new (4th) validator
+        let receipt = execution_runtime
+            .add_validator(
+                http_url,
+                validator(4),
+                new_node.public_key.clone(),
+                "127.0.0.1:4".parse::<SocketAddr>().unwrap(),
+            )
+            .await
+            .unwrap();
+
+        tracing::debug!(
+            block.number = receipt.block_number,
+            "addValidator call returned receipt"
+        );
+
+        // Now start the node. The validators are already linked via the
+        // consensus layer's peer discovery.
+        let new_node = new_node.start().await;
+        running.push(new_node);
+
+        let pat = format!("{}-", crate::CONSENSUS_NODE_PREFIX);
+
+        let mut success = false;
+
+        let mut observed_3_dealers_4_players = false;
+        while !success {
+            context.sleep(Duration::from_secs(1)).await;
+
+            let metrics = context.encode();
+
+
+            // This exists to ensure that a single validator starts a ceremony
+            // with 3 dealers and 4 players. We can't just check for `_ceremony_dealers`
+            // and `_ceremony_players` without accounting for the validator uid, because
+            // at the moment we read all metrics, there could be one validator that
+            // has not yet started a new ceremony (so we read its old metrics), while
+            // another validator has already started a new ceremony.
+            #[derive(Default)]
+            struct CeremonyParticipants {
+                dealers: u64,
+                players: u64,
+            }
+            #[derive(Default)]
+            struct Observations(HashMap::<String, CeremonyParticipants>);
+            impl Observations {
+                fn observe(&mut self, metric: &str, value: &str) {
+                    if let Some(metric) = metric.strip_suffix("_dkg_manager_ceremony_dealers") {
+                        let value = value.parse::<u64>().unwrap();
+                        self.0.entry(metric.to_string()).or_default().dealers = value;
+                    }
+                    if let Some(metric) = metric.strip_suffix("_dkg_manager_ceremony_players") {
+                        let value = value.parse::<u64>().unwrap();
+                        self.0.entry(metric.to_string()).or_default().players = value;
+                    }
+                }
+                fn had_expected(&self) -> bool {
+                    self.0.values().any(|participants| participants.dealers == 3 && participants.players == 4)
+                }
+            }
+
+            let mut observations = Observations::default();
+
+            'metrics: for line in metrics.lines() {
+                if !line.starts_with(&pat) {
+                    continue 'metrics;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metrics.ends_with("_peers_blocked") {
+                    let value = value.parse::<u64>().unwrap();
+                    assert_eq!(value, 0);
+                }
+
+                observations.observe(metric, value);
+
+                if metric.ends_with("_epoch_manager_latest_epoch") {
+                    let value = value.parse::<u64>().unwrap();
+                    assert!(value < 4, "the validator should have joined before epoch 4");
+                }
+
+                if metric.ends_with("_epoch_manager_latest_participants") {
+                    let value = value.parse::<u64>().unwrap();
+                    if value > 3 && observed_3_dealers_4_players {
+                        success = true
+                    } else if value > 3 {
+                        panic!("got more than 3 participants, but never observed a ceremony with 3 dealers and 4 players");
+                    }
+                }
+            }
+            observed_3_dealers_4_players |= observations.had_expected();
+        }
+
+        // Verify that the epoch boundary block contains the correct validator_state
+        let exec_node = &running[0].execution_node;
+        let epoch_boundary_block = exec_node
+            .node
+            .provider
+            .block_by_number(epoch_length - 1)
+            .expect("should query block")
+            .expect("epoch boundary block should exist");
+
+        let mut extra_data = epoch_boundary_block.header.inner.extra_data.as_ref();
+        assert!(
+            !extra_data.is_empty(),
+            "epoch boundary block should have extra_data"
+        );
+
+        let outcome = <PublicOutcome as alloy_rlp::Decodable>::decode(&mut extra_data)
+            .expect("should decode PublicOutcome from extra_data");
+
+        assert_eq!(
+            outcome.epoch, 1,
+            "epoch boundary block should contain outcome for epoch 1"
+        );
+
+        // The validator_state should reflect epoch 1's validator set (4 validators)
+        let peer_addresses = outcome.validator_state.resolve_addresses_and_merge_peers();
+        assert_eq!(
+            peer_addresses.len(),
+            4,
+            "epoch 1 validator_state should have 4 validators"
+        );
+    });
+}
+
+#[test_traced]
+fn validator_is_removed() {
+    let _ = tempo_eyre::install();
+
+    let seed = 0;
+
+    let cfg = Config::default().with_seed(seed);
+    let executor = Runner::from(cfg);
+
+    executor.start(|context| async move {
+        let execution_runtime = ExecutionRuntime::new();
+
+        let epoch_length = 30;
+        // Use Allegretto since we're testing contract-based validator management
+        let setup = Setup::new()
+            .seed(seed)
+            .epoch_length(epoch_length)
+            .hardfork(TempoHardfork::Allegretto);
+
+        let nodes = setup_validators(context.clone(), &execution_runtime, setup).await;
+
+        assert!(
+            nodes
+                .iter()
+                .all(|node| node.consensus_config.share.is_some()),
+            "all nodes must be signers",
+        );
+
+        let running = join_all(nodes.into_iter().map(|node| node.start())).await;
+
+        // We will send an arbitrary node of the initial validator set the smart
+        // contract call.
+        let http_url: Url = running[0]
+            .execution_node
+            .node
+            .rpc_server_handle()
+            .http_url()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        // Register all 4 validators on the contract (required for Allegretto)
+        for (i, node) in running.iter().enumerate() {
+            let addr: SocketAddr = format!("127.0.0.1:{}", i + 1).parse().unwrap();
+            execution_runtime
+                .add_validator(
+                    http_url.clone(),
+                    validator(i as u32),
+                    node.public_key.clone(),
+                    addr,
+                )
+                .await
+                .expect("should register validator on contract");
+        }
+
+        // Now deactivate validator 3
+        let receipt = execution_runtime
+            .change_validator_status(
+                http_url,
+                validator(3),
+                false,
+            )
+            .await
+            .unwrap();
+
+        tracing::debug!(
+            block.number = receipt.block_number,
+            "chanegValiidatorStatus call returned receipt"
+        );
+
+        let pat = format!("{}-", crate::CONSENSUS_NODE_PREFIX);
+
+        let mut success = false;
+
+        let mut observed_4_dealers_3_players = false;
+        while !success {
+            context.sleep(Duration::from_secs(1)).await;
+
+            let metrics = context.encode();
+
+
+            // This exists to ensure that a single validator starts a ceremony
+            // with 3 dealers and 4 players. We can't just check for `_ceremony_dealers`
+            // and `_ceremony_players` without accounting for the validator uid, because
+            // at the moment we read all metrics, there could be one validator that
+            // has not yet started a new ceremony (so we read its old metrics), while
+            // another validator has already started a new ceremony.
+            #[derive(Default)]
+            struct CeremonyParticipants {
+                dealers: u64,
+                players: u64,
+            }
+            #[derive(Default)]
+            struct Observations(HashMap::<String, CeremonyParticipants>);
+            impl Observations {
+                fn observe(&mut self, metric: &str, value: &str) {
+                    if let Some(metric) = metric.strip_suffix("_dkg_manager_ceremony_dealers") {
+                        let value = value.parse::<u64>().unwrap();
+                        self.0.entry(metric.to_string()).or_default().dealers = value;
+                    }
+                    if let Some(metric) = metric.strip_suffix("_dkg_manager_ceremony_players") {
+                        let value = value.parse::<u64>().unwrap();
+                        self.0.entry(metric.to_string()).or_default().players = value;
+                    }
+                }
+                fn had_expected(&self) -> bool {
+                    self.0.values().any(|participants| participants.dealers == 4 && participants.players == 3)
+                }
+            }
+
+            let mut observations = Observations::default();
+
+            'metrics: for line in metrics.lines() {
+                if !line.starts_with(&pat) {
+                    continue 'metrics;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metrics.ends_with("_peers_blocked") {
+                    let value = value.parse::<u64>().unwrap();
+                    assert_eq!(value, 0);
+                }
+
+                observations.observe(metric, value);
+
+                if metric.ends_with("_epoch_manager_latest_epoch") {
+                    let value = value.parse::<u64>().unwrap();
+                    assert!(value < 4, "the validator should have joined before epoch 4");
+                }
+
+                if metric.ends_with("_epoch_manager_latest_participants") {
+                    let value = value.parse::<u64>().unwrap();
+                    if value < 4 && observed_4_dealers_3_players {
+                        success = true
+                    } else if value < 4 {
+                        panic!("got less than 4 participants, but never observed a ceremony with 4 dealers and 3 players");
+                    }
+                }
+            }
+            observed_4_dealers_3_players |= observations.had_expected();
+        }
+    });
+}
+
+// #[test_traced]
+// fn transitions_with_fallible_links() {
+//     let _ = tempo_eyre::install();
+//     let linkage = Link {
+//         latency: Duration::from_millis(10),
+//         jitter: Duration::from_millis(1),
+//         success_rate: 0.9,
+//     };
+
+//     let setup = Setup {
+//         how_many: 5,
+//         seed: 0,
+//         linkage,
+//         epoch_length: 2,
+//     };
+
+//     let mut epoch_reached = false;
+//     let mut height_reached = false;
+//     let _first = run(setup, move |metric, value| {
+//         if metric.ends_with("_epoch_manager_latest_epoch") {
+//             let value = value.parse::<u64>().unwrap();
+//             epoch_reached |= value >= 3;
+//         }
+//         if metric.ends_with("_sync_processed_height") {
+//             let value = value.parse::<u64>().unwrap();
+//             height_reached |= value >= 6;
+//         }
+//         epoch_reached && height_reached
+//     });
+// }

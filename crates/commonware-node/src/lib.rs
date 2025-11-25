@@ -40,7 +40,7 @@ pub async fn run_consensus_stack(
         .signing_share
         .as_ref()
         .map(|share| {
-            SigningShare::read_from_file(&share).wrap_err_with(|| {
+            SigningShare::read_from_file(share).wrap_err_with(|| {
                 format!(
                     "failed reading private bls12-381 key share from file `{}`",
                     share.display()

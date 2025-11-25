@@ -15,7 +15,7 @@ use std::{sync::Arc, time::Duration};
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_engine::PayloadId;
-use commonware_codec::{DecodeExt as _, Encode as _};
+use commonware_codec::Encode as _;
 use commonware_consensus::{
     Block as _,
     marshal::SchemeProvider as _,
@@ -512,7 +512,12 @@ impl Inner<Init> {
                 outcome.epoch,
                 "received DKG outcome; will include in payload builder attributes",
             );
-            outcome.encode().freeze().into()
+
+            {
+                let mut buf = Vec::new();
+                alloy_rlp::Encodable::encode(&outcome, &mut buf);
+                Bytes::from(buf)
+            }
         } else {
             // Regular block: try to include intermediate dealing
             match self
@@ -649,7 +654,9 @@ impl Inner<Init> {
                 .wrap_err(
                     "failed getting public dkg ceremony outcome; cannot verify end of epoch block",
                 )?;
-            let block_outcome = match PublicOutcome::decode(block.header().extra_data().as_ref()) {
+            let block_outcome: PublicOutcome = match alloy_rlp::Decodable::decode(
+                &mut block.header().extra_data().as_ref(),
+            ) {
                 Err(error) => {
                     warn!(
                         error = %eyre::Report::new(error),
@@ -662,10 +669,10 @@ impl Inner<Init> {
             if our_outcome != block_outcome {
                 warn!(
                     our.epoch = our_outcome.epoch,
-                    our.participants = ?our_outcome.participants,
+                    our.validator_state = ?our_outcome.validator_state,
                     our.public = ?our_outcome.public,
                     block.epoch = block_outcome.epoch,
-                    block.participants = ?block_outcome.participants,
+                    block.validator_state = ?block_outcome.validator_state,
                     block.public = ?block_outcome.public,
                     "our public dkg ceremony outcome does not match what's stored in the block; failing block",
                 );

@@ -223,7 +223,7 @@ fn network_resumes_after_restart() {
 fn node_recovers_after_finalizing_ceremony() {
     let prefix = format!("{CONSENSUS_NODE_PREFIX}-");
 
-    let setup = Setup::new();
+    let setup = Setup::new().how_many_verifiers(4);
 
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);

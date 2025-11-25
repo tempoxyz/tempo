@@ -63,7 +63,7 @@ impl ConsensusArgs {
         let mut validators = vec![];
         for (addr, (signer, share)) in peers.values().iter().zip(signers.into_iter().zip(shares)) {
             validators.push(Validator {
-                addr: addr.clone(),
+                addr: *addr,
                 signing_key: SigningKey::from(signer),
                 signing_share: SigningShare::from(share),
             });

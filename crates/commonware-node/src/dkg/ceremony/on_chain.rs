@@ -286,19 +286,38 @@ mod tests {
 
     #[test]
     fn public_outcome_roundtrip() {
+        use alloy_primitives::Address;
+        use alloy_rlp::{Decodable, Encodable};
+        use tempo_dkg_onchain_artifacts::{DecodedValidator, ValidatorState};
+
         let (_, commitment, _) = dkg::Dealer::<_, MinSig>::new(
             &mut StdRng::from_seed([0; 32]),
             None,
             four_public_keys(),
         );
+        let validators: Vec<_> = four_public_keys()
+            .into_iter()
+            .enumerate()
+            .map(|(i, pk)| {
+                let v = DecodedValidator {
+                    public_key: pk.clone(),
+                    inbound: format!("127.0.0.1:{}", 8000 + i),
+                    outbound: format!("127.0.0.1:{}", 9000 + i),
+                    index: i as u64,
+                    address: Address::default(),
+                };
+                (pk, v)
+            })
+            .collect();
         let public_outcome = PublicOutcome {
             epoch: 42,
-            participants: four_public_keys(),
+            validator_state: ValidatorState::new(validators.into()),
             public: commitment,
         };
-        let bytes = public_outcome.encode();
+        let mut bytes = Vec::new();
+        Encodable::encode(&public_outcome, &mut bytes);
         assert_eq!(
-            PublicOutcome::decode(&mut bytes.as_ref()).unwrap(),
+            <PublicOutcome as Decodable>::decode(&mut bytes.as_slice()).unwrap(),
             public_outcome,
         );
     }

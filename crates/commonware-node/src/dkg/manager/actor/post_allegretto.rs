@@ -15,17 +15,14 @@ use commonware_utils::{
 };
 use eyre::ensure;
 use rand_core::CryptoRngCore;
-use tempo_dkg_onchain_artifacts::PublicOutcome;
+use tempo_dkg_onchain_artifacts::{DecodedValidator, PublicOutcome, ValidatorState};
 use tracing::{Span, info, instrument, warn};
 
 use crate::{
     consensus::block::Block,
     dkg::{
         ceremony::{self, Ceremony},
-        manager::{
-            actor::{DkgOutcome, pre_allegretto},
-            validators::ValidatorState,
-        },
+        manager::actor::{DkgOutcome, pre_allegretto},
     },
     epoch::{self, is_first_block_in_epoch},
 };
@@ -271,7 +268,7 @@ where
         self.post_allegretto_metadatas
             .epoch_metadata
             .put_sync(
-                CURRENT_EPOCH_KEY.into(),
+                CURRENT_EPOCH_KEY,
                 EpochState {
                     dkg_outcome: DkgOutcome {
                         dkg_successful: true,
@@ -359,14 +356,14 @@ where
         let old_epoch_state = self
             .post_allegretto_metadatas
             .epoch_metadata
-            .remove(&CURRENT_EPOCH_KEY.into())
+            .remove(&CURRENT_EPOCH_KEY)
             .expect("there must always exist an epoch state");
 
         // Remove it?
         let dkg_outcome = self
             .post_allegretto_metadatas
             .dkg_outcome_metadata
-            .get(&DKG_OUTCOME_KEY.into())
+            .get(&DKG_OUTCOME_KEY)
             .cloned()
             .expect(
                 "when updating the current epoch state, there must be a DKG \
@@ -395,7 +392,7 @@ where
         }
 
         self.post_allegretto_metadatas.epoch_metadata.put(
-            CURRENT_EPOCH_KEY.into(),
+            CURRENT_EPOCH_KEY,
             EpochState {
                 dkg_outcome,
                 validator_state: new_validator_state.clone(),
@@ -403,7 +400,7 @@ where
         );
         self.post_allegretto_metadatas
             .epoch_metadata
-            .put(PREVIOUS_EPOCH_KEY.into(), old_epoch_state);
+            .put(PREVIOUS_EPOCH_KEY, old_epoch_state);
 
         self.post_allegretto_metadatas
             .epoch_metadata
@@ -419,7 +416,7 @@ where
         let epoch_to_shutdown = if let Some(old_epoch_state) = self
             .post_allegretto_metadatas
             .epoch_metadata
-            .remove(&PREVIOUS_EPOCH_KEY.into())
+            .remove(&PREVIOUS_EPOCH_KEY)
         {
             self.post_allegretto_metadatas
                 .epoch_metadata
@@ -427,14 +424,11 @@ where
                 .await
                 .expect("must always be able to persist state");
             Some(old_epoch_state.epoch())
-        } else if let Some(old_pre_allegretto_epoch_state) = self
-            .pre_allegretto_metadatas
-            .delete_previous_epoch_state()
-            .await
-        {
-            Some(old_pre_allegretto_epoch_state.epoch())
         } else {
-            None
+            self.pre_allegretto_metadatas
+                .delete_previous_epoch_state()
+                .await
+                .map(|old_pre_allegretto_epoch_state| old_pre_allegretto_epoch_state.epoch())
         };
 
         if let Some(epoch) = epoch_to_shutdown {
@@ -509,22 +503,56 @@ where
         self.epoch_metadata.get(&PREVIOUS_EPOCH_KEY)
     }
 
+    /// Returns the pending DKG outcome if it exists.
+    ///
+    /// The pending DKG outcome is stored at ceremony finalization (pre-to-last block).
+    /// It represents the outcome for the NEXT epoch. This is used by the Actor to
+    /// construct the full PublicOutcome by reading syncing_players from the contract.
+    pub(super) fn pending_dkg_outcome(&self) -> Option<&DkgOutcome> {
+        self.dkg_outcome_metadata.get(&DKG_OUTCOME_KEY)
+    }
+
+    /// Constructs a PublicOutcome using the given syncing_players.
+    ///
+    /// This should be called when there's a pending DKG outcome (from ceremony
+    /// finalization) and we need to include the syncing_players read from the contract.
+    pub(super) fn dkg_outcome_with_syncing_players(
+        &self,
+        syncing_players: OrderedAssociated<PublicKey, DecodedValidator>,
+    ) -> Option<PublicOutcome> {
+        let dkg_outcome = self.dkg_outcome_metadata.get(&DKG_OUTCOME_KEY)?;
+        let validator_state = if let Some(epoch_state) = self.epoch_metadata.get(&CURRENT_EPOCH_KEY)
+        {
+            // Compute next epoch's validator state by calling push_on_success
+            // or push_on_failure with the syncing_players from the contract.
+            let mut next_validator_state = epoch_state.validator_state.clone();
+            if dkg_outcome.dkg_successful {
+                next_validator_state.push_on_success(syncing_players);
+            } else {
+                next_validator_state.push_on_failure(syncing_players);
+            }
+            next_validator_state
+        } else {
+            // For the first epoch transition (no previous epoch state), create
+            // ValidatorState directly from the syncing_players from the contract.
+            // This happens during the epoch 0 → epoch 1 transition.
+            ValidatorState::new(syncing_players)
+        };
+        Some(PublicOutcome {
+            epoch: dkg_outcome.epoch,
+            validator_state,
+            public: dkg_outcome.public.clone(),
+        })
+    }
+
     pub(super) fn dkg_outcome(&self) -> Option<PublicOutcome> {
-        if let Some(dkg_outcome) = self.dkg_outcome_metadata.get(&DKG_OUTCOME_KEY) {
-            Some(PublicOutcome {
-                epoch: dkg_outcome.epoch,
-                participants: dkg_outcome.participants.clone(),
-                public: dkg_outcome.public.clone(),
-            })
-        } else if let Some(epoch_state) = self.epoch_metadata.get(&CURRENT_EPOCH_KEY) {
-            Some(PublicOutcome {
+        self.epoch_metadata
+            .get(&CURRENT_EPOCH_KEY)
+            .map(|epoch_state| PublicOutcome {
                 epoch: epoch_state.dkg_outcome.epoch,
-                participants: epoch_state.dkg_outcome.participants.clone(),
+                validator_state: epoch_state.validator_state.clone(),
                 public: epoch_state.dkg_outcome.public.clone(),
             })
-        } else {
-            None
-        }
     }
 
     pub(super) fn exists(&self) -> bool {

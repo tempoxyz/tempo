@@ -11423,6 +11423,7 @@ dependencies = [
 name = "tempo-dkg-onchain-artifacts"
 version = "0.5.2"
 dependencies = [
+ "alloy-primitives",
  "alloy-rlp",
  "bytes",
  "commonware-codec",
@@ -11440,6 +11441,7 @@ dependencies = [
  "alloy-genesis",
  "alloy-network",
  "alloy-primitives",
+ "alloy-rlp",
  "commonware-codec",
  "commonware-consensus",
  "commonware-cryptography",
@@ -11782,6 +11784,7 @@ version = "0.5.2"
 dependencies = [
  "alloy",
  "alloy-primitives",
+ "alloy-rlp",
  "clap",
  "commonware-codec",
  "commonware-cryptography",

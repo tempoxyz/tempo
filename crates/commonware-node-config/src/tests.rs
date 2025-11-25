@@ -1,10 +1,12 @@
-use std::net::SocketAddr;
+use std::str::FromStr;
 
 use commonware_cryptography::{
     PrivateKeyExt as _, Signer as _, bls12381::primitives::variant::MinSig, ed25519::PrivateKey,
 };
 use commonware_utils::set::OrderedAssociated;
 use rand::SeedableRng as _;
+
+use std::net::SocketAddr;
 
 use crate::{PeersAndPublicPolynomial, SigningKey, SigningShare};
 
@@ -98,13 +100,13 @@ fn signing_share_snapshot() {
 
 #[test]
 fn signing_share_roundtrip() {
-    let quorum = commonware_utils::quorum(1 as u32);
+    let quorum = commonware_utils::quorum(1_u32);
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
     let (_, mut shares) = commonware_cryptography::bls12381::dkg::ops::generate_shares::<_, MinSig>(
         &mut rng, None, 1, quorum,
     );
     let signing_share: SigningShare = shares.remove(0).into();
-    println!("{}", signing_share.to_string());
+    println!("{signing_share}");
     assert_eq!(
         signing_share,
         SigningShare::from_str(&signing_share.to_string()).unwrap(),
