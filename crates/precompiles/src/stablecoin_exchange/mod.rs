@@ -1565,7 +1565,7 @@ mod tests {
         amount: u128,
     ) {
         mint_and_approve_token(storage, 0, admin, user, exchange_address, amount);
-        let mut quote = LinkingUSD::new(storage);
+        let mut quote = PathUSD::new(storage);
         quote
             .token
             .grant_role_internal(user, *TRANSFER_ROLE)
@@ -3745,13 +3745,13 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
 
         let admin = Address::random();
-        // Init Linking USD
+        // Init path USD
         let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
         path_usd
             .initialize("PathUSD", "LUSD", "USD", Address::ZERO, admin)
             .unwrap();
 
-        // Create EUR token with LINKING_USD as quote (valid non-USD token)
+        // Create EUR token with PATH USD as quote (valid non-USD token)
         let mut token_0 = TIP20Token::new(1, path_usd.storage());
         token_0
             .initialize("EuroToken", "EURO", "EUR", PATH_USD_ADDRESS, admin)
@@ -3822,7 +3822,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
 
         let admin = Address::random();
-        // Init Linking USD
+        // Init PATH USD
         let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
         path_usd
             .initialize("PathUSD", "LUSD", "USD", Address::ZERO, admin)
