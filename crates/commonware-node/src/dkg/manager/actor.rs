@@ -415,8 +415,7 @@ where
                     .into(),
                 )
                 .await;
-            tx.remove_previous_epoch()
-                .expect("must be able to remove previous epoch");
+            tx.remove_previous_epoch();
         }
 
         match epoch::relative_position(block.height(), self.config.epoch_length) {
@@ -485,8 +484,7 @@ where
 
             // Prune older ceremony
             if let Some(epoch) = new_epoch_state.epoch.checked_sub(2) {
-                tx.remove_ceremony(epoch)
-                    .expect("must be able to remove ceremony");
+                tx.remove_ceremony(epoch);
             }
 
             let config = ceremony::Config {

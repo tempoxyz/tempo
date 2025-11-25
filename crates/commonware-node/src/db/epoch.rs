@@ -26,7 +26,7 @@ where
     fn set_previous_epoch(&mut self, state: EpochState) -> Result<()>;
 
     /// Remove the previous epoch state.
-    fn remove_previous_epoch(&mut self) -> Result<()>;
+    fn remove_previous_epoch(&mut self);
 }
 
 impl<TContext> DkgEpochStore<TContext> for Tx<TContext>
@@ -49,7 +49,7 @@ where
         self.insert(PREVIOUS_EPOCH_KEY, state)
     }
 
-    fn remove_previous_epoch(&mut self) -> Result<()> {
+    fn remove_previous_epoch(&mut self) {
         self.remove(PREVIOUS_EPOCH_KEY)
     }
 }
