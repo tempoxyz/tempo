@@ -215,7 +215,8 @@ impl GenesisArgs {
                         account
                             .storage
                             .iter()
-                            .map(|(key, val)| ((*key).into(), val.present_value.into()))
+                            .map(|(key, val)| ((*key).into(), B256::from(val.present_value)))
+                            .filter(|(_, value)| !value.is_zero())
                             .collect(),
                     )
                 } else {
