@@ -33,9 +33,9 @@ type PoolsWithFees = Slot<Vec<TokenPair>, PoolsWithFeesSlot>;
 type ValidatorsWithFees = Slot<Vec<Address>, ValidatorsWithFeesSlot>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Storable)]
-struct TokenPair {
-    user_token: u64,
-    validator_token: u64,
+pub struct TokenPair {
+    pub user_token: u64,
+    pub validator_token: u64,
 }
 
 impl StorageKey for TokenPair {

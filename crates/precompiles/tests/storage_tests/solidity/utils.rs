@@ -241,7 +241,7 @@ pub(super) fn compare_struct_members(
         )]
     })?;
 
-    // Handle both direct struct fields and mappings with struct values
+    // Handle direct struct fields, mappings with struct values, and arrays of structs
     let struct_type_def = if type_def.encoding == "mapping" {
         // It's a mapping - get the value type
         let value_type_name = type_def.value.as_ref().ok_or_else(|| {
@@ -256,6 +256,22 @@ pub(super) fn compare_struct_members(
             vec![format!(
                 "Value type '{}' not found in type definitions",
                 value_type_name
+            )]
+        })?
+    } else if type_def.encoding == "dynamic_array" {
+        // It's a dynamic array - get the base (element) type
+        let base_type_name = type_def.base.as_ref().ok_or_else(|| {
+            vec![format!(
+                "Array type '{}' does not have a base type",
+                struct_var.ty
+            )]
+        })?;
+
+        // Get the struct type definition from the base type
+        solc_layout.types.get(base_type_name).ok_or_else(|| {
+            vec![format!(
+                "Base type '{}' not found in type definitions",
+                base_type_name
             )]
         })?
     } else {

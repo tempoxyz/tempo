@@ -58,7 +58,9 @@ fn test_tip403_registry_layout() {
 
 #[test]
 fn test_fee_manager_layout() {
-    use tempo_precompiles::tip_fee_manager::{amm::__packing_pool::*, slots};
+    use tempo_precompiles::tip_fee_manager::{
+        __packing_token_pair::*, amm::__packing_pool::*, slots,
+    };
 
     let sol_path = testdata("fee_manager.sol");
     let solc_layout = load_solc_layout(&sol_path);
@@ -83,14 +85,19 @@ fn test_fee_manager_layout() {
         panic_layout_mismatch("Layout", errors, &sol_path);
     }
 
-    // Verify `Pool` struct members (used in mapping, so struct member check works)
+    // Verify `Pool` struct members (used in mapping)
     let pool_base_slot = slots::POOLS;
     let rust_pool = struct_fields!(pool_base_slot, reserve_user_token, reserve_validator_token);
     if let Err(errors) = compare_struct_members(&solc_layout, "pools", &rust_pool) {
         panic_layout_mismatch("Pool struct member layout", errors, &sol_path);
     }
 
-    // TODO(rusowsky): add support for arrays to `compare_struct_members`
+    // Verify `TokenPair` struct members
+    let token_pair_base_slot = slots::POOLS_WITH_FEES;
+    let rust_token_pair = struct_fields!(token_pair_base_slot, user_token, validator_token);
+    if let Err(errors) = compare_struct_members(&solc_layout, "poolsWithFees", &rust_token_pair) {
+        panic_layout_mismatch("TokenPair struct member layout", errors, &sol_path);
+    }
 }
 
 #[test]
