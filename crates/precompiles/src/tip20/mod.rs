@@ -751,7 +751,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             self.sstore_supply_cap(U256::MAX)?;
         }
         self.sstore_transfer_policy_id(1)?;
-        self.sstore_fee_recipient(fee_recipient)?;
+
+        // Gate to avoid consensus-breaking gas usage
+        if self.storage.spec().is_allegretto() {
+            self.sstore_fee_recipient(fee_recipient)?;
+        }
 
         // Initialize roles system and grant admin role
         self.initialize_roles()?;
