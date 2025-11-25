@@ -414,14 +414,15 @@ async fn generate_transactions(input: GenerateTransactionsInput) -> eyre::Result
 
     let user_tokens_count = user_tokens.len();
 
-    println!("Pregenerating {total_txs} transactions");
-
-    let transactions: Vec<_> = params
-        .into_par_iter()
-        .progress_count(total_txs)
+    let mut transfers = 0;
+    let mut swaps = 0;
+    let mut orders = 0;
+    let transactions = params
+        .into_iter()
         .map(|(signer, nonce)| {
-            let tx_factory: [Box<dyn Fn(PrivateKeySigner, u64) -> _>; 3] = [
+            let mut tx_factory: [Box<dyn FnMut(PrivateKeySigner, u64) -> _>; 3] = [
                 Box::new(|signer: PrivateKeySigner, nonce: u64| {
+                    transfers += 1;
                     tip20::transfer(
                         &signer,
                         nonce,
@@ -430,7 +431,8 @@ async fn generate_transactions(input: GenerateTransactionsInput) -> eyre::Result
                     )
                 }),
                 Box::new(|signer: PrivateKeySigner, nonce: u64| {
-                    dex::swap_in(
+                    swaps += 1;
+                    dex::swap(
                         &exchange,
                         &signer,
                         nonce,
@@ -440,6 +442,7 @@ async fn generate_transactions(input: GenerateTransactionsInput) -> eyre::Result
                     )
                 }),
                 Box::new(|signer: PrivateKeySigner, nonce: u64| {
+                    orders += 1;
                     dex::place(
                         &exchange,
                         &signer,
@@ -450,32 +453,11 @@ async fn generate_transactions(input: GenerateTransactionsInput) -> eyre::Result
                 }),
             ];
             let weights = [(0, transfer_weight), (1, swap_weight), (2, place_weight)];
-
-            let mut rng = rand::rng();
-            let index = weights.choose_weighted(&mut rng, |item| item.1)?.0;
-            let f = &tx_factory[index];
-
-            f(signer, nonce).map(|tx| (index, tx))
+            let index = weights.choose_weighted(&mut rand::rng(), |item| item.1)?.0;
+            let f = &mut tx_factory[index];
+            f(signer, nonce)
         })
         .collect::<eyre::Result<Vec<_>>>()?;
-
-    let mut swaps = 0;
-    let mut transfers = 0;
-    let mut orders = 0;
-
-    let transactions: Vec<_> = transactions
-        .into_iter()
-        .map(|(index, tx)| {
-            match index {
-                0 => transfers += 1,
-                1 => swaps += 1,
-                2 => orders += 1,
-                v => unreachable!("Unknown index {v}"),
-            };
-
-            tx
-        })
-        .collect();
 
     println!(
         "Generated {} transactions [{transfers} transfers, {swaps} swaps, {orders} orders]",
@@ -519,9 +501,6 @@ async fn fund_accounts(
             });
         assert_receipts(tx_hashes, max_concurrent_requests).await?
     }
-
-    progress.finish();
-    println!("Finished funding accounts");
     Ok(())
 }
 

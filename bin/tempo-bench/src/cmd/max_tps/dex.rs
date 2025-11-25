@@ -287,7 +287,7 @@ where
     into_signed_encoded(tx, signer)
 }
 
-pub(super) fn swap_in<P, N>(
+pub(super) fn swap<P, N>(
     exchange: &IStablecoinExchangeInstance<P, N>,
     signer: &PrivateKeySigner,
     nonce: u64,
@@ -315,10 +315,10 @@ where
     into_signed_encoded(tx, signer)
 }
 
-/// Creates a test TIP20 token with issuer role granted to the caller
+/// Creates a test TIP20 token with issuer role granted to the provided address
 async fn setup_test_token<P>(
     provider: P,
-    caller: Address,
+    admin: Address,
     tx_count: &ProgressBar,
 ) -> eyre::Result<ITIP20Instance<P>>
 where
@@ -331,7 +331,7 @@ where
             "TEST".to_owned(),
             "USD".to_owned(),
             PATH_USD_ADDRESS,
-            caller,
+            admin,
         )
         .send()
         .await?
@@ -345,7 +345,7 @@ where
     let roles = IRolesAuth::new(*token.address(), provider);
 
     roles
-        .grantRole(*ISSUER_ROLE, caller)
+        .grantRole(*ISSUER_ROLE, admin)
         .send()
         .await?
         .get_receipt()
