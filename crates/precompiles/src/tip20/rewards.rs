@@ -1349,15 +1349,14 @@ mod tests {
     }
 
     #[test]
-    // https://github.com/tempoxyz/tempo/issues/997
-    fn test_audit_issue_997() -> eyre::Result<()> {
+    fn test_ensure_tip403_is_not_blacklisted() -> eyre::Result<()> {
         const STREAM_DURATION: u32 = 10;
 
         let mut storage = HashMapStorageProvider::new(1);
         let current_timestamp = storage.timestamp();
         let admin = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
 
         // create a blacklist policy before token setup
         let policy_id = {
@@ -1373,7 +1372,7 @@ mod tests {
 
         // setup token with the blacklist policy and start a reward stream
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)?;
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
         token.change_transfer_policy_id(
             admin,
