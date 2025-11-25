@@ -118,7 +118,10 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             return Err(FeeManagerError::invalid_token().into());
         }
 
-        if sender == beneficiary || self.sload_validator_in_fees_array(sender)? {
+        if sender == beneficiary
+            || (self.storage.spec().is_allegretto()
+                && self.sload_validator_in_fees_array(sender)?)
+        {
             return Err(FeeManagerError::cannot_change_within_block().into());
         }
 
