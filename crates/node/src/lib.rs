@@ -6,8 +6,8 @@
 pub use tempo_payload_types::{TempoExecutionData, TempoPayloadTypes};
 pub use version::{init_version_metadata, version_metadata};
 
+pub use crate::node::{DEFAULT_AA_VALID_AFTER_MAX_SECS, ValidatorConfig};
 use crate::node::{TempoAddOns, TempoNode};
-pub use crate::node::{ValidatorConfig, DEFAULT_AA_VALID_AFTER_MAX_SECS};
 use reth_ethereum::provider::db::DatabaseEnv;
 use reth_node_builder::{FullNode, NodeAdapter, RethFullAdapter};
 use std::sync::Arc;
