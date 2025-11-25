@@ -5,8 +5,8 @@
 pub mod error;
 pub use error::Result;
 use tempo_chainspec::hardfork::TempoHardfork;
-pub mod linking_usd;
 pub mod nonce;
+pub mod path_usd;
 pub mod stablecoin_exchange;
 pub mod storage;
 pub mod tip20;
@@ -21,8 +21,8 @@ pub mod validator_config;
 pub mod test_util;
 
 use crate::{
-    linking_usd::LinkingUSD,
     nonce::NonceManager,
+    path_usd::PathUSD,
     stablecoin_exchange::StablecoinExchange,
     storage::evm::EvmPrecompileStorageProvider,
     tip_account_registrar::TipAccountRegistrar,
@@ -49,7 +49,7 @@ use revm::{
 };
 
 pub use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, NONCE_PRECOMPILE_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
+    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     TIP20_REWARDS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
 };
@@ -75,7 +75,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
         if is_tip20(*address) {
             let token_id = address_to_token_id_unchecked(*address);
             if token_id == 0 {
-                Some(LinkingUSDPrecompile::create(chain_id, spec))
+                Some(PathUSDPrecompile::create(chain_id, spec))
             } else {
                 Some(TIP20Precompile::create(*address, chain_id, spec))
             }
@@ -203,10 +203,10 @@ impl NoncePrecompile {
     }
 }
 
-pub struct LinkingUSDPrecompile;
-impl LinkingUSDPrecompile {
+pub struct PathUSDPrecompile;
+impl PathUSDPrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("LinkingUSD", |input| LinkingUSD::new(
+        tempo_precompile!("PathUSD", |input| PathUSD::new(
             &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec),
         ))
     }

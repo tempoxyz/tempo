@@ -7,7 +7,7 @@ use alloy::{
 use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{ITIP20, ITIP20Factory};
-use tempo_precompiles::{LINKING_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::token_id_to_address};
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::token_id_to_address};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_create_token() -> eyre::Result<()> {
@@ -37,7 +37,7 @@ async fn test_create_token() -> eyre::Result<()> {
             "Test".to_string(),
             "TEST".to_string(),
             "USD".to_string(),
-            LINKING_USD_ADDRESS,
+            PATH_USD_ADDRESS,
             caller,
         )
         .gas_price(TEMPO_BASE_FEE as u128)
