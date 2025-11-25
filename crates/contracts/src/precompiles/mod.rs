@@ -30,9 +30,8 @@ pub const PATH_USD_ADDRESS: Address = address!("0x20C000000000000000000000000000
 /// Default fee token pre allegretto hardfork
 pub const DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO: Address =
     address!("0x20C0000000000000000000000000000000000001");
-/// Default fee token post allegretto hardfork
-pub const DEFAULT_FEE_TOKEN_POST_ALLEGRETTO: Address =
-    address!("0x20C0000000000000000000000000000000000000");
+/// Default fee token post allegretto hardfork (PathUSD)
+pub const DEFAULT_FEE_TOKEN_POST_ALLEGRETTO: Address = PATH_USD_ADDRESS;
 pub const TIP403_REGISTRY_ADDRESS: Address = address!("0x403C000000000000000000000000000000000000");
 pub const TIP20_FACTORY_ADDRESS: Address = address!("0x20FC000000000000000000000000000000000000");
 pub const TIP20_REWARDS_REGISTRY_ADDRESS: Address =
