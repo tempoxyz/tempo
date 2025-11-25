@@ -11,7 +11,7 @@ use p256::ecdsa::signature::hazmat::PrehashSigner;
 use reth_primitives_traits::transaction::TxHashRef;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
+    DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO,
     tip20::ITIP20::{self, transferCall},
 };
 use tempo_primitives::{
@@ -50,7 +50,7 @@ async fn fund_address_with_fee_tokens(
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 100_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+            to: DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO.into(),
             value: U256::ZERO,
             input: transfer_calldata.into(),
         }],
@@ -213,7 +213,10 @@ async fn setup_test_with_funded_account() -> eyre::Result<(
     Address,
 )> {
     // Setup test node with direct access
-    let setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_with_node_access()
+        .await?;
 
     let http_url = setup.node.rpc_url();
 
@@ -444,7 +447,10 @@ async fn setup_test_with_p256_funded_account(
     use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
 
     // Setup test node with direct access
-    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let mut setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_with_node_access()
+        .await?;
 
     let http_url = setup.node.rpc_url();
 
@@ -612,7 +618,7 @@ fn create_basic_aa_tx(chain_id: u64, nonce: u64, calls: Vec<Call>, gas_limit: u6
         calls,
         nonce_key: U256::ZERO,
         nonce,
-        fee_token: Some(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO),
+        fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         valid_after: None,
@@ -1050,7 +1056,10 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup test node with direct access
-    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let mut setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_with_node_access()
+        .await?;
 
     let http_url = setup.node.rpc_url();
 
@@ -1626,7 +1635,10 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup test node
-    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let mut setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_with_node_access()
+        .await?;
 
     let http_url = setup.node.rpc_url();
 
