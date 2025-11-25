@@ -338,7 +338,7 @@ where
         }
     }
 
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(epoch = self.pre_allegretto_metadatas.current_epoch_state().unwrap().epoch()))]
     pub(super) async fn start_pre_allegretto_ceremony<TReceiver, TSender>(
         &mut self,
         mux: &mut MuxHandle<TSender, TReceiver>,
@@ -378,6 +378,7 @@ where
         .expect("must always be able to initialize ceremony");
 
         info!(
+            us = %self.config.me,
             n_dealers = ceremony.dealers().len(),
             dealers = ?ceremony.dealers(),
             n_players = ceremony.players().len(),

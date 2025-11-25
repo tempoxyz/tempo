@@ -508,7 +508,10 @@ impl Inner<Init> {
                 outcome.epoch,
                 round.epoch() + 1,
             );
-
+            info!(
+                outcome.epoch,
+                "received DKG outcome; will include in payload builder attributes",
+            );
             outcome.encode().freeze().into()
         } else {
             // Regular block: try to include intermediate dealing

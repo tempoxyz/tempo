@@ -292,7 +292,7 @@ where
     #[instrument(skip_all, fields(epoch = self.config.epoch), err)]
     pub(super) async fn distribute_shares(&mut self) -> eyre::Result<()> {
         let Some(dealer_me) = &mut self.dealer_me else {
-            debug!("not a dealer, not requesting acks");
+            debug!("not a dealer, not distributing shares");
             return Ok(());
         };
         for player in &self.config.players {
@@ -403,6 +403,7 @@ where
         while let Some(msg) = self.receiver.recv().now_or_never() {
             let (peer, mut msg) = msg.wrap_err("receiver p2p channel was closed")?;
 
+            debug!(%peer, "received message from");
             let msg = Message::decode_cfg(&mut msg, &(self.config.players.len() as u32))
                 .wrap_err("unable to decode message")?;
             if msg.epoch != self.epoch() {
