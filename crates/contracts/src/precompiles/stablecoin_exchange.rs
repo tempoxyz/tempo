@@ -68,7 +68,7 @@ sol! {
         function getOrder(uint128 orderId) external view returns (Order memory);
 
         function getTickLevel(address base, int16 tick, bool isBid) external view returns (uint128 head, uint128 tail, uint128 totalLiquidity);
-        function pairKey(address tokenA, address tokenB) external view returns (bytes32);
+        function pairKey(address tokenA, address tokenB) external pure returns (bytes32);
         function activeOrderId() external view returns (uint128);
         function pendingOrderId() external view returns (uint128);
         function books(bytes32 pairKey) external view returns (Orderbook memory);
@@ -88,7 +88,7 @@ sol! {
         event PairCreated(bytes32 indexed key, address indexed base, address indexed quote);
         event OrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick);
         event FlipOrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick, int16 flipTick);
-        event OrderFilled(uint128 indexed orderId, address indexed maker, uint128 amountFilled, bool partialFill);
+        event OrderFilled(uint128 indexed orderId, address indexed maker, address indexed taker, uint128 amountFilled, bool partialFill);
         event OrderCancelled(uint128 indexed orderId);
 
         // Errors

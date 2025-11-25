@@ -286,9 +286,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         for (book_key, base_for_quote) in route {
             // Fill orders for this hop - no min check on intermediate hops
             amount = if self.storage.spec().is_moderato() {
-                self.fill_orders_exact_in_post_moderato(book_key, base_for_quote, amount)?
+                self.fill_orders_exact_in_post_moderato(book_key, base_for_quote, amount, sender)?
             } else {
-                self.fill_orders_exact_in_pre_moderato(book_key, base_for_quote, amount, 0)?
+                self.fill_orders_exact_in_pre_moderato(book_key, base_for_quote, amount, 0, sender)?
             };
         }
 
@@ -317,13 +317,19 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let mut amount = amount_out;
         for (book_key, base_for_quote) in route.iter().rev() {
             amount = if self.storage.spec().is_moderato() {
-                self.fill_orders_exact_out_post_moderato(*book_key, *base_for_quote, amount)?
+                self.fill_orders_exact_out_post_moderato(
+                    *book_key,
+                    *base_for_quote,
+                    amount,
+                    sender,
+                )?
             } else {
                 self.fill_orders_exact_out_pre_moderato(
                     *book_key,
                     *base_for_quote,
                     amount,
                     max_amount_in,
+                    sender,
                 )?
             };
         }
@@ -693,6 +699,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         order: &mut Order,
         level: &mut TickLevel,
         fill_amount: u128,
+        taker: Address,
     ) -> Result<u128> {
         let orderbook = self.sload_books(order.book_key())?;
         let price = tick_to_price(order.tick());
@@ -735,6 +742,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
                 orderId: order.order_id(),
                 maker: order.maker(),
+                taker,
                 amountFilled: fill_amount,
                 partialFill: true,
             })
@@ -750,6 +758,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         book_key: B256,
         order: &mut Order,
         mut level: TickLevel,
+        taker: Address,
     ) -> Result<(u128, Option<(TickLevel, Order)>)> {
         let orderbook = self.sload_books(order.book_key())?;
         let price = tick_to_price(order.tick());
@@ -777,6 +786,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
                 orderId: order.order_id(),
                 maker: order.maker(),
+                taker,
                 amountFilled: fill_amount,
                 partialFill: false,
             })
@@ -863,6 +873,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         book_key: B256,
         bid: bool,
         mut amount_out: u128,
+        taker: Address,
     ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, bid)?;
         let mut order = self.sload_orders(level.head)?;
@@ -889,14 +900,14 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             };
 
             if fill_amount < order.remaining() {
-                self.partial_fill_order(&mut order, &mut level, fill_amount)?;
+                self.partial_fill_order(&mut order, &mut level, fill_amount, taker)?;
                 total_amount_in = total_amount_in
                     .checked_add(amount_in)
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 break;
             } else {
                 let (amount_out_received, next_order_info) =
-                    self.fill_order(book_key, &mut order, level)?;
+                    self.fill_order(book_key, &mut order, level, taker)?;
                 total_amount_in = total_amount_in
                     .checked_add(amount_in)
                     .ok_or(TempoPrecompileError::under_overflow())?;
@@ -944,6 +955,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         bid: bool,
         mut amount_out: u128,
         max_amount_in: u128,
+        taker: Address,
     ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, bid)?;
         let mut order = self.sload_orders(level.head)?;
@@ -968,14 +980,14 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             }
 
             if fill_amount < order.remaining() {
-                self.partial_fill_order(&mut order, &mut level, fill_amount)?;
+                self.partial_fill_order(&mut order, &mut level, fill_amount, taker)?;
                 total_amount_in = total_amount_in
                     .checked_add(amount_in)
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 break;
             } else {
                 let (amount_out_received, next_order_info) =
-                    self.fill_order(book_key, &mut order, level)?;
+                    self.fill_order(book_key, &mut order, level, taker)?;
                 total_amount_in = total_amount_in
                     .checked_add(amount_in)
                     .ok_or(TempoPrecompileError::under_overflow())?;
@@ -1006,6 +1018,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         book_key: B256,
         bid: bool,
         mut amount_in: u128,
+        taker: Address,
     ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, bid)?;
         let mut order = self.sload_orders(level.head)?;
@@ -1026,13 +1039,15 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             };
 
             if fill_amount < order.remaining() {
-                let amount_out = self.partial_fill_order(&mut order, &mut level, fill_amount)?;
+                let amount_out =
+                    self.partial_fill_order(&mut order, &mut level, fill_amount, taker)?;
                 total_amount_out = total_amount_out
                     .checked_add(amount_out)
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 break;
             } else {
-                let (amount_out, next_order_info) = self.fill_order(book_key, &mut order, level)?;
+                let (amount_out, next_order_info) =
+                    self.fill_order(book_key, &mut order, level, taker)?;
                 total_amount_out = total_amount_out
                     .checked_add(amount_out)
                     .ok_or(TempoPrecompileError::under_overflow())?;
@@ -1087,6 +1102,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         bid: bool,
         mut amount_in: u128,
         min_amount_out: u128,
+        taker: Address,
     ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, bid)?;
         let mut order = self.sload_orders(level.head)?;
@@ -1097,13 +1113,15 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             let fill_amount = amount_in.min(order.remaining());
 
             if fill_amount < order.remaining() {
-                let amount_out = self.partial_fill_order(&mut order, &mut level, fill_amount)?;
+                let amount_out =
+                    self.partial_fill_order(&mut order, &mut level, fill_amount, taker)?;
                 total_amount_out = total_amount_out
                     .checked_add(amount_out)
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 break;
             } else {
-                let (amount_out, next_order_info) = self.fill_order(book_key, &mut order, level)?;
+                let (amount_out, next_order_info) =
+                    self.fill_order(book_key, &mut order, level, taker)?;
                 total_amount_out = total_amount_out
                     .checked_add(amount_out)
                     .ok_or(TempoPrecompileError::under_overflow())?;
