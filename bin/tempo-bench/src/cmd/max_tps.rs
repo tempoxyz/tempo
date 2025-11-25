@@ -507,14 +507,14 @@ async fn fund_accounts(
             .try_collect::<Vec<_>>()
             .await?
             .into_iter()
-            .enumerate()
-            .flat_map(|(i, hashes)| std::iter::repeat(i).zip(hashes))
-            .map(async |(account_idx, hash)| {
-                let receipt = PendingTransactionBuilder::new(provider.root().clone(), hash)
-                    .get_receipt()
-                    .await?;
-                progress.set_position(account_idx as u64);
-                Ok(receipt)
+            .inspect(|_| progress.inc(1))
+            .flatten()
+            .map(async |hash| {
+                Ok(
+                    PendingTransactionBuilder::new(provider.root().clone(), hash)
+                        .get_receipt()
+                        .await?,
+                )
             });
         assert_receipts(tx_hashes, max_concurrent_requests).await?
     }
