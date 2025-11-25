@@ -13,7 +13,7 @@ use tempo_revm::TempoStateAccess;
 
 // Reject AA transactions where `valid_after` is too far in the future to prevent mempool DOS.
 // ref: <https://github.com/tempoxyz/tempo/issues/1009>
-const MAX_VALID_AFTER_DISTANCE_SECS: u64 = 3600;
+const AA_VALID_AFTER_MAX_SECS: u64 = 3600;
 
 /// Validator for Tempo transactions.
 #[derive(Debug)]
@@ -74,7 +74,7 @@ where
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("system time before UNIX EPOCH")
                 .as_secs();
-            let max_allowed = current_time.saturating_add(MAX_VALID_AFTER_DISTANCE_SECS);
+            let max_allowed = current_time.saturating_add(AA_VALID_AFTER_MAX_SECS);
             if valid_after > max_allowed {
                 return TransactionValidationOutcome::Invalid(
                     transaction,
