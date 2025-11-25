@@ -812,6 +812,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         } else {
             // If there are subsequent orders at tick, advance to next order
             level.head = order.next();
+            if self.storage.spec().is_allegretto() {
+                Order::update_prev_order(self, order.next(), 0)?;
+            }
             let new_liquidity = level
                 .total_liquidity
                 .checked_sub(fill_amount)
@@ -1559,6 +1562,50 @@ mod tests {
 
     use super::*;
 
+    fn mint_and_approve_token<S: PrecompileStorageProvider>(
+        storage: &mut S,
+        token_id: u64,
+        admin: Address,
+        user: Address,
+        exchange_address: Address,
+        amount: u128,
+    ) {
+        let mut token = TIP20Token::new(token_id, storage);
+        token
+            .mint(
+                admin,
+                ITIP20::mintCall {
+                    to: user,
+                    amount: U256::from(amount),
+                },
+            )
+            .expect("Base mint failed");
+        token
+            .approve(
+                user,
+                ITIP20::approveCall {
+                    spender: exchange_address,
+                    amount: U256::from(amount),
+                },
+            )
+            .expect("Base approve failed");
+    }
+
+    fn mint_and_approve_quote<S: PrecompileStorageProvider>(
+        storage: &mut S,
+        admin: Address,
+        user: Address,
+        exchange_address: Address,
+        amount: u128,
+    ) {
+        mint_and_approve_token(storage, 0, admin, user, exchange_address, amount);
+        let mut quote = PathUSD::new(storage);
+        quote
+            .token
+            .grant_role_internal(user, *TRANSFER_ROLE)
+            .unwrap();
+    }
+
     fn setup_test_tokens<S: PrecompileStorageProvider>(
         storage: &mut S,
         admin: Address,
@@ -1578,59 +1625,19 @@ mod tests {
             .token
             .grant_role_internal(admin, *ISSUER_ROLE)
             .unwrap();
-        quote
-            .token
-            .grant_role_internal(user, *TRANSFER_ROLE)
-            .unwrap();
 
-        // Mint tokens to user
-        quote
-            .mint(
-                admin,
-                ITIP20::mintCall {
-                    to: user,
-                    amount: U256::from(amount),
-                },
-            )
-            .expect("Quote mint failed");
-
-        // Approve exchange to spend user's tokens
-        quote
-            .approve(
-                user,
-                ITIP20::approveCall {
-                    spender: exchange_address,
-                    amount: U256::from(amount),
-                },
-            )
-            .expect("Quote approve failed");
-
-        // Initialize base token  and mint amount
+        // Initialize base token
         let mut base = TIP20Token::new(1, quote.token.storage());
         base.initialize("BASE", "BASE", "USD", quote_address, admin)
             .expect("Base token initialization failed");
-
         base.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
+        let base_address = base.address();
 
-        base.approve(
-            user,
-            ITIP20::approveCall {
-                spender: exchange_address,
-                amount: U256::from(amount),
-            },
-        )
-        .expect("Base approve failed");
+        // Mint and approve tokens for user
+        mint_and_approve_quote(storage, admin, user, exchange_address, amount);
+        mint_and_approve_token(storage, 1, admin, user, exchange_address, amount);
 
-        base.mint(
-            admin,
-            ITIP20::mintCall {
-                to: user,
-                amount: U256::from(amount),
-            },
-        )
-        .expect("Base mint failed");
-
-        (base.address(), quote.token.address())
+        (base_address, quote_address)
     }
 
     #[test]
@@ -3772,13 +3779,13 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
 
         let admin = Address::random();
-        // Init Linking USD
+        // Init path USD
         let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
         path_usd
             .initialize("PathUSD", "LUSD", "USD", Address::ZERO, admin)
             .unwrap();
 
-        // Create EUR token with LINKING_USD as quote (valid non-USD token)
+        // Create EUR token with PATH USD as quote (valid non-USD token)
         let mut token_0 = TIP20Token::new(1, path_usd.storage());
         token_0
             .initialize("EuroToken", "EURO", "EUR", PATH_USD_ADDRESS, admin)
@@ -3849,7 +3856,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
 
         let admin = Address::random();
-        // Init Linking USD
+        // Init PATH USD
         let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
         path_usd
             .initialize("PathUSD", "LUSD", "USD", Address::ZERO, admin)
@@ -4154,6 +4161,59 @@ mod tests {
     }
 
     #[test]
+    fn test_clear_order_post_allegretto() -> eyre::Result<()> {
+        const AMOUNT: u128 = 1_000_000_000;
+
+        // Test that fill_order properly clears the prev pointer when advancing to the next order
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let bob = Address::random();
+        let carol = Address::random();
+        let admin = Address::random();
+
+        let (base_token, quote_token) =
+            setup_test_tokens(exchange.storage, admin, alice, exchange.address, AMOUNT);
+        exchange.create_pair(base_token)?;
+
+        // Give bob base tokens and carol quote tokens
+        mint_and_approve_token(exchange.storage, 1, admin, bob, exchange.address, AMOUNT);
+        mint_and_approve_quote(exchange.storage, admin, carol, exchange.address, AMOUNT);
+
+        let tick = 100i16;
+
+        // Place two ask orders at the same tick: Order 1 (alice), Order 2 (bob)
+        let order1_amount = MIN_ORDER_AMOUNT;
+        let order2_amount = MIN_ORDER_AMOUNT;
+
+        let order1_id = exchange.place(alice, base_token, order1_amount, false, tick)?;
+        let order2_id = exchange.place(bob, base_token, order2_amount, false, tick)?;
+        exchange.execute_block(Address::ZERO)?;
+
+        // Verify linked list is set up correctly
+        let order1 = exchange.sload_orders(order1_id)?;
+        let order2 = exchange.sload_orders(order2_id)?;
+        assert_eq!(order1.next(), order2_id);
+        assert_eq!(order2.prev(), order1_id);
+
+        // Swap to fill order1 completely
+        let swap_amount = order1_amount;
+        exchange.swap_exact_amount_out(carol, quote_token, base_token, swap_amount, u128::MAX)?;
+
+        // After filling order1, order2 should be the new head with prev = 0
+        let order2_after = exchange.sload_orders(order2_id)?;
+        assert_eq!(
+            order2_after.prev(),
+            0,
+            "New head order should have prev = 0 after previous head was filled"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn test_best_tick_updates_on_fill() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut exchange = StablecoinExchange::new(&mut storage);
@@ -4177,8 +4237,13 @@ mod tests {
         let bid_escrow_2 = (amount * bid_price_2 as u128) / orderbook::PRICE_SCALE as u128;
         let total_bid_escrow = bid_escrow_1 + bid_escrow_2;
 
-        let (base_token, quote_token) =
-            setup_test_tokens(exchange.storage, admin, alice, exchange.address, total_bid_escrow);
+        let (base_token, quote_token) = setup_test_tokens(
+            exchange.storage,
+            admin,
+            alice,
+            exchange.address,
+            total_bid_escrow,
+        );
         exchange.create_pair(base_token)?;
         let book_key = compute_book_key(base_token, quote_token);
 
@@ -4248,8 +4313,13 @@ mod tests {
         let escrow_2 = (amount * price_2 as u128) / orderbook::PRICE_SCALE as u128;
         let total_escrow = escrow_1 * 2 + escrow_2;
 
-        let (base_token, quote_token) =
-            setup_test_tokens(exchange.storage, admin, alice, exchange.address, total_escrow);
+        let (base_token, quote_token) = setup_test_tokens(
+            exchange.storage,
+            admin,
+            alice,
+            exchange.address,
+            total_escrow,
+        );
         exchange.create_pair(base_token)?;
         let book_key = compute_book_key(base_token, quote_token);
 

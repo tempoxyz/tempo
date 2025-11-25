@@ -2,13 +2,14 @@ pub mod dispatch;
 pub mod rewards;
 pub mod roles;
 
-use tempo_contracts::precompiles::FeeManagerError;
+use tempo_contracts::precompiles::{FeeManagerError, STABLECOIN_EXCHANGE_ADDRESS};
 pub use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event,
 };
 
 use crate::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
     storage::PrecompileStorageProvider,
     tip20::{
@@ -453,6 +454,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ) -> Result<()> {
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
+        // Prevent burning from `FeeManager` and `StablecoinExchange` to protect accounting invariants
+        if self.storage.spec().is_allegretto()
+            && matches!(
+                call.from,
+                TIP_FEE_MANAGER_ADDRESS | STABLECOIN_EXCHANGE_ADDRESS
+            )
+        {
+            return Err(TIP20Error::protected_address().into());
+        }
+
         // Check if the address is blocked from transferring
         let transfer_policy_id = self.transfer_policy_id()?;
         let mut registry = TIP403Registry::new(self.storage);
@@ -515,6 +526,17 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
     // Standard token functions
     pub fn approve(&mut self, msg_sender: Address, call: ITIP20::approveCall) -> Result<bool> {
+        // Only check access keys after Allegretto hardfork
+        if self.storage.spec().is_allegretto() {
+            // Get the old allowance
+            let old_allowance = self.get_allowance(msg_sender, call.spender)?;
+
+            // Check and update spending limits for access keys
+            let mut keychain = AccountKeychain::new(self.storage);
+            keychain.authorize_approve(msg_sender, self.address, old_allowance, call.amount)?;
+        }
+
+        // Set the new allowance
         self.set_allowance(msg_sender, call.spender, call.amount)?;
 
         self.storage.emit_event(
@@ -535,6 +557,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.check_not_paused()?;
         self.check_not_token_address(call.to)?;
         self.ensure_transfer_authorized(msg_sender, call.to)?;
+
+        // Only check access keys after Allegretto hardfork
+        if self.storage.spec().is_allegretto() {
+            // Check and update spending limits for access keys
+            let mut keychain = AccountKeychain::new(self.storage);
+            keychain.authorize_transfer(msg_sender, self.address, call.amount)?;
+        }
+
         self._transfer(msg_sender, call.to, call.amount)?;
         Ok(true)
     }
@@ -2434,6 +2464,83 @@ pub(crate) mod tests {
 
         let supply_cap = token.supply_cap()?;
         assert_eq!(supply_cap, U256::MAX,);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_unable_to_burn_blocked_from_protected_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let admin = Address::random();
+        let burner = Address::random();
+
+        // Initialize token
+        initialize_path_usd(&mut storage, admin)?;
+        let token_id = 1;
+        let mut token = TIP20Token::new(token_id, &mut storage);
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
+
+        // Grant BURN_BLOCKED_ROLE to burner
+        token.grant_role_internal(burner, *BURN_BLOCKED_ROLE)?;
+
+        // Simulate collected fees
+        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: TIP_FEE_MANAGER_ADDRESS,
+                amount: U256::from(1000),
+            },
+        )?;
+
+        // Attempt to burn from FeeManager
+        let result = token.burn_blocked(
+            burner,
+            ITIP20::burnBlockedCall {
+                from: TIP_FEE_MANAGER_ADDRESS,
+                amount: U256::from(500),
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::ProtectedAddress(_)))
+        ));
+
+        // Verify FeeManager balance is unchanged
+        let balance = token.balance_of(ITIP20::balanceOfCall {
+            account: TIP_FEE_MANAGER_ADDRESS,
+        })?;
+        assert_eq!(balance, U256::from(1000));
+
+        // Mint tokens to StablecoinExchange
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: STABLECOIN_EXCHANGE_ADDRESS,
+                amount: U256::from(1000),
+            },
+        )?;
+
+        // Attempt to burn from StablecoinExchange
+        let result = token.burn_blocked(
+            burner,
+            ITIP20::burnBlockedCall {
+                from: STABLECOIN_EXCHANGE_ADDRESS,
+                amount: U256::from(500),
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::ProtectedAddress(_)))
+        ));
+
+        // Verify StablecoinExchange balance is unchanged
+        let balance = token.balance_of(ITIP20::balanceOfCall {
+            account: STABLECOIN_EXCHANGE_ADDRESS,
+        })?;
+        assert_eq!(balance, U256::from(1000));
 
         Ok(())
     }

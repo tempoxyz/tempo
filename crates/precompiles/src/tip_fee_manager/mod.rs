@@ -232,19 +232,26 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
 
             // If FeeManager or validator are blacklisted, we are not transferring any fees
             if token.is_transfer_authorized(self.address, beneficiary)? {
-                token
-                    .transfer(
-                        self.address,
-                        ITIP20::transferCall {
-                            to: beneficiary,
-                            amount: collected_fees,
-                        },
-                    )
-                    .map_err(|_| {
-                        IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
-                            IFeeManager::InsufficientFeeTokenBalance {},
+                // Bound fee transfer to contract balance
+                let balance = token.balance_of(ITIP20::balanceOfCall {
+                    account: self.address,
+                })?;
+
+                if !balance.is_zero() {
+                    token
+                        .transfer(
+                            self.address,
+                            ITIP20::transferCall {
+                                to: beneficiary,
+                                amount: collected_fees.min(balance),
+                            },
                         )
-                    })?;
+                        .map_err(|_| {
+                            IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
+                                IFeeManager::InsufficientFeeTokenBalance {},
+                            )
+                        })?;
+                }
             }
 
             self.clear_collected_fees()?;
@@ -642,6 +649,69 @@ mod tests {
             result,
             Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
         ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_prevent_insufficient_balance_transfer() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let validator = Address::random();
+        let token = token_id_to_address(rand::random::<u64>());
+
+        // Manually set collected fees to 1000 and actual balance to 500 to simulate the attack.
+        let collected_fees = U256::from(1000);
+        let balance = U256::from(500);
+
+        {
+            // Initialize token
+            initialize_path_usd(&mut storage, admin)?;
+            let mut tip20_token = TIP20Token::from_address(token, &mut storage);
+            tip20_token.initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)?;
+            tip20_token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+            // Mint tokens simulating `collected fees - attack burn`
+            tip20_token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: TIP_FEE_MANAGER_ADDRESS,
+                    amount: balance,
+                },
+            )?;
+        }
+
+        {
+            // Set validator token
+            let mut fee_manager = TipFeeManager::new(&mut storage);
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall { token },
+                Address::random(),
+            )?;
+
+            // Simulate collected fees
+            fee_manager.sstore_collected_fees(collected_fees)?;
+
+            // Execute block
+            let result = fee_manager.execute_block(Address::ZERO, validator);
+            assert!(result.is_ok());
+
+            // Verify collected fees are cleared
+            let remaining_fees = fee_manager.sload_collected_fees()?;
+            assert_eq!(remaining_fees, U256::ZERO);
+        }
+
+        // Verify validator got the available balance
+        let mut tip20_token = TIP20Token::from_address(token, &mut storage);
+        let validator_balance =
+            tip20_token.balance_of(ITIP20::balanceOfCall { account: validator })?;
+        assert_eq!(validator_balance, balance);
+
+        let fee_manager_balance = tip20_token.balance_of(ITIP20::balanceOfCall {
+            account: TIP_FEE_MANAGER_ADDRESS,
+        })?;
+        assert_eq!(fee_manager_balance, U256::ZERO);
 
         Ok(())
     }

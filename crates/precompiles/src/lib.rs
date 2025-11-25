@@ -5,6 +5,7 @@
 pub mod error;
 pub use error::Result;
 use tempo_chainspec::hardfork::TempoHardfork;
+pub mod account_keychain;
 pub mod nonce;
 pub mod path_usd;
 pub mod stablecoin_exchange;
@@ -21,6 +22,7 @@ pub mod validator_config;
 pub mod test_util;
 
 use crate::{
+    account_keychain::AccountKeychain,
     nonce::NonceManager,
     path_usd::PathUSD,
     stablecoin_exchange::StablecoinExchange,
@@ -49,10 +51,14 @@ use revm::{
 };
 
 pub use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
-    TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    TIP20_REWARDS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+    STABLECOIN_EXCHANGE_ADDRESS, TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_FACTORY_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS,
 };
+
+// Re-export storage layout helpers for read-only contexts (e.g., pool validation)
+pub use account_keychain::{AuthorizedKey, compute_keys_slot};
 
 /// Input per word cost. It covers abi decoding and cloning of input into call data.
 ///
@@ -95,6 +101,9 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(NoncePrecompile::create(chain_id, spec))
         } else if *address == VALIDATOR_CONFIG_ADDRESS {
             Some(ValidatorConfigPrecompile::create(chain_id, spec))
+        } else if *address == ACCOUNT_KEYCHAIN_ADDRESS && spec.is_allegretto() {
+            // AccountKeychain is only available after Allegretto hardfork
+            Some(AccountKeychainPrecompile::create(chain_id, spec))
         } else {
             None
         }
@@ -198,6 +207,15 @@ pub struct NoncePrecompile;
 impl NoncePrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         tempo_precompile!("NonceManager", |input| NonceManager::new(
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec)
+        ))
+    }
+}
+
+pub struct AccountKeychainPrecompile;
+impl AccountKeychainPrecompile {
+    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
+        tempo_precompile!("AccountKeychain", |input| AccountKeychain::new(
             &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec)
         ))
     }
