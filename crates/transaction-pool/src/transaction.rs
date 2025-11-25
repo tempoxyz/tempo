@@ -86,7 +86,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             Self::ExceedsNonPaymentLimit => false,
             Self::InvalidFeeToken(_) => false,
             Self::MissingFeeToken => false,
-            Self::InvalidValidBefore { .. } => true,
+            Self::InvalidValidBefore { .. } => false,
         }
     }
 
