@@ -73,6 +73,9 @@ pub enum TempoPoolTransactionError {
 
     #[error("No fee token preference configured")]
     MissingFeeToken,
+
+    #[error("'valid_before' {valid_before} is too close to current time (min allowed: {min_allowed})")]
+    InvalidValidBefore { valid_before: u64, min_allowed: u64 },
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -81,6 +84,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             Self::ExceedsNonPaymentLimit => false,
             Self::InvalidFeeToken(_) => false,
             Self::MissingFeeToken => false,
+            Self::InvalidValidBefore { .. } => true,
         }
     }
 
