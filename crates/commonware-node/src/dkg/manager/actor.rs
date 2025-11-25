@@ -14,11 +14,14 @@ use rand_core::CryptoRngCore;
 use tracing::{Span, debug, info, instrument, warn};
 
 use crate::{
-    consensus::block::Block, db::{CeremonyStore, DkgEpochStore, MetadataDatabase, Tx}, dkg::{
+    consensus::block::Block,
+    db::{CeremonyStore, DkgEpochStore, MetadataDatabase, Tx},
+    dkg::{
         EpochState,
         ceremony::{self, Ceremony, PublicOutcome},
         manager::ingress::{Finalize, GetIntermediateDealing, GetOutcome},
-    }, epoch
+    },
+    epoch,
 };
 
 pub(crate) struct Actor<TContext>
