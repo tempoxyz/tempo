@@ -4,11 +4,12 @@ use std::{cmp::Ordering, fmt::Debug};
 
 use alloy_evm::EvmInternals;
 use alloy_primitives::{Address, B256, U256, b256};
+use reth_evm::EvmError;
 use revm::{
     Database,
     context::{
         Block, Cfg, ContextTr, JournalTr, Transaction,
-        result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction},
+        result::{EVMError, ExecutionResult, InvalidTransaction},
         transaction::{AccessListItem, AccessListItemTr},
     },
     handler::{
@@ -31,7 +32,7 @@ use revm::{
 use tempo_contracts::{
     DEFAULT_7702_DELEGATE_ADDRESS,
     precompiles::{
-        FeeManagerError, IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
+        IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
     },
 };
 use tempo_precompiles::{
@@ -40,13 +41,18 @@ use tempo_precompiles::{
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{evm::EvmPrecompileStorageProvider, slots::mapping_slot},
     tip_fee_manager::TipFeeManager,
-    tip20::{self},
+    tip20::{self, ITIP20::InsufficientBalance, TIP20Error},
 };
 use tempo_primitives::transaction::{
     AASignature, PrimitiveSignature, SignatureType, calc_gas_balance_spending,
 };
 
-use crate::{TempoEvm, TempoInvalidTransaction, common::TempoStateAccess, evm::TempoContext};
+use crate::{
+    TempoEvm, TempoInvalidTransaction,
+    common::TempoStateAccess,
+    error::{FeePaymentError, TempoHaltReason},
+    evm::TempoContext,
+};
 
 /// Additional gas for P256 signature verification
 /// P256 precompile cost (6900 from EIP-7951) + 1100 for 129 bytes extra signature size - ecrecover savings (3000)
@@ -94,10 +100,6 @@ fn aa_signature_verification_gas(signature: &AASignature) -> u64 {
 /// Fees are paid in fee tokens instead of account balance.
 #[derive(Debug)]
 pub struct TempoEvmHandler<DB, I> {
-    /// Fee token used for the transaction.
-    fee_token: Address,
-    /// Fee payer for the transaction.
-    fee_payer: Address,
     /// Phantom data to avoid type inference issues.
     _phantom: core::marker::PhantomData<(DB, I)>,
 }
@@ -106,38 +108,8 @@ impl<DB, I> TempoEvmHandler<DB, I> {
     /// Create a new [`TempoEvmHandler`] handler instance
     pub fn new() -> Self {
         Self {
-            fee_token: Address::default(),
-            fee_payer: Address::default(),
             _phantom: core::marker::PhantomData,
         }
-    }
-}
-
-impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
-    fn load_fee_fields(
-        &mut self,
-        evm: &mut TempoEvm<DB, I>,
-    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
-        let ctx = evm.ctx_mut();
-
-        self.fee_payer = ctx.tx.fee_payer()?;
-        self.fee_token = ctx.journaled_state.get_fee_token(
-            &ctx.tx,
-            ctx.block.beneficiary,
-            self.fee_payer,
-            ctx.cfg.spec,
-        )?;
-
-        // Skip fee token validity check for cases when the transaction is free and is not a part of a subblock.
-        if (!ctx.tx.max_balance_spending()?.is_zero() || ctx.tx.is_subblock_transaction())
-            && !ctx
-                .journaled_state
-                .is_valid_fee_token(self.fee_token, ctx.cfg.spec)?
-        {
-            return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
-        }
-
-        Ok(())
     }
 }
 
@@ -368,7 +340,7 @@ where
 {
     type Evm = TempoEvm<DB, I>;
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
-    type HaltReason = HaltReason;
+    type HaltReason = TempoHaltReason;
 
     #[inline]
     fn run(
@@ -418,8 +390,9 @@ where
             evm.logs = evm.journal_mut().take_logs();
         }
 
-        let mut mainnet = MainnetHandler::default();
-        mainnet.execution_result(evm, result)
+        MainnetHandler::default()
+            .execution_result(evm, result)
+            .map(|result| result.map_haltreason(Into::into))
     }
 
     /// Override apply_eip7702_auth_list to support AA transactions with authorization lists.
@@ -516,9 +489,6 @@ where
     ) -> Result<(), Self::Error> {
         let (block, tx, cfg, journal, _, _) = evm.ctx().all_mut();
 
-        // Load the fee payer balance
-        let account_balance = get_token_balance(journal, self.fee_token, self.fee_payer)?;
-
         // Load caller's account
         let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
 
@@ -603,11 +573,17 @@ where
             }
         }
 
-        // calculate the new balance after the fee is collected.
-        let new_balance = calculate_caller_fee(account_balance, tx, block, cfg)?;
-        // doing max to avoid underflow as new_balance can be more than
-        // account balance if `cfg.is_balance_check_disabled()` is true.
-        let gas_balance_spending = core::cmp::max(account_balance, new_balance) - new_balance;
+        let balance_spending = tx.effective_balance_spending(
+            block.basefee() as u128,
+            block.blob_gasprice().unwrap_or_default(),
+        )?;
+
+        if balance_spending.is_zero() {
+            return Ok(());
+        }
+
+        let fee_payer = tx.fee_payer()?;
+        let fee_token = journal.get_fee_token(tx, beneficiary, fee_payer)?;
 
         // Note: Signature verification happens during recover_signer() before entering the pool
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
@@ -821,10 +797,6 @@ where
 
         let mut fee_manager = TipFeeManager::new(&mut storage_provider);
 
-        if gas_balance_spending.is_zero() {
-            return Ok(());
-        }
-
         // Call the precompile function to collect the fee
         // We specify the `to_addr` to account for the case where the to address is a tip20
         // token and the fee token is not set for the specified caller.
@@ -845,24 +817,24 @@ where
                 match e {
                     TempoPrecompileError::TIPFeeAMMError(
                         TIPFeeAMMError::InsufficientLiquidity(_),
-                    ) => EVMError::Transaction(TempoInvalidTransaction::InsufficientAmmLiquidity {
-                        fee: Box::new(gas_balance_spending),
-                    }),
+                    ) => FeePaymentError::InsufficientAmmLiquidity {
+                        fee: gas_balance_spending,
+                    }
+                    .into(),
 
-                    TempoPrecompileError::FeeManagerError(
-                        FeeManagerError::InsufficientFeeTokenBalance(_),
-                    ) => EVMError::Transaction(
-                        TempoInvalidTransaction::InsufficientFeeTokenBalance {
-                            fee: Box::new(gas_balance_spending),
-                            balance: Box::new(account_balance),
-                        },
+                    TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
+                        InsufficientBalance { available, .. },
+                    )) => EVMError::Transaction(
+                        FeePaymentError::InsufficientFeeTokenBalance {
+                            fee: gas_balance_spending,
+                            balance: available,
+                        }
+                        .into(),
                     ),
 
                     TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
 
-                    _ => EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTxError(
-                        e.to_string(),
-                    )),
+                    _ => EVMError::Transaction(FeePaymentError::Other(e.to_string()).into()),
                 }
             })?;
         Ok(())
@@ -1002,6 +974,25 @@ where
                 validation::validate_initial_tx_gas(tx, spec, evm.ctx.cfg.is_eip7623_disabled())
                     .map_err(TempoInvalidTransaction::EthInvalidTransaction)?,
             )
+        }
+    }
+
+    fn catch_error(
+        &self,
+        evm: &mut Self::Evm,
+        error: Self::Error,
+    ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
+        if evm.ctx.tx.is_subblock_transaction()
+            && let Some(TempoInvalidTransaction::CollectFeePreTx(_)) = error.as_invalid_tx_err()
+        {
+            Ok(ExecutionResult::Halt {
+                reason: TempoHaltReason::SubblockTxFeePayment,
+                gas_used: 0,
+            })
+        } else {
+            MainnetHandler::default()
+                .catch_error(evm, error)
+                .map(|result| result.map_haltreason(Into::into))
         }
     }
 }
@@ -1188,8 +1179,6 @@ where
         &mut self,
         evm: &mut Self::Evm,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
-        self.load_fee_fields(evm)?;
-
         match self.inspect_run_without_catch_error(evm) {
             Ok(output) => Ok(output),
             Err(e) => self.catch_error(evm, e),

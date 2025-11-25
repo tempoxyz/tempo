@@ -18,6 +18,7 @@ tempo-chainspec.workspace = true
 
 reth-evm.workspace = true
 reth-storage-api = { workspace = true, optional = true }
+reth-rpc-eth-types = { workspace = true, optional = true }
 
 revm.workspace = true
 
@@ -38,3 +39,4 @@ tempo-evm.workspace = true
 
 [features]
 reth = ["dep:reth-storage-api"]
+rpc = ["dep:reth-rpc-eth-types"]
