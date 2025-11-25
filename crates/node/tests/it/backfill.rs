@@ -98,7 +98,14 @@ async fn test_backfill_sync() -> eyre::Result<()> {
             .full()
             .await?
             .unwrap();
-        assert!(block.into_transactions_vec()[1].inner.tx_hash() == &tx_hash);
+        // Find our transaction in the block (skip system transactions)
+        assert!(
+            block
+                .into_transactions_vec()
+                .iter()
+                .any(|tx| tx.inner.tx_hash() == &tx_hash),
+            "Transaction should be included in block"
+        );
 
         if block_number % 10 == 0 {
             println!("Advanced to block {block_number}");
