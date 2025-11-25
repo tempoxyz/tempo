@@ -40,7 +40,7 @@ use std::{
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{
     IRolesAuth, IStablecoinExchange::IStablecoinExchangeInstance, ITIP20, ITIP20::ITIP20Instance,
-    ITIP20Factory, LINKING_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP20_FACTORY_ADDRESS,
+    ITIP20Factory, STABLECOIN_EXCHANGE_ADDRESS, TIP20_FACTORY_ADDRESS,
 };
 use tempo_precompiles::{
     stablecoin_exchange::MIN_ORDER_AMOUNT,

@@ -1,7 +1,7 @@
 use super::*;
 use alloy::providers::DynProvider;
 use std::pin::Pin;
-use tempo_contracts::precompiles::IStablecoinExchange;
+use tempo_contracts::precompiles::{IStablecoinExchange, PATH_USD_ADDRESS};
 use tempo_precompiles::stablecoin_exchange::{MAX_TICK, MIN_TICK};
 
 const GAS_LIMIT: u64 = 500_000;
@@ -333,7 +333,7 @@ where
             "Test".to_owned(),
             "TEST".to_owned(),
             "USD".to_owned(),
-            LINKING_USD_ADDRESS,
+            PATH_USD_ADDRESS,
             caller,
         )
         .send()
