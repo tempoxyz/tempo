@@ -1,4 +1,4 @@
-use crate::utils::{TestNodeBuilder, setup_test_node, setup_test_token};
+use crate::utils::{TestNodeBuilder, setup_test_token};
 use alloy::{
     consensus::SignableTransaction,
     providers::{Provider, ProviderBuilder, WalletProvider},

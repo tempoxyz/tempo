@@ -1,4 +1,4 @@
-use crate::utils::{TestNodeBuilder, await_receipts, setup_test_node, setup_test_token};
+use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
 use alloy::{
     primitives::U256,
     providers::{Provider, ProviderBuilder},
