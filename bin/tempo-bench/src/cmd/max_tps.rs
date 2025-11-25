@@ -1,13 +1,14 @@
 mod dex;
 mod tip20;
 
+use itertools::Itertools;
 use tempo_alloy::TempoNetwork;
 
 use alloy::{
     consensus::BlockHeader,
     eips::{BlockNumberOrTag::Latest, Decodable2718},
     network::{Ethereum, Network, ReceiptResponse, TransactionBuilder, TxSignerSync},
-    primitives::{Address, BlockNumber, ChainId, Signature, TxKind, U256},
+    primitives::{Address, B256, BlockNumber, ChainId, Signature, TxKind, U256},
     providers::{PendingTransactionBuilder, Provider, ProviderBuilder},
     sol_types::{SolCall, SolEvent},
     transports::http::reqwest::Url,
@@ -19,7 +20,7 @@ use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English
 use clap::Parser;
 use core_affinity::CoreId;
 use eyre::{Context, OptionExt, ensure};
-use futures::{StreamExt, stream};
+use futures::{StreamExt, TryStreamExt, stream};
 use governor::{Quota, RateLimiter};
 use indicatif::{ParallelProgressIterator, ProgressBar};
 use rand::{random, seq::IndexedRandom};
@@ -139,6 +140,11 @@ pub struct MaxTpsArgs {
     /// An amount of receipts to wait for after sending all the transactions.
     #[arg(long, default_value = "100")]
     sample_size: usize,
+
+    /// Fund accounts from the faucet before running the benchmark.
+    /// Calls tempo_fundAddress for each account derived from the mnemonic.
+    #[arg(long)]
+    faucet: bool,
 }
 
 impl MaxTpsArgs {
@@ -163,6 +169,31 @@ impl MaxTpsArgs {
             })
             .collect::<eyre::Result<Vec<_>>>()
             .wrap_err("failed parsing input target URLs")?;
+
+        // Fund accounts from faucet if requested
+        if self.faucet {
+            let addresses: Vec<Address> = (self.from_mnemonic_index
+                ..(self.from_mnemonic_index + self.accounts as u32))
+                .into_par_iter()
+                .map(|i| -> eyre::Result<Address> {
+                    let signer = MnemonicBuilder::<English>::default()
+                        .phrase(&self.mnemonic)
+                        .index(i)?
+                        .build()?;
+                    Ok(signer.address())
+                })
+                .collect::<eyre::Result<Vec<_>>>()?;
+
+            let provider = ProviderBuilder::new().connect_http(target_urls[0].clone());
+            fund_accounts(
+                &provider,
+                &addresses,
+                self.total_connections as usize,
+                self.max_concurrent_transactions,
+            )
+            .await
+            .context("Failed to fund accounts from faucet")?;
+        }
 
         // Generate all transactions
         let total_txs = self.tps * self.duration;
@@ -476,6 +507,46 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
     Ok(transactions)
 }
 
+async fn fund_accounts(
+    provider: &impl Provider,
+    addresses: &[Address],
+    max_concurrent_requests: usize,
+    max_concurrent_transactions: usize,
+) -> eyre::Result<()> {
+    println!("Funding {} accounts from faucet...", addresses.len());
+    let progress = ProgressBar::new(addresses.len() as u64);
+
+    let chunks = addresses
+        .iter()
+        .map(|address| {
+            let address = *address;
+            provider.raw_request::<_, Vec<B256>>("tempo_fundAddress".into(), address)
+        })
+        .chunks(max_concurrent_transactions);
+
+    for chunk in chunks.into_iter() {
+        let tx_hashes = stream::iter(chunk)
+            .buffer_unordered(max_concurrent_requests)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .map(async |hash| {
+                provider
+                    .get_transaction_receipt(hash)
+                    .await?
+                    .ok_or_eyre("no receipt for {hash}")
+            });
+        assert_receipts(tx_hashes, max_concurrent_requests).await?
+    }
+
+    progress.finish();
+    println!("Finished funding accounts");
+    Ok(())
+}
+
 pub fn increase_nofile_limit(min_limit: u64) -> eyre::Result<u64> {
     let (soft, hard) = Resource::NOFILE.get()?;
     println!("[*] At startup, file descriptor limit:      soft = {soft}, hard = {hard}");
@@ -668,18 +739,29 @@ async fn join_all<
             tx_count.inc(1);
             receipts.push(receipt);
         }
-        let mut iter = stream::iter(
+        assert_receipts(
             receipts
                 .into_iter()
                 .map(|receipt| async { eyre::Ok(receipt?.get_receipt().await?) }),
+            max_concurrent_requests,
         )
-        .buffer_unordered(max_concurrent_requests);
-        while let Some(receipt) = iter.next().await {
-            assert!(receipt?.status());
-        }
+        .await?;
     }
 
     Ok(())
+}
+
+async fn assert_receipts<R: ReceiptResponse, F: Future<Output = eyre::Result<R>>>(
+    receipts: impl IntoIterator<Item = F>,
+    max_concurrent_requests: usize,
+) -> eyre::Result<()> {
+    stream::iter(receipts.into_iter())
+        .buffer_unordered(max_concurrent_requests)
+        .try_for_each(async |receipt| {
+            assert!(receipt.status());
+            Ok(())
+        })
+        .await
 }
 
 fn into_signed_encoded(

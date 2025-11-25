@@ -25,13 +25,14 @@ clap = { workspace = true, features = ["derive", "env"] }
 eyre.workspace = true
 futures.workspace = true
 hex.workspace = true
+itertools.workspace = true
+parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
-tokio-util.workspace = true
-toml.workspace = true
 thiserror.workspace = true
-parking_lot.workspace = true
+tokio-util.workspace = true
+tokio.workspace = true
+toml.workspace = true
 
 # Bespoke dependencies
 alloy-signer-local = { version = "1", features = ["mnemonic"] }
