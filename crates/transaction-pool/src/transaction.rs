@@ -78,16 +78,22 @@ pub enum TempoPoolTransactionError {
     InvalidValidAfter { valid_after: u64, max_allowed: u64 },
     #[error("Keychain signature validation failed: {0}")]
     Keychain(&'static str),
+
+    #[error(
+        "Native transfers are not supported, if you were trying to transfer a stablecoin, please call TIP20::Transfer"
+    )]
+    NonZeroValue,
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
     fn is_bad_transaction(&self) -> bool {
         match self {
-            Self::ExceedsNonPaymentLimit => false,
-            Self::InvalidFeeToken(_) => false,
-            Self::MissingFeeToken => false,
-            Self::InvalidValidAfter { .. } => false,
-            Self::Keychain(_) => true, // Bad transaction - invalid signature
+            Self::ExceedsNonPaymentLimit
+            | Self::InvalidFeeToken(_)
+            | Self::MissingFeeToken
+            | Self::Keychain(_)
+            | Self::InvalidValidAfter { .. } => false,
+            Self::NonZeroValue => true,
         }
     }
 
