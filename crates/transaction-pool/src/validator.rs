@@ -173,7 +173,15 @@ where
             }
         };
 
-        let spec = TempoHardfork::Allegretto;
+        let spec = if self
+            .inner
+            .chain_spec()
+            .is_allegretto_active_at_timestamp(self.inner.fork_tracker().tip_timestamp())
+        {
+            TempoHardfork::Allegretto
+        } else {
+            TempoHardfork::Adagio
+        };
         let fee_token =
             match state_provider.get_fee_token(transaction.inner(), Address::ZERO, fee_payer, spec)
             {

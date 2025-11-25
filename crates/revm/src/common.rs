@@ -12,7 +12,7 @@ use tempo_contracts::precompiles::{
     IStablecoinExchange, STABLECOIN_EXCHANGE_ADDRESS,
 };
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS,
     storage::slots::mapping_slot,
     tip_fee_manager,
     tip20::{self, is_tip20},
@@ -181,7 +181,7 @@ pub trait TempoStateAccess<T> {
     /// Checks if the given token can be used as a fee token.
     fn is_valid_fee_token(&mut self, fee_token: Address) -> Result<bool, Self::Error> {
         // Ensure it's a TIP20
-        if !is_tip20(fee_token) || fee_token == PATH_USD_ADDRESS {
+        if !is_tip20(fee_token) {
             return Ok(false);
         }
 
