@@ -87,15 +87,15 @@ pub(super) async fn setup(
         }
     }
 
+    println!("Minting tokens...");
     join_all(
-        futures,
+        futures.drain(..),
         &tx_count,
         max_concurrent_requests,
         max_concurrent_transactions,
     )
     .await?;
 
-    let mut futures = Vec::new();
     let mut signers_with_nonce = Vec::with_capacity(signers_count as usize);
 
     for signer in signers {
@@ -115,8 +115,9 @@ pub(super) async fn setup(
         signers_with_nonce.push((signer, nonce + tokens_count));
     }
 
+    println!("Approving tokens...");
     join_all(
-        futures,
+        futures.drain(..),
         &tx_count,
         max_concurrent_requests,
         max_concurrent_transactions,
@@ -125,8 +126,6 @@ pub(super) async fn setup(
 
     let tick_over = exchange.priceToTick(100010).call().await?;
     let tick_under = exchange.priceToTick(99990).call().await?;
-
-    let mut futures = Vec::new();
 
     for (signer, nonce) in signers_with_nonce.into_iter() {
         for (i, &token) in user_tokens.iter().enumerate() {
@@ -148,6 +147,7 @@ pub(super) async fn setup(
         }
     }
 
+    println!("Placing flip orders...");
     join_all(
         futures,
         &tx_count,

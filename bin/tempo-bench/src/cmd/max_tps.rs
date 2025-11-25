@@ -24,7 +24,7 @@ use futures::{StreamExt, TryStreamExt, stream};
 use governor::{Quota, RateLimiter};
 use indicatif::{ParallelProgressIterator, ProgressBar};
 use rand::{random, seq::IndexedRandom};
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::iter::{IntoParallelIterator, ParallelBridge, ParallelIterator};
 use rlimit::Resource;
 use serde::Serialize;
 use std::{
@@ -171,8 +171,9 @@ impl MaxTpsArgs {
             .wrap_err("failed parsing input target URLs")?;
 
         println!("Generating {} accounts...", self.accounts);
-        let signers = (self.from_mnemonic_index..(self.from_mnemonic_index + self.accounts as u32))
-            .into_par_iter()
+        let signers = (self.from_mnemonic_index..)
+            .take(self.accounts as usize)
+            .par_bridge()
             .progress_count(self.accounts)
             .map(|i| {
                 Ok(MnemonicBuilder::<English>::default()
