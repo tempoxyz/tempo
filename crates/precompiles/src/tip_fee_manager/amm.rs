@@ -17,6 +17,14 @@ pub const SCALE: U256 = uint!(10000_U256);
 pub const SQRT_SCALE: U256 = uint!(100000_U256);
 pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
 
+/// Compute amount out for a fee swap
+pub fn compute_amount_out(amount_in: U256) -> Result<U256> {
+    amount_in
+        .checked_mul(M)
+        .map(|product| product / SCALE)
+        .ok_or(TempoPrecompileError::under_overflow())
+}
+
 /// Pool structure matching the Solidity implementation
 #[derive(Debug, Clone, Default, Storable)]
 pub struct Pool {
@@ -33,7 +41,7 @@ impl From<Pool> for ITIPFeeAMM::Pool {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Storable)]
 pub struct PoolKey {
     pub user_token: Address,
     pub validator_token: Address,
@@ -78,10 +86,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         max_amount: U256,
     ) -> Result<()> {
         let pool_id = PoolKey::new(user_token, validator_token).get_id();
-        let amount_out = max_amount
-            .checked_mul(M)
-            .map(|product| product / SCALE)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let amount_out = compute_amount_out(max_amount)?;
         let available_validator_token = self.get_effective_validator_reserve(pool_id)?;
 
         if amount_out > available_validator_token {
@@ -107,10 +112,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     fn get_effective_validator_reserve(&mut self, pool_id: B256) -> Result<U256> {
         let pool = self.sload_pools(pool_id)?;
         let pending_fee_swap_in = self.get_pending_fee_swap_in(pool_id)?;
-        let pending_out = U256::from(pending_fee_swap_in)
-            .checked_mul(M)
-            .and_then(|product| product.checked_div(SCALE))
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let pending_out = compute_amount_out(U256::from(pending_fee_swap_in))?;
 
         U256::from(pool.reserve_validator_token)
             .checked_sub(pending_out)
@@ -622,10 +624,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         let mut pool = self.sload_pools(pool_id)?;
 
         let amount_in = U256::from(self.get_pending_fee_swap_in(pool_id)?);
-        let pending_out = amount_in
-            .checked_mul(M)
-            .and_then(|product| product.checked_div(SCALE))
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let pending_out = compute_amount_out(amount_in)?;
 
         // Use checked math for these operations
         let new_user_reserve = U256::from(pool.reserve_user_token)
