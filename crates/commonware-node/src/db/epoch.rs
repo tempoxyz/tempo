@@ -5,8 +5,8 @@ use crate::dkg::EpochState;
 use commonware_runtime::{Clock, Metrics, Storage};
 use eyre::Result;
 
-const CURRENT_EPOCH_KEY: &str = "dkg_epoch_store_current_epoch";
-const PREVIOUS_EPOCH_KEY: &str = "dkg_epoch_store_previous_epoch";
+const CURRENT_EPOCH_KEY: &str = "dkg_epoch_store_current";
+const PREVIOUS_EPOCH_KEY: &str = "dkg_epoch_store_previous";
 
 /// Trait for epoch-related database operations.
 pub trait DkgEpochStore<TContext>

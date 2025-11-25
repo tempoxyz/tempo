@@ -475,11 +475,10 @@ where
                 share,
             };
 
-            // Update epoch state and prune older ceremony using the provided transaction
             tx.set_epoch(new_epoch_state.clone())
                 .expect("must be able to write epoch");
 
-            // Prune older ceremony
+            // Prune older ceremony.
             if let Some(epoch) = new_epoch_state.epoch.checked_sub(2) {
                 tx.remove_ceremony(epoch);
             }

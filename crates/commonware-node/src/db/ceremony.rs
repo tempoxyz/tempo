@@ -27,9 +27,8 @@ where
     fn remove_ceremony(&mut self, epoch: u64);
 
     /// Update ceremony state for a specific epoch using a closure.
-    ///
+    /// 
     /// This reads the current state (or creates a default if none exists),
-    /// applies the provided function to modify it, and writes it back atomically.
     fn update_ceremony<F>(&mut self, epoch: u64, f: F) -> impl Future<Output = Result<()>> + Send
     where
         F: FnOnce(&mut CeremonyState) + Send;
