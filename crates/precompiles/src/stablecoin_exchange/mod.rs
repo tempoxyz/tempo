@@ -1817,7 +1817,7 @@ mod tests {
 
     #[test]
     fn test_place_order_below_minimum_amount() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -1855,7 +1855,7 @@ mod tests {
 
     #[test]
     fn test_place_bid_order() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -1927,7 +1927,7 @@ mod tests {
 
     #[test]
     fn test_place_ask_order() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize().expect("Could not init exchange");
 
@@ -1993,7 +1993,7 @@ mod tests {
 
     #[test]
     fn test_place_flip_order_below_minimum_amount() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -2103,7 +2103,7 @@ mod tests {
 
     #[test]
     fn test_place_flip_order() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize().expect("Could not init exchange");
 
@@ -2175,7 +2175,7 @@ mod tests {
 
     #[test]
     fn test_cancel_pending_order() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize().expect("Could not init exchange");
 
@@ -2240,7 +2240,7 @@ mod tests {
 
     #[test]
     fn test_execute_block() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize().expect("Could not init exchange");
 
@@ -2324,7 +2324,7 @@ mod tests {
 
     #[test]
     fn test_execute_block_unauthorized() {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize().expect("Could not init exchange");
 
@@ -2334,7 +2334,7 @@ mod tests {
 
     #[test]
     fn test_withdraw() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize().expect("Could not init exchange");
 
@@ -2393,7 +2393,7 @@ mod tests {
 
     #[test]
     fn test_withdraw_insufficient_balance() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize().expect("Could not init exchange");
 
@@ -2425,7 +2425,7 @@ mod tests {
 
     #[test]
     fn test_quote_swap_exact_amount_out() {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize().expect("Could not init exchange");
 
@@ -2466,7 +2466,7 @@ mod tests {
 
     #[test]
     fn test_quote_swap_exact_amount_in() {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize().expect("Could not init exchange");
 
@@ -2508,7 +2508,7 @@ mod tests {
 
     #[test]
     fn test_quote_swap_exact_amount_out_base_for_quote() {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize().expect("Could not init exchange");
 
@@ -2552,7 +2552,7 @@ mod tests {
 
     #[test]
     fn test_swap_exact_amount_out() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize().expect("Could not init exchange");
 
@@ -2606,7 +2606,7 @@ mod tests {
 
     #[test]
     fn test_swap_exact_amount_in() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize().expect("Could not init exchange");
 
@@ -2660,7 +2660,7 @@ mod tests {
 
     #[test]
     fn test_flip_order_execution() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize().expect("Could not init exchange");
 
@@ -2723,7 +2723,7 @@ mod tests {
 
     #[test]
     fn test_pair_created() {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize().expect("Could not init exchange");
 
@@ -2761,7 +2761,7 @@ mod tests {
 
     #[test]
     fn test_pair_already_created() {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize().expect("Could not init exchange");
 
@@ -2815,7 +2815,7 @@ mod tests {
 
     #[test]
     fn test_find_path_to_root() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -2861,7 +2861,7 @@ mod tests {
 
     #[test]
     fn test_find_trade_path_same_token_errors() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -2890,7 +2890,7 @@ mod tests {
 
     #[test]
     fn test_find_trade_path_direct_pair() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -2930,7 +2930,7 @@ mod tests {
 
     #[test]
     fn test_find_trade_path_reverse_pair() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -2970,7 +2970,7 @@ mod tests {
 
     #[test]
     fn test_find_trade_path_two_hop_siblings() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -3036,7 +3036,7 @@ mod tests {
 
     #[test]
     fn test_quote_exact_in_multi_hop() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -3193,7 +3193,7 @@ mod tests {
 
     #[test]
     fn test_quote_exact_out_multi_hop() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -3329,7 +3329,7 @@ mod tests {
 
     #[test]
     fn test_swap_exact_in_multi_hop_transitory_balances() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -3528,7 +3528,7 @@ mod tests {
 
     #[test]
     fn test_swap_exact_out_multi_hop_transitory_balances() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -3735,7 +3735,7 @@ mod tests {
 
     #[test]
     fn test_create_pair_invalid_currency() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
 
         let admin = Address::random();
         // Init Linking USD
@@ -3766,7 +3766,7 @@ mod tests {
 
     #[test]
     fn test_max_in_check_pre_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -3920,7 +3920,7 @@ mod tests {
     #[test]
     fn test_exact_out_bid_side_pre_moderato() -> eyre::Result<()> {
         // Pre-Moderato: old behavior with unit mismatch causes MaxInputExceeded
-        let mut storage = HashMapStorageProvider::new(1); // Default is Adagio
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -4024,7 +4024,7 @@ mod tests {
     #[test]
     fn test_exact_in_ask_side_pre_moderato() -> eyre::Result<()> {
         // Pre-Moderato: old behavior treats quote amount as base amount
-        let mut storage = HashMapStorageProvider::new(1); // Default is Adagio
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 

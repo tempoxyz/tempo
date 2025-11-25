@@ -678,8 +678,8 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
-    fn test_start_reward() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_start_reward_scheduled_pre_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let current_time = storage.timestamp().to::<u64>();
         let admin = Address::random();
 
@@ -766,7 +766,7 @@ mod tests {
 
     #[test]
     fn test_cancel_reward() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let admin = Address::random();
 
         initialize_path_usd(&mut storage, admin)?;
@@ -865,8 +865,8 @@ mod tests {
     }
 
     #[test]
-    fn test_accrue() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_accrue_pre_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let admin = Address::random();
         let alice = Address::random();
 
@@ -927,8 +927,8 @@ mod tests {
     }
 
     #[test]
-    fn test_finalize_streams() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_finalize_streams_pre_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let current_time = storage.timestamp().to::<u128>();
         let admin = Address::random();
         let alice = Address::random();
@@ -1044,8 +1044,8 @@ mod tests {
     }
 
     #[test]
-    fn test_reward_distribution_pro_rata() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_reward_distribution_pro_rata_pre_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let admin = Address::random();
         let alice = Address::random();
 
@@ -1116,7 +1116,7 @@ mod tests {
 
     #[test]
     fn test_claim_rewards() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let admin = Address::random();
         let alice = Address::random();
         let funder = Address::random();
@@ -1178,7 +1178,7 @@ mod tests {
     fn test_cancel_reward_removes_from_registry_post_moderato() -> eyre::Result<()> {
         // Test with Moderato hardfork - when cancelling the last stream at an end_time,
         // the token should be removed from the registry
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let admin = Address::random();
 
         initialize_path_usd(&mut storage, admin)?;
@@ -1245,7 +1245,7 @@ mod tests {
     fn test_cancel_reward_does_not_remove_from_registry_pre_moderato() -> eyre::Result<()> {
         // Test with Adagio (pre-Moderato) - token should NOT be removed from registry
         // even when all streams are cancelled (for consensus compatibility)
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
         let admin = Address::random();
 
         initialize_path_usd(&mut storage, admin)?;
