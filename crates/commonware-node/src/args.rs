@@ -3,7 +3,6 @@ use std::{net::SocketAddr, path::PathBuf};
 
 const DEFAULT_MAX_MESSAGE_SIZE_BYTES: usize = reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 
-/// Arguments for configuring the consensus layer of a tempo node.
 /// Command line arguments for configuring the consensus layer of a tempo node.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 pub struct Args {

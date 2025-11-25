@@ -74,7 +74,7 @@ where
     /// started before the allegretto hardfork.
     pre_allegretto_metadatas: pre_allegretto::Metadatas<ContextCell<TContext>>,
 
-    /// Information on the peers registered on the p2p peer mamnager for a given
+    /// Information on the peers registered on the p2p peer manager for a given
     /// epoch i and its precursors i-1 and i-2. Peer information is persisted
     /// on the last height of an epoch.
     ///

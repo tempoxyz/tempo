@@ -381,7 +381,7 @@ where
             .cloned()
             .expect(
                 "when updating the current epoch state, there must be a DKG \
-                outcome of some ceremomny",
+                outcome of some ceremony",
             );
 
         assert_eq!(
