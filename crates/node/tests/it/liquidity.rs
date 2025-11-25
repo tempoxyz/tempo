@@ -28,104 +28,32 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         .wallet(wallet.clone())
         .connect_http(http_url);
 
-    // Setup payment token
-    let payment_token = crate::utils::setup_test_token(provider.clone(), sender_address).await?;
-    let payment_token_addr = *payment_token.address();
-
-    // Get validator token address (USDC from genesis)
-    use tempo_contracts::precompiles::ITIPFeeAMM;
     use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
-    let validator_token_addr = DEFAULT_FEE_TOKEN_POST_ALLEGRETTO;
 
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-    let validator_token =
-        tempo_contracts::precompiles::ITIP20::new(validator_token_addr, provider.clone());
+    // Create a fee token that has NO liquidity pool with the validator's token
+    // This ensures any swap attempt will fail due to missing pool
+    let no_pool_token = crate::utils::setup_test_token(provider.clone(), sender_address).await?;
+    let no_pool_token_addr = *no_pool_token.address();
 
-    let liquidity_amount = U256::from(10_000_000);
+    println!("Created fee token with no liquidity pool: {no_pool_token_addr}");
 
-    println!("Setting up FeeAMM pool with initial liquidity...");
-
-    // Mint validator tokens for liquidity
-    validator_token
-        .mint(sender_address, liquidity_amount)
+    // Mint tokens to the sender so they can "pay" fees
+    let token_amount = U256::from(100_000_000_000_000u64);
+    no_pool_token
+        .mint(sender_address, token_amount)
         .send()
         .await?
         .get_receipt()
         .await?;
 
-    // Mint payment tokens for liquidity
-    payment_token
-        .mint(sender_address, liquidity_amount)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    // Create pool by minting liquidity
-    fee_amm
-        .mint(
-            payment_token_addr,
-            validator_token_addr,
-            liquidity_amount,
-            liquidity_amount,
-            sender_address,
-        )
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    println!("FeeAMM pool created. Now draining liquidity...");
-
-    // Get user's LP token balance
-    use tempo_precompiles::tip_fee_manager::amm::PoolKey;
-    let pool_key = PoolKey::new(payment_token_addr, validator_token_addr);
-    let pool_id = pool_key.get_id();
-
-    let lp_balance = fee_amm
-        .liquidityBalances(pool_id, sender_address)
-        .call()
-        .await?;
-    println!("User LP balance: {lp_balance}");
-
-    // Burn all liquidity to drain the pool
-    fee_amm
-        .burn(
-            payment_token_addr,
-            validator_token_addr,
-            lp_balance,
-            sender_address,
-        )
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    println!("Pool drained. Verifying insufficient liquidity...");
-
-    let pool = fee_amm.pools(pool_id).call().await?;
-    println!(
-        "Pool reserves - user_token: {}, validator_token: {}",
-        pool.reserveUserToken, pool.reserveValidatorToken
-    );
-
-    // Mint payment tokens for transaction fees (while still using USDC for fees)
-    let additional_tokens = U256::from(100_000_000_000_000u64);
-    payment_token
-        .mint(sender_address, additional_tokens)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    // Now set the user's fee token to our custom payment token (not USDC)
-    // This ensures subsequent transactions will require a swap through the drained FeeAMM
-    println!("Setting user's fee token preference...");
+    // Set the user's fee token to our token that has no pool
+    // This ensures subsequent transactions will require a swap through a non-existent pool
+    println!("Setting user's fee token to token with no liquidity pool...");
     let mut tx = TxFeeToken {
         fee_token: Some(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO),
         to: TIP_FEE_MANAGER_ADDRESS.into(),
         input: setUserTokenCall {
-            token: payment_token_addr,
+            token: no_pool_token_addr,
         }
         .abi_encode()
         .into(),
@@ -144,16 +72,18 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         .watch()
         .await?;
 
-    // Now try to send payment transactions that require fee swaps
-    // With insufficient liquidity, these should be excluded from blocks
+    // Now try to send transactions that require fee swaps through non-existent pool
+    // With no liquidity pool, these should be excluded from blocks
     let num_payment_txs = 5;
-    println!("Sending {num_payment_txs} payment transactions that require fee swaps...");
+    println!(
+        "Sending {num_payment_txs} transactions that require fee swaps through missing pool..."
+    );
 
     let mut transactions_included = 0;
     let mut transactions_timed_out = 0;
 
     for i in 0..num_payment_txs {
-        let transfer = payment_token.transfer(sender_address, U256::from((i + 1) as u64));
+        let transfer = no_pool_token.transfer(sender_address, U256::from((i + 1) as u64));
         match transfer.send().await {
             Ok(pending_tx) => {
                 let tx_num = i + 1;
