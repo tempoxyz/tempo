@@ -262,8 +262,8 @@ mod tests {
     }
 
     #[test]
-    fn test_start_reward_disabled() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_start_reward_disabled_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
         let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
@@ -286,8 +286,8 @@ mod tests {
     }
 
     #[test]
-    fn test_set_reward_recipient_disabled() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_set_reward_recipient_disabled_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
         let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
         let recipient = Address::from([2u8; 20]);
@@ -307,8 +307,8 @@ mod tests {
     }
 
     #[test]
-    fn test_cancel_reward_disabled() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_cancel_reward_disabled_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
         let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
@@ -327,8 +327,8 @@ mod tests {
     }
 
     #[test]
-    fn test_claim_rewards_disabled() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_claim_rewards_disabled_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
         let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
