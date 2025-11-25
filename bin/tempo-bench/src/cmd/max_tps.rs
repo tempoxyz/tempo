@@ -173,6 +173,7 @@ impl MaxTpsArgs {
         println!("Generating {} accounts...", self.accounts);
         let signers = (self.from_mnemonic_index..(self.from_mnemonic_index + self.accounts as u32))
             .into_par_iter()
+            .progress_count(self.accounts)
             .map(|i| {
                 Ok(MnemonicBuilder::<English>::default()
                     .phrase(&self.mnemonic)
@@ -417,7 +418,7 @@ async fn generate_transactions(input: GenerateTransactionsInput) -> eyre::Result
 
     let transactions: Vec<_> = params
         .into_par_iter()
-        .progress()
+        .progress_count(total_txs)
         .map(|(signer, nonce)| {
             let tx_factory: [Box<dyn Fn(PrivateKeySigner, u64) -> _>; 3] = [
                 Box::new(|signer: PrivateKeySigner, nonce: u64| {
