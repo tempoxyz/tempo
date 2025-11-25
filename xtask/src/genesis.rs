@@ -29,7 +29,6 @@ use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
     nonce::NonceManager,
-    path_usd::PathUSD,
     stablecoin_exchange::StablecoinExchange,
     storage::{ContractStorage, evm::EvmPrecompileStorageProvider},
     tip_fee_manager::{IFeeManager, TipFeeManager},
@@ -97,6 +96,14 @@ pub(crate) struct GenesisArgs {
     /// Adagio hardfork activation timestamp (defaults to 0 = active at genesis)
     #[arg(long, default_value_t = 0)]
     pub adagio_time: u64,
+
+    /// Moderato hardfork activation timestamp (defaults to 0 = active at genesis)
+    #[arg(long, default_value_t = 0)]
+    pub moderato_time: u64,
+
+    /// Moderato hardfork activation timestamp (defaults to 0 = active at genesis)
+    #[arg(long, default_value_t = 0)]
+    pub allegretto_time: u64,
 
     /// Path to validators config file (JSON)
     #[arg(long)]
@@ -313,6 +320,14 @@ impl GenesisArgs {
         chain_config.extra_fields.insert(
             "adagioTime".to_string(),
             serde_json::json!(self.adagio_time),
+        );
+        chain_config.extra_fields.insert(
+            "moderatoTime".to_string(),
+            serde_json::json!(self.moderato_time),
+        );
+        chain_config.extra_fields.insert(
+            "allegrettoTime".to_string(),
+            serde_json::json!(self.allegretto_time),
         );
 
         let mut genesis = Genesis::default()
