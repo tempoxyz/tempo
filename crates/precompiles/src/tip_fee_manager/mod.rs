@@ -60,15 +60,21 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         )
     }
 
+    /// Returns the default fee token based on the current hardfork.
+    /// Post-Allegretto returns PathUSD, pre-Allegretto returns the first TIP20 after PathUSD.
+    fn default_fee_token(&self) -> Address {
+        if self.storage.spec().is_allegretto() {
+            DEFAULT_FEE_TOKEN_POST_ALLEGRETTO
+        } else {
+            DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO
+        }
+    }
+
     pub fn get_validator_token(&mut self, beneficiary: Address) -> Result<Address> {
         let token = self.sload_validator_tokens(beneficiary)?;
 
         if token.is_zero() {
-            if self.storage.spec().is_allegretto() {
-                Ok(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO)
-            } else {
-                Ok(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)
-            }
+            Ok(self.default_fee_token())
         } else {
             Ok(token)
         }
@@ -312,11 +318,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         let token = self.sload_validator_tokens(call.validator)?;
 
         if token.is_zero() {
-            if self.storage.spec().is_allegretto() {
-                Ok(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO)
-            } else {
-                Ok(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)
-            }
+            Ok(self.default_fee_token())
         } else {
             Ok(token)
         }
