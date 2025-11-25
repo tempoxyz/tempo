@@ -11,6 +11,11 @@ contract FeeManager {
         uint128 reserveValidatorToken;
     }
 
+    struct TokenPair {
+        uint64 userToken;
+        uint64 validatorToken;
+    }
+
     // ========== Storage ==========
 
     /// Mapping of validator address to their preferred fee token
@@ -19,8 +24,8 @@ contract FeeManager {
     /// Mapping of user address to their preferred fee token
     mapping(address => address) public userTokens;
 
-    /// Total collected fees
-    uint256 public collectedFees;
+    /// Collected fees per validator
+    mapping(address => uint256) public collectedFees;
 
     /// Dynamic array of tokens with pending fees
     address[] public tokensWithFees;
@@ -39,4 +44,16 @@ contract FeeManager {
 
     /// Nested mapping for LP token balances: pool_key -> user -> balance
     mapping(bytes32 => mapping(address => uint256)) public liquidityBalances;
+
+    /// Dynamic array of pools with pending fees
+    TokenPair[] public poolsWithFees;
+
+    /// Tracking boolean for whether a pool is in pools_with_fees array
+    mapping(bytes32 => bool) public poolInFeesArray;
+
+    /// Dynamic array of validators with pending fees
+    address[] public validatorsWithFees;
+
+    /// Tracking boolean for whether a validator is in validators_with_fees array
+    mapping(address => bool) public validatorInFeesArray;
 }
