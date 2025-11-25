@@ -42,7 +42,7 @@ impl GenerateLocalnet {
         } = self;
 
         // Copy the seed here before genesis_args are consumed.
-        let seed = genesis_args.seed;
+        let seed = consensus_args.seed;
 
         let genesis = genesis_args
             .generate_genesis()

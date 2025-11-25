@@ -77,11 +77,6 @@ pub(crate) struct GenesisArgs {
     /// Adagio hardfork activation timestamp (defaults to 0 = active at genesis)
     #[arg(long, default_value_t = 0)]
     adagio_time: u64,
-
-    /// A fixed seed to generate all signing keys and group shares. This is
-    /// intended for use in development and testing. Use at your own peril.
-    #[arg(long)]
-    pub(crate) seed: Option<u64>,
 }
 
 impl GenesisArgs {

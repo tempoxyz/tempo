@@ -30,7 +30,7 @@ pub(crate) struct GenerateConsensusConfig {
 #[derive(Debug, clap::Args)]
 pub(crate) struct ConsensusArgs {
     /// A comma-separated list of <ip>:<port>.
-    #[arg(long, value_name = "<ip>:<port>")]
+    #[arg(long, value_name = "<ip>:<port>", value_delimiter = ',')]
     pub(crate) validators: Vec<SocketAddr>,
     /// A fixed seed to generate all signing keys and group shares. This is
     /// intended for use in development and testing. Use at your own peril.

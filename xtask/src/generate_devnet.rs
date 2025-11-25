@@ -130,6 +130,11 @@ impl GenerateDevnet {
                     consensus_on_disk_signing_key: validator.signing_key.to_string(),
                     consensus_on_disk_signing_share: validator.signing_share.to_string(),
 
+                    consensus_on_disk_peers_and_public_polynomial: consensus_config
+                        .peers_and_public_polynomial
+                        .to_string()
+                        .unwrap(),
+
                     // FIXME(janis): this should not be zero
                     consensus_fee_recipient: Address::ZERO,
 
@@ -177,6 +182,7 @@ pub(crate) struct ConfigOutput {
     devmode: bool,
     consensus_on_disk_signing_key: String,
     consensus_on_disk_signing_share: String,
+    consensus_on_disk_peers_and_public_polynomial: String,
     consensus_p2p_port: u16,
     consensus_fee_recipient: Address,
     consensus_metrics_port: u16,
