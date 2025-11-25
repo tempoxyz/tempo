@@ -63,7 +63,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     pub fn get_validator_token(&mut self, beneficiary: Address) -> Result<Address> {
         let token = self.sload_validator_tokens(beneficiary)?;
 
-        if self.storage.spec().is_allegretto() && token.is_zero() {
+        if token.is_zero() {
             Ok(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)
         } else {
             Ok(token)
@@ -307,7 +307,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     pub fn validator_tokens(&mut self, call: IFeeManager::validatorTokensCall) -> Result<Address> {
         let token = self.sload_validator_tokens(call.validator)?;
 
-        if self.storage.spec().is_allegretto() && token.is_zero() {
+        if token.is_zero() {
             Ok(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)
         } else {
             Ok(token)
