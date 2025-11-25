@@ -102,9 +102,9 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value_t = 0)]
     pub moderato_time: u64,
 
-    /// Allegretto hardfork activation timestamp (defaults to 0 = active at genesis)
-    #[arg(long, default_value_t = 0)]
-    pub allegretto_time: u64,
+    /// Allegretto hardfork activation timestamp
+    #[arg(long)]
+    pub allegretto_time: Option<u64>,
 
     /// Path to validators config file (JSON)
     #[arg(long)]
