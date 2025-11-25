@@ -366,7 +366,7 @@ mod tests {
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
             assert!(
                 err.to_string()
-                    .contains("native token transfers are not supported")
+                    .contains("Native transfers are not supported")
             );
         } else {
             panic!("Expected Invalid outcome with InsufficientFunds error");

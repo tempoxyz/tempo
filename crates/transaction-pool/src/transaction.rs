@@ -78,7 +78,7 @@ pub enum TempoPoolTransactionError {
     Keychain(&'static str),
 
     #[error(
-        "native transfers not supported, if you were trying to transfer a stablecoin, please call TIP20::Transfer"
+        "Native transfers are not supported, if you were trying to transfer a stablecoin, please call TIP20::Transfer"
     )]
     NonZeroValue,
 }
