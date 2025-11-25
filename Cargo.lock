@@ -11390,6 +11390,7 @@ dependencies = [
  "const-hex",
  "humantime-serde",
  "indexmap 2.12.1",
+ "reth-consensus-common",
  "serde",
  "thiserror 2.0.17",
  "toml",
