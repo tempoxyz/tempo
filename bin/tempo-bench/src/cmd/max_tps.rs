@@ -22,7 +22,7 @@ use core_affinity::CoreId;
 use eyre::{Context, OptionExt, ensure};
 use futures::{StreamExt, TryStreamExt, stream};
 use governor::{Quota, RateLimiter};
-use indicatif::{ParallelProgressIterator, ProgressBar};
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator};
 use rand::{random, seq::IndexedRandom};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rlimit::Resource;
@@ -403,7 +403,6 @@ async fn generate_transactions(input: GenerateTransactionsInput) -> eyre::Result
         let current_nonce = provider.get_transaction_count(address);
         futures.push(async move { (signer, current_nonce.await) });
     }
-
     let mut iter = stream::iter(futures).buffer_unordered(max_concurrent_requests);
     while let Some((signer, nonce)) = iter.next().await {
         let nonce = nonce.context("Failed to get transaction count")?;
@@ -414,11 +413,13 @@ async fn generate_transactions(input: GenerateTransactionsInput) -> eyre::Result
 
     let user_tokens_count = user_tokens.len();
 
+    println!("Pregenerating transactions...",);
     let mut transfers = 0;
     let mut swaps = 0;
     let mut orders = 0;
     let transactions = params
         .into_iter()
+        .progress()
         .map(|(signer, nonce)| {
             let mut tx_factory: [Box<dyn FnMut(PrivateKeySigner, u64) -> _>; 3] = [
                 Box::new(|signer: PrivateKeySigner, nonce: u64| {
