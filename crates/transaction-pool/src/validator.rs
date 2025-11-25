@@ -1,14 +1,17 @@
 use crate::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
 use alloy_consensus::Transaction;
-use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
+use alloy_primitives::U256;
+use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
 };
-use reth_storage_api::{StateProvider, StateProviderFactory};
+use reth_storage_api::{StateProvider, StateProviderFactory, errors::ProviderError};
 use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, AuthorizedKey, compute_keys_slot};
 use tempo_revm::TempoStateAccess;
 
 /// Validator for Tempo transactions.
@@ -20,10 +23,95 @@ pub struct TempoTransactionValidator<Client> {
 
 impl<Client> TempoTransactionValidator<Client>
 where
-    Client: ChainSpecProvider<ChainSpec: EthereumHardforks> + StateProviderFactory,
+    Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
 {
     pub fn new(inner: EthTransactionValidator<Client, TempoPooledTransaction>) -> Self {
         Self { inner }
+    }
+
+    /// Check if a transaction requires keychain validation
+    ///
+    /// Returns the validation result indicating what action to take:
+    /// - ValidateKeychain: Need to validate the keychain authorization
+    /// - Skip: No validation needed (not a keychain signature, or same-tx auth is valid)
+    /// - Reject: Transaction should be rejected with the given reason
+    fn validate_against_keychain(
+        &self,
+        transaction: &TempoPooledTransaction,
+        state_provider: &impl StateProvider,
+    ) -> Result<Result<(), &'static str>, ProviderError> {
+        let Some(tx) = transaction.inner().as_aa() else {
+            return Ok(Ok(()));
+        };
+
+        let is_allegretto = self
+            .inner
+            .chain_spec()
+            .is_allegretto_active_at_timestamp(self.inner.fork_tracker().tip_timestamp());
+
+        let auth = tx.tx().key_authorization.as_ref();
+
+        if (auth.is_some() || tx.signature().is_keychain()) && !is_allegretto {
+            return Ok(Err(
+                "keychain operations are only supported after Allegretto",
+            ));
+        }
+
+        // Ensure that key auth is valid if present.
+        if let Some(auth) = auth
+            && !auth
+                .recover_signer()
+                .is_ok_and(|signer| signer == transaction.sender())
+        {
+            return Ok(Err("Invalid KeyAuthorization signature"));
+        }
+
+        let Some(sig) = tx.signature().as_keychain() else {
+            return Ok(Ok(()));
+        };
+
+        // This should never fail because we set sender based on the sig.
+        if sig.user_address != transaction.sender() {
+            return Ok(Err("Keychain signature user_address does not match sender"));
+        }
+
+        // This should fail happen because we validate the signature validity in `recover_signer`.
+        let Ok(key_id) = sig.key_id(&tx.signature_hash()) else {
+            return Ok(Err(
+                "Failed to recover access key ID from Keychain signature",
+            ));
+        };
+
+        // Ensure that if key auth is present, it is for the same key as the keychain signature.
+        if let Some(auth) = auth {
+            if auth.key_id != key_id {
+                return Ok(Err(
+                    "KeyAuthorization key_id does not match Keychain signature key_id",
+                ));
+            }
+
+            // KeyAuthorization is valid - skip keychain storage check (key will be authorized during execution)
+            return Ok(Ok(()));
+        }
+
+        // Compute storage slot using helper function
+        let storage_slot = compute_keys_slot(transaction.sender(), key_id);
+
+        // Read storage slot from state provider
+        let slot_value = state_provider
+            .storage(ACCOUNT_KEYCHAIN_ADDRESS, storage_slot.into())?
+            .unwrap_or(U256::ZERO);
+
+        // Decode AuthorizedKey using helper
+        let authorized_key = AuthorizedKey::decode_from_slot(slot_value);
+
+        // Validate - only check if key is active
+        // Expiry validation is done in the EVM handler where block timestamp is readily available
+        if !authorized_key.is_active {
+            return Ok(Err("access key is not active"));
+        }
+
+        Ok(Ok(()))
     }
 
     fn validate_one(
@@ -38,6 +126,20 @@ where
                 *transaction.hash(),
                 InvalidTransactionError::TxTypeNotSupported.into(),
             );
+        }
+
+        // Validate transactions that involve keychain keys
+        match self.validate_against_keychain(&transaction, &state_provider) {
+            Ok(Ok(())) => {}
+            Ok(Err(reason)) => {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(TempoPoolTransactionError::Keychain(reason)),
+                );
+            }
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
         }
 
         // Balance transfer is not allowed as there is no balances in accounts yet.
@@ -130,7 +232,7 @@ where
 
 impl<Client> TransactionValidator for TempoTransactionValidator<Client>
 where
-    Client: ChainSpecProvider<ChainSpec: EthereumHardforks> + StateProviderFactory,
+    Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
 {
     type Transaction = TempoPooledTransaction;
 
@@ -204,7 +306,6 @@ where
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
     use alloy_consensus::Transaction;
     use alloy_eips::Decodable2718;
@@ -215,6 +316,8 @@ mod tests {
         PoolTransaction, blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
         validate::EthTransactionValidatorBuilder,
     };
+    use std::sync::Arc;
+    use tempo_chainspec::spec::ANDANTINO;
     use tempo_primitives::TempoTxEnvelope;
 
     fn get_transaction(with_value: Option<U256>) -> TempoPooledTransaction {
@@ -245,7 +348,8 @@ mod tests {
     #[tokio::test]
     async fn test_some_balance() {
         let transaction = get_transaction(Some(U256::from(1)));
-        let provider = MockEthProvider::default();
+        let provider =
+            MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(ANDANTINO.clone()));
         provider.add_account(
             transaction.sender(),
             ExtendedAccount::new(transaction.nonce(), alloy_primitives::U256::ZERO),
