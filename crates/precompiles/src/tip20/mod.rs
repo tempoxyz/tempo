@@ -369,7 +369,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     // Token operations
     /// Mints new tokens to specified address
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
-        self.check_role(msg_sender, *ISSUER_ROLE)?;
         self._mint(msg_sender, call.to, call.amount)
     }
 
