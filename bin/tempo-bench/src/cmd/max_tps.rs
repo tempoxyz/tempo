@@ -510,12 +510,11 @@ async fn fund_accounts(
             .enumerate()
             .flat_map(|(i, hashes)| std::iter::repeat(i).zip(hashes))
             .map(async |(account_idx, hash)| {
+                let receipt = PendingTransactionBuilder::new(provider.root().clone(), hash)
+                    .get_receipt()
+                    .await?;
                 progress.set_position(account_idx as u64);
-                Ok(
-                    PendingTransactionBuilder::new(provider.root().clone(), hash)
-                        .get_receipt()
-                        .await?,
-                )
+                Ok(receipt)
             });
         assert_receipts(tx_hashes, max_concurrent_requests).await?
     }
