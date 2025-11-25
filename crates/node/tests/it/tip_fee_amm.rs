@@ -153,10 +153,9 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
 
     // Mint liquidity first
     let mint_receipt = fee_amm
-        .mint(
+        .mintWithValidatorToken(
             pool_key.user_token,
             pool_key.validator_token,
-            amount,
             amount,
             caller,
         )
@@ -179,6 +178,8 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
 
     // Burn half of the liquidity
     let burn_amount = lp_balance_before_burn / U256::from(2);
+
+    // TODO: fix
     let burn_receipt = fee_amm
         .burn(
             pool_key.user_token,
@@ -490,13 +491,11 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Define amounts (100000 * 1e18)
-    let amount0 = uint!(100000_000000000000000000_U256);
-    let amount1 = uint!(100000_000000000000000000_U256);
+    let amount = uint!(2200000_000000000000000000_U256);
 
     // Mint tokens to alice
     let mut pending = vec![];
-    pending.push(user_token.mint(alice, amount0).send().await?);
-    pending.push(validator_token.mint(alice, amount1).send().await?);
+    pending.push(validator_token.mint(alice, amount).send().await?);
     await_receipts(&mut pending).await?;
 
     // Get pool info
@@ -505,13 +504,7 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
 
     // Add liquidity
     let mint_receipt = fee_amm
-        .mint(
-            pool_key.user_token,
-            pool_key.validator_token,
-            amount0,
-            amount1,
-            alice,
-        )
+        .mintWithValidatorToken(pool_key.user_token, pool_key.validator_token, amount, alice)
         .send()
         .await?
         .get_receipt()
