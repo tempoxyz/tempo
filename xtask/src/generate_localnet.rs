@@ -7,7 +7,7 @@ use reth_network_peers::pk2id;
 use secp256k1::SECP256K1;
 use serde::Serialize;
 
-use crate::{generate_consensus_config::ConsensusArgs, genesis_args::GenesisArgs};
+use crate::genesis_args::GenesisArgs;
 
 /// Generates a config file to run a bunch of validators locally.
 ///
@@ -27,9 +27,6 @@ pub(crate) struct GenerateLocalnet {
 
     #[clap(flatten)]
     genesis_args: GenesisArgs,
-
-    #[clap(flatten)]
-    consensus_args: ConsensusArgs,
 }
 
 impl GenerateLocalnet {
@@ -38,19 +35,15 @@ impl GenerateLocalnet {
             output,
             force,
             genesis_args,
-            consensus_args,
         } = self;
 
         // Copy the seed here before genesis_args are consumed.
-        let seed = consensus_args.seed;
+        let seed = genesis_args.seed;
 
-        let genesis = genesis_args
+        let (genesis, consensus_config) = genesis_args
             .generate_genesis()
             .await
             .wrap_err("failed to generate genesis")?;
-        let consensus_config = consensus_args
-            .generate_consensus_config()
-            .wrap_err("failed to generate consensus config")?;
 
         std::fs::create_dir_all(&output).wrap_err_with(|| {
             format!("failed creating target directory at `{}`", output.display())

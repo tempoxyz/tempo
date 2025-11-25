@@ -19,8 +19,9 @@ use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Metrics as _;
 use eyre::{OptionExt, WrapErr as _, eyre};
-use tempo_commonware_node_config::{PeersAndPublicPolynomial, SigningKey, SigningShare};
+use tempo_commonware_node_config::{SigningKey, SigningShare};
 use tempo_node::TempoFullNode;
+use tracing::info;
 
 use crate::config::{
     BOUNDARY_CERT_CHANNEL_IDENT, BOUNDARY_CERT_LIMIT, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
@@ -36,6 +37,35 @@ pub async fn run_consensus_stack(
     config: Args,
     execution_node: TempoFullNode,
 ) -> eyre::Result<()> {
+    let epoch_length = execution_node
+        .chain_spec()
+        .info
+        .epoch_length()
+        .ok_or_eyre("chainspec did not contain epochLength; cannot go on without it")?;
+
+    let public_polynomial = execution_node
+        .chain_spec()
+        .info
+        .public_polynomial()
+        .clone()
+        .ok_or_eyre("chainspec did not contain publicPolynomial; cannot go on without it")?
+        .into_inner();
+
+    let validators = execution_node
+        .chain_spec()
+        .info
+        .validators()
+        .clone()
+        .ok_or_eyre("chainspec did not contain validators; cannot go on without them")?
+        .into_inner();
+
+    info!(
+        epoch_length,
+        ?validators,
+        ?public_polynomial,
+        "using values found in chainspec"
+    );
+
     let share = config
         .signing_share
         .as_ref()
@@ -62,19 +92,6 @@ pub async fn run_consensus_stack(
             })
         })?
         .into_inner();
-
-    let (public_polynomial, peers) = config
-        .peers_and_public_polynomial
-        .ok_or_eyre("required option `consensus.peers-and-public-polynomial` not set")
-        .and_then(|peers_and_public_key| {
-            PeersAndPublicPolynomial::read_from_file(&peers_and_public_key).wrap_err_with(|| {
-                format!(
-                    "failed reading peers and public bls12-381 polynomial from file `{}`",
-                    peers_and_public_key.display()
-                )
-            })
-        })?
-        .into_parts();
 
     let (mut network, oracle) = instantiate_network(
         context,
@@ -113,7 +130,7 @@ pub async fn run_consensus_stack(
 
         fee_recipient,
 
-        epoch_length: config.epoch_length,
+        epoch_length,
 
         execution_node,
         blocker: oracle.clone(),
@@ -122,7 +139,7 @@ pub async fn run_consensus_stack(
         partition_prefix: "engine".into(),
         signer: signing_key,
         public_polynomial,
-        validators: peers,
+        validators,
         share,
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,

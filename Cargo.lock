@@ -11327,6 +11327,7 @@ dependencies = [
  "reth-network-peers",
  "serde",
  "serde_json",
+ "tempo-commonware-node-config",
  "tempo-primitives",
 ]
 
@@ -11393,7 +11394,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.17",
- "toml",
 ]
 
 [[package]]

@@ -5,10 +5,6 @@ use std::{net::SocketAddr, path::PathBuf};
 /// Command line arguments for configuring the consensus layer of a tempo node.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 pub struct Args {
-    /// The epoch length used by the node.
-    #[arg(long = "consensus.epoch-length", default_value_t = 302400)]
-    pub epoch_length: u64,
-
     /// The file containing the ed25519 signing key for p2p communication.
     #[arg(
         long = "consensus.signing-key",
@@ -19,14 +15,6 @@ pub struct Args {
     /// The file containing a share of the bls12-381 threshold signing key.
     #[arg(long = "consensus.signing-share")]
     pub signing_share: Option<PathBuf>,
-
-    /// The TOML formatted file containing the bls12-381 threshold public key
-    /// polynomial and the list of peers.
-    #[arg(
-        long = "consensus.peers-and-public-polynomial",
-        required_unless_present_any = ["follow", "dev"],
-    )]
-    pub peers_and_public_polynomial: Option<PathBuf>,
 
     /// The socket address that will be bound to listen for consensus communication from
     /// other nodes.

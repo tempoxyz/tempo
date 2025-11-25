@@ -14,6 +14,7 @@ use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
 use reth_ethereum::evm::primitives::eth::spec::EthExecutorSpec;
 use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
+use tempo_commonware_node_config::{Peers, PublicPolynomial};
 use tempo_primitives::TempoHeader;
 
 pub const TEMPO_BASE_FEE: u64 = 10_000_000_000;
@@ -33,6 +34,18 @@ pub struct TempoGenesisInfo {
     /// Timestamp of Allegretto hardfork activation
     #[serde(skip_serializing_if = "Option::is_none")]
     allegretto_time: Option<u64>,
+
+    /// The epoch length used by consensus.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    epoch_length: Option<u64>,
+
+    /// The public polynomial all nodes are to use at genesis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public_polynomial: Option<PublicPolynomial>,
+
+    /// The initial set of peers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    validators: Option<Peers>,
 }
 
 impl TempoGenesisInfo {
@@ -43,6 +56,18 @@ impl TempoGenesisInfo {
             .extra_fields
             .deserialize_as::<Self>()
             .unwrap_or_default()
+    }
+
+    pub fn epoch_length(&self) -> Option<u64> {
+        self.epoch_length
+    }
+
+    pub fn public_polynomial(&self) -> &Option<PublicPolynomial> {
+        &self.public_polynomial
+    }
+
+    pub fn validators(&self) -> &Option<Peers> {
+        &self.validators
     }
 }
 

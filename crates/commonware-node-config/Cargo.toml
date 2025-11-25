@@ -18,7 +18,6 @@ const-hex = { workspace = true, features = ["serde"] }
 indexmap = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
-toml.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

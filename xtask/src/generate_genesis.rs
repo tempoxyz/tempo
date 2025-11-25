@@ -16,20 +16,49 @@ pub(crate) struct GenerateGenesis {
 
 impl GenerateGenesis {
     pub(crate) async fn run(self) -> eyre::Result<()> {
-        let genesis = self
-            .genesis_args
+        let Self {
+            output,
+            genesis_args,
+        } = self;
+        let (genesis, consensus_config) = genesis_args
             .generate_genesis()
             .await
             .wrap_err("failed generating genesis")?;
 
         let json =
             serde_json::to_string_pretty(&genesis).wrap_err("failed encoding genesis as JSON")?;
-        std::fs::write(&self.output, json).wrap_err_with(|| {
-            format!(
-                "failed writing genesiss to file `{}`",
-                self.output.display()
-            )
-        })?;
+        std::fs::write(&output, json)
+            .wrap_err_with(|| format!("failed writing genesis to file `{}`", output.display()))?;
+
+        for validator in consensus_config.validators {
+            std::fs::create_dir_all(validator.dst_dir(&output)).wrap_err_with(|| {
+                format!(
+                    "failed creating target directory to store validator specifici keys at `{}`",
+                    validator.dst_dir(&output).display()
+                )
+            })?;
+            let signing_key_dst = validator.dst_signing_key(&output);
+            validator
+                .signing_key
+                .write_to_file(&signing_key_dst)
+                .wrap_err_with(|| {
+                    format!(
+                        "failed writing ed25519 signing key to `{}`",
+                        signing_key_dst.display()
+                    )
+                })?;
+            let signing_share_dst = validator.dst_signing_share(&output);
+            validator
+                .signing_share
+                .write_to_file(&signing_share_dst)
+                .wrap_err_with(|| {
+                    format!(
+                        "failed writing bls12381 signing share to `{}`",
+                        signing_share_dst.display()
+                    )
+                })?;
+        }
+
         Ok(())
     }
 }

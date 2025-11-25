@@ -7,7 +7,7 @@ use reth_network_peers::pk2id;
 use secp256k1::SECP256K1;
 use serde::Serialize;
 
-use crate::{generate_consensus_config::ConsensusArgs, genesis_args::GenesisArgs};
+use crate::genesis_args::GenesisArgs;
 
 /// Generates a config file to run a bunch of validators locally.
 ///
@@ -33,10 +33,7 @@ pub(crate) struct GenerateDevnet {
     genesis_url: String,
 
     #[clap(flatten)]
-    genesis_args: Option<GenesisArgs>,
-
-    #[clap(flatten)]
-    consensus_args: ConsensusArgs,
+    genesis_args: GenesisArgs,
 }
 
 impl GenerateDevnet {
@@ -47,19 +44,13 @@ impl GenerateDevnet {
             image_tag,
             genesis_url,
             genesis_args,
-            consensus_args,
         } = self;
 
-        let genesis = if let Some(genesis_args) = genesis_args {
-            Some(
-                genesis_args
-                    .generate_genesis()
-                    .await
-                    .wrap_err("failed to generate genesis")?,
-            )
-        } else {
-            None
-        };
+        let seed = genesis_args.seed;
+        let (genesis, consensus_config) = genesis_args
+            .generate_genesis()
+            .await
+            .wrap_err("failed to generate genesis")?;
 
         std::fs::create_dir_all(&output).wrap_err_with(|| {
             format!("failed creating target directory at `{}`", output.display())
@@ -94,10 +85,6 @@ impl GenerateDevnet {
             );
         }
 
-        let seed = consensus_args.seed;
-        let consensus_config = consensus_args
-            .generate_consensus_config()
-            .wrap_err("failed generating consensus config")?;
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
         let mut execution_peers = vec![];
 
@@ -130,11 +117,6 @@ impl GenerateDevnet {
                     consensus_on_disk_signing_key: validator.signing_key.to_string(),
                     consensus_on_disk_signing_share: validator.signing_share.to_string(),
 
-                    consensus_on_disk_peers_and_public_polynomial: consensus_config
-                        .peers_and_public_polynomial
-                        .to_string()
-                        .unwrap(),
-
                     // FIXME(janis): this should not be zero
                     consensus_fee_recipient: Address::ZERO,
 
@@ -165,14 +147,12 @@ impl GenerateDevnet {
         }
         eprintln!("config files written");
 
-        if let Some(genesis) = genesis {
-            let genesis_ser = serde_json::to_string_pretty(&genesis)
-                .wrap_err("failed serializing genesis as json")?;
-            let dst = output.join("genesis.json");
-            std::fs::write(&dst, &genesis_ser)
-                .wrap_err_with(|| format!("failed writing genesis to `{}`", dst.display()))?;
-            println!("wrote genesis to `{}`", dst.display());
-        }
+        let genesis_ser = serde_json::to_string_pretty(&genesis)
+            .wrap_err("failed serializing genesis as json")?;
+        let dst = output.join("genesis.json");
+        std::fs::write(&dst, &genesis_ser)
+            .wrap_err_with(|| format!("failed writing genesis to `{}`", dst.display()))?;
+        println!("wrote genesis to `{}`", dst.display());
         Ok(())
     }
 }
@@ -182,7 +162,6 @@ pub(crate) struct ConfigOutput {
     devmode: bool,
     consensus_on_disk_signing_key: String,
     consensus_on_disk_signing_share: String,
-    consensus_on_disk_peers_and_public_polynomial: String,
     consensus_p2p_port: u16,
     consensus_fee_recipient: Address,
     consensus_metrics_port: u16,

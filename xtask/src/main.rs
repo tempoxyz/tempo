@@ -2,8 +2,8 @@
 use std::net::SocketAddr;
 
 use crate::{
-    generate_consensus_config::GenerateConsensusConfig, generate_devnet::GenerateDevnet,
-    generate_genesis::GenerateGenesis, generate_localnet::GenerateLocalnet,
+    generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
+    generate_localnet::GenerateLocalnet,
 };
 
 use alloy::signers::{
@@ -15,7 +15,6 @@ use commonware_codec::DecodeExt;
 use commonware_cryptography::Signer;
 use eyre::Context;
 
-mod generate_consensus_config;
 mod generate_devnet;
 mod generate_genesis;
 mod generate_localnet;
@@ -25,7 +24,6 @@ mod genesis_args;
 async fn main() -> eyre::Result<()> {
     let args = Args::parse();
     match args.action {
-        Action::GenerateConsensusConfig(cfg) => cfg.run().wrap_err("failed generating config"),
         Action::GenerateGenesis(args) => args.run().await.wrap_err("failed generating genesis"),
         Action::GenerateDevnet(args) => args
             .run()
@@ -55,7 +53,6 @@ struct Args {
     reason = "the variant names map to actual cli inputs and are desired"
 )]
 enum Action {
-    GenerateConsensusConfig(GenerateConsensusConfig),
     GenerateGenesis(GenerateGenesis),
     GenerateDevnet(GenerateDevnet),
     GenerateLocalnet(GenerateLocalnet),

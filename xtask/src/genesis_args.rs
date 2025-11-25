@@ -17,8 +17,13 @@ use reth_evm::{
         inspector::JournalExt,
     },
 };
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_commonware_node_config::{Peers, PublicPolynomial, SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, DEFAULT_7702_DELEGATE_ADDRESS,
     MULTICALL_ADDRESS, PERMIT2_ADDRESS, SAFE_DEPLOYER_ADDRESS,
@@ -77,6 +82,44 @@ pub(crate) struct GenesisArgs {
     /// Adagio hardfork activation timestamp (defaults to 0 = active at genesis)
     #[arg(long, default_value_t = 0)]
     adagio_time: u64,
+
+    #[arg(long, default_value_t = 604_800)]
+    epoch_length: u64,
+
+    /// A comma-separated list of <ip>:<port>.
+    #[arg(long, value_name = "<ip>:<port>", value_delimiter = ',')]
+    validators: Vec<SocketAddr>,
+
+    /// A fixed seed to generate all signing keys and group shares. This is
+    /// intended for use in development and testing. Use at your own peril.
+    #[arg(long)]
+    pub(crate) seed: Option<u64>,
+}
+
+pub(crate) struct ConsensusConfig {
+    pub(crate) public_polynomial: PublicPolynomial,
+    pub(crate) peers: Peers,
+    pub(crate) validators: Vec<Validator>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Validator {
+    pub(crate) addr: SocketAddr,
+    pub(crate) signing_key: SigningKey,
+    pub(crate) signing_share: SigningShare,
+}
+
+impl Validator {
+    pub(crate) fn dst_dir(&self, path: impl AsRef<Path>) -> PathBuf {
+        path.as_ref().join(self.addr.to_string())
+    }
+    pub(crate) fn dst_signing_key(&self, path: impl AsRef<Path>) -> PathBuf {
+        self.dst_dir(path).join("signing.key")
+    }
+
+    pub(crate) fn dst_signing_share(&self, path: impl AsRef<Path>) -> PathBuf {
+        self.dst_dir(path).join("signing.share")
+    }
 }
 
 impl GenesisArgs {
@@ -84,7 +127,7 @@ impl GenesisArgs {
     ///
     /// It creates a new genesis allocation for the configured accounts.
     /// And creates accounts for system contracts.
-    pub(crate) async fn generate_genesis(self) -> eyre::Result<Genesis> {
+    pub(crate) async fn generate_genesis(self) -> eyre::Result<(Genesis, ConsensusConfig)> {
         println!("Generating {:?} accounts", self.accounts);
 
         let addresses: Vec<Address> = (0..self.accounts)
@@ -256,6 +299,12 @@ impl GenesisArgs {
             },
         );
 
+        println!(
+            "generating consensus config for validators: {:?}",
+            self.validators
+        );
+        let consensus_config = generate_consensus_config(&self.validators, self.seed)?;
+
         let mut chain_config = ChainConfig {
             chain_id: self.chain_id,
             homestead_block: Some(0),
@@ -284,6 +333,16 @@ impl GenesisArgs {
             "adagioTime".to_string(),
             serde_json::json!(self.adagio_time),
         );
+        chain_config
+            .extra_fields
+            .insert_value("epochLength".to_string(), self.epoch_length)?;
+        chain_config
+            .extra_fields
+            .insert_value("peers".to_string(), consensus_config.peers.clone())?;
+        chain_config.extra_fields.insert_value(
+            "publicPolynomial".to_string(),
+            consensus_config.public_polynomial.clone(),
+        )?;
 
         let mut genesis = Genesis::default()
             .with_gas_limit(self.gas_limit)
@@ -295,7 +354,7 @@ impl GenesisArgs {
         genesis.alloc = genesis_alloc;
         genesis.config = chain_config;
 
-        Ok(genesis)
+        Ok((genesis, consensus_config))
     }
 }
 
@@ -495,8 +554,10 @@ fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
     Ok(())
 }
 
-/// Initializes the initial set of validators with the specified validator config.
-/// Returns a vec of the validator public keys
+/// Initializes the initial validator config smart contract.
+///
+/// NOTE: Does not populate it at all because consensus does not read the
+/// validators at genesis.
 fn initialize_validator_config(
     admin: Address,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
@@ -510,6 +571,48 @@ fn initialize_validator_config(
         .initialize(admin)
         .wrap_err("failed to initialize validator config contract")?;
     Ok(())
+}
+
+/// Generates the consensus configs of the validators.
+fn generate_consensus_config(
+    addresses: &[SocketAddr],
+    seed: Option<u64>,
+) -> eyre::Result<ConsensusConfig> {
+    use commonware_cryptography::{PrivateKeyExt as _, Signer as _, ed25519::PrivateKey};
+    use rand::SeedableRng as _;
+
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
+    let mut signers = (0..addresses.len())
+        .map(|_| PrivateKey::from_rng(&mut rng))
+        .collect::<Vec<_>>();
+
+    // generate consensus key
+    let threshold = commonware_utils::quorum(addresses.len() as u32);
+    let (polynomial, shares) = commonware_cryptography::bls12381::dkg::ops::generate_shares::<
+        _,
+        commonware_cryptography::bls12381::primitives::variant::MinSig,
+    >(&mut rng, None, addresses.len() as u32, threshold);
+
+    signers.sort_by_key(|signer| signer.public_key());
+    let peers = addresses
+        .into_iter()
+        .zip(signers.iter())
+        .map(|(addr, private_key)| (private_key.public_key(), *addr))
+        .collect::<commonware_utils::set::OrderedAssociated<_, _>>();
+
+    let mut validators = vec![];
+    for (addr, (signer, share)) in peers.values().iter().zip(signers.into_iter().zip(shares)) {
+        validators.push(Validator {
+            addr: *addr,
+            signing_key: SigningKey::from(signer),
+            signing_share: SigningShare::from(share),
+        });
+    }
+    Ok(ConsensusConfig {
+        peers: peers.into(),
+        public_polynomial: polynomial.into(),
+        validators,
+    })
 }
 
 fn mint_pairwise_liquidity(
