@@ -777,13 +777,27 @@ mod tests {
         let user_token = token_id_to_address(1);
         let mut user_tip20 = TIP20Token::from_address(user_token, storage);
         user_tip20
-            .initialize("UserToken", "UTK", "USD", PATH_USD_ADDRESS, admin)
+            .initialize(
+                "UserToken",
+                "UTK",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let validator_token = token_id_to_address(2);
         let mut validator_tip20 = TIP20Token::from_address(validator_token, storage);
         validator_tip20
-            .initialize("ValidatorToken", "VTK", "USD", PATH_USD_ADDRESS, admin)
+            .initialize(
+                "ValidatorToken",
+                "VTK",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let amm = TipFeeManager::new(storage);
@@ -1137,18 +1151,39 @@ mod tests {
         // Init Linking USD, user token and validator tokens
         let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
         path_usd
-            .initialize("PathUSD", "LUSD", "USD", Address::ZERO, admin)
+            .initialize(
+                "PathUSD",
+                "LUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let mut user_token = TIP20Token::new(1, &mut storage);
         user_token
-            .initialize("TestToken", "TEST", "EUR", PATH_USD_ADDRESS, admin)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "EUR",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
         let user_token_address = user_token.address();
 
         let mut validator_token = TIP20Token::new(2, &mut storage);
         validator_token
-            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
         let validator_token_address = validator_token.address();
 
@@ -1194,18 +1229,39 @@ mod tests {
         // Init Linking USD, user token and validator tokens
         let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
         path_usd
-            .initialize("PathUSD", "LUSD", "USD", Address::ZERO, admin)
+            .initialize(
+                "PathUSD",
+                "LUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let mut user_token = TIP20Token::new(1, &mut storage);
         user_token
-            .initialize("TestToken", "TEST", "EUR", PATH_USD_ADDRESS, admin)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "EUR",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
         let user_token_address = user_token.address();
 
         let mut validator_token = TIP20Token::new(2, &mut storage);
         validator_token
-            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
         let validator_token_address = validator_token.address();
 
@@ -1249,18 +1305,39 @@ mod tests {
         // Init Linking USD, user token and validator tokens
         let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
         path_usd
-            .initialize("PathUSD", "LUSD", "USD", Address::ZERO, admin)
+            .initialize(
+                "PathUSD",
+                "LUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let mut user_token = TIP20Token::new(1, &mut storage);
         user_token
-            .initialize("TestToken", "TEST", "EUR", PATH_USD_ADDRESS, admin)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "EUR",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
         let user_token_address = user_token.address();
 
         let mut validator_token = TIP20Token::new(2, &mut storage);
         validator_token
-            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
         let validator_token_address = validator_token.address();
 

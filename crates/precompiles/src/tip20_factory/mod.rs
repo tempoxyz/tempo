@@ -42,10 +42,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_token(
         &mut self,
         sender: Address,
-        call: ITIP20Factory::createTokenCall,
+        name: String,
+        symbol: String,
+        currency: String,
+        quote_token: Address,
+        admin: Address,
+        fee_recipient: Address,
     ) -> Result<Address> {
         // TODO: We should update `token_id_counter` to be u64 in storage if we assume we can cast
         // to u64 here. Or we should update `token_id_to_address` to take a larger value
@@ -54,7 +60,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
             .try_into()
             .map_err(|_| TempoPrecompileError::under_overflow())?;
 
-        trace!(%sender, %token_id, ?call, "Create token");
+        trace!(%sender, %token_id, %name, %symbol, %currency, %quote_token, %admin, %fee_recipient, "Create token");
 
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
         // Note that the token Id increments on each deployment.
@@ -62,32 +68,29 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
 
         // Post-Allegretto, require that the first TIP20 deployed has a quote token of address(0)
         if self.storage.spec().is_allegretto() && token_id == 0 {
-            if !call.quoteToken.is_zero() {
+            if !quote_token.is_zero() {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
         } else if self.storage.spec().is_moderato() {
             // Post-Moderato: Fixed validation - quote token id must be < current token_id (strictly less than).
-            if !is_tip20(call.quoteToken)
-                || address_to_token_id_unchecked(call.quoteToken) >= token_id
-            {
+            if !is_tip20(quote_token) || address_to_token_id_unchecked(quote_token) >= token_id {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
         } else {
             // Pre-Moderato: Original validation with off-by-one bug for consensus compatibility.
             // The buggy check allowed quote_token_id == token_id to pass.
-            if !is_tip20(call.quoteToken)
-                || address_to_token_id_unchecked(call.quoteToken) > token_id
-            {
+            if !is_tip20(quote_token) || address_to_token_id_unchecked(quote_token) > token_id {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
         }
 
         TIP20Token::new(token_id, self.storage).initialize(
-            &call.name,
-            &call.symbol,
-            &call.currency,
-            call.quoteToken,
-            call.admin,
+            &name,
+            &symbol,
+            &currency,
+            quote_token,
+            admin,
+            fee_recipient,
         )?;
 
         let token_address = token_id_to_address(token_id);
@@ -97,11 +100,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
             TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
                 token: token_address,
                 tokenId: token_id,
-                name: call.name,
-                symbol: call.symbol,
-                currency: call.currency,
-                quoteToken: call.quoteToken,
-                admin: call.admin,
+                name,
+                symbol,
+                currency,
+                quoteToken: quote_token,
+                admin,
+                feeRecipient: fee_recipient,
             })
             .into_log_data(),
         )?;
@@ -148,20 +152,28 @@ mod tests {
         factory
             .initialize()
             .expect("Factory initialization should succeed");
-        let call = ITIP20Factory::createTokenCall {
-            name: "Test Token".to_string(),
-            symbol: "TEST".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: crate::PATH_USD_ADDRESS,
-            admin: sender,
-        };
-
         let token_addr_0 = factory
-            .create_token(sender, call.clone())
+            .create_token(
+                sender,
+                "Test Token".to_string(),
+                "TEST".to_string(),
+                "USD".to_string(),
+                crate::PATH_USD_ADDRESS,
+                sender,
+                Address::ZERO,
+            )
             .expect("Token creation should succeed");
 
         let token_addr_1 = factory
-            .create_token(sender, call)
+            .create_token(
+                sender,
+                "Test Token".to_string(),
+                "TEST".to_string(),
+                "USD".to_string(),
+                crate::PATH_USD_ADDRESS,
+                sender,
+                Address::ZERO,
+            )
             .expect("Token creation should succeed");
 
         let factory_events = storage.events.get(&TIP20_FACTORY_ADDRESS).unwrap();
@@ -176,6 +188,7 @@ mod tests {
             currency: "USD".to_string(),
             quoteToken: crate::PATH_USD_ADDRESS,
             admin: sender,
+            feeRecipient: Address::ZERO,
         });
         assert_eq!(factory_events[0], expected_event_0.into_log_data());
 
@@ -188,6 +201,7 @@ mod tests {
             currency: "USD".to_string(),
             quoteToken: crate::PATH_USD_ADDRESS,
             admin: sender,
+            feeRecipient: Address::ZERO,
         });
 
         assert_eq!(factory_events[1], expected_event_1.into_log_data());
@@ -205,15 +219,15 @@ mod tests {
 
         let sender = Address::random();
 
-        let invalid_call = ITIP20Factory::createTokenCall {
-            name: "Test Token".to_string(),
-            symbol: "TEST".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: Address::random(),
-            admin: sender,
-        };
-
-        let result = factory.create_token(sender, invalid_call);
+        let result = factory.create_token(
+            sender,
+            "Test Token".to_string(),
+            "TEST".to_string(),
+            "USD".to_string(),
+            Address::random(),
+            sender,
+            Address::ZERO,
+        );
         assert_eq!(
             result.unwrap_err(),
             TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
@@ -232,15 +246,15 @@ mod tests {
 
         let sender = Address::random();
         let non_existent_tip20 = token_id_to_address(5);
-        let invalid_call = ITIP20Factory::createTokenCall {
-            name: "Test Token".to_string(),
-            symbol: "TEST".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: non_existent_tip20,
-            admin: sender,
-        };
-
-        let result = factory.create_token(sender, invalid_call);
+        let result = factory.create_token(
+            sender,
+            "Test Token".to_string(),
+            "TEST".to_string(),
+            "USD".to_string(),
+            non_existent_tip20,
+            sender,
+            Address::ZERO,
+        );
         assert_eq!(
             result.unwrap_err(),
             TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
@@ -266,15 +280,16 @@ mod tests {
         // Try to use token_id 1 (the token being created) as the quote token
         // This should be rejected because token 1 doesn't exist yet
         let same_id_quote_token = token_id_to_address(1);
-        let call = ITIP20Factory::createTokenCall {
-            name: "Test Token".to_string(),
-            symbol: "TEST".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: same_id_quote_token,
-            admin: sender,
-        };
 
-        let result = factory.create_token(sender, call);
+        let result = factory.create_token(
+            sender,
+            "Test Token".to_string(),
+            "TEST".to_string(),
+            "USD".to_string(),
+            same_id_quote_token,
+            sender,
+            Address::ZERO,
+        );
         // Should fail with InvalidQuoteToken error because token 1 doesn't exist yet (off-by-one)
         assert_eq!(
             result.unwrap_err(),
@@ -301,15 +316,16 @@ mod tests {
         // Try to use token ID 5 as quote token (doesn't exist yet)
         // This should fail factory validation even pre-Moderato
         let future_quote_token = token_id_to_address(5);
-        let call = ITIP20Factory::createTokenCall {
-            name: "Test Token".to_string(),
-            symbol: "TEST".to_string(),
-            currency: "EUR".to_string(), // Use non-USD to avoid TIP20Token::initialize validation
-            quoteToken: future_quote_token,
-            admin: sender,
-        };
 
-        let result = factory.create_token(sender, call);
+        let result = factory.create_token(
+            sender,
+            "Test Token".to_string(),
+            "TEST".to_string(),
+            "EUR".to_string(), // Use non-USD to avoid TIP20Token::initialize validation
+            future_quote_token,
+            sender,
+            Address::ZERO,
+        );
 
         // This should fail with InvalidQuoteToken from factory validation
         // Currently this test will PASS (not fail) because factory validation is skipped pre-Moderato
@@ -345,15 +361,16 @@ mod tests {
         // Try to use token_id 1 (the token being created) as the quote token
         // Pre-Moderato, the old buggy validation (> instead of >=) allows this to pass
         let same_id_quote_token = token_id_to_address(1);
-        let call = ITIP20Factory::createTokenCall {
-            name: "Test Token".to_string(),
-            symbol: "TEST".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: same_id_quote_token,
-            admin: sender,
-        };
 
-        let result = factory.create_token(sender, call);
+        let result = factory.create_token(
+            sender,
+            "Test Token".to_string(),
+            "TEST".to_string(),
+            "USD".to_string(),
+            same_id_quote_token,
+            sender,
+            Address::ZERO,
+        );
 
         // Pre-Moderato: the old buggy validation (> token_id) allows quote_token_id == token_id
         // The operation may succeed or fail with a different error later, but it should NOT
@@ -393,29 +410,29 @@ mod tests {
         let mut factory = TIP20Factory::new(&mut storage);
         factory.initialize()?;
 
-        let call_fail = ITIP20Factory::createTokenCall {
-            name: "Test".to_string(),
-            symbol: "Test".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: token_id_to_address(0),
-            admin: sender,
-        };
-
-        let result = factory.create_token(sender, call_fail);
+        let result = factory.create_token(
+            sender,
+            "Test".to_string(),
+            "Test".to_string(),
+            "USD".to_string(),
+            token_id_to_address(0),
+            sender,
+            Address::ZERO,
+        );
         assert_eq!(
             result.unwrap_err(),
             TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
         );
 
-        let call = ITIP20Factory::createTokenCall {
-            name: "Test".to_string(),
-            symbol: "Test".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: Address::ZERO,
-            admin: sender,
-        };
-
-        factory.create_token(sender, call)?;
+        factory.create_token(
+            sender,
+            "Test".to_string(),
+            "Test".to_string(),
+            "USD".to_string(),
+            Address::ZERO,
+            sender,
+            Address::ZERO,
+        )?;
         Ok(())
     }
 }
