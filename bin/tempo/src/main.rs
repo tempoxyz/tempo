@@ -36,9 +36,27 @@ use tempo_faucet::{
     args::FaucetArgs,
     faucet::{TempoFaucetExt, TempoFaucetExtApiServer},
 };
-use tempo_node::{TempoFullNode, node::TempoNode};
+use tempo_node::{
+    DEFAULT_AA_VALID_AFTER_MAX_SECS, TempoFullNode, ValidatorConfig, node::TempoNode,
+};
 use tokio::sync::oneshot;
 use tokio_util::either::Either;
+
+/// Transaction pool validator CLI arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::Args)]
+struct ValidatorArgs {
+    /// Maximum allowed `valid_after` offset for AA txs.
+    #[arg(long, default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
+    pub aa_valid_after_max_secs: u64,
+}
+
+impl From<ValidatorArgs> for ValidatorConfig {
+    fn from(args: ValidatorArgs) -> Self {
+        Self {
+            aa_valid_after_max_secs: args.aa_valid_after_max_secs,
+        }
+    }
+}
 
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
@@ -57,6 +75,9 @@ struct TempoArgs {
 
     #[command(flatten)]
     pub faucet_args: FaucetArgs,
+
+    #[command(flatten)]
+    pub validator_args: ValidatorArgs,
 }
 
 fn main() -> eyre::Result<()> {
@@ -188,7 +209,7 @@ fn main() -> eyre::Result<()> {
             node,
             node_exit_future,
         } = builder
-            .node(TempoNode::new())
+            .node(TempoNode::new(args.validator_args.into()))
             .apply(|mut builder: WithLaunchContext<_>| {
                 if let Some(follow_url) = &args.follow {
                     builder.config_mut().debug.rpc_consensus_url = Some(follow_url.clone());

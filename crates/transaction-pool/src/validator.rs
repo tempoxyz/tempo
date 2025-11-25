@@ -1,5 +1,3 @@
-use std::sync::LazyLock;
-
 use crate::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
 use alloy_consensus::Transaction;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
@@ -13,27 +11,27 @@ use reth_transaction_pool::{
 };
 use tempo_revm::TempoStateAccess;
 
-/// Maximum allowed `valid_after` offset for AA transactions (in seconds).
-static AA_VALID_AFTER_MAX_SECS: LazyLock<u64> = LazyLock::new(|| {
-    std::env::var("AA_VALID_AFTER_MAX_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(3600)
-});
-
 /// Validator for Tempo transactions.
 #[derive(Debug)]
 pub struct TempoTransactionValidator<Client> {
     /// Inner validator that performs default Ethereum tx validation.
     pub(crate) inner: EthTransactionValidator<Client, TempoPooledTransaction>,
+    /// Maximum allowed `valid_after` offset for AA txs.
+    aa_valid_after_max_secs: u64,
 }
 
 impl<Client> TempoTransactionValidator<Client>
 where
     Client: ChainSpecProvider<ChainSpec: EthereumHardforks> + StateProviderFactory,
 {
-    pub fn new(inner: EthTransactionValidator<Client, TempoPooledTransaction>) -> Self {
-        Self { inner }
+    pub fn new(
+        inner: EthTransactionValidator<Client, TempoPooledTransaction>,
+        aa_valid_after_max_secs: u64,
+    ) -> Self {
+        Self {
+            inner,
+            aa_valid_after_max_secs,
+        }
     }
 
     fn validate_one(
@@ -79,7 +77,7 @@ where
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("system time before UNIX EPOCH")
                 .as_secs();
-            let max_allowed = current_time.saturating_add(*AA_VALID_AFTER_MAX_SECS);
+            let max_allowed = current_time.saturating_add(self.aa_valid_after_max_secs);
             if valid_after > max_allowed {
                 return TransactionValidationOutcome::Invalid(
                     transaction,
@@ -321,22 +319,13 @@ mod tests {
         let inner = EthTransactionValidatorBuilder::new(provider)
             .disable_balance_check()
             .build(InMemoryBlobStore::default());
-        TempoTransactionValidator::new(inner)
+        TempoTransactionValidator::new(inner, 3600)
     }
 
     #[tokio::test]
     async fn test_some_balance() {
         let transaction = get_transaction(Some(U256::from(1)));
-        let provider = MockEthProvider::default();
-        provider.add_account(
-            transaction.sender(),
-            ExtendedAccount::new(transaction.nonce(), alloy_primitives::U256::ZERO),
-        );
-
-        let inner = EthTransactionValidatorBuilder::new(provider.clone())
-            .disable_balance_check()
-            .build(InMemoryBlobStore::default());
-        let validator = TempoTransactionValidator::new(inner);
+        let validator = setup_validator(&transaction);
 
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, transaction.clone())
