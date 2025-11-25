@@ -10,10 +10,7 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
-use tempo_chainspec::{
-    TempoChainSpec,
-    hardfork::{TempoHardfork, TempoHardforks},
-};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, AuthorizedKey, compute_keys_slot};
 use tempo_revm::TempoStateAccess;
 
@@ -173,15 +170,10 @@ where
             }
         };
 
-        let spec = if self
+        let spec = self
             .inner
             .chain_spec()
-            .is_allegretto_active_at_timestamp(self.inner.fork_tracker().tip_timestamp())
-        {
-            TempoHardfork::Allegretto
-        } else {
-            TempoHardfork::Adagio
-        };
+            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
         let fee_token =
             match state_provider.get_fee_token(transaction.inner(), Address::ZERO, fee_payer, spec)
             {
