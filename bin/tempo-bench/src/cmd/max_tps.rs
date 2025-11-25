@@ -520,11 +520,6 @@ async fn fund_accounts(
         assert_receipts(tx_hashes, max_concurrent_requests).await?
     }
 
-    println!(
-        "nonce: {:?}",
-        provider.get_account(addresses[0]).await?.nonce
-    );
-
     progress.finish();
     println!("Finished funding accounts");
     Ok(())
