@@ -1397,29 +1397,37 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
     );
 
     // Check that the transaction in the block is our AA transaction
-    // Skip the rewards registry system tx at index 0
-    let block_tx = &batch_payload.block().body().transactions[1];
-    if let TempoTxEnvelope::AA(aa_tx) = block_tx {
-        assert_eq!(
-            aa_tx.tx().calls.len(),
-            num_recipients,
-            "Transaction should have {num_recipients} calls"
-        );
-        println!(
-            "✓ Block contains AA transaction with {} calls",
-            aa_tx.tx().calls.len()
-        );
-
-        // Verify it used P256 signature
-        match aa_tx.signature() {
-            AASignature::P256(P256SignatureWithPreHash { pre_hash, .. }) => {
-                assert!(*pre_hash, "Should have pre_hash flag set");
-                println!("✓ Transaction used P256 signature with pre-hash");
+    // Find the AA transaction (skip system transactions)
+    let aa_tx = batch_payload
+        .block()
+        .body()
+        .transactions
+        .iter()
+        .find_map(|tx| {
+            if let TempoTxEnvelope::AA(aa) = tx {
+                Some(aa)
+            } else {
+                None
             }
-            _ => panic!("Transaction should have P256 signature"),
+        })
+        .expect("Block should contain an AA transaction");
+    assert_eq!(
+        aa_tx.tx().calls.len(),
+        num_recipients,
+        "Transaction should have {num_recipients} calls"
+    );
+    println!(
+        "✓ Block contains AA transaction with {} calls",
+        aa_tx.tx().calls.len()
+    );
+
+    // Verify it used P256 signature
+    match aa_tx.signature() {
+        AASignature::P256(P256SignatureWithPreHash { pre_hash, .. }) => {
+            assert!(*pre_hash, "Should have pre_hash flag set");
+            println!("✓ Transaction used P256 signature with pre-hash");
         }
-    } else {
-        panic!("Expected AA transaction in block");
+        _ => panic!("Transaction should have P256 signature"),
     }
 
     // Verify all recipients received their tokens
@@ -1527,9 +1535,9 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        nonce_key: U256::ZERO, // Protocol nonce
-        nonce: 0,              // First transaction for user
-        fee_token: None,       // Use DEFAULT_FEE_TOKEN
+        nonce_key: U256::ZERO,                              // Protocol nonce
+        nonce: 0,                                           // First transaction for user
+        fee_token: Some(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO), // Explicitly use PathUSD
         fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)), // Placeholder
         valid_before: Some(u64::MAX),
         ..Default::default()
