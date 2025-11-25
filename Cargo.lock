@@ -11753,6 +11753,7 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "reth-chainspec",
+ "reth-ethereum-primitives",
  "reth-primitives-traits",
  "reth-provider",
  "reth-storage-api",

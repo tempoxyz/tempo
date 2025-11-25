@@ -31,5 +31,6 @@ thiserror.workspace = true
 [dev-dependencies]
 reth-transaction-pool.workspace = true
 reth-provider = { workspace = true, features = ["test-utils"] }
+reth-ethereum-primitives.workspace = true
 alloy-eips.workspace = true
 tokio.workspace = true

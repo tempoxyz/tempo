@@ -379,7 +379,10 @@ mod tests {
     fn create_aa_transaction(valid_after: Option<u64>) -> TempoPooledTransaction {
         use alloy_primitives::{Signature, TxKind, address};
         use tempo_primitives::transaction::{
-            TxAA, aa_signature::AASignature, aa_signed::AASigned, account_abstraction::Call,
+            TxAA,
+            aa_signature::{AASignature, PrimitiveSignature},
+            aa_signed::AASigned,
+            account_abstraction::Call,
         };
 
         let tx_aa = TxAA {
@@ -400,10 +403,13 @@ mod tests {
             valid_before: None,
             access_list: Default::default(),
             aa_authorization_list: vec![],
+            key_authorization: None,
         };
 
-        let signed_tx =
-            AASigned::new_unhashed(tx_aa, AASignature::Secp256k1(Signature::test_signature()));
+        let signed_tx = AASigned::new_unhashed(
+            tx_aa,
+            AASignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+        );
         let envelope: TempoTxEnvelope = signed_tx.into();
         let recovered = envelope.try_into_recovered().unwrap();
         TempoPooledTransaction::new(recovered)
@@ -412,8 +418,11 @@ mod tests {
     /// Helper function to setup validator with the given transaction
     fn setup_validator(
         transaction: &TempoPooledTransaction,
-    ) -> TempoTransactionValidator<MockEthProvider> {
-        let provider = MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(ANDANTINO.clone()));
+    ) -> TempoTransactionValidator<
+        MockEthProvider<reth_ethereum_primitives::EthPrimitives, TempoChainSpec>,
+    > {
+        let provider =
+            MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(ANDANTINO.clone()));
         provider.add_account(
             transaction.sender(),
             ExtendedAccount::new(transaction.nonce(), alloy_primitives::U256::ZERO),
