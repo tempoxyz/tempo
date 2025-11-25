@@ -77,7 +77,9 @@ pub enum TempoPoolTransactionError {
     #[error("Keychain signature validation failed: {0}")]
     Keychain(&'static str),
 
-    #[error("native token transfers are not supported, please transfer stablecoin instead")]
+    #[error(
+        "native transfers not supported, if you were trying to transfer a stablecoin, please call TIP20::Transfer"
+    )]
     NonZeroValue,
 }
 
