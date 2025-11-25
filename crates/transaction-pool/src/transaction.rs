@@ -76,15 +76,19 @@ pub enum TempoPoolTransactionError {
 
     #[error("Keychain signature validation failed: {0}")]
     Keychain(&'static str),
+
+    #[error("native token transfers are not supported")]
+    NonZeroValue,
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
     fn is_bad_transaction(&self) -> bool {
         match self {
-            Self::ExceedsNonPaymentLimit => false,
-            Self::InvalidFeeToken(_) => false,
-            Self::MissingFeeToken => false,
-            Self::Keychain(_) => true, // Bad transaction - invalid signature
+            Self::ExceedsNonPaymentLimit
+            | Self::InvalidFeeToken(_)
+            | Self::MissingFeeToken
+            | Self::Keychain(_) => false,
+            Self::NonZeroValue => true,
         }
     }
 
