@@ -71,12 +71,11 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, 0);
 
-    // Mint liquidity
+    // Mint liquidity (using mintWithValidatorToken which only deposits validator token)
     let mint_receipt = fee_amm
-        .mint(
+        .mintWithValidatorToken(
             pool_key.user_token,
             pool_key.validator_token,
-            amount,
             amount,
             caller,
         )
@@ -87,29 +86,32 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     assert!(mint_receipt.status());
 
     // Assert state changes
+    // With mintWithValidatorToken: liquidity = amount / 2 - MIN_LIQUIDITY
     let total_supply = fee_amm.totalSupply(pool_id).call().await?;
     let lp_balance = fee_amm.liquidityBalances(pool_id, caller).call().await?;
 
-    let expected_liquidity = (amount * amount) / uint!(2_U256) - MIN_LIQUIDITY;
+    let expected_liquidity = amount / uint!(2_U256) - MIN_LIQUIDITY;
     assert_eq!(lp_balance, expected_liquidity);
     let expected_total_supply = expected_liquidity + MIN_LIQUIDITY;
     assert_eq!(total_supply, expected_total_supply);
 
+    // With mintWithValidatorToken, only validator token is deposited
     let pool = fee_amm.pools(pool_id).call().await?;
-    assert_eq!(pool.reserveUserToken, amount.to::<u128>());
+    assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, amount.to::<u128>());
 
+    // User token balance unchanged (no user tokens deposited)
     let final_token0_balance = token_0.balanceOf(caller).call().await?;
-    assert_eq!(final_token0_balance, user_token0_balance - amount);
+    assert_eq!(final_token0_balance, user_token0_balance);
+    // Validator token balance reduced by amount
     let final_token1_balance = token_1.balanceOf(caller).call().await?;
     assert_eq!(final_token1_balance, user_token1_balance - amount);
 
+    // User token not transferred to fee manager
     let final_fee_manager_token0_balance =
         token_0.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
-    assert_eq!(
-        final_fee_manager_token0_balance,
-        fee_manager_token0_balance + amount
-    );
+    assert_eq!(final_fee_manager_token0_balance, fee_manager_token0_balance);
+    // Validator token transferred to fee manager
     let final_fee_manager_token1_balance =
         token_1.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
     assert_eq!(
@@ -426,12 +428,11 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, 0);
 
-    // Add liquidity which creates the pool
+    // Add liquidity which creates the pool (using mintWithValidatorToken)
     let mint_receipt = fee_amm
-        .mint(
+        .mintWithValidatorToken(
             pool_key.user_token,
             pool_key.validator_token,
-            amount0,
             amount1,
             alice,
         )
@@ -441,8 +442,8 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
         .await?;
     assert!(mint_receipt.status());
 
-    // Calculate expected liquidity: (amount0 * amount1) / 2 - MIN_LIQUIDITY
-    let expected_liquidity = (amount0 * amount1) / uint!(2_U256) - MIN_LIQUIDITY;
+    // Calculate expected liquidity: amount1 / 2 - MIN_LIQUIDITY (for mintWithValidatorToken)
+    let expected_liquidity = amount1 / uint!(2_U256) - MIN_LIQUIDITY;
 
     // Check liquidity minted
     let lp_balance = fee_amm.liquidityBalances(pool_id, alice).call().await?;
@@ -452,15 +453,16 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     let total_supply = fee_amm.totalSupply(pool_id).call().await?;
     assert_eq!(total_supply, expected_liquidity + MIN_LIQUIDITY);
 
-    // Check reserves updated
+    // Check reserves updated (only validator token deposited with mintWithValidatorToken)
     let pool = fee_amm.pools(pool_id).call().await?;
-    assert_eq!(pool.reserveUserToken, amount0.to::<u128>());
+    assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, amount1.to::<u128>());
 
-    // Verify tokens were transferred to fee manager
+    // User token not transferred to fee manager
     let fee_manager_balance0 = user_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
-    assert_eq!(fee_manager_balance0, amount0);
+    assert_eq!(fee_manager_balance0, U256::ZERO);
 
+    // Validator token transferred to fee manager
     let fee_manager_balance1 = validator_token
         .balanceOf(TIP_FEE_MANAGER_ADDRESS)
         .call()
