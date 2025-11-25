@@ -167,8 +167,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     }
 
     /// Emit the appropriate OrderFilled event based on hardfork
-    /// Pre-Allegretto: emits OrderFilledPreAllegretto (without taker)
-    /// Post-Allegretto: emits OrderFilled (with taker)
+    /// Pre-Allegretto: emits OrderFilled (without taker)
+    /// Post-Allegretto: emits OrderFilledWithTaker (with taker)
     fn emit_order_filled(
         &mut self,
         order_id: u128,
@@ -180,26 +180,26 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         if self.storage.spec().is_allegretto() {
             self.storage.emit_event(
                 self.address,
-                StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
-                    orderId: order_id,
-                    maker,
-                    taker,
-                    amountFilled: amount_filled,
-                    partialFill: partial_fill,
-                })
+                StablecoinExchangeEvents::OrderFilledWithTaker(
+                    IStablecoinExchange::OrderFilledWithTaker {
+                        orderId: order_id,
+                        maker,
+                        taker,
+                        amountFilled: amount_filled,
+                        partialFill: partial_fill,
+                    },
+                )
                 .into_log_data(),
             )?;
         } else {
             self.storage.emit_event(
                 self.address,
-                StablecoinExchangeEvents::OrderFilledPreAllegretto(
-                    IStablecoinExchange::OrderFilledPreAllegretto {
-                        orderId: order_id,
-                        maker,
-                        amountFilled: amount_filled,
-                        partialFill: partial_fill,
-                    },
-                )
+                StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
+                    orderId: order_id,
+                    maker,
+                    amountFilled: amount_filled,
+                    partialFill: partial_fill,
+                })
                 .into_log_data(),
             )?;
         }
