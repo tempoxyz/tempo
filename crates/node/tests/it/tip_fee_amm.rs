@@ -409,14 +409,12 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     let validator_token = setup_test_token(provider.clone(), alice).await?;
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
-    // Define amounts (100000 * 1e18)
-    let amount0 = uint!(100000_000000000000000000_U256);
-    let amount1 = uint!(100000_000000000000000000_U256);
+    // Define amount (100000 * 1e18)
+    let amount = uint!(100000_000000000000000000_U256);
 
-    // Mint tokens to alice
+    // Mint validator tokens to alice (user tokens not needed for mintWithValidatorToken)
     let mut pending = vec![];
-    pending.push(user_token.mint(alice, amount0).send().await?);
-    pending.push(validator_token.mint(alice, amount1).send().await?);
+    pending.push(validator_token.mint(alice, amount).send().await?);
     await_receipts(&mut pending).await?;
 
     // Get pool info
@@ -430,20 +428,15 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
 
     // Add liquidity which creates the pool (using mintWithValidatorToken)
     let mint_receipt = fee_amm
-        .mintWithValidatorToken(
-            pool_key.user_token,
-            pool_key.validator_token,
-            amount1,
-            alice,
-        )
+        .mintWithValidatorToken(pool_key.user_token, pool_key.validator_token, amount, alice)
         .send()
         .await?
         .get_receipt()
         .await?;
     assert!(mint_receipt.status());
 
-    // Calculate expected liquidity: amount1 / 2 - MIN_LIQUIDITY (for mintWithValidatorToken)
-    let expected_liquidity = amount1 / uint!(2_U256) - MIN_LIQUIDITY;
+    // Calculate expected liquidity: amount / 2 - MIN_LIQUIDITY (for mintWithValidatorToken)
+    let expected_liquidity = amount / uint!(2_U256) - MIN_LIQUIDITY;
 
     // Check liquidity minted
     let lp_balance = fee_amm.liquidityBalances(pool_id, alice).call().await?;
@@ -456,7 +449,7 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     // Check reserves updated (only validator token deposited with mintWithValidatorToken)
     let pool = fee_amm.pools(pool_id).call().await?;
     assert_eq!(pool.reserveUserToken, 0);
-    assert_eq!(pool.reserveValidatorToken, amount1.to::<u128>());
+    assert_eq!(pool.reserveValidatorToken, amount.to::<u128>());
 
     // User token not transferred to fee manager
     let fee_manager_balance0 = user_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
@@ -467,7 +460,7 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
         .balanceOf(TIP_FEE_MANAGER_ADDRESS)
         .call()
         .await?;
-    assert_eq!(fee_manager_balance1, amount1);
+    assert_eq!(fee_manager_balance1, amount);
 
     Ok(())
 }
