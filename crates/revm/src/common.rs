@@ -138,20 +138,24 @@ pub trait TempoStateAccess<T> {
         }
 
         // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin Exchange,
-        // use the input token as the fee token (the token that will be pulled from the user)
-        if spec.is_allegretto()
-            && !tx.is_aa()
-            && let Some((kind, input)) = tx.calls().next()
-            && kind.to() == Some(&STABLECOIN_EXCHANGE_ADDRESS)
-        {
-            if let Ok(call) = IStablecoinExchange::swapExactAmountInCall::abi_decode(input)
-                && self.is_valid_fee_token(call.tokenIn)?
+        // use the input token as the fee token (the token that will be pulled from the user).
+        // For AA transactions, this only applies if there's exactly one call.
+        if spec.is_allegretto() {
+            let mut calls = tx.calls();
+            if let Some((kind, input)) = calls.next()
+                && kind.to() == Some(&STABLECOIN_EXCHANGE_ADDRESS)
+                && (!tx.is_aa() || calls.next().is_none())
             {
-                return Ok(call.tokenIn);
-            } else if let Ok(call) = IStablecoinExchange::swapExactAmountOutCall::abi_decode(input)
-                && self.is_valid_fee_token(call.tokenIn)?
-            {
-                return Ok(call.tokenIn);
+                if let Ok(call) = IStablecoinExchange::swapExactAmountInCall::abi_decode(input)
+                    && self.is_valid_fee_token(call.tokenIn)?
+                {
+                    return Ok(call.tokenIn);
+                } else if let Ok(call) =
+                    IStablecoinExchange::swapExactAmountOutCall::abi_decode(input)
+                    && self.is_valid_fee_token(call.tokenIn)?
+                {
+                    return Ok(call.tokenIn);
+                }
             }
         }
 
