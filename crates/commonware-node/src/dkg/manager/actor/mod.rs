@@ -587,14 +587,11 @@ where
             .cloned()
         {
             Some(EpochState::PostModerato(epoch_state))
-        } else if let Some(epoch_state) = self
-            .pre_allegretto_metadatas
-            .previous_epoch_state()
-            .cloned()
-        {
-            Some(EpochState::PreModerato(epoch_state))
         } else {
-            None
+            self.pre_allegretto_metadatas
+                .previous_epoch_state()
+                .cloned()
+                .map(EpochState::PreModerato)
         }
     }
 
@@ -632,29 +629,29 @@ enum EpochState {
 impl EpochState {
     fn epoch(&self) -> Epoch {
         match self {
-            EpochState::PreModerato(epoch_state) => epoch_state.epoch(),
-            EpochState::PostModerato(epoch_state) => epoch_state.epoch(),
+            Self::PreModerato(epoch_state) => epoch_state.epoch(),
+            Self::PostModerato(epoch_state) => epoch_state.epoch(),
         }
     }
 
     fn participants(&self) -> &Ordered<PublicKey> {
         match self {
-            EpochState::PreModerato(epoch_state) => epoch_state.participants(),
-            EpochState::PostModerato(epoch_state) => epoch_state.participants(),
+            Self::PreModerato(epoch_state) => epoch_state.participants(),
+            Self::PostModerato(epoch_state) => epoch_state.participants(),
         }
     }
 
     fn public_polynomial(&self) -> &Public<MinSig> {
         match self {
-            EpochState::PreModerato(epoch_state) => epoch_state.public_polynomial(),
-            EpochState::PostModerato(epoch_state) => epoch_state.public_polynomial(),
+            Self::PreModerato(epoch_state) => epoch_state.public_polynomial(),
+            Self::PostModerato(epoch_state) => epoch_state.public_polynomial(),
         }
     }
 
     fn private_share(&self) -> &Option<Share> {
         match self {
-            EpochState::PreModerato(epoch_state) => epoch_state.private_share(),
-            EpochState::PostModerato(epoch_state) => epoch_state.private_share(),
+            Self::PreModerato(epoch_state) => epoch_state.private_share(),
+            Self::PostModerato(epoch_state) => epoch_state.private_share(),
         }
     }
 }

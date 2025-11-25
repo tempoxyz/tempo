@@ -134,7 +134,7 @@ impl ValidatorState {
                 let key = key.clone();
                 let validator = DecodedValidator {
                     public_key: key.clone(),
-                    inbound: addr.clone(),
+                    inbound: *addr,
                     outbound: SocketAddr::from(([0, 0, 0, 0], 0)),
                     index: 0,
                     address: Address::ZERO,
@@ -216,8 +216,9 @@ impl ValidatorState {
         syncing_players: OrderedAssociated<PublicKey, DecodedValidator>,
     ) -> OrderedAssociated<PublicKey, DecodedValidator> {
         let players = std::mem::replace(&mut self.syncing_players, syncing_players);
-        let dropped = std::mem::replace(&mut self.players, players);
-        dropped
+        // The previous players are dropped/returned - these are for who the
+        // ceremony failed for.
+        std::mem::replace(&mut self.players, players)
     }
 }
 

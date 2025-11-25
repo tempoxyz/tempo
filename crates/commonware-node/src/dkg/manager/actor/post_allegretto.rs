@@ -282,7 +282,7 @@ where
         self.post_allegretto_metadatas
             .epoch_metadata
             .put_sync(
-                CURRENT_EPOCH_KEY.into(),
+                CURRENT_EPOCH_KEY,
                 EpochState {
                     dkg_outcome: DkgOutcome {
                         dkg_successful: true,
@@ -370,14 +370,14 @@ where
         let old_epoch_state = self
             .post_allegretto_metadatas
             .epoch_metadata
-            .remove(&CURRENT_EPOCH_KEY.into())
+            .remove(&CURRENT_EPOCH_KEY)
             .expect("there must always exist an epoch state");
 
         // Remove it?
         let dkg_outcome = self
             .post_allegretto_metadatas
             .dkg_outcome_metadata
-            .get(&DKG_OUTCOME_KEY.into())
+            .get(&DKG_OUTCOME_KEY)
             .cloned()
             .expect(
                 "when updating the current epoch state, there must be a DKG \
@@ -406,7 +406,7 @@ where
         }
 
         self.post_allegretto_metadatas.epoch_metadata.put(
-            CURRENT_EPOCH_KEY.into(),
+            CURRENT_EPOCH_KEY,
             EpochState {
                 dkg_outcome,
                 validator_state: new_validator_state.clone(),
@@ -414,7 +414,7 @@ where
         );
         self.post_allegretto_metadatas
             .epoch_metadata
-            .put(PREVIOUS_EPOCH_KEY.into(), old_epoch_state);
+            .put(PREVIOUS_EPOCH_KEY, old_epoch_state);
 
         self.post_allegretto_metadatas
             .epoch_metadata
@@ -430,7 +430,7 @@ where
         let epoch_to_shutdown = if let Some(old_epoch_state) = self
             .post_allegretto_metadatas
             .epoch_metadata
-            .remove(&PREVIOUS_EPOCH_KEY.into())
+            .remove(&PREVIOUS_EPOCH_KEY)
         {
             self.post_allegretto_metadatas
                 .epoch_metadata
@@ -438,14 +438,11 @@ where
                 .await
                 .expect("must always be able to persist state");
             Some(old_epoch_state.epoch())
-        } else if let Some(old_pre_allegretto_epoch_state) = self
-            .pre_allegretto_metadatas
-            .delete_previous_epoch_state()
-            .await
-        {
-            Some(old_pre_allegretto_epoch_state.epoch())
         } else {
-            None
+            self.pre_allegretto_metadatas
+                .delete_previous_epoch_state()
+                .await
+                .map(|old_state| old_state.epoch())
         };
 
         if let Some(epoch) = epoch_to_shutdown {
@@ -527,14 +524,14 @@ where
                 participants: dkg_outcome.participants.clone(),
                 public: dkg_outcome.public.clone(),
             })
-        } else if let Some(epoch_state) = self.epoch_metadata.get(&CURRENT_EPOCH_KEY) {
-            Some(PublicOutcome {
-                epoch: epoch_state.dkg_outcome.epoch,
-                participants: epoch_state.dkg_outcome.participants.clone(),
-                public: epoch_state.dkg_outcome.public.clone(),
-            })
         } else {
-            None
+            self.epoch_metadata
+                .get(&CURRENT_EPOCH_KEY)
+                .map(|epoch_state| PublicOutcome {
+                    epoch: epoch_state.dkg_outcome.epoch,
+                    participants: epoch_state.dkg_outcome.participants.clone(),
+                    public: epoch_state.dkg_outcome.public.clone(),
+                })
         }
     }
 

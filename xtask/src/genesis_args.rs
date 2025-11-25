@@ -613,7 +613,7 @@ fn generate_consensus_config(
 
     signers.sort_by_key(|signer| signer.public_key());
     let peers = addresses
-        .into_iter()
+        .iter()
         .zip(signers.iter())
         .map(|(addr, private_key)| (private_key.public_key(), *addr))
         .collect::<commonware_utils::set::OrderedAssociated<_, _>>();

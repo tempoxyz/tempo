@@ -261,6 +261,12 @@ impl Setup {
     }
 }
 
+impl Default for Setup {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub async fn setup_validators(
     mut context: Context,
     Setup {
