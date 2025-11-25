@@ -8,10 +8,11 @@ use alloy::{
     },
 };
 use alloy_eips::{BlockId, Encodable2718};
-use alloy_network::{AnyReceiptEnvelope, EthereumWallet, TxSignerSync};
+use alloy_network::{AnyReceiptEnvelope, EthereumWallet, ReceiptResponse, TxSignerSync};
 use alloy_primitives::{Address, Signature, U256};
-use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
+use alloy_rpc_types_eth::TransactionRequest;
 use std::env;
+use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
     IFeeManager, ITIP20,
     ITIPFeeAMM::{self},
@@ -311,7 +312,11 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
             .is_zero()
     );
 
-    let balance_before = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, provider.clone())
+    // Get fee_payer's actual fee token (may differ from DEFAULT_FEE_TOKEN_POST_ALLEGRETTO)
+    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &provider);
+    let fee_payer_token = fee_manager.userTokens(fee_payer.address()).call().await?;
+
+    let balance_before = ITIP20::new(fee_payer_token, provider.clone())
         .balanceOf(fee_payer.address())
         .call()
         .await?;
@@ -323,21 +328,18 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
         .await?;
 
     let receipt = provider
-        .client()
-        .request::<_, AnyReceiptEnvelope>("eth_getTransactionReceipt", (tx_hash,))
+        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
         .await?;
 
     assert!(receipt.status());
 
-    let balance_after = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
+    let balance_after = ITIP20::new(fee_payer_token, &provider)
         .balanceOf(fee_payer.address())
         .call()
         .await?;
 
-    assert_eq!(
-        balance_after,
-        balance_before - calc_gas_balance_spending(tx.gas_limit(), fees.max_fee_per_gas)
-    );
+    let cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price());
+    assert_eq!(balance_after, balance_before - cost);
 
     Ok(())
 }
