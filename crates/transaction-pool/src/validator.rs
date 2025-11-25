@@ -1,5 +1,5 @@
 use crate::{
-    pool_2d::NonceKeys,
+    pool_2d::AA2dNonceKeys,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use alloy_consensus::Transaction;
@@ -11,7 +11,7 @@ use reth_primitives_traits::{
 use reth_storage_api::{StateProvider, StateProviderFactory, errors::ProviderResult};
 use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
-    TransactionValidator, error::InvalidPoolTransactionError, validate::ValidTransaction,
+    TransactionValidator, error::InvalidPoolTransactionError,
 };
 use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, storage::slots::mapping_slot};
 use tempo_revm::TempoStateAccess;
@@ -22,7 +22,7 @@ pub struct TempoTransactionValidator<Client> {
     /// Inner validator that performs default Ethereum tx validation.
     pub(crate) inner: EthTransactionValidator<Client, TempoPooledTransaction>,
     /// Keeps tracks of known nonce keys for AA transactions.
-    pub(crate) aa_nonce_keys: NonceKeys,
+    pub(crate) aa_nonce_keys: AA2dNonceKeys,
 }
 
 impl<Client> TempoTransactionValidator<Client>
@@ -31,7 +31,7 @@ where
 {
     pub fn new(
         inner: EthTransactionValidator<Client, TempoPooledTransaction>,
-        aa_nonce_keys: NonceKeys,
+        aa_nonce_keys: AA2dNonceKeys,
     ) -> Self {
         Self {
             inner,

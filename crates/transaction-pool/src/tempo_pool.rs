@@ -3,15 +3,29 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    pool_2d::Pool2D2, transaction::TempoPooledTransaction, validator::TempoTransactionValidator,
+    pool_2d::{AA2dNonceKeys, AASenderId, Pool2D},
+    transaction::TempoPooledTransaction,
+    validator::TempoTransactionValidator,
 };
+use alloy_consensus::Transaction;
 use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_eth_wire_types::HandleMempoolData;
 use reth_provider::StateProviderFactory;
-use reth_transaction_pool::{blobstore::DiskFileBlobStore, AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes, BlockInfo, CoinbaseTipOrdering, GetPooledTransactionLimit, NewBlobSidecar, Pool, PoolResult, PoolSize, PoolTransaction, PropagatedTransactions, TransactionEvents, TransactionOrigin, TransactionPool, TransactionValidationOutcome, TransactionValidationTaskExecutor, ValidPoolTransaction};
-use std::{collections::HashSet, sync::Arc};
+use reth_transaction_pool::{
+    AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
+    BlockInfo, CoinbaseTipOrdering, GetPooledTransactionLimit, NewBlobSidecar, Pool, PoolResult,
+    PoolSize, PoolTransaction, PropagatedTransactions, TransactionEvents, TransactionOrigin,
+    TransactionPool, TransactionValidationOutcome, TransactionValidationTaskExecutor,
+    TransactionValidator, ValidPoolTransaction, blobstore::DiskFileBlobStore,
+    identifier::TransactionId,
+};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Instant,
+};
 
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client>
@@ -26,13 +40,12 @@ where
     >,
 
     /// Minimal pool for 2D nonces (nonce_key > 0)
-    aa_2d_pool: Arc<RwLock<Pool2D2>>,
+    aa_2d_pool: Arc<RwLock<Pool2D>>,
 }
 
 impl<Client> TempoTransactionPool<Client>
 where
-    Client:
-        StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + Clone + 'static,
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + 'static,
 {
     pub fn new(
         protocol_pool: Pool<
@@ -47,13 +60,106 @@ where
         }
     }
 
-    fn add_validated_transaction(&self,
-                                  origin: TransactionOrigin,
-                                  transaction: TransactionValidationOutcome<TempoPooledTransaction>,
-    )-> Vec<PoolResult<AddedTransactionOutcome>> {
-        if transaction.as_invalid()
+    /// Obtains a clone of the shared [`AA2dNonceKeys`].
+    pub fn aa_2d_nonce_keys(&self) -> AA2dNonceKeys {
+        self.aa_2d_pool.read().aa_2d_nonce_keys().clone()
+    }
+
+    /// Updates the 2d nonce pool with the given state changes.
+    pub(crate) fn on_aa_2d_nonce_changes(&self, on_chain_ids: HashMap<AASenderId, u64>) {
+        if on_chain_ids.is_empty() {
+            return;
+        }
+        let (_promoted, _mined) = self.aa_2d_pool.write().on_aa_2d_nonce_changes(on_chain_ids);
+
+        // TODO: notify in protocol pool
+    }
+
+    fn add_validated_transactions(
+        &self,
+        _origin: TransactionOrigin,
+        _transaction: Vec<TransactionValidationOutcome<TempoPooledTransaction>>,
+    ) -> Vec<PoolResult<AddedTransactionOutcome>> {
+        // if transaction.iter().any(|outcome| outcome.) {
+        //
+        // }
 
         todo!()
+    }
+
+    fn add_validated_transaction(
+        &self,
+        origin: TransactionOrigin,
+        transaction: TransactionValidationOutcome<TempoPooledTransaction>,
+    ) -> PoolResult<AddedTransactionOutcome> {
+        match transaction {
+            TransactionValidationOutcome::Valid {
+                balance,
+                state_nonce,
+                bytecode_hash,
+                transaction,
+                propagate,
+                authorities,
+            } => {
+                if transaction.transaction().is_aa_2d() {
+                    let transaction = transaction.into_transaction();
+                    let sender_id = self
+                        .protocol_pool
+                        .inner()
+                        .get_sender_id(transaction.sender());
+                    let transaction_id = TransactionId::new(sender_id, transaction.nonce());
+                    let tx = ValidPoolTransaction {
+                        transaction,
+                        transaction_id,
+                        propagate,
+                        timestamp: Instant::now(),
+                        origin,
+                        authority_ids: authorities
+                            .map(|auths| self.protocol_pool.inner().get_sender_ids(auths)),
+                    };
+                    let added = self.aa_2d_pool.write().add_transaction(Arc::new(tx))?;
+                    let hash = *added.hash();
+                    if let Some(pending) = added.as_pending() {
+                        self.protocol_pool
+                            .inner()
+                            .on_new_pending_transaction(pending);
+                    }
+
+                    let state = added.transaction_state();
+                    // notify regular event listeners from the protocol pool
+                    self.protocol_pool.inner().notify_event_listeners(&added);
+                    self.protocol_pool
+                        .inner()
+                        .on_new_transaction(added.into_new_transaction_event());
+
+                    Ok(AddedTransactionOutcome { hash, state })
+                } else {
+                    self.protocol_pool
+                        .inner()
+                        .add_transactions(
+                            origin,
+                            std::iter::once(TransactionValidationOutcome::Valid {
+                                balance,
+                                state_nonce,
+                                bytecode_hash,
+                                transaction,
+                                propagate,
+                                authorities,
+                            }),
+                        )
+                        .pop()
+                        .unwrap()
+                }
+            }
+            invalid => {
+                // this forwards for event listener updates
+                self.protocol_pool
+                    .inner()
+                    .add_transactions(origin, Some(invalid))
+                    .pop()
+                    .unwrap()
+            }
+        }
     }
 }
 
@@ -88,7 +194,6 @@ impl<Client> TransactionPool for TempoTransactionPool<Client>
 where
     Client: StateProviderFactory
         + ChainSpecProvider<ChainSpec: EthereumHardforks>
-        + Clone
         + Send
         + Sync
         + 'static,
@@ -97,10 +202,9 @@ where
     type Transaction = TempoPooledTransaction;
 
     fn pool_size(&self) -> PoolSize {
-        let protocol_size = self.protocol_pool.pool_size();
         // TODO: update 2d size
 
-        protocol_size
+        self.protocol_pool.pool_size()
     }
 
     fn block_info(&self) -> BlockInfo {
@@ -109,10 +213,14 @@ where
 
     async fn add_transaction_and_subscribe(
         &self,
-        origin: TransactionOrigin,
-        transaction: Self::Transaction,
+        _origin: TransactionOrigin,
+        _transaction: Self::Transaction,
     ) -> PoolResult<reth_transaction_pool::TransactionEvents> {
-        let tx = self.protocol_pool.validator().validate(origin, transaction).await;
+        // let tx = self
+        //     .protocol_pool
+        //     .validator()
+        //     .validate(origin, transaction)
+        //     .await;
         todo!()
     }
 
@@ -121,9 +229,12 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<AddedTransactionOutcome> {
-        let tx = self.protocol_pool.validator().validate(origin, transaction).await;
-        let mut results = self.add_validated_transactions(origin, std::iter::once(tx));
-        results.pop().expect("result length is the same as the input")
+        let tx = self
+            .protocol_pool
+            .validator()
+            .validate_transaction(origin, transaction)
+            .await;
+        self.add_validated_transaction(origin, tx)
     }
 
     async fn add_transactions(
@@ -132,11 +243,15 @@ where
         transactions: Vec<Self::Transaction>,
     ) -> Vec<PoolResult<AddedTransactionOutcome>> {
         if transactions.is_empty() {
-            return Vec::new()
+            return Vec::new();
         }
-        let validated = self.protocol_pool.validator().validate_transactions_with_origin(origin, transactions).await;
+        let validated = self
+            .protocol_pool
+            .validator()
+            .validate_transactions_with_origin(origin, transactions)
+            .await;
 
-        self.add_validated_transactions(origin, validated.into_iter())
+        self.add_validated_transactions(origin, validated)
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
@@ -245,20 +360,20 @@ where
 
     fn best_transactions_with_attributes(
         &self,
-        attributes: BestTransactionsAttributes,
+        _attributes: BestTransactionsAttributes,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
         todo!()
     }
 
     fn pending_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
         // TODO: Check both pools
-        let mut txs = self.protocol_pool.pending_transactions();
-        txs
+
+        self.protocol_pool.pending_transactions()
     }
 
     fn pending_transactions_max(
         &self,
-        max: usize,
+        _max: usize,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
         todo!()
         // let protocol_txs = self.protocol_pool.pending_transactions_max(max);
@@ -302,24 +417,23 @@ where
     }
 
     fn all_transaction_hashes(&self) -> Vec<B256> {
-        let mut hashes = self.protocol_pool.all_transaction_hashes();
-        hashes
+        self.protocol_pool.all_transaction_hashes()
     }
 
     fn remove_transactions(
         &self,
-        hashes: Vec<B256>,
+        _hashes: Vec<B256>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut removed = vec![];
+        let removed = vec![];
 
         removed
     }
 
     fn remove_transactions_and_descendants(
         &self,
-        hashes: Vec<B256>,
+        _hashes: Vec<B256>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut removed = vec![];
+        let removed = vec![];
 
         removed
     }
@@ -328,8 +442,6 @@ where
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut removed = self.protocol_pool.remove_transactions_by_sender(sender);
-
         // removed.extend(self.aa_2d_pool.remove_all_for_sender(&sender));
         //
         // // Clean up tx_location
@@ -337,10 +449,10 @@ where
         //     self.tx_location.write().remove(tx.hash());
         // }
 
-        removed
+        self.protocol_pool.remove_transactions_by_sender(sender)
     }
 
-    fn retain_unknown<A: HandleMempoolData>(&self, announcement: &mut A) {
+    fn retain_unknown<A: HandleMempoolData>(&self, _announcement: &mut A) {
         // self.protocol_pool.retain_unknown(announcement);
     }
 
@@ -348,7 +460,7 @@ where
         self.protocol_pool.contains(tx_hash) || self.aa_2d_pool.read().contains(tx_hash)
     }
 
-    fn get(&self, tx_hash: &B256) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
+    fn get(&self, _tx_hash: &B256) -> Option<Arc<ValidPoolTransaction<Self::Transaction>>> {
         todo!()
     }
 
@@ -371,9 +483,8 @@ where
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self.protocol_pool.get_transactions_by_sender(sender);
         // txs.extend(self.aa_2d_pool.get_transactions_by_address(&sender));
-        txs
+        self.protocol_pool.get_transactions_by_sender(sender)
     }
 
     fn get_pending_transactions_with_predicate(
@@ -389,19 +500,16 @@ where
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self
-            .protocol_pool
-            .get_pending_transactions_by_sender(sender);
         // txs.extend(self.aa_2d_pool.get_pending_for_address(&sender));
-        txs
+        self.protocol_pool
+            .get_pending_transactions_by_sender(sender)
     }
 
     fn get_queued_transactions_by_sender(
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self.protocol_pool.get_queued_transactions_by_sender(sender);
-        txs
+        self.protocol_pool.get_queued_transactions_by_sender(sender)
     }
 
     fn get_highest_transaction_by_sender(
@@ -437,9 +545,8 @@ where
         &self,
         origin: TransactionOrigin,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self.protocol_pool.get_transactions_by_origin(origin);
         // txs.extend(self.aa_2d_pool.get_transactions_by_origin(origin));
-        txs
+        self.protocol_pool.get_transactions_by_origin(origin)
     }
 
     fn get_pending_transactions_by_origin(
@@ -451,9 +558,8 @@ where
     }
 
     fn unique_senders(&self) -> HashSet<Address> {
-        let mut senders = self.protocol_pool.unique_senders();
         // senders.extend(self.aa_2d_pool.unique_senders());
-        senders
+        self.protocol_pool.unique_senders()
     }
 
     fn get_blob(

@@ -4,12 +4,13 @@ use alloy_primitives::{Address, B256, TxHash, U256};
 use parking_lot::RwLock;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
-    CoinbaseTipOrdering, PoolResult, PoolTransaction, TransactionOrdering, ValidPoolTransaction,
+    CoinbaseTipOrdering, PoolResult, PoolTransaction, PriceBumpConfig, SubPool, SubPoolLimit,
+    TransactionOrdering, ValidPoolTransaction,
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
-    pool::{AddedPendingTransaction, AddedTransaction, pending::PendingTransaction},
+    pool::{AddedPendingTransaction, AddedTransaction, QueuedReason, pending::PendingTransaction},
 };
 use std::{
-    collections::{BTreeSet, HashMap, hash_map::Entry},
+    collections::{BTreeMap, BTreeSet, Bound::Unbounded, HashMap, btree_map::Entry, hash_map},
     sync::Arc,
 };
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
@@ -28,33 +29,34 @@ type Ordering = CoinbaseTipOrdering<TempoPooledTransaction>;
 ///
 /// * We assume new AA transactions either create a new nonce key (nonce 0) or use an existing nonce key. To keep track of the known keys by accounts this pool relies on state changes to promote transactions to pending.
 #[derive(Debug, Default)]
-pub(super) struct Pool2D2 {
+pub(super) struct Pool2D {
     /// Keeps track of transactions inserted in the pool.
     ///
     /// This way we can determine when transactions were submitted to the pool.
     submission_id: u64,
-    /// pending, executable transactions sorted by their priority.
-    pending: BTreeSet<PendingTransaction<Ordering>>,
-    // TODO: separate by queued and pending
+    /// independent, pending, executable transactions.
+    independent: HashMap<AA2dTransactionId, PendingTransaction<Ordering>>,
     /// _All_ transactions that are currently inside the pool grouped by their unique identifier.
-    by_id: HashMap<AA2dTransactionId, PendingTransaction<Ordering>>,
+    by_id: BTreeMap<AA2dTransactionId, AA2dInternalTransaction>,
     /// _All_ transactions by hash.
     by_hash: HashMap<TxHash, Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     /// Keeps track of the known nonce key values per account.
-    nonce_keys: NonceKeys,
+    nonce_keys: AA2dNonceKeys,
+    /// Settings for this sub-pool.
+    config: Pool2DConfig,
 }
 
-impl Pool2D2 {
+impl Pool2D {
     /// Entrypoint for adding a 2d AA transaction.
     ///
     /// ## Limitations
-    /// * This currently assumes that the account's nonce key is already tracked in [`NonceKeys`], if not then this transaction is considered pending.
-    pub fn add_transaction(
+    /// * This currently assumes that the account's nonce key is already tracked in [`AA2dNonceKeys`], if not then this transaction is considered pending.
+    pub(crate) fn add_transaction(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
     ) -> PoolResult<AddedTransaction<TempoPooledTransaction>> {
         debug_assert!(
-            transaction.transaction.is_aa(),
+            transaction.transaction.is_aa_2d(),
             "only AA transactions are supported"
         );
         if self.contains(transaction.hash()) {
@@ -69,8 +71,7 @@ impl Pool2D2 {
             .aa_transaction_id()
             .expect("is AA transaction");
 
-        // check if it's pending or queued
-        let active_nonce = self
+        let on_chain_nonce = self
             .nonce_keys
             .current_nonce(
                 transaction.transaction.sender_ref(),
@@ -78,73 +79,142 @@ impl Pool2D2 {
             )
             .unwrap_or_default();
 
-        if transaction.nonce() < active_nonce {
+        if transaction.nonce() < on_chain_nonce {
             // outdated transaction
             return Err(PoolError::new(
                 *transaction.hash(),
                 PoolErrorKind::InvalidTransaction(InvalidPoolTransactionError::Consensus(
                     InvalidTransactionError::NonceNotConsistent {
                         tx: transaction.nonce(),
-                        state: active_nonce,
+                        state: on_chain_nonce,
                     },
                 )),
             ));
         }
 
-        let tx = PendingTransaction {
-            submission_id: self.next_id(),
-            priority: CoinbaseTipOrdering::default()
-                .priority(&transaction.transaction, TEMPO_BASE_FEE),
-            transaction: transaction.clone(),
+        // assume the transaction is not pending, will get updated later
+        let mut inserted_as_pending = false;
+        let tx = AA2dInternalTransaction {
+            inner: PendingTransaction {
+                submission_id: self.next_id(),
+                priority: CoinbaseTipOrdering::default()
+                    .priority(&transaction.transaction, TEMPO_BASE_FEE),
+                transaction: transaction.clone(),
+            },
+            is_pending: inserted_as_pending,
         };
 
-        // insert into the unique id set
+        // try to insert the transaction
         let replaced = match self.by_id.entry(tx_id) {
             Entry::Occupied(mut entry) => {
-                // TODO: handle replacements, for now simply replace
+                // Ensure the replacement transaction is not underpriced
+                if entry
+                    .get()
+                    .inner
+                    .transaction
+                    .is_underpriced(&tx.inner.transaction, &self.config.price_bump_config)
+                {
+                    return Err(PoolError::new(
+                        *transaction.hash(),
+                        PoolErrorKind::ReplacementUnderpriced,
+                    ));
+                }
+
                 Some(entry.insert(tx.clone()))
             }
-            Entry::Vacant(mut entry) => {
+            Entry::Vacant(entry) => {
                 entry.insert(tx.clone());
                 None
             }
         };
 
-        // insert transaction by hash
-        self.by_hash
-            .insert(*tx.transaction.hash(), tx.transaction.clone());
-
         // clean up replaced
         if let Some(replaced) = &replaced {
-            self.by_hash.remove(replaced.transaction.hash());
-            self.pending.remove(&replaced);
+            self.by_hash.remove(replaced.inner.transaction.hash());
+            self.independent.remove(&tx_id);
         }
 
-        if active_nonce == tx.transaction.nonce() {
-            // insert to pending
-            self.pending.insert(tx);
+        // insert transaction by hash
+        self.by_hash
+            .insert(*tx.inner.transaction.hash(), tx.inner.transaction.clone());
+
+        let mut promoted = Vec::new();
+        // now we need to scan the range and mark transactions as pending, if any
+        let on_chain_id = AA2dTransactionId::new(tx_id.sender, on_chain_nonce);
+        // track the next nonce we expect if the transactions are gapless
+        let mut next_nonce = on_chain_id.nonce;
+
+        // scan all the transactions with the same nonce key starting with the on chain nonce
+        for (existing_id, existing_tx) in self.descendant_txs_mut(&on_chain_id) {
+            let mut is_promoted = false;
+            if existing_id.nonce == next_nonce {
+                // if this was previously not pending we need to promote the transaction
+                is_promoted = !std::mem::replace(&mut existing_tx.is_pending, true);
+            } else {
+                existing_tx.is_pending = false;
+            }
+            if existing_id.nonce == tx_id.nonce {
+                // we found our transaction and keep track of whether it's pending
+                inserted_as_pending = existing_tx.is_pending;
+            } else if is_promoted {
+                promoted.push(existing_tx.inner.transaction.clone());
+            }
+
+            next_nonce = existing_id.nonce.saturating_add(1);
+        }
+
+        if inserted_as_pending {
+            // if this is the next nonce in line we can mark it as independent
+            if tx_id.nonce == on_chain_nonce {
+                self.independent.insert(tx_id, tx.inner);
+            }
 
             return Ok(AddedTransaction::Pending(AddedPendingTransaction {
                 transaction,
-                replaced: replaced.map(|tx| tx.transaction),
-                promoted: Default::default(),
+                replaced: replaced.map(|tx| tx.inner.transaction),
+                promoted,
                 discarded: Default::default(),
             }));
-
-            // TODO: check if this promoted any transactions
         }
 
-        // parked transaction if ancestor key does not exist
-
-        todo!()
+        Ok(AddedTransaction::Parked {
+            transaction,
+            replaced: replaced.map(|tx| tx.inner.transaction),
+            subpool: SubPool::Queued,
+            queued_reason: Some(QueuedReason::NonceGap),
+        })
     }
 
     /// Returns the best, executable transactions for this sub-pool
-    pub fn best(&self) -> BestAATransactions {
-        BestAATransactions {
-            pending: self.pending.clone(),
-            by_id: self.by_id.clone(),
-        }
+    pub(crate) fn best(&self) -> BestAATransactions {
+        todo!()
+        // BestAATransactions {
+        //     pending: self.independent.clone(),
+        //     by_id: self.by_id.clone(),
+        // }
+    }
+
+    /// Returns all mutable transactions that _follow_ after the given id but have the same sender.
+    ///
+    /// NOTE: The range is _inclusive_: if the transaction that belongs to `id` it field be the
+    /// first value.
+    pub(crate) fn descendant_txs_mut<'a, 'b: 'a>(
+        &'a mut self,
+        id: &'b AA2dTransactionId,
+    ) -> impl Iterator<Item = (&'a AA2dTransactionId, &'a mut AA2dInternalTransaction)> + 'a {
+        self.by_id
+            .range_mut(id..)
+            .take_while(|(other, _)| id.sender == other.sender)
+    }
+
+    fn remove_transaction_by_id(
+        &mut self,
+        id: &AA2dTransactionId,
+    ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let tx = self.by_id.remove(id)?;
+        self.independent.remove(id);
+        self.by_hash.remove(tx.inner.transaction.hash());
+        Some(tx.inner.transaction)
     }
 
     /// Removes the transaction by its hash from all internal sets.
@@ -157,21 +227,87 @@ impl Pool2D2 {
             .transaction
             .aa_transaction_id()
             .expect("is AA transaction");
-        let tx = self.by_id.remove(&id)?;
-        self.pending.remove(&tx);
-        Some(tx.transaction)
+        self.by_id.remove(&id)?;
+        self.independent.remove(&id);
+        Some(tx)
     }
 
     /// Updates the internal state based on the state changes of the `NonceManager` [`NONCE_PRECOMPILE_ADDRESS`](tempo_precompiles::NONCE_PRECOMPILE_ADDRESS).
     ///
-    /// This will prune mined transactions and promote unblocked transactions if any.
-    pub fn on_state_change(&mut self) {}
+    /// This takes a vec of changed [`AASenderId`] with their current on chain nonce.
+    ///
+    /// This will prune mined transactions and promote unblocked transactions if any, returns `(promoted, mined)`
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn on_aa_2d_nonce_changes(
+        &mut self,
+        on_chain_ids: HashMap<AASenderId, u64>,
+    ) -> (
+        Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+        Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    ) {
+        let mut promoted = Vec::new();
+        let mut mined_ids = Vec::new();
+
+        // we assume the set of changed senders is smaller than the individual accounts
+        'changes: for (sender_id, on_chain_nonce) in on_chain_ids {
+            let mut iter = self
+                .by_id
+                .range_mut((sender_id.start_bound(), Unbounded))
+                .take_while(move |(other, _)| sender_id == other.sender)
+                .peekable();
+
+            let Some(mut current) = iter.next() else {
+                continue;
+            };
+
+            // track mined transactions
+            'mined: loop {
+                if current.0.nonce < on_chain_nonce {
+                    mined_ids.push(*current.0);
+                    let Some(next) = iter.next() else {
+                        continue 'changes;
+                    };
+                    current = next;
+                } else {
+                    break 'mined;
+                }
+            }
+
+            let mut next_nonce = on_chain_nonce;
+            for (existing_id, existing_tx) in iter {
+                if existing_id.nonce == next_nonce {
+                    if std::mem::replace(&mut existing_tx.is_pending, true) {
+                        promoted.push(existing_tx.inner.transaction.clone());
+                    }
+
+                    if existing_id.nonce == on_chain_nonce {
+                        // if this is the on chain nonce we can mark it as the next independent transaction
+                        self.independent
+                            .insert(*existing_id, existing_tx.inner.clone());
+                    }
+                } else {
+                    // can exit early
+                    break;
+                }
+
+                next_nonce = next_nonce.saturating_add(1);
+            }
+        }
+
+        // actually remove mined transactions
+        let mut mined = Vec::with_capacity(mined_ids.len());
+        for id in mined_ids {
+            if let Some(removed) = self.remove_transaction_by_id(&id) {
+                mined.push(removed);
+            }
+        }
+
+        (promoted, mined)
+    }
 
     /// Removes transactions if the pool is above capacity.
     fn discard(&mut self) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let removed = Vec::new();
-
-        removed
+        Vec::new()
     }
 
     /// Returns `true` if the transaction with the given hash is already included in this pool.
@@ -194,6 +330,11 @@ impl Pool2D2 {
         self.by_hash.values().filter(|tx| tx.propagate).cloned()
     }
 
+    /// Returns the shared instance of the [`AA2dNonceKeys`]
+    pub(crate) fn aa_2d_nonce_keys(&self) -> &AA2dNonceKeys {
+        &self.nonce_keys
+    }
+
     const fn next_id(&mut self) -> u64 {
         let id = self.submission_id;
         self.submission_id = self.submission_id.wrapping_add(1);
@@ -201,15 +342,24 @@ impl Pool2D2 {
     }
 }
 
+/// Settings for the [`Pool2DConfig`]
+#[derive(Debug, Clone, Default)]
+pub struct Pool2DConfig {
+    /// Price bump (in %) for the transaction pool underpriced check.
+    pub price_bump_config: PriceBumpConfig,
+    /// How many transactions
+    pub aa_2d_limit: SubPoolLimit,
+}
+
 /// Keeps track of the account's nonce keys.
 ///
 /// This tries to be in sync with the state
 #[derive(Default, Debug, Clone)]
-pub struct NonceKeys {
-    inner: Arc<RwLock<NonceKeysInner>>,
+pub struct AA2dNonceKeys {
+    inner: Arc<RwLock<AA2dNonceKeysInner>>,
 }
 
-impl NonceKeys {
+impl AA2dNonceKeys {
     /// Inserts/Updates the latest account info
     pub fn insert(&self, address: Address, nonce_key: U256, nonce: u64, slot: U256) {
         self.inner.write().insert(address, nonce_key, nonce, slot)
@@ -219,13 +369,23 @@ impl NonceKeys {
     pub fn current_nonce(&self, address: &Address, nonce_key: &U256) -> Option<u64> {
         self.inner.read().current_nonce(address, nonce_key)
     }
+
+    /// Update the tracked nonces for the slots and return the new on chain identifiers for the changed slots.]
+    ///
+    /// Note: This only updates existing, tracked slots.
+    pub(crate) fn update_tracked(
+        &self,
+        changed_slots: impl IntoIterator<Item = (U256, U256)>,
+    ) -> HashMap<AASenderId, u64> {
+        self.inner.write().update_tracked(changed_slots)
+    }
 }
 
 /// Keeps track of the account's nonce keys.
 ///
 /// This tries to be in sync with the
 #[derive(Default, Debug)]
-struct NonceKeysInner {
+struct AA2dNonceKeysInner {
     /// Keeps track of the on chain nonce for an account's nonce key.
     address_to_nonce_keys: HashMap<Address, HashMap<U256, u64>>,
     /// Reverse index for the storage slot of an account's nonce
@@ -238,7 +398,7 @@ struct NonceKeysInner {
     address_slots: HashMap<U256, (Address, U256)>,
 }
 
-impl NonceKeysInner {
+impl AA2dNonceKeysInner {
     /// Inserts the nonce key info for the account's nonce key.
     fn insert(&mut self, address: Address, nonce_key: U256, nonce: u64, slot: U256) {
         self.address_to_nonce_keys
@@ -251,9 +411,45 @@ impl NonceKeysInner {
     fn current_nonce(&self, address: &Address, nonce_key: &U256) -> Option<u64> {
         self.address_to_nonce_keys
             .get(address)?
-            .get(&nonce_key)
+            .get(nonce_key)
             .copied()
     }
+
+    fn update_tracked(
+        &mut self,
+        changed_slots: impl IntoIterator<Item = (U256, U256)>,
+    ) -> HashMap<AASenderId, u64> {
+        let mut ids = HashMap::new();
+        for (accout_nonce_key_slot, nonce) in changed_slots {
+            if let Some((address, nonce_key)) = self.address_slots.get(&accout_nonce_key_slot)
+                && let Some(nonce_keys) = self.address_to_nonce_keys.get_mut(address)
+            {
+                match nonce_keys.entry(*nonce_key) {
+                    hash_map::Entry::Occupied(mut entry) => {
+                        let new_nonce = nonce.saturating_to();
+                        entry.insert(new_nonce);
+                        ids.insert(AASenderId::new(*address, *nonce_key), new_nonce);
+                    }
+                    hash_map::Entry::Vacant(_) => {
+                        // we haven't tracked this key yet, so we ignore
+                    }
+                }
+            }
+        }
+        ids
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AA2dInternalTransaction {
+    /// Keeps track of the transaction
+    ///
+    /// We can use [`PendingTransaction`] here because the priority remains unchanged.
+    inner: PendingTransaction<CoinbaseTipOrdering<TempoPooledTransaction>>,
+    /// Whether this transaction is pending/executable.
+    ///
+    /// If it's not pending, it is queued.
+    is_pending: bool,
 }
 
 /// A snapshot of the sub-pool containing all executable transactions.
@@ -262,30 +458,41 @@ pub(crate) struct BestAATransactions {
     /// pending, executable transactions sorted by their priority.
     pending: BTreeSet<PendingTransaction<Ordering>>,
     /// _All_ transactions that are currently inside the pool grouped by their unique identifier.
-    by_id: HashMap<AA2dTransactionId, PendingTransaction<Ordering>>,
+    by_id: BTreeMap<AA2dTransactionId, PendingTransaction<Ordering>>,
 }
 
 impl BestAATransactions {}
 
 /// Key for identifying a unique sender in 2D nonce system
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub(crate) struct AASenderId {
     pub(crate) address: Address,
     pub(crate) nonce_key: U256,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+impl AASenderId {
+    /// Creates a new instance with the address and nonce key.
+    pub(crate) const fn new(address: Address, nonce_key: U256) -> Self {
+        Self { address, nonce_key }
+    }
+
+    const fn start_bound(self) -> std::ops::Bound<AA2dTransactionId> {
+        std::ops::Bound::Included(AA2dTransactionId::new(self, 0))
+    }
+}
+
+/// Unique identifier for an AA transaction.
+///
+/// Identified by its sender, nonce key and nonce for that nonce key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub(crate) struct AA2dTransactionId {
     pub(crate) sender: AASenderId,
     pub(crate) nonce: u64,
 }
 
 impl AA2dTransactionId {
-    /// Returns the id of the ancestor transaction if any
-    fn ancestor(&self) -> Option<AA2dTransactionId> {
-        self.nonce.checked_sub(1).map(|nonce| AA2dTransactionId {
-            sender: self.sender,
-            nonce,
-        })
+    /// Creates a new identifier.
+    pub(crate) const fn new(sender: AASenderId, nonce: u64) -> Self {
+        Self { sender, nonce }
     }
 }

@@ -14,7 +14,7 @@ use reth_transaction_pool::{
     error::PoolTransactionError,
 };
 use std::{convert::Infallible, fmt::Debug, sync::Arc};
-use tempo_primitives::{AASigned, TempoTxEnvelope, transaction::calc_gas_balance_spending};
+use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use thiserror::Error;
 
 /// Tempo pooled transaction representation.
@@ -72,11 +72,15 @@ impl TempoPooledTransaction {
     pub fn is_payment(&self) -> bool {
         self.is_payment
     }
-    
+
     /// Returns true if this transaction belongs into the 2D nonce pool:
     /// - AA transaction with a `nonce key != 0`
     pub(crate) fn is_aa_2d(&self) -> bool {
-        self.inner.transaction.as_aa().map(|tx| !tx.tx().nonce_key.is_zero()).unwrap_or(false)
+        self.inner
+            .transaction
+            .as_aa()
+            .map(|tx| !tx.tx().nonce_key.is_zero())
+            .unwrap_or(false)
     }
 
     /// Returns the unique identifier for this AA transaction.
