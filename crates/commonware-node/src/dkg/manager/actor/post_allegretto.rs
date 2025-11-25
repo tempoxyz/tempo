@@ -101,6 +101,7 @@ where
                 actor_epoch = self.current_epoch_state().epoch(),
                 "block was for an epoch other than what the actor is currently tracking; ignoring",
             );
+            return;
         }
 
         // Special case --- boundary block: report that a new epoch should be
