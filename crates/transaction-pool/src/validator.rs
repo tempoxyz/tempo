@@ -12,7 +12,6 @@ use reth_transaction_pool::{
 use tempo_revm::TempoStateAccess;
 
 // Reject AA transactions where `valid_after` is too far in the future to prevent mempool DOS.
-// ref: <https://github.com/tempoxyz/tempo/issues/1009>
 const AA_VALID_AFTER_MAX_SECS: u64 = 3600;
 
 /// Validator for Tempo transactions.
@@ -66,7 +65,6 @@ where
         }
 
         // Reject AA transactions where `valid_after` is too far in the future to prevent mempool DOS.
-        // ref: <https://github.com/tempoxyz/tempo/issues/1009>
         if let Some(tx) = transaction.inner().as_aa()
             && let Some(valid_after) = tx.tx().valid_after
         {
@@ -348,7 +346,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_aa_valid_after_validation() {
+    async fn test_aa_valid_after_check() {
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -397,7 +395,7 @@ mod tests {
                 error_msg.contains("'valid_after'") && error_msg.contains("too far in the future")
             );
         } else {
-            panic!("Expected Invalid outcome with InvalidValidAfter error");
+            panic!("Expected invalid outcome with InvalidValidAfter error");
         }
     }
 }
