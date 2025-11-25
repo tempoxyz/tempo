@@ -5,23 +5,21 @@ use alloy::{
     sol_types::SolEvent,
 };
 use futures::future::try_join_all;
-use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{ITIP20, ITIP403Registry, TIP20Error};
 use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
 
-use crate::utils::{await_receipts, setup_test_token};
+use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_transfer() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
@@ -152,12 +150,11 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
 async fn test_tip20_mint() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
@@ -236,12 +233,11 @@ async fn test_tip20_mint() -> eyre::Result<()> {
 async fn test_tip20_transfer_from() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let owner = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = owner.address();
@@ -349,12 +345,11 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
 async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
@@ -408,12 +403,11 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
 async fn test_tip20_blacklist() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let admin = wallet.address();
@@ -538,12 +532,11 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
 async fn test_tip20_whitelist() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let admin = wallet.address();
@@ -686,12 +679,11 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
 async fn test_tip20_rewards() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let admin_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let admin = admin_wallet.address();

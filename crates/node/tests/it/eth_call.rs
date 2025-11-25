@@ -1,4 +1,4 @@
-use crate::utils::{NodeSource, setup_test_node, setup_test_token};
+use crate::utils::{TestNodeBuilder, setup_test_token};
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder, ext::TraceApi},
@@ -12,7 +12,6 @@ use alloy::{
 use alloy_eips::BlockId;
 use alloy_rpc_types_eth::TransactionInput;
 use reth_evm::revm::interpreter::instructions::utility::IntoU256;
-use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{
     IFeeManager,
@@ -27,12 +26,11 @@ use tempo_precompiles::{
 async fn test_eth_call() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _node_handle) = setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
@@ -70,12 +68,11 @@ async fn test_eth_call() -> eyre::Result<()> {
 async fn test_eth_trace_call() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _node_handle) = setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
@@ -161,12 +158,11 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
 async fn test_eth_get_logs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _node_handle) = setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
@@ -224,12 +220,11 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
 async fn test_eth_estimate_gas() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _node_handle) = setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
@@ -260,13 +255,11 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
 async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-
-    let (http_url, _node_handle) = setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let user_address = wallet.address();
@@ -371,12 +364,12 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
 async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        NodeSource::LocalNode(include_str!("../assets/test-genesis-moderato.json").to_string())
-    };
-    let (http_url, _node_handle) = setup_test_node(source).await?;
+    // Note: This test uses moderato genesis (without allegretto) to test older behavior
+    let setup = TestNodeBuilder::new()
+        .with_genesis(include_str!("../assets/test-genesis-moderato.json").to_string())
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);

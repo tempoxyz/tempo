@@ -182,6 +182,7 @@ async fn test_block_building_few_mixed_txs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = crate::utils::TestNodeBuilder::new()
+        .allegretto_activated()
         .build_with_node_access()
         .await?;
 
@@ -267,6 +268,7 @@ async fn test_block_building_only_payment_txs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = crate::utils::TestNodeBuilder::new()
+        .allegretto_activated()
         .build_with_node_access()
         .await?;
 
@@ -335,6 +337,7 @@ async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = crate::utils::TestNodeBuilder::new()
+        .allegretto_activated()
         .build_with_node_access()
         .await?;
 
@@ -406,6 +409,7 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
 
     // Use lower gas limit to ensure transactions overflow to multiple blocks
     let mut setup = crate::utils::TestNodeBuilder::new()
+        .allegretto_activated()
         .with_gas_limit("0xf4240") // 1,000,000 gas
         .build_with_node_access()
         .await?;

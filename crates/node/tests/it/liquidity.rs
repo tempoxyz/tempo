@@ -16,6 +16,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     reth_tracing::init_test_tracing();
 
     let setup = crate::utils::TestNodeBuilder::new()
+        .allegretto_activated()
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
