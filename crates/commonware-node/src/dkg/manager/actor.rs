@@ -14,13 +14,11 @@ use rand_core::CryptoRngCore;
 use tracing::{Span, debug, info, instrument, warn};
 
 use crate::{
-    db::{CeremonyStore, DkgEpochStore, MetadataDatabase, Tx},
-    dkg::{
+    consensus::block::Block, db::{CeremonyStore, DkgEpochStore, MetadataDatabase, Tx}, dkg::{
         EpochState,
         ceremony::{self, Ceremony, PublicOutcome},
         manager::ingress::{Finalize, GetIntermediateDealing, GetOutcome},
-    },
-    epoch,
+    }, epoch
 };
 
 pub(crate) struct Actor<TContext>
@@ -213,15 +211,19 @@ where
                         .handle_get_outcome(cause, get_ceremony_outcome, &mut ceremony)
                         .await;
                 }
-                super::Command::Finalize(finalize) => {
+                super::Command::Finalize(Finalize {
+                    block,
+                    acknowledgment,
+                }) => {
                     let mut tx = self
                         .db
                         .read_write()
                         .expect("must be able to create transaction");
                     ceremony = self
-                        .handle_finalize(cause, finalize, ceremony, &mut ceremony_mux, &mut tx)
+                        .handle_finalize(cause, block, ceremony, &mut ceremony_mux, &mut tx)
                         .await;
                     tx.commit().await.expect("must be able to commit finalize");
+                    acknowledgment.acknowledge();
                 }
             }
         }
@@ -343,10 +345,7 @@ where
     async fn handle_finalize<TReceiver, TSender>(
         &mut self,
         cause: Span,
-        Finalize {
-            block,
-            acknowledgment,
-        }: Finalize,
+        block: Box<Block>,
         mut ceremony: Ceremony<TReceiver, TSender>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
         tx: &mut Tx<ContextCell<TContext>>,
@@ -356,7 +355,6 @@ where
         TSender: Sender<PublicKey = PublicKey>,
     {
         if block.height() == 0 {
-            acknowledgment.acknowledge();
             return ceremony;
         }
 
@@ -392,7 +390,6 @@ where
                 "block was for a different epoch; not including it in the \
                 ceremony"
             );
-            acknowledgment.acknowledge();
             return ceremony;
         };
 
@@ -507,8 +504,6 @@ where
                 .await
                 .expect("must always be able to initialize ceremony");
         }
-
-        acknowledgment.acknowledge();
 
         ceremony
     }
