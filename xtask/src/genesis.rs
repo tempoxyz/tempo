@@ -19,7 +19,7 @@ use reth_evm::{
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, path::PathBuf};
-use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_BASE_FEE};
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, DEFAULT_7702_DELEGATE_ADDRESS,
     MULTICALL_ADDRESS, PERMIT2_ADDRESS, SAFE_DEPLOYER_ADDRESS,
@@ -313,14 +313,6 @@ impl GenesisArgs {
             "adagioTime".to_string(),
             serde_json::json!(self.adagio_time),
         );
-        chain_config.extra_fields.insert(
-            "moderatoTime".to_string(),
-            serde_json::json!(self.moderato_time),
-        );
-        chain_config.extra_fields.insert(
-            "allegrettoTime".to_string(),
-            serde_json::json!(self.allegretto_time),
-        );
 
         let mut genesis = Genesis::default()
             .with_gas_limit(self.gas_limit)
@@ -341,8 +333,7 @@ impl GenesisArgs {
 
 fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>> {
     let db = CacheDB::default();
-    let mut env = EvmEnv::default();
-    env.cfg_env.spec = TempoHardfork::Allegretto;
+    let env = EvmEnv::default();
     let factory = TempoEvmFactory::default();
     factory.create_evm(db, env)
 }
