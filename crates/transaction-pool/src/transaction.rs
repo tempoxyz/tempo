@@ -76,6 +76,8 @@ pub enum TempoPoolTransactionError {
 
     #[error("'valid_after' {valid_after} is too far in the future (max allowed: {max_allowed})")]
     InvalidValidAfter { valid_after: u64, max_allowed: u64 },
+    #[error("Keychain signature validation failed: {0}")]
+    Keychain(&'static str),
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -85,6 +87,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             Self::InvalidFeeToken(_) => false,
             Self::MissingFeeToken => false,
             Self::InvalidValidAfter { .. } => false,
+            Self::Keychain(_) => true, // Bad transaction - invalid signature
         }
     }
 
