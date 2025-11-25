@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    net::{SocketAddr, ToSocketAddrs as _},
-};
+use std::{collections::HashMap, net::SocketAddr};
 
 use alloy_evm::EvmInternals;
 use alloy_primitives::Address;
@@ -188,10 +185,7 @@ impl ValidatorState {
             .iter_pairs()
             .chain(self.players().iter_pairs())
             .chain(self.dealers().iter_pairs())
-            .filter_map(|(pubkey, validator)| {
-                let addr = validator.inbound_to_socket_addr().ok()?;
-                Some((pubkey.clone(), addr))
-            })
+            .map(|(pubkey, validator)| (pubkey.clone(), validator.inbound_socket_addr()))
             .collect()
     }
 
@@ -313,34 +307,8 @@ impl DecodedValidator {
         })
     }
 
-    /// Converts a decoded validator to a (pubkey, socket addr) pair.
-    ///
-    /// At the moment, only the inbound address is considered (constraint of
-    /// [`commonware_p2p::authenticated::lookup`]). If the inbound value is a
-    /// socket address, then the conversion is immediate. If is a domain name,
-    /// the domain name is resolved. If DNS resolution returns more than 1 value,
-    /// the last one is taken.
-    #[instrument(skip_all, fields(public_key = %self.public_key, inbound = %self.inbound), err)]
-    fn inbound_to_socket_addr(&self) -> eyre::Result<SocketAddr> {
-        let all_addrs = self
-            .inbound
-            .to_string()
-            .to_socket_addrs()
-            .wrap_err_with(|| format!("failed resolving inbound address `{}`", self.inbound))?
-            .collect::<Vec<_>>();
-        let addr = match &all_addrs[..] {
-            [] => return Err(eyre::eyre!("found no addresses for `{}`", self.inbound)),
-            [addr] => *addr,
-            [dropped @ .., addr] => {
-                info!(
-                    ?dropped,
-                    "resolved to more than one; dropping all except the last"
-                );
-                *addr
-            }
-        };
-        info!(%addr, "using address");
-        Ok(addr)
+    fn inbound_socket_addr(&self) -> SocketAddr {
+        self.inbound
     }
 }
 
