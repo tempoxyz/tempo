@@ -74,7 +74,8 @@ where
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("system time before UNIX EPOCH")
                 .as_secs();
-            if valid_before <= current_time.saturating_add(AA_VALID_BEFORE_MIN_SECS) {
+            let min_allowed = current_time.saturating_add(AA_VALID_BEFORE_MIN_SECS);
+            if valid_before <= min_allowed {
                 return TransactionValidationOutcome::Invalid(
                     transaction,
                     InvalidPoolTransactionError::other(
