@@ -838,7 +838,7 @@ where
         exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
     ) -> Result<(), Self::Error> {
         // Call collectFeePostTx on TipFeeManager precompile
-        let context = evm.ctx();
+        let context = &mut evm.ctx;
         let tx = context.tx();
         let basefee = context.block().basefee() as u128;
         let effective_gas_price = tx.effective_gas_price(basefee);
