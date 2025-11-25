@@ -453,6 +453,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     ) -> Result<()> {
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
+        // Prevent burning from `FeeManager` to protect fee accounting invariants
+        if call.from == TIP_FEE_MANAGER_ADDRESS {
+            return Err(FeeManagerError::protected_address().into());
+        }
+
         // Check if the address is blocked from transferring
         let transfer_policy_id = self.transfer_policy_id()?;
         let mut registry = TIP403Registry::new(self.storage);
@@ -2434,6 +2439,56 @@ pub(crate) mod tests {
 
         let supply_cap = token.supply_cap()?;
         assert_eq!(supply_cap, U256::MAX,);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_unable_to_burn_blocked_fee_manager() -> eyre::Result<()> {
+        use tempo_contracts::precompiles::FeeManagerError;
+
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let burner = Address::random();
+
+        // Initialize token
+        let token_id = setup_factory_with_token(&mut storage, admin, "Test", "TST");
+        let mut token = TIP20Token::new(token_id, &mut storage);
+
+        // Grant BURN_BLOCKED_ROLE to burner
+        token.grant_role_internal(burner, *BURN_BLOCKED_ROLE)?;
+
+        // Simulate collected fees
+        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: TIP_FEE_MANAGER_ADDRESS,
+                amount: U256::from(1000),
+            },
+        )?;
+
+        // Attempt to burn from FeeManager
+        let result = token.burn_blocked(
+            burner,
+            ITIP20::burnBlockedCall {
+                from: TIP_FEE_MANAGER_ADDRESS,
+                amount: U256::from(500),
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::FeeManagerError(
+                FeeManagerError::ProtectedAddress(_)
+            ))
+        ));
+
+        // Verify FeeManager balance is unchanged
+        let balance = token.balance_of(ITIP20::balanceOfCall {
+            account: TIP_FEE_MANAGER_ADDRESS,
+        })?;
+        assert_eq!(balance, U256::from(1000));
 
         Ok(())
     }
