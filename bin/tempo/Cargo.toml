@@ -41,7 +41,7 @@ name = "tempo"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["asm-keccak", "jemalloc"]
 
 asm-keccak = [
 	"tempo-node/asm-keccak",
@@ -96,4 +96,3 @@ min-trace-logs = [
 	"reth-ethereum-cli/min-trace-logs",
 	"tempo-node/min-trace-logs"
 ]
-
