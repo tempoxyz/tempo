@@ -10,13 +10,7 @@ use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_eth_wire_types::HandleMempoolData;
 use reth_provider::StateProviderFactory;
-use reth_transaction_pool::{
-    AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
-    BlockInfo, CoinbaseTipOrdering, GetPooledTransactionLimit, NewBlobSidecar, Pool, PoolResult,
-    PoolSize, PoolTransaction, PropagatedTransactions, TransactionEvents, TransactionOrigin,
-    TransactionPool, TransactionValidationTaskExecutor, ValidPoolTransaction,
-    blobstore::DiskFileBlobStore, pool::AddedTransactionState,
-};
+use reth_transaction_pool::{blobstore::DiskFileBlobStore, AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes, BlockInfo, CoinbaseTipOrdering, GetPooledTransactionLimit, NewBlobSidecar, Pool, PoolResult, PoolSize, PoolTransaction, PropagatedTransactions, TransactionEvents, TransactionOrigin, TransactionPool, TransactionValidationOutcome, TransactionValidationTaskExecutor, ValidPoolTransaction};
 use std::{collections::HashSet, sync::Arc};
 
 /// Tempo transaction pool that routes based on nonce_key
@@ -51,6 +45,15 @@ where
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(Default::default())),
         }
+    }
+
+    fn add_validated_transaction(&self,
+                                  origin: TransactionOrigin,
+                                  transaction: TransactionValidationOutcome<TempoPooledTransaction>,
+    )-> Vec<PoolResult<AddedTransactionOutcome>> {
+        if transaction.as_invalid()
+
+        todo!()
     }
 }
 
@@ -109,6 +112,7 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<reth_transaction_pool::TransactionEvents> {
+        let tx = self.protocol_pool.validator().validate(origin, transaction).await;
         todo!()
     }
 
@@ -117,7 +121,9 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> PoolResult<AddedTransactionOutcome> {
-        todo!()
+        let tx = self.protocol_pool.validator().validate(origin, transaction).await;
+        let mut results = self.add_validated_transactions(origin, std::iter::once(tx));
+        results.pop().expect("result length is the same as the input")
     }
 
     async fn add_transactions(
@@ -125,7 +131,12 @@ where
         origin: TransactionOrigin,
         transactions: Vec<Self::Transaction>,
     ) -> Vec<PoolResult<AddedTransactionOutcome>> {
-        todo!()
+        if transactions.is_empty() {
+            return Vec::new()
+        }
+        let validated = self.protocol_pool.validator().validate_transactions_with_origin(origin, transactions).await;
+
+        self.add_validated_transactions(origin, validated.into_iter())
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
@@ -500,92 +511,3 @@ where
             .get_blobs_for_versioned_hashes_v2(versioned_hashes)
     }
 }
-
-// /// Iterator that merges best transactions from both pools
-// struct TempoBestTransactions {
-//     protocol_iter:
-//         Box<dyn Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send>,
-//     user_nonce_iter:
-//         Box<dyn Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send>,
-//     protocol_peek: Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-//     user_nonce_peek: Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-// }
-//
-// impl TempoBestTransactions {
-//     fn new(
-//         mut protocol: Box<
-//             dyn Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
-//         >,
-//         mut user_nonce: Box<
-//             dyn Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
-//         >,
-//     ) -> Self {
-//         let protocol_peek = protocol.next();
-//         let user_nonce_peek = user_nonce.next();
-//         Self {
-//             protocol_iter: protocol,
-//             user_nonce_iter: user_nonce,
-//             protocol_peek,
-//             user_nonce_peek,
-//         }
-//     }
-// }
-//
-// impl Iterator for TempoBestTransactions {
-//     type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
-//
-//     fn next(&mut self) -> Option<Self::Item> {
-//         // Properly interleave transactions from both pools by comparing gas prices
-//         match (&self.protocol_peek, &self.user_nonce_peek) {
-//             (Some(protocol_tx), Some(user_tx)) => {
-//                 // Both pools have transactions, pick higher gas price
-//                 // @mattse: Is this the correct gas number to compare, or should we use priority fee here?
-//                 if protocol_tx.max_fee_per_gas() >= user_tx.max_fee_per_gas() {
-//                     let tx = self.protocol_peek.take();
-//                     self.protocol_peek = self.protocol_iter.next();
-//                     tx
-//                 } else {
-//                     let tx = self.user_nonce_peek.take();
-//                     self.user_nonce_peek = self.user_nonce_iter.next();
-//                     tx
-//                 }
-//             }
-//             (Some(_), None) => {
-//                 // Only protocol pool has transactions
-//                 let tx = self.protocol_peek.take();
-//                 self.protocol_peek = self.protocol_iter.next();
-//                 tx
-//             }
-//             (None, Some(_)) => {
-//                 // Only user nonce pool has transactions
-//                 let tx = self.user_nonce_peek.take();
-//                 self.user_nonce_peek = self.user_nonce_iter.next();
-//                 tx
-//             }
-//             (None, None) => None,
-//         }
-//     }
-// }
-//
-// impl BestTransactions for TempoBestTransactions {
-//     fn mark_invalid(
-//         &mut self,
-//         _tx: &Arc<ValidPoolTransaction<TempoPooledTransaction>>,
-//         _error: reth_transaction_pool::error::InvalidPoolTransactionError,
-//     ) {
-//         // Since we're using plain iterators, we can't mark invalid
-//         // In production, would need to track state
-//     }
-//
-//     fn no_updates(&mut self) {
-//         // No-op for plain iterators
-//     }
-//
-//     fn skip_blobs(&mut self) {
-//         // No-op for plain iterators
-//     }
-//
-//     fn set_skip_blobs(&mut self, _skip: bool) {
-//         // No-op for plain iterators
-//     }
-// }
