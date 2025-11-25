@@ -6,7 +6,7 @@ use tempo_alloy::TempoNetwork;
 use alloy::{
     consensus::BlockHeader,
     eips::{BlockNumberOrTag::Latest, Decodable2718},
-    network::{Ethereum, Network, ReceiptResponse, TransactionBuilder, TxSignerSync},
+    network::{ReceiptResponse, TransactionBuilder, TxSignerSync},
     primitives::{Address, BlockNumber, ChainId, Signature, TxKind, U256},
     providers::{PendingTransactionBuilder, Provider, ProviderBuilder},
     sol_types::{SolCall, SolEvent},
@@ -171,9 +171,9 @@ impl MaxTpsArgs {
                 total_txs,
                 num_accounts: self.accounts,
                 mnemonic: &self.mnemonic,
-                from_mnemonic_index: self.from_mnemonic_index,
                 chain_id: self.chain_id,
                 rpc_url: target_urls[0].clone(),
+                from_mnemonic_index: self.from_mnemonic_index,
                 max_concurrent_requests: self.total_connections as usize,
                 max_concurrent_transactions: self.max_concurrent_transactions,
                 tip20_weight,
@@ -643,7 +643,7 @@ fn monitor_tps(tx_counter: Arc<AtomicU64>, target_count: u64) -> thread::JoinHan
 }
 
 async fn join_all<
-    T: Future<Output = alloy::contract::Result<PendingTransactionBuilder<Ethereum>>>,
+    T: Future<Output = alloy::contract::Result<PendingTransactionBuilder<TempoNetwork>>>,
 >(
     futures: impl IntoIterator<Item = T>,
     tx_count: &ProgressBar,

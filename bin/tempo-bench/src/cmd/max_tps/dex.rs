@@ -19,7 +19,7 @@ pub(super) async fn setup(
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
 ) -> eyre::Result<(
-    IStablecoinExchangeInstance<DynProvider>,
+    IStablecoinExchangeInstance<DynProvider<TempoNetwork>, TempoNetwork>,
     Address,
     Vec<Address>,
 )> {
@@ -40,9 +40,10 @@ pub(super) async fn setup(
     // Setup HTTP provider with a test wallet
     let wallet = MnemonicBuilder::from_phrase(mnemonic).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet.clone())
-        .connect_http(url.clone());
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .wallet(wallet)
+        .connect_http(url.clone())
+        .erased();
 
     let base1 = setup_test_token(provider.clone(), caller, &tx_count).await?;
     let base2 = setup_test_token(provider.clone(), caller, &tx_count).await?;
@@ -167,16 +168,12 @@ pub(super) async fn setup(
     ))
 }
 
-pub(super) fn approve<P, N>(
-    token: &ITIP20Instance<P, N>,
+pub(super) fn approve(
+    token: &ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>,
     signer: &PrivateKeySigner,
     nonce: u64,
     chain_id: ChainId,
-) -> eyre::Result<Vec<u8>>
-where
-    N: Network<UnsignedTx: SignableTransaction<alloy::signers::Signature> + RlpEcdsaEncodableTx>,
-    P: Provider<N>,
-{
+) -> eyre::Result<Vec<u8>> {
     let tx = token
         .approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
         .into_transaction_request()
@@ -184,23 +181,19 @@ where
         .with_gas_price(TEMPO_BASE_FEE as u128)
         .with_chain_id(chain_id)
         .with_nonce(nonce)
-        .build_unsigned()?;
+        .build_fee_token()?;
 
     into_signed_encoded(tx, signer)
 }
 
-pub(super) fn mint<P, N>(
-    token: &ITIP20Instance<P, N>,
+pub(super) fn mint(
+    token: &ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>,
     signer: &PrivateKeySigner,
     nonce: u64,
     chain_id: ChainId,
     recipient: Address,
     mint_amount: U256,
-) -> eyre::Result<Vec<u8>>
-where
-    N: Network<UnsignedTx: SignableTransaction<alloy::signers::Signature> + RlpEcdsaEncodableTx>,
-    P: Provider<N>,
-{
+) -> eyre::Result<Vec<u8>> {
     let tx = token
         .mint(recipient, mint_amount)
         .into_transaction_request()
@@ -208,14 +201,14 @@ where
         .with_gas_price(TEMPO_BASE_FEE as u128)
         .with_chain_id(chain_id)
         .with_nonce(nonce)
-        .build_unsigned()?;
+        .build_fee_token()?;
 
     into_signed_encoded(tx, signer)
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(super) fn place_flip<P, N>(
-    exchange: &IStablecoinExchangeInstance<P, N>,
+pub(super) fn place_flip(
+    exchange: &IStablecoinExchangeInstance<DynProvider<TempoNetwork>, TempoNetwork>,
     signer: &PrivateKeySigner,
     nonce: u64,
     chain_id: ChainId,
@@ -223,11 +216,7 @@ pub(super) fn place_flip<P, N>(
     amount: u128,
     tick_under: i16,
     tick_over: i16,
-) -> eyre::Result<Vec<u8>>
-where
-    N: Network<UnsignedTx: SignableTransaction<alloy::signers::Signature> + RlpEcdsaEncodableTx>,
-    P: Provider<N>,
-{
+) -> eyre::Result<Vec<u8>> {
     let tx = exchange
         .placeFlip(token, amount, true, tick_under, tick_over)
         .into_transaction_request()
@@ -235,22 +224,18 @@ where
         .with_gas_price(TEMPO_BASE_FEE as u128)
         .with_chain_id(chain_id)
         .with_nonce(nonce)
-        .build_unsigned()?;
+        .build_fee_token()?;
 
     into_signed_encoded(tx, signer)
 }
 
-pub(super) fn create_pair<P, N>(
-    exchange: &IStablecoinExchangeInstance<P, N>,
+pub(super) fn create_pair(
+    exchange: &IStablecoinExchangeInstance<DynProvider<TempoNetwork>, TempoNetwork>,
     signer: &PrivateKeySigner,
     nonce: u64,
     chain_id: ChainId,
     token_address: Address,
-) -> eyre::Result<Vec<u8>>
-where
-    N: Network<UnsignedTx: SignableTransaction<alloy::signers::Signature> + RlpEcdsaEncodableTx>,
-    P: Provider<N>,
-{
+) -> eyre::Result<Vec<u8>> {
     let tx = exchange
         .createPair(token_address)
         .into_transaction_request()
@@ -258,22 +243,18 @@ where
         .with_gas_price(TEMPO_BASE_FEE as u128)
         .with_chain_id(chain_id)
         .with_nonce(nonce)
-        .build_unsigned()?;
+        .build_fee_token()?;
 
     into_signed_encoded(tx, signer)
 }
 
-pub(super) fn place<P, N>(
-    exchange: &IStablecoinExchangeInstance<P, N>,
+pub(super) fn place(
+    exchange: &IStablecoinExchangeInstance<DynProvider<TempoNetwork>, TempoNetwork>,
     signer: &PrivateKeySigner,
     nonce: u64,
     chain_id: ChainId,
     token_address: Address,
-) -> eyre::Result<Vec<u8>>
-where
-    N: Network<UnsignedTx: SignableTransaction<alloy::signers::Signature> + RlpEcdsaEncodableTx>,
-    P: Provider<N>,
-{
+) -> eyre::Result<Vec<u8>> {
     let min_order_amount = MIN_ORDER_AMOUNT;
     let tick = (random::<u16>() % (MAX_TICK - MIN_TICK) as u16) as i16 + MIN_TICK;
 
@@ -285,23 +266,19 @@ where
         .with_gas_price(TEMPO_BASE_FEE as u128)
         .with_chain_id(chain_id)
         .with_nonce(nonce)
-        .build_unsigned()?;
+        .build_fee_token()?;
 
     into_signed_encoded(tx, signer)
 }
 
-pub(super) fn swap_in<P, N>(
-    exchange: &IStablecoinExchangeInstance<P, N>,
+pub(super) fn swap_in(
+    exchange: &IStablecoinExchangeInstance<DynProvider<TempoNetwork>, TempoNetwork>,
     signer: &PrivateKeySigner,
     nonce: u64,
     chain_id: ChainId,
     token_in: Address,
     token_out: Address,
-) -> eyre::Result<Vec<u8>>
-where
-    N: Network<UnsignedTx: SignableTransaction<alloy::signers::Signature> + RlpEcdsaEncodableTx>,
-    P: Provider<N>,
-{
+) -> eyre::Result<Vec<u8>> {
     let min_amount_out = 0;
     let min_order_amount = MIN_ORDER_AMOUNT;
 
@@ -313,19 +290,18 @@ where
         .with_gas_price(TEMPO_BASE_FEE as u128)
         .with_chain_id(chain_id)
         .with_nonce(nonce)
-        .build_unsigned()?;
+        .build_fee_token()?;
 
     into_signed_encoded(tx, signer)
 }
 
 /// Creates a test TIP20 token with issuer role granted to the caller
-async fn setup_test_token<P>(
-    provider: P,
+async fn setup_test_token(
+    provider: DynProvider<TempoNetwork>,
     caller: Address,
     tx_count: &ProgressBar,
-) -> eyre::Result<ITIP20Instance<P>>
+) -> eyre::Result<ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>>
 where
-    P: Provider + Clone,
 {
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
     let receipt = factory

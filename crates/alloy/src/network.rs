@@ -2,8 +2,8 @@ use crate::rpc::{TempoHeaderResponse, TempoTransactionReceipt, TempoTransactionR
 use alloy_consensus::{TxType, error::UnsupportedTransactionType};
 
 use alloy_network::{
-    BuildResult, Network, NetworkWallet, TransactionBuilder, TransactionBuilderError,
-    UnbuiltTransactionError,
+    BuildResult, Network, NetworkWallet, TransactionBuilder,
+    TransactionBuilderError, UnbuiltTransactionError,
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
 use alloy_provider::fillers::{
