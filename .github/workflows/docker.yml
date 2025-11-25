@@ -11,7 +11,7 @@ on:
   workflow_call:
   schedule:
     - cron: "5 9 * * *"
-    - cron: "30 20 * **"
+    - cron: "30 20 * * *"
 
 env:
   REGISTRY: ghcr.io/tempoxyz
