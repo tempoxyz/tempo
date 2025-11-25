@@ -13,7 +13,11 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
-use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, storage::slots::mapping_slot};
+use tempo_precompiles::{
+    NONCE_PRECOMPILE_ADDRESS,
+    storage::{double_mapping_slot, slots::mapping_slot},
+};
+use tempo_primitives::subblock::has_sub_block_nonce_key_prefix;
 use tempo_revm::TempoStateAccess;
 
 /// Validator for Tempo transactions.
@@ -50,12 +54,9 @@ where
     ) -> ProviderResult<(U256, u64)> {
         // Compute storage slot for 2D nonce
         // Based on: mapping(address => mapping(uint256 => uint64)) at slot 0
-        let outer_slot = mapping_slot(address.as_slice(), U256::ZERO);
-        let slot = mapping_slot(nonce_key.as_le_bytes(), outer_slot);
-
+        let slot = double_mapping_slot(address.as_slice(), nonce_key.as_le_bytes(), U256::ZERO);
         let nonce_value = state_provider.storage(NONCE_PRECOMPILE_ADDRESS, slot.into())?;
 
-        // Storage returns Option<U256>, unwrap to U256 then convert to u64
         Ok((slot, nonce_value.unwrap_or_default().saturating_to()))
     }
 
@@ -160,6 +161,16 @@ where
                 if let Some(nonce_key) = transaction.transaction().nonce_key()
                     && !nonce_key.is_zero()
                 {
+                    // ensure the nonce key isn't prefixed with the sub-block prefix
+                    if has_sub_block_nonce_key_prefix(&nonce_key) {
+                        return TransactionValidationOutcome::Invalid(
+                            transaction.into_transaction(),
+                            InvalidPoolTransactionError::other(
+                                TempoPoolTransactionError::SubblockNonceKey,
+                            ),
+                        );
+                    }
+
                     // This is a 2D nonce transaction - validate against 2D nonce
                     let (nonce_key_slot, on_chain_2d_nonce) = match self.get_2d_nonce(
                         &state_provider,

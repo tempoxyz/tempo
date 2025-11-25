@@ -5,7 +5,7 @@ use parking_lot::RwLock;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
     CoinbaseTipOrdering, PoolResult, PoolTransaction, PriceBumpConfig, SubPool, SubPoolLimit,
-    TransactionOrdering, ValidPoolTransaction,
+    TransactionOrdering, TransactionOrigin, ValidPoolTransaction,
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
     pool::{AddedPendingTransaction, AddedTransaction, QueuedReason, pending::PendingTransaction},
 };
@@ -185,6 +185,76 @@ impl Pool2D {
         })
     }
 
+    /// Returns how many pending and queued transactions are in the pool.
+    pub(crate) fn pending_and_queued_txn_count(&self) -> (usize, usize) {
+        self.by_id.values().fold((0, 0), |mut acc, tx| {
+            if tx.is_pending {
+                acc.0 += 1;
+            } else {
+                acc.1 += 1;
+            }
+            acc
+        })
+    }
+
+    /// Returns all transactions that where submitted with the given [`TransactionOrigin`]
+    pub(crate) fn get_transactions_by_origin_iter(
+        &self,
+        origin: TransactionOrigin,
+    ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        self.by_id
+            .values()
+            .filter(move |tx| tx.inner.transaction.origin == origin)
+            .map(|tx| tx.inner.transaction.clone())
+    }
+
+    /// Returns all transactions that where submitted with the given [`TransactionOrigin`]
+    pub(crate) fn get_pending_transactions_by_origin_iter(
+        &self,
+        origin: TransactionOrigin,
+    ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        self.by_id
+            .values()
+            .filter(move |tx| tx.is_pending && tx.inner.transaction.origin == origin)
+            .map(|tx| tx.inner.transaction.clone())
+    }
+
+    /// Returns all transactions of the address
+    pub(crate) fn get_transactions_by_sender_iter(
+        &self,
+        sender: Address,
+    ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        self.by_id
+            .values()
+            .filter(|tx| tx.inner.transaction.sender() == sender)
+            .map(|tx| tx.inner.transaction.clone())
+    }
+
+    /// Returns an iterator over all transaction hashes in this pool
+    pub(crate) fn all_transaction_hashes_iter(&self) -> impl Iterator<Item = TxHash> {
+        self.by_hash.keys().copied()
+    }
+
+    /// Returns all transactions from that are queued.
+    pub(crate) fn queued_transactions(
+        &self,
+    ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        self.by_id
+            .values()
+            .filter(|tx| !tx.is_pending)
+            .map(|tx| tx.inner.transaction.clone())
+    }
+
+    /// Returns all transactions that are pending.
+    pub(crate) fn pending_transactions(
+        &self,
+    ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        self.by_id
+            .values()
+            .filter(|tx| tx.is_pending)
+            .map(|tx| tx.inner.transaction.clone())
+    }
+
     /// Returns the best, executable transactions for this sub-pool
     pub(crate) fn best(&self) -> BestAATransactions {
         todo!()
@@ -192,6 +262,38 @@ impl Pool2D {
         //     pending: self.independent.clone(),
         //     by_id: self.by_id.clone(),
         // }
+    }
+
+    /// Returns the transaction by hash.
+    pub(crate) fn get(
+        &self,
+        tx_hash: &TxHash,
+    ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        self.by_hash.get(tx_hash).cloned()
+    }
+
+    /// Returns the transaction by hash.
+    pub(crate) fn get_all<'a, I>(
+        &self,
+        tx_hashes: I,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>
+    where
+        I: Iterator<Item = &'a TxHash> + 'a,
+    {
+        let mut ret = Vec::new();
+        for tx_hash in tx_hashes {
+            if let Some(tx) = self.get(tx_hash) {
+                ret.push(tx);
+            }
+        }
+        ret
+    }
+
+    /// Returns an iterator over all senders in this pool.
+    pub(crate) fn senders_iter(&self) -> impl Iterator<Item = &Address> {
+        self.by_id
+            .values()
+            .map(|tx| tx.inner.transaction.sender_ref())
     }
 
     /// Returns all mutable transactions that _follow_ after the given id but have the same sender.

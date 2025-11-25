@@ -5,7 +5,9 @@ use alloy_rlp::{Buf, BufMut, Decodable, EMPTY_STRING_CODE, Encodable};
 use core::mem;
 
 use crate::{
-    subblock::{PartialValidatorKey, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
+    subblock::{
+        PartialValidatorKey, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX, has_sub_block_nonce_key_prefix,
+    },
     transaction::{AASignature, AASigned, AASignedAuthorization},
 };
 
@@ -464,9 +466,14 @@ impl TxAA {
         Ok(tx)
     }
 
+    /// Returns true if the nonce key of this transaction has the [`TEMPO_SUBBLOCK_NONCE_KEY_PREFIX`].
+    pub fn has_sub_block_nonce_key_prefix(&self) -> bool {
+        has_sub_block_nonce_key_prefix(&self.nonce_key)
+    }
+
     /// Returns the proposer of the subblock if this is a subblock transaction.
     pub fn subblock_proposer(&self) -> Option<PartialValidatorKey> {
-        if self.nonce_key.byte(31) == TEMPO_SUBBLOCK_NONCE_KEY_PREFIX {
+        if self.has_sub_block_nonce_key_prefix() {
             Some(PartialValidatorKey::from_slice(
                 &self.nonce_key.to_be_bytes::<32>()[1..16],
             ))

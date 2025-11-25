@@ -107,6 +107,10 @@ pub enum TempoPoolTransactionError {
 
     #[error("No fee token preference configured")]
     MissingFeeToken,
+
+    /// Thrown if a AA transaction with a nonce key prefixed with the sub-block prefix marker added to the pool
+    #[error("AA transaction with subblock nonce key prefix aren't supported in the pool")]
+    SubblockNonceKey,
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -115,6 +119,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             Self::ExceedsNonPaymentLimit => false,
             Self::InvalidFeeToken(_) => false,
             Self::MissingFeeToken => false,
+            TempoPoolTransactionError::SubblockNonceKey => true,
         }
     }
 
