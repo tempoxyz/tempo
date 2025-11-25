@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use eyre::WrapErr as _;
+use eyre::{OptionExt as _, WrapErr as _};
 
 use crate::genesis_args::GenesisArgs;
 
@@ -24,6 +24,9 @@ impl GenerateGenesis {
             .generate_genesis()
             .await
             .wrap_err("failed generating genesis")?;
+
+        let consensus_config = consensus_config
+            .ok_or_eyre("no consensus config generated; did you provide --validators?")?;
 
         let json =
             serde_json::to_string_pretty(&genesis).wrap_err("failed encoding genesis as JSON")?;

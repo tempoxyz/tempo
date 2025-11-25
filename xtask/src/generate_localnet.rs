@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use alloy_primitives::Address;
-use eyre::{Context, ensure};
+use eyre::{OptionExt as _, WrapErr as _, ensure};
 use rand::SeedableRng as _;
 use reth_network_peers::pk2id;
 use secp256k1::SECP256K1;
@@ -44,6 +44,9 @@ impl GenerateLocalnet {
             .generate_genesis()
             .await
             .wrap_err("failed to generate genesis")?;
+
+        let consensus_config = consensus_config
+            .ok_or_eyre("no consensus config generated; did you provide --validators?")?;
 
         std::fs::create_dir_all(&output).wrap_err_with(|| {
             format!("failed creating target directory at `{}`", output.display())

@@ -135,7 +135,7 @@ impl GenesisArgs {
     ///
     /// It creates a new genesis allocation for the configured accounts.
     /// And creates accounts for system contracts.
-    pub(crate) async fn generate_genesis(self) -> eyre::Result<(Genesis, ConsensusConfig)> {
+    pub(crate) async fn generate_genesis(self) -> eyre::Result<(Genesis, Option<ConsensusConfig>)> {
         println!("Generating {:?} accounts", self.accounts);
 
         let addresses: Vec<Address> = (0..self.accounts)
@@ -309,7 +309,7 @@ impl GenesisArgs {
             "generating consensus config for validators: {:?}",
             self.validators
         );
-        let consensus_config = generate_consensus_config(&self.validators, self.seed)?;
+        let consensus_config = generate_consensus_config(&self.validators, self.seed);
 
         let mut chain_config = ChainConfig {
             chain_id: self.chain_id,
@@ -355,13 +355,15 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("epochLength".to_string(), self.epoch_length)?;
-        chain_config
-            .extra_fields
-            .insert_value("peers".to_string(), consensus_config.peers.clone())?;
-        chain_config.extra_fields.insert_value(
-            "publicPolynomial".to_string(),
-            consensus_config.public_polynomial.clone(),
-        )?;
+        if let Some(consensus_config) = &consensus_config {
+            chain_config
+                .extra_fields
+                .insert_value("peers".to_string(), consensus_config.peers.clone())?;
+            chain_config.extra_fields.insert_value(
+                "publicPolynomial".to_string(),
+                consensus_config.public_polynomial.clone(),
+            )?;
+        }
 
         let mut genesis = Genesis::default()
             .with_gas_limit(self.gas_limit)
@@ -588,9 +590,14 @@ fn initialize_validator_config(
 fn generate_consensus_config(
     addresses: &[SocketAddr],
     seed: Option<u64>,
-) -> eyre::Result<ConsensusConfig> {
+) -> Option<ConsensusConfig> {
     use commonware_cryptography::{PrivateKeyExt as _, Signer as _, ed25519::PrivateKey};
     use rand::SeedableRng as _;
+
+    if addresses.is_empty() {
+        println!("no addresses provided; not generating consensus config");
+        return None;
+    }
 
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
     let mut signers = (0..addresses.len())
@@ -619,7 +626,7 @@ fn generate_consensus_config(
             signing_share: SigningShare::from(share),
         });
     }
-    Ok(ConsensusConfig {
+    Some(ConsensusConfig {
         peers: peers.into(),
         public_polynomial: polynomial.into(),
         validators,
