@@ -1406,10 +1406,10 @@ pub(crate) mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let token_id = 1;
-        initialize_path_usd(&mut storage, admin).unwrap();
+
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "EUR", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1417,7 +1417,7 @@ pub(crate) mod tests {
         let owner = Address::random();
         let spender = Address::random();
         let to = Address::random();
-        let amount = U256::random();
+        let amount = U256::from(random::<u128>());
         let memo = FixedBytes::random();
 
         token
@@ -1457,7 +1457,7 @@ pub(crate) mod tests {
         assert_eq!(
             events[4],
             TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-                from: spender,
+                from: owner,
                 to,
                 amount,
                 memo
@@ -1469,14 +1469,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_transfer_from_with_memo_from_address_post_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+    fn test_transfer_from_with_memo_pre_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let admin = Address::random();
         let token_id = 1;
-        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "EUR", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1509,11 +1508,11 @@ pub(crate) mod tests {
 
         let events = &storage.events[&token_id_to_address(token_id)];
 
-        // TransferWithMemo event should have use call.from in transfer event
+        // TransferWithMemo event should have use spender in transfer event pre moderato
         assert_eq!(
             events[4],
             TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-                from: owner,
+                from: spender,
                 to,
                 amount,
                 memo
@@ -1529,10 +1528,9 @@ pub(crate) mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let admin = Address::random();
         let token_id = 1;
-        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "EUR", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -2302,7 +2300,7 @@ pub(crate) mod tests {
     #[test]
     fn test_transfer_fee_pre_tx_no_rewards_pre_moderato() -> eyre::Result<()> {
         // Test with Adagio (pre-Moderato) - rewards should NOT be handled
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let user = Address::random();
 
@@ -2361,7 +2359,7 @@ pub(crate) mod tests {
         // Setup token with rewards enabled, to do this we need to set the hardfork to pre-Moderato
         // to enable scheduled rewards
         storage.set_spec(TempoHardfork::Adagio);
-        let initial_opted_in = setup_token_with_rewards(
+        setup_token_with_rewards(
             &mut storage,
             token_id,
             admin,
