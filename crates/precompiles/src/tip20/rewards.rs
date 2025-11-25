@@ -679,11 +679,12 @@ mod tests {
 
     #[test]
     fn test_start_reward_scheduled_pre_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
+        let mut storage = HashMapStorageProvider::new(1);
         let current_time = storage.timestamp().to::<u64>();
         let admin = Address::random();
-
         initialize_path_usd(&mut storage, admin)?;
+
+        storage.set_spec(TempoHardfork::Adagio);
         let mut token = TIP20Token::new(1, &mut storage);
         token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
@@ -868,11 +869,12 @@ mod tests {
 
     #[test]
     fn test_accrue_pre_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let alice = Address::random();
-
         initialize_path_usd(&mut storage, admin)?;
+
+        storage.set_spec(TempoHardfork::Adagio);
         let mut token = TIP20Token::new(1, &mut storage);
         token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
@@ -1049,11 +1051,12 @@ mod tests {
 
     #[test]
     fn test_reward_distribution_pro_rata_pre_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let alice = Address::random();
-
         initialize_path_usd(&mut storage, admin)?;
+
+        storage.set_spec(TempoHardfork::Adagio);
         let mut token = TIP20Token::new(1, &mut storage);
         token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
@@ -1120,12 +1123,12 @@ mod tests {
 
     #[test]
     fn test_claim_rewards() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let alice = Address::random();
         let funder = Address::random();
-
         initialize_path_usd(&mut storage, admin)?;
+
         let mut token = TIP20Token::new(1, &mut storage);
         token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
@@ -1152,6 +1155,7 @@ mod tests {
             },
         )?;
 
+        token.storage.set_spec(TempoHardfork::Adagio);
         token.start_reward(
             funder,
             ITIP20::startRewardCall {
@@ -1159,6 +1163,7 @@ mod tests {
                 secs: 100,
             },
         )?;
+        token.storage.set_spec(TempoHardfork::Moderato);
 
         let current_time = token.storage.timestamp();
         token.storage.set_timestamp(current_time + U256::from(50));
@@ -1312,9 +1317,8 @@ mod tests {
 
     #[test]
     fn test_scheduled_rewards_disabled_post_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
-
         initialize_path_usd(&mut storage, admin)?;
 
         let mut token = TIP20Token::new(1, &mut storage);
