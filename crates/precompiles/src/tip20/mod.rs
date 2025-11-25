@@ -936,7 +936,7 @@ pub(crate) mod tests {
         PATH_USD_ADDRESS, error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
         tip20_factory::ITIP20Factory,
     };
-    use rand::{Rng, distributions::Alphanumeric, thread_rng};
+    use rand::{Rng, distributions::Alphanumeric, random, thread_rng};
 
     /// Initialize PathUSD token
     pub(crate) fn initialize_path_usd(
@@ -1327,15 +1327,36 @@ pub(crate) mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let token_id = 1;
-        initialize_path_usd(&mut storage, admin).unwrap();
-        let mut token = TIP20Token::new(token_id, &mut storage);
-        token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
-            .unwrap();
 
+        // Create factory and deploy pathUSD
+        let mut factory = TIP20Factory::new(&mut storage);
+        factory.initialize()?;
+        factory.create_token(
+            admin,
+            ITIP20Factory::createTokenCall {
+                name: "PathUSD".into(),
+                symbol: "PathUSD".into(),
+                currency: "USD".into(),
+                quoteToken: Address::ZERO,
+                admin,
+            },
+        )?;
+
+        // Deploy test token
+        let token_addr = factory.create_token(
+            admin,
+            ITIP20Factory::createTokenCall {
+                name: "Test".into(),
+                symbol: "TST".into(),
+                currency: "USD".into(),
+                quoteToken: PATH_USD_ADDRESS,
+                admin,
+            },
+        )?;
+        let mut token = TIP20Token::new(address_to_token_id_unchecked(token_addr), &mut storage);
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
-        let amount = U256::random();
+        let amount = U256::from(random::<u128>());
         let memo = FixedBytes::random();
 
         token
