@@ -8,7 +8,7 @@ pub use tempo_contracts::precompiles::{
 };
 
 use crate::{
-    DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS,
+    DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{PrecompileStorageProvider, Slot, Storable, VecSlotExt},
     tip_fee_manager::amm::Pool,
@@ -109,8 +109,8 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             return Err(FeeManagerError::invalid_token().into());
         }
 
-        // Forbid setting LinkingUSD as the user's fee token (only after Moderato hardfork)
-        if self.storage.spec().is_moderato() && call.token == LINKING_USD_ADDRESS {
+        // Forbid setting PathUSD as the user's fee token (only after Moderato hardfork)
+        if self.storage.spec().is_moderato() && call.token == PATH_USD_ADDRESS {
             return Err(FeeManagerError::invalid_token().into());
         }
 
@@ -345,12 +345,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+        PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
         error::TempoPrecompileError,
         storage::hashmap::HashMapStorageProvider,
-        tip20::{
-            ISSUER_ROLE, ITIP20, TIP20Token, tests::initialize_linking_usd, token_id_to_address,
-        },
+        tip20::{ISSUER_ROLE, ITIP20, TIP20Token, tests::initialize_path_usd, token_id_to_address},
     };
 
     fn setup_token_with_balance(
@@ -359,12 +357,12 @@ mod tests {
         user: Address,
         amount: U256,
     ) {
-        initialize_linking_usd(storage, user).unwrap();
+        initialize_path_usd(storage, user).unwrap();
         let mut tip20_token = TIP20Token::from_address(token, storage);
 
         // Initialize token
         tip20_token
-            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, user)
+            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, user)
             .unwrap();
 
         // Grant issuer role to user and mint tokens
@@ -391,14 +389,14 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let user = Address::random();
 
-        // Initialize LinkingUSD first
-        initialize_linking_usd(&mut storage, user).unwrap();
+        // Initialize PathUSD first
+        initialize_path_usd(&mut storage, user).unwrap();
 
         // Create a USD token to use as fee token
         let token = token_id_to_address(1);
         let mut tip20_token = TIP20Token::from_address(token, &mut storage);
         tip20_token
-            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, user)
+            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, user)
             .unwrap();
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
@@ -413,19 +411,19 @@ mod tests {
     }
 
     #[test]
-    fn test_set_user_token_cannot_be_linking_usd_post_moderato() -> eyre::Result<()> {
+    fn test_set_user_token_cannot_be_path_usd_post_moderato() -> eyre::Result<()> {
         // Test with Moderato hardfork (validation should be enforced)
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let user = Address::random();
 
-        // Initialize LinkingUSD first
-        initialize_linking_usd(&mut storage, user).unwrap();
+        // Initialize PathUSD first
+        initialize_path_usd(&mut storage, user).unwrap();
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
 
-        // Try to set LinkingUSD as user token - should fail
+        // Try to set PathUSD as user token - should fail
         let call = IFeeManager::setUserTokenCall {
-            token: LINKING_USD_ADDRESS,
+            token: PATH_USD_ADDRESS,
         };
         let result = fee_manager.set_user_token(user, call);
 
@@ -440,23 +438,23 @@ mod tests {
     }
 
     #[test]
-    fn test_set_user_token_allows_linking_usd_pre_moderato() -> eyre::Result<()> {
+    fn test_set_user_token_allows_path_usd_pre_moderato() -> eyre::Result<()> {
         // Test with Adagio (pre-Moderato) - validation should not be enforced
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let user = Address::random();
 
-        // Initialize LinkingUSD first
-        initialize_linking_usd(&mut storage, user).unwrap();
+        // Initialize PathUSD first
+        initialize_path_usd(&mut storage, user).unwrap();
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
 
-        // Try to set LinkingUSD as user token - should succeed pre-Moderato
+        // Try to set PathUSD as user token - should succeed pre-Moderato
         let call = IFeeManager::setUserTokenCall {
-            token: LINKING_USD_ADDRESS,
+            token: PATH_USD_ADDRESS,
         };
         let result = fee_manager.set_user_token(user, call);
 
-        // Pre-Moderato: should be allowed to set LinkingUSD as user token
+        // Pre-Moderato: should be allowed to set PathUSD as user token
         assert!(result.is_ok());
 
         Ok(())
@@ -468,14 +466,14 @@ mod tests {
         let validator = Address::random();
         let admin = Address::random();
 
-        // Initialize LinkingUSD first
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        // Initialize PathUSD first
+        initialize_path_usd(&mut storage, admin).unwrap();
 
         // Create a USD token to use as fee token
         let token = token_id_to_address(1);
         let mut tip20_token = TIP20Token::from_address(token, &mut storage);
         tip20_token
-            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
@@ -559,10 +557,10 @@ mod tests {
 
         // Initialize token and give fee manager tokens (simulating that collect_fee_pre_tx already happened)
         {
-            initialize_linking_usd(&mut storage, admin).unwrap();
+            initialize_path_usd(&mut storage, admin).unwrap();
             let mut tip20_token = TIP20Token::from_address(token, &mut storage);
             tip20_token
-                .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+                .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
 
             tip20_token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -620,7 +618,7 @@ mod tests {
         let token = token_id_to_address(rand::random::<u64>());
         let mut tip20_token = TIP20Token::from_address(token, &mut storage);
         tip20_token
-            .initialize("NonUSD", "NonUSD", "NonUSD", LINKING_USD_ADDRESS, admin)
+            .initialize("NonUSD", "NonUSD", "NonUSD", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         let validator = Address::random();
