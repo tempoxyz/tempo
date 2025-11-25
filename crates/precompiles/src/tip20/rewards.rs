@@ -670,7 +670,7 @@ mod tests {
     use super::*;
     use crate::{
         PATH_USD_ADDRESS,
-        storage::hashmap::HashMapStorageProvider,
+        storage::{ContractStorage, hashmap::HashMapStorageProvider},
         tip20::{ISSUER_ROLE, tests::initialize_path_usd},
         tip20_rewards_registry::TIP20RewardsRegistry,
     };
@@ -766,7 +766,7 @@ mod tests {
 
     #[test]
     fn test_cancel_reward() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
         initialize_path_usd(&mut storage, admin)?;
@@ -784,6 +784,7 @@ mod tests {
             },
         )?;
 
+        token.storage().set_spec(TempoHardfork::Adagio);
         let reward_amount = U256::from(100e18);
         let stream_id = token.start_reward(
             admin,
@@ -793,6 +794,7 @@ mod tests {
             },
         )?;
 
+        token.storage().set_spec(TempoHardfork::Moderato);
         let remaining = token.cancel_reward(admin, ITIP20::cancelRewardCall { id: stream_id })?;
 
         let total_after = token.get_total_reward_per_second()?;
@@ -896,6 +898,7 @@ mod tests {
             },
         )?;
 
+        token.storage.set_spec(TempoHardfork::Adagio);
         token.start_reward(
             admin,
             ITIP20::startRewardCall {
@@ -1179,11 +1182,12 @@ mod tests {
     fn test_cancel_reward_removes_from_registry_post_moderato() -> eyre::Result<()> {
         // Test with Moderato hardfork - when cancelling the last stream at an end_time,
         // the token should be removed from the registry
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
         initialize_path_usd(&mut storage, admin)?;
 
+        storage.set_spec(TempoHardfork::Adagio);
         // Setup and start stream in a scope to release the borrow
         let (stream_id, end_time) = {
             let mut token = TIP20Token::new(1, &mut storage);
@@ -1212,7 +1216,6 @@ mod tests {
         };
 
         storage.set_spec(TempoHardfork::Moderato);
-
         // Verify the token is in the registry before cancellation
         {
             let mut registry = TIP20RewardsRegistry::new(&mut storage);
@@ -1244,13 +1247,13 @@ mod tests {
 
     #[test]
     fn test_cancel_reward_does_not_remove_from_registry_pre_moderato() -> eyre::Result<()> {
-        // Test with Adagio (pre-Moderato) - token should NOT be removed from registry
-        // even when all streams are cancelled (for consensus compatibility)
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
-
         initialize_path_usd(&mut storage, admin)?;
 
+        // Test with Adagio (pre-Moderato) - token should NOT be removed from registry
+        // even when all streams are cancelled (for consensus compatibility)
+        storage.set_spec(TempoHardfork::Adagio);
         // Setup and start stream in a scope to release the borrow
         let (stream_id, end_time) = {
             let mut token = TIP20Token::new(1, &mut storage);
