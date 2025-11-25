@@ -527,17 +527,16 @@ async fn fund_accounts(
     for chunk in chunks.into_iter() {
         let tx_hashes = stream::iter(chunk)
             .buffer_unordered(max_concurrent_requests)
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?
+            .try_collect::<Vec<_>>()
+            .await?
             .into_iter()
             .flatten()
             .map(async |hash| {
-                provider
-                    .get_transaction_receipt(hash)
-                    .await?
-                    .ok_or_eyre("no receipt for {hash}")
+                Ok(
+                    PendingTransactionBuilder::new(provider.root().clone(), hash)
+                        .get_receipt()
+                        .await?,
+                )
             });
         assert_receipts(tx_hashes, max_concurrent_requests).await?
     }
