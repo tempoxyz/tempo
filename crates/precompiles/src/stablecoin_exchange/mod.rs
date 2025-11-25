@@ -166,6 +166,46 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         self.set_balance(user, token, current.saturating_sub(amount))
     }
 
+    /// Emit the appropriate OrderFilled event based on hardfork
+    /// Pre-Allegretto: emits OrderFilledPreAllegretto (without taker)
+    /// Post-Allegretto: emits OrderFilled (with taker)
+    fn emit_order_filled(
+        &mut self,
+        order_id: u128,
+        maker: Address,
+        taker: Address,
+        amount_filled: u128,
+        partial_fill: bool,
+    ) -> Result<()> {
+        if self.storage.spec().is_allegretto() {
+            self.storage.emit_event(
+                self.address,
+                StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
+                    orderId: order_id,
+                    maker,
+                    taker,
+                    amountFilled: amount_filled,
+                    partialFill: partial_fill,
+                })
+                .into_log_data(),
+            )?;
+        } else {
+            self.storage.emit_event(
+                self.address,
+                StablecoinExchangeEvents::OrderFilledPreAllegretto(
+                    IStablecoinExchange::OrderFilledPreAllegretto {
+                        orderId: order_id,
+                        maker,
+                        amountFilled: amount_filled,
+                        partialFill: partial_fill,
+                    },
+                )
+                .into_log_data(),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Transfer tokens, accounting for pathUSD
     fn transfer(&mut self, token: Address, to: Address, amount: u128) -> Result<()> {
         if token == PATH_USD_ADDRESS {
@@ -737,17 +777,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         Orderbook::write_tick_level(self, order.book_key(), order.is_bid(), order.tick(), *level)?;
 
         // Emit OrderFilled event for partial fill
-        self.storage.emit_event(
-            self.address,
-            StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
-                orderId: order.order_id(),
-                maker: order.maker(),
-                taker,
-                amountFilled: fill_amount,
-                partialFill: true,
-            })
-            .into_log_data(),
-        )?;
+        self.emit_order_filled(order.order_id(), order.maker(), taker, fill_amount, true)?;
 
         Ok(amount_out)
     }
@@ -781,17 +811,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         };
 
         // Emit OrderFilled event for complete fill
-        self.storage.emit_event(
-            self.address,
-            StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
-                orderId: order.order_id(),
-                maker: order.maker(),
-                taker,
-                amountFilled: fill_amount,
-                partialFill: false,
-            })
-            .into_log_data(),
-        )?;
+        self.emit_order_filled(order.order_id(), order.maker(), taker, fill_amount, false)?;
 
         if order.is_flip() {
             // Create a new flip order with flipped side and swapped ticks
