@@ -27,10 +27,6 @@ use reth_ethereum::{
     },
     tasks::{TaskExecutor, TaskManager},
 };
-use reth_evm::{
-    EvmEnv, EvmFactory,
-    revm::database::{CacheDB, EmptyDB},
-};
 use reth_node_builder::{NodeBuilder, NodeConfig};
 use reth_node_core::{
     args::{DatadirArgs, PayloadBuilderArgs, RpcServerArgs},
@@ -40,7 +36,6 @@ use reth_rpc_builder::RpcModuleSelection;
 use tempfile::TempDir;
 use tempo_chainspec::TempoChainSpec;
 use tempo_commonware_node_config::PublicPolynomial;
-use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
 use tempo_node::{TempoFullNode, node::TempoNode};
 use tempo_precompiles::{VALIDATOR_CONFIG_ADDRESS, validator_config::IValidatorConfig};
 

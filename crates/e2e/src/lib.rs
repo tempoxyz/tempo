@@ -7,6 +7,9 @@
 //! All definitions herein are only intended to support the the tests defined
 //! in tests/.
 
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 use std::{net::SocketAddr, time::Duration};
 
 use commonware_cryptography::{

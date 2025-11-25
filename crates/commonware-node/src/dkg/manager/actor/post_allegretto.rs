@@ -245,15 +245,26 @@ where
             on_chain_validators.keys(),
         );
 
-        ensure!(
-            pre_allegretto_validator_state.dealers().keys() == on_chain_validators.keys(),
-            "ed25519 public keys of validators read from contract do not match \
-            those of validator state persisted by the pre-allegretto logic; \
-            static validator state dealers = {:?}; \
-            contract = {:?}",
-            pre_allegretto_validator_state.dealers().keys(),
-            on_chain_validators.keys(),
-        );
+        {
+            let static_validators = pre_allegretto_validator_state
+                .dealers()
+                .iter_pairs()
+                .map(|(key, val)| (key, &val.inbound))
+                .collect::<OrderedAssociated<_, _>>();
+            let on_chain_validators = on_chain_validators
+                .iter_pairs()
+                .map(|(key, val)| (key, &val.inbound))
+                .collect::<OrderedAssociated<_, _>>();
+
+            ensure!(
+                static_validators == on_chain_validators,
+                "static validators known to node (derived from config or \
+                chainspec) do not match the validators read from the on-chain
+                contract; \
+                static validators = {static_validators:?}; \
+                on chain validators = {on_chain_validators:?}",
+            );
+        }
 
         // NOTE: it would be good to compare the static validators addresses to
         // what was read from the contract. But this would mean that some nodes
