@@ -729,7 +729,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
 
     // Start reward stream
     let start_receipt = token
-        .startReward(reward_amount, 1)
+        .startReward(reward_amount, 0)
         .send()
         .await?
         .get_receipt()

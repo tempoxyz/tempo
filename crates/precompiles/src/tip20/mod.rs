@@ -985,10 +985,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN_POST_ALLEGRETTO;
 
     use super::*;
     use crate::{
-        DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, error::TempoPrecompileError,
+        PATH_USD_ADDRESS, error::TempoPrecompileError,
         storage::hashmap::HashMapStorageProvider,
     };
     use rand::{Rng, distributions::Alphanumeric, thread_rng};
@@ -2038,7 +2039,10 @@ pub(crate) mod tests {
                 0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
             ]
         );
-        assert_eq!(&DEFAULT_FEE_TOKEN.as_slice()[..12], &TIP20_TOKEN_PREFIX);
+        assert_eq!(
+            &DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.as_slice()[..12],
+            &TIP20_TOKEN_PREFIX
+        );
     }
 
     #[test]

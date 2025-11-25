@@ -1,6 +1,6 @@
 use crate::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
 use alloy_consensus::Transaction;
-use alloy_primitives::U256;
+use alloy_primitives::{Address, U256};
 use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
@@ -10,7 +10,7 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{TempoChainSpec, hardfork::{TempoHardfork, TempoHardforks}};
 use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, AuthorizedKey, compute_keys_slot};
 use tempo_revm::TempoStateAccess;
 
@@ -170,21 +170,15 @@ where
             }
         };
 
-        let fee_token = match state_provider.user_or_tx_fee_token(transaction.inner(), fee_payer) {
-            Ok(Some(fee_token)) => fee_token,
-            Ok(None) => {
-                // If no fee token preference was specified at transaction or user level, this means that we will
-                // fallback to validator token. On Andantino testnet, all validators use LINKING_USD as their fee token,
-                // which will cause the transaction to be rejected because it can't be used to pay fees.
-                return TransactionValidationOutcome::Invalid(
-                    transaction,
-                    InvalidPoolTransactionError::other(TempoPoolTransactionError::MissingFeeToken),
-                );
-            }
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-            }
-        };
+        let spec = TempoHardfork::Allegretto;
+        let fee_token =
+            match state_provider.get_fee_token(transaction.inner(), Address::ZERO, fee_payer, spec)
+            {
+                Ok(fee_token) => fee_token,
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                }
+            };
 
         // Ensure that fee token is valid.
         match state_provider.is_valid_fee_token(fee_token) {
