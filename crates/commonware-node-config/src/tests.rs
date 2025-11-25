@@ -1,17 +1,19 @@
+use std::net::SocketAddr;
+
 use commonware_cryptography::{
     PrivateKeyExt as _, Signer as _, bls12381::primitives::variant::MinSig, ed25519::PrivateKey,
 };
 use commonware_utils::set::OrderedAssociated;
 use rand::SeedableRng as _;
 
-use crate::{PeersAndPublicPolynomial, SigningKey, SigningShare, SocketAddrOrFqdnPort};
+use crate::{PeersAndPublicPolynomial, SigningKey, SigningShare};
 
 const PEERS_AND_PUBLIC_POLYNOMIAL: &str = r#"
 public_polynomial = "0x85a21686d219ba66f65165c17cb9b8f02a827b473b54f734e8f00d5705b7ceb12537de49c1c06fdad1df74cbfb7cd7d104eb6ab9330edf7854b2180ff1594034115fa80dbc865aca54f8813f41ef0e34518f972adad793e9d9302114f941db0183a5ec4224f3df5471a3927e2d8968e2a7948322f204b228a131c5931df4eb5e903d1a1e4cf31f2fbda357191e33b0810a0e97b748b7ab8142fdb946c457b1b3d29b60469c488306381285e794a377e9d3cf049eb850507a04f8775b2dcb0788"
     
 [peers]
 0x945fadcd1ea3bac97c86c2acbc539fce43219552d24aaa3188c3afc1df4d50a7 = "127.0.0.1:8000"
-0xbaad106129bc215c1cca3760644914ed37ea91f1f1319999ce91ef2eaf51c827 = "localhost:8002"
+0xbaad106129bc215c1cca3760644914ed37ea91f1f1319999ce91ef2eaf51c827 = "192.168.0.1:9000"
 "#;
 
 const SIGNING_KEY: &str = "0x7848b5d711bc9883996317a3f9c90269d56771005d540a19184939c9e8d0db2a";
@@ -28,19 +30,19 @@ fn peers_and_public_polynomial_roundtrip() {
     let peers = OrderedAssociated::from_iter([
         (
             PrivateKey::from_seed(0).public_key(),
-            "127.0.0.1:8000".parse::<SocketAddrOrFqdnPort>().unwrap(),
+            "127.0.0.1:8000".parse::<SocketAddr>().unwrap(),
         ),
         (
             PrivateKey::from_seed(1).public_key(),
-            "localhost:8001".parse::<SocketAddrOrFqdnPort>().unwrap(),
+            "192.168.0.1:9000".parse::<SocketAddr>().unwrap(),
         ),
         (
             PrivateKey::from_seed(2).public_key(),
-            "service-1:8002".parse::<SocketAddrOrFqdnPort>().unwrap(),
+            "1.1.1.1:58".parse::<SocketAddr>().unwrap(),
         ),
         (
             PrivateKey::from_seed(3).public_key(),
-            "tempo.com:8003".parse::<SocketAddrOrFqdnPort>().unwrap(),
+            "172.3.2.4:42".parse::<SocketAddr>().unwrap(),
         ),
     ]);
     let quorum = commonware_utils::quorum(peers.len() as u32);
@@ -69,7 +71,7 @@ public_polynomial = "0x85a21686d219ba66f65165c17cb9b8f02a827b473b54f734e8f00d570
     
 [peers]
 0x945fadcd1ea3bac97c86c2acbc539fce43219552d24aaa3188c3afc1df4d50a7 = "127.0.0.1:8000"
-0xbaad106129bc215c1cca3760644914ed37ea91f1f1319999ce91ef2eaf51c827 = "localhost:8002"
+0xbaad106129bc215c1cca3760644914ed37ea91f1f1319999ce91ef2eaf51c827 = "192.168.0.1:9000"
 0x945fadcd1ea3bac97c86c2acbc539fce43219552d24aaa3188c3afc1df4d50a7 = "127.0.0.1:8000"
 "#;
     PeersAndPublicPolynomial::from_str(DUPLICATE_PEERS).unwrap();

@@ -3829,12 +3829,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fqdn"
-version = "0.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0f5d7f7b3eed2f771fc7f6fcb651f9560d7b0c483d75876082acb4649d266b3"
-
-[[package]]
 name = "fsevent-sys"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11394,7 +11388,6 @@ dependencies = [
  "commonware-cryptography",
  "commonware-utils",
  "const-hex",
- "fqdn",
  "indexmap 2.12.0",
  "rand 0.8.5",
  "serde",
@@ -11651,7 +11644,6 @@ dependencies = [
  "criterion",
  "derive_more",
  "eyre",
- "fqdn",
  "proptest",
  "rand 0.8.5",
  "revm",
@@ -11796,7 +11788,6 @@ dependencies = [
  "commonware-utils",
  "const-hex",
  "eyre",
- "fqdn",
  "indexmap 2.12.0",
  "indicatif",
  "itertools 0.14.0",

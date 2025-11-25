@@ -141,7 +141,7 @@ pub struct PeersAndPublicPolynomial {
     pub public_polynomial: Public<MinSig>,
 
     #[serde(with = "crate::_serde::peers")]
-    pub peers: OrderedAssociated<PublicKey, SocketAddrOrFqdnPort>,
+    pub peers: OrderedAssociated<PublicKey, SocketAddr>,
 }
 
 impl PeersAndPublicPolynomial {
@@ -170,12 +170,7 @@ impl PeersAndPublicPolynomial {
         Ok(s)
     }
 
-    pub fn into_parts(
-        self,
-    ) -> (
-        Public<MinSig>,
-        OrderedAssociated<PublicKey, SocketAddrOrFqdnPort>,
-    ) {
+    pub fn into_parts(self) -> (Public<MinSig>, OrderedAssociated<PublicKey, SocketAddr>) {
         (self.public_polynomial, self.peers)
     }
 }
@@ -212,7 +207,7 @@ struct DeserPeersAndPublicPolynomial {
     public_polynomial: Vec<u8>,
 
     #[serde(deserialize_with = "crate::_serde::peers::deserialize")]
-    peers: IndexMap<PublicKey, SocketAddrOrFqdnPort>,
+    peers: IndexMap<PublicKey, SocketAddr>,
 }
 
 impl TryFrom<DeserPeersAndPublicPolynomial> for PeersAndPublicPolynomial {
@@ -231,89 +226,6 @@ impl TryFrom<DeserPeersAndPublicPolynomial> for PeersAndPublicPolynomial {
                 .map_err(PeersAndPublicPolynomialErrorKind::Polynomial)?,
             peers: peers.into_iter().collect(),
         })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SocketAddrOrFqdnPort {
-    Addr(SocketAddr),
-    HostPort { host: fqdn::FQDN, port: u16 },
-}
-
-impl SocketAddrOrFqdnPort {
-    pub fn port(&self) -> u16 {
-        match self {
-            Self::Addr(socket_addr) => socket_addr.port(),
-            Self::HostPort { port, .. } => *port,
-        }
-    }
-
-    pub fn with_port(self, port: u16) -> Self {
-        match self {
-            Self::Addr(mut socket_addr) => Self::Addr({
-                socket_addr.set_port(port);
-                socket_addr
-            }),
-            Self::HostPort { host, .. } => Self::HostPort { host, port },
-        }
-    }
-}
-
-impl std::fmt::Display for SocketAddrOrFqdnPort {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Addr(socket_addr) => socket_addr.fmt(f),
-            Self::HostPort { host, port } => write!(f, "{host}:{port}"),
-        }
-    }
-}
-
-impl From<SocketAddr> for SocketAddrOrFqdnPort {
-    fn from(addr: SocketAddr) -> Self {
-        Self::Addr(addr)
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("input is not of the form `<host>:<port>` or `<ip>:<port>`")]
-pub struct NotAddrOrHostPort;
-
-impl std::str::FromStr for SocketAddrOrFqdnPort {
-    type Err = NotAddrOrHostPort;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s.trim();
-        if let Ok(addr) = s.parse::<SocketAddr>() {
-            return Ok(Self::Addr(addr));
-        }
-
-        if let Some((maybe_host, maybe_port)) = s.rsplit_once(':')
-            && let Ok(host) = maybe_host.parse::<fqdn::FQDN>()
-            && let Ok(port) = maybe_port.parse::<u16>()
-        {
-            return Ok(Self::HostPort { host, port });
-        }
-
-        Err(NotAddrOrHostPort)
-    }
-}
-
-impl serde::ser::Serialize for SocketAddrOrFqdnPort {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.collect_str(self)
-    }
-}
-
-impl<'de> serde::de::Deserialize<'de> for SocketAddrOrFqdnPort {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        s.parse().map_err(serde::de::Error::custom)
     }
 }
 
@@ -368,21 +280,22 @@ mod _serde {
     }
 
     pub(crate) mod peers {
+        use std::net::SocketAddr;
+
         use commonware_utils::set::OrderedAssociated;
         use indexmap::IndexMap;
         use serde::{Deserializer, Serializer, de::Visitor, ser::SerializeMap}; // # codespell:ignore ser
-
-        use crate::SocketAddrOrFqdnPort;
 
         use super::PublicKeyDe;
 
         struct PeersVisitor;
 
         impl<'de> Visitor<'de> for PeersVisitor {
-            type Value = IndexMap<crate::PublicKey, SocketAddrOrFqdnPort>;
+            type Value = IndexMap<crate::PublicKey, SocketAddr>;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a map of hex-formatted ed25519 public keys to <ip>:<port> or <fqdn>:<port> values")
+                formatter
+                    .write_str("a map of hex-formatted ed25519 public keys to <ip>:<port> entries")
             }
 
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -403,7 +316,7 @@ mod _serde {
         }
 
         pub(crate) fn serialize<S>(
-            peers: &OrderedAssociated<crate::PublicKey, SocketAddrOrFqdnPort>,
+            peers: &OrderedAssociated<crate::PublicKey, SocketAddr>,
             serializer: S,
         ) -> Result<S::Ok, S::Error>
         where
@@ -418,7 +331,7 @@ mod _serde {
 
         pub(crate) fn deserialize<'de, D>(
             deserializer: D,
-        ) -> Result<IndexMap<crate::PublicKey, SocketAddrOrFqdnPort>, D::Error>
+        ) -> Result<IndexMap<crate::PublicKey, SocketAddr>, D::Error>
         where
             D: Deserializer<'de>,
         {

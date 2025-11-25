@@ -13,7 +13,6 @@ use eyre::{OptionExt as _, WrapErr as _, ensure};
 use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
 use reth_node_builder::{Block as _, ConfigureEvm as _};
 use reth_provider::{BlockReader as _, StateProviderFactory as _};
-use tempo_commonware_node_config::SocketAddrOrFqdnPort;
 use tempo_node::TempoFullNode;
 use tempo_precompiles::{
     storage::evm::EvmPrecompileStorageProvider,
@@ -130,7 +129,7 @@ impl ValidatorState {
     ///
     /// All other values take default values.
     pub(super) fn with_unknown_contract_state(
-        validators: OrderedAssociated<PublicKey, SocketAddrOrFqdnPort>,
+        validators: OrderedAssociated<PublicKey, SocketAddr>,
     ) -> Self {
         let validators = validators
             .iter_pairs()
@@ -274,7 +273,7 @@ impl Read for ValidatorState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct DecodedValidator {
     pub(super) public_key: PublicKey,
-    pub(super) inbound: SocketAddrOrFqdnPort,
+    pub(super) inbound: SocketAddr,
     pub(super) outbound: SocketAddr,
     pub(super) index: u64,
     pub(super) address: Address,
@@ -397,10 +396,7 @@ impl Read for DecodedValidator {
         }
         .parse()
         .map_err(|_| {
-            commonware_codec::Error::Invalid(
-                "decode inbound address",
-                "not <ip>:<port> or <fqdn>:<port>",
-            )
+            commonware_codec::Error::Invalid("decode inbound address", "not <ip>:<port>")
         })?;
         let outbound = {
             // 253 is the maximum length of a fqdn.

@@ -22,10 +22,6 @@ revm.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 derive_more.workspace = true
-fqdn = { workspace = true, features = [
-  "domain-label-length-limited-to-63",
-  "domain-name-length-limited-to-255",
-] }
 
 [dev-dependencies]
 criterion.workspace = true

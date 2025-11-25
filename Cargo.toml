@@ -212,8 +212,6 @@ const-hex = { version = "1.15.0" }
 derive_more = { version = "2.0.0" }
 test-fuzz = "7"
 eyre = "0.6.12"
-# XXX: Features dictate what constitutes a FQDN.
-fqdn = { version = "0.4.6", features = [ "domain-label-length-limited-to-63", "domain-name-length-limited-to-255"] }
 futures = "0.3.31"
 governor = "0.10.2"
 hex = "0.4"

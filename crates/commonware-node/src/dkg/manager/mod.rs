@@ -9,7 +9,6 @@ use commonware_utils::set::OrderedAssociated;
 use eyre::WrapErr as _;
 use futures::channel::mpsc;
 use rand_core::CryptoRngCore;
-use tempo_commonware_node_config::SocketAddrOrFqdnPort;
 use tempo_node::TempoFullNode;
 
 mod actor;
@@ -75,7 +74,7 @@ pub(crate) struct Config<TPeerManager> {
     ///
     /// Pre the allegretto hardfork, this initial set are the dealers and players
     /// in a ceremony.
-    pub(crate) initial_validators: OrderedAssociated<PublicKey, SocketAddrOrFqdnPort>,
+    pub(crate) initial_validators: OrderedAssociated<PublicKey, SocketAddr>,
 
     /// The initial public polynomial, passed in through config.
     pub(crate) initial_public_polynomial: Public<MinSig>,

@@ -15,7 +15,6 @@ commonware-codec.workspace = true
 commonware-cryptography.workspace = true
 commonware-utils.workspace = true
 const-hex = { workspace = true, features = ["serde"] }
-fqdn.workspace = true
 indexmap = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true

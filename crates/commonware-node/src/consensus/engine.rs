@@ -24,7 +24,6 @@ use commonware_utils::set::OrderedAssociated;
 use eyre::WrapErr as _;
 use futures::future::try_join_all;
 use rand::{CryptoRng, Rng};
-use tempo_commonware_node_config::SocketAddrOrFqdnPort;
 use tempo_node::TempoFullNode;
 
 use crate::{
@@ -75,7 +74,7 @@ pub struct Builder<TBlocker, TContext, TPeerManager> {
 
     pub partition_prefix: String,
     pub signer: PrivateKey,
-    pub validators: OrderedAssociated<PublicKey, SocketAddrOrFqdnPort>,
+    pub validators: OrderedAssociated<PublicKey, SocketAddr>,
     pub public_polynomial: Public<MinSig>,
     pub share: Option<Share>,
     pub mailbox_size: usize,

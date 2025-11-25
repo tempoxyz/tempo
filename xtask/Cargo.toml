@@ -31,7 +31,6 @@ commonware-cryptography.workspace = true
 commonware-utils.workspace = true
 const-hex.workspace = true
 eyre.workspace = true
-fqdn.workspace = true
 indexmap.workspace = true
 indicatif = { workspace = true, features = ["rayon"] }
 itertools.workspace = true

@@ -1,12 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use commonware_cryptography::{PrivateKeyExt as _, Signer as _, ed25519::PrivateKey};
 use commonware_utils::set::OrderedAssociated;
 use eyre::{WrapErr as _, ensure};
 use rand::SeedableRng;
-use tempo_commonware_node_config::{
-    PeersAndPublicPolynomial, SigningKey, SigningShare, SocketAddrOrFqdnPort,
-};
+use tempo_commonware_node_config::{PeersAndPublicPolynomial, SigningKey, SigningShare};
 
 /// Generates a config file to run a bunch of validators locally.
 #[derive(Debug, clap::Parser)]
@@ -28,10 +29,9 @@ pub(crate) struct GenerateConsensusConfig {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ConsensusArgs {
-    /// A comma-separated list of <host>:<port>, where `<host>` can be a FQDN
-    /// or an IP address.
-    #[arg(long, value_name = "<host>:<port>")]
-    pub(crate) validators: Vec<SocketAddrOrFqdnPort>,
+    /// A comma-separated list of <ip>:<port>.
+    #[arg(long, value_name = "<ip>:<port>")]
+    pub(crate) validators: Vec<SocketAddr>,
     /// A fixed seed to generate all signing keys and group shares. This is
     /// intended for use in development and testing. Use at your own peril.
     #[arg(long)]
@@ -85,7 +85,7 @@ pub(crate) struct ConsensusConfig {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Validator {
-    pub(crate) addr: SocketAddrOrFqdnPort,
+    pub(crate) addr: SocketAddr,
     pub(crate) signing_key: SigningKey,
     pub(crate) signing_share: SigningShare,
 }
