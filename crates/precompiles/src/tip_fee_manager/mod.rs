@@ -411,9 +411,9 @@ mod tests {
     }
 
     #[test]
-    fn test_set_user_token_cannot_be_path_usd_post_moderato() -> eyre::Result<()> {
-        // Test with Moderato hardfork (validation should be enforced)
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+    fn test_set_user_token_path_usd() -> eyre::Result<()> {
+        // Test with Adagio (pre-Moderato) - validation should not be enforced
+        let mut storage = HashMapStorageProvider::new(1);
         let user = Address::random();
 
         // Initialize PathUSD first
@@ -421,11 +421,17 @@ mod tests {
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
 
-        // Try to set PathUSD as user token - should fail
+        fee_manager.storage.set_spec(TempoHardfork::Adagio);
+        // Try to set PathUSD as user token - should succeed pre-Moderato
         let call = IFeeManager::setUserTokenCall {
             token: PATH_USD_ADDRESS,
         };
-        let result = fee_manager.set_user_token(user, call);
+        let result = fee_manager.set_user_token(user, call.clone());
+        // Pre-Moderato: should be allowed to set PathUSD as user token
+        assert!(result.is_ok());
+
+        fee_manager.storage.set_spec(TempoHardfork::Moderato);
+        let result = fee_manager.set_user_token(user, call.clone());
 
         assert!(matches!(
             result,
@@ -434,20 +440,7 @@ mod tests {
             ))
         ));
 
-        Ok(())
-    }
-
-    #[test]
-    fn test_set_user_token_allows_path_usd_pre_moderato() -> eyre::Result<()> {
-        // Test with Adagio (pre-Moderato) - validation should not be enforced
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-        let user = Address::random();
-
-        // Initialize PathUSD first
-        initialize_path_usd(&mut storage, user).unwrap();
-
-        let mut fee_manager = TipFeeManager::new(&mut storage);
-
+        fee_manager.storage.set_spec(TempoHardfork::Allegretto);
         // Try to set PathUSD as user token - should succeed pre-Moderato
         let call = IFeeManager::setUserTokenCall {
             token: PATH_USD_ADDRESS,

@@ -178,7 +178,6 @@ mod tests {
         sol_types::{SolError, SolValue},
     };
     use eyre::Result;
-    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls, UnknownFunctionSelector,
     };
@@ -189,7 +188,6 @@ mod tests {
         user: Address,
         amount: U256,
     ) {
-        initialize_path_usd(storage, user).unwrap();
         let mut tip20_token = TIP20Token::from_address(token, storage);
 
         // Initialize token
@@ -422,9 +420,11 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let token = Address::random();
 
-        // Setup token
         let user = Address::random();
-        setup_token_with_balance(&mut storage, token, user, U256::MAX);
+        initialize_path_usd(&mut storage, user)?;
+
+        // Setup token
+        setup_token_with_balance(&mut storage, token, user, U256::from(u128::MAX));
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
 
@@ -601,7 +601,7 @@ mod tests {
 
     #[test]
     fn test_mint_deprecated_post_moderato() {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
+        let mut storage = HashMapStorageProvider::new(1);
         let user = Address::random();
         let admin = Address::random();
         initialize_path_usd(&mut storage, admin).unwrap();

@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn test_create_token_off_by_one_rejected_post_moderato() {
         // Test the off-by-one bug fix: using token_id as quote token should be rejected post-Moderato
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         initialize_path_usd(&mut storage, sender).unwrap();
 
@@ -299,10 +299,11 @@ mod tests {
     fn test_create_token_future_quote_token_pre_moderato() {
         // Test that pre-Moderato SHOULD still validate that quote tokens exist
         // Using a TIP20 address with ID > current token_id should fail (not yet created)
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         initialize_path_usd(&mut storage, sender).unwrap();
 
+        storage.set_spec(TempoHardfork::Adagio);
         let mut factory = TIP20Factory::new(&mut storage);
         factory
             .initialize()
@@ -342,9 +343,11 @@ mod tests {
     #[test]
     fn test_create_token_off_by_one_allowed_pre_moderato() {
         // Test the off-by-one bug: using token_id as quote token is allowed pre-Moderato (buggy behavior)
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         initialize_path_usd(&mut storage, sender).unwrap();
+
+        storage.set_spec(TempoHardfork::Adagio);
 
         let mut factory = TIP20Factory::new(&mut storage);
         factory

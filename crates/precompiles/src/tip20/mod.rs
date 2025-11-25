@@ -1280,7 +1280,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_mint_with_memo_from_address_pre_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let token_id = 1;
         initialize_path_usd(&mut storage, admin).unwrap();
@@ -1292,9 +1292,10 @@ pub(crate) mod tests {
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         let to = Address::random();
-        let amount = U256::random();
+        let amount = U256::from(random::<u128>());
         let memo = FixedBytes::random();
 
+        token.storage.set_spec(TempoHardfork::Adagio);
         token
             .mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo })
             .unwrap();
