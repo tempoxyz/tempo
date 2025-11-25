@@ -2,11 +2,8 @@ use std::convert::Infallible;
 
 use alloy_primitives::Bytes;
 use reth_errors::ProviderError;
-use reth_evm::{
-    EvmErrorFor,
-    revm::context::result::{EVMError, HaltReason},
-};
-use reth_rpc_eth_api::{AsEthApiError, FromEvmError, TransactionConversionError};
+use reth_evm::revm::context::result::{EVMError, HaltReason};
+use reth_rpc_eth_api::{AsEthApiError, TransactionConversionError};
 use reth_rpc_eth_types::{
     EthApiError, RpcInvalidTransactionError,
     error::api::{FromEvmHalt, FromRevert},

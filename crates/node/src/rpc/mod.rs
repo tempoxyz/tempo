@@ -10,7 +10,7 @@ use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use amm::{TempoAmm, TempoAmmApiServer};
 pub use dex::{TempoDex, api::TempoDexApiServer};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
-use futures::future::Either;
+use futures::{TryFutureExt, future::Either};
 pub use policy::{TempoPolicy, TempoPolicyApiServer};
 use reth_errors::RethError;
 use reth_primitives_traits::{Recovered, TransactionMeta, WithEncoded, transaction::TxHashRef};
@@ -31,7 +31,7 @@ use reth_ethereum::tasks::{
     pool::{BlockingTaskGuard, BlockingTaskPool},
 };
 use reth_evm::{
-    ConfigureEvm, EvmEnvFor, TxEnvFor,
+    EvmEnvFor, TxEnvFor,
     revm::{Database, context::result::EVMError},
 };
 use reth_node_api::{FullNodeComponents, FullNodeTypes, HeaderTy, PrimitivesTy};
@@ -42,7 +42,7 @@ use reth_node_builder::{
 use reth_provider::{ChainSpecProvider, ProviderError};
 use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
-    EthApiTypes, RpcConvert, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
+    EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
     helpers::{
         Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, LoadBlock,
         LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction, SpawnBlocking, Trace,
@@ -66,15 +66,6 @@ use tokio::sync::{Mutex, broadcast};
 pub const NATIVE_BALANCE_PLACEHOLDER: U256 =
     uint!(4242424242424242424242424242424242424242424242424242424242424242424242424242_U256);
 
-pub type TempoDynRpcConverter<Evm, Network, Error = TempoEthApiError> = Box<
-    dyn RpcConvert<
-            Primitives = <Evm as ConfigureEvm>::Primitives,
-            Network = Network,
-            Error = Error,
-            Evm = Evm,
-        >,
->;
-
 /// Tempo `Eth` API implementation.
 ///
 /// This type provides the functionality for handling `eth_` related requests.
@@ -88,7 +79,7 @@ pub type TempoDynRpcConverter<Evm, Network, Error = TempoEthApiError> = Box<
 #[derive(Clone)]
 pub struct TempoEthApi<N: FullNodeTypes<Types = TempoNode>> {
     /// Gateway to node's core components.
-    inner: EthApi<NodeAdapter<N>, TempoDynRpcConverter<TempoEvmConfig, TempoNetwork>>,
+    inner: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
 
     /// Channel for sending subblock transactions to the subblocks service.
     subblock_transactions_tx: broadcast::Sender<Recovered<TempoTxEnvelope>>,
@@ -97,7 +88,7 @@ pub struct TempoEthApi<N: FullNodeTypes<Types = TempoNode>> {
 impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
     /// Creates a new `TempoEthApi`.
     pub fn new(
-        eth_api: EthApi<NodeAdapter<N>, TempoDynRpcConverter<TempoEvmConfig, TempoNetwork>>,
+        eth_api: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
     ) -> Self {
         Self {
             inner: eth_api,
@@ -114,7 +105,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
 impl<N: FullNodeTypes<Types = TempoNode>> EthApiTypes for TempoEthApi<N> {
     type Error = TempoEthApiError;
     type NetworkTypes = TempoNetwork;
-    type RpcConvert = TempoDynRpcConverter<TempoEvmConfig, TempoNetwork>;
+    type RpcConvert = DynRpcConverter<TempoEvmConfig, TempoNetwork>;
 
     fn tx_resp_builder(&self) -> &Self::RpcConvert {
         self.inner.tx_resp_builder()
@@ -303,13 +294,15 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
 
                 self.subblock_transactions_tx
                     .send(tx.into_value())
-                    .map_err(|_| RethError::msg("subblocks service channel closed").into())?;
+                    .map_err(|_| {
+                        EthApiError::from(RethError::msg("subblocks service channel closed"))
+                    })?;
 
                 Ok(tx_hash)
             })
         } else {
             // Send regular transactions to the transaction pool.
-            Either::Right(self.inner.send_transaction(tx))
+            Either::Right(self.inner.send_transaction(tx).map_err(Into::into))
         }
     }
 }
@@ -338,7 +331,7 @@ impl TempoReceiptConverter {
 
 impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
     type RpcReceipt = TempoTransactionReceipt;
-    type Error = TempoEthApiError;
+    type Error = EthApiError;
 
     fn convert_receipts(
         &self,
@@ -346,8 +339,7 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
     ) -> Result<Vec<Self::RpcReceipt>, Self::Error> {
         let txs = receipts.iter().map(|r| r.tx).collect::<Vec<_>>();
         self.inner
-            .convert_receipts(receipts)
-            .map_err(|e| TempoEthApiError::EthApiError(e))?
+            .convert_receipts(receipts)?
             .into_iter()
             .zip(txs)
             .map(|(inner, tx)| {
@@ -355,9 +347,9 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
                     inner,
                     fee_token: None,
                     // should never fail, we only deal with valid transactions here
-                    fee_payer: tx.fee_payer(tx.signer()).map_err(|_| {
-                        TempoEthApiError::EthApiError(EthApiError::InvalidTransactionSignature)
-                    })?,
+                    fee_payer: tx
+                        .fee_payer(tx.signer())
+                        .map_err(|_| EthApiError::InvalidTransactionSignature)?,
                 };
                 if receipt.effective_gas_price == 0 || receipt.gas_used == 0 {
                     return Ok(receipt);
