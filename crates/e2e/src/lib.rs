@@ -20,17 +20,21 @@ use commonware_runtime::{
     Clock, Handle, Metrics as _, Runner as _,
     deterministic::{self, Context, Runner},
 };
-use commonware_utils::{quorum, set::OrderedAssociated};
+use commonware_utils::{SystemTimeExt as _, quorum, set::OrderedAssociated};
 use futures::future::join_all;
 use itertools::Itertools as _;
 use reth_node_metrics::recorder::PrometheusRecorder;
+use tempo_chainspec::TempoChainSpec;
 use tempo_commonware_node::consensus;
 use tracing::debug;
 
 pub mod execution_runtime;
 pub use execution_runtime::ExecutionRuntime;
 
-use crate::execution_runtime::ExecutionNode;
+use crate::execution_runtime::{
+    ExecutionNode, insert_allegretto, insert_epoch_length, insert_public_polynomial,
+    insert_validators,
+};
 
 #[cfg(test)]
 mod tests;
@@ -189,6 +193,8 @@ pub struct Setup {
     pub epoch_length: u64,
 
     pub connect_execution_layer_nodes: bool,
+
+    pub allegretto_in_seconds: Option<u64>,
 }
 
 impl Setup {
@@ -204,6 +210,7 @@ impl Setup {
             },
             epoch_length: 20,
             connect_execution_layer_nodes: false,
+            allegretto_in_seconds: None,
         }
     }
 
@@ -242,21 +249,27 @@ impl Setup {
             ..self
         }
     }
+
+    pub fn allegretto_in_seconds(self, seconds: u64) -> Self {
+        Self {
+            allegretto_in_seconds: Some(seconds),
+            ..self
+        }
+    }
 }
 
 pub async fn setup_validators(
     mut context: Context,
-    execution_runtime: &ExecutionRuntime,
     Setup {
         how_many_signers,
         how_many_verifiers,
         seed,
-        epoch_length,
         connect_execution_layer_nodes,
         linkage,
-        ..
+        epoch_length,
+        allegretto_in_seconds,
     }: Setup,
-) -> Vec<PreparedNode> {
+) -> (Vec<PreparedNode>, ExecutionRuntime) {
     let (network, mut oracle) = Network::new(
         context.with_label("network"),
         simulated::Config {
@@ -301,11 +314,26 @@ pub async fn setup_validators(
         .map(|(i, signer)| {
             (
                 signer.public_key(),
-                SocketAddr::from(([127, 0, 0, 1], i as u16 + 1)).into(),
+                SocketAddr::from(([127, 0, 0, 1], i as u16 + 1)),
             )
         })
         .collect::<Vec<_>>()
         .into();
+
+    let mut genesis = crate::execution_runtime::genesis();
+    if let Some(allegretto_in_seconds) = allegretto_in_seconds {
+        genesis = insert_allegretto(
+            genesis,
+            context.current().epoch().as_secs() + allegretto_in_seconds,
+        );
+    }
+    genesis = insert_epoch_length(genesis, epoch_length);
+    genesis = insert_public_polynomial(genesis, polynomial.into());
+    genesis = insert_validators(genesis, peers.into());
+
+    let chain_spec = TempoChainSpec::from_genesis(genesis);
+
+    let execution_runtime = ExecutionRuntime::with_chain_spec(chain_spec);
 
     let mut execution_nodes: Vec<ExecutionNode> =
         Vec::with_capacity((how_many_signers + how_many_verifiers) as usize);
@@ -343,7 +371,6 @@ pub async fn setup_validators(
 
         let consensus_config = tempo_commonware_node::consensus::Builder {
             context: context.with_label(&uid),
-            epoch_length,
             fee_recipient: alloy_primitives::Address::ZERO,
             execution_node: execution_node.node.clone(),
             blocker: oracle.control(public_key.clone()),
@@ -351,8 +378,6 @@ pub async fn setup_validators(
             partition_prefix: uid.clone(),
             share: Some(share),
             signer: private_key,
-            public_polynomial: polynomial.clone(),
-            validators: peers.clone(),
             mailbox_size: 1024,
             deque_size: 10,
             time_to_propose: Duration::from_secs(2),
@@ -384,15 +409,12 @@ pub async fn setup_validators(
 
         let consensus_config = tempo_commonware_node::consensus::Builder {
             context: context.with_label(&uid),
-            epoch_length,
             fee_recipient: alloy_primitives::Address::ZERO,
             execution_node: execution_node.node.clone(),
             blocker: oracle.control(public_key.clone()),
             peer_manager: oracle.socket_manager(),
             partition_prefix: uid.clone(),
             signer: private_key,
-            public_polynomial: polynomial.clone(),
-            validators: peers.clone(),
             share: None,
             mailbox_size: 1024,
             deque_size: 10,
@@ -415,7 +437,7 @@ pub async fn setup_validators(
         });
     }
 
-    nodes
+    (nodes, execution_runtime)
 }
 
 /// Runs a test configured by [`Setup`].
@@ -424,10 +446,8 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
-        let execution_runtime = ExecutionRuntime::new();
-
         // Setup and run all validators.
-        let nodes = setup_validators(context.clone(), &execution_runtime, setup).await;
+        let (nodes, _execution_runtime) = setup_validators(context.clone(), setup).await;
         let _running = join_all(nodes.into_iter().map(|node| node.start())).await;
 
         let pat = format!("{CONSENSUS_NODE_PREFIX}-");

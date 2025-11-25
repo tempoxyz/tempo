@@ -8,12 +8,10 @@ use commonware_runtime::{
     Clock as _, Metrics as _, Runner as _,
     deterministic::{self, Config, Runner},
 };
-use commonware_utils::time::SystemTimeExt as _;
 use futures::future::join_all;
 
 use crate::{
-    CONSENSUS_NODE_PREFIX, ExecutionRuntime, PreparedNode, Setup, execution_runtime::validator,
-    run, setup_validators,
+    CONSENSUS_NODE_PREFIX, PreparedNode, Setup, execution_runtime::validator, run, setup_validators,
 };
 
 #[test_traced]
@@ -126,23 +124,14 @@ fn assert_allegretto_transition_refused_without_contract_validators(
 
     let setup = Setup::new()
         .how_many_signers(how_many)
-        .epoch_length(epoch_length);
+        .epoch_length(epoch_length)
+        .allegretto_in_seconds(10);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
-        let allegretto_timestamp = context.current().epoch().as_secs() + 10;
-        let allegretto_chain_spec =
-            crate::execution_runtime::chainspec_with_allegretto(allegretto_timestamp);
-        let execution_runtime = ExecutionRuntime::with_chain_spec(allegretto_chain_spec);
-
-        let _validators = join_all(
-            setup_validators(context.clone(), &execution_runtime, setup)
-                .await
-                .into_iter()
-                .map(PreparedNode::start),
-        )
-        .await;
+        let (validators, _execution_runtime) = setup_validators(context.clone(), setup).await;
+        let _validators = join_all(validators.into_iter().map(PreparedNode::start)).await;
 
         loop {
             context.sleep(Duration::from_secs(1)).await;
@@ -202,23 +191,14 @@ fn assert_allegretto_transition(how_many: u32, epoch_length: u64) {
 
     let setup = Setup::new()
         .how_many_signers(how_many)
-        .epoch_length(epoch_length);
+        .epoch_length(epoch_length)
+        .allegretto_in_seconds(10);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
-        let allegretto_timestamp = context.current().epoch().as_secs() + 10;
-        let allegretto_chain_spec =
-            crate::execution_runtime::chainspec_with_allegretto(allegretto_timestamp);
-        let execution_runtime = ExecutionRuntime::with_chain_spec(allegretto_chain_spec);
-
-        let validators = join_all(
-            setup_validators(context.clone(), &execution_runtime, setup)
-                .await
-                .into_iter()
-                .map(PreparedNode::start),
-        )
-        .await;
+        let (validators, execution_runtime) = setup_validators(context.clone(), setup).await;
+        let validators = join_all(validators.into_iter().map(PreparedNode::start)).await;
 
         // We will send an arbitrary node of the initial validator set the smart
         // contract call.
@@ -281,18 +261,14 @@ fn assert_validator_is_added_post_allegretto(how_many_initial: u32, epoch_length
     let setup = Setup::new()
         .how_many_signers(how_many_initial)
         .how_many_verifiers(1)
-        .epoch_length(epoch_length);
+        .epoch_length(epoch_length)
+        .allegretto_in_seconds(10);
 
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
-        let allegretto_timestamp = context.current().epoch().as_secs() + 10;
-        let allegretto_chain_spec =
-            crate::execution_runtime::chainspec_with_allegretto(allegretto_timestamp);
-        let execution_runtime = ExecutionRuntime::with_chain_spec(allegretto_chain_spec);
-
-        let mut validators = setup_validators(context.clone(), &execution_runtime, setup).await;
+        let (mut validators, execution_runtime) = setup_validators(context.clone(), setup).await;
 
         let new_validator = {
             let idx = validators
@@ -467,18 +443,14 @@ fn assert_validator_is_removed_post_allegretto(how_many_initial: u32, epoch_leng
 
     let setup = Setup::new()
         .how_many_signers(how_many_initial)
-        .epoch_length(epoch_length);
+        .epoch_length(epoch_length)
+        .allegretto_in_seconds(10);
 
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
-        let allegretto_timestamp = context.current().epoch().as_secs() + 10;
-        let allegretto_chain_spec =
-            crate::execution_runtime::chainspec_with_allegretto(allegretto_timestamp);
-        let execution_runtime = ExecutionRuntime::with_chain_spec(allegretto_chain_spec);
-
-        let validators = setup_validators(context.clone(), &execution_runtime, setup).await;
+        let (validators, execution_runtime) = setup_validators(context.clone(), setup).await;
 
         let validators = join_all(validators.into_iter().map(|node| node.start())).await;
 
@@ -815,12 +787,11 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
-        let execution_runtime = ExecutionRuntime::new();
-
         let epoch_length = 30;
         let setup = Setup::new().seed(seed).epoch_length(epoch_length);
 
-        let mut nodes = setup_validators(context.clone(), &execution_runtime, setup.clone()).await;
+        let (mut nodes, _execution_runtime) =
+            setup_validators(context.clone(), setup.clone()).await;
         let last_node = {
             let last_node = nodes
                 .last_mut()

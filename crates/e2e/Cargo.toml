@@ -37,6 +37,7 @@ reth-rpc-builder.workspace = true
 
 tempo-chainspec.workspace = true
 tempo-commonware-node.workspace = true
+tempo-commonware-node-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-eyre.workspace = true
 tempo-evm.workspace = true

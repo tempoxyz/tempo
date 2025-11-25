@@ -1,7 +1,7 @@
 use commonware_macros::test_traced;
 use reth_ethereum::{rpc::types::engine::ForkchoiceState, storage::BlockReader as _};
 
-use crate::ExecutionRuntime;
+use crate::{ExecutionRuntime, execution_runtime::chainspec};
 
 mod backfill;
 mod dkg;
@@ -28,7 +28,7 @@ fn spawning_execution_node_works() {
     //     .try_init();
     // <rest>
 
-    let runtime = ExecutionRuntime::new();
+    let runtime = ExecutionRuntime::with_chain_spec(chainspec());
 
     let runtime = futures::executor::block_on(async move {
         let node = runtime

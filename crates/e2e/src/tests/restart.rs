@@ -14,7 +14,7 @@ use futures::future::join_all;
 use rand::Rng;
 use tracing::debug;
 
-use crate::{CONSENSUS_NODE_PREFIX, ExecutionRuntime, Setup, setup_validators};
+use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
 
 /// Test configuration for restart scenarios
 #[derive(Clone)]
@@ -42,9 +42,8 @@ fn run_restart_test(
     let executor = Runner::from(cfg);
 
     executor.start(|mut context| async move {
-        let execution_runtime = ExecutionRuntime::new();
-
-        let nodes = setup_validators(context.clone(), &execution_runtime, node_setup.clone()).await;
+        let (nodes, _execution_runtime) =
+            setup_validators(context.clone(), node_setup.clone()).await;
 
         let mut running = join_all(nodes.into_iter().map(|node| node.start())).await;
 
@@ -183,9 +182,8 @@ fn network_resumes_after_restart() {
         let executor = Runner::from(cfg);
 
         executor.start(|mut context| async move {
-            let execution_runtime = ExecutionRuntime::new();
-
-            let nodes = setup_validators(context.clone(), &execution_runtime, setup.clone()).await;
+            let (nodes, _execution_runtime) =
+                setup_validators(context.clone(), setup.clone()).await;
 
             let mut running = join_all(nodes.into_iter().map(|node| node.start())).await;
 
@@ -229,9 +227,7 @@ fn node_recovers_after_finalizing_ceremony() {
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
-        let execution_runtime = ExecutionRuntime::new();
-
-        let nodes = setup_validators(context.clone(), &execution_runtime, setup.clone()).await;
+        let (nodes, _execution_runtime) = setup_validators(context.clone(), setup.clone()).await;
 
         let mut running = join_all(nodes.into_iter().map(|node| node.start())).await;
 

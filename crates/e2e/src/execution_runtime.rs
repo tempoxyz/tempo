@@ -39,6 +39,7 @@ use reth_node_core::{
 use reth_rpc_builder::RpcModuleSelection;
 use tempfile::TempDir;
 use tempo_chainspec::TempoChainSpec;
+use tempo_commonware_node_config::PublicPolynomial;
 use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
 use tempo_node::{TempoFullNode, node::TempoNode};
 use tempo_precompiles::{VALIDATOR_CONFIG_ADDRESS, validator_config::IValidatorConfig};
@@ -68,10 +69,6 @@ pub struct ExecutionRuntime {
 
 impl ExecutionRuntime {
     /// Constructs a new execution runtime to launch execution nodes.
-    pub fn new() -> Self {
-        Self::with_chain_spec(chainspec())
-    }
-
     pub fn with_chain_spec(chain_spec: TempoChainSpec) -> Self {
         let tempdir = tempfile::Builder::new()
             // TODO(janis): cargo manifest prefix?
@@ -270,12 +267,6 @@ impl ExecutionRuntime {
     }
 }
 
-impl Default for ExecutionRuntime {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// An execution node spawned by the execution runtime.
 ///
 /// This is essentially the same as [`reth_node_builder::NodeHandle`], but
@@ -324,7 +315,7 @@ impl std::fmt::Debug for ExecutionNode {
     }
 }
 
-fn genesis() -> Genesis {
+pub fn genesis() -> Genesis {
     serde_json::from_str(include_str!(
         "../../node/tests/assets/test-genesis-moderato.json"
     ))
@@ -336,14 +327,46 @@ pub fn chainspec() -> TempoChainSpec {
     TempoChainSpec::from_genesis(genesis())
 }
 
-pub fn chainspec_with_allegretto(timestamp: u64) -> TempoChainSpec {
-    let mut genesis = genesis();
+pub fn insert_allegretto(mut genesis: Genesis, timestamp: u64) -> Genesis {
     genesis
         .config
         .extra_fields
         .insert_value("allegrettoTime".to_string(), timestamp)
         .unwrap();
-    TempoChainSpec::from_genesis(genesis)
+    genesis
+}
+
+pub fn insert_epoch_length(mut genesis: Genesis, epoch_length: u64) -> Genesis {
+    genesis
+        .config
+        .extra_fields
+        .insert_value("epochLength".to_string(), epoch_length)
+        .unwrap();
+    genesis
+}
+
+pub fn insert_validators(
+    mut genesis: Genesis,
+    validators: tempo_commonware_node_config::Peers,
+) -> Genesis {
+    genesis
+        .config
+        .extra_fields
+        .insert_value("validators".to_string(), validators)
+        .unwrap();
+    genesis
+}
+
+pub fn insert_public_polynomial(
+    mut genesis: Genesis,
+    public_polynomial: PublicPolynomial,
+) -> Genesis {
+    genesis
+        .config
+        .extra_fields
+        .insert_value("publicPolynomial".to_string(), public_polynomial)
+        .unwrap();
+    genesis
 }
 
 /// Launches a tempo execution node.

@@ -9,7 +9,7 @@ use futures::future::join_all;
 use reth_ethereum::storage::BlockNumReader;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 
-use crate::{ExecutionRuntime, Setup, get_pipeline_runs, setup_validators};
+use crate::{Setup, get_pipeline_runs, setup_validators};
 
 async fn run_validator_late_join_test(
     context: &Context,
@@ -23,8 +23,7 @@ async fn run_validator_late_join_test(
         .epoch_length(100)
         .connect_execution_layer_nodes(should_pipeline_sync);
 
-    let execution_runtime = ExecutionRuntime::new();
-    let mut nodes = setup_validators(context.clone(), &execution_runtime, setup.clone()).await;
+    let (mut nodes, _execution_runtime) = setup_validators(context.clone(), setup.clone()).await;
 
     // Start all nodes except the last one
     let last = nodes.pop().unwrap();

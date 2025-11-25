@@ -11463,6 +11463,7 @@ dependencies = [
  "tempfile",
  "tempo-chainspec",
  "tempo-commonware-node",
+ "tempo-commonware-node-config",
  "tempo-contracts",
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",

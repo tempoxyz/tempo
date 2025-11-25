@@ -20,7 +20,7 @@ use tempo_node::primitives::{
     TempoTxEnvelope, TxAA, subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX, transaction::Call,
 };
 
-use crate::{ExecutionRuntime, RunningNode, Setup, setup_validators};
+use crate::{RunningNode, Setup, setup_validators};
 
 #[test_traced]
 fn subblocks_are_included() {
@@ -34,8 +34,7 @@ fn subblocks_are_included() {
             .epoch_length(10);
 
         // Setup and start all nodes.
-        let execution_runtime = ExecutionRuntime::new();
-        let nodes = setup_validators(context.clone(), &execution_runtime, setup.clone()).await;
+        let (nodes, _execution_runtime) = setup_validators(context.clone(), setup.clone()).await;
 
         let running = join_all(
             nodes
