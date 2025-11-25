@@ -15,13 +15,14 @@ workspace = true
 tempo-primitives = { workspace = true, features = ["serde", "reth-codec"] }
 tempo-revm = { workspace = true, features = ["reth"] }
 tempo-precompiles.workspace = true
+tempo-chainspec.workspace = true
 
 reth-transaction-pool.workspace = true
 reth-chainspec.workspace = true
 reth-primitives-traits.workspace = true
 reth-storage-api.workspace = true
 reth-provider.workspace = true
-reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", rev = "b0494a1" }
+reth-eth-wire-types.workspace = true
 
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true

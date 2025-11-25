@@ -225,6 +225,11 @@ impl TempoTxEnvelope {
         }
     }
 
+    /// Returns the nonce key of this transaction if it's an [`AASigned`] transaction.
+    pub fn nonce_key(&self) -> Option<U256> {
+        self.as_aa().map(|tx| tx.tx().nonce_key)
+    }
+
     /// Returns true if this is an AA transaction
     pub fn is_aa(&self) -> bool {
         matches!(self, Self::AA(_))

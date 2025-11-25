@@ -1,3 +1,4 @@
+use crate::pool_2d::{AA2dTransactionId, AASenderId};
 use alloy_consensus::{BlobTransactionValidationError, Transaction, transaction::TxHashRef};
 use alloy_eips::{
     eip2718::{Encodable2718, Typed2718},
@@ -13,7 +14,7 @@ use reth_transaction_pool::{
     error::PoolTransactionError,
 };
 use std::{convert::Infallible, fmt::Debug, sync::Arc};
-use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
+use tempo_primitives::{AASigned, TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use thiserror::Error;
 
 /// Tempo pooled transaction representation.
@@ -55,11 +56,34 @@ impl TempoPooledTransaction {
         &self.inner.transaction
     }
 
+    /// Returns true if this is an AA transaction
+    pub fn is_aa(&self) -> bool {
+        self.inner().is_aa()
+    }
+
+    /// Returns the nonce key of this transaction if it's an [`AASigned`] transaction.
+    pub fn nonce_key(&self) -> Option<U256> {
+        self.inner.transaction.nonce_key()
+    }
+
     /// Returns whether this is a payment transaction.
     ///
     /// Based on classifier v1: payment if tx.to has TIP20 reserved prefix.
     pub fn is_payment(&self) -> bool {
         self.is_payment
+    }
+
+    /// Returns the unique identifier for this AA transaction.
+    pub(crate) fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
+        let nonce_key = self.nonce_key()?;
+        let sender = AASenderId {
+            address: self.sender(),
+            nonce_key,
+        };
+        Some(AA2dTransactionId {
+            sender,
+            nonce: self.nonce(),
+        })
     }
 }
 
@@ -150,6 +174,17 @@ impl PoolTransaction for TempoPooledTransaction {
 
     fn encoded_length(&self) -> usize {
         self.inner.encoded_length
+    }
+
+    fn requires_nonce_check(&self) -> bool {
+        self.inner
+            .transaction()
+            .as_aa()
+            .map(|tx| {
+                // for AA transaction with a custom nonce key we can skip the nonce validation
+                tx.tx().nonce_key.is_zero()
+            })
+            .unwrap_or(true)
     }
 }
 

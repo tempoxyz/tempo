@@ -1,11 +1,14 @@
-use crate::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
+use crate::{
+    pool_2d::NonceKeys,
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+};
 use alloy_consensus::Transaction;
 use alloy_primitives::U256;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
 };
-use reth_storage_api::{StateProvider, StateProviderFactory};
+use reth_storage_api::{StateProvider, StateProviderFactory, errors::ProviderResult};
 use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError, validate::ValidTransaction,
@@ -18,24 +21,33 @@ use tempo_revm::TempoStateAccess;
 pub struct TempoTransactionValidator<Client> {
     /// Inner validator that performs default Ethereum tx validation.
     pub(crate) inner: EthTransactionValidator<Client, TempoPooledTransaction>,
+    /// Keeps tracks of known nonce keys for AA transactions.
+    pub(crate) aa_nonce_keys: NonceKeys,
 }
 
 impl<Client> TempoTransactionValidator<Client>
 where
     Client: ChainSpecProvider<ChainSpec: EthereumHardforks> + StateProviderFactory,
 {
-    pub fn new(inner: EthTransactionValidator<Client, TempoPooledTransaction>) -> Self {
-        Self { inner }
+    pub fn new(
+        inner: EthTransactionValidator<Client, TempoPooledTransaction>,
+        aa_nonce_keys: NonceKeys,
+    ) -> Self {
+        Self {
+            inner,
+            aa_nonce_keys,
+        }
     }
 
-    /// Get the 2D nonce from state for (address, nonce_key)
-    /// TODO: This needs to be moved to the nonce precompile logic.
+    /// Get the 2D nonce from state for (address, nonce_key) and the slot
+    ///
+    /// Returns `(slot, nonce)` for the given address and nonce key.
     fn get_2d_nonce(
         &self,
         state_provider: &impl StateProvider,
         address: alloy_primitives::Address,
         nonce_key: U256,
-    ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> ProviderResult<(U256, u64)> {
         // Compute storage slot for 2D nonce
         // Based on: mapping(address => mapping(uint256 => uint64)) at slot 0
         let outer_slot = mapping_slot(address.as_slice(), U256::ZERO);
@@ -44,7 +56,7 @@ where
         let nonce_value = state_provider.storage(NONCE_PRECOMPILE_ADDRESS, slot.into())?;
 
         // Storage returns Option<U256>, unwrap to U256 then convert to u64
-        Ok(nonce_value.unwrap_or_default().to::<u64>())
+        Ok((slot, nonce_value.unwrap_or_default().saturating_to()))
     }
 
     fn validate_one(
@@ -134,53 +146,66 @@ where
             );
         }
 
-        // Check for 2D nonce validation (nonce_key > 0)
-        // TODO: Figure out how to nicely add inner validation checks for 2d nonces.
-        if let Some(aa) = transaction.inner().as_aa() {
-            let nonce_key = aa.tx().nonce_key;
-            if !nonce_key.is_zero() {
-                // This is a 2D nonce transaction - validate against 2D nonce
-                let expected_nonce =
-                    match self.get_2d_nonce(&state_provider, transaction.sender(), nonce_key) {
+        match self.inner.validate_one(origin, transaction) {
+            TransactionValidationOutcome::Valid {
+                balance,
+                state_nonce,
+                bytecode_hash,
+                transaction,
+                propagate,
+                authorities,
+            } => {
+                // Additional 2D nonce validations
+                // Check for 2D nonce validation (nonce_key > 0)
+                if let Some(nonce_key) = transaction.transaction().nonce_key()
+                    && !nonce_key.is_zero()
+                {
+                    // This is a 2D nonce transaction - validate against 2D nonce
+                    let (nonce_key_slot, on_chain_2d_nonce) = match self.get_2d_nonce(
+                        &state_provider,
+                        transaction.transaction().sender(),
+                        nonce_key,
+                    ) {
                         Ok(nonce) => nonce,
                         Err(err) => {
-                            return TransactionValidationOutcome::Error(*transaction.hash(), err);
+                            return TransactionValidationOutcome::Error(
+                                *transaction.hash(),
+                                Box::new(err),
+                            );
                         }
                     };
+                    let tx_nonce = transaction.nonce();
+                    if tx_nonce < on_chain_2d_nonce {
+                        return TransactionValidationOutcome::Invalid(
+                            transaction.into_transaction(),
+                            InvalidTransactionError::NonceNotConsistent {
+                                tx: tx_nonce,
+                                state: on_chain_2d_nonce,
+                            }
+                            .into(),
+                        );
+                    }
 
-                let tx_nonce = transaction.nonce();
-                if tx_nonce < expected_nonce {
-                    return TransactionValidationOutcome::Invalid(
-                        transaction,
-                        InvalidTransactionError::NonceNotConsistent {
-                            tx: tx_nonce,
-                            state: expected_nonce,
-                        }
-                        .into(),
+                    // since we've just fetched the most recent on chain nonce for this valid transaction, we can update the tracker.
+                    self.aa_nonce_keys.insert(
+                        transaction.transaction().sender(),
+                        nonce_key,
+                        on_chain_2d_nonce,
+                        nonce_key_slot,
                     );
                 }
 
-                // For 2D nonces, we've validated the nonce ourselves
-                // Now call inner validator but note that it will also check protocol nonce
-                // Since we're using a different nonce space, we skip the inner validator's
-                // nonce check by not calling it for 2D transactions
-                // Instead, we return Valid directly after our checks
-                return TransactionValidationOutcome::Valid {
+                TransactionValidationOutcome::Valid {
                     balance,
-                    state_nonce: expected_nonce,
-                    transaction: ValidTransaction::Valid(transaction),
-                    propagate: matches!(
-                        origin,
-                        TransactionOrigin::External | TransactionOrigin::Local
-                    ),
-                    authorities: None,
-                    bytecode_hash: None,
-                };
+                    state_nonce,
+                    bytecode_hash,
+                    transaction,
+                    propagate,
+                    authorities,
+                }
             }
+            outcome => outcome,
         }
-
-        // For protocol nonces (nonce_key=0), use the inner validator
-        self.inner.validate_one(origin, transaction)
     }
 }
 
@@ -260,7 +285,6 @@ where
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
     use alloy_consensus::Transaction;
     use alloy_eips::Decodable2718;
@@ -310,7 +334,7 @@ mod tests {
         let inner = EthTransactionValidatorBuilder::new(provider.clone())
             .disable_balance_check()
             .build(InMemoryBlobStore::default());
-        let validator = TempoTransactionValidator::new(inner);
+        let validator = TempoTransactionValidator::new(inner, Default::default());
 
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, transaction.clone())
