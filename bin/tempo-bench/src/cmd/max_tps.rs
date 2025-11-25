@@ -170,24 +170,23 @@ impl MaxTpsArgs {
             .collect::<eyre::Result<Vec<_>>>()
             .wrap_err("failed parsing input target URLs")?;
 
+        println!("Generating {} accounts...", self.accounts);
+        let signers = (self.from_mnemonic_index..(self.from_mnemonic_index + self.accounts as u32))
+            .into_par_iter()
+            .map(|i| {
+                Ok(MnemonicBuilder::<English>::default()
+                    .phrase(&self.mnemonic)
+                    .index(i)?
+                    .build()?)
+            })
+            .collect::<eyre::Result<Vec<_>>>()?;
+
         // Fund accounts from faucet if requested
         if self.faucet {
-            let addresses: Vec<Address> = (self.from_mnemonic_index
-                ..(self.from_mnemonic_index + self.accounts as u32))
-                .into_par_iter()
-                .map(|i| -> eyre::Result<Address> {
-                    let signer = MnemonicBuilder::<English>::default()
-                        .phrase(&self.mnemonic)
-                        .index(i)?
-                        .build()?;
-                    Ok(signer.address())
-                })
-                .collect::<eyre::Result<Vec<_>>>()?;
-
             let provider = ProviderBuilder::new().connect_http(target_urls[0].clone());
             fund_accounts(
                 &provider,
-                &addresses,
+                &signers.iter().map(|s| s.address()).collect::<Vec<_>>(),
                 self.total_connections as usize,
                 self.max_concurrent_transactions,
             )
@@ -200,9 +199,7 @@ impl MaxTpsArgs {
         let transactions = Arc::new(
             generate_transactions(GenerateTransactionsInput {
                 total_txs,
-                num_accounts: self.accounts,
-                mnemonic: &self.mnemonic,
-                from_mnemonic_index: self.from_mnemonic_index,
+                signers,
                 chain_id: self.chain_id,
                 rpc_url: target_urls[0].clone(),
                 max_concurrent_requests: self.total_connections as usize,
@@ -364,12 +361,10 @@ fn send_transactions(
     Ok(())
 }
 
-async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Result<Vec<Vec<u8>>> {
+async fn generate_transactions(input: GenerateTransactionsInput) -> eyre::Result<Vec<Vec<u8>>> {
     let GenerateTransactionsInput {
         total_txs,
-        num_accounts,
-        mnemonic,
-        from_mnemonic_index,
+        signers,
         chain_id,
         rpc_url,
         max_concurrent_requests,
@@ -378,22 +373,9 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
         place_order_weight: place_weight,
         swap_weight,
     } = input;
-    println!("Generating {num_accounts} accounts...");
 
-    let signers: Vec<PrivateKeySigner> = (from_mnemonic_index
-        ..(from_mnemonic_index + num_accounts as u32))
-        .into_par_iter()
-        .progress()
-        .map(|i| -> eyre::Result<PrivateKeySigner> {
-            let signer = MnemonicBuilder::<English>::default()
-                .phrase(mnemonic)
-                .index(i)?
-                .build()?;
-            Ok(signer)
-        })
-        .collect::<eyre::Result<Vec<_>>>()?;
-
-    let txs_per_sender = total_txs / num_accounts;
+    let accounts = signers.len();
+    let txs_per_sender = total_txs / accounts as u64;
     ensure!(
         txs_per_sender > 0,
         "txs per sender is 0, increase tps or decrease senders"
@@ -402,19 +384,17 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
     let (exchange, quote, user_tokens) = dex::setup(
         rpc_url.clone(),
         chain_id,
-        mnemonic,
+        signers[0].clone(),
         signers.clone(),
         max_concurrent_requests,
         max_concurrent_transactions,
     )
     .await?;
 
-    let accounts = signers.len();
     // Fetch current nonces for all accounts
     let provider = ProviderBuilder::new().connect_http(rpc_url);
 
     println!("Fetching nonces for {accounts} accounts...");
-
     let mut futures = Vec::new();
     let mut params = Vec::new();
     for signer in signers {
@@ -433,10 +413,7 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
 
     let user_tokens_count = user_tokens.len();
 
-    println!(
-        "Pregenerating {} transactions",
-        txs_per_sender as usize * accounts,
-    );
+    println!("Pregenerating {total_txs} transactions");
 
     let transactions: Vec<_> = params
         .into_par_iter()
@@ -775,13 +752,11 @@ fn into_signed_encoded(
     Ok(payload)
 }
 
-struct GenerateTransactionsInput<'input> {
+struct GenerateTransactionsInput {
     total_txs: u64,
-    num_accounts: u64,
-    mnemonic: &'input str,
+    signers: Vec<PrivateKeySigner>,
     chain_id: u64,
     rpc_url: Url,
-    from_mnemonic_index: u32,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
     tip20_weight: u64,

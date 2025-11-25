@@ -14,7 +14,7 @@ const GAS_LIMIT: u64 = 500_000;
 pub(super) async fn setup(
     url: Url,
     chain_id: ChainId,
-    mnemonic: &str,
+    signer: PrivateKeySigner,
     signers: Vec<PrivateKeySigner>,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
@@ -38,10 +38,9 @@ pub(super) async fn setup(
     tx_count.tick();
 
     // Setup HTTP provider with a test wallet
-    let wallet = MnemonicBuilder::from_phrase(mnemonic).build()?;
-    let caller = wallet.address();
+    let caller = signer.address();
     let provider = ProviderBuilder::new()
-        .wallet(wallet.clone())
+        .wallet(signer.clone())
         .connect_http(url.clone());
 
     let base1 = setup_test_token(provider.clone(), caller, &tx_count).await?;
@@ -56,13 +55,13 @@ pub(super) async fn setup(
 
     let tokens = [&base1, &base2];
     let mut futures = Vec::new();
-    let nonce = provider.get_transaction_count(wallet.address()).await?;
+    let nonce = provider.get_transaction_count(caller).await?;
 
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
 
     for (i, &token) in user_tokens.iter().enumerate() {
         let provider = provider.clone();
-        let tx = create_pair(&exchange, &wallet, nonce + i as u64, chain_id, token)?;
+        let tx = create_pair(&exchange, &signer, nonce + i as u64, chain_id, token)?;
 
         futures.push(Box::pin(async move {
             alloy::contract::Result::Ok(provider.send_raw_transaction(tx.as_slice()).await?)
@@ -77,7 +76,7 @@ pub(super) async fn setup(
             let recipient = signer.address();
             let tx = mint(
                 token,
-                &wallet,
+                signer,
                 nonce + (i as u64 * tokens.len() as u64) + j as u64,
                 chain_id,
                 recipient,
@@ -188,7 +187,6 @@ where
 
     into_signed_encoded(tx, signer)
 }
-
 pub(super) fn mint<P, N>(
     token: &ITIP20Instance<P, N>,
     signer: &PrivateKeySigner,
