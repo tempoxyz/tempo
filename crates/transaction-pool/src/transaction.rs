@@ -78,6 +78,8 @@ pub enum TempoPoolTransactionError {
         "'valid_before' {valid_before} is too close to current time (min allowed: {min_allowed})"
     )]
     InvalidValidBefore { valid_before: u64, min_allowed: u64 },
+    #[error("Keychain signature validation failed: {0}")]
+    Keychain(&'static str),
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -87,6 +89,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             Self::InvalidFeeToken(_) => false,
             Self::MissingFeeToken => false,
             Self::InvalidValidBefore { .. } => false,
+            Self::Keychain(_) => true, // Bad transaction - invalid signature
         }
     }
 

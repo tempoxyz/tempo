@@ -98,6 +98,14 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value_t = 0)]
     pub adagio_time: u64,
 
+    /// Moderato hardfork activation timestamp
+    #[arg(long)]
+    pub moderato_time: Option<u64>,
+
+    /// Allegretto hardfork activation timestamp
+    #[arg(long)]
+    pub allegretto_time: Option<u64>,
+
     /// Path to validators config file (JSON)
     #[arg(long)]
     pub validators_config: Option<PathBuf>,
@@ -301,6 +309,17 @@ impl GenesisArgs {
             "adagioTime".to_string(),
             serde_json::json!(self.adagio_time),
         );
+        if let Some(moderato_time) = self.moderato_time {
+            chain_config
+                .extra_fields
+                .insert("moderatoTime".to_string(), serde_json::json!(moderato_time));
+        }
+        if let Some(allegretto_time) = self.allegretto_time {
+            chain_config.extra_fields.insert(
+                "allegrettoTime".to_string(),
+                serde_json::json!(allegretto_time),
+            );
+        }
 
         let mut genesis = Genesis::default()
             .with_gas_limit(self.gas_limit)

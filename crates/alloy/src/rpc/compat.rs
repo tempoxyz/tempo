@@ -118,27 +118,27 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
 /// Creates a mock AA signature for gas estimation based on key type hints
 fn create_mock_aa_signature(key_type: &SignatureType, key_data: Option<&Bytes>) -> AASignature {
     use tempo_primitives::transaction::aa_signature::{
-        AASignature, P256SignatureWithPreHash, WebAuthnSignature,
+        AASignature, P256SignatureWithPreHash, PrimitiveSignature, WebAuthnSignature,
     };
 
     match key_type {
         SignatureType::Secp256k1 => {
             // Create a dummy secp256k1 signature (65 bytes)
-            AASignature::Secp256k1(Signature::new(
+            AASignature::Primitive(PrimitiveSignature::Secp256k1(Signature::new(
                 alloy_primitives::U256::ZERO,
                 alloy_primitives::U256::ZERO,
                 false,
-            ))
+            )))
         }
         SignatureType::P256 => {
             // Create a dummy P256 signature
-            AASignature::P256(P256SignatureWithPreHash {
+            AASignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
                 r: alloy_primitives::B256::ZERO,
                 s: alloy_primitives::B256::ZERO,
                 pub_key_x: alloy_primitives::B256::ZERO,
                 pub_key_y: alloy_primitives::B256::ZERO,
                 pre_hash: false,
-            })
+            }))
         }
         SignatureType::WebAuthn => {
             // Create a dummy WebAuthn signature with the specified size
@@ -186,13 +186,13 @@ fn create_mock_aa_signature(key_type: &SignatureType, key_data: Option<&Bytes>) 
             webauthn_data.extend_from_slice(client_json.as_bytes());
             let webauthn_data = Bytes::from(webauthn_data);
 
-            AASignature::WebAuthn(WebAuthnSignature {
+            AASignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
                 webauthn_data,
                 r: alloy_primitives::B256::ZERO,
                 s: alloy_primitives::B256::ZERO,
                 pub_key_x: alloy_primitives::B256::ZERO,
                 pub_key_y: alloy_primitives::B256::ZERO,
-            })
+            }))
         }
     }
 }
