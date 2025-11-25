@@ -520,7 +520,7 @@ async fn fund_accounts(
         .iter()
         .map(|address| {
             let address = *address;
-            provider.raw_request::<_, Vec<B256>>("tempo_fundAddress".into(), address)
+            provider.raw_request::<_, Vec<B256>>("tempo_fundAddress".into(), (address,))
         })
         .chunks(max_concurrent_transactions);
 
