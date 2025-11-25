@@ -11,6 +11,7 @@ use alloy::{
 };
 use alloy_eips::BlockId;
 use alloy_rpc_types_eth::TransactionInput;
+use rand::random;
 use reth_evm::revm::interpreter::instructions::utility::IntoU256;
 use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
@@ -42,7 +43,7 @@ async fn test_eth_call() -> eyre::Result<()> {
     let token = setup_test_token(provider.clone(), caller).await?;
 
     // First, mint some tokens to the caller for testing
-    let mint_amount = U256::random();
+    let mint_amount = U256::from(random::<u128>());
     token
         .mint(caller, mint_amount)
         .gas_price(TEMPO_BASE_FEE as u128)
