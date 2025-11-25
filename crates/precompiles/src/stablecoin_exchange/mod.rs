@@ -802,7 +802,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         } else {
             // If there are subsequent orders at tick, advance to next order
             level.head = order.next();
-            Order::update_prev_order(self, order.next(), 0)?;
+            if self.storage.spec().is_allegretto() {
+                Order::update_prev_order(self, order.next(), 0)?;
+            }
             let new_liquidity = level
                 .total_liquidity
                 .checked_sub(fill_amount)
@@ -4129,7 +4131,7 @@ mod tests {
         const AMOUNT: u128 = 1_000_000_000;
 
         // Test that fill_order properly clears the prev pointer when advancing to the next order
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
