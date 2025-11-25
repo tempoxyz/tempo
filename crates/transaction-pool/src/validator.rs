@@ -11,7 +11,7 @@ use reth_transaction_pool::{
 };
 use tempo_revm::TempoStateAccess;
 
-// Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent subblock invalidation.
+// Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
 const AA_VALID_BEFORE_MIN_SECS: u64 = 3;
 
 /// Validator for Tempo transactions.
@@ -64,7 +64,7 @@ where
             );
         }
 
-        // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent subblock invalidation.
+        // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
         if let Some(tx) = transaction.inner().as_aa()
             && let Some(valid_before) = tx.tx().valid_before
         {
