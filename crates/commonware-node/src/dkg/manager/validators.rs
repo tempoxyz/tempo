@@ -9,7 +9,7 @@ use commonware_codec::{DecodeExt as _, EncodeSize, RangeCfg, Read, Write, varint
 use commonware_consensus::{types::Epoch, utils};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::set::{Ordered, OrderedAssociated};
-use eyre::{OptionExt as _, WrapErr as _, ensure};
+use eyre::{OptionExt as _, WrapErr as _};
 use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
 use reth_node_builder::{Block as _, ConfigureEvm as _};
 use reth_provider::{BlockReader as _, StateProviderFactory as _};
@@ -289,7 +289,6 @@ impl DecodedValidator {
     pub(super) fn decode_from_contract(
         IValidatorConfig::Validator {
             publicKey,
-            active,
             index,
             validatorAddress,
             inboundAddress,
@@ -297,11 +296,6 @@ impl DecodedValidator {
             ..
         }: IValidatorConfig::Validator,
     ) -> eyre::Result<Self> {
-        ensure!(
-            active,
-            "field `active` is set to false; this method should only be called \
-            for active validators"
-        );
         let public_key = PublicKey::decode(publicKey.as_ref())
             .wrap_err("failed decoding publicKey field as ed25519 public key")?;
         let inbound = inboundAddress
