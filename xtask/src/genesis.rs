@@ -313,6 +313,16 @@ impl GenesisArgs {
             "adagioTime".to_string(),
             serde_json::json!(self.adagio_time),
         );
+        chain_config.extra_fields.insert(
+            "moderatoTime".to_string(),
+            serde_json::json!(self.moderato_time),
+        );
+        if let Some(allegretto_time) = self.allegretto_time {
+            chain_config.extra_fields.insert(
+                "allegrettoTime".to_string(),
+                serde_json::json!(allegretto_time),
+            );
+        }
 
         let mut genesis = Genesis::default()
             .with_gas_limit(self.gas_limit)
