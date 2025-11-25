@@ -354,6 +354,15 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
         self.sstore_fee_recipient(new_recipient)?;
 
+        self.storage.emit_event(
+            self.address,
+            TIP20Event::FeeRecipientUpdated(ITIP20::FeeRecipientUpdated {
+                updater: msg_sender,
+                newRecipient: new_recipient,
+            })
+            .into_log_data(),
+        )?;
+
         Ok(())
     }
 
