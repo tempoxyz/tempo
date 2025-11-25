@@ -4127,8 +4127,7 @@ mod tests {
     }
 
     #[test]
-    // https://github.com/tempoxyz/tempo/issues/1007
-    fn test_audit_issue_1007() -> eyre::Result<()> {
+    fn test_clear_order_post_allegretto() -> eyre::Result<()> {
         const AMOUNT: u128 = 1_000_000_000;
 
         // Test that fill_order properly clears the prev pointer when advancing to the next order
