@@ -76,7 +76,7 @@ pub struct MaxTpsArgs {
     )]
     mnemonic: String,
 
-    #[arg(short, long, default_value = "0")]
+    #[arg(short, long, default_value = "1")]
     from_mnemonic_index: u32,
 
     /// Chain ID
