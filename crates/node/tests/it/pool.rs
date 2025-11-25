@@ -41,7 +41,7 @@ async fn submit_pending_tx() -> eyre::Result<()> {
         node_exit_future: _,
     } = NodeBuilder::new(node_config.clone())
         .testing_node(executor.clone())
-        .node(TempoNode::new())
+        .node(TempoNode::default())
         .launch()
         .await?;
 
@@ -89,7 +89,7 @@ async fn test_insufficient_funds() -> eyre::Result<()> {
         node_exit_future: _,
     } = NodeBuilder::new(node_config.clone())
         .testing_node(executor.clone())
-        .node(TempoNode::new())
+        .node(TempoNode::default())
         .launch()
         .await?;
 
