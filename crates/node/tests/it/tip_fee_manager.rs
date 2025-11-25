@@ -144,8 +144,8 @@ async fn test_set_validator_token() -> eyre::Result<()> {
         .validatorTokens(validator_address)
         .call()
         .await?;
-    // Initial token should be predeployed token
-    assert_eq!(initial_token, token_id_to_address(1));
+    // Initial token should be default fee token (PathUSD in Allegretto)
+    assert_eq!(initial_token, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO);
 
     let set_receipt = fee_manager
         .setValidatorToken(*validator_token.address())
