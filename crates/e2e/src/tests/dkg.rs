@@ -16,33 +16,6 @@ use crate::{
     run, setup_validators,
 };
 
-fn assert_static_transitions(how_many: u32, epoch_length: u64, transitions: u64) {
-    let _ = tempo_eyre::install();
-
-    let setup = Setup::new()
-        .how_many_signers(how_many)
-        .epoch_length(epoch_length);
-
-    let mut epoch_reached = false;
-    let mut dkg_successful = false;
-    let _first = run(setup, move |metric, value| {
-        if metric.ends_with("_dkg_manager_ceremony_failures_total") {
-            let value = value.parse::<u64>().unwrap();
-            assert!(value < 1);
-        }
-
-        if metric.ends_with("_epoch_manager_latest_epoch") {
-            let value = value.parse::<u64>().unwrap();
-            epoch_reached |= value >= transitions;
-        }
-        if metric.ends_with("_dkg_manager_ceremony_successes_total") {
-            let value = value.parse::<u64>().unwrap();
-            dkg_successful |= value >= transitions;
-        }
-        epoch_reached && dkg_successful
-    });
-}
-
 #[test_traced]
 fn single_validator_can_transition_once() {
     assert_static_transitions(1, 20, 1);
@@ -76,6 +49,73 @@ fn four_validators_can_transition_once() {
 #[test_traced]
 fn four_validators_can_transition_twice() {
     assert_static_transitions(4, 20, 2);
+}
+
+#[test_traced]
+fn single_validator_does_allegretto_transition_with_validator_in_contract() {
+    assert_allegretto_transition(1, 20);
+}
+
+#[test_traced]
+fn four_validators_do_allegretto_transition_with_validators_in_contract() {
+    assert_allegretto_transition(4, 30);
+}
+
+#[test_traced]
+fn single_validator_refuses_allegretto_transition_without_contract_validators() {
+    assert_allegretto_transition_refused_without_contract_validators(1, 20);
+}
+
+#[test_traced]
+fn four_validators_refuse_allegretto_transition_without_contract_validators() {
+    assert_allegretto_transition_refused_without_contract_validators(4, 40);
+}
+
+#[test_traced]
+fn validator_is_added_to_a_set_of_one() {
+    assert_validator_is_added_post_allegretto(1, 20);
+}
+
+#[test_traced]
+fn validator_is_added_to_a_set_of_three() {
+    assert_validator_is_added_post_allegretto(3, 30);
+}
+
+#[test_traced]
+fn validator_is_removed_from_set_of_two() {
+    assert_validator_is_removed_post_allegretto(2, 20);
+}
+
+#[test_traced]
+fn validator_is_removed_from_set_of_four() {
+    assert_validator_is_removed_post_allegretto(4, 40);
+}
+
+fn assert_static_transitions(how_many: u32, epoch_length: u64, transitions: u64) {
+    let _ = tempo_eyre::install();
+
+    let setup = Setup::new()
+        .how_many_signers(how_many)
+        .epoch_length(epoch_length);
+
+    let mut epoch_reached = false;
+    let mut dkg_successful = false;
+    let _first = run(setup, move |metric, value| {
+        if metric.ends_with("_dkg_manager_ceremony_failures_total") {
+            let value = value.parse::<u64>().unwrap();
+            assert!(value < 1);
+        }
+
+        if metric.ends_with("_epoch_manager_latest_epoch") {
+            let value = value.parse::<u64>().unwrap();
+            epoch_reached |= value >= transitions;
+        }
+        if metric.ends_with("_dkg_manager_ceremony_successes_total") {
+            let value = value.parse::<u64>().unwrap();
+            dkg_successful |= value >= transitions;
+        }
+        epoch_reached && dkg_successful
+    });
 }
 
 fn assert_allegretto_transition_refused_without_contract_validators(
@@ -157,16 +197,6 @@ fn assert_allegretto_transition_refused_without_contract_validators(
     })
 }
 
-#[test_traced("WARN")]
-fn single_validator_refuses_allegretto_transition_without_contract_validators() {
-    assert_allegretto_transition_refused_without_contract_validators(1, 20);
-}
-
-#[test_traced("WARN")]
-fn four_validators_refuse_allegretto_transition_without_contract_validators() {
-    assert_allegretto_transition_refused_without_contract_validators(4, 40);
-}
-
 fn assert_allegretto_transition(how_many: u32, epoch_length: u64) {
     let _ = tempo_eyre::install();
 
@@ -245,16 +275,6 @@ fn assert_allegretto_transition(how_many: u32, epoch_length: u64) {
     })
 }
 
-#[test_traced]
-fn single_validator_does_allegretto_transition_with_validator_in_contract() {
-    assert_allegretto_transition(1, 20);
-}
-
-#[test_traced]
-fn four_validators_do_allegretto_transition_with_validators_in_contract() {
-    assert_allegretto_transition(4, 30);
-}
-
 fn assert_validator_is_added_post_allegretto(how_many_initial: u32, epoch_length: u64) {
     let _ = tempo_eyre::install();
 
@@ -289,7 +309,7 @@ fn assert_validator_is_added_post_allegretto(how_many_initial: u32, epoch_length
             "must have removed the one non-signer node; must be left with only signers",
         );
 
-        let validators = join_all(validators.into_iter().map(|node| node.start())).await;
+        let validators = join_all(validators.into_iter().map(PreparedNode::start)).await;
 
         // We will send an arbitrary node of the initial validator set the smart
         // contract call.
@@ -349,6 +369,8 @@ fn assert_validator_is_added_post_allegretto(how_many_initial: u32, epoch_length
         let receipt = execution_runtime
             .add_validator(
                 http_url.clone(),
+                // XXX: The addValidator call above adding the initial set
+                // adds validators 0..validators.len() (i.e. exclusive validators.len())
                 validator(validators.len() as u32),
                 new_validator.public_key.clone(),
                 SocketAddr::from(([127, 0, 0, 1], (validators.len() + 1) as u16)),
@@ -440,9 +462,172 @@ fn assert_validator_is_added_post_allegretto(how_many_initial: u32, epoch_length
     })
 }
 
-#[test_traced("ERROR")]
-fn validator_is_added_to_set_of_one() {
-    assert_validator_is_added_post_allegretto(1, 20);
+fn assert_validator_is_removed_post_allegretto(how_many_initial: u32, epoch_length: u64) {
+    let _ = tempo_eyre::install();
+
+    let setup = Setup::new()
+        .how_many_signers(how_many_initial)
+        .epoch_length(epoch_length);
+
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+    let executor = Runner::from(cfg);
+
+    executor.start(|context| async move {
+        let allegretto_timestamp = context.current().epoch().as_secs() + 10;
+        let allegretto_chain_spec =
+            crate::execution_runtime::chainspec_with_allegretto(allegretto_timestamp);
+        let execution_runtime = ExecutionRuntime::with_chain_spec(allegretto_chain_spec);
+
+        let validators = setup_validators(context.clone(), &execution_runtime, setup).await;
+
+        let validators = join_all(validators.into_iter().map(|node| node.start())).await;
+
+        // We will send an arbitrary node of the initial validator set the smart
+        // contract call.
+        let http_url = validators[0]
+            .execution_node
+            .node
+            .rpc_server_handle()
+            .http_url()
+            .unwrap()
+            .parse::<Url>()
+            .unwrap();
+
+        for (i, node) in validators.iter().enumerate() {
+            let receipt = execution_runtime
+                .add_validator(
+                    http_url.clone(),
+                    validator(i as u32),
+                    node.public_key.clone(),
+                    SocketAddr::from(([127, 0, 0, 1], (i + 1) as u16)),
+                )
+                .await
+                .unwrap();
+
+            tracing::debug!(
+                block.number = receipt.block_number,
+                "addValidator call returned receipt"
+            );
+        }
+
+        // After the validators have been added to the smart contract, wait
+        // until the node makes the allegretto hardfork transition.
+        loop {
+            context.sleep(Duration::from_secs(1)).await;
+            let metrics = context.encode();
+
+            let mut transitioned = 0;
+
+            for line in metrics.lines() {
+                if !line.starts_with(CONSENSUS_NODE_PREFIX) {
+                    continue;
+                }
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("_dkg_manager_post_allegretto_ceremonies_total") {
+                    let value = value.parse::<u64>().unwrap();
+                    transitioned += (value > 0) as u32;
+                }
+            }
+            if transitioned == how_many_initial {
+                break;
+            }
+        }
+
+        let receipt = execution_runtime
+            // XXX: The addValidator call above adding the initial set
+            // adds validators 0..validators.len(). So this is the last of
+            // the validators
+            .change_validator_status(http_url, validator(validators.len() as u32 - 1), false)
+            .await
+            .unwrap();
+
+        tracing::debug!(
+            block.number = receipt.block_number,
+            "chanegValidatorStatus call returned receipt"
+        );
+
+        tracing::info!("validator was removed");
+
+        // First, all initial validator nodes must observe a ceremony with
+        // dealers = how_many_initial, players = how_many_initial - 1,
+        // including the validator to be removed because it is part of the
+        // original dealer set.
+        loop {
+            context.sleep(Duration::from_secs(1)).await;
+
+            let mut dealers_is_initial = 0;
+            let mut players_is_initial_minus_one = 0;
+
+            let metrics = context.encode();
+            for line in metrics.lines() {
+                if !line.starts_with(CONSENSUS_NODE_PREFIX) {
+                    continue;
+                }
+
+                // Only consider metrics from the initial set of validators.
+                if !validators.iter().any(|val| line.contains(&val.uid)) {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("_dkg_manager_ceremony_dealers") {
+                    let value = value.parse::<u64>().unwrap();
+                    if (value as u32) < how_many_initial {
+                        panic!(
+                            "observed dealers = {value} before observing \
+                            dealers = {how_many_initial}, \
+                            players = {how_many_initial} - 1",
+                        );
+                    }
+                    dealers_is_initial += (value as u32 == how_many_initial) as u32;
+                }
+
+                if metric.ends_with("_dkg_manager_ceremony_players") {
+                    let value = value.parse::<u64>().unwrap();
+                    players_is_initial_minus_one += (value as u32 == how_many_initial - 1) as u32;
+                }
+            }
+            if dealers_is_initial == how_many_initial
+                && players_is_initial_minus_one == how_many_initial
+            {
+                break;
+            }
+        }
+
+        // Then, all how_many_initial nodes must observe an epoch with the
+        // same number of participants (= how_many_intial - 1). This even
+        // includes the validator to be removed, since it will still transition.
+        loop {
+            context.sleep(Duration::from_secs(1)).await;
+
+            let metrics = context.encode();
+            let mut participants_is_initial_minus_one = 0;
+
+            for line in metrics.lines() {
+                if !line.starts_with(CONSENSUS_NODE_PREFIX) {
+                    continue;
+                }
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("_epoch_manager_latest_participants") {
+                    let value = value.parse::<u64>().unwrap();
+                    participants_is_initial_minus_one +=
+                        (value as u32 == how_many_initial - 1) as u32;
+                }
+            }
+            if participants_is_initial_minus_one == how_many_initial {
+                break;
+            }
+        }
+    })
 }
 
 // #[test_traced]
@@ -648,7 +833,7 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
             last_node.uid.clone()
         };
 
-        let _running = join_all(nodes.into_iter().map(|node| node.start())).await;
+        let _running = join_all(nodes.into_iter().map(PreparedNode::start)).await;
 
         let mut epoch_reached = false;
         let mut height_reached = false;
