@@ -130,7 +130,9 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
 
         // Skip fee token validity check for cases when the transaction is free and is not a part of a subblock.
         if (!ctx.tx.max_balance_spending()?.is_zero() || ctx.tx.is_subblock_transaction())
-            && !ctx.journaled_state.is_valid_fee_token(self.fee_token)?
+            && !ctx
+                .journaled_state
+                .is_valid_fee_token(self.fee_token, ctx.cfg.spec)?
         {
             return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
         }

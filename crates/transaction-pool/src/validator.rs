@@ -184,7 +184,7 @@ where
             };
 
         // Ensure that fee token is valid.
-        match state_provider.is_valid_fee_token(fee_token) {
+        match state_provider.is_valid_fee_token(fee_token, spec) {
             Ok(valid) => {
                 if !valid {
                     return TransactionValidationOutcome::Invalid(

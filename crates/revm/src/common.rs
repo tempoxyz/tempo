@@ -9,7 +9,7 @@ use revm::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, IFeeManager,
-    IStablecoinExchange, STABLECOIN_EXCHANGE_ADDRESS,
+    IStablecoinExchange, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
@@ -132,7 +132,7 @@ pub trait TempoStateAccess<T> {
         // If tx.to() is a TIP-20 token, use that token as the fee token
         if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied())
             && tx.calls().all(|(kind, _)| kind.to() == Some(&to))
-            && self.is_valid_fee_token(to)?
+            && self.is_valid_fee_token(to, spec)?
         {
             return Ok(to);
         }
@@ -147,12 +147,12 @@ pub trait TempoStateAccess<T> {
                 && (!tx.is_aa() || calls.next().is_none())
             {
                 if let Ok(call) = IStablecoinExchange::swapExactAmountInCall::abi_decode(input)
-                    && self.is_valid_fee_token(call.tokenIn)?
+                    && self.is_valid_fee_token(call.tokenIn, spec)?
                 {
                     return Ok(call.tokenIn);
                 } else if let Ok(call) =
                     IStablecoinExchange::swapExactAmountOutCall::abi_decode(input)
-                    && self.is_valid_fee_token(call.tokenIn)?
+                    && self.is_valid_fee_token(call.tokenIn, spec)?
                 {
                     return Ok(call.tokenIn);
                 }
@@ -179,9 +179,18 @@ pub trait TempoStateAccess<T> {
     }
 
     /// Checks if the given token can be used as a fee token.
-    fn is_valid_fee_token(&mut self, fee_token: Address) -> Result<bool, Self::Error> {
+    fn is_valid_fee_token(
+        &mut self,
+        fee_token: Address,
+        spec: TempoHardfork,
+    ) -> Result<bool, Self::Error> {
         // Ensure it's a TIP20
         if !is_tip20(fee_token) {
+            return Ok(false);
+        }
+
+        // Pre-Allegretto: PathUSD cannot be used as fee token
+        if !spec.is_allegretto() && fee_token == PATH_USD_ADDRESS {
             return Ok(false);
         }
 
