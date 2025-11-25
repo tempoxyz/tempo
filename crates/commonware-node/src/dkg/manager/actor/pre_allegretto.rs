@@ -148,7 +148,7 @@ where
                         Ok(ceremony) => {
                             maybe_ceremony.replace(ceremony);
                             info!(
-                                "transitioning to dynamic validator sets was sucessful; \
+                                "transitioning to dynamic validator sets was successful; \
                                 deleting current pre-allegretto epoch state and leaving \
                                 DKG logic to the post-hardfork routines",
                             );
@@ -162,7 +162,7 @@ where
                             warn!(
                                 %error,
                                 "transitioning to dynamic validator sets was not \
-                                succesful; will attempt again next epoch"
+                                successful; will attempt again next epoch"
                             );
                         }
                     }
@@ -186,7 +186,7 @@ where
                 // If a node restarts, it immediately starts a ceremony for
                 // CURRENT_EPOCH_KEY, and then starts processing *last height*.
                 //
-                // This attempt to create a cermony with the same mux subchannel
+                // This attempt to create a ceremony with the same mux subchannel
                 // and fail.
                 if maybe_ceremony.is_none()
                     || maybe_ceremony

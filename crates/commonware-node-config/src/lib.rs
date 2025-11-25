@@ -16,7 +16,12 @@ use commonware_cryptography::{
 };
 use commonware_utils::set::OrderedAssociated;
 use indexmap::IndexMap;
-use serde::{Deserialize, Serialize, ser::SerializeMap as _};
+use serde::{
+    Deserialize,
+    Deserializer,
+    Serialize,
+    ser::{SerializeMap as _, Serializer}, // codespell:ignore ser
+};
 
 #[cfg(test)]
 mod tests;
@@ -47,7 +52,7 @@ impl From<OrderedAssociated<PublicKey, SocketAddr>> for Peers {
 impl Serialize for Peers {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::ser::Serializer,
+        S: Serializer,
     {
         /// Serialization target for public keys.
         struct Helper<'a>(&'a PublicKey);
@@ -73,14 +78,14 @@ impl Serialize for Peers {
 impl<'de> Deserialize<'de> for Peers {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::Deserializer<'de>,
+        D: Deserializer<'de>,
     {
         // Deserialization target for public keys.
         struct Helper(PublicKey);
         impl<'de> Deserialize<'de> for Helper {
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where
-                D: serde::Deserializer<'de>,
+                D: Deserializer<'de>,
             {
                 let bytes: Vec<u8> = const_hex::serde::deserialize(deserializer)?;
                 let key = PublicKey::decode(&bytes[..]).map_err(|err| {
@@ -145,7 +150,7 @@ impl From<Public<MinSig>> for PublicPolynomial {
 impl Serialize for PublicPolynomial {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::ser::Serializer,
+        S: Serializer,
     {
         let bytes = self.inner.encode();
         const_hex::serde::serialize(&bytes, serializer)
@@ -155,7 +160,7 @@ impl Serialize for PublicPolynomial {
 impl<'de> Deserialize<'de> for PublicPolynomial {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::Deserializer<'de>,
+        D: Deserializer<'de>,
     {
         let bytes: Vec<u8> = const_hex::serde::deserialize(deserializer)?;
         let degree_of_public_polynomial = degree_of_public_polynomial_from_bytes(&bytes);

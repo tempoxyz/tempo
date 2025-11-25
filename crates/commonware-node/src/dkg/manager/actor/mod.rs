@@ -60,7 +60,7 @@ where
     /// The channel over which the actor will receive messages.
     mailbox: mpsc::UnboundedReceiver<super::Message>,
 
-    /// Persisted information on the currently running ceremmony and its
+    /// Persisted information on the currently running ceremony and its
     /// predecessor (epochs i and i-1). This ceremony metadata is updated on
     /// the last height of en epoch (the height on which the ceremony for the
     /// next epoch will be started).
@@ -80,7 +80,7 @@ where
     ///
     /// Note that validators are also persisted in the epoch metadata and are
     /// the main source of truth. The validators are also tracked here so that
-    /// they can be resgistered as peers for older epoch states that are no longer
+    /// they can be registered as peers for older epoch states that are no longer
     /// tracked.
     validators_metadata: Metadata<ContextCell<TContext>, U64, ValidatorState>,
 
@@ -567,7 +567,7 @@ where
     ///
     /// This is to account for ceremonies that are started pre-allegretto, and
     /// are running past the hardfork timestamp: we need to run the ceremony to
-    /// its conclusion and then start a new post-allegretto cermony at the epoch
+    /// its conclusion and then start a new post-allegretto ceremony at the epoch
     /// boundary.
     fn is_running_post_allegretto(&self, block: &Block) -> bool {
         self.config

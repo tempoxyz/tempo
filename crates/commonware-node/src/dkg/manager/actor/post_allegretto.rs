@@ -546,7 +546,7 @@ where
 /// All state for an epoch:
 ///
 /// + the DKG outcome containing the public key, the private key share, and the
-///   participants fo the epoch
+///   participants for the epoch
 /// + the validator state, containing the dealers of the epoch (corresponds to
 ///   the participants in the DKG outcome), the players of the next ceremony,
 ///   and the syncing players, who will be players in the ceremony thereafter.
