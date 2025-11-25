@@ -23,6 +23,9 @@ use alloy::primitives::{Address, Bytes, IntoLogData, U256, uint};
 use revm::state::Bytecode;
 use tempo_precompiles_macros::{Storable, contract};
 
+/// Helper type to easily interact with the `tokens_with_fees` array
+type TokensWithFees = Slot<Vec<Address>, TokensWithFeesSlot>;
+
 /// Helper type to easily interact with the `pools_with_fees` array
 type PoolsWithFees = Slot<Vec<TokenPair>, PoolsWithFeesSlot>;
 
@@ -49,12 +52,14 @@ pub struct TipFeeManager {
     validator_tokens: Mapping<Address, Address>,
     user_tokens: Mapping<Address, Address>,
     collected_fees: Mapping<Address, U256>,
-    pools_with_fees: Vec<TokenPair>,
-    pool_in_fees_array: Mapping<TokenPair, bool>,
+    tokens_with_fees: Vec<Address>,
+    token_in_fees_array: Mapping<Address, bool>,
     pools: Mapping<B256, Pool>,
     pending_fee_swap_in: Mapping<B256, u128>,
     total_supply: Mapping<B256, U256>,
     liquidity_balances: Mapping<B256, Mapping<Address, U256>>,
+    pools_with_fees: Vec<TokenPair>,
+    pool_in_fees_array: Mapping<TokenPair, bool>,
     validators_with_fees: Vec<Address>,
     validator_in_fees_array: Mapping<Address, bool>,
 }
@@ -219,7 +224,15 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
 
             // Record the pool if there was a non-zero swap
             if !actual_spending.is_zero() {
-                self.add_pair_to_fees_array(fee_token, validator_token)?;
+                if !self.storage.spec().is_allegretto() {
+                    // Pre-Allegretto: track in buggy token_in_fees_array
+                    if !self.sload_token_in_fees_array(fee_token)? {
+                        TokensWithFees::push(self, fee_token)?;
+                        self.sstore_token_in_fees_array(fee_token, true)?;
+                    }
+                } else {
+                    self.add_pair_to_fees_array(fee_token, validator_token)?;
+                }
             }
         }
 
@@ -249,10 +262,24 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         }
 
         let mut total_amount_out = U256::ZERO;
-        for pair in self.drain_pools_with_fees()? {
-            let user_token = token_id_to_address(pair.user_token);
-            let validator_token = token_id_to_address(pair.validator_token);
-
+        let pools = if !self.storage.spec().is_allegretto() {
+            let validator_token = self.get_validator_token(beneficiary)?;
+            self.drain_tokens_with_fees()?
+                .into_iter()
+                .map(|token| (token, validator_token))
+                .collect::<Vec<_>>()
+        } else {
+            self.drain_pools_with_fees()?
+                .into_iter()
+                .map(|pair| {
+                    (
+                        token_id_to_address(pair.user_token),
+                        token_id_to_address(pair.validator_token),
+                    )
+                })
+                .collect()
+        };
+        for (user_token, validator_token) in pools {
             total_amount_out += self.execute_pending_fee_swaps(user_token, validator_token)?;
         }
 
@@ -317,6 +344,21 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             PoolsWithFees::push(self, pair)?;
         }
         Ok(())
+    }
+
+    /// Drain all tokens with fees by popping from the back until empty
+    /// Returns a `Vec<Address>` with all the tokens that were in storage
+    /// Also sets token_in_fees_array to false for each token
+    fn drain_tokens_with_fees(&mut self) -> Result<Vec<Address>> {
+        let mut tokens = Vec::new();
+        while let Some(token) = TokensWithFees::pop(self)? {
+            tokens.push(token);
+            if self.storage.spec().is_moderato() {
+                self.sstore_token_in_fees_array(token, false)?;
+            }
+        }
+
+        Ok(tokens)
     }
 
     /// Drain all validators with fees by popping from the back until empty
