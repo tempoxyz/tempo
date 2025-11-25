@@ -55,7 +55,6 @@ where
     /// Returns an error if a read-write transaction is already active.
     /// Only one read-write transaction can be active at a time.
     pub fn read_write(&self) -> Result<Tx<TContext>, eyre::Error> {
-        // Try to set tx_active from false to true atomically
         if self
             .tx_active
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -138,7 +137,6 @@ where
             return Ok(value_bytes_opt.clone());
         }
 
-        // Check store
         let store = self.store.read().await;
         Ok(store.get(&key_hash).cloned())
     }
@@ -146,7 +144,6 @@ where
     /// Get a value from the store, deserializing it.
     ///
     /// This checks pending writes first, then falls back to the store.
-    /// Keys can be any type that can be converted to bytes.
     pub async fn get<K, V>(&mut self, key: K) -> Result<Option<V>, eyre::Error>
     where
         K: AsRef<[u8]>,
@@ -163,7 +160,6 @@ where
     ///
     /// This does not immediately write to the store.
     /// Call `commit()` to apply all buffered writes.
-    /// Keys can be any type that can be converted to bytes.
     pub fn insert<K, V>(&mut self, key: K, value: V) -> Result<(), eyre::Error>
     where
         K: AsRef<[u8]>,
@@ -178,7 +174,6 @@ where
     /// Remove a key from the transaction's write buffer.
     ///
     /// This marks the key for deletion. The actual removal happens when `commit()` is called.
-    /// Keys can be any type that can be converted to bytes.
     pub fn remove<K>(&mut self, key: K)
     where
         K: AsRef<[u8]>,
@@ -206,11 +201,7 @@ where
     }
 
     /// Commit all buffered writes to the store and sync.
-    ///
-    /// Holds the write lock across the async sync operation to ensure atomicity - all writes
-    /// are applied and flushed to disk without other transactions interleaving.
     pub async fn commit(mut self) -> Result<(), eyre::Error> {
-        // Acquire write lock and apply all buffered writes and deletions
         let mut store = self.store.write().await;
 
         for (key, value_opt) in self.writes.drain() {
@@ -224,7 +215,6 @@ where
             }
         }
 
-        // Sync the store - lock held to maintain atomicity
         store
             .sync()
             .await
@@ -245,7 +235,7 @@ where
 
 /// Convert key to B256.
 ///
-/// Zero-pads if key is <= 32 bytes, hashes with Keccak256 if > 32 bytes.
+/// Zero-pads if key is <= 32 bytes, hashes with [`keccak256`] if > 32 bytes.
 fn key_to_b256(key: &[u8]) -> B256 {
     if key.len() <= 32 {
         let mut bytes = [0u8; 32];
