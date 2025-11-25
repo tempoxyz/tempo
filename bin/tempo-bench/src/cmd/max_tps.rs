@@ -22,7 +22,7 @@ use core_affinity::CoreId;
 use eyre::{Context, OptionExt, ensure};
 use futures::{StreamExt, TryStreamExt, stream};
 use governor::{Quota, RateLimiter};
-use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator};
+use indicatif::{ParallelProgressIterator, ProgressBar};
 use rand::{random, seq::IndexedRandom};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rlimit::Resource;
@@ -33,7 +33,7 @@ use std::{
     num::NonZeroU32,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     thread,
     time::Duration,
@@ -414,16 +414,16 @@ async fn generate_transactions(input: GenerateTransactionsInput) -> eyre::Result
     let user_tokens_count = user_tokens.len();
 
     println!("Pregenerating transactions...",);
-    let mut transfers = 0;
-    let mut swaps = 0;
-    let mut orders = 0;
+    let transfers = Arc::new(AtomicUsize::new(0));
+    let swaps = Arc::new(AtomicUsize::new(0));
+    let orders = Arc::new(AtomicUsize::new(0));
     let transactions = params
-        .into_iter()
+        .into_par_iter()
         .progress()
         .map(|(signer, nonce)| {
             let mut tx_factory: [Box<dyn FnMut(PrivateKeySigner, u64) -> _>; 3] = [
                 Box::new(|signer: PrivateKeySigner, nonce: u64| {
-                    transfers += 1;
+                    transfers.fetch_add(1, Ordering::Relaxed);
                     tip20::transfer(
                         &signer,
                         nonce,
@@ -432,7 +432,7 @@ async fn generate_transactions(input: GenerateTransactionsInput) -> eyre::Result
                     )
                 }),
                 Box::new(|signer: PrivateKeySigner, nonce: u64| {
-                    swaps += 1;
+                    swaps.fetch_add(1, Ordering::Relaxed);
                     dex::swap(
                         &exchange,
                         &signer,
@@ -443,7 +443,7 @@ async fn generate_transactions(input: GenerateTransactionsInput) -> eyre::Result
                     )
                 }),
                 Box::new(|signer: PrivateKeySigner, nonce: u64| {
-                    orders += 1;
+                    orders.fetch_add(1, Ordering::Relaxed);
                     dex::place(
                         &exchange,
                         &signer,
@@ -461,8 +461,11 @@ async fn generate_transactions(input: GenerateTransactionsInput) -> eyre::Result
         .collect::<eyre::Result<Vec<_>>>()?;
 
     println!(
-        "Generated {} transactions [{transfers} transfers, {swaps} swaps, {orders} orders]",
-        transactions.len()
+        "Generated {} transactions [{} transfers, {} swaps, {} orders]",
+        transactions.len(),
+        transfers.load(Ordering::Relaxed),
+        swaps.load(Ordering::Relaxed),
+        orders.load(Ordering::Relaxed)
     );
 
     Ok(transactions)
