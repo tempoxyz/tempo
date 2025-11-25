@@ -64,7 +64,7 @@ fn duplicate_peers_are_rejected() {
 
 #[test]
 fn signing_key_snapshot() {
-    SigningKey::from_str(SIGNING_KEY).unwrap();
+    SigningKey::try_from_hex(SIGNING_KEY).unwrap();
 }
 
 #[test]
@@ -72,18 +72,18 @@ fn signing_key_roundtrip() {
     let signing_key: SigningKey = PrivateKey::from_seed(42).into();
     assert_eq!(
         signing_key,
-        SigningKey::from_str(&signing_key.to_string()).unwrap(),
+        SigningKey::try_from_hex(&signing_key.to_string()).unwrap(),
     );
 }
 
 #[test]
 fn signing_share_snapshot() {
-    SigningShare::from_str(SIGNING_SHARE).unwrap();
+    SigningShare::try_from_hex(SIGNING_SHARE).unwrap();
 }
 
 #[test]
 fn signing_share_roundtrip() {
-    let quorum = commonware_utils::quorum(1 as u32);
+    let quorum = commonware_utils::quorum(1_u32);
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
     let (_, mut shares) = commonware_cryptography::bls12381::dkg::ops::generate_shares::<_, MinSig>(
         &mut rng, None, 1, quorum,
@@ -91,7 +91,7 @@ fn signing_share_roundtrip() {
     let signing_share: SigningShare = shares.remove(0).into();
     assert_eq!(
         signing_share,
-        SigningShare::from_str(&signing_share.to_string()).unwrap(),
+        SigningShare::try_from_hex(&signing_share.to_string()).unwrap(),
     );
 }
 

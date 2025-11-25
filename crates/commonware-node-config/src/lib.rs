@@ -3,7 +3,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-use std::{net::SocketAddr, path::Path};
+use std::{fmt::Display, net::SocketAddr, path::Path};
 
 use commonware_codec::{DecodeExt as _, Encode as _, FixedSize, Read};
 use commonware_cryptography::{
@@ -182,22 +182,24 @@ impl SigningKey {
 
     pub fn read_from_file<P: AsRef<Path>>(path: P) -> Result<Self, SigningKeyError> {
         let hex = std::fs::read_to_string(path).map_err(SigningKeyErrorKind::Read)?;
-        Self::from_str(&hex)
+        Self::try_from_hex(&hex)
     }
 
-    pub fn from_str(hex: &str) -> Result<Self, SigningKeyError> {
+    pub fn try_from_hex(hex: &str) -> Result<Self, SigningKeyError> {
         let bytes = const_hex::decode(hex).map_err(SigningKeyErrorKind::Hex)?;
         let inner = PrivateKey::decode(&bytes[..]).map_err(SigningKeyErrorKind::Parse)?;
         Ok(Self { inner })
     }
 
-    pub fn to_string(&self) -> String {
-        const_hex::encode_prefixed(self.inner.encode().as_ref())
-    }
-
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), SigningKeyError> {
-        std::fs::write(path, &self.to_string()).map_err(SigningKeyErrorKind::Write)?;
+        std::fs::write(path, self.to_string()).map_err(SigningKeyErrorKind::Write)?;
         Ok(())
+    }
+}
+
+impl Display for SigningKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&const_hex::encode_prefixed(self.inner.encode().as_ref()))
     }
 }
 
@@ -238,22 +240,24 @@ impl SigningShare {
 
     pub fn read_from_file<P: AsRef<Path>>(path: P) -> Result<Self, SigningShareError> {
         let hex = std::fs::read_to_string(path).map_err(SigningShareErrorKind::Read)?;
-        Self::from_str(&hex)
+        Self::try_from_hex(&hex)
     }
 
-    pub fn from_str(hex: &str) -> Result<Self, SigningShareError> {
+    pub fn try_from_hex(hex: &str) -> Result<Self, SigningShareError> {
         let bytes = const_hex::decode(hex).map_err(SigningShareErrorKind::Hex)?;
         let inner = Share::decode(&bytes[..]).map_err(SigningShareErrorKind::Parse)?;
         Ok(Self { inner })
     }
 
-    pub fn to_string(&self) -> String {
-        const_hex::encode_prefixed(self.inner.encode().as_ref())
-    }
-
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), SigningShareError> {
-        std::fs::write(path, &self.to_string()).map_err(SigningShareErrorKind::Write)?;
+        std::fs::write(path, self.to_string()).map_err(SigningShareErrorKind::Write)?;
         Ok(())
+    }
+}
+
+impl Display for SigningShare {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&const_hex::encode_prefixed(self.inner.encode().as_ref()))
     }
 }
 

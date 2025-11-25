@@ -94,7 +94,7 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value_t = 604_800)]
     epoch_length: u64,
 
-    /// A comma-separated list of <ip>:<port>.
+    /// A comma-separated list of `<ip>:<port>`.
     #[arg(long, value_name = "<ip>:<port>", value_delimiter = ',')]
     validators: Vec<SocketAddr>,
 
