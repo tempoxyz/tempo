@@ -304,10 +304,9 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     // Provide liquidity for the fee token pair
     let liquidity_amount = U256::from(u32::MAX);
     fee_amm
-        .mint(
+        .mintWithValidatorToken(
             *user_fee_token.address(),
             validator_token_address,
-            liquidity_amount,
             liquidity_amount,
             user_address,
         )
