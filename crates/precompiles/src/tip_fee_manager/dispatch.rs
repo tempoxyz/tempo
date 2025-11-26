@@ -1,7 +1,7 @@
 use crate::{
     Precompile,
     error::TempoPrecompileError,
-    input_cost, mutate, mutate_void,
+    fill_precompile_output, input_cost, mutate, mutate_void,
     storage::PrecompileStorageProvider,
     tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager, amm::MIN_LIQUIDITY},
     unknown_selector, view,
@@ -153,10 +153,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
             _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
-        result.map(|mut res| {
-            res.gas_used = self.storage.gas_used();
-            res
-        })
+        result.map(|res| fill_precompile_output(res, self.storage))
     }
 }
 
@@ -194,7 +191,14 @@ mod tests {
 
         // Initialize token
         tip20_token
-            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, user)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                user,
+                Address::ZERO,
+            )
             .unwrap();
 
         // Grant issuer role to user and mint tokens
@@ -229,7 +233,14 @@ mod tests {
         let token = token_id_to_address(1);
         let mut tip20_token = TIP20Token::from_address(token, &mut storage);
         tip20_token
-            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
@@ -279,7 +290,14 @@ mod tests {
         let token = token_id_to_address(1);
         let mut tip20_token = TIP20Token::from_address(token, &mut storage);
         tip20_token
-            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let mut fee_manager = TipFeeManager::new(&mut storage);

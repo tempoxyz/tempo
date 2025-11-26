@@ -40,7 +40,7 @@ impl<'a, S: PrecompileStorageProvider> PathUSD<'a, S> {
         };
 
         self.token
-            .initialize(name, symbol, CURRENCY, Address::ZERO, admin)
+            .initialize(name, symbol, CURRENCY, Address::ZERO, admin, Address::ZERO)
     }
 
     fn is_transfer_authorized(&mut self, sender: Address) -> Result<bool> {

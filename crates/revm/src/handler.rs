@@ -121,13 +121,18 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         let ctx = evm.ctx_mut();
 
         self.fee_payer = ctx.tx.fee_payer()?;
-        self.fee_token =
-            ctx.journaled_state
-                .get_fee_token(&ctx.tx, ctx.block.beneficiary, self.fee_payer)?;
+        self.fee_token = ctx.journaled_state.get_fee_token(
+            &ctx.tx,
+            ctx.block.beneficiary,
+            self.fee_payer,
+            ctx.cfg.spec,
+        )?;
 
         // Skip fee token validity check for cases when the transaction is free and is not a part of a subblock.
         if (!ctx.tx.max_balance_spending()?.is_zero() || ctx.tx.is_subblock_transaction())
-            && !ctx.journaled_state.is_valid_fee_token(self.fee_token)?
+            && !ctx
+                .journaled_state
+                .is_valid_fee_token(self.fee_token, ctx.cfg.spec)?
         {
             return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
         }
@@ -655,6 +660,18 @@ where
                         reason: format!(
                             "KeyAuthorization must be signed by root account {root_account}, but was signed by {auth_signer}",
                         ),
+                    },
+                ));
+            }
+
+            // Validate KeyAuthorization chain_id (following EIP-7702 pattern)
+            // chain_id == 0 allows replay on any chain (wildcard)
+            let expected_chain_id = cfg.chain_id();
+            if key_auth.chain_id != 0 && key_auth.chain_id != expected_chain_id {
+                return Err(EVMError::Transaction(
+                    TempoInvalidTransaction::KeyAuthorizationChainIdMismatch {
+                        expected: expected_chain_id,
+                        got: key_auth.chain_id,
                     },
                 ));
             }
@@ -1227,6 +1244,7 @@ mod tests {
         primitives::hardfork::SpecId,
         state::Account,
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, tip_fee_manager};
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
@@ -1282,9 +1300,12 @@ mod tests {
             )
             .unwrap();
 
-        let fee_token = ctx
-            .journaled_state
-            .get_fee_token(&ctx.tx, validator, user)?;
+        let fee_token = ctx.journaled_state.get_fee_token(
+            &ctx.tx,
+            validator,
+            user,
+            TempoHardfork::default(),
+        )?;
         assert_eq!(validator_fee_token, fee_token);
 
         // Set user token
@@ -1297,16 +1318,22 @@ mod tests {
             )
             .unwrap();
 
-        let fee_token = ctx
-            .journaled_state
-            .get_fee_token(&ctx.tx, validator, user)?;
+        let fee_token = ctx.journaled_state.get_fee_token(
+            &ctx.tx,
+            validator,
+            user,
+            TempoHardfork::Allegretto,
+        )?;
         assert_eq!(user_fee_token, fee_token);
 
         // Set tx fee token
         ctx.tx.fee_token = Some(tx_fee_token);
-        let fee_token = ctx
-            .journaled_state
-            .get_fee_token(&ctx.tx, validator, user)?;
+        let fee_token = ctx.journaled_state.get_fee_token(
+            &ctx.tx,
+            validator,
+            user,
+            TempoHardfork::Allegretto,
+        )?;
         assert_eq!(tx_fee_token, fee_token);
 
         Ok(())
@@ -1624,6 +1651,7 @@ mod tests {
         };
 
         // Create test data
+        let chain_id = 1u64;
         let key_type = SignatureType::Secp256k1;
         let key_id = Address::random();
         let expiry = 1000u64;
@@ -1639,12 +1667,24 @@ mod tests {
         ];
 
         // Compute hash using the helper function
-        let hash1 = KeyAuthorization::authorization_message_hash(key_type, key_id, expiry, &limits);
+        let hash1 = KeyAuthorization::authorization_message_hash(
+            chain_id, key_type, key_id, expiry, &limits,
+        );
 
         // Compute again to verify consistency
-        let hash2 = KeyAuthorization::authorization_message_hash(key_type, key_id, expiry, &limits);
+        let hash2 = KeyAuthorization::authorization_message_hash(
+            chain_id, key_type, key_id, expiry, &limits,
+        );
 
         assert_eq!(hash1, hash2, "Hash computation should be deterministic");
+
+        // Verify that different chain_id produces different hash
+        let hash3 =
+            KeyAuthorization::authorization_message_hash(2, key_type, key_id, expiry, &limits);
+        assert_ne!(
+            hash1, hash3,
+            "Different chain_id should produce different hash"
+        );
     }
 
     #[test]

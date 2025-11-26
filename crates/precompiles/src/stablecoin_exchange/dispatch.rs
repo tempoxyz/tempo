@@ -5,7 +5,7 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::{
-    Precompile, input_cost, mutate, mutate_void,
+    Precompile, fill_precompile_output, input_cost, mutate, mutate_void,
     stablecoin_exchange::{IStablecoinExchange, StablecoinExchange},
     storage::PrecompileStorageProvider,
     unknown_selector, view,
@@ -183,10 +183,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
             _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
-        result.map(|mut res| {
-            res.gas_used = self.storage.gas_used();
-            res
-        })
+        result.map(|res| fill_precompile_output(res, self.storage))
     }
 }
 
@@ -256,7 +253,7 @@ mod tests {
         // Initialize base token
         let quote_address = quote.token.address();
         let mut base = TIP20Token::new(1, quote.token.storage());
-        base.initialize("BASE", "BASE", "USD", quote_address, admin)
+        base.initialize("BASE", "BASE", "USD", quote_address, admin, Address::ZERO)
             .unwrap();
 
         base.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
