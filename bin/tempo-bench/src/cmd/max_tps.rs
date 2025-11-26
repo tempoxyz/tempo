@@ -15,7 +15,10 @@ use alloy::{
     providers::{DynProvider, PendingTransactionBuilder, Provider, ProviderBuilder},
     transports::http::reqwest::Url,
 };
-use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
+use alloy_signer_local::{
+    MnemonicBuilder, PrivateKeySigner,
+    coins_bip39::{English, Mnemonic, MnemonicError},
+};
 use clap::Parser;
 use core_affinity::CoreId;
 use eyre::{Context, OptionExt, ensure};
@@ -33,6 +36,7 @@ use std::{
     fs::File,
     io::BufWriter,
     num::NonZeroU32,
+    str::FromStr,
     sync::{
         Arc,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -72,12 +76,8 @@ pub struct MaxTpsArgs {
     workers: usize,
 
     /// Mnemonic for generating accounts
-    #[arg(
-        short,
-        long,
-        default_value = "test test test test test test test test test test test junk"
-    )]
-    mnemonic: String,
+    #[arg(short, long, default_value = "random")]
+    mnemonic: MnemonicArg,
 
     #[arg(short, long, default_value_t = 0)]
     from_mnemonic_index: u32,
@@ -144,6 +144,36 @@ pub struct MaxTpsArgs {
     faucet: bool,
 }
 
+#[derive(Debug, Clone)]
+enum MnemonicArg {
+    Mnemonic(String),
+    Random,
+}
+
+impl FromStr for MnemonicArg {
+    type Err = MnemonicError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "random" => Ok(MnemonicArg::Random),
+            mnemonic => Ok(MnemonicArg::Mnemonic(
+                Mnemonic::<English>::from_str(mnemonic)?.to_phrase(),
+            )),
+        }
+    }
+}
+
+impl MnemonicArg {
+    fn resolve(&self) -> String {
+        match self {
+            MnemonicArg::Mnemonic(mnemonic) => mnemonic.clone(),
+            MnemonicArg::Random => {
+                Mnemonic::<English>::new(&mut rand_085::thread_rng()).to_phrase()
+            }
+        }
+    }
+}
+
 impl MaxTpsArgs {
     const WEIGHT_PRECISION: f64 = 1000.0;
 
@@ -165,13 +195,14 @@ impl MaxTpsArgs {
         let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
 
         info!(accounts = self.accounts, "Creating signers and providers");
+        let mnemonic = self.mnemonic.resolve();
         let signer_providers = (self.from_mnemonic_index
             ..(self.from_mnemonic_index + self.accounts as u32))
             .into_par_iter()
             .progress()
             .map(|i| {
                 let signer = MnemonicBuilder::<English>::default()
-                    .phrase(&self.mnemonic)
+                    .phrase(&mnemonic)
                     .index(i)?
                     .build()?;
                 let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
@@ -209,6 +240,7 @@ impl MaxTpsArgs {
             total_txs,
             num_accounts: self.accounts,
             signer_providers,
+            fee_token: self.fee_token,
             max_concurrent_requests: self.max_concurrent_requests,
             max_concurrent_transactions: self.max_concurrent_transactions,
             tip20_weight,
@@ -279,6 +311,11 @@ fn send_transactions(
     disable_thread_pinning: bool,
     tx_counter: Arc<AtomicU64>,
 ) -> eyre::Result<Vec<PendingTransactionBuilder<TempoNetwork>>> {
+    info!(
+        transactions = transactions.len(),
+        num_workers, tps, "Sending transactions"
+    );
+
     // Get available cores
     let core_ids =
         core_affinity::get_core_ids().ok_or_else(|| eyre::eyre!("Failed to get core IDs"))?;
@@ -357,6 +394,7 @@ async fn generate_transactions(
         total_txs,
         num_accounts,
         signer_providers,
+        fee_token,
         max_concurrent_requests,
         max_concurrent_transactions,
         tip20_weight,
@@ -372,6 +410,7 @@ async fn generate_transactions(
 
     let (quote, user_tokens) = dex::setup(
         &signer_providers,
+        fee_token,
         2,
         max_concurrent_requests,
         max_concurrent_transactions,
@@ -411,7 +450,10 @@ async fn generate_transactions(
                     Box::pin(async move {
                         let token = ITIP20Instance::new(token, provider);
 
-                        let tx = token.transfer(Address::random(), U256::ONE);
+                        // Transfer minimum possible amount
+                        let tx = token
+                            .transfer(Address::random(), U256::ONE)
+                            .map(|request| request.with_fee_token(fee_token));
                         tx.send().await
                     })
                 }
@@ -422,7 +464,10 @@ async fn generate_transactions(
                         let exchange =
                             IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider);
 
-                        let tx = exchange.swapExactAmountIn(token, quote, MIN_ORDER_AMOUNT, 0);
+                        // Swap minimum possible amount
+                        let tx = exchange
+                            .quoteSwapExactAmountIn(token, quote, 1)
+                            .map(|request| request.with_fee_token(fee_token));
                         tx.send().await
                     })
                 }
@@ -436,7 +481,9 @@ async fn generate_transactions(
                         // Place an order at exactly the dust limit
                         let tick =
                             (random::<u16>() % (MAX_TICK - MIN_TICK) as u16) as i16 + MIN_TICK;
-                        let tx = exchange.place(token, MIN_ORDER_AMOUNT, true, tick);
+                        let tx = exchange
+                            .place(token, MIN_ORDER_AMOUNT, true, tick)
+                            .map(|request| request.with_fee_token(fee_token));
                         tx.send().await
                     })
                 }
@@ -465,7 +512,7 @@ async fn fund_accounts(
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
 ) -> eyre::Result<()> {
-    println!("Funding {} accounts from faucet...", addresses.len());
+    info!(accounts = addresses.len(), "Funding accounts from faucet");
     let progress = ProgressBar::new(addresses.len() as u64);
 
     let chunks = addresses
@@ -666,7 +713,6 @@ async fn join_all<
     T: Future<Output = alloy::contract::Result<PendingTransactionBuilder<TempoNetwork>>>,
 >(
     futures: impl IntoIterator<Item = T>,
-    tx_count: &ProgressBar,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
 ) -> eyre::Result<()> {
@@ -676,7 +722,6 @@ async fn join_all<
         // Send transactions and collect pending builders
         let pending_txs = stream::iter(chunk)
             .buffer_unordered(max_concurrent_requests)
-            .inspect_ok(|_| tx_count.inc(1))
             .try_collect::<Vec<_>>()
             .await?;
 
@@ -710,6 +755,7 @@ struct GenerateTransactionsInput {
     total_txs: u64,
     num_accounts: u64,
     signer_providers: Vec<(PrivateKeySigner, DynProvider<TempoNetwork>)>,
+    fee_token: Address,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
     tip20_weight: u64,

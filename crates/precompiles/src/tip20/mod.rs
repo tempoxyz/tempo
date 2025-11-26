@@ -29,7 +29,7 @@ use tempo_precompiles_macros::contract;
 use tracing::trace;
 
 /// u128::MAX as U256
-const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
+pub const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
 
 /// Decimal precision for TIP-20 tokens
 const TIP20_DECIMALS: u8 = 6;
