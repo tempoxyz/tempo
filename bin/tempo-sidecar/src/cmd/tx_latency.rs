@@ -1,3 +1,4 @@
+use crate::monitor::prometheus_metrics;
 use alloy::{
     primitives::B256,
     providers::{Provider, ProviderBuilder, WsConnect},
@@ -10,14 +11,12 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 use poem::{EndpointExt, Route, Server, get, listener::TcpListener};
 use reqwest::Url;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use tempo_alloy::{TempoNetwork, primitives::TempoHeader};
 use tokio::signal;
-use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, warn};
-
-use crate::monitor::prometheus_metrics;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -30,10 +29,6 @@ pub struct TxLatencyArgs {
     #[arg(short, long, required = true)]
     chain_id: String,
 
-    /// Poll interval (ms) for checking pending transactions and receipts.
-    #[arg(long, default_value_t = 1_000)]
-    poll_interval_ms: u64,
-
     /// Port to expose Prometheus metrics on.
     #[arg(short, long, required = true)]
     port: u16,
@@ -45,16 +40,15 @@ pub struct TxLatencyArgs {
 
 struct TransactionLatencyMonitor {
     rpc_url: Url,
-    poll_interval: Duration,
     max_pending_age: Duration,
+    /// Keeps track of the transactions that were emitted over the pending event stream.
     pending: HashMap<B256, u128>,
 }
 
 impl TransactionLatencyMonitor {
-    fn new(rpc_url: Url, poll_interval: Duration, max_pending_age: Duration) -> Self {
+    fn new(rpc_url: Url, max_pending_age: Duration) -> Self {
         Self {
             rpc_url,
-            poll_interval,
             max_pending_age,
             pending: HashMap::new(),
         }
@@ -62,18 +56,23 @@ impl TransactionLatencyMonitor {
 
     async fn watch_transactions(&mut self) -> Result<()> {
         let rpc_url = self.rpc_url.to_string();
-        let mut provider = ProviderBuilder::new()
+        let mut provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect_ws(WsConnect::new(rpc_url.clone()))
             .await
             .context("failed to connect websocket provider")?;
-        let mut subscription = provider
+        let mut pending_txs_sub = provider
             .subscribe_pending_transactions()
             .await
             .context("failed to subscribe to pending transactions")?;
-        let mut stream = subscription.into_stream();
 
-        let mut receipt_interval = tokio::time::interval(self.poll_interval);
-        receipt_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut block_subscription = provider
+            .subscribe_full_blocks()
+            .channel_size(1000)
+            .into_stream()
+            .await
+            .context("failed to create block stream")?;
+
+        let mut stream = pending_txs_sub.into_stream();
 
         loop {
             tokio::select! {
@@ -82,68 +81,46 @@ impl TransactionLatencyMonitor {
                         Some(hash) => { self.pending.entry(hash).or_insert_with(Self::now_millis); }
                         None => {
                             warn!("pending transaction stream ended; reconnecting");
-                            provider = ProviderBuilder::new()
+                            provider = ProviderBuilder::new_with_network::<TempoNetwork>()
                                 .connect_ws(WsConnect::new(rpc_url.clone()))
                                 .await
                                 .context("failed to reconnect websocket provider")?;
-                            subscription = provider
+                            pending_txs_sub = provider
                                 .subscribe_pending_transactions()
                                 .await
                                 .context("failed to resubscribe to pending transactions")?;
-                            stream = subscription.into_stream();
+                            stream = pending_txs_sub.into_stream();
                             continue;
                         }
                     }
-                }
-                _ = receipt_interval.tick() => {
-                    self.observe_pending(&provider).await?;
+                },
+                maybe_block = block_subscription.next() => {
+                    if let Some(Ok(block)) = maybe_block {
+                         self.on_mined_block(block.header.inner.into_consensus(), block.transactions.hashes().collect());
+                    }
                 }
             }
         }
     }
 
-    async fn observe_pending<P>(&mut self, provider: &P) -> Result<()>
-    where
-        P: Provider,
-    {
+    fn on_mined_block(&mut self, header: TempoHeader, mined_txs: HashSet<B256>) {
         gauge!("tempo_tx_latency_pending_observed").set(self.pending.len() as f64);
-
-        let tracked_hashes: Vec<B256> = self.pending.keys().cloned().collect();
-
-        for hash in tracked_hashes {
-            match provider.get_transaction_receipt(hash).await {
-                Ok(Some(receipt)) => {
-                    if let Some(seen_at) = self.pending.get(&hash).copied() {
-                        match receipt.block_hash {
-                            Some(block_hash) => {
-                                match provider.get_block_by_hash(block_hash).await {
-                                    Ok(Some(block)) => {
-                                        let landing_millis =
-                                            Self::header_timestamp_millis(&block.header);
-                                        let latency_secs =
-                                            Self::latency_seconds(seen_at, landing_millis);
-
-                                        histogram!("tempo_tx_landing_latency_seconds")
-                                            .record(latency_secs);
-                                        self.pending.remove(&hash);
-                                    }
-                                    Ok(None) => debug!("block not found for confirmed transaction"),
-                                    Err(err) => {
-                                        debug!(err = %err, "failed to fetch block for receipt")
-                                    }
-                                }
-                            }
-                            None => debug!("receipt missing block hash"),
-                        }
-                    }
-                }
-                Ok(None) => continue,
-                Err(err) => debug!(err = %err, "failed to fetch transaction receipt"),
-            }
+        if self.pending.is_empty() {
+            return;
         }
+        self.pending.retain(|hash, seen_at| {
+            if mined_txs.contains(hash) {
+                let latency_secs =
+                    Self::latency_seconds(*seen_at, header.timestamp_millis() as u128);
+                histogram!("tempo_tx_landing_latency_seconds").record(latency_secs);
+                false
+            } else {
+                true
+            }
+        });
 
         let now = Self::now_millis();
-        let max_age_millis = self.max_pending_age.as_millis() as u128;
+        let max_age_millis = self.max_pending_age.as_millis();
         let before_cleanup = self.pending.len();
         self.pending
             .retain(|_, seen_at| now.saturating_sub(*seen_at) <= max_age_millis);
@@ -154,8 +131,6 @@ impl TransactionLatencyMonitor {
                 "dropped stale pending transactions"
             );
         }
-
-        Ok(())
     }
 
     fn now_millis() -> u128 {
@@ -163,10 +138,6 @@ impl TransactionLatencyMonitor {
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_millis())
             .unwrap_or_default()
-    }
-
-    fn header_timestamp_millis(header: &impl alloy::consensus::BlockHeader) -> u128 {
-        header.timestamp().saturating_mul(1000) as u128
     }
 
     fn latency_seconds(seen_at_millis: u128, landing_millis: u128) -> f64 {
@@ -203,7 +174,6 @@ impl TxLatencyArgs {
 
         let mut monitor = TransactionLatencyMonitor::new(
             self.rpc_url,
-            Duration::from_millis(self.poll_interval_ms),
             Duration::from_secs(self.max_pending_age_secs),
         );
 

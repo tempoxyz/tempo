@@ -11730,6 +11730,7 @@ dependencies = [
  "poem",
  "rand_distr 0.5.1",
  "reqwest",
+ "tempo-alloy",
  "tempo-precompiles",
  "tempo-telemetry-util",
  "tokio",
