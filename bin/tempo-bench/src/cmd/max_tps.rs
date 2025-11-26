@@ -5,7 +5,7 @@ use reth_tracing::{
     RethTracer, Tracer,
     tracing::{error, info, warn},
 };
-use tempo_alloy::{TempoNetwork, rpc::TempoTransactionCallBuilderExt};
+use tempo_alloy::TempoNetwork;
 
 use alloy::{
     consensus::BlockHeader,
@@ -24,7 +24,7 @@ use core_affinity::CoreId;
 use eyre::{Context, OptionExt, ensure};
 use futures::{StreamExt, TryStreamExt, future::BoxFuture, stream};
 use governor::{Quota, RateLimiter};
-use indicatif::{ParallelProgressIterator, ProgressBar};
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator};
 use rand::{
     random, random_range,
     seq::{IndexedRandom, SliceRandom},
@@ -46,11 +46,14 @@ use std::{
     time::Duration,
 };
 use tempo_contracts::precompiles::{
-    IRolesAuth, IStablecoinExchange::IStablecoinExchangeInstance, ITIP20, ITIP20::ITIP20Instance,
+    IFeeManager::IFeeManagerInstance,
+    IRolesAuth,
+    IStablecoinExchange::IStablecoinExchangeInstance,
+    ITIP20::{self, ITIP20Instance},
     ITIP20Factory, STABLECOIN_EXCHANGE_ADDRESS, TIP20_FACTORY_ADDRESS,
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO,
+    DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS,
     stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK},
     tip20::{ISSUER_ROLE, token_id_to_address},
 };
@@ -180,10 +183,6 @@ impl MaxTpsArgs {
                 Ok((signer, provider))
             })
             .collect::<eyre::Result<Vec<_>>>()?;
-        info!(
-            signer_providers = signer_providers.len(),
-            "Created signers and providers"
-        );
 
         // Fund accounts from faucet if requested
         if self.faucet {
@@ -201,13 +200,29 @@ impl MaxTpsArgs {
             .context("Failed to fund accounts from faucet")?;
         }
 
+        info!(fee_token = %self.fee_token, "Setting default fee token");
+        join_all(
+            signer_providers
+                .iter()
+                .map(async |(_, provider)| {
+                    IFeeManagerInstance::new(TIP_FEE_MANAGER_ADDRESS, provider.clone())
+                        .setUserToken(self.fee_token)
+                        .send()
+                        .await
+                })
+                .progress(),
+            self.max_concurrent_requests,
+            self.max_concurrent_transactions,
+        )
+        .await
+        .context("Failed to set default fee token")?;
+
         // Generate all transactions
         let total_txs = self.tps * self.duration;
         let transactions = generate_transactions(GenerateTransactionsInput {
             total_txs,
             num_accounts: self.accounts,
             signer_providers,
-            fee_token: self.fee_token,
             max_concurrent_requests: self.max_concurrent_requests,
             max_concurrent_transactions: self.max_concurrent_transactions,
             tip20_weight,
@@ -389,7 +404,6 @@ async fn generate_transactions(
         total_txs,
         num_accounts,
         signer_providers,
-        fee_token,
         max_concurrent_requests,
         max_concurrent_transactions,
         tip20_weight,
@@ -405,7 +419,6 @@ async fn generate_transactions(
 
     let (quote, user_tokens) = dex::setup(
         &signer_providers,
-        fee_token,
         2,
         max_concurrent_requests,
         max_concurrent_transactions,
@@ -446,9 +459,7 @@ async fn generate_transactions(
                         let token = ITIP20Instance::new(token, provider);
 
                         // Transfer minimum possible amount
-                        let tx = token
-                            .transfer(Address::random(), U256::ONE)
-                            .fee_token(fee_token);
+                        let tx = token.transfer(Address::random(), U256::ONE);
                         tx.send().await
                     })
                 }
@@ -460,9 +471,8 @@ async fn generate_transactions(
                             IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider);
 
                         // Swap minimum possible amount
-                        let tx = exchange
-                            .quoteSwapExactAmountIn(token, quote, 1)
-                            .fee_token(fee_token);
+                        let tx = exchange.quoteSwapExactAmountIn(token, quote, 1);
+
                         tx.send().await
                     })
                 }
@@ -476,9 +486,8 @@ async fn generate_transactions(
                         // Place an order at exactly the dust limit
                         let tick =
                             (random::<u16>() % (MAX_TICK - MIN_TICK) as u16) as i16 + MIN_TICK;
-                        let tx = exchange
-                            .place(token, MIN_ORDER_AMOUNT, true, tick)
-                            .fee_token(fee_token);
+                        let tx = exchange.place(token, MIN_ORDER_AMOUNT, true, tick);
+
                         tx.send().await
                     })
                 }
@@ -534,7 +543,9 @@ async fn fund_accounts(
                         .await?,
                 )
             });
-        assert_receipts(tx_hashes, max_concurrent_requests).await?
+        assert_receipts(tx_hashes, max_concurrent_requests)
+            .await
+            .expect("Failed to fund accounts");
     }
     Ok(())
 }
@@ -755,7 +766,6 @@ struct GenerateTransactionsInput {
     total_txs: u64,
     num_accounts: u64,
     signer_providers: Vec<(PrivateKeySigner, DynProvider<TempoNetwork>)>,
-    fee_token: Address,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
     tip20_weight: u64,

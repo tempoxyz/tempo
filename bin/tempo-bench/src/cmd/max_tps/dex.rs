@@ -1,7 +1,6 @@
 use super::*;
 use alloy::providers::DynProvider;
 use indicatif::ProgressIterator;
-use tempo_alloy::rpc::TempoTransactionCallBuilderExt;
 use tempo_contracts::precompiles::{IStablecoinExchange, PATH_USD_ADDRESS};
 use tempo_precompiles::tip20::U128_MAX;
 
@@ -12,27 +11,25 @@ use tempo_precompiles::tip20::U128_MAX;
 /// * Seeds initial liquidity by placing DEX flip orders.
 pub(super) async fn setup(
     signer_providers: &[(PrivateKeySigner, DynProvider<TempoNetwork>)],
-    fee_token: Address,
     user_tokens: usize,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
 ) -> eyre::Result<(Address, Vec<Address>)> {
     info!(
         signers = signer_providers.len(),
-        %fee_token, user_tokens, "Setting up DEX"
+        user_tokens, "Setting up DEX"
     );
 
     // Grab first signer provider
     let (signer, provider) = signer_providers.first().unwrap();
     let caller = signer.address();
 
-    let quote_token =
-        setup_test_token(provider.clone(), fee_token, caller, PATH_USD_ADDRESS).await?;
+    let quote_token = setup_test_token(provider.clone(), caller, PATH_USD_ADDRESS).await?;
 
     // Create `user_tokens` tokens
     info!("Creating tokens");
     let user_tokens = stream::iter((0..user_tokens).progress())
-        .then(|_| setup_test_token(provider.clone(), fee_token, caller, *quote_token.address()))
+        .then(|_| setup_test_token(provider.clone(), caller, *quote_token.address()))
         .try_collect::<Vec<_>>()
         .await?;
     let user_token_addresses = user_tokens
@@ -57,14 +54,15 @@ pub(super) async fn setup(
         user_token_addresses.iter().copied().map(|token| {
             let exchange = exchange.clone();
             Box::pin(async move {
-                let tx = exchange.createPair(token).fee_token(fee_token);
+                let tx = exchange.createPair(token);
                 tx.send().await
             }) as BoxFuture<'static, _>
         }),
         max_concurrent_requests,
         max_concurrent_transactions,
     )
-    .await?;
+    .await
+    .context("Failed to create exchange pairs")?;
 
     // Mint user tokens to each signer
     let mint_amount = U128_MAX / U256::from(signer_providers.len());
@@ -77,7 +75,7 @@ pub(super) async fn setup(
                 #[expect(clippy::redundant_iter_cloned)] // False positive
                 all_tokens.iter().cloned().map(move |token| {
                     Box::pin(async move {
-                        let tx = token.mint(signer, mint_amount).fee_token(fee_token);
+                        let tx = token.mint(signer, mint_amount);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 })
@@ -86,7 +84,8 @@ pub(super) async fn setup(
         max_concurrent_requests,
         max_concurrent_transactions,
     )
-    .await?;
+    .await
+    .context("Failed to mint tokens")?;
 
     // Approve for each signer quote token and each user token to spend by exchange
     info!("Approving tokens");
@@ -97,9 +96,7 @@ pub(super) async fn setup(
                 all_token_addresses.iter().copied().map(move |token| {
                     let token = ITIP20Instance::new(token, provider.clone());
                     Box::pin(async move {
-                        let tx = token
-                            .approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
-                            .fee_token(fee_token);
+                        let tx = token.approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 })
@@ -108,7 +105,8 @@ pub(super) async fn setup(
         max_concurrent_requests,
         max_concurrent_transactions,
     )
-    .await?;
+    .await
+    .context("Failed to approve tokens")?;
 
     // Place flip orders of `order_amount` with tick `tick_over` and flip tick `tick_under` for each signer and each token
     let order_amount = 1000000000000u128;
@@ -125,9 +123,8 @@ pub(super) async fn setup(
                         provider.clone(),
                     );
                     Box::pin(async move {
-                        let tx = exchange
-                            .placeFlip(token, order_amount, true, tick_under, tick_over)
-                            .fee_token(fee_token);
+                        let tx =
+                            exchange.placeFlip(token, order_amount, true, tick_under, tick_over);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 })
@@ -136,7 +133,8 @@ pub(super) async fn setup(
         max_concurrent_requests,
         max_concurrent_transactions,
     )
-    .await?;
+    .await
+    .context("Failed to place flip orders")?;
 
     Ok((*quote_token.address(), user_token_addresses))
 }
@@ -144,7 +142,6 @@ pub(super) async fn setup(
 /// Creates a test TIP20 token with issuer role granted to the provided address.
 async fn setup_test_token(
     provider: DynProvider<TempoNetwork>,
-    fee_token: Address,
     admin: Address,
     quote_token: Address,
 ) -> eyre::Result<ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>>
@@ -159,7 +156,6 @@ where
             quote_token,
             admin,
         )
-        .fee_token(fee_token)
         .send()
         .await?
         .get_receipt()
@@ -172,7 +168,6 @@ where
 
     roles
         .grantRole(*ISSUER_ROLE, admin)
-        .fee_token(fee_token)
         .send()
         .await?
         .get_receipt()
