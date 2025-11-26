@@ -536,6 +536,7 @@ fn create_key_authorization(
     root_signer: &impl SignerSync,
     access_key_addr: Address,
     access_key_signature: AASignature,
+    chain_id: u64,
     expiry: u64,
     spending_limits: Vec<tempo_primitives::transaction::TokenLimit>,
 ) -> eyre::Result<KeyAuthorization> {
@@ -543,8 +544,9 @@ fn create_key_authorization(
     let key_type = access_key_signature.signature_type();
 
     // Compute the authorization message hash using the helper function
-    // Message format: keccak256(rlp([key_type, key_id, expiry, limits]))
+    // Message format: keccak256(rlp([chain_id, key_type, key_id, expiry, limits]))
     let auth_message_hash = KeyAuthorization::authorization_message_hash(
+        chain_id,
         key_type,
         access_key_addr,
         expiry,
@@ -555,6 +557,7 @@ fn create_key_authorization(
     let root_auth_signature = root_signer.sign_hash_sync(&auth_message_hash)?;
 
     Ok(KeyAuthorization {
+        chain_id,
         key_type, // Type of key being authorized
         expiry,
         limits: spending_limits,
@@ -2978,8 +2981,9 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     let key_expiry = u64::MAX; // Never expires for this test
 
     // Compute the authorization message hash using the helper function
-    // Message format: keccak256(rlp([key_type, key_id, expiry, limits]))
+    // Message format: keccak256(rlp([chain_id, key_type, key_id, expiry, limits]))
     let auth_message_hash = KeyAuthorization::authorization_message_hash(
+        chain_id,
         tempo_primitives::transaction::SignatureType::P256,
         access_key_addr,
         key_expiry,
@@ -2991,6 +2995,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
 
     // Create the key authorization with root key signature
     let key_authorization = KeyAuthorization {
+        chain_id,
         key_type: tempo_primitives::transaction::SignatureType::P256, // Type of key being authorized
         expiry: key_expiry,
         limits: spending_limits,
@@ -3429,6 +3434,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         &root_signer,
         access_key_addr,
         mock_p256_sig,
+        chain_id,
         u64::MAX,
         vec![TokenLimit {
             token: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
@@ -3552,6 +3558,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         &root_signer,
         access_addr_1,
         mock_p256_sig_1,
+        chain_id,
         u64::MAX,
         vec![TokenLimit {
             token: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
@@ -3605,6 +3612,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         &root_signer,
         access_addr_2,
         mock_p256_sig_2,
+        chain_id,
         u64::MAX,
         vec![],
     )?;
@@ -3704,6 +3712,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         &root_signer,
         access_key_addr,
         mock_p256_sig,
+        chain_id,
         u64::MAX,
         vec![TokenLimit {
             token: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
@@ -4014,6 +4023,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         &root_key_signer,
         authorized_key_addr,
         mock_p256_sig,
+        chain_id,
         u64::MAX,
         spending_limits.clone(),
     )?;
@@ -4236,6 +4246,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
     // Try to create a KeyAuthorization signed by the WRONG signer (not root key)
     // This simulates someone trying to authorize a key without root key permission
     let auth_message_hash = KeyAuthorization::authorization_message_hash(
+        chain_id,
         tempo_primitives::transaction::SignatureType::P256,
         addr_3,
         u64::MAX,
@@ -4250,6 +4261,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
     let wrong_sig_bytes = wrong_signature.to_bytes();
 
     let invalid_key_auth = KeyAuthorization {
+        chain_id,
         key_type: tempo_primitives::transaction::SignatureType::P256,
         expiry: u64::MAX,
         limits: spending_limits.clone(),
@@ -4397,6 +4409,149 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
         .get_transaction_by_hash(pending_hash2)
         .await
         .unwrap();
+/// Test that KeyAuthorization with wrong chain_id is rejected
+///
+/// This test verifies that:
+/// 1. A KeyAuthorization signed for a different chain_id is rejected at the RPC/pool level
+/// 2. A KeyAuthorization with chain_id = 0 (wildcard) is accepted on any chain
+#[tokio::test]
+async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
+    use tempo_primitives::transaction::TokenLimit;
+
+    let mut setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_with_node_access()
+        .await?;
+
+    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root_signer.address();
+
+    let provider = ProviderBuilder::new()
+        .wallet(root_signer.clone())
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+    let nonce = provider.get_transaction_count(root_addr).await?;
+
+    println!("\n=== Test: KeyAuthorization Chain ID Validation ===");
+    println!("Current chain ID: {chain_id}");
+
+    // Generate an access key
+    let (_, pub_x, pub_y, access_key_addr) = generate_p256_access_key();
+
+    let mock_p256_sig = AASignature::Primitive(PrimitiveSignature::P256(
+        tempo_primitives::transaction::aa_signature::P256SignatureWithPreHash {
+            r: B256::ZERO,
+            s: B256::ZERO,
+            pub_key_x: pub_x,
+            pub_key_y: pub_y,
+            pre_hash: false,
+        },
+    ));
+
+    let spending_limits = vec![TokenLimit {
+        token: DEFAULT_FEE_TOKEN,
+        limit: U256::from(10u64) * U256::from(10).pow(U256::from(18)),
+    }];
+
+    // Test 1: Wrong chain_id should be rejected
+    println!("\nTest 1: KeyAuthorization with wrong chain_id should be rejected");
+    let wrong_chain_id = chain_id + 1; // Different chain ID
+    let key_auth_wrong_chain = create_key_authorization(
+        &root_signer,
+        access_key_addr,
+        mock_p256_sig.clone(),
+        wrong_chain_id,
+        u64::MAX,
+        spending_limits.clone(),
+    )?;
+
+    let tx_wrong_chain = TxAA {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        gas_limit: 300_000,
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        nonce_key: U256::ZERO,
+        nonce,
+        fee_token: None,
+        fee_payer_signature: None,
+        valid_before: Some(u64::MAX),
+        valid_after: None,
+        access_list: Default::default(),
+        key_authorization: Some(key_auth_wrong_chain),
+        aa_authorization_list: vec![],
+    };
+
+    let sig_hash = tx_wrong_chain.signature_hash();
+    let signature = root_signer.sign_hash_sync(&sig_hash)?;
+    let signed_tx = AASigned::new_unhashed(
+        tx_wrong_chain,
+        AASignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+    );
+    let envelope: TempoTxEnvelope = signed_tx.into();
+    let mut encoded = Vec::new();
+    envelope.encode_2718(&mut encoded);
+
+    let inject_result = setup.node.rpc.inject_tx(encoded.into()).await;
+
+    // Should be rejected
+    assert!(
+        inject_result.is_err(),
+        "Transaction with wrong chain_id KeyAuthorization MUST be rejected"
+    );
+
+    let error_msg = inject_result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("chain_id does not match"),
+        "Error must mention chain_id mismatch. Got: {error_msg}"
+    );
+    println!("  ✓ Wrong chain_id KeyAuthorization rejected as expected");
+
+    // Test 2: chain_id = 0 (wildcard) should be accepted
+    println!("\nTest 2: KeyAuthorization with chain_id = 0 (wildcard) should be accepted");
+    let key_auth_wildcard = create_key_authorization(
+        &root_signer,
+        access_key_addr,
+        mock_p256_sig,
+        0, // Wildcard chain_id
+        u64::MAX,
+        spending_limits,
+    )?;
+
+    let tx_wildcard = TxAA {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        gas_limit: 300_000,
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        nonce_key: U256::ZERO,
+        nonce,
+        fee_token: None,
+        fee_payer_signature: None,
+        valid_before: Some(u64::MAX),
+        valid_after: None,
+        access_list: Default::default(),
+        key_authorization: Some(key_auth_wildcard),
+        aa_authorization_list: vec![],
+    };
+
+    let sig_hash = tx_wildcard.signature_hash();
+    let signature = root_signer.sign_hash_sync(&sig_hash)?;
+    let tx_hash = submit_and_mine_aa_tx(
+        &mut setup,
+        tx_wildcard,
+        AASignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+    )
+    .await?;
+    println!("  ✓ Wildcard chain_id KeyAuthorization accepted (tx: {tx_hash})");
 
     Ok(())
 }
