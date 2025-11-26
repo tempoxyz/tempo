@@ -56,7 +56,7 @@ async fn fund_address_with_fee_tokens(
         }],
         nonce_key: U256::ZERO,
         nonce: provider.get_transaction_count(funder_addr).await?,
-        fee_token: None,
+        fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         ..Default::default()
@@ -73,6 +73,7 @@ async fn fund_address_with_fee_tokens(
 
     setup.node.rpc.inject_tx(encoded_funding.into()).await?;
     let funding_payload = setup.node.advance_block().await?;
+
     println!(
         "✓ Funded {} with {} tokens in block {}",
         recipient,
@@ -618,6 +619,7 @@ fn create_basic_aa_tx(chain_id: u64, nonce: u64, calls: Vec<Call>, gas_limit: u6
         calls,
         nonce_key: U256::ZERO,
         nonce,
+        // Use AlphaUSD to match fund_address_with_fee_tokens
         fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
@@ -1452,7 +1454,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         .abi_encode();
 
         calls.push(Call {
-            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+            to: DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO.into(),
             value: U256::ZERO,
             input: calldata.into(),
         });
@@ -1464,10 +1466,23 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
     );
 
     // Create AA transaction with batched calls and P256 signature
-    let batch_tx = create_basic_aa_tx(
-        chain_id, 0, // First transaction from P256 signer
-        calls, 500_000, // Higher gas limit for multiple calls
-    );
+    // Use AlphaUSD (DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO) since that's what we funded with
+    let batch_tx = TxAA {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        gas_limit: 500_000, // Higher gas limit for multiple calls
+        calls,
+        nonce_key: U256::ZERO,
+        nonce: 0, // First transaction from P256 signer
+        fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
+        fee_payer_signature: None,
+        valid_before: Some(u64::MAX),
+        valid_after: None,
+        access_list: Default::default(),
+        key_authorization: None,
+        aa_authorization_list: vec![],
+    };
 
     // Sign with P256
     let batch_sig_hash = batch_tx.signature_hash();
@@ -1504,7 +1519,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
 
     println!("\nChecking initial recipient balances:");
     for (i, (recipient, _)) in recipients.iter().enumerate() {
-        let balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
+        let balance = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
             .balanceOf(*recipient)
             .call()
             .await?;
@@ -1584,7 +1599,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         recipients.iter().zip(initial_balances.iter()).enumerate()
     {
         let expected_amount = transfer_base_amount * U256::from(*multiplier);
-        let final_balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
+        let final_balance = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
             .balanceOf(*recipient)
             .call()
             .await?;
@@ -1611,7 +1626,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         .map(|i| transfer_base_amount * U256::from(i))
         .fold(U256::ZERO, |acc, x| acc + x);
 
-    let signer_final_balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
+    let signer_final_balance = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
         .balanceOf(signer_addr)
         .call()
         .await?;
