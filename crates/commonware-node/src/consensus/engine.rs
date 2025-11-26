@@ -138,8 +138,8 @@ where
         );
 
         info!(
-            identity = self.signer.public_key(),
-            "using my identity (derived from supplied ed25519 signing key)",
+            identity = %self.signer.public_key(),
+            "using public ed25519 verifying key derived from provided private ed25519 signing key",
         );
 
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
