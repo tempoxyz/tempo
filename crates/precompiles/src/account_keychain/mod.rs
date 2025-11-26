@@ -26,18 +26,17 @@ use tempo_precompiles_macros::{Storable, contract};
 /// Storage layout (packed into single slot, right-aligned):
 /// - byte 0: signature_type (u8)
 /// - bytes 1-8: expiry (u64, little-endian)
-/// - byte 9: is_active (bool)
+/// - byte 9: enforce_limits (bool)
 #[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
 pub struct AuthorizedKey {
     /// Signature type: 0 = secp256k1, 1 = P256, 2 = WebAuthn
     pub signature_type: u8,
     /// Block timestamp when key expires
     pub expiry: u64,
-    /// Whether key is active
-    pub is_active: bool,
+    /// Whether to enforce spending limits for this key
+    pub enforce_limits: bool,
 }
 
-// TODO: Can we get some precompile macro utilities for this, which are compatible with read-only contexts?
 impl AuthorizedKey {
     /// Decode AuthorizedKey from a storage slot value
     ///
@@ -132,10 +131,9 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
             return Err(AccountKeychainError::zero_public_key().into());
         }
 
-        // Check if key already exists
+        // Check if key already exists (key exists if expiry > 0)
         let existing_key = self.sload_keys(msg_sender, call.keyId)?;
-
-        if existing_key.is_active {
+        if existing_key.expiry > 0 {
             return Err(AccountKeychainError::key_already_exists().into());
         }
 
@@ -151,15 +149,17 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
         let new_key = AuthorizedKey {
             signature_type,
             expiry: call.expiry,
-            is_active: true,
+            enforce_limits: call.enforceLimits,
         };
 
         self.sstore_keys(msg_sender, call.keyId, new_key)?;
 
-        // Set initial spending limits
-        let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
-        for limit in call.limits {
-            self.sstore_spending_limits(limit_key, limit.token, limit.amount)?;
+        // Set initial spending limits (only if enforce_limits is true)
+        if call.enforceLimits {
+            let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
+            for limit in call.limits {
+                self.sstore_spending_limits(limit_key, limit.token, limit.amount)?;
+            }
         }
 
         // Emit event
@@ -180,6 +180,10 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
     }
 
     /// Revoke an authorized key
+    ///
+    /// This deletes the key from storage by setting expiry to 0.
+    /// IMP: Spending limits must be cleared separately before revoking.
+    /// If you authorize the same key again, the spending limits of the old key will still be applied.
     pub fn revoke_key(&mut self, msg_sender: Address, call: revokeKeyCall) -> Result<()> {
         let transaction_key = self.tload_transaction_key()?;
 
@@ -187,15 +191,19 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
             return Err(AccountKeychainError::unauthorized_caller().into());
         }
 
-        let mut key = self.sload_keys(msg_sender, call.keyId)?;
+        let key = self.sload_keys(msg_sender, call.keyId)?;
 
-        if !key.is_active {
-            return Err(AccountKeychainError::key_inactive().into());
+        // Key exists if expiry > 0
+        if key.expiry == 0 {
+            return Err(AccountKeychainError::key_not_found().into());
         }
 
-        // Mark key as inactive
-        key.is_active = false;
-        self.sstore_keys(msg_sender, call.keyId, key)?;
+        // Delete the key by setting expiry to 0 (clears all fields)
+        let deleted_key = AuthorizedKey::default();
+        self.sstore_keys(msg_sender, call.keyId, deleted_key)?;
+
+        // Note: We don't clear spending limits here - they become inaccessible
+        // TODO: Add proper garbage collection for expired keys.
 
         // Emit event
         let mut public_key_bytes = [0u8; 32];
@@ -213,6 +221,9 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
     }
 
     /// Update spending limit for a key-token pair
+    ///
+    /// This can be used to add limits to an unlimited key (converting it to limited)
+    /// or to update existing limits.
     pub fn update_spending_limit(
         &mut self,
         msg_sender: Address,
@@ -224,11 +235,22 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
             return Err(AccountKeychainError::unauthorized_caller().into());
         }
 
-        // Verify key exists and is active
-        let key = self.sload_keys(msg_sender, call.keyId)?;
+        // Verify key exists and hasn't expired
+        let mut key = self.sload_keys(msg_sender, call.keyId)?;
 
-        if !key.is_active {
-            return Err(AccountKeychainError::key_inactive().into());
+        if key.expiry == 0 {
+            return Err(AccountKeychainError::key_not_found().into());
+        }
+
+        let current_timestamp = self.storage.timestamp().to::<u64>();
+        if current_timestamp >= key.expiry {
+            return Err(AccountKeychainError::key_expired().into());
+        }
+
+        // If this key had unlimited spending (enforce_limits=false), enable limits now
+        if !key.enforce_limits {
+            key.enforce_limits = true;
+            self.sstore_keys(msg_sender, call.keyId, key)?;
         }
 
         // Update the spending limit
@@ -256,12 +278,13 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
     pub fn get_key(&mut self, call: getKeyCall) -> Result<KeyInfo> {
         let key = self.sload_keys(call.account, call.keyId)?;
 
-        // If the key is not active, return default (non-existent key)
-        if !key.is_active {
+        // Key exists if expiry > 0
+        if key.expiry == 0 {
             return Ok(KeyInfo {
                 signatureType: SignatureType::Secp256k1,
                 keyId: Address::ZERO,
                 expiry: 0,
+                enforceLimits: false,
             });
         }
 
@@ -277,6 +300,7 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
             signatureType: signature_type,
             keyId: call.keyId,
             expiry: key.expiry,
+            enforceLimits: key.enforce_limits,
         })
     }
 
@@ -310,7 +334,7 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
         Ok(())
     }
 
-    /// Validate keychain authorization (existence, active status, expiry)
+    /// Validate keychain authorization (existence and expiry)
     ///
     /// This consolidates all validation checks into one method.
     /// Returns Ok(()) if the key is valid and authorized, Err otherwise.
@@ -322,11 +346,13 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
     ) -> Result<()> {
         let key = self.sload_keys(account, key_id)?;
 
-        if !key.is_active {
-            return Err(AccountKeychainError::key_inactive().into());
+        // Key exists if expiry > 0
+        if key.expiry == 0 {
+            return Err(AccountKeychainError::key_not_found().into());
         }
 
-        if key.expiry > 0 && current_timestamp >= key.expiry {
+        // Check expiry
+        if current_timestamp >= key.expiry {
             return Err(AccountKeychainError::key_expired().into());
         }
 
@@ -346,11 +372,16 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
             return Ok(());
         }
 
-        // Check key is valid
+        // Check key is valid (exists)
         let key = self.sload_keys(account, key_id)?;
 
-        if !key.is_active {
-            return Err(AccountKeychainError::key_inactive().into());
+        if key.expiry == 0 {
+            return Err(AccountKeychainError::key_not_found().into());
+        }
+
+        // If enforce_limits is false, this key has unlimited spending
+        if !key.enforce_limits {
+            return Ok(());
         }
 
         // Check and update spending limit
@@ -511,6 +542,7 @@ mod tests {
             keyId: existing_key,
             signatureType: SignatureType::Secp256k1,
             expiry: u64::MAX,
+            enforceLimits: true,
             limits: vec![],
         };
         keychain.authorize_key(msg_sender, setup_call).unwrap();
@@ -523,6 +555,7 @@ mod tests {
             keyId: Address::from([0x05; 20]),
             signatureType: SignatureType::P256,
             expiry: u64::MAX,
+            enforceLimits: true,
             limits: vec![],
         };
         let auth_result = keychain.authorize_key(msg_sender, auth_call);

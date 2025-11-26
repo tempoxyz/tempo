@@ -34,6 +34,7 @@ sol! {
             SignatureType signatureType;
             address keyId;
             uint64 expiry;
+            bool enforceLimits;
         }
         /// Emitted when a new key is authorized
         event KeyAuthorized(address indexed account, bytes32 indexed publicKey, uint8 signatureType, uint64 expiry);
@@ -45,14 +46,16 @@ sol! {
         event SpendingLimitUpdated(address indexed account, bytes32 indexed publicKey, address indexed token, uint256 newLimit);
 
         /// Authorize a new key for the caller's account
-        /// @param publicKey The public key or key identifier to authorize
+        /// @param keyId The key identifier (address derived from public key)
         /// @param signatureType 0: secp256k1, 1: P256, 2: WebAuthn
-        /// @param expiry Block timestamp when the key expires
-        /// @param limits Initial spending limits for tokens
+        /// @param expiry Block timestamp when the key expires (u64::MAX for never expires)
+        /// @param enforceLimits Whether to enforce spending limits for this key
+        /// @param limits Initial spending limits for tokens (only used if enforceLimits is true)
         function authorizeKey(
             address keyId,
             SignatureType signatureType,
             uint64 expiry,
+            bool enforceLimits,
             TokenLimit[] calldata limits
         ) external;
 
@@ -96,10 +99,10 @@ sol! {
         error KeyAlreadyExists();
         error KeyNotFound();
         error KeyExpired();
-        error KeyInactive();
         error SpendingLimitExceeded();
         error InvalidSignatureType();
         error ZeroPublicKey();
+        error ExpiryInPast();
     }
 }
 
@@ -124,11 +127,6 @@ impl AccountKeychainError {
         Self::KeyExpired(IAccountKeychain::KeyExpired {})
     }
 
-    /// Creates an error for key inactive.
-    pub const fn key_inactive() -> Self {
-        Self::KeyInactive(IAccountKeychain::KeyInactive {})
-    }
-
     /// Creates an error for spending limit exceeded.
     pub const fn spending_limit_exceeded() -> Self {
         Self::SpendingLimitExceeded(IAccountKeychain::SpendingLimitExceeded {})
@@ -142,5 +140,10 @@ impl AccountKeychainError {
     /// Creates an error for zero public key.
     pub const fn zero_public_key() -> Self {
         Self::ZeroPublicKey(IAccountKeychain::ZeroPublicKey {})
+    }
+
+    /// Creates an error for expiry timestamp in the past.
+    pub const fn expiry_in_past() -> Self {
+        Self::ExpiryInPast(IAccountKeychain::ExpiryInPast {})
     }
 }

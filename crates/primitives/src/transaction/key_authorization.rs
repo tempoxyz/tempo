@@ -27,11 +27,17 @@ pub struct TokenLimit {
 ///
 /// Used in TxAA to add a new key to the AccountKeychain precompile.
 /// The transaction must be signed by the root key to authorize adding this access key.
+///
+/// RLP encoding: `[key_type, key_id, signature, expiry?, limits?]`
+/// - Non-optional fields come first, followed by optional (trailing) fields
+/// - `expiry`: `None` (omitted or 0x80) = key never expires, `Some(timestamp)` = expires at timestamp
+/// - `limits`: `None` (omitted or 0x80) = unlimited spending, `Some([])` = no spending, `Some([...])` = specific limits
 #[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
-#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+#[rlp(trailing)]
+// TODO: Macro RLP tests don't work here because of the trailing flag.
 pub struct KeyAuthorization {
     /// Chain ID for replay protection (0 = valid on any chain)
     pub chain_id: u64,
@@ -39,17 +45,22 @@ pub struct KeyAuthorization {
     /// Type of key being authorized (Secp256k1, P256, or WebAuthn)
     pub key_type: SignatureType,
 
-    /// Unix timestamp when key expires (0 = never expires)
-    pub expiry: u64,
-
-    /// TIP20 spending limits for this key
-    pub limits: Vec<TokenLimit>,
-
     /// Key identifier, is the address derived from the public key of the key type.
     pub key_id: Address,
 
     /// Signature authorizing this key (signed by root key)
     pub signature: PrimitiveSignature,
+
+    /// Unix timestamp when key expires.
+    /// - `None` (RLP 0x80) = key never expires (stored as u64::MAX in precompile)
+    /// - `Some(timestamp)` = key expires at this timestamp
+    pub expiry: Option<u64>,
+
+    /// TIP20 spending limits for this key.
+    /// - `None` (RLP 0x80) = unlimited spending (no limits enforced)
+    /// - `Some([])` = no spending allowed (enforce_limits=true but no tokens allowed)
+    /// - `Some([TokenLimit{...}])` = specific limits enforced
+    pub limits: Option<Vec<TokenLimit>>,
 }
 
 impl KeyAuthorization {
@@ -63,7 +74,7 @@ impl KeyAuthorization {
             self.key_type,
             self.key_id,
             self.expiry,
-            &self.limits,
+            self.limits.as_deref(),
         )
     }
 
@@ -71,24 +82,39 @@ impl KeyAuthorization {
     ///
     /// The message format is: `keccak256(rlp([chain_id, key_type, key_id, expiry, limits]))`
     ///
+    /// - `expiry`: `None` encodes as RLP empty (0x80), `Some(v)` encodes as the u64 value
+    /// - `limits`: `None` encodes as RLP empty (0x80), `Some([])` encodes as empty list (0xc0),
+    ///   `Some([...])` encodes as the list of TokenLimits
+    ///
     /// Note: The signature field is NOT included in this hash, as it signs this hash.
     /// Note: chain_id of 0 allows replay on any chain (wildcard).
     pub fn authorization_message_hash(
         chain_id: u64,
         key_type: SignatureType,
         key_id: Address,
-        expiry: u64,
-        limits: &[TokenLimit],
+        expiry: Option<u64>,
+        limits: Option<&[TokenLimit]>,
     ) -> B256 {
         let mut auth_message = Vec::new();
         let key_type_byte: u8 = key_type.into();
 
         // Calculate payload length
+        // Option<u64>: None = 1 byte (0x80), Some(v) = v.length()
+        let expiry_length = match expiry {
+            None => 1, // RLP empty string 0x80
+            Some(v) => v.length(),
+        };
+        // Option<&[TokenLimit]>: None = 1 byte (0x80), Some(v) = list_length(v)
+        let limits_length = match limits {
+            None => 1, // RLP empty string 0x80
+            Some(v) => list_length(v),
+        };
+
         let payload_length = chain_id.length()
             + key_type_byte.length()
             + key_id.length()
-            + expiry.length()
-            + list_length(limits);
+            + expiry_length
+            + limits_length;
 
         // Encode outer list header
         alloy_rlp::Header {
@@ -101,10 +127,30 @@ impl KeyAuthorization {
         chain_id.encode(&mut auth_message);
         key_type_byte.encode(&mut auth_message);
         key_id.encode(&mut auth_message);
-        expiry.encode(&mut auth_message);
-        encode_list(limits, &mut auth_message);
+
+        // Encode expiry: None as 0x80, Some(v) as the value
+        match expiry {
+            None => auth_message.push(0x80), // RLP empty string
+            Some(v) => v.encode(&mut auth_message),
+        }
+
+        // Encode limits: None as 0x80, Some(v) as the list
+        match limits {
+            None => auth_message.push(0x80), // RLP empty string (unlimited)
+            Some(v) => encode_list(v, &mut auth_message),
+        }
 
         keccak256(&auth_message)
+    }
+
+    /// Returns whether this key has unlimited spending (limits is None)
+    pub fn has_unlimited_spending(&self) -> bool {
+        self.limits.is_none()
+    }
+
+    /// Returns whether this key never expires (expiry is None)
+    pub fn never_expires(&self) -> bool {
+        self.expiry.is_none()
     }
 
     /// Recover the signer of the [`KeyAuthorization`].
@@ -135,11 +181,13 @@ impl reth_primitives_traits::InMemorySize for KeyAuthorization {
     fn size(&self) -> usize {
         mem::size_of::<u64>() + // chain_id
         mem::size_of::<u8>() + // key_type
-        mem::size_of::<u64>() + // expiry
+        mem::size_of::<Option<u64>>() + // expiry
         mem::size_of::<Address>() + // key_id
         self.signature.size() + // signature
-        self.limits.iter().map(|_limit| {
-            mem::size_of::<Address>() + mem::size_of::<U256>()
-        }).sum::<usize>()
+        self.limits.as_ref().map_or(0, |limits| {
+            limits.iter().map(|_limit| {
+                mem::size_of::<Address>() + mem::size_of::<U256>()
+            }).sum::<usize>()
+        })
     }
 }
