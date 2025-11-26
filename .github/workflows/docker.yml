@@ -6,7 +6,6 @@ on:
       - main
     tags:
       - "v*.*.*"
-  pull_request:
   workflow_dispatch:
   workflow_call:
   schedule:
@@ -27,7 +26,7 @@ jobs:
     runs-on: depot-ubuntu-latest-16
     strategy:
       matrix:
-        binary: 
+        binary:
           - name: tempo
             features: "asm-keccak,jemalloc,otlp"
           - name: tempo-bench
