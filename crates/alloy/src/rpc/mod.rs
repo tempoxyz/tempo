@@ -4,7 +4,7 @@ mod header;
 pub use header::TempoHeaderResponse;
 
 mod request;
-pub use request::{FeeToken, TempoTransactionRequest};
+pub use request::{FeeToken, TempoTransactionCallBuilderExt, TempoTransactionRequest};
 
 mod receipt;
 pub use receipt::TempoTransactionReceipt;

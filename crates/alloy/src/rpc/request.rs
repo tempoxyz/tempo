@@ -1,12 +1,16 @@
 use alloy_consensus::{Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, error::ValueError};
+use alloy_contract::{CallBuilder, CallDecoder};
 use alloy_eips::Typed2718;
 use alloy_primitives::{Address, Bytes};
+use alloy_provider::Provider;
 use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use tempo_primitives::{
     AASigned, SignatureType, TempoTxEnvelope, TxAA, TxFeeToken,
     transaction::{AASignedAuthorization, Call, TempoTypedTransaction},
 };
+
+use crate::TempoNetwork;
 
 /// An Ethereum [`TransactionRequest`] with an optional `fee_token`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -305,5 +309,18 @@ impl From<TempoTypedTransaction> for TempoTransactionRequest {
             },
             TempoTypedTransaction::AA(tx) => tx.into(),
         }
+    }
+}
+
+/// Extension trait for [`CallBuilder`]
+pub trait TempoTransactionCallBuilderExt {
+    fn fee_token(self, fee_token: Address) -> Self;
+}
+
+impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoTransactionCallBuilderExt
+    for CallBuilder<P, D, TempoNetwork>
+{
+    fn fee_token(self, fee_token: Address) -> Self {
+        self.map(|request| request.with_fee_token(fee_token))
     }
 }

@@ -1,6 +1,7 @@
 use super::*;
 use alloy::providers::DynProvider;
 use indicatif::ProgressIterator;
+use tempo_alloy::rpc::TempoTransactionCallBuilderExt;
 use tempo_contracts::precompiles::{IStablecoinExchange, PATH_USD_ADDRESS};
 use tempo_precompiles::tip20::U128_MAX;
 
@@ -56,9 +57,7 @@ pub(super) async fn setup(
         user_token_addresses.iter().copied().map(|token| {
             let exchange = exchange.clone();
             Box::pin(async move {
-                let tx = exchange
-                    .createPair(token)
-                    .map(|request| request.with_fee_token(fee_token));
+                let tx = exchange.createPair(token).fee_token(fee_token);
                 tx.send().await
             }) as BoxFuture<'static, _>
         }),
@@ -78,9 +77,7 @@ pub(super) async fn setup(
                 #[expect(clippy::redundant_iter_cloned)] // False positive
                 all_tokens.iter().cloned().map(move |token| {
                     Box::pin(async move {
-                        let tx = token
-                            .mint(signer, mint_amount)
-                            .map(|request| request.with_fee_token(fee_token));
+                        let tx = token.mint(signer, mint_amount).fee_token(fee_token);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 })
@@ -102,7 +99,7 @@ pub(super) async fn setup(
                     Box::pin(async move {
                         let tx = token
                             .approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
-                            .map(|request| request.with_fee_token(fee_token));
+                            .fee_token(fee_token);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 })
@@ -130,7 +127,7 @@ pub(super) async fn setup(
                     Box::pin(async move {
                         let tx = exchange
                             .placeFlip(token, order_amount, true, tick_under, tick_over)
-                            .map(|request| request.with_fee_token(fee_token));
+                            .fee_token(fee_token);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 })
@@ -162,7 +159,7 @@ where
             quote_token,
             admin,
         )
-        .map(|request| request.with_fee_token(fee_token))
+        .fee_token(fee_token)
         .send()
         .await?
         .get_receipt()
@@ -175,7 +172,7 @@ where
 
     roles
         .grantRole(*ISSUER_ROLE, admin)
-        .map(|request| request.with_fee_token(fee_token))
+        .fee_token(fee_token)
         .send()
         .await?
         .get_receipt()

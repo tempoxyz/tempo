@@ -11260,6 +11260,7 @@ name = "tempo-alloy"
 version = "0.5.3"
 dependencies = [
  "alloy-consensus",
+ "alloy-contract",
  "alloy-eips",
  "alloy-network",
  "alloy-primitives",

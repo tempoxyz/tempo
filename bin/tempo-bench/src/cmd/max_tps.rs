@@ -5,7 +5,7 @@ use reth_tracing::{
     RethTracer, Tracer,
     tracing::{error, info, warn},
 };
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{TempoNetwork, rpc::TempoTransactionCallBuilderExt};
 
 use alloy::{
     consensus::BlockHeader,
@@ -453,7 +453,7 @@ async fn generate_transactions(
                         // Transfer minimum possible amount
                         let tx = token
                             .transfer(Address::random(), U256::ONE)
-                            .map(|request| request.with_fee_token(fee_token));
+                            .fee_token(fee_token);
                         tx.send().await
                     })
                 }
@@ -467,7 +467,7 @@ async fn generate_transactions(
                         // Swap minimum possible amount
                         let tx = exchange
                             .quoteSwapExactAmountIn(token, quote, 1)
-                            .map(|request| request.with_fee_token(fee_token));
+                            .fee_token(fee_token);
                         tx.send().await
                     })
                 }
@@ -483,7 +483,7 @@ async fn generate_transactions(
                             (random::<u16>() % (MAX_TICK - MIN_TICK) as u16) as i16 + MIN_TICK;
                         let tx = exchange
                             .place(token, MIN_ORDER_AMOUNT, true, tick)
-                            .map(|request| request.with_fee_token(fee_token));
+                            .fee_token(fee_token);
                         tx.send().await
                     })
                 }
