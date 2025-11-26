@@ -11751,6 +11751,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
+ "futures",
  "reth-chainspec",
  "reth-ethereum-primitives",
  "reth-primitives-traits",
@@ -11763,6 +11764,7 @@ dependencies = [
  "tempo-revm",
  "thiserror 2.0.17",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

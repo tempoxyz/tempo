@@ -417,6 +417,15 @@ where
             .with_validator(validator)
             .build_and_spawn_maintenance_task(blob_store, pool_config)?;
 
+        // Spawn mempool maintenance tasks
+        let task_pool = transaction_pool.clone();
+        let task_provider = ctx.provider().clone();
+        ctx.task_executor()
+            .spawn(tempo_transaction_pool::tasks::evict_expired_aa_txs(
+                task_pool,
+                task_provider,
+            ));
+
         info!(target: "reth::cli", "Transaction pool initialized");
         debug!(target: "reth::cli", "Spawned txpool maintenance task");
 

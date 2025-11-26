@@ -9,6 +9,7 @@ use reth_transaction_pool::{
 
 use crate::{transaction::TempoPooledTransaction, validator::TempoTransactionValidator};
 
+pub mod tasks;
 pub mod transaction;
 pub mod validator;
 
