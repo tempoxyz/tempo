@@ -5140,8 +5140,8 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         access_key_addr,
         mock_p256_sig.clone(),
         wrong_chain_id,
-        u64::MAX,
-        spending_limits.clone(),
+        None, // Never expires
+        Some(spending_limits.clone()),
     )?;
 
     let tx_wrong_chain = TxAA {
@@ -5197,8 +5197,8 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         access_key_addr,
         mock_p256_sig,
         0, // Wildcard chain_id
-        u64::MAX,
-        spending_limits,
+        None, // Never expires
+        Some(spending_limits),
     )?;
 
     let tx_wildcard = TxAA {
