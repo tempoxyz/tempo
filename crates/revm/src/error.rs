@@ -126,6 +126,10 @@ pub enum TempoInvalidTransaction {
         got: u64,
     },
 
+    /// Keychain operations are not supported in subblock transactions.
+    #[error("keychain operations are not supported in subblock transactions")]
+    KeychainOpInSubblockTransaction,
+
     /// Fee payment error.
     #[error(transparent)]
     CollectFeePreTx(#[from] FeePaymentError),
