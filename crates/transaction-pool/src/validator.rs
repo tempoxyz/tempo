@@ -22,7 +22,7 @@ use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, compute_keys_slot,
     nonce::slots, storage::double_mapping_slot,
 };
-use tempo_primitives::subblock::has_sub_block_nonce_key_prefix;
+use tempo_primitives::{subblock::has_sub_block_nonce_key_prefix, transaction::TxAA};
 use tempo_revm::TempoStateAccess;
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
@@ -171,6 +171,40 @@ where
         Ok(Ok(()))
     }
 
+    /// Validates AA transaction time-bound conditionals
+    fn ensure_valid_conditionals(&self, tx: &TxAA) -> Result<(), TempoPoolTransactionError> {
+        // Reject AA txs where `valid_before` is too close to current time (or already expired).
+        if let Some(valid_before) = tx.valid_before {
+            // Uses tip_timestamp, as if the node is lagging lagging, the maintenance task will evict expired txs.
+            let current_time = self.inner.fork_tracker().tip_timestamp();
+            let min_allowed = current_time.saturating_add(AA_VALID_BEFORE_MIN_SECS);
+            if valid_before <= min_allowed {
+                return Err(TempoPoolTransactionError::InvalidValidBefore {
+                    valid_before,
+                    min_allowed,
+                });
+            }
+        }
+
+        // Reject AA txs where `valid_after` is too far in the future.
+        if let Some(valid_after) = tx.valid_after {
+            // Uses local time to avoid rejecting valid txs when node is lagging.
+            let current_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let max_allowed = current_time.saturating_add(self.aa_valid_after_max_secs);
+            if valid_after > max_allowed {
+                return Err(TempoPoolTransactionError::InvalidValidAfter {
+                    valid_after,
+                    max_allowed,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
     fn validate_one(
         &self,
         origin: TransactionOrigin,
@@ -209,40 +243,14 @@ where
             );
         }
 
-        if let Some(tx) = transaction.inner().as_aa() {
-            // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent mempool DOS attacks.
-            if let Some(valid_before) = tx.tx().valid_before {
-                let current_time = self.inner.fork_tracker().tip_timestamp();
-                let min_allowed = current_time.saturating_add(AA_VALID_BEFORE_MIN_SECS);
-                if valid_before <= min_allowed {
-                    return TransactionValidationOutcome::Invalid(
-                        transaction,
-                        InvalidPoolTransactionError::other(
-                            TempoPoolTransactionError::InvalidValidBefore {
-                                valid_before,
-                                min_allowed,
-                            },
-                        ),
-                    );
-                }
-            }
-
-            // Reject AA txs where `valid_after` is too far in the future to prevent mempool DOS attacks.
-            if let Some(valid_after) = tx.tx().valid_after {
-                let current_time = self.inner.fork_tracker().tip_timestamp();
-                let max_allowed = current_time.saturating_add(self.aa_valid_after_max_secs);
-                if valid_after > max_allowed {
-                    return TransactionValidationOutcome::Invalid(
-                        transaction,
-                        InvalidPoolTransactionError::other(
-                            TempoPoolTransactionError::InvalidValidAfter {
-                                valid_after,
-                                max_allowed,
-                            },
-                        ),
-                    );
-                }
-            }
+        // Validate AA transaction temporal conditionals (`valid_before` and `valid_after`).
+        if let Some(tx) = transaction.inner().as_aa()
+            && let Err(err) = self.ensure_valid_conditionals(tx.tx())
+        {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
+            );
         }
 
         let fee_payer = match transaction.inner().fee_payer(transaction.sender()) {
