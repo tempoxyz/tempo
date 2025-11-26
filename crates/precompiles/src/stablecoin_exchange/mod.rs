@@ -1418,6 +1418,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             return Err(StablecoinExchangeError::identical_tokens().into());
         }
 
+        // Validate that both tokens are TIP20 tokens
+        if self.storage.spec().is_allegretto() && (!is_tip20(token_in) || !is_tip20(token_out)) {
+            return Err(StablecoinExchangeError::invalid_token().into());
+        }
+
         // Check if direct or reverse pair exists
         let in_quote = TIP20Token::from_address(token_in, self.storage).quote_token()?;
         let out_quote = TIP20Token::from_address(token_out, self.storage).quote_token()?;
@@ -4560,6 +4565,38 @@ mod tests {
             valid_flip_tick,
         );
         assert!(result.is_ok());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_trade_path_rejects_non_tip20_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let admin = Address::random();
+        let user = Address::random();
+
+        let (_, quote_token) = setup_test_tokens(
+            exchange.storage,
+            admin,
+            user,
+            exchange.address,
+            MIN_ORDER_AMOUNT,
+        );
+
+        let non_tip20_address = Address::random();
+        let result = exchange.find_trade_path(non_tip20_address, quote_token);
+        assert!(
+            matches!(
+                result,
+                Err(TempoPrecompileError::StablecoinExchange(
+                    StablecoinExchangeError::InvalidToken(_)
+                ))
+            ),
+            "Should return InvalidToken error for non-TIP20 token post-Allegretto"
+        );
 
         Ok(())
     }
