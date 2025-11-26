@@ -1,4 +1,6 @@
-use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
+use crate::utils::{
+    TestNodeBuilder, await_receipts, setup_test_token, setup_test_token_pre_allegretto,
+};
 use alloy::{
     primitives::U256,
     providers::{Provider, ProviderBuilder},
@@ -118,14 +120,14 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     Ok(())
 }
 
+/// Test burning liquidity from a FeeAMM pool.
+/// Note: This test runs without Moderato since balanced `mint` is disabled post-Moderato.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_burn_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    // Run without Moderato to use balanced `mint` function
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -134,9 +136,9 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
 
     let amount = U256::from(u64::MAX);
 
-    // Setup test token and fee AMM
-    let token_0 = setup_test_token(provider.clone(), caller).await?;
-    let token_1 = setup_test_token(provider.clone(), caller).await?;
+    // Setup test token and fee AMM (use pre-allegretto token creation)
+    let token_0 = setup_test_token_pre_allegretto(provider.clone(), caller).await?;
+    let token_1 = setup_test_token_pre_allegretto(provider.clone(), caller).await?;
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Mint tokens to caller
@@ -148,11 +150,12 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
     let pool_key = PoolKey::new(*token_0.address(), *token_1.address());
     let pool_id = pool_key.get_id();
 
-    // Mint liquidity first (use mintWithValidatorToken as mint is disabled post-Moderato)
+    // Mint liquidity using balanced `mint` (available pre-Moderato)
     let mint_receipt = fee_amm
-        .mintWithValidatorToken(
+        .mint(
             pool_key.user_token,
             pool_key.validator_token,
+            amount,
             amount,
             caller,
         )
@@ -463,23 +466,23 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     Ok(())
 }
 
+/// Test partial burn of liquidity from a FeeAMM pool.
+/// Note: This test runs without Moderato since balanced `mint` is disabled post-Moderato.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_burn_liquidity_partial() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    // Run without Moderato to use balanced `mint` function
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let alice = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
-    // Setup test tokens and fee AMM
-    let user_token = setup_test_token(provider.clone(), alice).await?;
-    let validator_token = setup_test_token(provider.clone(), alice).await?;
+    // Setup test tokens and fee AMM (use pre-allegretto token creation)
+    let user_token = setup_test_token_pre_allegretto(provider.clone(), alice).await?;
+    let validator_token = setup_test_token_pre_allegretto(provider.clone(), alice).await?;
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Define amounts (100000 * 1e18)
@@ -496,11 +499,12 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
     let pool_key = PoolKey::new(*user_token.address(), *validator_token.address());
     let pool_id = pool_key.get_id();
 
-    // Add liquidity (use mintWithValidatorToken as mint is disabled post-Moderato)
+    // Add liquidity using balanced `mint` (available pre-Moderato)
     let mint_receipt = fee_amm
-        .mintWithValidatorToken(
+        .mint(
             pool_key.user_token,
             pool_key.validator_token,
+            amount0,
             amount1,
             alice,
         )
