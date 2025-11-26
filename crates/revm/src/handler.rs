@@ -8,7 +8,7 @@ use reth_evm::EvmError;
 use revm::{
     Database,
     context::{
-        Block, Cfg, ContextTr, JournalTr, Transaction,
+        Block, Cfg, ContextTr, JournalTr, LocalContextTr, Transaction,
         result::{EVMError, ExecutionResult, InvalidTransaction},
         transaction::{AccessListItem, AccessListItemTr},
     },
@@ -831,15 +831,10 @@ where
         }
 
         // Call the precompile function to collect the fee
-        // We specify the `to_addr` to account for the case where the to address is a tip20
-        // token and the fee token is not set for the specified caller.
-        // In this case, the collect_fee_pre_tx fn will set the fee token as the `to_addr`
-        let to_addr = tx.kind().into_to().unwrap_or_default();
         fee_manager
             .collect_fee_pre_tx(
                 self.fee_payer,
                 self.fee_token,
-                to_addr,
                 gas_balance_spending,
                 beneficiary,
             )
@@ -1015,9 +1010,20 @@ where
         evm: &mut Self::Evm,
         error: Self::Error,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
+        // For subblock transactions that failed `collectFeePreTx` call we catch error and treat such transactions as valid.
         if evm.ctx.tx.is_subblock_transaction()
+            && evm.cfg.spec.is_allegretto()
             && let Some(TempoInvalidTransaction::CollectFeePreTx(_)) = error.as_invalid_tx_err()
         {
+            // Commit the transaction.
+            //
+            // `collectFeePreTx` call will happen after the nonce bump so this will only commit the nonce increment.
+            evm.ctx.journaled_state.commit_tx();
+
+            evm.ctx().local_mut().clear();
+            evm.ctx().journal_mut().discard_tx();
+            evm.frame_stack().clear();
+
             Ok(ExecutionResult::Halt {
                 reason: TempoHaltReason::SubblockTxFeePayment,
                 gas_used: 0,

@@ -180,7 +180,6 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         &mut self,
         fee_payer: Address,
         user_token: Address,
-        _to: Address,
         max_amount: U256,
         beneficiary: Address,
     ) -> Result<Address> {
@@ -674,7 +673,7 @@ mod tests {
             .unwrap();
 
         // Call collect_fee_pre_tx directly
-        let result = fee_manager.collect_fee_pre_tx(user, token, validator, max_amount, validator);
+        let result = fee_manager.collect_fee_pre_tx(user, token, max_amount, validator);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), token);
     }
