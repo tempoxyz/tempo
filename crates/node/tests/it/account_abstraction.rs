@@ -5196,7 +5196,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         &root_signer,
         access_key_addr,
         mock_p256_sig,
-        0, // Wildcard chain_id
+        0,    // Wildcard chain_id
         None, // Never expires
         Some(spending_limits),
     )?;
