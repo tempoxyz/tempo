@@ -266,12 +266,6 @@ where
             );
         }
 
-        // NOTE: it would be good to compare the static validators addresses to
-        // what was read from the contract. But this would mean that some nodes
-        // transition to the dynamic validator regime while others don't,
-        // depending on how they are launched. Only the ed25519 keys are
-        // guaranteed to be the same across nodes.
-
         let mut new_validator_state = pre_allegretto_validator_state.clone();
         // NOTE: `push_on_failure` ensures that the dealers remain in the
         // validator set. This pushes the on-chain validators into the
