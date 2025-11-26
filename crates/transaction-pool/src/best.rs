@@ -72,17 +72,21 @@ where
             self.next_right = self.right.next_tx_and_priority();
         }
 
-        match (&self.next_left, &self.next_right) {
+        match (&mut self.next_left, &mut self.next_right) {
             (None, None) => {
                 // both iters are done
                 None
             }
-            // Only one item available - take it
-            (Some(item), None) | (None, Some(item)) => {
+            // Only left has an item - take it
+            (Some(_), None) => {
                 let (item, priority) = self.next_left.take()?;
                 Some((item, priority))
             }
-
+            // Only right has an item - take it
+            (None, Some(_)) => {
+                let (item, priority) = self.next_right.take()?;
+                Some((item, priority))
+            }
             // Both sides have items - compare priorities and take the higher one
             (Some((_, left_priority)), Some((_, right_priority))) => {
                 // Higher priority value is better
