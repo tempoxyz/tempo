@@ -2436,7 +2436,7 @@ dependencies = [
  "quote",
  "syn 2.0.111",
  "tracing",
- "tracing-subscriber 0.3.20",
+ "tracing-subscriber 0.3.21",
 ]
 
 [[package]]
@@ -2516,7 +2516,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-opentelemetry",
- "tracing-subscriber 0.3.20",
+ "tracing-subscriber 0.3.21",
 ]
 
 [[package]]
@@ -5383,7 +5383,7 @@ dependencies = [
  "generator",
  "scoped-tls",
  "tracing",
- "tracing-subscriber 0.3.20",
+ "tracing-subscriber 0.3.21",
 ]
 
 [[package]]
@@ -9686,7 +9686,7 @@ dependencies = [
  "tracing-appender",
  "tracing-journald",
  "tracing-logfmt",
- "tracing-subscriber 0.3.20",
+ "tracing-subscriber 0.3.21",
 ]
 
 [[package]]
@@ -9702,7 +9702,7 @@ dependencies = [
  "opentelemetry_sdk",
  "tracing",
  "tracing-opentelemetry",
- "tracing-subscriber 0.3.20",
+ "tracing-subscriber 0.3.21",
  "url",
 ]
 
@@ -11471,7 +11471,7 @@ dependencies = [
  "tempo-precompiles",
  "tokio",
  "tracing",
- "tracing-subscriber 0.3.20",
+ "tracing-subscriber 0.3.21",
 ]
 
 [[package]]
@@ -11540,6 +11540,7 @@ dependencies = [
  "alloy-serde",
  "async-trait",
  "base64 0.22.1",
+ "clap",
  "eyre",
  "futures",
  "jsonrpsee",
@@ -11747,7 +11748,7 @@ dependencies = [
  "tempo-telemetry-util",
  "tokio",
  "tracing",
- "tracing-subscriber 0.3.20",
+ "tracing-subscriber 0.3.21",
 ]
 
 [[package]]
@@ -11771,6 +11772,7 @@ dependencies = [
  "parking_lot",
  "reth-chainspec",
  "reth-eth-wire-types",
+ "reth-ethereum-primitives",
  "reth-metrics",
  "reth-primitives-traits",
  "reth-provider",
@@ -11783,6 +11785,7 @@ dependencies = [
  "tempo-revm",
  "thiserror 2.0.17",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -12331,9 +12334,9 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 
 [[package]]
 name = "tracing"
-version = "0.1.41"
+version = "0.1.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "784e0ac535deb450455cbfa28a6f0df145ea1bb7ae51b821cf5e7927fdcfbdd0"
+checksum = "8eb41cbdb933e23b7929f47bb577710643157d7602ef3a2ebd3902b13ac5eda6"
 dependencies = [
  "log",
  "pin-project-lite",
@@ -12350,7 +12353,7 @@ dependencies = [
  "crossbeam-channel",
  "thiserror 2.0.17",
  "time",
- "tracing-subscriber 0.3.20",
+ "tracing-subscriber 0.3.21",
 ]
 
 [[package]]
@@ -12392,7 +12395,7 @@ checksum = "2d3a81ed245bfb62592b1e2bc153e77656d94ee6a0497683a65a12ccaf2438d0"
 dependencies = [
  "libc",
  "tracing-core",
- "tracing-subscriber 0.3.20",
+ "tracing-subscriber 0.3.21",
 ]
 
 [[package]]
@@ -12415,7 +12418,7 @@ dependencies = [
  "time",
  "tracing",
  "tracing-core",
- "tracing-subscriber 0.3.20",
+ "tracing-subscriber 0.3.21",
 ]
 
 [[package]]
@@ -12433,7 +12436,7 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
- "tracing-subscriber 0.3.20",
+ "tracing-subscriber 0.3.21",
  "web-time",
 ]
 
@@ -12458,9 +12461,9 @@ dependencies = [
 
 [[package]]
 name = "tracing-subscriber"
-version = "0.3.20"
+version = "0.3.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2054a14f5307d601f88daf0553e1cbf472acc4f2c51afab632431cdcd72124d5"
+checksum = "bee4bf13715d00789f2a099fd05d127c012bddc5c6628f2c8968374c1820c01d"
 dependencies = [
  "matchers",
  "nu-ansi-term",

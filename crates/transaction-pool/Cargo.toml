@@ -30,15 +30,17 @@ alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
 
+futures.workspace = true
+tracing.workspace = true
 parking_lot.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 thiserror.workspace = true
-futures.workspace = true
 metrics.workspace = true
 
 [dev-dependencies]
 reth-transaction-pool = { workspace = true, features = ["test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
+reth-ethereum-primitives.workspace = true
 alloy-eips.workspace = true
 alloy-consensus.workspace = true
 tokio.workspace = true
