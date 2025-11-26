@@ -347,8 +347,9 @@ mod tests {
     #[test]
     fn test_get_fee_token_stablecoin_exchange() -> eyre::Result<()> {
         let caller = Address::random();
-        let token_in = Address::random();
-        let token_out = Address::random();
+        // Use PathUSD as token_in since it's a known valid USD fee token
+        let token_in = DEFAULT_FEE_TOKEN_POST_ALLEGRETTO;
+        let token_out = DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO;
 
         // Test swapExactAmountIn
         let call = IStablecoinExchange::swapExactAmountInCall {
@@ -370,7 +371,8 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let token = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::default())?;
+        // Stablecoin exchange fee token inference requires Allegretto hardfork
+        let token = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
         assert_eq!(token, token_in);
 
         // Test swapExactAmountOut
@@ -393,7 +395,7 @@ mod tests {
             ..Default::default()
         };
 
-        let token = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::default())?;
+        let token = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
         assert_eq!(token, token_in);
 
         Ok(())

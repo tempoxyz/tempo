@@ -989,8 +989,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::{
-        PATH_USD_ADDRESS, error::TempoPrecompileError,
-        storage::hashmap::HashMapStorageProvider,
+        PATH_USD_ADDRESS, error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
     };
     use rand::{Rng, distributions::Alphanumeric, thread_rng};
 

@@ -131,7 +131,10 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Run without Moderato to use balanced `mint` function
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_genesis(include_str!("../assets/test-genesis-pre-moderato.json").to_string())
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -156,9 +159,10 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
 
     // Mint liquidity using balanced `mint` (available pre-Moderato)
     let mint_receipt = fee_amm
-        .mintWithValidatorToken(
+        .mint(
             pool_key.user_token,
             pool_key.validator_token,
+            amount,
             amount,
             caller,
         )
@@ -397,7 +401,10 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Run without Moderato to use balanced `mint` function
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_genesis(include_str!("../assets/test-genesis-pre-moderato.json").to_string())
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -480,7 +487,10 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Run without Moderato to use balanced `mint` function
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_genesis(include_str!("../assets/test-genesis-pre-moderato.json").to_string())
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -493,11 +503,13 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Define amounts (100000 * 1e18)
-    let amount = uint!(2200000_000000000000000000_U256);
+    let amount0 = uint!(100000_000000000000000000_U256);
+    let amount1 = uint!(100000_000000000000000000_U256);
 
     // Mint tokens to alice
     let mut pending = vec![];
-    pending.push(validator_token.mint(alice, amount).send().await?);
+    pending.push(user_token.mint(alice, amount0).send().await?);
+    pending.push(validator_token.mint(alice, amount1).send().await?);
     await_receipts(&mut pending).await?;
 
     // Get pool info
@@ -506,7 +518,13 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
 
     // Add liquidity using balanced `mint` (available pre-Moderato)
     let mint_receipt = fee_amm
-        .mintWithValidatorToken(pool_key.user_token, pool_key.validator_token, amount, alice)
+        .mint(
+            pool_key.user_token,
+            pool_key.validator_token,
+            amount0,
+            amount1,
+            alice,
+        )
         .send()
         .await?
         .get_receipt()
