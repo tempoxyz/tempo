@@ -1,93 +1,82 @@
 use super::*;
 use alloy::providers::DynProvider;
-use std::pin::Pin;
 use tempo_contracts::precompiles::{IStablecoinExchange, PATH_USD_ADDRESS};
-use tempo_precompiles::stablecoin_exchange::{MAX_TICK, MIN_TICK};
-
-const GAS_LIMIT: u64 = 500_000;
 
 /// This method performs a one-time setup for sending a lot of transactions:
-/// * Adds a quote token and a couple of user tokens paired with the quote token.
-/// * Mints some large amount for all `signers` and approves unlimited spending for stablecoin
-///   exchange contract.
-/// * Seeds initial liquidity by placing flip orders
+/// * Deploys the specified number of user tokens.
+/// * Creates DEX pairs of user tokens with the quote token.
+/// * Mints user tokens for all signers and approves unlimited spending for DEX.
+/// * Seeds initial liquidity by placing DEX flip orders.
 pub(super) async fn setup(
-    url: Url,
-    chain_id: ChainId,
-    signer: PrivateKeySigner,
-    signers: Vec<PrivateKeySigner>,
+    signer_providers: &[(PrivateKeySigner, DynProvider<TempoNetwork>)],
+    user_tokens: usize,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
-) -> eyre::Result<(
-    IStablecoinExchangeInstance<DynProvider>,
-    Address,
-    Vec<Address>,
-)> {
-    println!("Sending DEX setup transactions...");
+) -> eyre::Result<(Address, Vec<Address>)> {
+    info!(user_tokens, "Setting up DEX");
 
-    let user_tokens_count = 2;
-    let tokens_count = user_tokens_count + 1;
-    let signers_count = signers.len() as u64;
-    let setup_test_token_tx_count = 2;
-    let tx_count = ProgressBar::new(
-        setup_test_token_tx_count * user_tokens_count
-            + user_tokens_count
-            + 2 * tokens_count * signers_count
-            + user_tokens_count * signers_count,
-    );
-    tx_count.tick();
+    let tx_count = ProgressBar::new(0);
 
-    // Setup HTTP provider with a test wallet
+    // Grab first signer provider
+    let (signer, provider) = signer_providers.first().unwrap();
     let caller = signer.address();
-    let provider = ProviderBuilder::new()
-        .wallet(signer.clone())
-        .connect_http(url.clone());
 
-    let base1 = setup_test_token(provider.clone(), caller, &tx_count).await?;
-    let base2 = setup_test_token(provider.clone(), caller, &tx_count).await?;
-    let user_tokens = [*base1.address(), *base2.address()];
-    let base = [base1.clone(), base2.clone()];
+    // Create `user_tokens` tokens
+    tx_count.inc_length(user_tokens as u64 * 2);
+    let user_tokens = stream::iter(0..user_tokens)
+        .then(|_| setup_test_token(provider.clone(), caller, &tx_count))
+        .try_collect::<Vec<_>>()
+        .await?;
+    let user_token_addresses = user_tokens
+        .iter()
+        .map(|token| *token.address())
+        .collect::<Vec<_>>();
 
-    let quote_address = token_id_to_address(0);
-
-    let mint_amount = U256::from(1000000000000000u128);
-    let first_order_amount = 1000000000000u128;
-
-    let tokens = [&base1, &base2];
     let mut futures = Vec::new();
-    let nonce = provider.get_transaction_count(caller).await?;
 
+    // Create exchange pairs for each user token
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
+    futures.extend(user_token_addresses.iter().copied().map(|token| {
+        let exchange = exchange.clone();
+        Box::pin(async move {
+            let tx = exchange.createPair(token);
+            tx.send().await
+        }) as BoxFuture<'static, _>
+    }));
 
-    for (i, &token) in user_tokens.iter().enumerate() {
-        let provider = provider.clone();
-        let tx = create_pair(&exchange, &signer, nonce + i as u64, chain_id, token)?;
+    // Mint user tokens to each signer
+    let mint_amount = U256::MAX / U256::from(signer_providers.len());
+    futures.extend(
+        signer_providers
+            .iter()
+            .map(|(signer, _)| signer.address())
+            .flat_map(|signer| {
+                #[expect(clippy::redundant_iter_cloned)] // False positive
+                user_tokens.iter().cloned().map(move |token| {
+                    Box::pin(async move {
+                        let tx = token.mint(signer, mint_amount);
+                        tx.send().await
+                    }) as BoxFuture<'static, _>
+                })
+            }),
+    );
 
-        futures.push(Box::pin(async move {
-            alloy::contract::Result::Ok(provider.send_raw_transaction(tx.as_slice()).await?)
-        }) as Pin<Box<dyn Future<Output = _>>>);
-    }
+    // Approve for each signer quote token and each user token to spend by exchange
+    futures.extend(signer_providers.iter().flat_map(|(_, provider)| {
+        user_token_addresses
+            .iter()
+            .copied()
+            .chain(std::iter::once(PATH_USD_ADDRESS))
+            .map(move |token| {
+                let token = ITIP20Instance::new(token, provider.clone());
+                Box::pin(async move {
+                    let tx = token.approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX);
+                    tx.send().await
+                }) as BoxFuture<'static, _>
+            })
+    }));
 
-    let nonce = nonce + base.len() as u64;
-
-    for (i, recipient) in signers.iter().enumerate() {
-        for (j, token) in tokens.iter().enumerate() {
-            let provider = provider.clone();
-            let tx = mint(
-                token,
-                &signer,
-                nonce + (i as u64 * tokens.len() as u64) + j as u64,
-                chain_id,
-                recipient.address(),
-                mint_amount,
-            )?;
-            futures.push(Box::pin(async move {
-                alloy::contract::Result::Ok(provider.send_raw_transaction(tx.as_slice()).await?)
-            }) as Pin<Box<dyn Future<Output = _>>>);
-        }
-    }
-
-    println!("Minting tokens...");
+    tx_count.inc_length(futures.len() as u64);
     join_all(
         futures.drain(..),
         &tx_count,
@@ -96,58 +85,22 @@ pub(super) async fn setup(
     )
     .await?;
 
-    let mut signers_with_nonce = Vec::with_capacity(signers_count as usize);
-
-    for signer in signers {
-        let nonce = provider.get_transaction_count(signer.address()).await?;
-        let quote = ITIP20::new(quote_address, provider.clone());
-        let tokens = base.clone().into_iter().chain(std::iter::once(quote));
-        let tokens_count = base.len() as u64 + 1;
-
-        for (i, token) in tokens.enumerate() {
-            let provider = provider.clone();
-            let tx = approve(&token, &signer, nonce + i as u64, chain_id)?;
-            futures.push(Box::pin(async move {
-                alloy::contract::Result::Ok(provider.send_raw_transaction(tx.as_slice()).await?)
-            }) as Pin<Box<dyn Future<Output = _>>>);
-        }
-
-        signers_with_nonce.push((signer, nonce + tokens_count));
-    }
-
-    println!("Approving tokens...");
-    join_all(
-        futures.drain(..),
-        &tx_count,
-        max_concurrent_requests,
-        max_concurrent_transactions,
-    )
-    .await?;
-
+    // Place flip orders of `order_amount` with tick `tick_over` and flip tick `tick_under` for each signer and each token
+    let order_amount = 1000000000000u128;
     let tick_over = exchange.priceToTick(100010).call().await?;
     let tick_under = exchange.priceToTick(99990).call().await?;
+    futures.extend(signer_providers.iter().flat_map(|(_, provider)| {
+        user_token_addresses.iter().copied().map(move |token| {
+            let exchange =
+                IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
+            Box::pin(async move {
+                let tx = exchange.placeFlip(token, order_amount, true, tick_under, tick_over);
+                tx.send().await
+            }) as BoxFuture<'static, _>
+        })
+    }));
 
-    for (signer, nonce) in signers_with_nonce.into_iter() {
-        for (i, &token) in user_tokens.iter().enumerate() {
-            let provider = provider.clone();
-            let tx = place_flip(
-                &exchange,
-                &signer,
-                nonce + i as u64,
-                chain_id,
-                token,
-                first_order_amount,
-                tick_under,
-                tick_over,
-            )?;
-
-            futures.push(Box::pin(async move {
-                alloy::contract::Result::Ok(provider.send_raw_transaction(tx.as_slice()).await?)
-            }) as Pin<Box<dyn Future<Output = _>>>);
-        }
-    }
-
-    println!("Placing flip orders...");
+    tx_count.inc_length(futures.len() as u64);
     join_all(
         futures,
         &tx_count,
@@ -156,173 +109,16 @@ pub(super) async fn setup(
     )
     .await?;
 
-    let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone().erased());
-
-    Ok((
-        exchange,
-        quote_address,
-        base.into_iter().map(|base| *base.address()).collect(),
-    ))
+    Ok((PATH_USD_ADDRESS, user_token_addresses))
 }
 
-pub(super) fn approve<P, N>(
-    token: &ITIP20Instance<P, N>,
-    signer: &PrivateKeySigner,
-    nonce: u64,
-    chain_id: ChainId,
-) -> eyre::Result<Vec<u8>>
-where
-    N: Network<UnsignedTx: SignableTransaction<alloy::signers::Signature> + RlpEcdsaEncodableTx>,
-    P: Provider<N>,
-{
-    let tx = token
-        .approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
-        .into_transaction_request()
-        .with_gas_limit(GAS_LIMIT)
-        .with_gas_price(TEMPO_BASE_FEE as u128)
-        .with_chain_id(chain_id)
-        .with_nonce(nonce)
-        .build_unsigned()?;
-
-    into_signed_encoded(tx, signer)
-}
-pub(super) fn mint<P, N>(
-    token: &ITIP20Instance<P, N>,
-    signer: &PrivateKeySigner,
-    nonce: u64,
-    chain_id: ChainId,
-    recipient: Address,
-    mint_amount: U256,
-) -> eyre::Result<Vec<u8>>
-where
-    N: Network<UnsignedTx: SignableTransaction<alloy::signers::Signature> + RlpEcdsaEncodableTx>,
-    P: Provider<N>,
-{
-    let tx = token
-        .mint(recipient, mint_amount)
-        .into_transaction_request()
-        .with_gas_limit(GAS_LIMIT)
-        .with_gas_price(TEMPO_BASE_FEE as u128)
-        .with_chain_id(chain_id)
-        .with_nonce(nonce)
-        .build_unsigned()?;
-
-    into_signed_encoded(tx, signer)
-}
-
-#[expect(clippy::too_many_arguments)]
-pub(super) fn place_flip<P, N>(
-    exchange: &IStablecoinExchangeInstance<P, N>,
-    signer: &PrivateKeySigner,
-    nonce: u64,
-    chain_id: ChainId,
-    token: Address,
-    amount: u128,
-    tick_under: i16,
-    tick_over: i16,
-) -> eyre::Result<Vec<u8>>
-where
-    N: Network<UnsignedTx: SignableTransaction<alloy::signers::Signature> + RlpEcdsaEncodableTx>,
-    P: Provider<N>,
-{
-    let tx = exchange
-        .placeFlip(token, amount, true, tick_under, tick_over)
-        .into_transaction_request()
-        .with_gas_limit(GAS_LIMIT)
-        .with_gas_price(TEMPO_BASE_FEE as u128)
-        .with_chain_id(chain_id)
-        .with_nonce(nonce)
-        .build_unsigned()?;
-
-    into_signed_encoded(tx, signer)
-}
-
-pub(super) fn create_pair<P, N>(
-    exchange: &IStablecoinExchangeInstance<P, N>,
-    signer: &PrivateKeySigner,
-    nonce: u64,
-    chain_id: ChainId,
-    token_address: Address,
-) -> eyre::Result<Vec<u8>>
-where
-    N: Network<UnsignedTx: SignableTransaction<alloy::signers::Signature> + RlpEcdsaEncodableTx>,
-    P: Provider<N>,
-{
-    let tx = exchange
-        .createPair(token_address)
-        .into_transaction_request()
-        .with_gas_limit(GAS_LIMIT)
-        .with_gas_price(TEMPO_BASE_FEE as u128)
-        .with_chain_id(chain_id)
-        .with_nonce(nonce)
-        .build_unsigned()?;
-
-    into_signed_encoded(tx, signer)
-}
-
-pub(super) fn place<P, N>(
-    exchange: &IStablecoinExchangeInstance<P, N>,
-    signer: &PrivateKeySigner,
-    nonce: u64,
-    chain_id: ChainId,
-    token_address: Address,
-) -> eyre::Result<Vec<u8>>
-where
-    N: Network<UnsignedTx: SignableTransaction<alloy::signers::Signature> + RlpEcdsaEncodableTx>,
-    P: Provider<N>,
-{
-    let min_order_amount = MIN_ORDER_AMOUNT;
-    let tick = (random::<u16>() % (MAX_TICK - MIN_TICK) as u16) as i16 + MIN_TICK;
-
-    // Place an order at exactly the dust limit (should succeed)
-    let tx = exchange
-        .place(token_address, min_order_amount, true, tick)
-        .into_transaction_request()
-        .with_gas_limit(GAS_LIMIT)
-        .with_gas_price(TEMPO_BASE_FEE as u128)
-        .with_chain_id(chain_id)
-        .with_nonce(nonce)
-        .build_unsigned()?;
-
-    into_signed_encoded(tx, signer)
-}
-
-pub(super) fn swap<P, N>(
-    exchange: &IStablecoinExchangeInstance<P, N>,
-    signer: &PrivateKeySigner,
-    nonce: u64,
-    chain_id: ChainId,
-    token_in: Address,
-    token_out: Address,
-) -> eyre::Result<Vec<u8>>
-where
-    N: Network<UnsignedTx: SignableTransaction<alloy::signers::Signature> + RlpEcdsaEncodableTx>,
-    P: Provider<N>,
-{
-    let min_amount_out = 0;
-    let min_order_amount = MIN_ORDER_AMOUNT;
-
-    // Place an order at exactly the dust limit (should succeed)
-    let tx = exchange
-        .swapExactAmountIn(token_in, token_out, min_order_amount, min_amount_out)
-        .into_transaction_request()
-        .with_gas_limit(GAS_LIMIT)
-        .with_gas_price(TEMPO_BASE_FEE as u128)
-        .with_chain_id(chain_id)
-        .with_nonce(nonce)
-        .build_unsigned()?;
-
-    into_signed_encoded(tx, signer)
-}
-
-/// Creates a test TIP20 token with issuer role granted to the provided address
-async fn setup_test_token<P>(
-    provider: P,
+/// Creates a test TIP20 token with issuer role granted to the provided address.
+async fn setup_test_token(
+    provider: DynProvider<TempoNetwork>,
     admin: Address,
     tx_count: &ProgressBar,
-) -> eyre::Result<ITIP20Instance<P>>
+) -> eyre::Result<ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>>
 where
-    P: Provider + Clone,
 {
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
     let receipt = factory
@@ -338,9 +134,9 @@ where
         .get_receipt()
         .await?;
     tx_count.inc(1);
-    let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[0].inner)?;
+    let event = receipt.logs()[0].log_decode::<ITIP20Factory::TokenCreated>()?;
 
-    let token_addr = token_id_to_address(event.tokenId.to());
+    let token_addr = token_id_to_address(event.data().tokenId.to());
     let token = ITIP20::new(token_addr, provider.clone());
     let roles = IRolesAuth::new(*token.address(), provider);
 

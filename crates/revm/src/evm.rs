@@ -214,10 +214,24 @@ mod tests {
             &ctx.cfg,
         );
         TIP20Token::new(0, &mut storage)
-            .initialize("USD", "USD", "USD", Address::ZERO, Address::ZERO)
+            .initialize(
+                "USD",
+                "USD",
+                "USD",
+                Address::ZERO,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
         TIP20Token::new(1, &mut storage)
-            .initialize("USD", "USD", "USD", PATH_USD_ADDRESS, Address::ZERO)
+            .initialize(
+                "USD",
+                "USD",
+                "USD",
+                PATH_USD_ADDRESS,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
         drop(storage);
 
@@ -251,10 +265,24 @@ mod tests {
             &ctx.cfg,
         );
         TIP20Token::new(0, &mut storage)
-            .initialize("USD", "USD", "USD", Address::ZERO, Address::ZERO)
+            .initialize(
+                "USD",
+                "USD",
+                "USD",
+                Address::ZERO,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
         TIP20Token::new(1, &mut storage)
-            .initialize("USD", "USD", "USD", PATH_USD_ADDRESS, Address::ZERO)
+            .initialize(
+                "USD",
+                "USD",
+                "USD",
+                PATH_USD_ADDRESS,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
         drop(storage);
 
