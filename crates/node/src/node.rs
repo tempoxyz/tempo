@@ -9,6 +9,7 @@ use crate::{
 use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use reth_chainspec::EthChainSpec;
 use reth_engine_local::LocalPayloadAttributesBuilder;
+use reth_ethereum::provider::CanonStateSubscriptions;
 use reth_evm::revm::primitives::Address;
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodePrimitives, NodeTypes,
@@ -39,7 +40,10 @@ use tempo_evm::{TempoEvmConfig, evm::TempoEvmFactory};
 use tempo_payload_builder::TempoPayloadBuilder;
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
-use tempo_transaction_pool::{TempoTransactionPool, validator::TempoTransactionValidator};
+use tempo_transaction_pool::{
+    AA2dNonceKeys, AA2dPool, AA2dPoolConfig, TempoTransactionPool,
+    validator::TempoTransactionValidator,
+};
 
 /// Default maximum allowed `valid_after` offset for AA txs (1 hour).
 pub const DEFAULT_AA_VALID_AFTER_MAX_SECS: u64 = 3600;
@@ -411,20 +415,40 @@ where
             });
         }
 
-        let validator =
-            validator.map(move |v| TempoTransactionValidator::new(v, self.aa_valid_after_max_secs));
-        let transaction_pool = TxPoolBuilder::new(ctx)
+        let aa_2d_config = AA2dPoolConfig {
+            price_bump_config: pool_config.price_bumps,
+            // TODO: configure dedicated limit
+            aa_2d_limit: pool_config.pending_limit,
+        };
+        let nonce_keys = AA2dNonceKeys::default();
+        let aa_2d_pool = AA2dPool::new(aa_2d_config, nonce_keys.clone());
+
+        let validator = validator.map(|v| {
+            TempoTransactionValidator::new(v, nonce_keys.clone(), self.aa_valid_after_max_secs)
+        });
+        let protocol_pool = TxPoolBuilder::new(ctx)
             .with_validator(validator)
             .build_and_spawn_maintenance_task(blob_store, pool_config)?;
 
-        // Spawn mempool maintenance tasks
-        let task_pool = transaction_pool.clone();
+        // Spawn (protocol) mempool maintenance tasks
+        let task_pool = protocol_pool.clone();
         let task_provider = ctx.provider().clone();
-        ctx.task_executor()
-            .spawn(tempo_transaction_pool::tasks::evict_expired_aa_txs(
-                task_pool,
-                task_provider,
-            ));
+        ctx.task_executor().spawn_critical(
+            "txpool maintenance - evict expired AA txs",
+            tempo_transaction_pool::tasks::evict_expired_aa_txs(task_pool, task_provider),
+        );
+
+        // Wrap the protocol pool in our hybrid TempoTransactionPool
+        let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);
+
+        // spawn the 2d nonce maintenance task
+        ctx.task_executor().spawn_critical(
+            "txpool maintenance - 2d nonce AA txs",
+            tempo_transaction_pool::tasks::maintain_2d_nonce_pool(
+                transaction_pool.clone(),
+                ctx.provider().canonical_state_stream(),
+            ),
+        );
 
         info!(target: "reth::cli", "Transaction pool initialized");
         debug!(target: "reth::cli", "Spawned txpool maintenance task");

@@ -1,4 +1,4 @@
-use crate::utils::{NodeSource, TEST_MNEMONIC, setup_test_node, setup_test_token};
+use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, setup_test_token};
 use alloy::{
     consensus::Transaction,
     primitives::U256,
@@ -6,19 +6,17 @@ use alloy::{
     signers::local::MnemonicBuilder,
 };
 use alloy_network::TransactionResponse;
-use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_get_transaction_by_sender_and_nonce() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _node_handle) = setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let caller = wallet.address();
