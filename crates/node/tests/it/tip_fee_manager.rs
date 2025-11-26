@@ -222,13 +222,12 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
         );
     }
 
-    // Mint liquidity
+    // Mint liquidity (use mintWithValidatorToken as mint is disabled post-Moderato)
     assert!(
         fee_amm
-            .mint(
+            .mintWithValidatorToken(
                 *user_token.address(),
                 PATH_USD_ADDRESS,
-                U256::from(1e18),
                 U256::from(1e18),
                 signers[1].address(),
             )

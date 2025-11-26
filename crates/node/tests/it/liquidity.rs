@@ -62,12 +62,11 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         .get_receipt()
         .await?;
 
-    // Create pool by minting liquidity
+    // Create pool by minting liquidity (use mintWithValidatorToken as mint is disabled post-Moderato)
     fee_amm
-        .mint(
+        .mintWithValidatorToken(
             payment_token_addr,
             validator_token_addr,
-            liquidity_amount,
             liquidity_amount,
             sender_address,
         )

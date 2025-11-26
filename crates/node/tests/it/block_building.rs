@@ -76,7 +76,7 @@ where
         .find(|r| !r.inner.logs().is_empty())
         .ok_or_else(|| eyre::eyre!("No receipt with logs found"))?;
     let event =
-        ITIP20Factory::TokenCreated::decode_log(&token_create_receipt.inner.logs()[0].inner)?;
+        ITIP20Factory::TokenCreated_1::decode_log(&token_create_receipt.inner.logs()[0].inner)?;
     let token_addr = token_id_to_address(event.tokenId.to());
 
     // Grant issuer role

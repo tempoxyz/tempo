@@ -69,12 +69,11 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, 0);
 
-    // Mint liquidity
+    // Mint liquidity (use mintWithValidatorToken as mint is disabled post-Moderato)
     let mint_receipt = fee_amm
-        .mint(
+        .mintWithValidatorToken(
             pool_key.user_token,
             pool_key.validator_token,
-            amount,
             amount,
             caller,
         )
@@ -88,9 +87,10 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     let total_supply = fee_amm.totalSupply(pool_id).call().await?;
     let lp_balance = fee_amm.liquidityBalances(pool_id, caller).call().await?;
 
-    let expected_liquidity = (amount * amount) / uint!(2_U256) - MIN_LIQUIDITY;
+    // With mintWithValidatorToken, liquidity = amount - MIN_LIQUIDITY (for first mint)
+    let expected_liquidity = amount - MIN_LIQUIDITY;
     assert_eq!(lp_balance, expected_liquidity);
-    let expected_total_supply = expected_liquidity + MIN_LIQUIDITY;
+    let expected_total_supply = amount;
     assert_eq!(total_supply, expected_total_supply);
 
     let pool = fee_amm.pools(pool_id).call().await?;
@@ -148,12 +148,11 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
     let pool_key = PoolKey::new(*token_0.address(), *token_1.address());
     let pool_id = pool_key.get_id();
 
-    // Mint liquidity first
+    // Mint liquidity first (use mintWithValidatorToken as mint is disabled post-Moderato)
     let mint_receipt = fee_amm
-        .mint(
+        .mintWithValidatorToken(
             pool_key.user_token,
             pool_key.validator_token,
-            amount,
             amount,
             caller,
         )
@@ -421,12 +420,11 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, 0);
 
-    // Add liquidity which creates the pool
+    // Add liquidity which creates the pool (use mintWithValidatorToken as mint is disabled post-Moderato)
     let mint_receipt = fee_amm
-        .mint(
+        .mintWithValidatorToken(
             pool_key.user_token,
             pool_key.validator_token,
-            amount0,
             amount1,
             alice,
         )
@@ -436,8 +434,8 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
         .await?;
     assert!(mint_receipt.status());
 
-    // Calculate expected liquidity: (amount0 * amount1) / 2 - MIN_LIQUIDITY
-    let expected_liquidity = (amount0 * amount1) / uint!(2_U256) - MIN_LIQUIDITY;
+    // With mintWithValidatorToken, liquidity = amount1 - MIN_LIQUIDITY (for first mint)
+    let expected_liquidity = amount1 - MIN_LIQUIDITY;
 
     // Check liquidity minted
     let lp_balance = fee_amm.liquidityBalances(pool_id, alice).call().await?;
@@ -498,12 +496,11 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
     let pool_key = PoolKey::new(*user_token.address(), *validator_token.address());
     let pool_id = pool_key.get_id();
 
-    // Add liquidity
+    // Add liquidity (use mintWithValidatorToken as mint is disabled post-Moderato)
     let mint_receipt = fee_amm
-        .mint(
+        .mintWithValidatorToken(
             pool_key.user_token,
             pool_key.validator_token,
-            amount0,
             amount1,
             alice,
         )

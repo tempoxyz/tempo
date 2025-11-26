@@ -58,7 +58,7 @@ where
         .await?
         .get_receipt()
         .await?;
-    let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[0].inner).unwrap();
+    let event = ITIP20Factory::TokenCreated_1::decode_log(&receipt.logs()[0].inner).unwrap();
 
     let token_addr = token_id_to_address(event.tokenId.to());
     let token = ITIP20::new(token_addr, provider.clone());
