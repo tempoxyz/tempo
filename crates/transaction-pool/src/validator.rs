@@ -616,8 +616,8 @@ mod tests {
         }
 
         // Test case 2: `valid_before` too small (at boundary)
-        // AA_VALID_BEFORE_MIN_SECS = 3, so valid_before <= current_time + 3 should be rejected
-        let tx_too_close = create_aa_transaction(None, Some(current_time + 3));
+        let tx_too_close =
+            create_aa_transaction(None, Some(current_time + AA_VALID_BEFORE_MIN_SECS));
         let validator = setup_validator(&tx_too_close, current_time);
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, tx_too_close)
@@ -633,8 +633,9 @@ mod tests {
             panic!("Expected invalid outcome with InvalidValidBefore error");
         }
 
-        // Test case 3: `valid_before` sufficiently in the future (> current_time + 3)
-        let tx_valid = create_aa_transaction(None, Some(current_time + 4));
+        // Test case 3: `valid_before` sufficiently in the future
+        let tx_valid =
+            create_aa_transaction(None, Some(current_time + AA_VALID_BEFORE_MIN_SECS + 1));
         let validator = setup_validator(&tx_valid, current_time);
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, tx_valid)
@@ -642,7 +643,6 @@ mod tests {
 
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
             let error_msg = format!("{err}");
-            // Should NOT fail due to valid_before since it's sufficiently in the future
             assert!(!error_msg.contains("valid_before"));
         }
     }
