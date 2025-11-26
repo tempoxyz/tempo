@@ -118,7 +118,10 @@ impl Read for PublicOutcome {
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
         let epoch = UInt::read(buf)?.into();
-        let participants = Ordered::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), ()))?;
+        let max_participants: usize = u16::MAX
+            .try_into()
+            .expect("must always be able to convert u16 to usize");
+        let participants = Ordered::read_cfg(buf, &(RangeCfg::from(0..=max_participants), ()))?;
         let public =
             Public::<MinSig>::read_cfg(buf, &(quorum(participants.len() as u32) as usize))?;
         Ok(Self {
@@ -370,6 +373,15 @@ impl Read for IntermediateOutcome {
         _cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         let n_players: u16 = UInt::read(buf)?.into();
+
+        // Ensure is not 0 because otherwise `quorum(0)` would panic.
+        if n_players == 0 {
+            return Err(commonware_codec::Error::Invalid(
+                "n_players",
+                "cannot be zero",
+            ));
+        }
+
         let dealer = PublicKey::read(buf)?;
         let dealer_signature = Signature::read(buf)?;
         let epoch = UInt::read(buf)?.into();
