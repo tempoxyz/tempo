@@ -1,15 +1,18 @@
+use std::fmt::Debug;
+
 use crate::rpc::{TempoHeaderResponse, TempoTransactionReceipt, TempoTransactionRequest};
-use alloy_consensus::{TxType, error::UnsupportedTransactionType};
+use alloy_consensus::{SignableTransaction, TxType, error::UnsupportedTransactionType};
 
 use alloy_network::{
-    BuildResult, Network, NetworkWallet, TransactionBuilder, TransactionBuilderError,
-    UnbuiltTransactionError,
+    BuildResult, Ethereum, EthereumWallet, IntoWallet, Network, NetworkWallet, TransactionBuilder,
+    TransactionBuilderError, UnbuiltTransactionError,
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
 use alloy_provider::fillers::{
     ChainIdFiller, GasFiller, JoinFill, NonceFiller, RecommendedFillers,
 };
 use alloy_rpc_types_eth::AccessList;
+use alloy_signer_local::PrivateKeySigner;
 use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
 };
@@ -281,6 +284,65 @@ impl RecommendedFillers for TempoNetwork {
 
     fn recommended_fillers() -> Self::RecommendedFillers {
         Default::default()
+    }
+}
+
+impl NetworkWallet<TempoNetwork> for EthereumWallet {
+    fn default_signer_address(&self) -> Address {
+        NetworkWallet::<Ethereum>::default_signer_address(self)
+    }
+
+    fn has_signer_for(&self, address: &Address) -> bool {
+        NetworkWallet::<Ethereum>::has_signer_for(self, address)
+    }
+
+    fn signer_addresses(&self) -> impl Iterator<Item = Address> {
+        NetworkWallet::<Ethereum>::signer_addresses(self)
+    }
+
+    #[doc(alias = "sign_tx_from")]
+    async fn sign_transaction_from(
+        &self,
+        sender: Address,
+        tx: TempoTypedTransaction,
+    ) -> alloy_signer::Result<TempoTxEnvelope> {
+        let signer = self.signer_by_address(sender).ok_or_else(|| {
+            alloy_signer::Error::other(format!("Missing signing credential for {sender}"))
+        })?;
+        match tx {
+            TempoTypedTransaction::Legacy(mut t) => {
+                let sig = signer.sign_transaction(&mut t).await?;
+                Ok(t.into_signed(sig).into())
+            }
+            TempoTypedTransaction::Eip2930(mut t) => {
+                let sig = signer.sign_transaction(&mut t).await?;
+                Ok(t.into_signed(sig).into())
+            }
+            TempoTypedTransaction::Eip1559(mut t) => {
+                let sig = signer.sign_transaction(&mut t).await?;
+                Ok(t.into_signed(sig).into())
+            }
+            TempoTypedTransaction::Eip7702(mut t) => {
+                let sig = signer.sign_transaction(&mut t).await?;
+                Ok(t.into_signed(sig).into())
+            }
+            TempoTypedTransaction::FeeToken(mut t) => {
+                let sig = signer.sign_transaction(&mut t).await?;
+                Ok(t.into_signed(sig).into())
+            }
+            TempoTypedTransaction::AA(mut t) => {
+                let sig = signer.sign_transaction(&mut t).await?;
+                Ok(t.into_signed(sig.into()).into())
+            }
+        }
+    }
+}
+
+impl IntoWallet<TempoNetwork> for PrivateKeySigner {
+    type NetworkWallet = EthereumWallet;
+
+    fn into_wallet(self) -> Self::NetworkWallet {
+        self.into()
     }
 }
 
