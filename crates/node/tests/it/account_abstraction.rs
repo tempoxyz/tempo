@@ -893,7 +893,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
 
     // Recreate envelope for verification
     let signed_tx_parallel = AASigned::new_unhashed(tx_parallel, aa_signature_parallel);
-    let _envelope_parallel: TempoTxEnvelope = signed_tx_parallel.into();
+    let envelope_parallel: TempoTxEnvelope = signed_tx_parallel.into();
 
     println!(
         "Transaction with nonce_key=1 encoded, size: {} bytes",
@@ -981,7 +981,10 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
 
         let sig_hash = tx.signature_hash();
         let signature = alice_signer.sign_hash_sync(&sig_hash)?;
-        let signed_tx = AASigned::new_unhashed(tx, AASignature::Secp256k1(signature));
+        let signed_tx = AASigned::new_unhashed(
+            tx,
+            AASignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+        );
         let envelope: TempoTxEnvelope = signed_tx.into();
         let mut encoded = Vec::new();
         envelope.encode_2718(&mut encoded);
@@ -1309,7 +1312,10 @@ async fn send_tx(
 
     let sig_hash = tx.signature_hash();
     let signature = alice_signer.sign_hash_sync(&sig_hash)?;
-    let signed_tx = AASigned::new_unhashed(tx, AASignature::Secp256k1(signature));
+    let signed_tx = AASigned::new_unhashed(
+        tx,
+        AASignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+    );
     let envelope: TempoTxEnvelope = signed_tx.into();
     let mut encoded = Vec::new();
     envelope.encode_2718(&mut encoded);

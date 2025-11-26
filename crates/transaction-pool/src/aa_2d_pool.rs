@@ -348,7 +348,7 @@ impl AA2dPool {
     {
         let mut txs = Vec::new();
         for tx_hash in tx_hashes {
-            if let Some(tx) = self.by_hash.remove(tx_hash) {
+            if let Some(tx) = self.remove_transaction_by_hash(tx_hash) {
                 txs.push(tx);
             }
         }
