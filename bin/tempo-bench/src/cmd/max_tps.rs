@@ -138,7 +138,8 @@ pub struct MaxTpsArgs {
     sample_size: usize,
 
     /// Fund accounts from the faucet before running the benchmark.
-    /// Calls tempo_fundAddress for each account derived from the mnemonic.
+    ///
+    /// Calls tempo_fundAddress for each account.
     #[arg(long)]
     faucet: bool,
 }
