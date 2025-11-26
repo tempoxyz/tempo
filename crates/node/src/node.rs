@@ -48,23 +48,43 @@ use tempo_transaction_pool::{
 /// Default maximum allowed `valid_after` offset for AA txs (1 hour).
 pub const DEFAULT_AA_VALID_AFTER_MAX_SECS: u64 = 3600;
 
+/// Tempo node CLI arguments.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::Args)]
+#[command(next_help_heading = "TxPool")]
+pub struct TempoNodeArgs {
+    /// Maximum allowed `valid_after` offset for AA txs.
+    #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
+    pub aa_valid_after_max_secs: u64,
+}
+
+impl TempoNodeArgs {
+    /// Returns a [`TempoPoolBuilder`] configured from these args.
+    pub fn pool_builder(&self) -> TempoPoolBuilder {
+        TempoPoolBuilder {
+            aa_valid_after_max_secs: self.aa_valid_after_max_secs,
+        }
+    }
+}
+
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct TempoNode {
-    /// Transaction pool configuration.
-    tx_pool_config: TempoPoolBuilder,
+    /// Transaction pool builder.
+    pool_builder: TempoPoolBuilder,
 }
 
 impl TempoNode {
     /// Create new instance of a Tempo node
-    pub fn new(tx_pool_config: TempoPoolBuilder) -> Self {
-        Self { tx_pool_config }
+    pub fn new(args: &TempoNodeArgs) -> Self {
+        Self {
+            pool_builder: args.pool_builder(),
+        }
     }
 
     /// Returns a [`ComponentsBuilder`] configured for a regular Tempo node.
     pub fn components<Node>(
-        tx_pool_config: TempoPoolBuilder,
+        pool_builder: TempoPoolBuilder,
     ) -> ComponentsBuilder<
         Node,
         TempoPoolBuilder,
@@ -78,7 +98,7 @@ impl TempoNode {
     {
         ComponentsBuilder::default()
             .node_types::<Node>()
-            .pool(tx_pool_config)
+            .pool(pool_builder)
             .executor(TempoExecutorBuilder::default())
             .payload(BasicPayloadServiceBuilder::default())
             .network(EthereumNetworkBuilder::default())
@@ -219,7 +239,7 @@ where
     type AddOns = TempoAddOns<NodeAdapter<N>>;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
-        Self::components(self.tx_pool_config)
+        Self::components(self.pool_builder)
     }
 
     fn add_ons(&self) -> Self::AddOns {

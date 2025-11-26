@@ -36,9 +36,7 @@ use tempo_faucet::{
     args::FaucetArgs,
     faucet::{TempoFaucetExt, TempoFaucetExtApiServer},
 };
-use tempo_node::{
-    DEFAULT_AA_VALID_AFTER_MAX_SECS, TempoFullNode, TempoPoolBuilder, node::TempoNode,
-};
+use tempo_node::{TempoFullNode, TempoNodeArgs, node::TempoNode};
 use tokio::sync::oneshot;
 use tokio_util::either::Either;
 
@@ -61,22 +59,7 @@ struct TempoArgs {
     pub faucet_args: FaucetArgs,
 
     #[command(flatten)]
-    pub tx_pool_args: TempoTxPoolArgs,
-}
-
-/// Tempo transaction pool CLI arguments.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::Args)]
-#[command(next_help_heading = "TxPool")]
-pub struct TempoTxPoolArgs {
-    /// Maximum allowed `valid_after` offset for AA txs.
-    #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
-    pub aa_valid_after_max_secs: u64,
-}
-
-impl From<TempoTxPoolArgs> for TempoPoolBuilder {
-    fn from(args: TempoTxPoolArgs) -> Self {
-        Self::default().with_aa_tx_valid_after_max_secs(args.aa_valid_after_max_secs)
-    }
+    pub node_args: TempoNodeArgs,
 }
 
 fn main() -> eyre::Result<()> {
@@ -208,7 +191,7 @@ fn main() -> eyre::Result<()> {
             node,
             node_exit_future,
         } = builder
-            .node(TempoNode::new(args.tx_pool_args.into()))
+            .node(TempoNode::new(&args.node_args))
             .apply(|mut builder: WithLaunchContext<_>| {
                 if let Some(follow_url) = &args.follow {
                     builder.config_mut().debug.rpc_consensus_url = Some(follow_url.clone());
