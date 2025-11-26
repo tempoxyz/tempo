@@ -2,7 +2,7 @@ use super::SignatureType;
 use crate::transaction::PrimitiveSignature;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
-use alloy_rlp::{Encodable, encode_list, list_length};
+use alloy_rlp::{EMPTY_STRING_CODE, Encodable, encode_list, list_length};
 use core::mem;
 
 /// Token spending limit for access keys
@@ -99,16 +99,10 @@ impl KeyAuthorization {
         let key_type_byte: u8 = key_type.into();
 
         // Calculate payload length
-        // Option<u64>: None = 1 byte (0x80), Some(v) = v.length()
-        let expiry_length = match expiry {
-            None => 1, // RLP empty string 0x80
-            Some(v) => v.length(),
-        };
-        // Option<&[TokenLimit]>: None = 1 byte (0x80), Some(v) = list_length(v)
-        let limits_length = match limits {
-            None => 1, // RLP empty string 0x80
-            Some(v) => list_length(v),
-        };
+        // Option<u64>: None = 1 byte (EMPTY_STRING_CODE), Some(v) = v.length()
+        let expiry_length = expiry.map_or(1, |v| v.length());
+        // Option<&[TokenLimit]>: None = 1 byte (EMPTY_STRING_CODE), Some(v) = list_length(v)
+        let limits_length = limits.map_or(1, list_length);
 
         let payload_length = chain_id.length()
             + key_type_byte.length()
@@ -128,15 +122,15 @@ impl KeyAuthorization {
         key_type_byte.encode(&mut auth_message);
         key_id.encode(&mut auth_message);
 
-        // Encode expiry: None as 0x80, Some(v) as the value
+        // Encode expiry: None as EMPTY_STRING_CODE, Some(v) as the value
         match expiry {
-            None => auth_message.push(0x80), // RLP empty string
+            None => auth_message.push(EMPTY_STRING_CODE),
             Some(v) => v.encode(&mut auth_message),
         }
 
-        // Encode limits: None as 0x80, Some(v) as the list
+        // Encode limits: None as EMPTY_STRING_CODE, Some(v) as the list
         match limits {
-            None => auth_message.push(0x80), // RLP empty string (unlimited)
+            None => auth_message.push(EMPTY_STRING_CODE), // unlimited spending
             Some(v) => encode_list(v, &mut auth_message),
         }
 

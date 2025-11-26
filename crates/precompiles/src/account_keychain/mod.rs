@@ -260,7 +260,7 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
             return Err(AccountKeychainError::key_not_found().into());
         }
 
-        let current_timestamp = self.storage.timestamp().to::<u64>();
+        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         if current_timestamp >= key.expiry {
             return Err(AccountKeychainError::key_expired().into());
         }
