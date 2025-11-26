@@ -529,11 +529,13 @@ async fn build_subblock(
                 if tx.gas_limit() > gas_left {
                     continue;
                 }
-                if evm.transact_commit(&*tx).is_err() {
+                if let Err(err) = evm.transact_commit(&*tx) {
+                    warn!(%err, tx_hash = %tx_hash, "invalid subblock candidate transaction");
                     // Remove invalid transactions from the set.
                     transactions.lock().swap_remove(&tx_hash);
                     continue;
                 }
+
                 gas_left -= tx.gas_limit();
                 selected_transactions.push(tx.inner().clone());
                 senders.push(tx.signer());
@@ -611,6 +613,7 @@ async fn validate_subblock(
     let subblock = subblock.try_into_recovered(B256::from_slice(&sender))?;
 
     let mut evm = evm_at_block(&node, subblock.parent_hash)?;
+    evm.ctx_mut().block.beneficiary = subblock.fee_recipient;
 
     let epoch = utils::epoch(epoch_length, evm.block().number.to::<u64>() + 1);
     let scheme = scheme_provider
