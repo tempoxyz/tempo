@@ -63,7 +63,7 @@ pub(super) async fn setup(
 
     for (i, &token) in user_tokens.iter().enumerate() {
         let provider = provider.clone();
-        let tx = create_pair(&exchange, wallet.clone(), nonce + i as u64, token).await?;
+        let tx = create_pair(exchange.clone(), wallet.clone(), nonce + i as u64, token).await?;
 
         futures.push(Box::pin(async move {
             alloy::contract::Result::Ok(provider.send_raw_transaction(tx.as_slice()).await?)
@@ -135,7 +135,7 @@ pub(super) async fn setup(
         for (i, &token) in user_tokens.iter().enumerate() {
             let provider = provider.clone();
             let tx = place_flip(
-                &exchange,
+                exchange.clone(),
                 signer.clone(),
                 nonce + i as u64,
                 token,
@@ -195,7 +195,7 @@ pub(super) async fn mint(
 }
 
 pub(super) async fn place_flip(
-    exchange: &StablecoinExchangeInstance,
+    exchange: StablecoinExchangeInstance,
     signer: PrivateKeySigner,
     nonce: u64,
     token: Address,
@@ -213,7 +213,7 @@ pub(super) async fn place_flip(
 }
 
 pub(super) async fn create_pair(
-    exchange: &StablecoinExchangeInstance,
+    exchange: StablecoinExchangeInstance,
     signer: PrivateKeySigner,
     nonce: u64,
     token_address: Address,
@@ -228,7 +228,7 @@ pub(super) async fn create_pair(
 }
 
 pub(super) async fn place(
-    exchange: &StablecoinExchangeInstance,
+    exchange: StablecoinExchangeInstance,
     signer: PrivateKeySigner,
     nonce: u64,
     token_address: Address,
@@ -246,7 +246,7 @@ pub(super) async fn place(
 }
 
 pub(super) async fn swap_in(
-    exchange: &StablecoinExchangeInstance,
+    exchange: StablecoinExchangeInstance,
     signer: PrivateKeySigner,
     nonce: u64,
     token_in: Address,

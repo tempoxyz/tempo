@@ -17,7 +17,7 @@ use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English
 use clap::Parser;
 use core_affinity::CoreId;
 use eyre::{Context, OptionExt, ensure};
-use futures::{StreamExt, TryStreamExt, stream};
+use futures::{StreamExt, TryStreamExt, future::BoxFuture, stream};
 use governor::{Quota, RateLimiter};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator};
 use rand::{random, seq::IndexedRandom};
@@ -28,7 +28,6 @@ use std::{
     fs::File,
     io::BufWriter,
     num::NonZeroU32,
-    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -404,15 +403,13 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
     let orders = Arc::new(AtomicUsize::new(0));
     let transactions: Vec<_> = stream::iter(params.into_iter().progress())
         .then(async |(signer, nonce)| {
-            let tx_factory: [(
-                Box<dyn Fn(PrivateKeySigner, u64) -> Pin<Box<dyn Future<Output = _>>>>,
-                u64,
-            ); 3] = [
+            #[expect(clippy::type_complexity)]
+            let tx_factories: [(Box<dyn Fn() -> BoxFuture<'static, _>>, u64); 3] = [
                 (
-                    Box::new(|signer: PrivateKeySigner, nonce: u64| {
+                    Box::new(|| {
                         transfers.fetch_add(1, Ordering::Relaxed);
                         Box::pin(tip20::transfer(
-                            signer,
+                            signer.clone(),
                             nonce,
                             user_tokens[random::<u16>() as usize % user_tokens_count].clone(),
                         ))
@@ -420,11 +417,11 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
                     tip20_weight,
                 ),
                 (
-                    Box::new(|signer: PrivateKeySigner, nonce: u64| {
+                    Box::new(|| {
                         swaps.fetch_add(1, Ordering::Relaxed);
                         Box::pin(dex::swap_in(
-                            &exchange,
-                            signer,
+                            exchange.clone(),
+                            signer.clone(),
                             nonce,
                             *user_tokens[random::<u16>() as usize % user_tokens_count].address(),
                             quote,
@@ -433,11 +430,11 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
                     swap_weight,
                 ),
                 (
-                    Box::new(|signer: PrivateKeySigner, nonce: u64| {
+                    Box::new(|| {
                         orders.fetch_add(1, Ordering::Relaxed);
                         Box::pin(dex::place(
-                            &exchange,
-                            signer,
+                            exchange.clone(),
+                            signer.clone(),
                             nonce,
                             *user_tokens[random::<u16>() as usize % user_tokens_count].address(),
                         ))
@@ -446,10 +443,10 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
                 ),
             ];
             let mut rng = rand::rng();
-            let f = tx_factory
+            let tx = tx_factories
                 .choose_weighted(&mut rng, |item| item.1)
                 .map(|item| &item.0)?;
-            f(signer, nonce).await
+            tx().await
         })
         .try_collect::<Vec<_>>()
         .await?;
