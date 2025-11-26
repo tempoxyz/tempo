@@ -1692,19 +1692,32 @@ mod tests {
 
         // Compute hash using the helper function
         let hash1 = KeyAuthorization::authorization_message_hash(
-            chain_id, key_type, key_id, expiry, &limits,
+            chain_id,
+            key_type,
+            key_id,
+            Some(expiry),
+            Some(&limits),
         );
 
         // Compute again to verify consistency
         let hash2 = KeyAuthorization::authorization_message_hash(
-            chain_id, key_type, key_id, expiry, &limits,
+            chain_id,
+            key_type,
+            key_id,
+            Some(expiry),
+            Some(&limits),
         );
 
         assert_eq!(hash1, hash2, "Hash computation should be deterministic");
 
         // Verify that different chain_id produces different hash
-        let hash3 =
-            KeyAuthorization::authorization_message_hash(2, key_type, key_id, expiry, &limits);
+        let hash3 = KeyAuthorization::authorization_message_hash(
+            2,
+            key_type,
+            key_id,
+            Some(expiry),
+            Some(&limits),
+        );
         assert_ne!(
             hash1, hash3,
             "Different chain_id should produce different hash"
