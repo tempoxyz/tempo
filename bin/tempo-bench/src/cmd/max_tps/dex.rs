@@ -85,7 +85,7 @@ pub(super) async fn setup(
                     }) as BoxFuture<'static, _>
                 })
             })
-            .progress_count((signer_providers.len() + all_tokens.len()) as u64),
+            .progress_count((signer_providers.len() * all_tokens.len()) as u64),
         max_concurrent_requests,
         max_concurrent_transactions,
     )
