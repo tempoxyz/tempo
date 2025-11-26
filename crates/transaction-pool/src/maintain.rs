@@ -38,14 +38,17 @@ where
     // Track valid_before timestamp -> Vec<TxHash>
     let mut expiry_map: BTreeMap<u64, Vec<TxHash>> = BTreeMap::new();
 
-    // Populate expiry map to prevent race condition at start-up
-    pool.all_transactions()
-        .all()
-        .for_each(|tx| track_expiry(&mut expiry_map, tx.inner().as_aa()));
+    // Small delay to allow backup tasks to initialize
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     // Subscribe to new transactions and blocks
     let mut new_txs = pool.new_transactions_listener();
     let mut chain_events = client.canonical_state_stream();
+
+    // Populate expiry map to prevent race condition at start-up
+    pool.all_transactions()
+        .all()
+        .for_each(|tx| track_expiry(&mut expiry_map, tx.inner().as_aa()));
 
     loop {
         tokio::select! {

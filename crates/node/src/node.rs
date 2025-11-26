@@ -455,7 +455,7 @@ where
         let task_provider = ctx.provider().clone();
         ctx.task_executor().spawn_critical(
             "txpool maintenance (protocol) - evict expired AA txs",
-            tempo_transaction_pool::tasks::evict_expired_aa_txs(task_pool, task_provider),
+            tempo_transaction_pool::maintain::evict_expired_aa_txs(task_pool, task_provider),
         );
 
         // Wrap the protocol pool in our hybrid TempoTransactionPool
@@ -464,7 +464,7 @@ where
         // Spawn (AA 2d nonce) mempool maintenance tasks
         ctx.task_executor().spawn_critical(
             "txpool maintenance - 2d nonce AA txs",
-            tempo_transaction_pool::tasks::maintain_2d_nonce_pool(
+            tempo_transaction_pool::maintain::maintain_2d_nonce_pool(
                 transaction_pool.clone(),
                 ctx.provider().canonical_state_stream(),
             ),
