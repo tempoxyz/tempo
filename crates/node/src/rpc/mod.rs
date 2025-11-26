@@ -1,5 +1,6 @@
 pub mod amm;
 pub mod dex;
+pub mod error;
 pub mod eth_ext;
 pub mod policy;
 pub mod token;
@@ -9,7 +10,7 @@ use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use amm::{TempoAmm, TempoAmmApiServer};
 pub use dex::{TempoDex, api::TempoDexApiServer};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
-use futures::future::Either;
+use futures::{TryFutureExt, future::Either};
 pub use policy::{TempoPolicy, TempoPolicyApiServer};
 use reth_errors::RethError;
 use reth_primitives_traits::{Recovered, TransactionMeta, WithEncoded, transaction::TxHashRef};
@@ -20,7 +21,7 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_evm::TempoStateAccess;
 pub use token::{TempoToken, TempoTokenApiServer};
 
-use crate::node::TempoNode;
+use crate::{node::TempoNode, rpc::error::TempoEthApiError};
 use alloy::{
     consensus::TxReceipt,
     primitives::{U256, uint},
@@ -102,7 +103,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> EthApiTypes for TempoEthApi<N> {
-    type Error = EthApiError;
+    type Error = TempoEthApiError;
     type NetworkTypes = TempoNetwork;
     type RpcConvert = DynRpcConverter<TempoEvmConfig, TempoNetwork>;
 
@@ -275,7 +276,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> LoadTransaction for TempoEthApi<N> {}
 
 impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
     fn signers(&self) -> &SignersForRpc<Self::Provider, Self::NetworkTypes> {
-        EthTransactions::signers(&self.inner)
+        self.inner.signers()
     }
 
     fn send_raw_transaction_sync_timeout(&self) -> std::time::Duration {
@@ -293,13 +294,15 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
 
                 self.subblock_transactions_tx
                     .send(tx.into_value())
-                    .map_err(|_| RethError::msg("subblocks service channel closed"))?;
+                    .map_err(|_| {
+                        EthApiError::from(RethError::msg("subblocks service channel closed"))
+                    })?;
 
                 Ok(tx_hash)
             })
         } else {
             // Send regular transactions to the transaction pool.
-            Either::Right(self.inner.send_transaction(tx))
+            Either::Right(self.inner.send_transaction(tx).map_err(Into::into))
         }
     }
 }
