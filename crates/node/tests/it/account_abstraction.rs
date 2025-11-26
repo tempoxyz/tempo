@@ -4409,6 +4409,10 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
         .get_transaction_by_hash(pending_hash2)
         .await
         .unwrap();
+
+    Ok(())
+}
+
 /// Test that KeyAuthorization with wrong chain_id is rejected
 ///
 /// This test verifies that:
@@ -4449,7 +4453,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
     ));
 
     let spending_limits = vec![TokenLimit {
-        token: DEFAULT_FEE_TOKEN,
+        token: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
         limit: U256::from(10u64) * U256::from(10).pow(U256::from(18)),
     }];
 
@@ -4471,7 +4475,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 300_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN.into(),
+            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
             value: U256::ZERO,
             input: Bytes::new(),
         }],
@@ -4528,7 +4532,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 300_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN.into(),
+            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
             value: U256::ZERO,
             input: Bytes::new(),
         }],
