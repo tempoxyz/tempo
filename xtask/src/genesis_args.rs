@@ -1,10 +1,7 @@
 use alloy::{
     genesis::{ChainConfig, Genesis, GenesisAccount},
     primitives::{Address, U256, address},
-    signers::{
-        local::{MnemonicBuilder, coins_bip39::English},
-        utils::secret_key_to_address,
-    },
+    signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
 use alloy_primitives::Bytes;
 use eyre::WrapErr as _;
@@ -142,10 +139,7 @@ impl GenesisArgs {
             .into_par_iter()
             .progress()
             .map(|worker_id| -> eyre::Result<Address> {
-                let signer = MnemonicBuilder::<English>::default()
-                    .phrase(self.mnemonic.clone())
-                    .index(worker_id)?
-                    .build()?;
+                let signer = MnemonicBuilder::from_phrase_nth(&self.mnemonic, worker_id);
                 let address = secret_key_to_address(signer.credential());
                 Ok(address)
             })

@@ -201,10 +201,7 @@ impl MaxTpsArgs {
             .into_par_iter()
             .progress()
             .map(|i| {
-                let signer = MnemonicBuilder::<English>::default()
-                    .phrase(&mnemonic)
-                    .index(i)?
-                    .build()?;
+                let signer = MnemonicBuilder::<English>::from_phrase_nth(&mnemonic, i);
                 let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
                     .wallet(signer.clone())
                     .with_cached_nonce_management()

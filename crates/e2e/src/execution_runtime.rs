@@ -4,10 +4,7 @@ use std::{net::SocketAddr, path::Path, sync::Arc, time::Duration};
 use alloy::{
     providers::ProviderBuilder,
     rpc::types::TransactionReceipt,
-    signers::{
-        local::{MnemonicBuilder, coins_bip39::English},
-        utils::secret_key_to_address,
-    },
+    signers::{local::MnemonicBuilder, utils::secret_key_to_address},
     transports::http::reqwest::Url,
 };
 use alloy_genesis::Genesis;
@@ -477,11 +474,5 @@ pub fn validator(idx: u32) -> Address {
 }
 
 pub fn address(index: u32) -> Address {
-    let signer = MnemonicBuilder::<English>::default()
-        .phrase(TEST_MNEMONIC)
-        .index(index)
-        .unwrap()
-        .build()
-        .unwrap();
-    secret_key_to_address(signer.credential())
+    secret_key_to_address(MnemonicBuilder::from_phrase_nth(TEST_MNEMONIC, index).credential())
 }
