@@ -51,6 +51,7 @@ pub(super) async fn setup(
             .iter()
             .map(|(signer, _)| signer.address())
             .flat_map(|signer| {
+                #[expect(clippy::redundant_iter_cloned)] // False positive
                 user_tokens.iter().cloned().map(move |token| {
                     Box::pin(async move {
                         let tx = token.mint(signer, mint_amount);
