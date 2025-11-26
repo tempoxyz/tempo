@@ -121,7 +121,7 @@ impl Read for PublicOutcome {
         let max_participants: usize = u16::MAX
             .try_into()
             .expect("must always be able to convert u16 to usize");
-        let participants = Ordered::read_cfg(buf, &(RangeCfg::from(0..=max_participants), ()))?;
+        let participants = Ordered::read_cfg(buf, &(RangeCfg::from(1..=max_participants), ()))?;
         let public =
             Public::<MinSig>::read_cfg(buf, &(quorum(participants.len() as u32) as usize))?;
         Ok(Self {
