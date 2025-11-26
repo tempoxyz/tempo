@@ -613,7 +613,6 @@ async fn validate_subblock(
     let subblock = subblock.try_into_recovered(B256::from_slice(&sender))?;
 
     let mut evm = evm_at_block(&node, subblock.parent_hash)?;
-    evm.ctx_mut().block.beneficiary = subblock.fee_recipient;
 
     let epoch = utils::epoch(epoch_length, evm.block().number.to::<u64>() + 1);
     let scheme = scheme_provider
