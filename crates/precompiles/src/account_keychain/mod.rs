@@ -250,15 +250,7 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
         }
 
         // Verify key exists, hasn't been revoked, and hasn't expired
-        let mut key = self.sload_keys(msg_sender, call.keyId)?;
-
-        if key.is_revoked {
-            return Err(AccountKeychainError::key_already_revoked().into());
-        }
-
-        if key.expiry == 0 {
-            return Err(AccountKeychainError::key_not_found().into());
-        }
+        let mut key = self.load_active_key(msg_sender, call.keyId)?;
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         if current_timestamp >= key.expiry {
@@ -296,14 +288,14 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
     pub fn get_key(&mut self, call: getKeyCall) -> Result<KeyInfo> {
         let key = self.sload_keys(call.account, call.keyId)?;
 
-        // Key exists if expiry > 0 (but might be revoked)
-        if key.expiry == 0 && !key.is_revoked {
+        // Key doesn't exist if expiry == 0, or key has been revoked
+        if key.expiry == 0 || key.is_revoked {
             return Ok(KeyInfo {
                 signatureType: SignatureType::Secp256k1,
                 keyId: Address::ZERO,
                 expiry: 0,
                 enforceLimits: false,
-                isRevoked: false,
+                isRevoked: key.is_revoked,
             });
         }
 
@@ -354,6 +346,28 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
         Ok(())
     }
 
+    /// Load and validate a key exists and is not revoked.
+    ///
+    /// Returns the key if valid, or an error if:
+    /// - Key doesn't exist (expiry == 0)
+    /// - Key has been revoked
+    ///
+    /// Note: This does NOT check expiry against current timestamp.
+    /// Callers should check expiry separately if needed.
+    fn load_active_key(&mut self, account: Address, key_id: Address) -> Result<AuthorizedKey> {
+        let key = self.sload_keys(account, key_id)?;
+
+        if key.is_revoked {
+            return Err(AccountKeychainError::key_already_revoked().into());
+        }
+
+        if key.expiry == 0 {
+            return Err(AccountKeychainError::key_not_found().into());
+        }
+
+        Ok(key)
+    }
+
     /// Validate keychain authorization (existence, revocation, and expiry)
     ///
     /// This consolidates all validation checks into one method.
@@ -364,19 +378,8 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
         key_id: Address,
         current_timestamp: u64,
     ) -> Result<()> {
-        let key = self.sload_keys(account, key_id)?;
+        let key = self.load_active_key(account, key_id)?;
 
-        // Check if key was revoked
-        if key.is_revoked {
-            return Err(AccountKeychainError::key_already_revoked().into());
-        }
-
-        // Key exists if expiry > 0
-        if key.expiry == 0 {
-            return Err(AccountKeychainError::key_not_found().into());
-        }
-
-        // Check expiry
         if current_timestamp >= key.expiry {
             return Err(AccountKeychainError::key_expired().into());
         }
@@ -398,15 +401,7 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
         }
 
         // Check key is valid (exists and not revoked)
-        let key = self.sload_keys(account, key_id)?;
-
-        if key.is_revoked {
-            return Err(AccountKeychainError::key_already_revoked().into());
-        }
-
-        if key.expiry == 0 {
-            return Err(AccountKeychainError::key_not_found().into());
-        }
+        let key = self.load_active_key(account, key_id)?;
 
         // If enforce_limits is false, this key has unlimited spending
         if !key.enforce_limits {

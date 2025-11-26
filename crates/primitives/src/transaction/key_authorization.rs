@@ -37,7 +37,7 @@ pub struct TokenLimit {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[rlp(trailing)]
-// TODO: Macro RLP tests don't work here because of the trailing flag.
+#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
 pub struct KeyAuthorization {
     /// Chain ID for replay protection (0 = valid on any chain)
     pub chain_id: u64,

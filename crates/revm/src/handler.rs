@@ -696,7 +696,7 @@ where
             let expiry = key_auth.expiry.unwrap_or(u64::MAX);
 
             // Validate expiry is not in the past
-            let current_timestamp = block.timestamp().to::<u64>();
+            let current_timestamp = block.timestamp().saturating_to::<u64>();
             if expiry <= current_timestamp {
                 return Err(EVMError::Transaction(
                     TempoInvalidTransaction::AccessKeyAuthorizationFailed {

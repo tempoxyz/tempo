@@ -1,6 +1,6 @@
 use alloy::{
-    consensus::Transaction,
-    network::EthereumWallet,
+    consensus::{BlockHeader, Transaction},
+    network::{EthereumWallet, ReceiptResponse},
     primitives::{Address, B256, Bytes, Signature, U256, keccak256},
     providers::{Provider, ProviderBuilder},
     signers::{SignerSync, local::MnemonicBuilder},
@@ -4017,7 +4017,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
 
-    let provider = ProviderBuilder::new()
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
         .wallet(root_signer.clone())
         .connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
@@ -4095,19 +4095,14 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
     nonce += 1;
 
     // Check the receipt to understand the result
-    let receipt: Option<serde_json::Value> = provider
-        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-        .await?;
+    let receipt = provider
+        .get_transaction_receipt(tx_hash)
+        .await?
+        .expect("Transaction must be included in block");
 
-    let receipt_json = receipt.expect("Transaction must be included in block");
-    let status = receipt_json
-        .get("status")
-        .and_then(|v| v.as_str())
-        .expect("Receipt must have status field");
-
-    assert_eq!(
-        status, "0x1",
-        "Unlimited key transfer must succeed. Receipt: {receipt_json}"
+    assert!(
+        receipt.status(),
+        "Unlimited key transfer must succeed. Receipt: {receipt:?}"
     );
 
     // Verify the large transfer succeeded (unlimited key has no limit enforcement)
@@ -4181,18 +4176,13 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
     setup.node.rpc.inject_tx(encoded.into()).await?;
     setup.node.advance_block().await?;
 
-    let receipt: Option<serde_json::Value> = provider
-        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-        .await?;
+    let receipt = provider
+        .get_transaction_receipt(tx_hash)
+        .await?
+        .expect("Transaction must be included in block");
 
-    let receipt_json = receipt.expect("Transaction must be included in block");
-    let status = receipt_json
-        .get("status")
-        .and_then(|v| v.as_str())
-        .expect("Receipt must have status field");
-
-    assert_eq!(
-        status, "0x0",
+    assert!(
+        !receipt.status(),
         "No-spending key must not be able to transfer any tokens"
     );
 
@@ -4286,7 +4276,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
 
-    let provider = ProviderBuilder::new()
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
         .wallet(root_signer.clone())
         .connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
@@ -4310,7 +4300,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         .get_block_by_number(Default::default())
         .await?
         .unwrap();
-    let current_timestamp = block.header.timestamp;
+    let current_timestamp = block.header.timestamp();
     println!("\nCurrent block timestamp: {current_timestamp}");
 
     // ========================================
@@ -4392,7 +4382,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         .get_block_by_number(Default::default())
         .await?
         .unwrap();
-    let test2_timestamp = block.header.timestamp;
+    let test2_timestamp = block.header.timestamp();
 
     println!("Current block timestamp for TEST 2: {test2_timestamp}, using nonce: {nonce}");
 
@@ -4476,7 +4466,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         .get_block_by_number(Default::default())
         .await?
         .unwrap();
-    let new_timestamp = block.header.timestamp;
+    let new_timestamp = block.header.timestamp();
     println!("New block timestamp: {new_timestamp} (expiry was: {short_expiry_timestamp})");
 
     assert!(
@@ -4515,19 +4505,12 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
     setup.node.advance_block().await?;
 
     // Check if transaction was included and reverted
-    let receipt: Option<serde_json::Value> = provider
-        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-        .await?;
+    let receipt = provider.get_transaction_receipt(tx_hash).await?;
 
     // The tx might not be included at all (rejected by builder) or included but reverted
-    if let Some(receipt_json) = receipt {
-        let status = receipt_json
-            .get("status")
-            .and_then(|v| v.as_str())
-            .expect("Receipt must have status field");
-
-        assert_eq!(
-            status, "0x0",
+    if let Some(receipt) = receipt {
+        assert!(
+            !receipt.status(),
             "Expired key transaction must revert if included"
         );
         println!("✓ Expired key transaction was included but reverted (status: 0x0)");
@@ -4559,7 +4542,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         .get_block_by_number(Default::default())
         .await?
         .unwrap();
-    let block_timestamp = block.header.timestamp;
+    let block_timestamp = block.header.timestamp();
     println!("Block timestamp: {block_timestamp}, using nonce: {nonce}");
 
     // Use expiry = 1 which is definitely in the past
@@ -4597,20 +4580,13 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
     setup.node.advance_block().await?;
 
     // Check if transaction was included (it should fail or not be included)
-    let receipt: Option<serde_json::Value> = provider
-        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-        .await?;
+    let receipt = provider.get_transaction_receipt(tx_hash).await?;
 
-    if let Some(receipt_json) = receipt {
-        let status = receipt_json
-            .get("status")
-            .and_then(|v| v.as_str())
-            .expect("Receipt must have status field");
-
+    if let Some(receipt) = receipt {
         // If included, it must have failed
-        assert_eq!(
-            status, "0x0",
-            "Past expiry key transaction must fail if included. Receipt: {receipt_json}"
+        assert!(
+            !receipt.status(),
+            "Past expiry key transaction must fail if included. Receipt: {receipt:?}"
         );
         println!("✓ Past expiry key transaction was included but failed (status: 0x0)");
     } else {
