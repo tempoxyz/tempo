@@ -30,21 +30,21 @@ impl From<Infallible> for TempoEthApiError {
 
 impl From<TransactionConversionError> for TempoEthApiError {
     fn from(_: TransactionConversionError) -> Self {
-        TempoEthApiError::EthApiError(EthApiError::TransactionConversionError)
+        Self::EthApiError(EthApiError::TransactionConversionError)
     }
 }
 
 impl AsEthApiError for TempoEthApiError {
     fn as_err(&self) -> Option<&EthApiError> {
         match self {
-            TempoEthApiError::EthApiError(err) => Some(err),
+            Self::EthApiError(err) => Some(err),
         }
     }
 }
 
 impl From<EthApiError> for TempoEthApiError {
     fn from(error: EthApiError) -> Self {
-        TempoEthApiError::EthApiError(error)
+        Self::EthApiError(error)
     }
 }
 
@@ -65,12 +65,17 @@ where
 
 impl FromEvmHalt<HaltReason> for TempoEthApiError {
     fn from_evm_halt(halt: HaltReason, gas_limit: u64) -> Self {
-        TempoEthApiError::EthApiError(RpcInvalidTransactionError::halt(halt, gas_limit).into())
+        Self::EthApiError(RpcInvalidTransactionError::halt(halt, gas_limit).into())
     }
 }
 
 impl FromRevert for TempoEthApiError {
     fn from_revert(revert: Bytes) -> Self {
-        Self::EthApiError(EthApiError::from_revert(revert))
+        match tempo_precompiles::error::decode_error(&revert.0) {
+            Some(error) => Self::EthApiError(EthApiError::from_revert(Bytes::copy_from_slice(
+                error.to_string().as_bytes(),
+            ))),
+            None => Self::EthApiError(EthApiError::from_revert(revert)),
+        }
     }
 }
