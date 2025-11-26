@@ -458,7 +458,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Post allegretto, enforce that the tick adheres to tick spacing
-        if self.storage.spec().is_allegretto() && !(tick % TICK_SPACING != 0) {
+        if self.storage.spec().is_allegretto() && tick % TICK_SPACING != 0 {
             return Err(StablecoinExchangeError::invalid_tick().into());
         }
 
@@ -548,7 +548,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Post allegretto, enforce that the tick adheres to tick spacing
-        if self.storage.spec().is_allegretto() && !(tick % TICK_SPACING != 0) {
+        if self.storage.spec().is_allegretto() && tick % TICK_SPACING != 0 {
             return Err(StablecoinExchangeError::invalid_tick().into());
         }
 
@@ -557,7 +557,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Post allegretto, enforce that the tick adheres to tick spacing
-        if self.storage.spec().is_allegretto() && !(flip_tick % TICK_SPACING != 0) {
+        if self.storage.spec().is_allegretto() && flip_tick % TICK_SPACING != 0 {
             return Err(StablecoinExchangeError::invalid_flip_tick().into());
         }
 
@@ -4479,8 +4479,7 @@ mod tests {
         ));
 
         // Test valid tick spacing
-        let valid_tick = 20i16;
-        dbg!(valid_tick % TICK_SPACING);
+        let valid_tick = -20i16;
         let result = exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, valid_tick);
         assert!(result.is_ok());
 
