@@ -8,7 +8,7 @@ use commonware_p2p::{
 };
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics as _, Spawner, Storage, spawn_cell};
 use commonware_storage::metadata::Metadata;
-use commonware_utils::sequence::U64;
+use commonware_utils::{Acknowledgement as _, sequence::U64};
 use eyre::eyre;
 use futures::{StreamExt as _, channel::mpsc, lock::Mutex};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
@@ -22,10 +22,10 @@ use crate::{
         manager::ingress::{Finalize, GetIntermediateDealing, GetOutcome},
     },
     epoch,
-    marshal_utils::UpdateExt as _,
 };
 
-const EPOCH_KEY: u64 = 0;
+const CURRENT_EPOCH_KEY: U64 = U64::new(0);
+const PREVIOUS_EPOCH_KEY: U64 = U64::new(1);
 
 pub(crate) struct Actor<TContext>
 where
@@ -133,7 +133,7 @@ where
 
         let epoch_state = self
             .epoch_metadata
-            .get(&EPOCH_KEY.into())
+            .get(&CURRENT_EPOCH_KEY)
             .cloned()
             .unwrap_or_else(|| EpochState {
                 epoch: 0,
@@ -141,19 +141,58 @@ where
                 public: self.config.initial_public.clone(),
                 share: self.config.initial_share.clone(),
             });
+        self.epoch_metadata
+            .put_sync(CURRENT_EPOCH_KEY, epoch_state.clone())
+            .await
+            .expect("must always be able to persist state");
 
-        self.config
-            .epoch_manager
-            .report(
-                epoch::Enter {
-                    epoch: epoch_state.epoch,
-                    public: epoch_state.public.clone(),
-                    share: epoch_state.share.clone(),
-                    participants: epoch_state.participants.clone(),
-                }
-                .into(),
-            )
-            .await;
+        // Only start the current epoch if the marshal actor has the "genesis"
+        // block for it.
+        let has_genesis_block_for_epoch =
+            if let Some(previous_epoch) = epoch_state.epoch.checked_sub(1) {
+                self.config
+                    .marshal
+                    .get_info(utils::last_block_in_epoch(
+                        self.config.epoch_length,
+                        previous_epoch,
+                    ))
+                    .await
+                    .is_some()
+            } else {
+                true
+            };
+        if has_genesis_block_for_epoch {
+            self.config
+                .epoch_manager
+                .report(
+                    epoch::Enter {
+                        epoch: epoch_state.epoch,
+                        public: epoch_state.public.clone(),
+                        share: epoch_state.share.clone(),
+                        participants: epoch_state.participants.clone(),
+                    }
+                    .into(),
+                )
+                .await;
+        }
+
+        if let Some(epoch_state) = self.epoch_metadata.get(&PREVIOUS_EPOCH_KEY) {
+            // NOTE: PREVIOUS_EPOCH_KEY is only set if the node was shut down
+            // before the first height of the incoming epoch was observed (which
+            // would have subsequently deleted PREVIOUS_EPOCH_KEY).
+            self.config
+                .epoch_manager
+                .report(
+                    epoch::Enter {
+                        epoch: epoch_state.epoch,
+                        public: epoch_state.public.clone(),
+                        share: epoch_state.share.clone(),
+                        participants: epoch_state.participants.clone(),
+                    }
+                    .into(),
+                )
+                .await;
+        }
 
         let mut ceremony = {
             let config = ceremony::Config {
@@ -311,17 +350,18 @@ where
         parent = cause,
         skip_all,
         fields(
-            block.derived_epoch = update
-                .as_block()
-                .map(|b| utils::epoch(self.config.epoch_length, b.height())),
-            block.height = update.as_block().map(|b| b.height()),
+            block.derived_epoch = utils::epoch(self.config.epoch_length, block.height()),
+            block.height = block.height(),
             ceremony.epoch = ceremony.epoch(),
         ),
     )]
     async fn handle_finalize<TReceiver, TSender>(
         &mut self,
         cause: Span,
-        Finalize { update, response }: Finalize,
+        Finalize {
+            block,
+            acknowledgment,
+        }: Finalize,
         mut ceremony: Ceremony<ContextCell<TContext>, TReceiver, TSender>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> Ceremony<ContextCell<TContext>, TReceiver, TSender>
@@ -329,18 +369,15 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let Some(block) = update.into_block() else {
-            return ceremony;
-        };
-
         if block.height() == 0 {
+            acknowledgment.acknowledge();
             return ceremony;
         }
 
         let block_epoch = utils::epoch(self.config.epoch_length, block.height());
 
         // Special case the last height of the previous epoch: remember that we
-        // can only enter the a new epoch once the last height of outgoing was
+        // can only enter the new epoch once the last height of outgoing was
         // reached, because that's what provides the genesis.
         if ceremony.epoch().saturating_sub(1) == block_epoch
             && utils::is_last_block_in_epoch(self.config.epoch_length, block.height())
@@ -369,6 +406,7 @@ where
                 "block was for a different epoch; not including it in the \
                 ceremony"
             );
+            acknowledgment.acknowledge();
             return ceremony;
         };
 
@@ -376,19 +414,22 @@ where
         // was entered and the previous epoch can be exited.
         //
         // Recall, for an epoch length E the first heights are 0E, 1E, 2E, ...
-        if block.height().is_multiple_of(self.config.epoch_length) {
-            // Special case epoch == 0
-            if let Some(previous_epoch) = ceremony.epoch().checked_sub(1) {
-                self.config
-                    .epoch_manager
-                    .report(
-                        epoch::Exit {
-                            epoch: previous_epoch,
-                        }
-                        .into(),
-                    )
-                    .await;
-            }
+        if block.height().is_multiple_of(self.config.epoch_length)
+            && let Some(old_epoch_state) = self.epoch_metadata.remove(&PREVIOUS_EPOCH_KEY)
+        {
+            self.config
+                .epoch_manager
+                .report(
+                    epoch::Exit {
+                        epoch: old_epoch_state.epoch,
+                    }
+                    .into(),
+                )
+                .await;
+            self.epoch_metadata
+                .sync()
+                .await
+                .expect("must always be able to sync state");
         }
 
         match epoch::relative_position(block.height(), self.config.epoch_length) {
@@ -435,19 +476,27 @@ where
             };
             let (public, share) = ceremony_outcome.role.into_key_pair();
 
-            let epoch_state = EpochState {
+            let old_epoch_state = self
+                .epoch_metadata
+                .remove(&CURRENT_EPOCH_KEY)
+                .expect("a current epoch state must always exist");
+            self.epoch_metadata.put(PREVIOUS_EPOCH_KEY, old_epoch_state);
+            let new_epoch_state = EpochState {
                 epoch: next_epoch,
                 participants: ceremony_outcome.participants,
                 public,
                 share,
             };
             self.epoch_metadata
-                .put_sync(EPOCH_KEY.into(), epoch_state.clone())
+                .put(CURRENT_EPOCH_KEY, new_epoch_state.clone());
+
+            self.epoch_metadata
+                .sync()
                 .await
                 .expect("must always be able to write epoch state to disk");
 
             // Prune older ceremony.
-            if let Some(epoch) = epoch_state.epoch.checked_sub(2) {
+            if let Some(epoch) = new_epoch_state.epoch.checked_sub(2) {
                 let mut ceremony_metadata = self.ceremony_metadata.lock().await;
                 ceremony_metadata.remove(&epoch.into());
                 ceremony_metadata.sync().await.expect("metadata must sync");
@@ -456,18 +505,18 @@ where
             let config = ceremony::Config {
                 namespace: self.config.namespace.clone(),
                 me: self.config.me.clone(),
-                public: epoch_state.public.clone(),
-                share: epoch_state.share.clone(),
-                epoch: epoch_state.epoch,
-                dealers: epoch_state.participants.clone(),
-                players: epoch_state.participants.clone(),
+                public: new_epoch_state.public.clone(),
+                share: new_epoch_state.share.clone(),
+                epoch: new_epoch_state.epoch,
+                dealers: new_epoch_state.participants.clone(),
+                players: new_epoch_state.participants.clone(),
             };
             self.metrics
                 .ceremony_dealers
-                .set(epoch_state.participants.len() as i64);
+                .set(new_epoch_state.participants.len() as i64);
             self.metrics
                 .ceremony_players
-                .set(epoch_state.participants.len() as i64);
+                .set(new_epoch_state.participants.len() as i64);
 
             ceremony = ceremony::Ceremony::init(
                 &mut self.context,
@@ -479,9 +528,7 @@ where
             .expect("must always be able to initialize ceremony")
         }
 
-        if let Err(()) = response.send(()) {
-            warn!("could not confirm finalization because recipient already went away");
-        }
+        acknowledgment.acknowledge();
 
         ceremony
     }

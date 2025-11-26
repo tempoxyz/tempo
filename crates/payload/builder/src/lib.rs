@@ -1,7 +1,7 @@
 //! Tempo Payload Builder.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod metrics;
 
@@ -17,7 +17,7 @@ use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_errors::ConsensusError;
 use reth_evm::{
-    ConfigureEvm, Evm, NextBlockEnvAttributes,
+    ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
     block::{BlockExecutionError, BlockValidationError},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
@@ -43,7 +43,7 @@ use std::{
 };
 use tempo_chainspec::TempoChainSpec;
 use tempo_consensus::{TEMPO_GENERAL_GAS_DIVISOR, TEMPO_SHARED_GAS_DIVISOR};
-use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
+use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, evm::TempoEvm};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_precompiles::{
     STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
@@ -52,6 +52,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoTxEnvelope,
+    subblock::PartialValidatorKey,
     transaction::{
         calc_gas_balance_spending,
         envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
@@ -104,14 +105,22 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
     ///
     /// Returns a vector of system transactions that must be executed at the beginning of each block:
     /// 1. TIP20 Rewards Registry finalizeStreams - finalizes expired reward streams
-    fn build_start_block_txs(&self, block_env: &BlockEnv) -> Vec<Recovered<TempoTxEnvelope>> {
+    fn build_start_block_txs(
+        &self,
+        evm: &TempoEvm<impl Database>,
+    ) -> Vec<Recovered<TempoTxEnvelope>> {
+        // No start of block system transactions after moderato.
+        if evm.ctx().cfg.spec.is_moderato() {
+            return vec![];
+        }
+
         let chain_id = Some(self.provider.chain_spec().chain().id());
 
         // Build rewards registry system transaction
         let rewards_registry_input = ITIP20RewardsRegistry::finalizeStreamsCall {}
             .abi_encode()
             .into_iter()
-            .chain(block_env.number.to_be_bytes_vec())
+            .chain(evm.block().number.to_be_bytes_vec())
             .collect();
 
         let rewards_registry_tx = Recovered::new_unchecked(
@@ -332,35 +341,6 @@ where
         let mut payment_transactions = 0;
         let mut total_fees = U256::ZERO;
 
-        let mut builder = self
-            .evm_config
-            .builder_for_next_block(
-                &mut db,
-                &parent_header,
-                TempoNextBlockEnvAttributes {
-                    inner: NextBlockEnvAttributes {
-                        timestamp: attributes.timestamp(),
-                        suggested_fee_recipient: attributes.suggested_fee_recipient(),
-                        prev_randao: attributes.prev_randao(),
-                        gas_limit: block_gas_limit,
-                        parent_beacon_block_root: attributes.parent_beacon_block_root(),
-                        withdrawals: Some(attributes.withdrawals().clone()),
-                    },
-                    general_gas_limit,
-                    shared_gas_limit,
-                    timestamp_millis_part: attributes.timestamp_millis_part(),
-                    extra_data: attributes.extra_data().clone(),
-                },
-            )
-            .map_err(PayloadBuilderError::other)?;
-
-        builder.apply_pre_execution_changes().map_err(|err| {
-            warn!(%err, "failed to apply pre-execution changes");
-            PayloadBuilderError::Internal(err.into())
-        })?;
-
-        debug!("building new payload");
-
         // If building an empty payload, don't include any subblocks
         //
         // Also don't include any subblocks if we've seen an invalid subblock
@@ -395,6 +375,46 @@ where
             true
         });
 
+        let subblock_fee_recipients = subblocks
+            .iter()
+            .map(|subblock| {
+                (
+                    PartialValidatorKey::from_slice(&subblock.validator()[..15]),
+                    subblock.fee_recipient,
+                )
+            })
+            .collect();
+
+        let mut builder = self
+            .evm_config
+            .builder_for_next_block(
+                &mut db,
+                &parent_header,
+                TempoNextBlockEnvAttributes {
+                    inner: NextBlockEnvAttributes {
+                        timestamp: attributes.timestamp(),
+                        suggested_fee_recipient: attributes.suggested_fee_recipient(),
+                        prev_randao: attributes.prev_randao(),
+                        gas_limit: block_gas_limit,
+                        parent_beacon_block_root: attributes.parent_beacon_block_root(),
+                        withdrawals: Some(attributes.withdrawals().clone()),
+                    },
+                    general_gas_limit,
+                    shared_gas_limit,
+                    timestamp_millis_part: attributes.timestamp_millis_part(),
+                    extra_data: attributes.extra_data().clone(),
+                    subblock_fee_recipients,
+                },
+            )
+            .map_err(PayloadBuilderError::other)?;
+
+        builder.apply_pre_execution_changes().map_err(|err| {
+            warn!(%err, "failed to apply pre-execution changes");
+            PayloadBuilderError::Internal(err.into())
+        })?;
+
+        debug!("building new payload");
+
         // Prepare system transactions before actual block building and account for their size.
         let system_txs = self.build_seal_block_txs(builder.evm().block(), &subblocks);
         for tx in &system_txs {
@@ -412,7 +432,7 @@ where
         ));
 
         // Execute start-of-block system transactions (rewards registry finalize)
-        for tx in self.build_start_block_txs(builder.evm().block()) {
+        for tx in self.build_start_block_txs(builder.evm()) {
             block_size_used += tx.inner().length();
 
             builder

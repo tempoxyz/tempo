@@ -1,4 +1,5 @@
 use commonware_consensus::{Reporter, marshal::Update, types::Epoch};
+use commonware_utils::acknowledgement::Exact;
 use eyre::WrapErr as _;
 use futures::channel::{mpsc, oneshot};
 use tracing::{Span, warn};
@@ -85,8 +86,8 @@ impl From<GetOutcome> for Command {
 }
 
 pub(super) struct Finalize {
-    pub(super) update: Box<Update<Block>>,
-    pub(super) response: oneshot::Sender<()>,
+    pub(super) block: Box<Block>,
+    pub(super) acknowledgment: Exact,
 }
 
 pub(super) struct GetIntermediateDealing {
@@ -103,18 +104,18 @@ impl Reporter for Mailbox {
     type Activity = Update<Block>;
 
     async fn report(&mut self, update: Self::Activity) {
-        let (response, rx) = oneshot::channel();
-        // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
+        let Update::Block(block, acknowledgment) = update else {
+            return;
+        };
         if let Err(error) = self
             .inner
             .unbounded_send(Message::in_current_span(Finalize {
-                update: update.into(),
-                response,
+                block: block.into(),
+                acknowledgment,
             }))
             .wrap_err("dkg manager no longer running")
         {
             warn!(%error, "failed to report finalized block to dkg manager")
         }
-        let _ = rx.await;
     }
 }

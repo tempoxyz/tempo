@@ -50,7 +50,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 
 FROM debian:bookworm-slim
 
-COPY --from=ghcr.io/nushell/nushell@sha256:5899792a1d6e7a055e134066e1d400ee526edb3ee512cc4bb3acc9c7c5fe3880 /usr/bin/nu /usr/bin/nu
+COPY --from=ghcr.io/nushell/nushell:0.108.0-bookworm /usr/bin/nu /usr/bin/nu
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

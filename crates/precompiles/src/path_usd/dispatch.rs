@@ -1,7 +1,6 @@
 use crate::{
-    Precompile, fill_precompile_output, input_cost,
-    linking_usd::LinkingUSD,
-    metadata, mutate, mutate_void,
+    Precompile, fill_precompile_output, input_cost, metadata, mutate, mutate_void,
+    path_usd::PathUSD,
     storage::{ContractStorage, PrecompileStorageProvider},
     tip20::{IRolesAuth, ITIP20},
     view,
@@ -9,22 +8,37 @@ use crate::{
 
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
-use tempo_contracts::precompiles::{ILinkingUSD, TIP20Error};
+use tempo_contracts::precompiles::{IPathUSD, TIP20Error};
 
-impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
+impl<S: PrecompileStorageProvider> Precompile for PathUSD<'_, S> {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+        let selector: [u8; 4] = if let Some(bytes) = calldata.get(..4) {
+            bytes.try_into().unwrap()
+        } else {
+            self.token
+                .storage()
+                .deduct_gas(input_cost(calldata.len()))
+                .map_err(|_| PrecompileError::OutOfGas)?;
+
+            return Err(PrecompileError::Other(
+                "Invalid input: missing function selector".into(),
+            ));
+        };
+
+        // Post allegretto hardfork, treat pathUSD as a default TIP20 without extra permissions
+        // For calls to name() or symbol(), since this contract is already deployed pre hardfork,
+        // we override name/symbol to PathUSD rather than treating these calls with default TIP20 logic
+        if self.token.storage().spec().is_allegretto()
+            && selector != ITIP20::nameCall::SELECTOR
+            && selector != ITIP20::symbolCall::SELECTOR
+        {
+            return self.token.call(calldata, msg_sender);
+        }
+
         self.token
             .storage()
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
-
-        let selector: [u8; 4] = calldata
-            .get(..4)
-            .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".into())
-            })?
-            .try_into()
-            .unwrap();
 
         let result = match selector {
             // Metadata
@@ -65,11 +79,11 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
             ITIP20::BURN_BLOCKED_ROLECall::SELECTOR => {
                 view::<ITIP20::BURN_BLOCKED_ROLECall>(calldata, |_| Ok(Self::burn_blocked_role()))
             }
-            ILinkingUSD::TRANSFER_ROLECall::SELECTOR => {
-                view::<ILinkingUSD::TRANSFER_ROLECall>(calldata, |_| Ok(Self::transfer_role()))
+            IPathUSD::TRANSFER_ROLECall::SELECTOR => {
+                view::<IPathUSD::TRANSFER_ROLECall>(calldata, |_| Ok(Self::transfer_role()))
             }
-            ILinkingUSD::RECEIVE_WITH_MEMO_ROLECall::SELECTOR => {
-                view::<ILinkingUSD::RECEIVE_WITH_MEMO_ROLECall>(calldata, |_| {
+            IPathUSD::RECEIVE_WITH_MEMO_ROLECall::SELECTOR => {
+                view::<IPathUSD::RECEIVE_WITH_MEMO_ROLECall>(calldata, |_| {
                     Ok(Self::receive_with_memo_role())
                 })
             }
@@ -128,7 +142,7 @@ impl<S: PrecompileStorageProvider> Precompile for LinkingUSD<'_, S> {
                 })
             }
 
-            // Transfer functions that are disabled for LinkingUSD
+            // Transfer functions that are disabled for PathUSD
             ITIP20::transferCall::SELECTOR => {
                 mutate::<ITIP20::transferCall>(calldata, msg_sender, |sender, call| {
                     self.transfer(sender, call)
@@ -216,26 +230,27 @@ mod tests {
         primitives::{Bytes, U256},
         sol_types::SolInterface,
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error,
     };
 
     #[test]
-    fn linking_usd_test_selector_coverage() {
+    fn path_usd_test_selector_coverage() {
         use crate::test_util::assert_full_coverage;
 
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
 
-        linking_usd.initialize(Address::ZERO).unwrap();
+        path_usd.initialize(Address::ZERO).unwrap();
 
         let itip20_unsupported =
-            check_selector_coverage(&mut linking_usd, ITIP20Calls::SELECTORS, "ITIP20", |s| {
+            check_selector_coverage(&mut path_usd, ITIP20Calls::SELECTORS, "ITIP20", |s| {
                 ITIP20Calls::name_by_selector(s)
             });
 
         let roles_unsupported = check_selector_coverage(
-            &mut linking_usd,
+            &mut path_usd,
             IRolesAuthCalls::SELECTORS,
             "IRolesAuth",
             IRolesAuthCalls::name_by_selector,
@@ -247,7 +262,7 @@ mod tests {
     #[test]
     fn test_start_reward_disabled() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = LinkingUSD::new(&mut storage);
+        let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
         token
@@ -271,7 +286,7 @@ mod tests {
     #[test]
     fn test_set_reward_recipient_disabled() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = LinkingUSD::new(&mut storage);
+        let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
         let recipient = Address::from([2u8; 20]);
 
@@ -292,7 +307,7 @@ mod tests {
     #[test]
     fn test_cancel_reward_disabled() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = LinkingUSD::new(&mut storage);
+        let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
         token
@@ -312,7 +327,7 @@ mod tests {
     #[test]
     fn test_claim_rewards_disabled() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut token = LinkingUSD::new(&mut storage);
+        let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
         token
@@ -325,6 +340,49 @@ mod tests {
         assert!(output.reverted);
         let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
         assert_eq!(output.bytes, expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pre_allegretto_name_symbol() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
+        let mut token = PathUSD::new(&mut storage);
+        let sender = Address::from([1u8; 20]);
+
+        token.initialize(sender)?;
+
+        let name_calldata = ITIP20::nameCall {}.abi_encode();
+        let name_output = token.call(&Bytes::from(name_calldata), sender)?;
+        let name = ITIP20::nameCall::abi_decode_returns(&name_output.bytes)?;
+        assert_eq!(name, "linkingUSD");
+
+        let symbol_calldata = ITIP20::symbolCall {}.abi_encode();
+        let symbol_output = token.call(&Bytes::from(symbol_calldata), sender)?;
+        let symbol = ITIP20::symbolCall::abi_decode_returns(&symbol_output.bytes)?;
+        assert_eq!(symbol, "linkingUSD");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_post_allegretto_name_symbol() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Allegretto);
+        let mut token = PathUSD::new(&mut storage);
+        let sender = Address::from([1u8; 20]);
+
+        token.initialize(sender)?;
+
+        let name_calldata = ITIP20::nameCall {}.abi_encode();
+        let name_output = token.call(&Bytes::from(name_calldata), sender)?;
+        let name = ITIP20::nameCall::abi_decode_returns(&name_output.bytes)?;
+        assert_eq!(name, "pathUSD");
+
+        // Test symbol() call
+        let symbol_calldata = ITIP20::symbolCall {}.abi_encode();
+        let symbol_output = token.call(&Bytes::from(symbol_calldata), sender)?;
+        let symbol = ITIP20::symbolCall::abi_decode_returns(&symbol_output.bytes)?;
+        assert_eq!(symbol, "pathUSD");
 
         Ok(())
     }

@@ -1,6 +1,6 @@
-use crate::rpc::pagination::FilterRange;
 use alloy_primitives::{Address, B256, BlockNumber, TxHash};
 use serde::{Deserialize, Serialize};
+use tempo_alloy::rpc::pagination::FilterRange;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

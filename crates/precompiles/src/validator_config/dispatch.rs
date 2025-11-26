@@ -1,7 +1,7 @@
 use super::{IValidatorConfig, ValidatorConfig};
 use crate::{
     Precompile, fill_precompile_output, input_cost, mutate_void,
-    storage::PrecompileStorageProvider, view,
+    storage::PrecompileStorageProvider, unknown_selector, view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
@@ -59,7 +59,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for ValidatorConfig<'a, S> {
                 })
             }
 
-            _ => Err(PrecompileError::Other("Unknown function selector".into())),
+            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
         result.map(|res| fill_precompile_output(res, self.storage))
@@ -84,7 +84,8 @@ mod tests {
 
     #[test]
     fn test_function_selector_dispatch() {
-        let mut storage = HashMapStorageProvider::new(1);
+        use tempo_chainspec::hardfork::TempoHardfork;
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
         let mut validator_config = ValidatorConfig::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
@@ -92,9 +93,10 @@ mod tests {
         let owner = Address::from([0u8; 20]);
         validator_config.initialize(owner).unwrap();
 
-        // Test invalid selector
+        // Test invalid selector - should return Ok with reverted status
         let result = validator_config.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), sender);
-        assert!(matches!(result, Err(PrecompileError::Other(_))));
+        assert!(result.is_ok());
+        assert!(result.unwrap().reverted);
 
         // Test insufficient calldata
         let result = validator_config.call(&Bytes::from([0x12, 0x34]), sender);

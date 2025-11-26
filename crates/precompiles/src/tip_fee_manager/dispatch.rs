@@ -4,7 +4,7 @@ use crate::{
     fill_precompile_output, input_cost, mutate, mutate_void,
     storage::PrecompileStorageProvider,
     tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager, amm::MIN_LIQUIDITY},
-    view,
+    unknown_selector, view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
@@ -96,7 +96,9 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
             ITIPFeeAMM::mintCall::SELECTOR => {
                 mutate::<ITIPFeeAMM::mintCall>(calldata, msg_sender, |s, call| {
                     if self.storage.spec().is_moderato() {
-                        Err(TempoPrecompileError::UnknownFunctionSelector)
+                        Err(TempoPrecompileError::UnknownFunctionSelector(
+                            ITIPFeeAMM::mintCall::SELECTOR,
+                        ))
                     } else {
                         self.mint(
                             s,
@@ -148,7 +150,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
                 })
             }
 
-            _ => Err(PrecompileError::Other("Unknown function selector".into())),
+            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
         result.map(|res| fill_precompile_output(res, self.storage))
@@ -159,25 +161,23 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
 mod tests {
     use super::*;
     use crate::{
-        LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, expect_precompile_revert,
+        PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, expect_precompile_revert,
         storage::hashmap::HashMapStorageProvider,
         test_util::check_selector_coverage,
         tip_fee_manager::{
             TIPFeeAMMError, TipFeeManager,
             amm::{MIN_LIQUIDITY, PoolKey},
         },
-        tip20::{
-            ISSUER_ROLE, ITIP20, TIP20Token, tests::initialize_linking_usd, token_id_to_address,
-        },
+        tip20::{ISSUER_ROLE, ITIP20, TIP20Token, tests::initialize_path_usd, token_id_to_address},
     };
     use alloy::{
         primitives::{Address, B256, Bytes, U256},
-        sol_types::SolValue,
+        sol_types::{SolError, SolValue},
     };
     use eyre::Result;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls,
+        IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls, UnknownFunctionSelector,
     };
 
     fn setup_token_with_balance(
@@ -186,12 +186,12 @@ mod tests {
         user: Address,
         amount: U256,
     ) {
-        initialize_linking_usd(storage, user).unwrap();
+        initialize_path_usd(storage, user).unwrap();
         let mut tip20_token = TIP20Token::from_address(token, storage);
 
         // Initialize token
         tip20_token
-            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, user)
+            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, user)
             .unwrap();
 
         // Grant issuer role to user and mint tokens
@@ -219,14 +219,14 @@ mod tests {
         let validator = Address::random();
         let admin = Address::random();
 
-        // Initialize LinkingUSD first
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        // Initialize PathUSD first
+        initialize_path_usd(&mut storage, admin).unwrap();
 
         // Create a USD token to use as fee token
         let token = token_id_to_address(1);
         let mut tip20_token = TIP20Token::from_address(token, &mut storage);
         tip20_token
-            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
@@ -269,14 +269,14 @@ mod tests {
         let user = Address::random();
         let admin = Address::random();
 
-        // Initialize LinkingUSD first
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        // Initialize PathUSD first
+        initialize_path_usd(&mut storage, admin).unwrap();
 
         // Create a USD token to use as fee token
         let token = token_id_to_address(1);
         let mut tip20_token = TIP20Token::from_address(token, &mut storage);
         tip20_token
-            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)
             .unwrap();
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
@@ -464,8 +464,8 @@ mod tests {
         let user = Address::random();
         let admin = Address::random();
 
-        // Initialize LinkingUSD first
-        initialize_linking_usd(&mut storage, admin)?;
+        // Initialize PathUSD first
+        initialize_path_usd(&mut storage, admin)?;
 
         // Create two USD tokens
         let user_token = token_id_to_address(1);
@@ -551,11 +551,57 @@ mod tests {
     }
 
     #[test]
-    fn test_mint_deprecated_after_moderato_hardfork() {
+    fn test_unknown_selector_error_pre_moderato() {
+        use tempo_chainspec::hardfork::TempoHardfork;
+        // Before Moderato: should return generic PrecompileError::Other
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
+        let mut fee_manager = TipFeeManager::new(&mut storage);
+
+        // Call with an unknown selector (0x12345678)
+        let unknown_selector = [0x12, 0x34, 0x56, 0x78];
+        let calldata = Bytes::from(unknown_selector);
+        let result = fee_manager.call(&calldata, Address::random());
+
+        // Should return Err(PrecompileError::Other)
+        assert!(result.is_err());
+        assert!(matches!(result, Err(PrecompileError::Other(_))));
+    }
+
+    #[test]
+    fn test_unknown_selector_error_post_moderato() {
+        use tempo_chainspec::hardfork::TempoHardfork;
+        // After Moderato: should return ABI-encoded error with selector
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
+        let mut fee_manager = TipFeeManager::new(&mut storage);
+
+        // Call with an unknown selector (0x12345678)
+        let unknown_selector = [0x12, 0x34, 0x56, 0x78];
+        let calldata = Bytes::from(unknown_selector);
+        let result = fee_manager.call(&calldata, Address::random());
+
+        // Should return Ok with reverted status
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.reverted);
+
+        // Verify the error can be decoded as UnknownFunctionSelector
+        let decoded_error = UnknownFunctionSelector::abi_decode(&output.bytes);
+        assert!(
+            decoded_error.is_ok(),
+            "Should decode as UnknownFunctionSelector"
+        );
+
+        // Verify the selector matches what we sent
+        let error = decoded_error.unwrap();
+        assert_eq!(error.selector.as_slice(), &unknown_selector);
+    }
+
+    #[test]
+    fn test_mint_deprecated_post_moderato() {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
         let user = Address::random();
         let admin = Address::random();
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
 
         let user_token = token_id_to_address(1);
         let validator_token = token_id_to_address(2);
@@ -576,8 +622,20 @@ mod tests {
         let calldata = call.abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), user);
 
+        // Should return Ok with reverted status for unknown function selector
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.reverted);
+
+        // Verify the error can be decoded as UnknownFunctionSelector
+        let decoded_error = UnknownFunctionSelector::abi_decode(&output.bytes);
         assert!(
-            matches!(result, Err(revm::precompile::PrecompileError::Other(ref msg)) if msg == "Unknown function selector")
+            decoded_error.is_ok(),
+            "Should decode as UnknownFunctionSelector"
         );
+
+        // Verify it's the mint selector
+        let error = decoded_error.unwrap();
+        assert_eq!(error.selector.as_slice(), &ITIPFeeAMM::mintCall::SELECTOR);
     }
 }

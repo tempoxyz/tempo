@@ -1,10 +1,12 @@
 //! Tempo EVM implementation.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod assemble;
-use alloy_consensus::BlockHeader as _;
+use alloy_consensus::{BlockHeader as _, Transaction};
+use alloy_primitives::Address;
+use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
 mod block;
 mod context;
@@ -27,7 +29,10 @@ use reth_evm::{
 };
 use reth_primitives_traits::{SealedBlock, SealedHeader, SignedTransaction};
 use tempo_payload_types::TempoExecutionData;
-use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
+use tempo_primitives::{
+    Block, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
+    subblock::PartialValidatorKey,
+};
 
 use crate::{block::TempoBlockExecutor, evm::TempoEvm};
 use reth_evm_ethereum::EthEvmConfig;
@@ -167,6 +172,24 @@ impl ConfigureEvm for TempoEvmConfig {
         &self,
         block: &'a SealedBlock<Block>,
     ) -> Result<TempoBlockExecutionCtx<'a>, Self::Error> {
+        // Decode validator -> fee_recipient mapping from the subblock metadata system transaction.
+        let subblock_fee_recipients = block
+            .body()
+            .transactions
+            .iter()
+            .rev()
+            .filter(|tx| (*tx).to() == Some(Address::ZERO))
+            .find_map(|tx| Vec::<SubBlockMetadata>::decode(&mut tx.input().as_ref()).ok())
+            .ok_or(TempoEvmError::NoSubblockMetadataFound)?
+            .into_iter()
+            .map(|metadata| {
+                (
+                    PartialValidatorKey::from_slice(&metadata.validator[..15]),
+                    metadata.fee_recipient,
+                )
+            })
+            .collect();
+
         Ok(TempoBlockExecutionCtx {
             inner: EthBlockExecutionCtx {
                 parent_hash: block.header().parent_hash(),
@@ -181,6 +204,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
             // Not available when we only have a block body.
             validator_set: None,
+            subblock_fee_recipients,
         })
     }
 
@@ -202,6 +226,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
             // Fine to not validate during block building.
             validator_set: None,
+            subblock_fee_recipients: attributes.subblock_fee_recipients,
         })
     }
 }

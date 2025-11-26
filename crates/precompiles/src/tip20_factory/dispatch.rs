@@ -1,4 +1,6 @@
-use crate::{Precompile, fill_precompile_output, input_cost, mutate, tip20::is_tip20, view};
+use crate::{
+    Precompile, fill_precompile_output, input_cost, mutate, tip20::is_tip20, unknown_selector, view,
+};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -33,7 +35,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Factory<'a, S> {
             ITIP20Factory::isTIP20Call::SELECTOR => {
                 view::<ITIP20Factory::isTIP20Call>(calldata, |call| Ok(is_tip20(call.token)))
             }
-            _ => Err(PrecompileError::Other("Unknown function selector".into())),
+            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
         result.map(|res| fill_precompile_output(res, self.storage))

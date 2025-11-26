@@ -5,9 +5,9 @@ use alloy::{
 };
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{
-    FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError,
+    AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError,
     TIP20RewardsRegistryError, TIP403RegistryError, TIPAccountRegistrarError, TIPFeeAMMError,
-    ValidatorConfigError,
+    UnknownFunctionSelector, ValidatorConfigError,
 };
 
 // TODO: add error type for overflow/underflow
@@ -57,11 +57,15 @@ pub enum TempoPrecompileError {
     #[error("Validator config error: {0:?}")]
     ValidatorConfigError(ValidatorConfigError),
 
+    /// Error from account keychain precompile
+    #[error("Account keychain error: {0:?}")]
+    AccountKeychainError(AccountKeychainError),
+
     #[error("Gas limit exceeded")]
     OutOfGas,
 
-    #[error("Unknown function selector")]
-    UnknownFunctionSelector,
+    #[error("Unknown function selector: {0:?}")]
+    UnknownFunctionSelector([u8; 4]),
 
     #[error("Fatal precompile error: {0:?}")]
     #[from(skip)]
@@ -115,12 +119,15 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
                         panic.abi_encode().into()
                     }
                     TPErr::ValidatorConfigError(e) => e.abi_encode().into(),
+                    TPErr::AccountKeychainError(e) => e.abi_encode().into(),
                     TPErr::OutOfGas => {
                         return Err(PrecompileError::OutOfGas);
                     }
-                    TPErr::UnknownFunctionSelector => {
-                        return Err(PrecompileError::Other("Unknown function selector".into()));
+                    TPErr::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
+                        selector: selector.into(),
                     }
+                    .abi_encode()
+                    .into(),
                     TPErr::Fatal(msg) => {
                         return Err(PrecompileError::Fatal(msg));
                     }
@@ -128,5 +135,46 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
                 Ok(PrecompileOutput::new_reverted(gas, bytes))
             }
         }
+    }
+}
+
+impl<T> IntoPrecompileResult<T> for TempoPrecompileError {
+    fn into_precompile_result(
+        self,
+        gas: u64,
+        _encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
+    ) -> PrecompileResult {
+        let bytes = match self {
+            Self::StablecoinExchange(e) => e.abi_encode().into(),
+            Self::TIP20(e) => e.abi_encode().into(),
+            Self::TIP20RewardsRegistry(e) => e.abi_encode().into(),
+            Self::RolesAuthError(e) => e.abi_encode().into(),
+            Self::TIP403RegistryError(e) => e.abi_encode().into(),
+            Self::TIPAccountRegistrarError(e) => e.abi_encode().into(),
+            Self::FeeManagerError(e) => e.abi_encode().into(),
+            Self::TIPFeeAMMError(e) => e.abi_encode().into(),
+            Self::NonceError(e) => e.abi_encode().into(),
+            Self::AccountKeychainError(e) => e.abi_encode().into(),
+            Self::Panic(kind) => {
+                let panic = Panic {
+                    code: U256::from(kind as u32),
+                };
+
+                panic.abi_encode().into()
+            }
+            Self::ValidatorConfigError(e) => e.abi_encode().into(),
+            Self::OutOfGas => {
+                return Err(PrecompileError::OutOfGas);
+            }
+            Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
+                selector: selector.into(),
+            }
+            .abi_encode()
+            .into(),
+            Self::Fatal(msg) => {
+                return Err(PrecompileError::Fatal(msg));
+            }
+        };
+        Ok(PrecompileOutput::new_reverted(gas, bytes))
     }
 }

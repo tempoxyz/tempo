@@ -1,8 +1,4 @@
-pub use books::{Orderbook, OrderbooksFilter, OrderbooksResponse};
-pub use error::DexApiError;
-pub use orders::{Order, OrdersFilters, OrdersSort, OrdersSortOrder, Tick};
-
-use crate::rpc::{TempoDexApiServer, dex::orders::OrdersResponse, pagination::PaginationParams};
+use crate::rpc::{TempoDexApiServer, dex::orders::OrdersResponse};
 use alloy_eips::{BlockId, BlockNumberOrTag};
 use alloy_primitives::{Address, B256, Sealable};
 use jsonrpsee::core::RpcResult;
@@ -12,6 +8,7 @@ use reth_node_api::{ConfigureEvm, NodePrimitives};
 use reth_provider::{BlockReaderIdExt, StateProviderFactory};
 use reth_rpc_eth_api::{RpcNodeCore, helpers::SpawnBlocking};
 use reth_rpc_eth_types::{EthApiError, error::FromEthApiError};
+use tempo_alloy::rpc::pagination::PaginationParams;
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
     stablecoin_exchange::{
@@ -23,10 +20,15 @@ use tempo_precompiles::{
 use tempo_primitives::TempoHeader;
 
 pub mod api;
+
 pub mod orders;
+pub use orders::{Order, OrdersFilters, Tick};
 
 mod books;
+pub use books::{Orderbook, OrderbooksFilter, OrderbooksResponse};
+
 mod error;
+pub use error::DexApiError;
 
 /// Default limit for pagination
 const DEFAULT_LIMIT: usize = 10;

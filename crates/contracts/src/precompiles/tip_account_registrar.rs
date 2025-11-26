@@ -5,7 +5,13 @@ sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc, abi)]
     interface ITipAccountRegistrar {
+        /// Pre-Moderato: accepts arbitrary hash (vulnerable to signature forgery)
+        /// Only works pre-Moderato. Returns UnknownSelector post-Moderato.
         function delegateToDefault(bytes32 hash, bytes calldata signature) external returns (address authority);
+
+        /// Post-Moderato: accepts arbitrary message bytes, computes keccak256(bytes) internally
+        /// Only works post-Moderato. Returns UnknownSelector pre-Moderato.
+        function delegateToDefault(bytes calldata message, bytes calldata signature) external returns (address authority);
 
         // Errors
         error InvalidSignature();

@@ -49,42 +49,51 @@ asm-keccak = [
 ]
 
 otlp = [
-    "reth-ethereum-cli/otlp",
-	"reth-ethereum/otlp"
+	"reth-ethereum-cli/otlp",
+	"reth-ethereum/otlp",
+	"tempo-node/otlp"
 ]
 js-tracer = [
 	"reth-node-builder/js-tracer",
-	"reth-ethereum/js-tracer"
+	"reth-ethereum/js-tracer",
+	"tempo-node/js-tracer"
 ]
 
 jemalloc = [
 	"reth-cli-util/jemalloc",
 	"reth-ethereum-cli/jemalloc",
-	"reth-ethereum/jemalloc"
+	"reth-ethereum/jemalloc",
+	"tempo-node/jemalloc"
 ]
 jemalloc-prof = [
 	"reth-cli-util/jemalloc",
 	"reth-cli-util/jemalloc-prof",
-	"reth-ethereum-cli/jemalloc-prof"
+	"reth-ethereum-cli/jemalloc-prof",
+	"tempo-node/jemalloc-prof"
 ]
 
 min-error-logs = [
 	"tracing/release_max_level_error",
-	"reth-ethereum-cli/min-error-logs"
+	"reth-ethereum-cli/min-error-logs",
+	"tempo-node/min-error-logs"
 ]
 min-warn-logs = [
 	"tracing/release_max_level_warn",
-	"reth-ethereum-cli/min-warn-logs"
+	"reth-ethereum-cli/min-warn-logs",
+	"tempo-node/min-warn-logs"
 ]
 min-info-logs = [
 	"tracing/release_max_level_info",
-	"reth-ethereum-cli/min-info-logs"
+	"reth-ethereum-cli/min-info-logs",
+	"tempo-node/min-info-logs"
 ]
 min-debug-logs = [
 	"tracing/release_max_level_debug",
-	"reth-ethereum-cli/min-debug-logs"
+	"reth-ethereum-cli/min-debug-logs",
+	"tempo-node/min-debug-logs"
 ]
 min-trace-logs = [
-	"reth-ethereum-cli/min-trace-logs"
+	"reth-ethereum-cli/min-trace-logs",
+	"tempo-node/min-trace-logs"
 ]
 

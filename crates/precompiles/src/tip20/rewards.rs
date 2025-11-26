@@ -63,6 +63,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
             Ok(0)
         } else {
+            // Scheduled rewards are disabled post-Moderato hardfork
+            if self.storage.spec().is_moderato() {
+                return Err(TIP20Error::scheduled_rewards_disabled().into());
+            }
+
             let rate = call
                 .amount
                 .checked_mul(ACC_PRECISION)
@@ -327,10 +332,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             .ok_or(TempoPrecompileError::under_overflow())?;
         self.set_scheduled_rate_decrease_at(end_time, new_rate)?;
 
+        // Remove from registry when all streams at this end_time are cancelled (Moderato+)
+        if self.storage.spec().is_moderato() && new_rate == U256::ZERO {
+            let mut registry = TIP20RewardsRegistry::new(self.storage);
+            registry.remove_stream(self.address, end_time)?;
+        }
+
         self.clear_streams(stream_id)?;
 
         let mut actual_refund = U256::ZERO;
-        if refund > U256::ZERO && self.is_transfer_authorized(stream.funder, stream.funder)? {
+        if refund > U256::ZERO && self.is_transfer_authorized(stream.funder, self.address)? {
             let funder_delegate = self.update_rewards(stream.funder)?;
             if funder_delegate != Address::ZERO {
                 let opted_in_supply = U256::from(self.get_opted_in_supply()?)
@@ -658,11 +669,15 @@ impl From<UserRewardInfo> for ITIP20::UserRewardInfo {
 mod tests {
     use super::*;
     use crate::{
-        LINKING_USD_ADDRESS,
+        PATH_USD_ADDRESS,
         storage::hashmap::HashMapStorageProvider,
-        tip20::{ISSUER_ROLE, tests::initialize_linking_usd},
+        tip20::{ISSUER_ROLE, tests::initialize_path_usd},
+        tip20_rewards_registry::TIP20RewardsRegistry,
+        tip403_registry::TIP403Registry,
     };
     use alloy::primitives::{Address, U256};
+    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::ITIP403Registry;
 
     #[test]
     fn test_start_reward() -> eyre::Result<()> {
@@ -670,9 +685,9 @@ mod tests {
         let current_time = storage.timestamp().to::<u64>();
         let admin = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -720,9 +735,9 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -756,9 +771,9 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -807,9 +822,9 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -857,9 +872,9 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -920,9 +935,9 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -985,9 +1000,9 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -1036,9 +1051,9 @@ mod tests {
         let admin = Address::random();
         let alice = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -1108,9 +1123,9 @@ mod tests {
         let alice = Address::random();
         let funder = Address::random();
 
-        initialize_linking_usd(&mut storage, admin)?;
+        initialize_path_usd(&mut storage, admin)?;
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -1157,6 +1172,251 @@ mod tests {
 
         let alice_info = token.sload_user_reward_info(alice)?;
         assert_eq!(alice_info.reward_balance, U256::ZERO);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cancel_reward_removes_from_registry_post_moderato() -> eyre::Result<()> {
+        // Test with Moderato hardfork - when cancelling the last stream at an end_time,
+        // the token should be removed from the registry
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        initialize_path_usd(&mut storage, admin)?;
+
+        // Setup and start stream in a scope to release the borrow
+        let (stream_id, end_time) = {
+            let mut token = TIP20Token::new(1, &mut storage);
+            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
+            token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+            let mint_amount = U256::from(1000e18);
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: admin,
+                    amount: mint_amount,
+                },
+            )?;
+
+            let reward_amount = U256::from(100e18);
+            let stream_id = token.start_reward(
+                admin,
+                ITIP20::startRewardCall {
+                    amount: reward_amount,
+                    secs: 10,
+                },
+            )?;
+            let stream = token.get_stream(stream_id)?;
+            (stream_id, stream.end_time as u128)
+        };
+
+        storage.set_spec(TempoHardfork::Moderato);
+
+        // Verify the token is in the registry before cancellation
+        {
+            let mut registry = TIP20RewardsRegistry::new(&mut storage);
+            let count_before = registry.get_stream_count_at(end_time)?;
+            assert_eq!(
+                count_before, 1,
+                "Registry should have 1 stream before cancellation"
+            );
+        }
+
+        // Cancel the stream
+        {
+            let mut token = TIP20Token::new(1, &mut storage);
+            token.cancel_reward(admin, ITIP20::cancelRewardCall { id: stream_id })?;
+        }
+
+        // Verify the token is removed from the registry (post-Moderato behavior)
+        {
+            let mut registry = TIP20RewardsRegistry::new(&mut storage);
+            let count_after = registry.get_stream_count_at(end_time)?;
+            assert_eq!(
+                count_after, 0,
+                "Post-Moderato: Registry should have 0 streams after cancelling the last stream"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cancel_reward_does_not_remove_from_registry_pre_moderato() -> eyre::Result<()> {
+        // Test with Adagio (pre-Moderato) - token should NOT be removed from registry
+        // even when all streams are cancelled (for consensus compatibility)
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        initialize_path_usd(&mut storage, admin)?;
+
+        // Setup and start stream in a scope to release the borrow
+        let (stream_id, end_time) = {
+            let mut token = TIP20Token::new(1, &mut storage);
+            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
+            token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+            let mint_amount = U256::from(1000e18);
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: admin,
+                    amount: mint_amount,
+                },
+            )?;
+
+            let reward_amount = U256::from(100e18);
+            let stream_id = token.start_reward(
+                admin,
+                ITIP20::startRewardCall {
+                    amount: reward_amount,
+                    secs: 10,
+                },
+            )?;
+            let stream = token.get_stream(stream_id)?;
+            (stream_id, stream.end_time as u128)
+        };
+
+        // Verify the token is in the registry before cancellation
+        {
+            let mut registry = TIP20RewardsRegistry::new(&mut storage);
+            let count_before = registry.get_stream_count_at(end_time)?;
+            assert_eq!(
+                count_before, 1,
+                "Registry should have 1 stream before cancellation"
+            );
+        }
+
+        // Cancel the stream
+        {
+            let mut token = TIP20Token::new(1, &mut storage);
+            token.cancel_reward(admin, ITIP20::cancelRewardCall { id: stream_id })?;
+        }
+
+        // Pre-Moderato: token should NOT be removed from registry
+        {
+            let mut registry = TIP20RewardsRegistry::new(&mut storage);
+            let count_after = registry.get_stream_count_at(end_time)?;
+            assert_eq!(
+                count_after, 1,
+                "Pre-Moderato: Registry should still have 1 stream (not removed for consensus compatibility)"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_scheduled_rewards_disabled_post_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let admin = Address::random();
+
+        initialize_path_usd(&mut storage, admin)?;
+
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)?;
+
+        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        let mint_amount = U256::from(1000e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: admin,
+                amount: mint_amount,
+            },
+        )?;
+
+        let reward_amount = U256::from(100e18);
+        let result = token.start_reward(
+            admin,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                secs: 10,
+            },
+        );
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            TempoPrecompileError::TIP20(TIP20Error::ScheduledRewardsDisabled(_))
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_ensure_tip403_is_not_blacklisted() -> eyre::Result<()> {
+        const STREAM_DURATION: u32 = 10;
+
+        let mut storage = HashMapStorageProvider::new(1);
+        let current_timestamp = storage.timestamp();
+        let admin = Address::random();
+
+        initialize_path_usd(&mut storage, admin)?;
+
+        // create a blacklist policy before token setup
+        let policy_id = {
+            let mut tip403_registry = TIP403Registry::new(&mut storage);
+            tip403_registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?
+        };
+
+        // setup token with the blacklist policy and start a reward stream
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)?;
+        token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        token.change_transfer_policy_id(
+            admin,
+            ITIP20::changeTransferPolicyIdCall {
+                newPolicyId: policy_id,
+            },
+        )?;
+
+        let mint_amount = U256::from(1000e18);
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: admin,
+                amount: mint_amount,
+            },
+        )?;
+
+        let reward_amount = U256::from(100e18);
+        let stream_id = token.start_reward(
+            admin,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                secs: STREAM_DURATION,
+            },
+        )?;
+
+        // blacklist the token address
+        {
+            let mut tip403_registry = TIP403Registry::new(token.storage);
+            tip403_registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: token.address,
+                    restricted: true,
+                },
+            )?;
+        }
+
+        // attempt to cancel the rewards
+        storage.set_timestamp(current_timestamp + U256::from(STREAM_DURATION - 1));
+        let mut token = TIP20Token::new(1, &mut storage);
+        let refund = token.cancel_reward(admin, ITIP20::cancelRewardCall { id: stream_id })?;
+        assert!(matches!(refund, U256::ZERO), "non-zero refund: {refund}");
 
         Ok(())
     }

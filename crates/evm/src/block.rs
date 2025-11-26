@@ -11,7 +11,7 @@ use alloy_evm::{
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
-use alloy_primitives::{B256, Bytes, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
 use commonware_codec::DecodeExt;
@@ -20,12 +20,17 @@ use commonware_cryptography::{
     ed25519::{PublicKey, Signature},
 };
 use reth_revm::{Inspector, State, context::result::ResultAndState};
-use std::collections::HashSet;
-use tempo_chainspec::TempoChainSpec;
+use revm::{
+    DatabaseCommit,
+    context::ContextTr,
+    state::{Account, Bytecode},
+};
+use std::collections::{HashMap, HashSet};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_precompiles::{
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
-    stablecoin_exchange::IStablecoinExchange, tip_fee_manager::IFeeManager,
-    tip20_rewards_registry::ITIP20RewardsRegistry,
+    ACCOUNT_KEYCHAIN_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_REWARDS_REGISTRY_ADDRESS, stablecoin_exchange::IStablecoinExchange,
+    tip_fee_manager::IFeeManager, tip20_rewards_registry::ITIP20RewardsRegistry,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, subblock::PartialValidatorKey,
@@ -96,6 +101,7 @@ pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
     seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
     validator_set: Option<Vec<B256>>,
     shared_gas_limit: u64,
+    subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
 
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
@@ -128,6 +134,7 @@ where
                 seen_tip20_rewards_registry: false,
             },
             seen_subblocks: Vec::new(),
+            subblock_fee_recipients: ctx.subblock_fee_recipients,
         }
     }
 
@@ -136,36 +143,44 @@ where
         &self,
         tx: &TempoTxEnvelope,
     ) -> Result<BlockSection, BlockValidationError> {
-        let block = self.evm().block().number.to_be_bytes_vec();
+        let block = self.evm().block();
+        let block_timestamp = block.timestamp;
+        let block_number = block.number.to_be_bytes_vec();
         let to = tx.to().unwrap_or_default();
 
-        // Handle start-of-block system transaction (rewards registry)
-        // Only enforce this restriction when we haven't seen the rewards registry yet
-        if let BlockSection::StartOfBlock {
-            seen_tip20_rewards_registry: false,
-        } = self.section
+        if !self
+            .inner
+            .spec
+            .is_moderato_active_at_timestamp(block_timestamp.to::<u64>())
         {
-            if to != TIP20_REWARDS_REGISTRY_ADDRESS {
-                return Err(BlockValidationError::msg(
-                    "only rewards registry system transaction allowed at start of block",
-                ));
+            // Handle start-of-block system transaction (rewards registry)
+            // Only enforce this restriction when we haven't seen the rewards registry yet
+            if let BlockSection::StartOfBlock {
+                seen_tip20_rewards_registry: false,
+            } = self.section
+            {
+                if to != TIP20_REWARDS_REGISTRY_ADDRESS {
+                    return Err(BlockValidationError::msg(
+                        "only rewards registry system transaction allowed at start of block",
+                    ));
+                }
+
+                let finalize_streams_input = ITIP20RewardsRegistry::finalizeStreamsCall {}
+                    .abi_encode()
+                    .into_iter()
+                    .chain(block_number)
+                    .collect::<Bytes>();
+
+                if *tx.input() != finalize_streams_input {
+                    return Err(BlockValidationError::msg(
+                        "invalid TIP20 rewards registry system transaction",
+                    ));
+                }
+
+                return Ok(BlockSection::StartOfBlock {
+                    seen_tip20_rewards_registry: true,
+                });
             }
-
-            let finalize_streams_input = ITIP20RewardsRegistry::finalizeStreamsCall {}
-                .abi_encode()
-                .into_iter()
-                .chain(block)
-                .collect::<Bytes>();
-
-            if *tx.input() != finalize_streams_input {
-                return Err(BlockValidationError::msg(
-                    "invalid TIP20 rewards registry system transaction",
-                ));
-            }
-
-            return Ok(BlockSection::StartOfBlock {
-                seen_tip20_rewards_registry: true,
-            });
         }
 
         // Handle end-of-block system transactions (fee manager, DEX, subblocks signatures)
@@ -193,7 +208,7 @@ where
             let fee_input = IFeeManager::executeBlockCall
                 .abi_encode()
                 .into_iter()
-                .chain(block)
+                .chain(block_number)
                 .collect::<Bytes>();
 
             if *tx.input() != fee_input {
@@ -213,7 +228,7 @@ where
             let dex_input = IStablecoinExchange::executeBlockCall {}
                 .abi_encode()
                 .into_iter()
-                .chain(block)
+                .chain(block_number)
                 .collect::<Bytes>();
 
             if *tx.input() != dex_input {
@@ -231,7 +246,7 @@ where
             }
 
             if tx.input().len() < U256::BYTES
-                || tx.input()[tx.input().len() - U256::BYTES..] != block
+                || tx.input()[tx.input().len() - U256::BYTES..] != block_number
             {
                 return Err(BlockValidationError::msg(
                     "invalid subblocks metadata system transaction",
@@ -350,6 +365,13 @@ where
         tx: &TempoTxEnvelope,
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
+        let block = self.evm().block();
+        let block_timestamp = block.timestamp.to::<u64>();
+        let post_moderato = self
+            .inner
+            .spec
+            .is_moderato_active_at_timestamp(block_timestamp);
+
         // Start with processing of transaction kinds that require specific sections.
         if tx.is_system_tx() {
             self.validate_system_tx(tx)
@@ -357,9 +379,11 @@ where
             match self.section {
                 BlockSection::StartOfBlock {
                     seen_tip20_rewards_registry,
-                } if !seen_tip20_rewards_registry => Err(BlockValidationError::msg(
-                    "TIP20 rewards registry system transaction was not seen",
-                )),
+                } if !post_moderato && !seen_tip20_rewards_registry => {
+                    Err(BlockValidationError::msg(
+                        "TIP20 rewards registry system transaction was not seen",
+                    ))
+                }
                 BlockSection::GasIncentive | BlockSection::System { .. } => {
                     Err(BlockValidationError::msg("subblock section already passed"))
                 }
@@ -386,9 +410,11 @@ where
             match self.section {
                 BlockSection::StartOfBlock {
                     seen_tip20_rewards_registry,
-                } if !seen_tip20_rewards_registry => Err(BlockValidationError::msg(
-                    "TIP20 rewards registry system transaction was not seen",
-                )),
+                } if !post_moderato && !seen_tip20_rewards_registry => {
+                    Err(BlockValidationError::msg(
+                        "TIP20 rewards registry system transaction was not seen",
+                    ))
+                }
                 BlockSection::StartOfBlock { .. } | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
                         || (!tx.is_payment() && gas_used > self.non_payment_gas_left)
@@ -428,14 +454,64 @@ where
     type Evm = TempoEvm<&'a mut State<DB>, I>;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
-        self.inner.apply_pre_execution_changes()
+        self.inner.apply_pre_execution_changes()?;
+
+        // Initialize keychain precompile if allegretto is active
+        let block_timestamp = self.evm().block().timestamp.to::<u64>();
+        if self
+            .inner
+            .spec
+            .is_allegretto_active_at_timestamp(block_timestamp)
+        {
+            let evm = self.evm_mut();
+            let db = evm.ctx_mut().db_mut();
+
+            // Load the keychain account from the cache
+            let acc = db
+                .load_cache_account(ACCOUNT_KEYCHAIN_ADDRESS)
+                .map_err(BlockExecutionError::other)?;
+
+            // Get existing account info or create default
+            let mut acc_info = acc.account_info().unwrap_or_default();
+
+            // Only initialize if the account has no code
+            if acc_info.is_empty_code_hash() {
+                // Set the keychain code
+                let code = Bytecode::new_legacy(Bytes::from_static(&[0xef]));
+                acc_info.code_hash = code.hash_slow();
+                acc_info.code = Some(code);
+
+                // Convert to revm account and mark as touched
+                let mut revm_acc: Account = acc_info.into();
+                revm_acc.mark_touch();
+
+                // Commit the account to the database to ensure it persists
+                // even if no transactions are executed in this block
+                db.commit(HashMap::from_iter([(ACCOUNT_KEYCHAIN_ADDRESS, revm_acc)]));
+            }
+        }
+
+        Ok(())
     }
 
     fn execute_transaction_without_commit(
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<ResultAndState, BlockExecutionError> {
-        self.inner.execute_transaction_without_commit(tx)
+        // If we are dealing with a subblock transaction, configure the fee recipient context.
+        if let Some(validator) = tx.tx().subblock_proposer() {
+            let fee_recipient = *self
+                .subblock_fee_recipients
+                .get(&validator)
+                .ok_or(BlockExecutionError::msg("invalid subblock transaction"))?;
+
+            self.evm_mut().set_subblock_fee_recipient(fee_recipient);
+        }
+        let result = self.inner.execute_transaction_without_commit(tx);
+
+        self.evm_mut().unset_subblock_fee_recipient();
+
+        result
     }
 
     fn commit_transaction(

@@ -1,5 +1,24 @@
-use crate::rpc::dex::OrdersSort;
 use serde::{Deserialize, Serialize};
+
+/// Field sorting parameters.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Sort {
+    /// A field the items are compared with.
+    pub on: String,
+
+    /// An ordering direction.
+    pub order: SortOrder,
+}
+
+/// A sort order.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SortOrder {
+    Asc,
+    #[default]
+    Desc,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,7 +47,7 @@ pub struct PaginationParams<Filters> {
 
     /// Determines the order of the items yielded in the response.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sort: Option<OrdersSort>,
+    pub sort: Option<Sort>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

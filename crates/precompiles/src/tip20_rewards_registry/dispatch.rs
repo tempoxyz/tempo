@@ -1,4 +1,4 @@
-use crate::{Precompile, fill_precompile_output, input_cost, mutate_void};
+use crate::{Precompile, fill_precompile_output, input_cost, mutate_void, unknown_selector};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::ITIP20RewardsRegistry;
@@ -27,7 +27,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20RewardsRegistry<'a, S
                     |sender, _call| self.finalize_streams(sender),
                 )
             }
-            _ => Err(PrecompileError::Other("Unknown function selector".into())),
+            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
         result.map(|res| fill_precompile_output(res, self.storage))

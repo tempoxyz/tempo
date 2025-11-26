@@ -26,10 +26,11 @@ fn only_good_links() {
     // for seed in 0..5 {
     for seed in 0..1 {
         let setup = Setup {
-            how_many: 5,
+            how_many_signers: 4,
             seed,
             linkage: link.clone(),
             epoch_length: 100,
+            connect_execution_layer_nodes: false,
         };
         let _first = run(setup.clone(), |metric, value| {
             // // TODO(janis): commonware calls this marshal, we call this sync.
@@ -94,10 +95,11 @@ fn many_bad_links() {
     // for seed in 0..5 {
     for seed in 0..1 {
         let setup = Setup {
-            how_many: 5,
+            how_many_signers: 5,
             seed,
             linkage: link.clone(),
             epoch_length: 100,
+            connect_execution_layer_nodes: false,
         };
         let _first = run(setup.clone(), |metric, value| {
             // // TODO(janis): commonware calls this marshal, we call this sync.
@@ -135,10 +137,11 @@ fn reach_height_20_with_a_few_bad_links() {
     };
 
     let setup = Setup {
-        how_many: 10,
+        how_many_signers: 10,
         seed: 0,
         linkage: link,
         epoch_length: 100,
+        connect_execution_layer_nodes: false,
     };
     let _first = run(setup, |metric, value| {
         // // TODO(janis): commonware calls this marshal, we call this sync.

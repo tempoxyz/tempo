@@ -2,11 +2,11 @@ use crate::rpc::{TempoHeaderResponse, TempoTransactionRequest};
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError};
 use alloy_network::TxSigner;
 use alloy_primitives::{Bytes, Signature};
-use reth_evm::revm::context::CfgEnv;
+use reth_evm::EvmEnv;
 use reth_primitives_traits::SealedHeader;
 use reth_rpc_convert::{
-    SignTxRequestError, SignableTxRequest, TryIntoSimTx,
-    transaction::{FromConsensusHeader, TryIntoTxEnv},
+    SignTxRequestError, SignableTxRequest, TryIntoSimTx, TryIntoTxEnv,
+    transaction::FromConsensusHeader,
 };
 use reth_rpc_eth_types::EthApiError;
 use tempo_evm::TempoBlockEnv;
@@ -75,8 +75,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
 
     fn try_into_tx_env<Spec>(
         self,
-        cfg_env: &CfgEnv<Spec>,
-        block_env: &TempoBlockEnv,
+        evm_env: &EvmEnv<Spec, TempoBlockEnv>,
     ) -> Result<TempoTxEnv, Self::Err> {
         let Self {
             inner,
@@ -87,7 +86,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             aa_authorization_list,
         } = self;
         Ok(TempoTxEnv {
-            inner: inner.try_into_tx_env(cfg_env, &block_env.inner)?,
+            inner: inner.try_into_tx_env(evm_env)?,
             fee_token,
             is_system_tx: false,
             fee_payer: None,
@@ -119,27 +118,27 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
 /// Creates a mock AA signature for gas estimation based on key type hints
 fn create_mock_aa_signature(key_type: &SignatureType, key_data: Option<&Bytes>) -> AASignature {
     use tempo_primitives::transaction::aa_signature::{
-        AASignature, P256SignatureWithPreHash, WebAuthnSignature,
+        AASignature, P256SignatureWithPreHash, PrimitiveSignature, WebAuthnSignature,
     };
 
     match key_type {
         SignatureType::Secp256k1 => {
             // Create a dummy secp256k1 signature (65 bytes)
-            AASignature::Secp256k1(Signature::new(
+            AASignature::Primitive(PrimitiveSignature::Secp256k1(Signature::new(
                 alloy_primitives::U256::ZERO,
                 alloy_primitives::U256::ZERO,
                 false,
-            ))
+            )))
         }
         SignatureType::P256 => {
             // Create a dummy P256 signature
-            AASignature::P256(P256SignatureWithPreHash {
+            AASignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
                 r: alloy_primitives::B256::ZERO,
                 s: alloy_primitives::B256::ZERO,
                 pub_key_x: alloy_primitives::B256::ZERO,
                 pub_key_y: alloy_primitives::B256::ZERO,
                 pre_hash: false,
-            })
+            }))
         }
         SignatureType::WebAuthn => {
             // Create a dummy WebAuthn signature with the specified size
@@ -187,13 +186,13 @@ fn create_mock_aa_signature(key_type: &SignatureType, key_data: Option<&Bytes>) 
             webauthn_data.extend_from_slice(client_json.as_bytes());
             let webauthn_data = Bytes::from(webauthn_data);
 
-            AASignature::WebAuthn(WebAuthnSignature {
+            AASignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
                 webauthn_data,
                 r: alloy_primitives::B256::ZERO,
                 s: alloy_primitives::B256::ZERO,
                 pub_key_x: alloy_primitives::B256::ZERO,
                 pub_key_y: alloy_primitives::B256::ZERO,
-            })
+            }))
         }
     }
 }

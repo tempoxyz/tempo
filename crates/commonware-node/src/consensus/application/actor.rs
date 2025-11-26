@@ -271,7 +271,8 @@ impl Inner<Init> {
                 // TODO(janis): should we panic instead?
                 bail!(
                     "no information on the source block at height `{height}` \
-                    exists yet; this is a problem and will likely cause the consensus engine to not start"
+                    exists yet; this is a problem and will likely cause the \
+                    consensus engine to not start"
                 );
             };
             digest
@@ -718,6 +719,9 @@ impl Inner<Uninit> {
         }
         .build(context.with_label("executor"));
 
+        let executor_mailbox = executor.mailbox().clone();
+        let executor_handle = executor.start();
+
         let initialized = Inner {
             fee_recipient: self.fee_recipient,
             epoch_length: self.epoch_length,
@@ -729,13 +733,12 @@ impl Inner<Uninit> {
             state: Init {
                 latest_proposed_block: Arc::new(RwLock::new(None)),
                 dkg_manager,
-                executor_mailbox: executor.mailbox().clone(),
+                executor_mailbox,
+                _executor_handle: AbortOnDrop(executor_handle).into(),
             },
             subblocks: self.subblocks,
             scheme_provider: self.scheme_provider,
         };
-
-        executor.start();
 
         Ok(initialized)
     }
@@ -750,7 +753,13 @@ pub(in crate::consensus) struct Uninit(());
 struct Init {
     latest_proposed_block: Arc<RwLock<Option<Block>>>,
     dkg_manager: crate::dkg::manager::Mailbox,
+    /// The communication channel to the [`executor::Executor`] task.
     executor_mailbox: ExecutorMailbox,
+    /// The handle to the spawned executor task.
+    ///
+    /// If the last instance of this is dropped (the application task is aborted),
+    /// this ensures that the task is aborted as well.
+    _executor_handle: Arc<AbortOnDrop>,
 }
 
 /// Verifies `block` given its `parent` against the execution layer.
@@ -871,4 +880,19 @@ fn report_verification_result(
         }
     }
     Ok(())
+}
+
+/// Ensures the task associated with the [`Handle`] is aborted [`Handle::abort`] when this instance is dropped.
+struct AbortOnDrop(Handle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl std::fmt::Debug for AbortOnDrop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AbortOnDrop").finish_non_exhaustive()
+    }
 }

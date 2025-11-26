@@ -1,8 +1,8 @@
-use crate::rpc::{
-    dex::{OrderbooksFilter, OrdersFilters, books::OrderbooksResponse, orders::OrdersResponse},
-    pagination::PaginationParams,
+use crate::rpc::dex::{
+    OrderbooksFilter, OrdersFilters, books::OrderbooksResponse, orders::OrdersResponse,
 };
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
+use tempo_alloy::rpc::pagination::PaginationParams;
 
 /// RPC api for the `dex_` namespace
 #[rpc(server, namespace = "dex")]

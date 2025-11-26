@@ -127,16 +127,22 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
 
         Ok(())
     }
+
+    /// Helper method to get the count of streams at a given end time (for testing)
+    #[cfg(test)]
+    pub(crate) fn get_stream_count_at(&mut self, end_time: u128) -> Result<usize> {
+        StreamEndingAt::len(self, end_time)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        LINKING_USD_ADDRESS,
+        PATH_USD_ADDRESS,
         error::TempoPrecompileError,
         storage::{ContractStorage, hashmap::HashMapStorageProvider},
-        tip20::{ISSUER_ROLE, TIP20Token, tests::initialize_linking_usd},
+        tip20::{ISSUER_ROLE, TIP20Token, tests::initialize_path_usd},
         tip20_rewards_registry::TIP20RewardsRegistry,
     };
     use tempo_contracts::precompiles::ITIP20;
@@ -144,7 +150,7 @@ mod tests {
     fn setup_registry(timestamp: u64) -> (HashMapStorageProvider, Address) {
         let mut storage = HashMapStorageProvider::new(timestamp);
         let admin = Address::random();
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         (storage, admin)
     }
 
@@ -290,7 +296,7 @@ mod tests {
 
         // Create a TIP20 token and start a reward stream
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
         let token_addr = token.address();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;

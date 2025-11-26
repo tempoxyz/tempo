@@ -30,6 +30,8 @@ hardfork!(
         Adagio,
         /// Testnet hardfork for Andantino. To be removed before mainnet launch.
         Moderato,
+        /// Allegretto hardfork.
+        Allegretto,
     }
 );
 
@@ -38,6 +40,11 @@ impl TempoHardfork {
     #[inline]
     pub fn is_moderato(self) -> bool {
         self >= Self::Moderato
+    }
+
+    /// Returns `true` if this hardfork is Allegretto or later.
+    pub fn is_allegretto(self) -> bool {
+        self >= Self::Allegretto
     }
 }
 
@@ -58,9 +65,17 @@ pub trait TempoHardforks: EthereumHardforks {
             .active_at_timestamp(timestamp)
     }
 
+    /// Convenience method to check if Allegretto hardfork is active at a given timestamp
+    fn is_allegretto_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.tempo_fork_activation(TempoHardfork::Allegretto)
+            .active_at_timestamp(timestamp)
+    }
+
     /// Retrieves the latest Tempo hardfork active at a given timestamp.
     fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
-        if self.is_moderato_active_at_timestamp(timestamp) {
+        if self.is_allegretto_active_at_timestamp(timestamp) {
+            TempoHardfork::Allegretto
+        } else if self.is_moderato_active_at_timestamp(timestamp) {
             TempoHardfork::Moderato
         } else {
             TempoHardfork::Adagio
@@ -73,6 +88,7 @@ impl From<TempoHardfork> for SpecId {
         match value {
             TempoHardfork::Adagio => Self::OSAKA,
             TempoHardfork::Moderato => Self::OSAKA,
+            TempoHardfork::Allegretto => Self::OSAKA,
         }
     }
 }
@@ -84,7 +100,9 @@ impl From<SpecId> for TempoHardfork {
     /// `From<TempoHardfork> for SpecId`, because multiple Tempo
     /// hardforks may share the same underlying EVM spec.
     fn from(spec: SpecId) -> Self {
-        if spec.is_enabled_in(SpecId::from(Self::Moderato)) {
+        if spec.is_enabled_in(SpecId::from(Self::Allegretto)) {
+            Self::Allegretto
+        } else if spec.is_enabled_in(SpecId::from(Self::Moderato)) {
             Self::Moderato
         } else {
             Self::Adagio
@@ -128,5 +146,15 @@ mod tests {
     fn test_is_moderato() {
         assert!(!TempoHardfork::Adagio.is_moderato());
         assert!(TempoHardfork::Moderato.is_moderato());
+    }
+
+    #[test]
+    fn test_is_allegretto() {
+        assert!(!TempoHardfork::Adagio.is_allegretto());
+        assert!(!TempoHardfork::Moderato.is_allegretto());
+
+        assert!(TempoHardfork::Allegretto.is_allegretto());
+
+        assert!(TempoHardfork::Allegretto.is_moderato());
     }
 }

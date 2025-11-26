@@ -1,13 +1,13 @@
 use crate::utils::{NodeSource, setup_test_node, setup_test_token};
 use alloy::{
-    primitives::{Address, B256, U256},
+    primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder, ext::TraceApi},
     rpc::types::{
         Filter, TransactionRequest,
         trace::parity::{ChangedType, Delta},
     },
     signers::local::MnemonicBuilder,
-    sol_types::{SolCall, SolEvent},
+    sol_types::{SolCall, SolError, SolEvent},
 };
 use alloy_eips::BlockId;
 use alloy_rpc_types_eth::TransactionInput;
@@ -17,9 +17,11 @@ use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{
     IFeeManager,
     ITIP20::{self, transferCall},
-    ITIPFeeAMM,
+    ITIPFeeAMM, UnknownFunctionSelector,
 };
-use tempo_precompiles::{DEFAULT_FEE_TOKEN, storage::slots::mapping_slot, tip20};
+use tempo_precompiles::{
+    PATH_USD_ADDRESS, TIP_ACCOUNT_REGISTRAR, storage::slots::mapping_slot, tip20,
+};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_call() -> eyre::Result<()> {
@@ -294,7 +296,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
         IFeeManager::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Supply liquidity to enable fee token swapping
-    let validator_token_address = DEFAULT_FEE_TOKEN;
+    let validator_token_address = PATH_USD_ADDRESS;
 
     let fee_amm = ITIPFeeAMM::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
@@ -314,7 +316,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
         .await?;
 
     // Set different fee tokens for user and validator
-    // Note that the validator defaults to the predeployed fee token
+    // Note that the validator defaults to the PathUSD
     fee_manager
         .setUserToken(*user_fee_token.address())
         .send()
@@ -361,6 +363,71 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
 
     assert!(receipt.status());
     assert!(receipt.gas_used <= gas);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
+        NodeSource::ExternalRpc(rpc_url.parse()?)
+    } else {
+        NodeSource::LocalNode(include_str!("../assets/test-genesis-moderato.json").to_string())
+    };
+    let (http_url, _node_handle) = setup_test_node(source).await?;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    // Call with an unknown function selector (0x12345678)
+    let unknown_selector = [0x12u8, 0x34, 0x56, 0x78];
+    let mut calldata = unknown_selector.to_vec();
+    // Add some dummy data
+    calldata.extend_from_slice(&[0u8; 64]);
+
+    let tx = TransactionRequest::default()
+        .to(TIP_ACCOUNT_REGISTRAR)
+        .input(TransactionInput::new(Bytes::from(calldata)));
+
+    // The call should fail with UnknownFunctionSelector error
+    let result = provider.call(tx).await;
+
+    assert!(
+        result.is_err(),
+        "Call should have failed with unknown selector"
+    );
+
+    let err = result.unwrap_err();
+
+    // Get the error response payload
+    let error_payload = err.as_error_resp();
+    assert!(
+        error_payload.is_some(),
+        "Should have error response payload"
+    );
+
+    let payload = error_payload.unwrap();
+    assert!(payload.data.is_some(), "Should have error data");
+
+    // Deserialize the error data as Bytes
+    let error_bytes: Bytes = serde_json::from_str(payload.data.as_ref().unwrap().get())
+        .expect("Failed to deserialize error data as bytes");
+
+    // Decode UnknownFunctionSelector from the error data
+    let decoded_error = UnknownFunctionSelector::abi_decode(&error_bytes);
+    assert!(
+        decoded_error.is_ok(),
+        "Error should be decodable as UnknownFunctionSelector"
+    );
+
+    // Verify it contains the correct selector
+    let error = decoded_error.unwrap();
+    assert_eq!(
+        error.selector, unknown_selector,
+        "Error should contain the correct unknown selector"
+    );
 
     Ok(())
 }

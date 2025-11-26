@@ -147,6 +147,8 @@ sol! {
         error NoOptedInSupply();
         error Unauthorized();
         error RewardsDisabled();
+        error ScheduledRewardsDisabled();
+        error ProtectedAddress();
     }
 }
 
@@ -250,5 +252,15 @@ impl TIP20Error {
     /// Error for when rewards are disabled
     pub const fn rewards_disabled() -> Self {
         Self::RewardsDisabled(ITIP20::RewardsDisabled {})
+    }
+
+    /// Error for when scheduled rewards are disabled post-moderato
+    pub const fn scheduled_rewards_disabled() -> Self {
+        Self::ScheduledRewardsDisabled(ITIP20::ScheduledRewardsDisabled {})
+    }
+
+    /// Error for operations on protected addresses (like burning `FeeManager` tokens)
+    pub const fn protected_address() -> Self {
+        Self::ProtectedAddress(ITIP20::ProtectedAddress {})
     }
 }

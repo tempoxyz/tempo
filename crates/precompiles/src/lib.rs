@@ -1,12 +1,13 @@
 //! Tempo precompile implementations.
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod error;
 pub use error::Result;
 use tempo_chainspec::hardfork::TempoHardfork;
-pub mod linking_usd;
+pub mod account_keychain;
 pub mod nonce;
+pub mod path_usd;
 pub mod stablecoin_exchange;
 pub mod storage;
 pub mod tip20;
@@ -21,8 +22,9 @@ pub mod validator_config;
 pub mod test_util;
 
 use crate::{
-    linking_usd::LinkingUSD,
+    account_keychain::AccountKeychain,
     nonce::NonceManager,
+    path_usd::PathUSD,
     stablecoin_exchange::StablecoinExchange,
     storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
     tip_account_registrar::TipAccountRegistrar,
@@ -45,14 +47,18 @@ use alloy::{
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
     context::CfgEnv,
-    precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
+    precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
 pub use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, NONCE_PRECOMPILE_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
-    TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    TIP20_REWARDS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+    STABLECOIN_EXCHANGE_ADDRESS, TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_FACTORY_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS,
 };
+
+// Re-export storage layout helpers for read-only contexts (e.g., pool validation)
+pub use account_keychain::{AuthorizedKey, compute_keys_slot};
 
 /// Input per word cost. It covers abi decoding and cloning of input into call data.
 ///
@@ -75,7 +81,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
         if is_tip20(*address) {
             let token_id = address_to_token_id_unchecked(*address);
             if token_id == 0 {
-                Some(LinkingUSDPrecompile::create(chain_id, spec))
+                Some(PathUSDPrecompile::create(chain_id, spec))
             } else {
                 Some(TIP20Precompile::create(*address, chain_id, spec))
             }
@@ -95,6 +101,9 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(NoncePrecompile::create(chain_id, spec))
         } else if *address == VALIDATOR_CONFIG_ADDRESS {
             Some(ValidatorConfigPrecompile::create(chain_id, spec))
+        } else if *address == ACCOUNT_KEYCHAIN_ADDRESS && spec.is_allegretto() {
+            // AccountKeychain is only available after Allegretto hardfork
+            Some(AccountKeychainPrecompile::create(chain_id, spec))
         } else {
             None
         }
@@ -203,10 +212,19 @@ impl NoncePrecompile {
     }
 }
 
-pub struct LinkingUSDPrecompile;
-impl LinkingUSDPrecompile {
+pub struct AccountKeychainPrecompile;
+impl AccountKeychainPrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("LinkingUSD", |input| LinkingUSD::new(
+        tempo_precompile!("AccountKeychain", |input| AccountKeychain::new(
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec)
+        ))
+    }
+}
+
+pub struct PathUSDPrecompile;
+impl PathUSDPrecompile {
+    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
+        tempo_precompile!("PathUSD", |input| PathUSD::new(
             &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec),
         ))
     }
@@ -271,6 +289,20 @@ fn fill_precompile_output(
         output.gas_refunded = storage.gas_refunded();
     }
     output
+}
+
+/// Helper function to return an unknown function selector error
+///
+/// Before Moderato: Returns a generic PrecompileError::Other
+/// Moderato onwards: Returns an ABI-encoded UnknownFunctionSelector error with the selector
+#[inline]
+pub fn unknown_selector(selector: [u8; 4], gas: u64, spec: TempoHardfork) -> PrecompileResult {
+    if spec.is_moderato() {
+        error::TempoPrecompileError::UnknownFunctionSelector(selector)
+            .into_precompile_result(gas, |_: ()| Bytes::new())
+    } else {
+        Err(PrecompileError::Other("Unknown function selector".into()))
+    }
 }
 
 #[cfg(test)]

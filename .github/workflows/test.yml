@@ -58,7 +58,7 @@ jobs:
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Generate genesis
-        run: cargo run --bin tempo-xtask -- generate-genesis --accounts 100 --output generated-test-genesis.json --coinbase 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+        run: cargo run --bin tempo-xtask -- generate-genesis --accounts 100 --output generated-test-genesis.json --coinbase 0xbba20Bb99dA4E103721B754b25071Fc85e7028A1
       - name: Compare with existing test genesis
         run: |
           # Compare the generated genesis with the existing test-genesis.json
@@ -82,7 +82,7 @@ jobs:
       - name: Download snapshot
         run: cargo run --release --bin tempo download --datadir snap-rexec
       - name: Re-execute snapshot
-        run: cargo run --release --bin tempo re-execute --datadir snap-rexec/data/tempo
+        run: cargo run --release --bin tempo re-execute --datadir snap-rexec
 
   test-success:
     name: test success
