@@ -67,7 +67,6 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
     /// Internal: Increment nonce for a specific account and nonce key
     pub fn increment_nonce(&mut self, account: Address, nonce_key: U256) -> Result<u64> {
         if nonce_key == 0 {
-            // TODO: Should this be a different error?
             return Err(NonceError::invalid_nonce_key().into());
         }
 
@@ -83,6 +82,18 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
             .ok_or_else(NonceError::nonce_overflow)?;
 
         self.sstore_nonces(account, nonce_key, new_nonce)?;
+
+        if self.storage.spec().is_allegretto() {
+            self.storage.emit_event(
+                self.address,
+                NonceEvent::NonceIncremented(INonce::NonceIncremented {
+                    account,
+                    nonceKey: nonce_key,
+                    newNonce: new_nonce,
+                })
+                .into_log_data(),
+            )?;
+        }
 
         Ok(new_nonce)
     }
