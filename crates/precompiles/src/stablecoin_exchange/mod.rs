@@ -557,7 +557,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Post allegretto, enforce that the tick adheres to tick spacing
-        if self.storage.spec().is_allegretto() && !(tick as u64).is_multiple_of(TICK_SPACING) {
+        if self.storage.spec().is_allegretto() && !(flip_tick as u64).is_multiple_of(TICK_SPACING) {
             return Err(StablecoinExchangeError::invalid_flip_tick().into());
         }
 
