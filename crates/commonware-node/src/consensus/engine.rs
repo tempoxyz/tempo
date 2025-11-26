@@ -137,6 +137,11 @@ where
             "using values found in chainspec"
         );
 
+        info!(
+            identity = self.signer.public_key(),
+            "using my identity (derived from supplied ed25519 signing key)",
+        );
+
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
             self.context.with_label("broadcast"),
             buffered::Config {
