@@ -144,34 +144,6 @@ pub struct MaxTpsArgs {
     faucet: bool,
 }
 
-#[derive(Debug, Clone)]
-enum MnemonicArg {
-    Mnemonic(String),
-    Random,
-}
-
-impl FromStr for MnemonicArg {
-    type Err = MnemonicError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "random" => Ok(MnemonicArg::Random),
-            mnemonic => Ok(MnemonicArg::Mnemonic(
-                Mnemonic::<English>::from_str(mnemonic)?.to_phrase(),
-            )),
-        }
-    }
-}
-
-impl MnemonicArg {
-    fn resolve(&self) -> String {
-        match self {
-            MnemonicArg::Mnemonic(mnemonic) => mnemonic.clone(),
-            MnemonicArg::Random => Mnemonic::<English>::new(&mut rand_08::thread_rng()).to_phrase(),
-        }
-    }
-}
-
 impl MaxTpsArgs {
     const WEIGHT_PRECISION: f64 = 1000.0;
 
@@ -293,6 +265,34 @@ impl MaxTpsArgs {
         generate_report(&target_url, start_block_number, end_block_number, &self).await?;
 
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+enum MnemonicArg {
+    Mnemonic(String),
+    Random,
+}
+
+impl FromStr for MnemonicArg {
+    type Err = MnemonicError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "random" => Ok(MnemonicArg::Random),
+            mnemonic => Ok(MnemonicArg::Mnemonic(
+                Mnemonic::<English>::from_str(mnemonic)?.to_phrase(),
+            )),
+        }
+    }
+}
+
+impl MnemonicArg {
+    fn resolve(&self) -> String {
+        match self {
+            MnemonicArg::Mnemonic(mnemonic) => mnemonic.clone(),
+            MnemonicArg::Random => Mnemonic::<English>::new(&mut rand_08::thread_rng()).to_phrase(),
+        }
     }
 }
 
