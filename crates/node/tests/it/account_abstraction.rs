@@ -4271,7 +4271,6 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
     let provider1 =
         ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(node1.rpc_url());
     let _ = provider1.send_raw_transaction(&encoded).await.unwrap();
-    println!("Sent tx");
 
     // ensure we see it as pending from the first peer
     let pending_hash1 = tx_listener1.recv().await.unwrap();
