@@ -27,9 +27,9 @@ use tempo_contracts::{
 };
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS,
-    linking_usd::{LinkingUSD, TRANSFER_ROLE},
+    PATH_USD_ADDRESS,
     nonce::NonceManager,
+    path_usd::PathUSD,
     stablecoin_exchange::StablecoinExchange,
     storage::{ContractStorage, evm::EvmPrecompileStorageProvider},
     tip_fee_manager::{IFeeManager, TipFeeManager},
@@ -98,6 +98,14 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value_t = 0)]
     pub adagio_time: u64,
 
+    /// Moderato hardfork activation timestamp
+    #[arg(long)]
+    pub moderato_time: Option<u64>,
+
+    /// Allegretto hardfork activation timestamp
+    #[arg(long)]
+    pub allegretto_time: Option<u64>,
+
     /// Path to validators config file (JSON)
     #[arg(long)]
     pub validators_config: Option<PathBuf>,
@@ -127,16 +135,14 @@ impl GenesisArgs {
         // system contracts/precompiles must be initialized bottom up, if an init function (e.g. mint_pairwise_liquidity) uses another system contract/precompiles internally (tip403 registry), the registry must be initialized first.
 
         // Deploy TestUSD fee token
-        // TODO: admin should be updated to be a cli arg so we can specify that
-        // linkingUSD admin for persistent testnet deployments
         let admin = addresses[0];
         let mut evm = setup_tempo_evm();
 
         println!("Initializing registry");
         initialize_registry(&mut evm)?;
 
-        println!("Initializing LinkingUSD");
-        initialize_linking_usd(admin, &addresses, &mut evm)?;
+        println!("Initializing PathUSD");
+        initialize_path_usd(admin, &addresses, &mut evm)?;
 
         let (_, alpha_token_address) = create_and_mint_token(
             "AlphaUSD",
@@ -187,7 +193,7 @@ impl GenesisArgs {
         println!("Minting pairwise FeeAMM liquidity");
         mint_pairwise_liquidity(
             alpha_token_address,
-            vec![LINKING_USD_ADDRESS, beta_token_address, theta_token_address],
+            vec![PATH_USD_ADDRESS, beta_token_address, theta_token_address],
             U256::from(10u64.pow(10)),
             admin,
             &mut evm,
@@ -303,6 +309,17 @@ impl GenesisArgs {
             "adagioTime".to_string(),
             serde_json::json!(self.adagio_time),
         );
+        if let Some(moderato_time) = self.moderato_time {
+            chain_config
+                .extra_fields
+                .insert("moderatoTime".to_string(), serde_json::json!(moderato_time));
+        }
+        if let Some(allegretto_time) = self.allegretto_time {
+            chain_config.extra_fields.insert(
+                "allegrettoTime".to_string(),
+                serde_json::json!(allegretto_time),
+            );
+        }
 
         let mut genesis = Genesis::default()
             .with_gas_limit(self.gas_limit)
@@ -354,7 +371,7 @@ fn create_and_mint_token(
                     name: name.into(),
                     symbol: symbol.into(),
                     currency: currency.into(),
-                    quoteToken: LINKING_USD_ADDRESS,
+                    quoteToken: PATH_USD_ADDRESS,
                     admin,
                 },
             )
@@ -399,7 +416,7 @@ fn create_and_mint_token(
     Ok((token_id, token.address()))
 }
 
-fn initialize_linking_usd(
+fn initialize_path_usd(
     admin: Address,
     recipients: &[Address],
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
@@ -408,23 +425,15 @@ fn initialize_linking_usd(
     let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
     let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
-    let mut linking_usd = LinkingUSD::new(&mut provider);
-    linking_usd
+    let mut path_usd = PathUSD::new(&mut provider);
+    path_usd
         .initialize(admin)
-        .expect("LinkingUSD initialization should succeed");
+        .expect("PathUSD initialization should succeed");
 
-    linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-    linking_usd
-        .token
-        .grant_role_internal(admin, *TRANSFER_ROLE)?;
-    for recipient in recipients.iter().progress() {
-        linking_usd
-            .token
-            .grant_role_internal(*recipient, *TRANSFER_ROLE)?;
-    }
+    path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
     for recipient in recipients.iter().progress() {
-        linking_usd
+        path_usd
             .mint(
                 admin,
                 ITIP20::mintCall {
@@ -432,7 +441,7 @@ fn initialize_linking_usd(
                     amount: U256::from(u64::MAX),
                 },
             )
-            .expect("Could not mint linkingUSD");
+            .expect("Could not mint pathUSD");
     }
 
     Ok(())
@@ -473,13 +482,13 @@ fn initialize_fee_manager(
             .expect("Could not set fee token");
     }
 
-    // Set validator fee tokens to linking USD
+    // Set validator fee tokens to path USD
     for validator in validators {
         fee_manager
             .set_validator_token(
                 validator,
                 IFeeManager::setValidatorTokenCall {
-                    token: LINKING_USD_ADDRESS,
+                    token: PATH_USD_ADDRESS,
                 },
                 // use random address to avoid `CannotChangeWithinBlock` error
                 Address::random(),
