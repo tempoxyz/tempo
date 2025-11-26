@@ -1,4 +1,4 @@
-use crate::utils::{TestNodeBuilder, setup_test_token};
+use crate::utils::{TestNodeBuilder, setup_test_token, setup_test_token_pre_allegretto};
 use alloy::{
     consensus::SignableTransaction,
     providers::{Provider, ProviderBuilder, WalletProvider},
@@ -33,7 +33,8 @@ async fn test_set_user_token() -> eyre::Result<()> {
     let user_address = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
-    let user_token = setup_test_token(provider.clone(), user_address).await?;
+    // Use pre-allegretto token creation since test uses moderato genesis
+    let user_token = setup_test_token_pre_allegretto(provider.clone(), user_address).await?;
     let validator_token = ITIP20::new(PATH_USD_ADDRESS, &provider);
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 

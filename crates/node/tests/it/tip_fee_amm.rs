@@ -89,27 +89,31 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     let total_supply = fee_amm.totalSupply(pool_id).call().await?;
     let lp_balance = fee_amm.liquidityBalances(pool_id, caller).call().await?;
 
-    // With mintWithValidatorToken, liquidity = amount - MIN_LIQUIDITY (for first mint)
-    let expected_liquidity = amount - MIN_LIQUIDITY;
+    // With mintWithValidatorToken, liquidity = (amount / 2) - MIN_LIQUIDITY (for first mint)
+    // Only validator tokens are transferred, creating a one-sided pool
+    let half_amount = amount / U256::from(2);
+    let expected_liquidity = half_amount - MIN_LIQUIDITY;
     assert_eq!(lp_balance, expected_liquidity);
-    let expected_total_supply = amount;
+    let expected_total_supply = half_amount;
     assert_eq!(total_supply, expected_total_supply);
 
+    // Only validator reserve is updated (user reserve stays 0)
     let pool = fee_amm.pools(pool_id).call().await?;
-    assert_eq!(pool.reserveUserToken, amount.to::<u128>());
+    assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, amount.to::<u128>());
 
+    // User token balance unchanged (not transferred)
     let final_token0_balance = token_0.balanceOf(caller).call().await?;
-    assert_eq!(final_token0_balance, user_token0_balance - amount);
+    assert_eq!(final_token0_balance, user_token0_balance);
+    // Validator token balance decreased
     let final_token1_balance = token_1.balanceOf(caller).call().await?;
     assert_eq!(final_token1_balance, user_token1_balance - amount);
 
+    // User token not transferred to fee manager
     let final_fee_manager_token0_balance =
         token_0.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
-    assert_eq!(
-        final_fee_manager_token0_balance,
-        fee_manager_token0_balance + amount
-    );
+    assert_eq!(final_fee_manager_token0_balance, fee_manager_token0_balance);
+    // Validator token transferred to fee manager
     let final_fee_manager_token1_balance =
         token_1.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
     assert_eq!(
@@ -274,8 +278,8 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let validator_address = block.header.beneficiary;
     assert!(!validator_address.is_zero());
 
-    // Create different tokens for user and validator
-    let user_token = setup_test_token(provider.clone(), user_address).await?;
+    // Create different tokens for user and validator (use pre-allegretto version)
+    let user_token = setup_test_token_pre_allegretto(provider.clone(), user_address).await?;
     // Use default fee token for validator
     let validator_token = ITIP20Instance::new(PATH_USD_ADDRESS, provider.clone());
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
@@ -385,23 +389,23 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     Ok(())
 }
 
+/// Test the first liquidity provider creating a new pool.
+/// Note: This test runs without Moderato since balanced `mint` is disabled post-Moderato.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_first_liquidity_provider() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    // Run without Moderato to use balanced `mint` function
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let alice = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
-    // Setup test tokens and fee AMM
-    let user_token = setup_test_token(provider.clone(), alice).await?;
-    let validator_token = setup_test_token(provider.clone(), alice).await?;
+    // Setup test tokens and fee AMM (use pre-allegretto token creation)
+    let user_token = setup_test_token_pre_allegretto(provider.clone(), alice).await?;
+    let validator_token = setup_test_token_pre_allegretto(provider.clone(), alice).await?;
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Define amounts (100000 * 1e18)
@@ -423,11 +427,12 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, 0);
 
-    // Add liquidity which creates the pool (use mintWithValidatorToken as mint is disabled post-Moderato)
+    // Add liquidity which creates the pool using balanced `mint` (available pre-Moderato)
     let mint_receipt = fee_amm
-        .mintWithValidatorToken(
+        .mint(
             pool_key.user_token,
             pool_key.validator_token,
+            amount0,
             amount1,
             alice,
         )
@@ -437,8 +442,9 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
         .await?;
     assert!(mint_receipt.status());
 
-    // With mintWithValidatorToken, liquidity = amount1 - MIN_LIQUIDITY (for first mint)
-    let expected_liquidity = amount1 - MIN_LIQUIDITY;
+    // Pre-Moderato uses product formula: liquidity = (amount0 * amount1) / 2 - MIN_LIQUIDITY
+    let mean = (amount0 * amount1) / U256::from(2);
+    let expected_liquidity = mean - MIN_LIQUIDITY;
 
     // Check liquidity minted
     let lp_balance = fee_amm.liquidityBalances(pool_id, alice).call().await?;
