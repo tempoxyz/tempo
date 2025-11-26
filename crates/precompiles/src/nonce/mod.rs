@@ -14,7 +14,7 @@ use alloy::primitives::{Address, IntoLogData, U256};
 /// Storage Layout (similar to Solidity contract):
 /// ```solidity
 /// contract Nonce {
-///     mapping(address => mapping(uint64 => uint64)) public nonces;      // slot 0
+///     mapping(address => mapping(uint256 => uint64)) public nonces;      // slot 0
 ///     mapping(address => uint256) public activeKeyCount;                  // slot 1
 /// }
 /// ```
