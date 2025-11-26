@@ -174,6 +174,7 @@ impl AA2dPool {
         self.by_hash
             .insert(*tx.inner.transaction.hash(), tx.inner.transaction.clone());
 
+        // contains transactions directly impacted by the new transaction (filled nonca gap)
         let mut promoted = Vec::new();
         // now we need to scan the range and mark transactions as pending, if any
         let on_chain_id = AA2dTransactionId::new(tx_id.seq_id, on_chain_nonce);
@@ -181,18 +182,26 @@ impl AA2dPool {
         let mut next_nonce = on_chain_id.nonce;
 
         // scan all the transactions with the same nonce key starting with the on chain nonce
+        // to check if our new transaction was inserted as pending and perhaps promoted more transactions
         for (existing_id, existing_tx) in self.descendant_txs_mut(&on_chain_id) {
             if existing_id.nonce == next_nonce {
-                // if this was previously not pending we need to promote the transaction
-                let is_promoted = !std::mem::replace(&mut existing_tx.is_pending, true);
-
-                if existing_id.nonce == tx_id.nonce {
-                    // we found our transaction and keep track of whether it's pending
-                    inserted_as_pending = existing_tx.is_pending;
-                } else if is_promoted {
-                    promoted.push(existing_tx.inner.transaction.clone());
+                match existing_id.nonce.cmp(&tx_id.nonce) {
+                    std::cmp::Ordering::Less => {
+                        // unaffected by our transaction
+                    }
+                    std::cmp::Ordering::Equal => {
+                        existing_tx.is_pending = true;
+                        inserted_as_pending = true;
+                    }
+                    std::cmp::Ordering::Greater => {
+                        // if this was previously not pending we need to promote the transaction
+                        let is_promoted = !std::mem::replace(&mut existing_tx.is_pending, true);
+                        if is_promoted {
+                            promoted.push(existing_tx.inner.transaction.clone());
+                        }
+                    }
                 }
-
+                // continue ungapped sequence
                 next_nonce = existing_id.nonce.saturating_add(1);
             } else {
                 // can exit early here because we hit a nonce gap
