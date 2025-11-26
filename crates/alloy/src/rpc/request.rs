@@ -313,12 +313,12 @@ impl From<TempoTypedTransaction> for TempoTransactionRequest {
 }
 
 /// Extension trait for [`CallBuilder`]
-pub trait TempoTransactionCallBuilderExt {
+pub trait TempoCallBuilderExt {
     /// Sets the `fee_token` field in the transaction to the provided value
     fn fee_token(self, fee_token: Address) -> Self;
 }
 
-impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoTransactionCallBuilderExt
+impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoCallBuilderExt
     for CallBuilder<P, D, TempoNetwork>
 {
     fn fee_token(self, fee_token: Address) -> Self {
