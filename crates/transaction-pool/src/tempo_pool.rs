@@ -250,7 +250,6 @@ where
             .validator()
             .validate_transaction(origin, transaction)
             .await;
-        dbg!(&tx);
         self.add_validated_transaction(origin, tx)
     }
 
@@ -268,7 +267,6 @@ where
             .validate_transactions_with_origin(origin, transactions)
             .await;
 
-        dbg!(&validated);
         self.add_validated_transactions(origin, validated)
     }
 
