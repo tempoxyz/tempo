@@ -314,6 +314,7 @@ impl From<TempoTypedTransaction> for TempoTransactionRequest {
 
 /// Extension trait for [`CallBuilder`]
 pub trait TempoTransactionCallBuilderExt {
+    /// Sets the `fee_token` field in the transaction to the provided value
     fn fee_token(self, fee_token: Address) -> Self;
 }
 
