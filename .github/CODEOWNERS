@@ -20,6 +20,6 @@ crates/payload/ @0xKitsune @klkvr @mattsse
 crates/precompiles/ @0xKitsune @fgimenez @klkvr @mattsse
 crates/precompiles-macros/ @0xrusowsky @mattsse
 crates/primitives/ @klkvr @mattsse
-crates/revm/ @klkvr @mattsse
+crates/revm/ @klkvr @mattsse @rakita @0xKitsune
 crates/telemetry-util/ @SuperFluffy
 crates/transaction-pool/ @0xKitsune @klkvr @mattsse
