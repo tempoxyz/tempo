@@ -91,7 +91,7 @@ pub(crate) struct GenesisArgs {
     #[arg(long)]
     pub allegretto_time: Option<u64>,
 
-    #[arg(long, default_value_t = 604_800)]
+    #[arg(long, default_value_t = 302_400)]
     epoch_length: u64,
 
     /// A comma-separated list of `<ip>:<port>`.
@@ -599,7 +599,7 @@ fn generate_consensus_config(
     use rand::SeedableRng as _;
 
     if addresses.is_empty() {
-        println!("no addresses provided; not generating consensus config");
+        println!("no validator socket addresses provided; not generating consensus config");
         return None;
     }
 
