@@ -3,10 +3,6 @@ use alloy::providers::DynProvider;
 use std::pin::Pin;
 use tempo_contracts::precompiles::{IStablecoinExchange, PATH_USD_ADDRESS};
 
-pub(crate) type TIP20Instance = ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>;
-type StablecoinExchangeInstance =
-    IStablecoinExchangeInstance<DynProvider<TempoNetwork>, TempoNetwork>;
-
 /// This method performs a one-time setup for sending a lot of transactions:
 /// * Adds a quote token and a couple of user tokens paired with the quote token.
 /// * Mints some large amount for all `signers` and approves unlimited spending for stablecoin
@@ -92,7 +88,7 @@ pub(super) async fn setup(
     futures.extend(signer_providers.iter().flat_map(|(_, provider)| {
         user_token_addresses.iter().map(move |token| {
             let exchange =
-                StablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
+                IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
             Box::pin(async move {
                 let tx = exchange.placeFlip(*token, order_amount, true, tick_under, tick_over);
                 tx.send().await
@@ -117,7 +113,7 @@ async fn setup_test_token(
     provider: DynProvider<TempoNetwork>,
     caller: Address,
     tx_count: &ProgressBar,
-) -> eyre::Result<TIP20Instance>
+) -> eyre::Result<ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>>
 where
 {
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
