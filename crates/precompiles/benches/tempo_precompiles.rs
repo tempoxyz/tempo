@@ -5,7 +5,7 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS,
     storage::hashmap::HashMapStorageProvider,
     tip20::{ISSUER_ROLE, ITIP20, PAUSE_ROLE, TIP20Token, UNPAUSE_ROLE},
-    tip20_factory::TIP20Factory,
+    tip20_factory::{ITIP20Factory, TIP20Factory},
     tip403_registry::{ITIP403Registry, TIP403Registry},
 };
 
@@ -612,12 +612,13 @@ fn tip20_factory_mutate(c: &mut Criterion) {
             let result = factory
                 .create_token(
                     sender,
-                    "Test".into(),
-                    "TEST".into(),
-                    "USD".into(),
-                    PATH_USD_ADDRESS,
-                    sender,
-                    Address::ZERO,
+                    ITIP20Factory::createTokenCall {
+                        name: "Test".into(),
+                        symbol: "TEST".into(),
+                        currency: "USD".into(),
+                        quoteToken: PATH_USD_ADDRESS,
+                        admin: sender,
+                    },
                 )
                 .unwrap();
             black_box(result);

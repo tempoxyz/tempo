@@ -1,6 +1,7 @@
 use crate::utils::{TestNodeBuilder, setup_test_token, setup_test_token_pre_allegretto};
 use alloy::{
     consensus::SignableTransaction,
+    network::ReceiptResponse,
     providers::{Provider, ProviderBuilder, WalletProvider},
     signers::{
         SignerSync,
@@ -10,12 +11,16 @@ use alloy::{
 use alloy_eips::{BlockId, Encodable2718};
 use alloy_network::{AnyReceiptEnvelope, EthereumWallet, TxSignerSync};
 use alloy_primitives::{Address, Signature, U256};
-use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
+use alloy_rpc_types_eth::TransactionRequest;
+use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
     IFeeManager, ITIP20,
     ITIPFeeAMM::{self},
 };
-use tempo_precompiles::{DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
+use tempo_precompiles::{
+    DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    tip20::token_id_to_address,
+};
 use tempo_primitives::{TxFeeToken, transaction::calc_gas_balance_spending};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -48,7 +53,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
     // Initial token should be predeployed token
     assert_eq!(
         fee_manager.userTokens(user_address).call().await?,
-        DEFAULT_FEE_TOKEN
+        token_id_to_address(1)
     );
 
     let validator = provider
@@ -140,8 +145,8 @@ async fn test_set_validator_token() -> eyre::Result<()> {
         .validatorTokens(validator_address)
         .call()
         .await?;
-    // Initial token should be predeployed token
-    assert_eq!(initial_token, DEFAULT_FEE_TOKEN);
+    // Initial token should be PathUSD (token_id 0)
+    assert_eq!(initial_token, token_id_to_address(0));
 
     let set_receipt = fee_manager
         .setValidatorToken(*validator_token.address())
@@ -297,14 +302,14 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
     let tx = tx.into_signed(signature);
 
     assert!(
-        ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
             .balanceOf(user.address())
             .call()
             .await?
             .is_zero()
     );
 
-    let balance_before = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+    let balance_before = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, provider.clone())
         .balanceOf(fee_payer.address())
         .call()
         .await?;
@@ -316,20 +321,19 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
         .await?;
 
     let receipt = provider
-        .client()
-        .request::<_, AnyReceiptEnvelope>("eth_getTransactionReceipt", (tx_hash,))
+        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
         .await?;
 
     assert!(receipt.status());
 
-    let balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+    let balance_after = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
         .balanceOf(fee_payer.address())
         .call()
         .await?;
 
     assert_eq!(
         balance_after,
-        balance_before - calc_gas_balance_spending(tx.gas_limit(), fees.max_fee_per_gas)
+        balance_before - calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price())
     );
 
     Ok(())

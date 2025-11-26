@@ -15,7 +15,7 @@ use tempo_contracts::precompiles::{
     ITIPFeeAMM,
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey},
 };
 
@@ -131,7 +131,10 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Run without Moderato to use balanced `mint` function
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_genesis(include_str!("../assets/test-genesis-pre-moderato.json").to_string())
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -182,6 +185,8 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
 
     // Burn half of the liquidity
     let burn_amount = lp_balance_before_burn / U256::from(2);
+
+    // TODO: fix
     let burn_receipt = fee_amm
         .burn(
             pool_key.user_token,
@@ -357,7 +362,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let initial_user_balance = user_token.balanceOf(user_address).call().await?;
 
     // Transfer using predeployed TIP20
-    let transfer_token = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone());
+    let transfer_token = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, provider.clone());
 
     let transfer_receipt = transfer_token
         .transfer(Address::random(), U256::from(1))
@@ -396,7 +401,10 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Run without Moderato to use balanced `mint` function
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_genesis(include_str!("../assets/test-genesis-pre-moderato.json").to_string())
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -479,7 +487,10 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Run without Moderato to use balanced `mint` function
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_genesis(include_str!("../assets/test-genesis-pre-moderato.json").to_string())
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;

@@ -76,11 +76,6 @@ pub enum TempoPoolTransactionError {
     InvalidFeeToken(Address),
 
     #[error(
-        "No fee token preference configured, please see https://docs.tempo.xyz/errors/tx/MissingFeeToken for more"
-    )]
-    MissingFeeToken,
-
-    #[error(
         "Keychain signature validation failed: {0}, please see https://docs.tempo.xyz/errors/tx/Keychain for more"
     )]
     Keychain(&'static str),
@@ -94,10 +89,9 @@ pub enum TempoPoolTransactionError {
 impl PoolTransactionError for TempoPoolTransactionError {
     fn is_bad_transaction(&self) -> bool {
         match self {
-            Self::ExceedsNonPaymentLimit
-            | Self::InvalidFeeToken(_)
-            | Self::MissingFeeToken
-            | Self::Keychain(_) => false,
+            Self::ExceedsNonPaymentLimit => false,
+            Self::InvalidFeeToken(_) => false,
+            Self::Keychain(_) => true, // Bad transaction - invalid signature
             Self::NonZeroValue => true,
         }
     }

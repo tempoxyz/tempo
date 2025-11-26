@@ -985,11 +985,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, ITIP20Factory};
 
     use super::*;
     use crate::{
-        DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, error::TempoPrecompileError,
-        storage::hashmap::HashMapStorageProvider,
+        PATH_USD_ADDRESS, error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
     };
     use rand::{Rng, distributions::Alphanumeric, thread_rng};
 
@@ -1085,12 +1085,13 @@ pub(crate) mod tests {
         let token_address = factory
             .create_token(
                 admin,
-                name.to_string(),
-                symbol.to_string(),
-                "USD".to_string(),
-                PATH_USD_ADDRESS,
-                admin,
-                Address::ZERO,
+                ITIP20Factory::createTokenCall {
+                    name: name.to_string(),
+                    symbol: symbol.to_string(),
+                    currency: "USD".to_string(),
+                    quoteToken: PATH_USD_ADDRESS,
+                    admin,
+                },
             )
             .unwrap();
 
@@ -1108,12 +1109,13 @@ pub(crate) mod tests {
         let token_address = factory
             .create_token(
                 admin,
-                name.to_string(),
-                symbol.to_string(),
-                "USD".to_string(),
-                quote_token,
-                admin,
-                Address::ZERO,
+                ITIP20Factory::createTokenCall {
+                    name: name.to_string(),
+                    symbol: symbol.to_string(),
+                    currency: "USD".to_string(),
+                    quoteToken: quote_token,
+                    admin,
+                },
             )
             .unwrap();
 
@@ -2038,7 +2040,10 @@ pub(crate) mod tests {
                 0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
             ]
         );
-        assert_eq!(&DEFAULT_FEE_TOKEN.as_slice()[..12], &TIP20_TOKEN_PREFIX);
+        assert_eq!(
+            &DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.as_slice()[..12],
+            &TIP20_TOKEN_PREFIX
+        );
     }
 
     #[test]
@@ -2318,12 +2323,13 @@ pub(crate) mod tests {
         let created_tip20 = factory
             .create_token(
                 sender,
-                "Test Token".to_string(),
-                "TEST".to_string(),
-                "USD".to_string(),
-                crate::PATH_USD_ADDRESS,
-                sender,
-                Address::ZERO,
+                ITIP20Factory::createTokenCall {
+                    name: "Test Token".to_string(),
+                    symbol: "TEST".to_string(),
+                    currency: "USD".to_string(),
+                    quoteToken: crate::PATH_USD_ADDRESS,
+                    admin: sender,
+                },
             )
             .expect("Token creation should succeed");
         let non_tip20 = Address::random();
