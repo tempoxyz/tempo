@@ -167,9 +167,7 @@ impl MnemonicArg {
     fn resolve(&self) -> String {
         match self {
             MnemonicArg::Mnemonic(mnemonic) => mnemonic.clone(),
-            MnemonicArg::Random => {
-                Mnemonic::<English>::new(&mut rand_085::thread_rng()).to_phrase()
-            }
+            MnemonicArg::Random => Mnemonic::<English>::new(&mut rand_08::thread_rng()).to_phrase(),
         }
     }
 }
@@ -503,6 +501,7 @@ async fn generate_transactions(
     Ok(transactions)
 }
 
+/// Funds accounts from the faucet using `temp_fundAddress` RPC.
 async fn fund_accounts(
     provider: &impl Provider,
     addresses: &[Address],
@@ -742,7 +741,11 @@ async fn assert_receipts<R: ReceiptResponse, F: Future<Output = eyre::Result<R>>
     stream::iter(receipts.into_iter())
         .buffer_unordered(max_concurrent_requests)
         .try_for_each(async |receipt| {
-            eyre::ensure!(receipt.status(), "Transaction failed");
+            eyre::ensure!(
+                receipt.status(),
+                "Transaction {} failed",
+                receipt.transaction_hash()
+            );
             Ok(())
         })
         .await
