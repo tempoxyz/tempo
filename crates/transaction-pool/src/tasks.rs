@@ -5,8 +5,9 @@ use alloy_primitives::TxHash;
 use futures::StreamExt;
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions};
-use reth_transaction_pool::{PoolTransaction, TransactionPool};
+use reth_transaction_pool::TransactionPool;
 use std::collections::BTreeMap;
+use tempo_primitives::AASigned;
 use tracing::debug;
 
 /// Spawns a background task that evicts expired AA transactions.
@@ -19,8 +20,23 @@ where
     P: TransactionPool<Transaction = TempoPooledTransaction> + 'static,
     C: CanonStateSubscriptions + 'static,
 {
+    // Helper to track AA transactions with `valid_before` timestamps
+    let track_expiry = |map: &mut BTreeMap<u64, Vec<TxHash>>, maybe_aa_tx: Option<&AASigned>| {
+        if let Some(aa_tx) = maybe_aa_tx
+            && let Some(valid_before) = aa_tx.tx().valid_before
+        {
+            let hash = *aa_tx.hash();
+            map.entry(valid_before).or_default().push(hash);
+        }
+    };
+
     // Track valid_before timestamp -> Vec<TxHash>
     let mut expiry_map: BTreeMap<u64, Vec<TxHash>> = BTreeMap::new();
+
+    // Populate expiry map to prevent race condition at start-up
+    pool.all_transactions()
+        .all()
+        .for_each(|tx| track_expiry(&mut expiry_map, tx.inner().as_aa()));
 
     // Subscribe to new transactions and blocks
     let mut new_txs = pool.new_transactions_listener();
@@ -36,12 +52,7 @@ where
 
                 // Check if it's an AA tx with `valid_before`
                 let tx = &tx_event.transaction.transaction;
-                if let Some(aa_tx) = tx.inner().as_aa()
-                    && let Some(valid_before) = aa_tx.tx().valid_before
-                {
-                    let hash = *tx.hash();
-                    expiry_map.entry(valid_before).or_default().push(hash);
-                }
+                track_expiry(&mut expiry_map, tx.inner().as_aa());
             }
 
             // Check for expired txs when a new block is commited
