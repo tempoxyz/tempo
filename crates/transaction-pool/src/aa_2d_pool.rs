@@ -383,21 +383,35 @@ impl AA2dPool {
             .take_while(|(other, _)| id.seq_id == other.seq_id)
     }
 
+    /// Removes the transaction with the given id from all sets.
+    ///
+    /// This does __not__ shift the independent transaction forward or mark descendants as pending.
     fn remove_transaction_by_id(
         &mut self,
         id: &AA2dTransactionId,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let tx = self.by_id.remove(id)?;
-
-        // Only remove from independent_transactions if this is the independent transaction
-        if let Some(independent_tx) = self.independent_transactions.get(&id.seq_id)
-            && independent_tx.transaction.hash() == tx.inner.transaction.hash()
-        {
-            self.independent_transactions.remove(&id.seq_id);
-        }
-
+        self.remove_independent(id);
         self.by_hash.remove(tx.inner.transaction.hash());
         Some(tx.inner.transaction)
+    }
+
+    /// Removes the independent transaction if it matches the given id.
+    fn remove_independent(
+        &mut self,
+        id: &AA2dTransactionId,
+    ) -> Option<PendingTransaction<Ordering>> {
+        // Only remove from independent_transactions if this is the independent transaction
+        match self.independent_transactions.entry(id.seq_id) {
+            hash_map::Entry::Occupied(entry) => {
+                // we know it's the independent tx if the tracked tx has the same nonce
+                if entry.get().transaction.nonce() == id.nonce {
+                    return Some(entry.remove());
+                }
+            }
+            hash_map::Entry::Vacant(_) => {}
+        };
+        None
     }
 
     /// Removes the transaction by its hash from all internal sets.
@@ -418,35 +432,19 @@ impl AA2dPool {
     }
 
     /// Removes the transaction by its hash from all internal sets.
+    ///
+    /// This does __not__ shift the independent transaction forward or mark descendants as pending.
     fn remove_transaction_by_hash(
         &mut self,
         tx_hash: &B256,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        // First check if transaction exists in by_hash without removing
-        let tx = self.by_hash.get(tx_hash)?;
+        let tx = self.by_hash.remove(tx_hash)?;
         let id = tx
             .transaction
             .aa_transaction_id()
-            .expect("Transaction in AA2D pool must be an AA transaction");
-
-        // Verify it exists in by_id before removing from either map
-        if !self.by_id.contains_key(&id) {
-            // Inconsistent state - transaction in by_hash but not in by_id
-            // This should never happen, but if it does, we still need to clean up by_hash
-            return self.by_hash.remove(tx_hash);
-        }
-
-        // Now we can safely remove from all data structures
-        let tx = self.by_hash.remove(tx_hash).expect("just checked");
-        self.by_id.remove(&id).expect("just checked");
-
-        // Only remove from independent_transactions if this is the independent transaction
-        if let Some(independent_tx) = self.independent_transactions.get(&id.seq_id)
-            && independent_tx.transaction.hash() == tx_hash
-        {
-            self.independent_transactions.remove(&id.seq_id);
-        }
-
+            .expect("is AA transaction");
+        self.by_id.remove(&id)?;
+        self.remove_independent(&id);
         Some(tx)
     }
 
