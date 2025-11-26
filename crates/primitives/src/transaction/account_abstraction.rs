@@ -6,9 +6,8 @@ use core::mem;
 use reth_primitives_traits::InMemorySize;
 
 use crate::{
-    subblock::{TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
-    transaction::{AASignature, AASigned, AASignedAuthorization, KeyAuthorization},
     subblock::{PartialValidatorKey, has_sub_block_nonce_key_prefix},
+    transaction::{AASignature, AASigned, AASignedAuthorization, KeyAuthorization},
 };
 
 /// Account abstraction transaction type byte (0x76)

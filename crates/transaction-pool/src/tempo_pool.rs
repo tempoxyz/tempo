@@ -11,7 +11,7 @@ use crate::{
 use alloy_consensus::Transaction;
 use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
-use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
+use reth_chainspec::ChainSpecProvider;
 use reth_eth_wire_types::HandleMempoolData;
 use reth_primitives_traits::Block;
 use reth_provider::{ChangedAccount, StateProviderFactory};
@@ -31,11 +31,12 @@ use std::{
     sync::Arc,
     time::Instant,
 };
+use tempo_chainspec::TempoChainSpec;
 
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client>
 where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + 'static,
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
 {
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
     protocol_pool: Pool<
@@ -49,7 +50,7 @@ where
 
 impl<Client> TempoTransactionPool<Client>
 where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + 'static,
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
 {
     pub fn new(
         protocol_pool: Pool<
@@ -182,7 +183,7 @@ where
 // Manual Clone implementation
 impl<Client> Clone for TempoTransactionPool<Client>
 where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + 'static,
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
 {
     fn clone(&self) -> Self {
         Self {
@@ -195,7 +196,7 @@ where
 // Manual Debug implementation
 impl<Client> std::fmt::Debug for TempoTransactionPool<Client>
 where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + 'static,
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TempoTransactionPool")
@@ -209,7 +210,7 @@ where
 impl<Client> TransactionPool for TempoTransactionPool<Client>
 where
     Client: StateProviderFactory
-        + ChainSpecProvider<ChainSpec: EthereumHardforks>
+        + ChainSpecProvider<ChainSpec = TempoChainSpec>
         + Send
         + Sync
         + 'static,
@@ -654,7 +655,7 @@ where
 
 impl<Client> TransactionPoolExt for TempoTransactionPool<Client>
 where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + 'static,
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
 {
     fn set_block_info(&self, info: BlockInfo) {
         self.protocol_pool.set_block_info(info)

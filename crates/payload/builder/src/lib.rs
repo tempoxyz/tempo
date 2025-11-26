@@ -5,6 +5,7 @@
 
 mod metrics;
 
+use crate::metrics::TempoPayloadBuilderMetrics;
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
 use alloy_primitives::{Address, U256};
 use alloy_rlp::{Decodable, Encodable};
@@ -31,7 +32,7 @@ use reth_revm::{
 };
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, ValidPoolTransaction,
+    BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::{
@@ -58,14 +59,15 @@ use tempo_primitives::{
         envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
     },
 };
-use tempo_transaction_pool::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
+use tempo_transaction_pool::{
+    TempoTransactionPool,
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+};
 use tracing::{Level, debug, error, info, instrument, trace, warn};
 
-use crate::metrics::TempoPayloadBuilderMetrics;
-
 #[derive(Debug, Clone)]
-pub struct TempoPayloadBuilder<Provider, Pool> {
-    pool: Pool,
+pub struct TempoPayloadBuilder<Provider> {
+    pool: TempoTransactionPool<Provider>,
     provider: Provider,
     evm_config: TempoEvmConfig,
     metrics: TempoPayloadBuilderMetrics,
@@ -81,8 +83,12 @@ pub struct TempoPayloadBuilder<Provider, Pool> {
     highest_invalid_subblock: Arc<AtomicU64>,
 }
 
-impl<Provider, Pool> TempoPayloadBuilder<Provider, Pool> {
-    pub fn new(pool: Pool, provider: Provider, evm_config: TempoEvmConfig) -> Self {
+impl<Provider> TempoPayloadBuilder<Provider> {
+    pub fn new(
+        pool: TempoTransactionPool<Provider>,
+        provider: Provider,
+        evm_config: TempoEvmConfig,
+    ) -> Self {
         Self {
             pool,
             provider,
@@ -93,7 +99,7 @@ impl<Provider, Pool> TempoPayloadBuilder<Provider, Pool> {
     }
 }
 
-impl<Provider: ChainSpecProvider, Pool> TempoPayloadBuilder<Provider, Pool> {
+impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
     /// Builds system transactions to execute at the start of the block.
     ///
     /// Returns a vector of system transactions that must be executed at the beginning of each block:
@@ -228,11 +234,10 @@ impl<Provider: ChainSpecProvider, Pool> TempoPayloadBuilder<Provider, Pool> {
     }
 }
 
-impl<Provider, Pool> PayloadBuilder for TempoPayloadBuilder<Provider, Pool>
+impl<Provider> PayloadBuilder for TempoPayloadBuilder<Provider>
 where
     Provider:
         StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
-    Pool: reth_transaction_pool::TransactionPool<Transaction = TempoPooledTransaction> + Clone,
 {
     type Attributes = TempoPayloadBuilderAttributes;
     type BuiltPayload = EthBuiltPayload<TempoPrimitives>;
@@ -274,10 +279,9 @@ where
     }
 }
 
-impl<Provider, Pool> TempoPayloadBuilder<Provider, Pool>
+impl<Provider> TempoPayloadBuilder<Provider>
 where
     Provider: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec>,
-    Pool: reth_transaction_pool::TransactionPool<Transaction = TempoPooledTransaction>,
 {
     #[instrument(
         target = "payload_builder",

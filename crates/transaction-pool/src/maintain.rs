@@ -2,9 +2,10 @@
 
 use crate::TempoTransactionPool;
 use futures::{Stream, StreamExt};
-use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
+use reth_chainspec::ChainSpecProvider;
 use reth_provider::CanonStateNotification;
 use reth_storage_api::StateProviderFactory;
+use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 use tempo_primitives::TempoPrimitives;
 
@@ -20,7 +21,7 @@ use tempo_primitives::TempoPrimitives;
 /// The next executable nonce is the current value of in the contract's state.
 pub async fn maintain_2d_nonce_pool<Client, St>(pool: TempoTransactionPool<Client>, mut events: St)
 where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + 'static,
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
     St: Stream<Item = CanonStateNotification<TempoPrimitives>> + Send + Unpin + 'static,
 {
     let nonce_keys = pool.aa_2d_nonce_keys();
