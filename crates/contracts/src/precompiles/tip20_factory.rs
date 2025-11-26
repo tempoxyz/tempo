@@ -8,8 +8,8 @@ sol! {
         /// TokenCreated event pre Allegretto hardfork (without feeRecipient)
         event TokenCreated(address indexed token, uint256 indexed tokenId, string name, string symbol, string currency, address quoteToken, address admin);
 
-        /// TokenCreatedWithFeeRecipient event post Allegretto hardfork (with feeRecipient)
-        event TokenCreatedWithFeeRecipient(address indexed token, uint256 indexed tokenId, string name, string symbol, string currency, address quoteToken, address admin, address feeRecipient);
+        /// TokenCreated event post Allegretto hardfork (with feeRecipient)
+        event TokenCreated(address indexed token, uint256 indexed tokenId, string name, string symbol, string currency, address quoteToken, address admin, address feeRecipient);
 
 
         /// createToken call pre Allegretto hardfork

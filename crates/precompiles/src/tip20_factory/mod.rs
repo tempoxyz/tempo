@@ -101,25 +101,23 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
             // Post-allegretto: emit event with feeRecipient
             self.storage.emit_event(
                 TIP20_FACTORY_ADDRESS,
-                TIP20FactoryEvent::TokenCreatedWithFeeRecipient(
-                    ITIP20Factory::TokenCreatedWithFeeRecipient {
-                        token: token_address,
-                        tokenId: token_id,
-                        name,
-                        symbol,
-                        currency,
-                        quoteToken: quote_token,
-                        admin,
-                        feeRecipient: fee_recipient,
-                    },
-                )
+                TIP20FactoryEvent::TokenCreated_1(ITIP20Factory::TokenCreated_1 {
+                    token: token_address,
+                    tokenId: token_id,
+                    name,
+                    symbol,
+                    currency,
+                    quoteToken: quote_token,
+                    admin,
+                    feeRecipient: fee_recipient,
+                })
                 .into_log_data(),
             )?;
         } else {
             // Pre-allegretto: emit event without feeRecipient
             self.storage.emit_event(
                 TIP20_FACTORY_ADDRESS,
-                TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
+                TIP20FactoryEvent::TokenCreated_0(ITIP20Factory::TokenCreated_0 {
                     token: token_address,
                     tokenId: token_id,
                     name,
@@ -203,7 +201,7 @@ mod tests {
 
         let token_id_0 = address_to_token_id_unchecked(token_addr_0);
         // Pre-allegretto storage, so expect old event without feeRecipient
-        let expected_event_0 = TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
+        let expected_event_0 = TIP20FactoryEvent::TokenCreated_0(ITIP20Factory::TokenCreated_0 {
             token: token_addr_0,
             tokenId: U256::from(token_id_0),
             name: "Test Token".to_string(),
@@ -216,7 +214,7 @@ mod tests {
 
         let token_id_1 = address_to_token_id_unchecked(token_addr_1);
         // Pre-allegretto storage, so expect old event without feeRecipient
-        let expected_event_1 = TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
+        let expected_event_1 = TIP20FactoryEvent::TokenCreated_0(ITIP20Factory::TokenCreated_0 {
             token: token_addr_1,
             tokenId: U256::from(token_id_1),
             name: "Test Token".to_string(),

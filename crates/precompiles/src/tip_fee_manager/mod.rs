@@ -703,7 +703,14 @@ mod tests {
             // Initialize token
             initialize_path_usd(&mut storage, admin)?;
             let mut tip20_token = TIP20Token::from_address(token, &mut storage);
-            tip20_token.initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)?;
+            tip20_token.initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )?;
             tip20_token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
             // Mint tokens simulating `collected fees - attack burn`
