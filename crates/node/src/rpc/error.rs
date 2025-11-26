@@ -2,13 +2,14 @@ use std::convert::Infallible;
 
 use alloy_primitives::Bytes;
 use reth_errors::ProviderError;
-use reth_evm::revm::context::result::{EVMError, HaltReason};
+use reth_evm::revm::context::result::EVMError;
 use reth_node_core::rpc::result::rpc_err;
 use reth_rpc_eth_api::{AsEthApiError, TransactionConversionError};
 use reth_rpc_eth_types::{
-    EthApiError, RpcInvalidTransactionError,
+    EthApiError,
     error::api::{FromEvmHalt, FromRevert},
 };
+use tempo_evm::TempoHaltReason;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TempoEthApiError {
@@ -64,9 +65,9 @@ where
     }
 }
 
-impl FromEvmHalt<HaltReason> for TempoEthApiError {
-    fn from_evm_halt(halt: HaltReason, gas_limit: u64) -> Self {
-        Self::EthApiError(RpcInvalidTransactionError::halt(halt, gas_limit).into())
+impl FromEvmHalt<TempoHaltReason> for TempoEthApiError {
+    fn from_evm_halt(halt: TempoHaltReason, gas_limit: u64) -> Self {
+        EthApiError::from_evm_halt(halt, gas_limit).into()
     }
 }
 

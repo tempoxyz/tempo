@@ -31,9 +31,7 @@ use revm::{
 };
 use tempo_contracts::{
     DEFAULT_7702_DELEGATE_ADDRESS,
-    precompiles::{
-        IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
-    },
+    precompiles::{IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError},
 };
 use tempo_precompiles::{
     account_keychain::{AccountKeychain, TokenLimit, authorizeKeyCall},
@@ -100,6 +98,10 @@ fn aa_signature_verification_gas(signature: &AASignature) -> u64 {
 /// Fees are paid in fee tokens instead of account balance.
 #[derive(Debug)]
 pub struct TempoEvmHandler<DB, I> {
+    /// Fee token used for the transaction.
+    fee_token: Address,
+    /// Fee payer for the transaction.
+    fee_payer: Address,
     /// Phantom data to avoid type inference issues.
     _phantom: core::marker::PhantomData<(DB, I)>,
 }
@@ -108,8 +110,38 @@ impl<DB, I> TempoEvmHandler<DB, I> {
     /// Create a new [`TempoEvmHandler`] handler instance
     pub fn new() -> Self {
         Self {
+            fee_token: Address::default(),
+            fee_payer: Address::default(),
             _phantom: core::marker::PhantomData,
         }
+    }
+}
+
+impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
+    fn load_fee_fields(
+        &mut self,
+        evm: &mut TempoEvm<DB, I>,
+    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+        let ctx = evm.ctx_mut();
+
+        self.fee_payer = ctx.tx.fee_payer()?;
+        self.fee_token = ctx.journaled_state.get_fee_token(
+            &ctx.tx,
+            ctx.block.beneficiary,
+            self.fee_payer,
+            ctx.cfg.spec,
+        )?;
+
+        // Skip fee token validity check for cases when the transaction is free and is not a part of a subblock.
+        if (!ctx.tx.max_balance_spending()?.is_zero() || ctx.tx.is_subblock_transaction())
+            && !ctx
+                .journaled_state
+                .is_valid_fee_token(self.fee_token, ctx.cfg.spec)?
+        {
+            return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
+        }
+
+        Ok(())
     }
 }
 
@@ -489,6 +521,9 @@ where
     ) -> Result<(), Self::Error> {
         let (block, tx, cfg, journal, _, _) = evm.ctx().all_mut();
 
+        // Load the fee payer balance
+        let account_balance = get_token_balance(journal, self.fee_token, self.fee_payer)?;
+
         // Load caller's account
         let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
 
@@ -573,17 +608,11 @@ where
             }
         }
 
-        let balance_spending = tx.effective_balance_spending(
-            block.basefee() as u128,
-            block.blob_gasprice().unwrap_or_default(),
-        )?;
-
-        if balance_spending.is_zero() {
-            return Ok(());
-        }
-
-        let fee_payer = tx.fee_payer()?;
-        let fee_token = journal.get_fee_token(tx, beneficiary, fee_payer)?;
+        // calculate the new balance after the fee is collected.
+        let new_balance = calculate_caller_fee(account_balance, tx, block, cfg)?;
+        // doing max to avoid underflow as new_balance can be more than
+        // account balance if `cfg.is_balance_check_disabled()` is true.
+        let gas_balance_spending = core::cmp::max(account_balance, new_balance) - new_balance;
 
         // Note: Signature verification happens during recover_signer() before entering the pool
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
@@ -796,6 +825,10 @@ where
         }
 
         let mut fee_manager = TipFeeManager::new(&mut storage_provider);
+
+        if gas_balance_spending.is_zero() {
+            return Ok(());
+        }
 
         // Call the precompile function to collect the fee
         // We specify the `to_addr` to account for the case where the to address is a tip20
@@ -1179,6 +1212,8 @@ where
         &mut self,
         evm: &mut Self::Evm,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
+        self.load_fee_fields(evm)?;
+
         match self.inspect_run_without_catch_error(evm) {
             Ok(output) => Ok(output),
             Err(e) => self.catch_error(evm, e),
