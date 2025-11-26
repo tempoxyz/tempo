@@ -1085,7 +1085,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
     for tx_hash in &sent {
         // Assert that transactions were removed from the pool and included in the block
         assert!(block1_txs.iter().any(|tx| tx.tx_hash() == tx_hash));
-        assert!(!setup.node.inner.pool.contains(&tx_hash));
+        assert!(!setup.node.inner.pool.contains(tx_hash));
     }
     println!("  ✓ All 3 transactions from different pools included in block");
 
@@ -1195,7 +1195,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
 
     for tx_hash in &sent {
         // Assert that transactions were removed from the pool
-        assert!(!setup.node.inner.pool.contains(&tx_hash));
+        assert!(!setup.node.inner.pool.contains(tx_hash));
     }
 
     // ===========================================================================
