@@ -29,6 +29,9 @@ use tempo_precompiles_macros::contract;
 /// Minimum order size of $10 USD
 pub const MIN_ORDER_AMOUNT: u128 = 10_000_000;
 
+/// Allowed tick spacing for order placement
+pub const TICK_SPACING: u64 = 10;
+
 /// Calculate quote amount using floor division (rounds down)
 /// Pre-Moderato behavior
 fn calculate_quote_amount_floor(amount: u128, tick: i16) -> Option<u128> {
@@ -454,6 +457,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             return Err(StablecoinExchangeError::tick_out_of_bounds(tick).into());
         }
 
+        // Post allegretto, enfoce that the tick adheres to tick spacing
+        if self.storage.spec().is_allegretto() && tick as u64 % TICK_SPACING != 0 {
+            return Err(StablecoinExchangeError::invalid_tick().into());
+        }
+
         // Validate order amount meets minimum requirement
         if amount < MIN_ORDER_AMOUNT {
             return Err(StablecoinExchangeError::below_minimum_order_size(amount).into());
@@ -538,8 +546,19 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
             return Err(StablecoinExchangeError::tick_out_of_bounds(tick).into());
         }
+
+        // Post allegretto, enfoce that the tick adheres to tick spacing
+        if self.storage.spec().is_allegretto() && tick as u64 % TICK_SPACING != 0 {
+            return Err(StablecoinExchangeError::invalid_tick().into());
+        }
+
         if !(MIN_TICK..=MAX_TICK).contains(&flip_tick) {
             return Err(StablecoinExchangeError::tick_out_of_bounds(flip_tick).into());
+        }
+
+        // Post allegretto, enfoce that the tick adheres to tick spacing
+        if self.storage.spec().is_allegretto() && flip_tick as u64 % TICK_SPACING != 0 {
+            return Err(StablecoinExchangeError::invalid_flip_tick().into());
         }
 
         // Validate flip_tick relationship to tick based on order side
