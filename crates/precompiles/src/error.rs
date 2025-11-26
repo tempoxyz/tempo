@@ -5,7 +5,7 @@ use alloy::{
 };
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{
-    FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError,
+    AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError,
     TIP20RewardsRegistryError, TIP403RegistryError, TIPAccountRegistrarError, TIPFeeAMMError,
     UnknownFunctionSelector, ValidatorConfigError,
 };
@@ -56,6 +56,10 @@ pub enum TempoPrecompileError {
     /// Error from validator config
     #[error("Validator config error: {0:?}")]
     ValidatorConfigError(ValidatorConfigError),
+
+    /// Error from account keychain precompile
+    #[error("Account keychain error: {0:?}")]
+    AccountKeychainError(AccountKeychainError),
 
     #[error("Gas limit exceeded")]
     OutOfGas,
@@ -115,6 +119,7 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
                         panic.abi_encode().into()
                     }
                     TPErr::ValidatorConfigError(e) => e.abi_encode().into(),
+                    TPErr::AccountKeychainError(e) => e.abi_encode().into(),
                     TPErr::OutOfGas => {
                         return Err(PrecompileError::OutOfGas);
                     }
@@ -149,6 +154,7 @@ impl<T> IntoPrecompileResult<T> for TempoPrecompileError {
             Self::FeeManagerError(e) => e.abi_encode().into(),
             Self::TIPFeeAMMError(e) => e.abi_encode().into(),
             Self::NonceError(e) => e.abi_encode().into(),
+            Self::AccountKeychainError(e) => e.abi_encode().into(),
             Self::Panic(kind) => {
                 let panic = Panic {
                     code: U256::from(kind as u32),

@@ -108,6 +108,14 @@ pub enum TempoPoolTransactionError {
     #[error("No fee token preference configured")]
     MissingFeeToken,
 
+    #[error("Keychain signature validation failed: {0}")]
+    Keychain(&'static str),
+
+    #[error(
+        "Native transfers are not supported, if you were trying to transfer a stablecoin, please call TIP20::Transfer"
+    )]
+    NonZeroValue,
+
     /// Thrown if a AA transaction with a nonce key prefixed with the sub-block prefix marker added to the pool
     #[error("AA transaction with subblock nonce key prefix aren't supported in the pool")]
     SubblockNonceKey,
@@ -116,9 +124,11 @@ pub enum TempoPoolTransactionError {
 impl PoolTransactionError for TempoPoolTransactionError {
     fn is_bad_transaction(&self) -> bool {
         match self {
-            Self::ExceedsNonPaymentLimit => false,
-            Self::InvalidFeeToken(_) => false,
-            Self::MissingFeeToken => false,
+            Self::ExceedsNonPaymentLimit
+            | Self::InvalidFeeToken(_)
+            | Self::MissingFeeToken
+            | Self::Keychain(_) => false,
+            Self::NonZeroValue => true,
             Self::SubblockNonceKey => true,
         }
     }

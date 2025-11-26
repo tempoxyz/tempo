@@ -48,7 +48,18 @@ fn subblocks_are_included() {
         let (nodes, mut oracle) =
             setup_validators(context.clone(), &execution_runtime, setup).await;
 
-        let running = join_all(nodes.into_iter().map(|node| node.start())).await;
+        let running = join_all(
+            nodes
+                .into_iter()
+                .map(|mut node| {
+                    // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
+                    // to ensure that payload builder has enough time to accumulate subblocks.
+                    node.consensus_config.new_payload_wait_time = Duration::from_millis(500);
+                    node.start()
+                })
+                .collect::<Vec<_>>(),
+        )
+        .await;
 
         link_validators(&mut oracle, &running, linkage.clone(), None).await;
 

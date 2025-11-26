@@ -12,10 +12,10 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tempo-chainspec.workspace = true
 tempo-primitives = { workspace = true, features = ["serde", "reth-codec"] }
 tempo-revm = { workspace = true, features = ["reth"] }
 tempo-precompiles.workspace = true
-tempo-chainspec.workspace = true
 
 reth-transaction-pool.workspace = true
 reth-chainspec.workspace = true

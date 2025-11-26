@@ -11120,7 +11120,7 @@ dependencies = [
 
 [[package]]
 name = "tempo"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "camino",
  "clap",
@@ -11147,7 +11147,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-alloy"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -11171,7 +11171,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-bench"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -11209,7 +11209,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-chainspec"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy-eips",
  "alloy-genesis",
@@ -11227,7 +11227,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-commonware-node"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -11269,7 +11269,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-commonware-node-config"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy-primitives",
  "camino",
@@ -11279,6 +11279,7 @@ dependencies = [
  "const-hex",
  "humantime-serde",
  "indexmap 2.12.1",
+ "reth-consensus-common",
  "serde",
  "thiserror 2.0.17",
  "toml",
@@ -11286,7 +11287,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-consensus"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -11302,20 +11303,21 @@ dependencies = [
 
 [[package]]
 name = "tempo-contracts"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy",
 ]
 
 [[package]]
 name = "tempo-e2e"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy",
  "alloy-genesis",
  "alloy-network",
  "alloy-primitives",
  "commonware-codec",
+ "commonware-consensus",
  "commonware-cryptography",
  "commonware-macros",
  "commonware-p2p",
@@ -11349,7 +11351,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-evm"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -11381,7 +11383,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-eyre"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "eyre",
  "indenter",
@@ -11389,7 +11391,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-faucet"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy",
  "async-trait",
@@ -11401,7 +11403,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-node"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy",
  "alloy-eips",
@@ -11423,7 +11425,6 @@ dependencies = [
  "reth-engine-local",
  "reth-errors",
  "reth-ethereum",
- "reth-ethereum-engine-primitives",
  "reth-evm",
  "reth-node-api",
  "reth-node-builder",
@@ -11461,7 +11462,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-payload-builder"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -11492,11 +11493,12 @@ dependencies = [
 
 [[package]]
 name = "tempo-payload-types"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
+ "alloy-serde",
  "derive_more",
  "reth-ethereum-engine-primitives",
  "reth-node-api",
@@ -11507,7 +11509,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy",
  "alloy-evm",
@@ -11533,7 +11535,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles-macros"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy",
  "proc-macro2",
@@ -11547,7 +11549,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-primitives"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -11579,7 +11581,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-revm"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -11602,7 +11604,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-sidecar"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy",
  "clap",
@@ -11625,7 +11627,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-telemetry-util"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "eyre",
  "jiff",
@@ -11634,7 +11636,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-transaction-pool"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -11658,7 +11660,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-xtask"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "alloy",
  "alloy-primitives",
@@ -12157,9 +12159,9 @@ dependencies = [
 
 [[package]]
 name = "tower-http"
-version = "0.6.7"
+version = "0.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cf146f99d442e8e68e585f5d798ccd3cad9a7835b917e09728880a862706456"
+checksum = "adc82fd73de2a9722ac5da747f12383d2bfdb93591ee6c58486e0097890f05f2"
 dependencies = [
  "async-compression",
  "base64 0.22.1",
@@ -13578,18 +13580,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.30"
+version = "0.8.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ea879c944afe8a2b25fef16bb4ba234f47c694565e97383b36f3a878219065c"
+checksum = "43fa6694ed34d6e57407afbccdeecfa268c470a7d2a5b0cf49ce9fcc345afb90"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.30"
+version = "0.8.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf955aa904d6040f70dc8e9384444cb1030aed272ba3cb09bbc4ab9e7c1f34f5"
+checksum = "c640b22cd9817fae95be82f0d2f90b11f7605f6c319d16705c459b27ac2cbc26"
 dependencies = [
  "proc-macro2",
  "quote",
