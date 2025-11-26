@@ -203,6 +203,11 @@ impl IntermediateOutcome {
 
     /// Creates a new intermediate ceremony outcome.
     ///
+    /// This method constructs a signature without the number players. This is
+    /// incorrect and addressed by [`Self::new`]. [`Self::new_pre_allegretto`]
+    /// exists for compatibility reasons and should only be used for hardforks
+    /// pre allegretto.
+    ///
     /// This object contains, the number of players, the epoch of the ceremony,
     /// the dealer's commitment (public polynomial), the acks received by the
     /// players and the revealed shares for which no acks are received.
@@ -248,6 +253,11 @@ impl IntermediateOutcome {
     }
 
     /// Verifies the intermediate outcome's signature.
+    ///
+    /// This method constructs a signature without the number players. This is
+    /// incorrect and addressed by [`Self::new`]. [`Self::new_pre_allegretto`]
+    /// exists for compatibility reasons and should only be used for hardforks
+    /// pre allegretto.
     pub fn verify_pre_allegretto(&self, namespace: &[u8]) -> bool {
         let payload = Self::signature_payload_from_parts_pre_allegretto(
             self.epoch,
@@ -283,6 +293,11 @@ impl IntermediateOutcome {
     }
 
     /// Returns the payload that was signed by the dealer, formed from raw parts.
+    ///
+    /// This method constructs a signature without the number players. This is
+    /// incorrect and addressed by [`Self::new`]. [`Self::new_pre_allegretto`]
+    /// exists for compatibility reasons and should only be used for hardforks
+    /// pre allegretto.
     fn signature_payload_from_parts_pre_allegretto(
         epoch: Epoch,
         commitment: &Public<MinSig>,
