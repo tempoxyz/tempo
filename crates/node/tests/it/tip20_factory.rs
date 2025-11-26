@@ -4,7 +4,6 @@ use alloy::{
     signers::local::MnemonicBuilder,
     sol_types::SolEvent,
 };
-use alloy_primitives::Address;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{ITIP20, ITIP20Factory};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::token_id_to_address};
@@ -32,13 +31,12 @@ async fn test_create_token() -> eyre::Result<()> {
     let balance = provider.get_account_info(caller).await?.balance;
     assert_eq!(balance, U256::ZERO);
     let receipt = factory
-        .createToken_1(
+        .createToken(
             "Test".to_string(),
             "TEST".to_string(),
             "USD".to_string(),
             PATH_USD_ADDRESS,
             caller,
-            Address::ZERO,
         )
         .gas_price(TEMPO_BASE_FEE as u128)
         .gas(300_000)
@@ -47,7 +45,7 @@ async fn test_create_token() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    let event = ITIP20Factory::TokenCreated_1::decode_log(&receipt.logs()[0].inner).unwrap();
+    let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[0].inner).unwrap();
     assert_eq!(event.tokenId, initial_token_id);
     assert_eq!(event.address, TIP20_FACTORY_ADDRESS);
     assert_eq!(event.name, "Test");

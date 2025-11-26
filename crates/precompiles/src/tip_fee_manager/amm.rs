@@ -593,18 +593,19 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             .and_then(|product| product.checked_div(total_supply))
             .ok_or(TempoPrecompileError::under_overflow())?;
 
-        if amount_user_token.is_zero() || amount_validator_token.is_zero() {
-            return Err(TIPFeeAMMError::insufficient_liquidity().into());
+        if !self.storage.spec().is_allegretto() {
+            if amount_user_token.is_zero() || amount_validator_token.is_zero() {
+                return Err(TIPFeeAMMError::insufficient_liquidity().into());
+            }
+
+            let available_user_token = self.get_effective_user_reserve(pool_id)?;
+            if amount_user_token > available_user_token {
+                return Err(TIPFeeAMMError::insufficient_reserves().into());
+            }
         }
 
         // Check that withdrawal does not violate pending swaps
-        let available_user_token = self.get_effective_user_reserve(pool_id)?;
         let available_validator_token = self.get_effective_validator_reserve(pool_id)?;
-
-        if amount_user_token > available_user_token {
-            return Err(TIPFeeAMMError::insufficient_reserves().into());
-        }
-
         if amount_validator_token > available_validator_token {
             return Err(TIPFeeAMMError::insufficient_reserves().into());
         }

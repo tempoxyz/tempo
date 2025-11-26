@@ -7,19 +7,20 @@ use alloy::{
 use alloy_eips::Encodable2718;
 use alloy_network::TxSignerSync;
 use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20};
-use tempo_precompiles::DEFAULT_FEE_TOKEN;
+use tempo_precompiles::DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO;
 use tempo_primitives::TxFeeToken;
 
 use crate::utils::setup_test_token_pre_allegretto;
 
 /// Test block building when FeeAMM pool has insufficient liquidity for payment transactions
-/// Note: This test runs without allegretto to use the old balanced `mint` function
+/// Note: This test runs without Moderato to use the balanced `mint` function
 #[tokio::test(flavor = "multi_thread")]
 async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Run without allegretto to use the old `mint` function that creates balanced pools
+    // Run without Moderato to use the balanced `mint` function
     let setup = crate::utils::TestNodeBuilder::new()
+        .with_genesis(include_str!("../assets/test-genesis-pre-moderato.json").to_string())
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -36,10 +37,10 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     let payment_token = setup_test_token_pre_allegretto(provider.clone(), sender_address).await?;
     let payment_token_addr = *payment_token.address();
 
-    // Get validator token address (USDC from genesis)
+    // Get validator token address (default fee token from genesis)
     use tempo_contracts::precompiles::ITIPFeeAMM;
     use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
-    let validator_token_addr = DEFAULT_FEE_TOKEN;
+    let validator_token_addr = DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO;
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
     let validator_token = ITIP20::new(validator_token_addr, provider.clone());
@@ -126,7 +127,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     // This ensures subsequent transactions will require a swap through the drained FeeAMM
     println!("Setting user's fee token preference...");
     let mut tx = TxFeeToken {
-        fee_token: Some(DEFAULT_FEE_TOKEN),
+        fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
         to: TIP_FEE_MANAGER_ADDRESS.into(),
         input: setUserTokenCall {
             token: payment_token_addr,

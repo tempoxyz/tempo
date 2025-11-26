@@ -23,7 +23,7 @@ use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, DEFAULT_7702_DELEGATE_ADDRESS,
     MULTICALL_ADDRESS, PERMIT2_ADDRESS, SAFE_DEPLOYER_ADDRESS,
-    contracts::ARACHNID_CREATE2_FACTORY_BYTECODE,
+    contracts::ARACHNID_CREATE2_FACTORY_BYTECODE, precompiles::ITIP20Factory,
 };
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
@@ -98,9 +98,9 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value_t = 0)]
     pub adagio_time: u64,
 
-    /// Moderato hardfork activation timestamp
-    #[arg(long)]
-    pub moderato_time: Option<u64>,
+    /// Moderato hardfork activation timestamp (defaults to 0 = active at genesis)
+    #[arg(long, default_value_t = 0)]
+    pub moderato_time: u64,
 
     /// Allegretto hardfork activation timestamp
     #[arg(long)]
@@ -144,10 +144,12 @@ impl GenesisArgs {
         println!("Initializing PathUSD");
         initialize_path_usd(admin, &addresses, &mut evm)?;
 
+        println!("Initializing TIP20 tokens");
         let (_, alpha_token_address) = create_and_mint_token(
             "AlphaUSD",
             "AlphaUSD",
             "USD",
+            PATH_USD_ADDRESS,
             admin,
             &addresses,
             U256::from(u64::MAX),
@@ -158,6 +160,7 @@ impl GenesisArgs {
             "BetaUSD",
             "BetaUSD",
             "USD",
+            PATH_USD_ADDRESS,
             admin,
             &addresses,
             U256::from(u64::MAX),
@@ -168,6 +171,7 @@ impl GenesisArgs {
             "ThetaUSD",
             "ThetaUSD",
             "USD",
+            PATH_USD_ADDRESS,
             admin,
             &addresses,
             U256::from(u64::MAX),
@@ -309,11 +313,10 @@ impl GenesisArgs {
             "adagioTime".to_string(),
             serde_json::json!(self.adagio_time),
         );
-        if let Some(moderato_time) = self.moderato_time {
-            chain_config
-                .extra_fields
-                .insert("moderatoTime".to_string(), serde_json::json!(moderato_time));
-        }
+        chain_config.extra_fields.insert(
+            "moderatoTime".to_string(),
+            serde_json::json!(self.moderato_time),
+        );
         if let Some(allegretto_time) = self.allegretto_time {
             chain_config.extra_fields.insert(
                 "allegrettoTime".to_string(),
@@ -346,10 +349,12 @@ fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>> {
 }
 
 /// Initializes the TIP20 factory contract and creates a token
+#[expect(clippy::too_many_arguments)]
 fn create_and_mint_token(
     symbol: &str,
     name: &str,
     currency: &str,
+    _quote_token: Address,
     admin: Address,
     recipients: &[Address],
     mint_amount: U256,
@@ -367,12 +372,13 @@ fn create_and_mint_token(
         let token_address = factory
             .create_token(
                 admin,
-                name.into(),
-                symbol.into(),
-                currency.into(),
-                PATH_USD_ADDRESS,
-                admin,
-                Address::ZERO,
+                ITIP20Factory::createTokenCall {
+                    name: name.into(),
+                    symbol: symbol.into(),
+                    currency: currency.into(),
+                    quoteToken: PATH_USD_ADDRESS,
+                    admin,
+                },
             )
             .expect("Could not create token");
 
@@ -481,7 +487,7 @@ fn initialize_fee_manager(
             .expect("Could not set fee token");
     }
 
-    // Set validator fee tokens to path USD
+    // Set validator fee tokens to PathUSD
     for validator in validators {
         fee_manager
             .set_validator_token(

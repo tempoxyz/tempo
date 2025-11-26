@@ -46,19 +46,18 @@ where
 {
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
     let receipt = factory
-        .createToken_1(
+        .createToken(
             "Test".to_string(),
             "TEST".to_string(),
             "USD".to_string(),
             PATH_USD_ADDRESS,
             caller,
-            Address::ZERO,
         )
         .send()
         .await?
         .get_receipt()
         .await?;
-    let event = ITIP20Factory::TokenCreated_1::decode_log(&receipt.logs()[0].inner).unwrap();
+    let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[0].inner).unwrap();
 
     let token_addr = token_id_to_address(event.tokenId.to());
     let token = ITIP20::new(token_addr, provider.clone());
@@ -74,8 +73,7 @@ where
     Ok(token)
 }
 
-/// Creates a test TIP20 token using pre-allegretto createToken_0
-/// Use this for tests that need to run without Moderato/Allegretto hardforks
+/// Creates a test TIP20 token (same as setup_test_token, kept for compatibility)
 pub(crate) async fn setup_test_token_pre_allegretto<P>(
     provider: P,
     caller: Address,
@@ -83,33 +81,7 @@ pub(crate) async fn setup_test_token_pre_allegretto<P>(
 where
     P: Provider + Clone,
 {
-    let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
-    let receipt = factory
-        .createToken_0(
-            "Test".to_string(),
-            "TEST".to_string(),
-            "USD".to_string(),
-            PATH_USD_ADDRESS,
-            caller,
-        )
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    let event = ITIP20Factory::TokenCreated_0::decode_log(&receipt.logs()[0].inner).unwrap();
-
-    let token_addr = token_id_to_address(event.tokenId.to());
-    let token = ITIP20::new(token_addr, provider.clone());
-    let roles = IRolesAuth::new(*token.address(), provider);
-
-    roles
-        .grantRole(*ISSUER_ROLE, caller)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    Ok(token)
+    setup_test_token(provider, caller).await
 }
 
 /// Node source for integration testing
