@@ -3,12 +3,9 @@
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, FixedSize as _, Read, ReadExt as _, Write, varint::UInt};
 use commonware_consensus::types::Epoch;
-use commonware_cryptography::{
-    Signer as _, Verifier as _,
-    bls12381::primitives::{group, poly::Public, variant::MinSig},
-    ed25519::{PrivateKey, PublicKey, Signature},
-};
+use commonware_cryptography::bls12381::primitives::{group, poly::Public, variant::MinSig};
 use commonware_utils::quorum;
+use tempo_dkg_onchain_artifacts::Ack;
 
 /// The actual message that is sent over p2p.
 #[derive(Clone, Debug, PartialEq)]
@@ -110,87 +107,6 @@ impl EncodeSize for Payload {
                 Self::Share(inner) => inner.encode_size(),
                 Self::Ack(inner) => inner.encode_size(),
             }
-    }
-}
-
-/// A message from a player to a dealer.
-///
-/// Confirms the receipt and verification of a [`Share`] message by a dealer.
-///
-/// Contains the player's public key, as well as its signature over the
-/// ceremony's epoch, dealear public key, and commitment contained in the
-/// share message.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Ack {
-    /// The public key identifier of the player sending the acknowledgment.
-    pub(super) player: PublicKey,
-    /// A signature covering the DKG round, dealer ID, and the dealer's commitment.
-    /// This confirms the player received and validated the correct share.
-    pub(super) signature: Signature,
-}
-
-impl Ack {
-    /// Create a new acknowledgment signed by `signer`.
-    pub(super) fn new(
-        namespace: &[u8],
-        signer: PrivateKey,
-        player: PublicKey,
-        epoch: Epoch,
-        dealer: &PublicKey,
-        commitment: &Public<MinSig>,
-    ) -> Self {
-        let payload = Self::construct_signature_payload(epoch, dealer, commitment);
-        let signature = signer.sign(Some(namespace), &payload);
-        Self { player, signature }
-    }
-
-    fn construct_signature_payload(
-        epoch: Epoch,
-        dealer: &PublicKey,
-        commitment: &Public<MinSig>,
-    ) -> Vec<u8> {
-        let mut payload =
-            Vec::with_capacity(Epoch::SIZE + PublicKey::SIZE + commitment.encode_size());
-        epoch.write(&mut payload);
-        dealer.write(&mut payload);
-        commitment.write(&mut payload);
-        payload
-    }
-
-    pub(super) fn verify(
-        &self,
-        namespace: &[u8],
-        public_key: &PublicKey,
-        epoch: Epoch,
-        dealer: &PublicKey,
-        commitment: &Public<MinSig>,
-    ) -> bool {
-        let payload = Self::construct_signature_payload(epoch, dealer, commitment);
-        public_key.verify(Some(namespace), &payload, &self.signature)
-    }
-}
-
-impl Write for Ack {
-    fn write(&self, buf: &mut impl BufMut) {
-        self.player.write(buf);
-        self.signature.write(buf);
-    }
-}
-
-impl EncodeSize for Ack {
-    fn encode_size(&self) -> usize {
-        self.player.encode_size() + self.signature.encode_size()
-    }
-}
-
-impl Read for Ack {
-    type Cfg = ();
-
-    fn read_cfg(buf: &mut impl Buf, _: &()) -> Result<Self, commonware_codec::Error> {
-        Ok(Self {
-            player: PublicKey::read(buf)?,
-            signature: Signature::read(buf)?,
-        })
     }
 }
 

@@ -99,10 +99,14 @@ impl TempoPooledTransaction {
 
 #[derive(Debug, Error)]
 pub enum TempoPoolTransactionError {
-    #[error("Transaction exceeds non payment gas limit")]
+    #[error(
+        "Transaction exceeds non payment gas limit, please see https://docs.tempo.xyz/errors/tx/ExceedsNonPaymentLimit for more"
+    )]
     ExceedsNonPaymentLimit,
 
-    #[error("Invalid fee token: {0}")]
+    #[error(
+        "Invalid fee token: {0}, please see https://docs.tempo.xyz/errors/tx/InvalidFeeToken for more"
+    )]
     InvalidFeeToken(Address),
 
     #[error("No fee token preference configured")]
@@ -110,7 +114,10 @@ pub enum TempoPoolTransactionError {
 
     #[error("'valid_after' {valid_after} is too far in the future (max allowed: {max_allowed})")]
     InvalidValidAfter { valid_after: u64, max_allowed: u64 },
-    #[error("Keychain signature validation failed: {0}")]
+
+    #[error(
+        "Keychain signature validation failed: {0}, please see https://docs.tempo.xyz/errors/tx/Keychain for more"
+    )]
     Keychain(&'static str),
 
     #[error(

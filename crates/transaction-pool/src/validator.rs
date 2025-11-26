@@ -3,8 +3,9 @@ use crate::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use alloy_consensus::Transaction;
+
 use alloy_primitives::{Address, U256};
-use reth_chainspec::ChainSpecProvider;
+use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
 };
@@ -101,12 +102,22 @@ where
         }
 
         // Ensure that key auth is valid if present.
-        if let Some(auth) = auth
-            && !auth
+        if let Some(auth) = auth {
+            // Validate signature
+            if !auth
                 .recover_signer()
                 .is_ok_and(|signer| signer == transaction.sender())
-        {
-            return Ok(Err("Invalid KeyAuthorization signature"));
+            {
+                return Ok(Err("Invalid KeyAuthorization signature"));
+            }
+
+            // Validate chain_id (chain_id == 0 is wildcard, works on any chain)
+            let chain_id = self.inner.chain_spec().chain_id();
+            if auth.chain_id != 0 && auth.chain_id != chain_id {
+                return Ok(Err(
+                    "KeyAuthorization chain_id does not match current chain",
+                ));
+            }
         }
 
         let Some(sig) = tx.signature().as_keychain() else {
