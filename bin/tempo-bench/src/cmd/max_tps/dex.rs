@@ -4,6 +4,10 @@ use std::pin::Pin;
 use tempo_contracts::precompiles::{IStablecoinExchange, PATH_USD_ADDRESS};
 use tempo_precompiles::stablecoin_exchange::{MAX_TICK, MIN_TICK};
 
+type StablecoinExchangeInstance =
+    IStablecoinExchangeInstance<DynProvider<TempoNetwork>, TempoNetwork>;
+type TIP20Instance = ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>;
+
 const GAS_LIMIT: u64 = 500_000;
 
 /// This method performs a one-time setup for sending a lot of transactions:
@@ -18,11 +22,7 @@ pub(super) async fn setup(
     signers: Vec<PrivateKeySigner>,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
-) -> eyre::Result<(
-    IStablecoinExchangeInstance<DynProvider<TempoNetwork>, TempoNetwork>,
-    Address,
-    Vec<Address>,
-)> {
+) -> eyre::Result<(StablecoinExchangeInstance, Address, Vec<Address>)> {
     println!("Sending DEX setup transactions...");
 
     let user_tokens_count = 2;
@@ -41,7 +41,7 @@ pub(super) async fn setup(
     let wallet = MnemonicBuilder::from_phrase(mnemonic).build()?;
     let caller = wallet.address();
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .wallet(wallet)
+        .wallet(wallet.clone())
         .connect_http(url.clone())
         .erased();
 
@@ -57,7 +57,7 @@ pub(super) async fn setup(
 
     let tokens = [&base1, &base2];
     let mut futures = Vec::new();
-    let nonce = provider.get_transaction_count(wallet.address()).await?;
+    let nonce = provider.get_transaction_count(caller).await?;
 
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
 
@@ -169,7 +169,7 @@ pub(super) async fn setup(
 }
 
 pub(super) fn approve(
-    token: &ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>,
+    token: &TIP20Instance,
     signer: &PrivateKeySigner,
     nonce: u64,
     chain_id: ChainId,
@@ -187,7 +187,7 @@ pub(super) fn approve(
 }
 
 pub(super) fn mint(
-    token: &ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>,
+    token: &TIP20Instance,
     signer: &PrivateKeySigner,
     nonce: u64,
     chain_id: ChainId,
@@ -208,7 +208,7 @@ pub(super) fn mint(
 
 #[expect(clippy::too_many_arguments)]
 pub(super) fn place_flip(
-    exchange: &IStablecoinExchangeInstance<DynProvider<TempoNetwork>, TempoNetwork>,
+    exchange: &StablecoinExchangeInstance,
     signer: &PrivateKeySigner,
     nonce: u64,
     chain_id: ChainId,
@@ -230,7 +230,7 @@ pub(super) fn place_flip(
 }
 
 pub(super) fn create_pair(
-    exchange: &IStablecoinExchangeInstance<DynProvider<TempoNetwork>, TempoNetwork>,
+    exchange: &StablecoinExchangeInstance,
     signer: &PrivateKeySigner,
     nonce: u64,
     chain_id: ChainId,
@@ -249,7 +249,7 @@ pub(super) fn create_pair(
 }
 
 pub(super) fn place(
-    exchange: &IStablecoinExchangeInstance<DynProvider<TempoNetwork>, TempoNetwork>,
+    exchange: &StablecoinExchangeInstance,
     signer: &PrivateKeySigner,
     nonce: u64,
     chain_id: ChainId,
@@ -272,7 +272,7 @@ pub(super) fn place(
 }
 
 pub(super) fn swap_in(
-    exchange: &IStablecoinExchangeInstance<DynProvider<TempoNetwork>, TempoNetwork>,
+    exchange: &StablecoinExchangeInstance,
     signer: &PrivateKeySigner,
     nonce: u64,
     chain_id: ChainId,
@@ -300,7 +300,7 @@ async fn setup_test_token(
     provider: DynProvider<TempoNetwork>,
     caller: Address,
     tx_count: &ProgressBar,
-) -> eyre::Result<ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>>
+) -> eyre::Result<TIP20Instance>
 where
 {
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
