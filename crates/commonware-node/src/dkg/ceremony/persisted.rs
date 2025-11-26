@@ -15,7 +15,7 @@ use super::IntermediateOutcome;
 /// Information on a ceremony that is persisted to disk.
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub(in crate::dkg) struct State {
-    pub(super) num_players: u64,
+    pub(super) num_players: u16,
 
     /// Tracks the local dealing if we participate as a dealer.
     pub(super) dealing: Option<Dealing>,
@@ -57,21 +57,23 @@ impl Read for State {
         _cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         let num_players = UInt::read_cfg(buf, &())?.into();
+        let dealing = Option::<Dealing>::read_cfg(buf, &(quorum(num_players as u32) as usize))?;
+        let received_shares = Vec::<(PublicKey, Public<MinSig>, group::Share)>::read_cfg(
+            buf,
+            &(
+                RangeCfg::from(0..usize::MAX),
+                ((), quorum(num_players as u32) as usize, ()),
+            ),
+        )?;
+        let dealing_outcome = Option::<IntermediateOutcome>::read_cfg(buf, &())?;
+        let outcomes =
+            Vec::<IntermediateOutcome>::read_cfg(buf, &(RangeCfg::from(0..usize::MAX), ()))?;
         Ok(Self {
             num_players,
-            dealing: Option::<Dealing>::read_cfg(buf, &(quorum(num_players as u32) as usize))?,
-            received_shares: Vec::<(PublicKey, Public<MinSig>, group::Share)>::read_cfg(
-                buf,
-                &(
-                    RangeCfg::from(0..usize::MAX),
-                    ((), quorum(num_players as u32) as usize, ()),
-                ),
-            )?,
-            dealing_outcome: Option::<IntermediateOutcome>::read_cfg(buf, &())?,
-            outcomes: Vec::<IntermediateOutcome>::read_cfg(
-                buf,
-                &(RangeCfg::from(0..usize::MAX), ()),
-            )?,
+            dealing,
+            received_shares,
+            dealing_outcome,
+            outcomes,
         })
     }
 }
@@ -120,13 +122,10 @@ impl Write for Dealing {
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::dkg::{
-        IntermediateOutcome,
-        ceremony::{ACK_NAMESPACE, Ack, OUTCOME_NAMESPACE},
-    };
+    use crate::dkg::ceremony::{ACK_NAMESPACE, Ack, OUTCOME_NAMESPACE};
 
     use super::{Dealing, State};
-    use commonware_codec::{Decode as _, Encode as _, Read as _};
+    use commonware_codec::{DecodeExt as _, Encode as _, Read as _};
     use commonware_cryptography::{
         PrivateKeyExt as _, Signer,
         bls12381::{dkg, primitives::variant::MinSig},
@@ -134,6 +133,7 @@ mod tests {
     };
     use commonware_utils::{quorum, set::Ordered, union};
     use rand::{SeedableRng as _, rngs::StdRng};
+    use tempo_dkg_onchain_artifacts::IntermediateOutcome;
 
     fn four_private_keys() -> Ordered<PrivateKey> {
         vec![
@@ -262,6 +262,6 @@ mod tests {
 
         let bytes = state.encode().freeze();
 
-        assert_eq!(State::decode_cfg(&mut bytes.as_ref(), &()).unwrap(), state);
+        assert_eq!(State::decode(&mut bytes.as_ref()).unwrap(), state);
     }
 }

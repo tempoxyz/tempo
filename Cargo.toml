@@ -14,6 +14,7 @@ members = [
   "crates/chainspec",
   "crates/commonware-node",
   "crates/commonware-node-config",
+  "crates/dkg-onchain-artifacts",
   "crates/consensus",
   "crates/eyre",
   "crates/evm",
@@ -101,6 +102,7 @@ tempo-chainspec = { path = "crates/chainspec", default-features = false }
 tempo-commonware-node = { path = "crates/commonware-node", default-features = false }
 tempo-commonware-node-config = { path = "crates/commonware-node-config", default-features = false }
 tempo-consensus = { path = "crates/consensus", default-features = false }
+tempo-dkg-onchain-artifacts = { path = "crates/dkg-onchain-artifacts", default-features = false }
 tempo-e2e = { path = "crates/e2e" }
 tempo-faucet = { path = "crates/faucet", default-features = false }
 tempo-evm = { path = "crates/evm", default-features = false }
@@ -196,30 +198,29 @@ commonware-consensus = "0.0.63"
 commonware-cryptography = "0.0.63"
 commonware-macros = "0.0.63"
 commonware-p2p = "0.0.63"
-commonware-resolver = "0.0.63"
 commonware-runtime = "0.0.63"
 commonware-storage = "0.0.63"
 commonware-utils = "0.0.63"
 
-auto_impl = "1"
 anyhow = "1.0.98"
+auto_impl = "1"
 async-trait = "0.1"
 axum = "0.8.4"
 base64 = "0.22"
 bytes = "1.8"
-camino = "1.1.12"
 clap = { version = "4.5.45", features = ["derive"] }
 const-hex = { version = "1.15.0" }
 derive_more = { version = "2.0.0" }
 test-fuzz = "7"
 eyre = "0.6.12"
 futures = "0.3.31"
-hex = "0.4"
 governor = "0.10.2"
+hex = "0.4"
 humantime-serde = "1.1.1"
 indexmap = "2.11.0"
 indicatif = "0.18"
 itertools = "0.14.0"
+jiff = { version = "0.2.15", default-features = false }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 metrics = "0.24.0"
 p256 = "0.13"
