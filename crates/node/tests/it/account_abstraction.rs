@@ -18,6 +18,7 @@ use tempo_precompiles::{
     DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO,
     tip20::ITIP20::{self, transferCall},
 };
+
 use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{
@@ -622,7 +623,7 @@ fn create_transfer_call(to: Address, amount: U256) -> Call {
     use tempo_contracts::precompiles::ITIP20::transferCall;
 
     Call {
-        to: DEFAULT_FEE_TOKEN.into(),
+        to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
         value: U256::ZERO,
         input: transferCall { to, amount }.abi_encode().into(),
     }
@@ -633,7 +634,7 @@ fn create_balance_of_call(account: Address) -> Call {
     use alloy::sol_types::SolCall;
 
     Call {
-        to: DEFAULT_FEE_TOKEN.into(),
+        to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
         value: U256::ZERO,
         input: ITIP20::balanceOfCall { account }.abi_encode().into(),
     }
@@ -659,7 +660,7 @@ fn create_default_token_limit() -> Vec<tempo_primitives::transaction::TokenLimit
     use tempo_primitives::transaction::TokenLimit;
 
     vec![TokenLimit {
-        token: DEFAULT_FEE_TOKEN,
+        token: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
         limit: U256::from(100u64) * U256::from(10).pow(U256::from(18)),
     }]
 }
@@ -4110,7 +4111,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
     );
 
     // Verify the large transfer succeeded (unlimited key has no limit enforcement)
-    let recipient1_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+    let recipient1_balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
         .balanceOf(recipient1)
         .call()
         .await?;
@@ -4196,7 +4197,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
     );
 
     // Verify recipient2 received NO tokens
-    let recipient2_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+    let recipient2_balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
         .balanceOf(recipient2)
         .call()
         .await?;
@@ -4222,7 +4223,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 300_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN.into(),
+            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
             value: U256::ZERO,
             input: transferCall {
                 to: recipient3,
@@ -4252,7 +4253,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
 
     let _tx_hash = submit_and_mine_aa_tx(&mut setup, second_unlimited_tx, unlimited_sig2).await?;
 
-    let recipient3_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+    let recipient3_balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
         .balanceOf(recipient3)
         .call()
         .await?;
@@ -4365,7 +4366,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
     submit_and_mine_aa_tx(&mut setup, transfer_tx, never_expires_sig).await?;
     nonce += 1;
 
-    let recipient1_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+    let recipient1_balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
         .balanceOf(recipient1)
         .call()
         .await?;
@@ -4451,7 +4452,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
     submit_and_mine_aa_tx(&mut setup, before_expiry_tx, short_expiry_sig).await?;
     nonce += 1;
 
-    let recipient2_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+    let recipient2_balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
         .balanceOf(recipient2)
         .call()
         .await?;
@@ -4535,7 +4536,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
     }
 
     // Verify recipient3 received NO tokens
-    let recipient3_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+    let recipient3_balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
         .balanceOf(recipient3)
         .call()
         .await?;

@@ -35,6 +35,7 @@ sol! {
             address keyId;
             uint64 expiry;
             bool enforceLimits;
+            bool isRevoked;
         }
         /// Emitted when a new key is authorized
         event KeyAuthorized(address indexed account, bytes32 indexed publicKey, uint8 signatureType, uint64 expiry);
@@ -103,6 +104,7 @@ sol! {
         error InvalidSignatureType();
         error ZeroPublicKey();
         error ExpiryInPast();
+        error KeyAlreadyRevoked();
     }
 }
 
@@ -145,5 +147,12 @@ impl AccountKeychainError {
     /// Creates an error for expiry timestamp in the past.
     pub const fn expiry_in_past() -> Self {
         Self::ExpiryInPast(IAccountKeychain::ExpiryInPast {})
+    }
+
+    /// Creates an error for when a key_id has already been revoked.
+    /// Once revoked, a key_id can never be re-authorized for the same account.
+    /// This prevents replay attacks where a revoked key's authorization is reused.
+    pub const fn key_already_revoked() -> Self {
+        Self::KeyAlreadyRevoked(IAccountKeychain::KeyAlreadyRevoked {})
     }
 }

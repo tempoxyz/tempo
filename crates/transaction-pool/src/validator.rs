@@ -155,6 +155,11 @@ where
         // Decode AuthorizedKey using helper
         let authorized_key = AuthorizedKey::decode_from_slot(slot_value);
 
+        // Check if key was revoked (revoked keys cannot be used)
+        if authorized_key.is_revoked {
+            return Ok(Err("access key has been revoked"));
+        }
+
         // Check if key exists (key exists if expiry > 0)
         if authorized_key.expiry == 0 {
             return Ok(Err("access key does not exist"));
