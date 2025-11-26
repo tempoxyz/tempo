@@ -1263,12 +1263,8 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
     let nonce_key_3_txs: Vec<_> = block3_txs
         .iter()
         .filter_map(|tx| {
-            if let TempoTxEnvelope::AA(aa_tx) = tx {
-                if aa_tx.tx().nonce_key == U256::from(3) {
-                    Some(aa_tx.tx().nonce)
-                } else {
-                    None
-                }
+            if tx.nonce_key() == Some(U256::from(3)) {
+                Some(tx.nonce())
             } else {
                 None
             }
@@ -1481,12 +1477,8 @@ async fn test_aa_2d_nonce_out_of_order_arrival() -> eyre::Result<()> {
     let executed_nonces: Vec<u64> = block1_txs
         .iter()
         .filter_map(|tx| {
-            if let TempoTxEnvelope::AA(aa_tx) = tx {
-                if aa_tx.tx().nonce_key == U256::from(4) {
-                    Some(aa_tx.tx().nonce)
-                } else {
-                    None
-                }
+            if tx.nonce_key() == Some(U256::from(4)) {
+                Some(tx.nonce())
             } else {
                 None
             }
