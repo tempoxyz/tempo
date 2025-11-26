@@ -74,8 +74,11 @@ where
         if on_chain_ids.is_empty() {
             return;
         }
-        let (_promoted, _mined) = self.aa_2d_pool.write().on_aa_2d_nonce_changes(on_chain_ids);
-        // TODO: notify in protocol pool's listeners
+        let (promoted, _mined) = self.aa_2d_pool.write().on_aa_2d_nonce_changes(on_chain_ids);
+        // Note: mined transactions are notified via the vanilla pool updates
+        self.protocol_pool
+            .inner()
+            .notify_on_transaction_updates(promoted, Vec::new());
     }
 
     fn add_validated_transactions(
@@ -325,13 +328,12 @@ where
         &self,
         max: usize,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let protocol_txs = self.protocol_pool.pooled_transactions_max(max);
-        if protocol_txs.len() >= max {
-            return protocol_txs;
+        let mut txs = self.protocol_pool.pooled_transactions_max(max);
+        if txs.len() >= max {
+            return txs;
         }
 
-        let remaining = max - protocol_txs.len();
-        let mut txs = protocol_txs;
+        let remaining = max - txs.len();
         txs.extend(
             self.aa_2d_pool
                 .read()
@@ -346,9 +348,24 @@ where
         tx_hashes: Vec<B256>,
         limit: GetPooledTransactionLimit,
     ) -> Vec<<Self::Transaction as PoolTransaction>::Pooled> {
-        // TODO: Check both pools
-        self.protocol_pool
-            .get_pooled_transaction_elements(tx_hashes, limit)
+        let mut txs = self
+            .aa_2d_pool
+            .read()
+            .get_all_iter(&tx_hashes)
+            .filter_map(|tx| {
+                tx.transaction
+                    .clone()
+                    .try_into_pooled()
+                    .ok()
+                    .map(|tx| tx.into_inner())
+            })
+            .collect::<Vec<_>>();
+        txs.extend(
+            self.protocol_pool
+                .get_pooled_transaction_elements(tx_hashes, limit),
+        );
+
+        txs
     }
 
     fn get_pooled_transaction_element(
@@ -449,17 +466,27 @@ where
         &self,
         hashes: Vec<B256>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        // TODO
-        self.protocol_pool
-            .remove_transactions_and_descendants(hashes)
+        let mut txs = self
+            .aa_2d_pool
+            .write()
+            .remove_transactions_and_descendants(hashes.iter());
+        txs.extend(
+            self.protocol_pool
+                .remove_transactions_and_descendants(hashes),
+        );
+        txs
     }
 
     fn remove_transactions_by_sender(
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        // TODO
-        self.protocol_pool.remove_transactions_by_sender(sender)
+        let mut txs = self
+            .aa_2d_pool
+            .write()
+            .remove_transactions_by_sender(sender);
+        txs.extend(self.protocol_pool.remove_transactions_by_sender(sender));
+        txs
     }
 
     fn retain_unknown<A: HandleMempoolData>(&self, announcement: &mut A) {
@@ -505,7 +532,7 @@ where
         &self,
         predicate: impl FnMut(&ValidPoolTransaction<Self::Transaction>) -> bool,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        // TODO
+        // TODO: support 2d pool
         self.protocol_pool
             .get_pending_transactions_with_predicate(predicate)
     }
@@ -514,9 +541,17 @@ where
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        // TODO
-        self.protocol_pool
-            .get_pending_transactions_by_sender(sender)
+        let mut txs = self
+            .protocol_pool
+            .get_pending_transactions_by_sender(sender);
+        txs.extend(
+            self.aa_2d_pool
+                .read()
+                .pending_transactions()
+                .filter(|tx| tx.sender() == sender),
+        );
+
+        txs
     }
 
     fn get_queued_transactions_by_sender(

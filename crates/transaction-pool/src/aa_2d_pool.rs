@@ -12,7 +12,11 @@ use reth_transaction_pool::{
 };
 use std::{
     collections::{
-        BTreeMap, BTreeSet, Bound::Unbounded, HashMap, HashSet, btree_map::Entry, hash_map,
+        BTreeMap, BTreeSet,
+        Bound::{Excluded, Unbounded},
+        HashMap, HashSet,
+        btree_map::Entry,
+        hash_map,
     },
     sync::Arc,
 };
@@ -309,6 +313,19 @@ impl AA2dPool {
         ret
     }
 
+    /// Returns an iterator over all the matching transactions.
+    pub(crate) fn get_all_iter<'a, I>(
+        &'a self,
+        tx_hashes: I,
+    ) -> impl Iterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>> + 'a
+    where
+        I: IntoIterator<Item = &'a TxHash> + 'a,
+    {
+        tx_hashes
+            .into_iter()
+            .filter_map(|tx_hash| self.by_hash.get(tx_hash))
+    }
+
     /// Returns an iterator over all senders in this pool.
     pub(crate) fn senders_iter(&self) -> impl Iterator<Item = &Address> {
         self.by_id
@@ -326,6 +343,18 @@ impl AA2dPool {
     ) -> impl Iterator<Item = (&'a AA2dTransactionId, &'a mut AA2dInternalTransaction)> + 'a {
         self.by_id
             .range_mut(id..)
+            .take_while(|(other, _)| id.sender == other.sender)
+    }
+
+    /// Returns all transactions that _follow_ after the given id and have the same sender.
+    ///
+    /// NOTE: The range is _exclusive_
+    fn descendant_txs_exclusive<'a, 'b: 'a>(
+        &'a self,
+        id: &'b AA2dTransactionId,
+    ) -> impl Iterator<Item = (&'a AA2dTransactionId, &'a AA2dInternalTransaction)> + 'a {
+        self.by_id
+            .range((Excluded(id), Unbounded))
             .take_while(|(other, _)| id.sender == other.sender)
     }
 
@@ -355,6 +384,7 @@ impl AA2dPool {
         }
         txs
     }
+
     /// Removes the transaction by its hash from all internal sets.
     fn remove_transaction_by_hash(
         &mut self,
@@ -379,6 +409,73 @@ impl AA2dPool {
         self.by_id.remove(&id).expect("just checked");
         self.independent_transactions.remove(&id);
         Some(tx)
+    }
+
+    /// Removes and returns all matching transactions and their dependent transactions from the
+    /// pool.
+    pub(crate) fn remove_transactions_and_descendants<'a, I>(
+        &mut self,
+        hashes: I,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>
+    where
+        I: Iterator<Item = &'a TxHash> + 'a,
+    {
+        let mut removed = Vec::new();
+        for hash in hashes {
+            if let Some(tx) = self.remove_transaction_by_hash(hash) {
+                let id = tx.transaction.aa_transaction_id();
+                removed.push(tx);
+                if let Some(id) = id {
+                    self.remove_descendants(&id, &mut removed);
+                }
+            }
+        }
+        removed
+    }
+
+    /// Removes all transactions from the given sender.
+    pub(crate) fn remove_transactions_by_sender(
+        &mut self,
+        sender_id: Address,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let mut removed = Vec::new();
+        let txs = self
+            .get_transactions_by_sender_iter(sender_id)
+            .collect::<Vec<_>>();
+        for tx in txs {
+            if let Some(tx) = tx
+                .transaction
+                .aa_transaction_id()
+                .and_then(|id| self.remove_transaction_by_id(&id))
+            {
+                removed.push(tx);
+            }
+        }
+        removed
+    }
+
+    /// Removes _only_ the descendants of the given transaction from this pool.
+    ///
+    /// All removed transactions are added to the `removed` vec.
+    fn remove_descendants(
+        &mut self,
+        tx: &AA2dTransactionId,
+        removed: &mut Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    ) {
+        let mut id = *tx;
+
+        // this will essentially pop _all_ descendant transactions one by one
+        loop {
+            let descendant = self.descendant_txs_exclusive(&id).map(|(id, _)| *id).next();
+            if let Some(descendant) = descendant {
+                if let Some(tx) = self.remove_transaction_by_id(&descendant) {
+                    removed.push(tx)
+                }
+                id = descendant;
+            } else {
+                return;
+            }
+        }
     }
 
     /// Updates the internal state based on the state changes of the `NonceManager` [`NONCE_PRECOMPILE_ADDRESS`](tempo_precompiles::NONCE_PRECOMPILE_ADDRESS).
