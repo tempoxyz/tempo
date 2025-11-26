@@ -15,4 +15,7 @@ pub use tempo_pool::TempoTransactionPool;
 pub mod aa_2d_pool;
 pub mod best;
 pub mod maintain;
+pub mod metrics;
+
 pub use aa_2d_pool::{AA2dNonceKeys, AA2dPool, AA2dPoolConfig};
+pub use metrics::AA2dPoolMetrics;

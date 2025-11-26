@@ -1,4 +1,5 @@
 use alloy::{
+    consensus::Transaction,
     network::EthereumWallet,
     primitives::{Address, B256, Bytes, Signature, U256, keccak256},
     providers::{Provider, ProviderBuilder},
@@ -1425,12 +1426,8 @@ async fn test_aa_2d_nonce_out_of_order_arrival() -> eyre::Result<()> {
     let mut executed_nonces: Vec<u64> = block2_txs
         .iter()
         .filter_map(|tx| {
-            if let TempoTxEnvelope::AA(aa_tx) = tx {
-                if aa_tx.tx().nonce_key == U256::from(4) {
-                    Some(aa_tx.tx().nonce)
-                } else {
-                    None
-                }
+            if tx.nonce_key() == Some(U256::from(4)) {
+                Some(tx.nonce())
             } else {
                 None
             }
@@ -1476,12 +1473,8 @@ async fn test_aa_2d_nonce_out_of_order_arrival() -> eyre::Result<()> {
     let mut executed_nonces: Vec<u64> = block3_txs
         .iter()
         .filter_map(|tx| {
-            if let TempoTxEnvelope::AA(aa_tx) = tx {
-                if aa_tx.tx().nonce_key == U256::from(4) {
-                    Some(aa_tx.tx().nonce)
-                } else {
-                    None
-                }
+            if tx.nonce_key() == Some(U256::from(4)) {
+                Some(tx.nonce())
             } else {
                 None
             }
@@ -2103,13 +2096,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         .body()
         .transactions
         .iter()
-        .find_map(|tx| {
-            if let TempoTxEnvelope::AA(aa_tx) = tx {
-                Some(aa_tx)
-            } else {
-                None
-            }
-        })
+        .find_map(|tx| tx.as_aa())
         .expect("Block should contain an AA transaction");
 
     assert_eq!(

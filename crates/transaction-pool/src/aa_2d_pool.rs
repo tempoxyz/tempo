@@ -1,5 +1,5 @@
 /// Basic 2D nonce pool for user nonces (nonce_key > 0) that are tracked on chain.
-use crate::transaction::TempoPooledTransaction;
+use crate::{metrics::AA2dPoolMetrics, transaction::TempoPooledTransaction};
 use alloy_primitives::{Address, B256, TxHash, U256};
 use parking_lot::RwLock;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
@@ -35,7 +35,7 @@ type Ordering = CoinbaseTipOrdering<TempoPooledTransaction>;
 /// # Limitations
 ///
 /// * We assume new AA transactions either create a new nonce key (nonce 0) or use an existing nonce key. To keep track of the known keys by accounts this pool relies on state changes to promote transactions to pending.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AA2dPool {
     /// Keeps track of transactions inserted in the pool.
     ///
@@ -51,6 +51,14 @@ pub struct AA2dPool {
     nonce_keys: AA2dNonceKeys,
     /// Settings for this sub-pool.
     config: AA2dPoolConfig,
+    /// Metrics for tracking pool statistics
+    metrics: AA2dPoolMetrics,
+}
+
+impl Default for AA2dPool {
+    fn default() -> Self {
+        Self::new(AA2dPoolConfig::default(), AA2dNonceKeys::default())
+    }
 }
 
 impl AA2dPool {
@@ -63,14 +71,21 @@ impl AA2dPool {
             by_hash: Default::default(),
             nonce_keys,
             config,
+            metrics: AA2dPoolMetrics::default(),
         }
+    }
+
+    /// Updates all metrics to reflect the current state of the pool
+    fn update_metrics(&self) {
+        let (pending, queued) = self.pending_and_queued_txn_count();
+        let total = self.by_id.len();
+        self.metrics.set_transaction_counts(total, pending, queued);
     }
 
     /// Entrypoint for adding a 2d AA transaction.
     ///
     /// ## Limitations
-    /// * This currently assumes that the account's nonce key is already tracked in [`AA2dNonceKeys`],
-    /// if not then this transaction is considered pending.
+    /// * This currently assumes that the account's nonce key is already tracked in [`AA2dNonceKeys`], if not then this transaction is considered pending.
     pub(crate) fn add_transaction(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
@@ -181,6 +196,13 @@ impl AA2dPool {
                 promoted.push(existing_tx.inner.transaction.clone());
             }
         }
+
+        // Record metrics
+        self.metrics.inc_inserted();
+        if !promoted.is_empty() {
+            self.metrics.inc_promoted(promoted.len());
+        }
+        self.update_metrics();
 
         if inserted_as_pending {
             // if this is the next nonce in line we can mark it as independent
@@ -550,6 +572,15 @@ impl AA2dPool {
             }
         }
 
+        // Record metrics
+        if !promoted.is_empty() {
+            self.metrics.inc_promoted(promoted.len());
+        }
+        if !mined.is_empty() {
+            self.metrics.inc_removed(mined.len());
+        }
+        self.update_metrics();
+
         (promoted, mined)
     }
 
@@ -565,7 +596,16 @@ impl AA2dPool {
             removed.push(self.remove_transaction_by_id(&id).unwrap());
         }
 
+        if !removed.is_empty() {
+            self.metrics.inc_removed(removed.len());
+        }
+
         removed
+    }
+
+    /// Returns a reference to the metrics for this pool
+    pub fn metrics(&self) -> &AA2dPoolMetrics {
+        &self.metrics
     }
 
     /// Returns `true` if the transaction with the given hash is already included in this pool.
@@ -737,13 +777,20 @@ pub struct AA2dPoolConfig {
 #[derive(Default, Debug, Clone)]
 pub struct AA2dNonceKeys {
     inner: Arc<RwLock<AA2dNonceKeysInner>>,
+    /// Metrics for tracking pool statistics
+    metrics: AA2dPoolMetrics,
 }
 
 impl AA2dNonceKeys {
     /// Inserts/Updates the latest account info
     pub fn insert(&self, address: Address, nonce_key: U256, nonce: u64, slot: U256) {
         trace!(target: "txpool::2d", ?address, ?nonce_key, ?nonce, ?slot, "inserting 2d nonce info");
-        self.inner.write().insert(address, nonce_key, nonce, slot)
+        let (address_count, new_nonce_key) =
+            self.inner.write().insert(address, nonce_key, nonce, slot);
+        if new_nonce_key {
+            self.metrics.inc_nonce_key_count(1);
+        }
+        self.metrics.set_tracked_address_count(address_count);
     }
 
     /// Returns the tracked nonce for this address' nonce key.
@@ -759,6 +806,20 @@ impl AA2dNonceKeys {
         changed_slots: impl IntoIterator<Item = (U256, U256)>,
     ) -> HashMap<AASenderId, u64> {
         self.inner.write().update_tracked(changed_slots)
+    }
+
+    /// Returns the number of tracked addresses and total tracked nonce keys.
+    ///
+    /// Returns (number of addresses, total number of nonce keys across all addresses)
+    pub fn tracked_counts(&self) -> (usize, usize) {
+        let inner = self.inner.read();
+        let num_addresses = inner.address_to_nonce_keys.len();
+        let num_nonce_keys = inner
+            .address_to_nonce_keys
+            .values()
+            .map(|keys| keys.len())
+            .sum();
+        (num_addresses, num_nonce_keys)
     }
 }
 
@@ -781,12 +842,24 @@ struct AA2dNonceKeysInner {
 
 impl AA2dNonceKeysInner {
     /// Inserts the nonce key info for the account's nonce key.
-    fn insert(&mut self, address: Address, nonce_key: U256, nonce: u64, slot: U256) {
-        self.address_to_nonce_keys
+    ///
+    /// Returns the number of tracked addresses and whether the nonce key was new.
+    fn insert(
+        &mut self,
+        address: Address,
+        nonce_key: U256,
+        nonce: u64,
+        slot: U256,
+    ) -> (usize, bool) {
+        let new_key = self
+            .address_to_nonce_keys
             .entry(address)
             .or_default()
-            .insert(nonce_key, nonce);
+            .insert(nonce_key, nonce)
+            .is_none();
         self.address_slots.insert(slot, (address, nonce_key));
+
+        (self.address_slots.len(), new_key)
     }
 
     fn current_nonce(&self, address: &Address, nonce_key: &U256) -> Option<u64> {
