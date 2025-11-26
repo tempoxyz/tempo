@@ -75,8 +75,8 @@ impl FromRevert for TempoEthApiError {
         match tempo_precompiles::error::decode_error(&revert.0) {
             Some(error) => Self::EthApiError(EthApiError::Other(Box::new(rpc_err(
                 3,
-                format!("execution reverted: {}", error.error.to_string()),
-                Some(&error.revert_bytes),
+                format!("execution reverted: {}", error.error),
+                Some(error.revert_bytes),
             )))),
             None => Self::EthApiError(EthApiError::from_revert(revert)),
         }
