@@ -1041,7 +1041,6 @@ where
             evm.ctx.journaled_state.commit_tx();
 
             evm.ctx().local_mut().clear();
-            evm.ctx().journal_mut().discard_tx();
             evm.frame_stack().clear();
 
             Ok(ExecutionResult::Halt {
