@@ -24,19 +24,22 @@ pub(super) async fn setup(
     let (signer, provider) = signer_providers.first().unwrap();
     let caller = signer.address();
 
-    let quote_token = setup_test_token(provider.clone(), caller, PATH_USD_ADDRESS).await?;
-
-    // Create `user_tokens` tokens
     info!("Creating tokens");
-    let user_tokens = stream::iter((0..user_tokens).progress())
-        .then(|_| setup_test_token(provider.clone(), caller, *quote_token.address()))
+    let progress = ProgressBar::new(user_tokens as u64 + 1);
+    // Create quote token
+    let quote_token = setup_test_token(provider.clone(), caller, PATH_USD_ADDRESS).await?;
+    progress.inc(1);
+    // Create `user_tokens` tokens
+    let user_tokens = stream::iter((0..user_tokens).progress_with(progress))
+        .map(|_| setup_test_token(provider.clone(), caller, *quote_token.address()))
+        .buffered(max_concurrent_requests)
         .try_collect::<Vec<_>>()
         .await?;
+
     let user_token_addresses = user_tokens
         .iter()
         .map(|token| *token.address())
         .collect::<Vec<_>>();
-
     let all_tokens = user_tokens
         .iter()
         .cloned()
@@ -51,13 +54,17 @@ pub(super) async fn setup(
     info!("Creating exchange pairs");
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
     join_all(
-        user_token_addresses.iter().copied().map(|token| {
-            let exchange = exchange.clone();
-            Box::pin(async move {
-                let tx = exchange.createPair(token);
-                tx.send().await
-            }) as BoxFuture<'static, _>
-        }),
+        user_token_addresses
+            .iter()
+            .copied()
+            .map(|token| {
+                let exchange = exchange.clone();
+                Box::pin(async move {
+                    let tx = exchange.createPair(token);
+                    tx.send().await
+                }) as BoxFuture<'static, _>
+            })
+            .progress(),
         max_concurrent_requests,
         max_concurrent_transactions,
     )
