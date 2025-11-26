@@ -19,7 +19,7 @@ use reth_transaction_pool::{
 use std::sync::Arc;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_node::node::TempoNode;
-use tempo_precompiles::{DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, storage::slots, tip_fee_manager};
+use tempo_precompiles::{DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, storage::slots, tip_fee_manager};
 use tempo_primitives::{TempoTxEnvelope, TxFeeToken, transaction::calc_gas_balance_spending};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -96,7 +96,8 @@ async fn test_insufficient_funds() -> eyre::Result<()> {
     let mut tx = TxFeeToken {
         chain_id: 1,
         nonce: U256::random().saturating_to(),
-        fee_token: Some(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO),
+        // Use AlphaUSD since PathUSD is only valid post-Allegretto
+        fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
         max_priority_fee_per_gas: 74982851675,
         max_fee_per_gas: 74982851675,
         gas_limit: 1015288,

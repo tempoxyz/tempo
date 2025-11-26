@@ -1674,8 +1674,8 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     println!("Fee payer address: {fee_payer_addr}");
     println!("User address: {user_addr} (unfunded)");
 
-    // Verify user has ZERO balance
-    let user_token_balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
+    // Verify user has ZERO balance (check AlphaUSD since that's what fees are paid in)
+    let user_token_balance = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
         .balanceOf(user_addr)
         .call()
         .await?;
@@ -1686,8 +1686,8 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     );
     println!("User token balance: {user_token_balance} (expected: 0)");
 
-    // Get fee payer's balance before transaction
-    let fee_payer_balance_before = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
+    // Get fee payer's balance before transaction (check AlphaUSD since that's what fees are paid in)
+    let fee_payer_balance_before = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
         .balanceOf(fee_payer_addr)
         .call()
         .await?;
@@ -1773,7 +1773,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     );
 
     // Verify user still has ZERO balance (fee payer paid)
-    let user_token_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
+    let user_token_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
         .balanceOf(user_addr)
         .call()
         .await?;
@@ -1783,8 +1783,8 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
         "User should still have zero balance"
     );
 
-    // Verify fee payer's balance decreased
-    let fee_payer_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
+    // Verify fee payer's balance decreased (check AlphaUSD since that's what fees are paid in)
+    let fee_payer_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
         .balanceOf(fee_payer_addr)
         .call()
         .await?;
@@ -2658,11 +2658,13 @@ async fn test_aa_access_key() -> eyre::Result<()> {
         "\nRoot key balance: {root_balance_initial} → {root_balance_after} (decreased by {balance_decrease})"
     );
 
-    assert!(
-        balance_decrease > transfer_amount,
-        "Root key should have paid transfer amount plus gas fees"
+    // PathUSD balance should decrease by exactly the transfer amount
+    // (gas fees are paid in AlphaUSD via fee_token setting)
+    assert_eq!(
+        balance_decrease, transfer_amount,
+        "Root key PathUSD should have decreased by transfer amount"
     );
-    println!("✓ Root key paid for transfer and gas fees");
+    println!("✓ Root key paid for transfer (gas fees paid in AlphaUSD)");
 
     // Verify the key was authorized in the AccountKeychain precompile
     println!("\n=== Verifying Key Authorization in Precompile ===");
