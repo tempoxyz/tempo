@@ -4252,7 +4252,14 @@ mod tests {
         exchange.place(alice, base_token, amount, true, bid_tick_2)?;
 
         // Place ask orders at two different ticks
-        mint_and_approve_token(exchange.storage, 1, admin, alice, exchange.address, amount * 2);
+        mint_and_approve_token(
+            exchange.storage,
+            1,
+            admin,
+            alice,
+            exchange.address,
+            amount * 2,
+        );
         exchange.place(alice, base_token, amount, false, ask_tick_1)?;
         exchange.place(alice, base_token, amount, false, ask_tick_2)?;
 
