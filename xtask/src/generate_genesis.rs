@@ -37,13 +37,13 @@ impl GenerateGenesis {
             );
             for validator in consensus_config.validators {
                 let parent = output.parent().expect("must not specify /");
-                std::fs::create_dir_all(validator.dst_dir(&parent)).wrap_err_with(|| {
+                std::fs::create_dir_all(validator.dst_dir(parent)).wrap_err_with(|| {
                     format!(
                         "failed creating target directory to store validator specifici keys at `{}`",
                         validator.dst_dir(&output).display()
                     )
                 })?;
-                let signing_key_dst = validator.dst_signing_key(&parent);
+                let signing_key_dst = validator.dst_signing_key(parent);
                 validator
                     .signing_key
                     .write_to_file(&signing_key_dst)
@@ -53,7 +53,7 @@ impl GenerateGenesis {
                             signing_key_dst.display()
                         )
                     })?;
-                let signing_share_dst = validator.dst_signing_share(&parent);
+                let signing_share_dst = validator.dst_signing_share(parent);
                 validator
                     .signing_share
                     .write_to_file(&signing_share_dst)
