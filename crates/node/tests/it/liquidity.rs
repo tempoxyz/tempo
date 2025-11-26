@@ -6,15 +6,19 @@ use alloy::{
 };
 use alloy_eips::Encodable2718;
 use alloy_network::TxSignerSync;
-use tempo_contracts::precompiles::IFeeManager::setUserTokenCall;
+use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20};
 use tempo_precompiles::DEFAULT_FEE_TOKEN;
 use tempo_primitives::TxFeeToken;
 
+use crate::utils::setup_test_token_pre_allegretto;
+
 /// Test block building when FeeAMM pool has insufficient liquidity for payment transactions
+/// Note: This test runs without allegretto to use the old balanced `mint` function
 #[tokio::test(flavor = "multi_thread")]
 async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
+    // Run without allegretto to use the old `mint` function that creates balanced pools
     let setup = crate::utils::TestNodeBuilder::new()
         .build_http_only()
         .await?;
@@ -28,8 +32,8 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         .wallet(wallet.clone())
         .connect_http(http_url);
 
-    // Setup payment token
-    let payment_token = crate::utils::setup_test_token(provider.clone(), sender_address).await?;
+    // Setup payment token using pre-allegretto createToken_0
+    let payment_token = setup_test_token_pre_allegretto(provider.clone(), sender_address).await?;
     let payment_token_addr = *payment_token.address();
 
     // Get validator token address (USDC from genesis)
@@ -38,8 +42,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     let validator_token_addr = DEFAULT_FEE_TOKEN;
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-    let validator_token =
-        tempo_contracts::precompiles::ITIP20::new(validator_token_addr, provider.clone());
+    let validator_token = ITIP20::new(validator_token_addr, provider.clone());
 
     let liquidity_amount = U256::from(10_000_000);
 
@@ -61,7 +64,8 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         .get_receipt()
         .await?;
 
-    // Create pool by minting liquidity
+    // Create pool by minting liquidity with both tokens (balanced pool)
+    // This requires pre-Moderato spec since mint is disabled post-Moderato
     fee_amm
         .mint(
             payment_token_addr,

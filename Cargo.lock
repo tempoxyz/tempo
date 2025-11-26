@@ -11266,6 +11266,8 @@ dependencies = [
  "alloy-provider",
  "alloy-rpc-types-eth",
  "alloy-serde",
+ "alloy-signer",
+ "alloy-signer-local",
  "derive_more",
  "reth-evm",
  "reth-primitives-traits",

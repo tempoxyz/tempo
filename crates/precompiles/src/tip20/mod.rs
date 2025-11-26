@@ -90,6 +90,9 @@ pub struct TIP20Token {
     streams: Mapping<u64, RewardStream>,
     scheduled_rate_decrease: Mapping<u128, U256>,
     user_reward_info: Mapping<Address, UserRewardInfo>,
+
+    // Fee recipient
+    fee_recipient: Address,
 }
 
 pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"));
@@ -344,6 +347,23 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             })
             .into_log_data(),
         )
+    }
+
+    /// Sets a new fee recipient
+    pub fn set_fee_recipient(&mut self, msg_sender: Address, new_recipient: Address) -> Result<()> {
+        self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
+        self.sstore_fee_recipient(new_recipient)?;
+
+        self.storage.emit_event(
+            self.address,
+            TIP20Event::FeeRecipientUpdated(ITIP20::FeeRecipientUpdated {
+                updater: msg_sender,
+                newRecipient: new_recipient,
+            })
+            .into_log_data(),
+        )?;
+
+        Ok(())
     }
 
     // Token operations
@@ -697,6 +717,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         currency: &str,
         quote_token: Address,
         admin: Address,
+        fee_recipient: Address,
     ) -> Result<()> {
         trace!(%name, address=%self.address, "Initializing token");
 
@@ -730,6 +751,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             self.sstore_supply_cap(U256::MAX)?;
         }
         self.sstore_transfer_policy_id(1)?;
+
+        // Gate to avoid consensus-breaking gas usage
+        if self.storage.spec().is_allegretto() {
+            self.sstore_fee_recipient(fee_recipient)?;
+        }
 
         // Initialize roles system and grant admin role
         self.initialize_roles()?;
@@ -963,7 +989,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::{
         DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, error::TempoPrecompileError,
-        storage::hashmap::HashMapStorageProvider, tip20_factory::ITIP20Factory,
+        storage::hashmap::HashMapStorageProvider,
     };
     use rand::{Rng, distributions::Alphanumeric, thread_rng};
 
@@ -973,7 +999,14 @@ pub(crate) mod tests {
         admin: Address,
     ) -> Result<()> {
         let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, storage);
-        path_usd.initialize("PathUSD", "PUSD", "USD", Address::ZERO, admin)
+        path_usd.initialize(
+            "PathUSD",
+            "PUSD",
+            "USD",
+            Address::ZERO,
+            admin,
+            Address::ZERO,
+        )
     }
 
     /// Helper to setup a token with rewards for testing fee transfer functions
@@ -1052,13 +1085,12 @@ pub(crate) mod tests {
         let token_address = factory
             .create_token(
                 admin,
-                ITIP20Factory::createTokenCall {
-                    name: name.to_string(),
-                    symbol: symbol.to_string(),
-                    currency: "USD".to_string(),
-                    quoteToken: PATH_USD_ADDRESS,
-                    admin,
-                },
+                name.to_string(),
+                symbol.to_string(),
+                "USD".to_string(),
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
             )
             .unwrap();
 
@@ -1076,13 +1108,12 @@ pub(crate) mod tests {
         let token_address = factory
             .create_token(
                 admin,
-                ITIP20Factory::createTokenCall {
-                    name: name.to_string(),
-                    symbol: symbol.to_string(),
-                    currency: "USD".to_string(),
-                    quoteToken: quote_token,
-                    admin,
-                },
+                name.to_string(),
+                symbol.to_string(),
+                "USD".to_string(),
+                quote_token,
+                admin,
+                Address::ZERO,
             )
             .unwrap();
 
@@ -1118,7 +1149,7 @@ pub(crate) mod tests {
             let mut token = TIP20Token::new(token_id, &mut storage);
             // Initialize with admin
             token
-                .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+                .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
                 .unwrap();
 
             // Grant issuer role to admin
@@ -1161,7 +1192,7 @@ pub(crate) mod tests {
             initialize_path_usd(&mut storage, admin).unwrap();
             let mut token = TIP20Token::new(token_id, &mut storage);
             token
-                .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+                .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
                 .unwrap();
             token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
@@ -1205,7 +1236,7 @@ pub(crate) mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
         let from = Address::from([1u8; 20]);
         let to = Address::from([2u8; 20]);
@@ -1230,7 +1261,7 @@ pub(crate) mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1282,7 +1313,7 @@ pub(crate) mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1320,7 +1351,7 @@ pub(crate) mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1358,7 +1389,7 @@ pub(crate) mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1417,7 +1448,7 @@ pub(crate) mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1484,7 +1515,7 @@ pub(crate) mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1540,7 +1571,7 @@ pub(crate) mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1597,7 +1628,7 @@ pub(crate) mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1627,7 +1658,7 @@ pub(crate) mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         let fee_amount = U256::from(50);
@@ -1649,7 +1680,7 @@ pub(crate) mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         let initial_fee = U256::from(100);
@@ -1690,7 +1721,7 @@ pub(crate) mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1721,7 +1752,7 @@ pub(crate) mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -1802,7 +1833,7 @@ pub(crate) mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(token_id, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         let quote_token_address = token_id_to_address(2);
@@ -2025,7 +2056,14 @@ pub(crate) mod tests {
                 .collect();
 
             // Initialize token with the random currency
-            token.initialize("Test", "TST", &currency, PATH_USD_ADDRESS, admin)?;
+            token.initialize(
+                "Test",
+                "TST",
+                &currency,
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )?;
 
             // Verify the currency was stored and can be retrieved correctly
             let stored_currency = token.currency()?;
@@ -2051,7 +2089,14 @@ pub(crate) mod tests {
                 .map(char::from)
                 .collect();
 
-            let result = token.initialize("Test", "TST", &currency, PATH_USD_ADDRESS, admin);
+            let result = token.initialize(
+                "Test",
+                "TST",
+                &currency,
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            );
             assert!(matches!(
                 result,
                 Err(TempoPrecompileError::TIP20(TIP20Error::StringTooLong(_)))
@@ -2103,12 +2148,26 @@ pub(crate) mod tests {
             .collect();
 
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Token", "T", &currency, PATH_USD_ADDRESS, admin)?;
+        token.initialize(
+            "Token",
+            "T",
+            &currency,
+            PATH_USD_ADDRESS,
+            admin,
+            Address::ZERO,
+        )?;
 
         // Try to create a new USD token with the arbitrary token as the quote token, this should fail
         let token_address = token.address;
         let mut usd_token = TIP20Token::new(2, &mut storage);
-        let result = usd_token.initialize("USD Token", "USDT", USD_CURRENCY, token_address, admin);
+        let result = usd_token.initialize(
+            "USD Token",
+            "USDT",
+            USD_CURRENCY,
+            token_address,
+            admin,
+            Address::ZERO,
+        );
 
         assert!(matches!(
             result,
@@ -2127,7 +2186,14 @@ pub(crate) mod tests {
 
         initialize_path_usd(&mut storage, admin)?;
         let mut usd_token1 = TIP20Token::new(1, &mut storage);
-        usd_token1.initialize("USD Token", "USDT", USD_CURRENCY, PATH_USD_ADDRESS, admin)?;
+        usd_token1.initialize(
+            "USD Token",
+            "USDT",
+            USD_CURRENCY,
+            PATH_USD_ADDRESS,
+            admin,
+            Address::ZERO,
+        )?;
 
         // USD token with USD token as quote
         let usd_token1_address = token_id_to_address(1);
@@ -2138,6 +2204,7 @@ pub(crate) mod tests {
             USD_CURRENCY,
             usd_token1_address,
             admin,
+            Address::ZERO,
         );
         assert!(result.is_ok());
 
@@ -2149,7 +2216,14 @@ pub(crate) mod tests {
             .collect();
 
         let mut token_1 = TIP20Token::new(3, &mut storage);
-        token_1.initialize("Token 1", "TK1", &currency_1, PATH_USD_ADDRESS, admin)?;
+        token_1.initialize(
+            "Token 1",
+            "TK1",
+            &currency_1,
+            PATH_USD_ADDRESS,
+            admin,
+            Address::ZERO,
+        )?;
 
         // Create a non USD token with non USD quote token
         let currency_2: String = thread_rng()
@@ -2160,7 +2234,14 @@ pub(crate) mod tests {
 
         let token_1_address = token_id_to_address(3);
         let mut token_2 = TIP20Token::new(4, &mut storage);
-        let result = token_2.initialize("Token 2", "TK2", &currency_2, token_1_address, admin);
+        let result = token_2.initialize(
+            "Token 2",
+            "TK2",
+            &currency_2,
+            token_1_address,
+            admin,
+            Address::ZERO,
+        );
         assert!(result.is_ok());
 
         Ok(())
@@ -2180,11 +2261,25 @@ pub(crate) mod tests {
             .collect();
 
         let mut token_1 = TIP20Token::new(1, &mut storage);
-        token_1.initialize("Token 1", "TK1", &currency, PATH_USD_ADDRESS, admin)?;
+        token_1.initialize(
+            "Token 1",
+            "TK1",
+            &currency,
+            PATH_USD_ADDRESS,
+            admin,
+            Address::ZERO,
+        )?;
 
         // Create a new USD token
         let mut usd_token = TIP20Token::new(2, &mut storage);
-        usd_token.initialize("USD Token", "USDT", USD_CURRENCY, PATH_USD_ADDRESS, admin)?;
+        usd_token.initialize(
+            "USD Token",
+            "USDT",
+            USD_CURRENCY,
+            PATH_USD_ADDRESS,
+            admin,
+            Address::ZERO,
+        )?;
 
         // Try to update the USD token's quote token to the arbitrary currency token, this should fail
         let token_1_address = token_id_to_address(1);
@@ -2220,16 +2315,16 @@ pub(crate) mod tests {
         factory
             .initialize()
             .expect("Factory initialization should succeed");
-        let call = ITIP20Factory::createTokenCall {
-            name: "Test Token".to_string(),
-            symbol: "TEST".to_string(),
-            currency: "USD".to_string(),
-            quoteToken: crate::PATH_USD_ADDRESS,
-            admin: sender,
-        };
-
         let created_tip20 = factory
-            .create_token(sender, call)
+            .create_token(
+                sender,
+                "Test Token".to_string(),
+                "TEST".to_string(),
+                "USD".to_string(),
+                crate::PATH_USD_ADDRESS,
+                sender,
+                Address::ZERO,
+            )
             .expect("Token creation should succeed");
         let non_tip20 = Address::random();
 
@@ -2478,7 +2573,7 @@ pub(crate) mod tests {
         initialize_path_usd(&mut storage, admin)?;
         let token_id = 1;
         let mut token = TIP20Token::new(token_id, &mut storage);
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
 
         // Grant BURN_BLOCKED_ROLE to burner
         token.grant_role_internal(burner, *BURN_BLOCKED_ROLE)?;
@@ -2541,6 +2636,29 @@ pub(crate) mod tests {
             account: STABLECOIN_EXCHANGE_ADDRESS,
         })?;
         assert_eq!(balance, U256::from(1000));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_fee_recipient() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::random();
+
+        let token_id = setup_factory_with_token(&mut storage, admin, "Test", "TST");
+        let mut token = TIP20Token::new(token_id, &mut storage);
+
+        let fee_recipient = token.sload_fee_recipient()?;
+        assert_eq!(fee_recipient, Address::ZERO);
+
+        let expected_recipient = Address::random();
+        token.set_fee_recipient(admin, expected_recipient)?;
+
+        let fee_recipient = token.sload_fee_recipient()?;
+        assert_eq!(fee_recipient, expected_recipient);
+
+        let result = token.set_fee_recipient(Address::random(), expected_recipient);
+        assert!(result.is_err());
 
         Ok(())
     }

@@ -1,3 +1,4 @@
+use crate::utils::TestNodeBuilder;
 use alloy::{
     network::ReceiptResponse,
     primitives::U256,
@@ -5,7 +6,6 @@ use alloy::{
     signers::local::MnemonicBuilder,
 };
 use alloy_rpc_types_eth::TransactionRequest;
-use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{IFeeManager, ITIP20};
 use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
@@ -14,12 +14,11 @@ use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
 async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
@@ -408,12 +407,11 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
 async fn test_payment_lane_ordering() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     // Create multiple accounts to avoid nonce ordering issues.
     // We'll use different accounts for different transactions to allow arbitrary ordering.
@@ -545,12 +543,11 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
 async fn test_payment_lane_gas_limits() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();

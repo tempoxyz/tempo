@@ -4,19 +4,18 @@ use alloy::{
     signers::local::MnemonicBuilder,
     sol_types::SolEvent,
 };
-use std::env;
+use alloy_primitives::Address;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{ITIP20, ITIP20Factory};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::token_id_to_address};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_create_token() -> eyre::Result<()> {
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = crate::utils::TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
@@ -33,12 +32,13 @@ async fn test_create_token() -> eyre::Result<()> {
     let balance = provider.get_account_info(caller).await?.balance;
     assert_eq!(balance, U256::ZERO);
     let receipt = factory
-        .createToken(
+        .createToken_1(
             "Test".to_string(),
             "TEST".to_string(),
             "USD".to_string(),
             PATH_USD_ADDRESS,
             caller,
+            Address::ZERO,
         )
         .gas_price(TEMPO_BASE_FEE as u128)
         .gas(300_000)
@@ -47,7 +47,7 @@ async fn test_create_token() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[0].inner).unwrap();
+    let event = ITIP20Factory::TokenCreated_1::decode_log(&receipt.logs()[0].inner).unwrap();
     assert_eq!(event.tokenId, initial_token_id);
     assert_eq!(event.address, TIP20_FACTORY_ADDRESS);
     assert_eq!(event.name, "Test");
@@ -64,7 +64,8 @@ async fn test_create_token() -> eyre::Result<()> {
     assert_eq!(token.symbol().call().await?, symbol);
     assert_eq!(token.decimals().call().await?, 6);
     assert_eq!(token.currency().call().await?, currency);
-    assert_eq!(token.supplyCap().call().await?, U256::MAX);
+    // Supply cap is u128::MAX post-allegretto
+    assert_eq!(token.supplyCap().call().await?, U256::from(u128::MAX));
     assert_eq!(token.transferPolicyId().call().await?, 1);
 
     Ok(())
