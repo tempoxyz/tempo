@@ -537,8 +537,8 @@ fn create_key_authorization(
     access_key_addr: Address,
     access_key_signature: AASignature,
     chain_id: u64,
-    expiry: u64,
-    spending_limits: Vec<tempo_primitives::transaction::TokenLimit>,
+    expiry: Option<u64>,
+    spending_limits: Option<Vec<tempo_primitives::transaction::TokenLimit>>,
 ) -> eyre::Result<KeyAuthorization> {
     // Infer key_type from the access key signature
     let key_type = access_key_signature.signature_type();
@@ -550,7 +550,7 @@ fn create_key_authorization(
         key_type,
         access_key_addr,
         expiry,
-        &spending_limits,
+        spending_limits.as_deref(),
     );
 
     // Root key signs the authorization
@@ -559,10 +559,10 @@ fn create_key_authorization(
     Ok(KeyAuthorization {
         chain_id,
         key_type, // Type of key being authorized
-        expiry,
-        limits: spending_limits,
         key_id: access_key_addr,
         signature: PrimitiveSignature::Secp256k1(root_auth_signature),
+        expiry,
+        limits: spending_limits,
     })
 }
 
@@ -612,6 +612,56 @@ fn sign_aa_tx_with_p256_access_key(
     Ok(AASignature::Keychain(
         tempo_primitives::transaction::KeychainSignature::new(root_key_addr, inner_signature),
     ))
+}
+
+// ===== Call Creation Helper Functions =====
+
+/// Helper to create a TIP20 transfer call
+fn create_transfer_call(to: Address, amount: U256) -> Call {
+    use alloy::sol_types::SolCall;
+    use tempo_contracts::precompiles::ITIP20::transferCall;
+
+    Call {
+        to: DEFAULT_FEE_TOKEN.into(),
+        value: U256::ZERO,
+        input: transferCall { to, amount }.abi_encode().into(),
+    }
+}
+
+/// Helper to create a TIP20 balanceOf call (useful as a benign call for key authorization txs)
+fn create_balance_of_call(account: Address) -> Call {
+    use alloy::sol_types::SolCall;
+
+    Call {
+        to: DEFAULT_FEE_TOKEN.into(),
+        value: U256::ZERO,
+        input: ITIP20::balanceOfCall { account }.abi_encode().into(),
+    }
+}
+
+/// Helper to create a mock P256 signature for key authorization
+/// This is used when creating a KeyAuthorization - the actual signature is from the root key,
+/// but we need to specify the access key's public key coordinates
+fn create_mock_p256_sig(pub_key_x: B256, pub_key_y: B256) -> AASignature {
+    AASignature::Primitive(PrimitiveSignature::P256(
+        tempo_primitives::transaction::aa_signature::P256SignatureWithPreHash {
+            r: B256::ZERO,
+            s: B256::ZERO,
+            pub_key_x,
+            pub_key_y,
+            pre_hash: false,
+        },
+    ))
+}
+
+/// Helper to create default token spending limits (100 tokens of DEFAULT_FEE_TOKEN)
+fn create_default_token_limit() -> Vec<tempo_primitives::transaction::TokenLimit> {
+    use tempo_primitives::transaction::TokenLimit;
+
+    vec![TokenLimit {
+        token: DEFAULT_FEE_TOKEN,
+        limit: U256::from(100u64) * U256::from(10).pow(U256::from(18)),
+    }]
 }
 
 // ===== Transaction Creation Helper Functions =====
@@ -2985,16 +3035,14 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     println!("  - Key ID (address): {access_key_addr}");
 
     // Root key signs the key authorization data to authorize the access key
-    let key_expiry = u64::MAX; // Never expires for this test
-
     // Compute the authorization message hash using the helper function
     // Message format: keccak256(rlp([chain_id, key_type, key_id, expiry, limits]))
     let auth_message_hash = KeyAuthorization::authorization_message_hash(
         chain_id,
         tempo_primitives::transaction::SignatureType::P256,
         access_key_addr,
-        key_expiry,
-        &spending_limits,
+        None, // Never expires
+        Some(&spending_limits),
     );
 
     // Root key signs the authorization message
@@ -3004,13 +3052,13 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     let key_authorization = KeyAuthorization {
         chain_id,
         key_type: tempo_primitives::transaction::SignatureType::P256, // Type of key being authorized
-        expiry: key_expiry,
-        limits: spending_limits,
         key_id: access_key_addr, // Address derived from P256 public key
         signature: PrimitiveSignature::Secp256k1(root_auth_signature), // Root key signature (secp256k1)
+        expiry: None,                                                  // Never expires
+        limits: Some(spending_limits),
     };
 
-    println!("✓ Key authorization created (expiry: {key_expiry})");
+    println!("✓ Key authorization created (never expires)");
     println!("✓ Key authorization signed by root key");
 
     // Create a token transfer call within the spending limit
@@ -3206,10 +3254,10 @@ async fn test_aa_access_key() -> eyre::Result<()> {
         );
         if let Some(key_auth) = &aa_signed.tx().key_authorization {
             println!("  key_authorization.key_id: {}", key_auth.key_id);
-            println!("  key_authorization.expiry: {}", key_auth.expiry);
+            println!("  key_authorization.expiry: {:?}", key_auth.expiry);
             println!(
                 "  key_authorization.limits: {} limits",
-                key_auth.limits.len()
+                key_auth.limits.as_ref().map_or(0, |l| l.len())
             );
             println!(
                 "  key_authorization.signature type: {:?}",
@@ -3391,6 +3439,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         keyId: Address::ZERO,
         signatureType: SignatureType::P256,
         expiry: u64::MAX,
+        enforceLimits: true,
         limits: vec![],
     };
     let tx = TxAA {
@@ -3442,11 +3491,11 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         access_key_addr,
         mock_p256_sig,
         chain_id,
-        u64::MAX,
-        vec![TokenLimit {
+        None, // Never expires
+        Some(vec![TokenLimit {
             token: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
             limit: U256::from(10u64) * U256::from(10).pow(U256::from(18)),
-        }],
+        }]),
     )?;
 
     // First authorization should succeed
@@ -3566,11 +3615,11 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         access_addr_1,
         mock_p256_sig_1,
         chain_id,
-        u64::MAX,
-        vec![TokenLimit {
+        None, // Never expires
+        Some(vec![TokenLimit {
             token: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
             limit: U256::from(10u64) * U256::from(10).pow(U256::from(18)),
-        }],
+        }]),
     )?;
 
     // Authorize access_key_1 with root key (should succeed)
@@ -3620,8 +3669,8 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         access_addr_2,
         mock_p256_sig_2,
         chain_id,
-        u64::MAX,
-        vec![],
+        None,         // Never expires
+        Some(vec![]), // No spending allowed
     )?;
     let tx4 = TxAA {
         chain_id,
@@ -3720,11 +3769,11 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         access_key_addr,
         mock_p256_sig,
         chain_id,
-        u64::MAX,
-        vec![TokenLimit {
+        None, // Never expires
+        Some(vec![TokenLimit {
             token: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
             limit: spending_limit,
-        }],
+        }]),
     )?;
 
     let mut nonce = provider.get_transaction_count(root_addr).await?;
@@ -3952,6 +4001,624 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
     Ok(())
 }
 
+/// Test enforce_limits flag behavior with unlimited and restricted spending keys
+#[tokio::test]
+async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing enforce_limits Flag Behavior ===\n");
+
+    let mut setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_with_node_access()
+        .await?;
+
+    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root_signer.address();
+
+    let provider = ProviderBuilder::new()
+        .wallet(root_signer.clone())
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+
+    // Generate two access keys - one unlimited, one with no spending allowed
+    let (unlimited_key_signing, unlimited_pub_x, unlimited_pub_y, unlimited_key_addr) =
+        generate_p256_access_key();
+    let (no_spending_key_signing, no_spending_pub_x, no_spending_pub_y, no_spending_key_addr) =
+        generate_p256_access_key();
+
+    println!("Unlimited access key address: {unlimited_key_addr}");
+    println!("No-spending access key address: {no_spending_key_addr}");
+
+    let mut nonce = provider.get_transaction_count(root_addr).await?;
+
+    // STEP 1: Authorize unlimited spending key (limits: None)
+    // Root key signs to authorize the access key
+    println!("\n=== STEP 1: Authorize Unlimited Spending Key ===");
+
+    let unlimited_key_auth = create_key_authorization(
+        &root_signer,
+        unlimited_key_addr,
+        create_mock_p256_sig(unlimited_pub_x, unlimited_pub_y),
+        chain_id,
+        None, // Never expires
+        None, // Unlimited spending (no limits enforced)
+    )?;
+
+    // First tx: Root key signs to authorize the unlimited access key (with benign balanceOf call)
+    let mut auth_unlimited_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_balance_of_call(root_addr)],
+        400_000,
+    );
+    auth_unlimited_tx.fee_token = None;
+    auth_unlimited_tx.key_authorization = Some(unlimited_key_auth);
+
+    let root_sig = sign_aa_tx_secp256k1(&auth_unlimited_tx, &root_signer)?;
+    submit_and_mine_aa_tx(&mut setup, auth_unlimited_tx, root_sig).await?;
+    nonce += 1;
+
+    println!("✓ Unlimited key authorized");
+
+    // STEP 2: Use unlimited access key to transfer a large amount
+    println!("\n=== STEP 2: Transfer with Unlimited Key ===");
+
+    let recipient1 = Address::random();
+    let large_transfer_amount = U256::from(10u64) * U256::from(10).pow(U256::from(18)); // 10 tokens
+
+    let mut transfer_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_transfer_call(recipient1, large_transfer_amount)],
+        300_000,
+    );
+    transfer_tx.fee_token = None;
+
+    let unlimited_sig = sign_aa_tx_with_p256_access_key(
+        &transfer_tx,
+        &unlimited_key_signing,
+        &unlimited_pub_x,
+        &unlimited_pub_y,
+        root_addr,
+    )?;
+
+    let signed_tx = AASigned::new_unhashed(transfer_tx, unlimited_sig);
+    let envelope: TempoTxEnvelope = signed_tx.into();
+    let tx_hash = *envelope.tx_hash();
+    let mut encoded = Vec::new();
+    envelope.encode_2718(&mut encoded);
+
+    setup.node.rpc.inject_tx(encoded.into()).await?;
+    setup.node.advance_block().await?;
+    nonce += 1;
+
+    // Check the receipt to understand the result
+    let receipt: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+        .await?;
+
+    let receipt_json = receipt.expect("Transaction must be included in block");
+    let status = receipt_json
+        .get("status")
+        .and_then(|v| v.as_str())
+        .expect("Receipt must have status field");
+
+    assert_eq!(
+        status, "0x1",
+        "Unlimited key transfer must succeed. Receipt: {receipt_json}"
+    );
+
+    // Verify the large transfer succeeded (unlimited key has no limit enforcement)
+    let recipient1_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(recipient1)
+        .call()
+        .await?;
+
+    assert_eq!(
+        recipient1_balance, large_transfer_amount,
+        "Unlimited key must be able to transfer any amount"
+    );
+    println!("✓ Unlimited key transferred {large_transfer_amount} tokens successfully");
+
+    // STEP 3: Authorize no-spending key (limits: Some([]))
+    println!("\n=== STEP 3: Authorize No-Spending Key ===");
+
+    let no_spending_key_auth = create_key_authorization(
+        &root_signer,
+        no_spending_key_addr,
+        create_mock_p256_sig(no_spending_pub_x, no_spending_pub_y),
+        chain_id,
+        None,         // Never expires
+        Some(vec![]), // No spending allowed (empty limits with enforce_limits=true)
+    )?;
+
+    // First authorize the no-spending key (with root key)
+    let mut auth_no_spending_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_balance_of_call(root_addr)],
+        400_000,
+    );
+    auth_no_spending_tx.fee_token = None;
+    auth_no_spending_tx.key_authorization = Some(no_spending_key_auth);
+
+    let root_sig = sign_aa_tx_secp256k1(&auth_no_spending_tx, &root_signer)?;
+    submit_and_mine_aa_tx(&mut setup, auth_no_spending_tx, root_sig).await?;
+    nonce += 1;
+
+    println!("✓ No-spending key authorized");
+
+    // STEP 4: Try to transfer with no-spending key (must fail)
+    println!("\n=== STEP 4: Transfer with No-Spending Key (must fail) ===");
+
+    let recipient2 = Address::random();
+    let small_transfer_amount = U256::from(1u64) * U256::from(10).pow(U256::from(18)); // 1 token
+
+    let mut no_spending_transfer_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_transfer_call(recipient2, small_transfer_amount)],
+        300_000,
+    );
+    no_spending_transfer_tx.fee_token = None;
+
+    let no_spending_sig = sign_aa_tx_with_p256_access_key(
+        &no_spending_transfer_tx,
+        &no_spending_key_signing,
+        &no_spending_pub_x,
+        &no_spending_pub_y,
+        root_addr,
+    )?;
+
+    let signed_tx = AASigned::new_unhashed(no_spending_transfer_tx, no_spending_sig);
+    let envelope: TempoTxEnvelope = signed_tx.into();
+    let mut encoded = Vec::new();
+    envelope.encode_2718(&mut encoded);
+    let tx_hash = *envelope.tx_hash();
+
+    setup.node.rpc.inject_tx(encoded.into()).await?;
+    setup.node.advance_block().await?;
+
+    let receipt: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+        .await?;
+
+    let receipt_json = receipt.expect("Transaction must be included in block");
+    let status = receipt_json
+        .get("status")
+        .and_then(|v| v.as_str())
+        .expect("Receipt must have status field");
+
+    assert_eq!(
+        status, "0x0",
+        "No-spending key must not be able to transfer any tokens"
+    );
+
+    // Verify recipient2 received NO tokens
+    let recipient2_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(recipient2)
+        .call()
+        .await?;
+
+    assert_eq!(
+        recipient2_balance,
+        U256::ZERO,
+        "Recipient must not receive any tokens from no-spending key"
+    );
+
+    println!("✓ No-spending key correctly blocked from transferring tokens");
+
+    // STEP 5: Verify unlimited key can still transfer (second transfer)
+    println!("\n=== STEP 5: Unlimited Key Second Transfer ===");
+    nonce += 1;
+
+    let recipient3 = Address::random();
+    let second_transfer = U256::from(5u64) * U256::from(10).pow(U256::from(18)); // 5 tokens
+
+    let second_unlimited_tx = TxAA {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        gas_limit: 300_000,
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: transferCall {
+                to: recipient3,
+                amount: second_transfer,
+            }
+            .abi_encode()
+            .into(),
+        }],
+        nonce_key: U256::ZERO,
+        nonce,
+        fee_token: None,
+        fee_payer_signature: None,
+        valid_before: Some(u64::MAX),
+        valid_after: None,
+        access_list: Default::default(),
+        key_authorization: None,
+        aa_authorization_list: vec![],
+    };
+
+    let unlimited_sig2 = sign_aa_tx_with_p256_access_key(
+        &second_unlimited_tx,
+        &unlimited_key_signing,
+        &unlimited_pub_x,
+        &unlimited_pub_y,
+        root_addr,
+    )?;
+
+    let _tx_hash = submit_and_mine_aa_tx(&mut setup, second_unlimited_tx, unlimited_sig2).await?;
+
+    let recipient3_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(recipient3)
+        .call()
+        .await?;
+
+    assert_eq!(
+        recipient3_balance, second_transfer,
+        "Unlimited key must be able to transfer again without limit"
+    );
+    println!("✓ Unlimited key transferred {second_transfer} tokens successfully");
+
+    println!("\n=== All enforce_limits Tests Passed ===");
+    Ok(())
+}
+
+/// Test key expiry functionality - covers various expiry scenarios
+/// - expiry = None (never expires) - should work indefinitely
+/// - expiry > block.timestamp - should work before expiry, fail after expiry
+/// - expiry < block.timestamp (past) - should fail during block building (rejected by builder)
+#[tokio::test]
+async fn test_aa_keychain_expiry() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing Key Expiry Functionality ===\n");
+
+    let mut setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_with_node_access()
+        .await?;
+
+    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root_signer.address();
+
+    let provider = ProviderBuilder::new()
+        .wallet(root_signer.clone())
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+
+    // Generate multiple access keys for different expiry scenarios
+    let (never_expires_signing, never_expires_pub_x, never_expires_pub_y, never_expires_addr) =
+        generate_p256_access_key();
+    let (short_expiry_signing, short_expiry_pub_x, short_expiry_pub_y, short_expiry_addr) =
+        generate_p256_access_key();
+    let (_past_expiry_signing, past_expiry_pub_x, past_expiry_pub_y, past_expiry_addr) =
+        generate_p256_access_key();
+
+    println!("Never-expires key address: {never_expires_addr}");
+    println!("Short-expiry key address: {short_expiry_addr}");
+    println!("Past-expiry key address: {past_expiry_addr}");
+
+    let mut nonce = provider.get_transaction_count(root_addr).await?;
+
+    // Get current block timestamp
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp;
+    println!("\nCurrent block timestamp: {current_timestamp}");
+
+    // ========================================
+    // TEST 1: expiry = None (never expires)
+    // ========================================
+    println!("\n=== TEST 1: Authorize Key with expiry = None (never expires) ===");
+
+    let never_expires_key_auth = create_key_authorization(
+        &root_signer,
+        never_expires_addr,
+        create_mock_p256_sig(never_expires_pub_x, never_expires_pub_y),
+        chain_id,
+        None, // Never expires
+        Some(create_default_token_limit()),
+    )?;
+
+    // Authorize the never-expires key
+    let mut auth_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_balance_of_call(root_addr)],
+        400_000,
+    );
+    auth_tx.fee_token = None;
+    auth_tx.key_authorization = Some(never_expires_key_auth);
+
+    let root_sig = sign_aa_tx_secp256k1(&auth_tx, &root_signer)?;
+    submit_and_mine_aa_tx(&mut setup, auth_tx, root_sig).await?;
+    nonce += 1;
+
+    println!("✓ Never-expires key authorized");
+
+    // Use the never-expires key - should work
+    let recipient1 = Address::random();
+    let transfer_amount = U256::from(1u64) * U256::from(10).pow(U256::from(18));
+
+    let mut transfer_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_transfer_call(recipient1, transfer_amount)],
+        300_000,
+    );
+    transfer_tx.fee_token = None;
+
+    let never_expires_sig = sign_aa_tx_with_p256_access_key(
+        &transfer_tx,
+        &never_expires_signing,
+        &never_expires_pub_x,
+        &never_expires_pub_y,
+        root_addr,
+    )?;
+
+    submit_and_mine_aa_tx(&mut setup, transfer_tx, never_expires_sig).await?;
+    nonce += 1;
+
+    let recipient1_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(recipient1)
+        .call()
+        .await?;
+
+    assert_eq!(
+        recipient1_balance, transfer_amount,
+        "Never-expires key must be able to transfer"
+    );
+    println!("✓ Never-expires key transfer succeeded");
+
+    // ========================================
+    // TEST 2: expiry > block.timestamp (authorize, use before expiry, then test after expiry)
+    // ========================================
+    println!("\n=== TEST 2: Authorize Key with future expiry ===");
+
+    // Advance a few blocks to get a meaningful timestamp
+    for _ in 0..3 {
+        setup.node.advance_block().await?;
+    }
+
+    // Get fresh timestamp
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let test2_timestamp = block.header.timestamp;
+
+    println!("Current block timestamp for TEST 2: {test2_timestamp}, using nonce: {nonce}");
+
+    // Set expiry to just enough time in the future to authorize and use the key once
+    // Each block advances timestamp by ~1 second, so 3 seconds should be enough for:
+    // - authorization tx (1 block)
+    // - use key tx (1 block)
+    // Then after expiry, advancing a few more blocks should exceed the expiry
+    let short_expiry_timestamp = test2_timestamp + 3;
+    println!("Setting key expiry to: {short_expiry_timestamp} (current: {test2_timestamp})");
+
+    let short_expiry_key_auth = create_key_authorization(
+        &root_signer,
+        short_expiry_addr,
+        create_mock_p256_sig(short_expiry_pub_x, short_expiry_pub_y),
+        chain_id,
+        Some(short_expiry_timestamp),
+        Some(create_default_token_limit()),
+    )?;
+
+    let mut auth_short_expiry_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_balance_of_call(root_addr)],
+        400_000,
+    );
+    auth_short_expiry_tx.fee_token = None;
+    auth_short_expiry_tx.key_authorization = Some(short_expiry_key_auth);
+
+    let root_sig = sign_aa_tx_secp256k1(&auth_short_expiry_tx, &root_signer)?;
+    submit_and_mine_aa_tx(&mut setup, auth_short_expiry_tx, root_sig).await?;
+    nonce += 1;
+
+    println!("✓ Short-expiry key authorized");
+
+    // Use the short-expiry key BEFORE expiry - should work
+    println!("\n=== TEST 2a: Use key BEFORE expiry (should succeed) ===");
+
+    let recipient2 = Address::random();
+
+    let mut before_expiry_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_transfer_call(recipient2, transfer_amount)],
+        300_000,
+    );
+    before_expiry_tx.fee_token = None;
+
+    let short_expiry_sig = sign_aa_tx_with_p256_access_key(
+        &before_expiry_tx,
+        &short_expiry_signing,
+        &short_expiry_pub_x,
+        &short_expiry_pub_y,
+        root_addr,
+    )?;
+
+    submit_and_mine_aa_tx(&mut setup, before_expiry_tx, short_expiry_sig).await?;
+    nonce += 1;
+
+    let recipient2_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(recipient2)
+        .call()
+        .await?;
+
+    assert_eq!(
+        recipient2_balance, transfer_amount,
+        "Short-expiry key must work before expiry"
+    );
+    println!("✓ Short-expiry key transfer succeeded before expiry");
+
+    // Advance blocks until the key expires
+    println!("\n=== TEST 2b: Advance time past expiry, then try to use key (should fail) ===");
+
+    // Advance several blocks to ensure timestamp exceeds expiry
+    for _ in 0..3 {
+        setup.node.advance_block().await?;
+    }
+
+    // Get new timestamp
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let new_timestamp = block.header.timestamp;
+    println!("New block timestamp: {new_timestamp} (expiry was: {short_expiry_timestamp})");
+
+    assert!(
+        new_timestamp >= short_expiry_timestamp,
+        "Block timestamp should be past expiry"
+    );
+
+    // Try to use the expired key - should fail
+    let recipient3 = Address::random();
+
+    let mut after_expiry_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_transfer_call(recipient3, transfer_amount)],
+        300_000,
+    );
+    after_expiry_tx.fee_token = None;
+
+    let expired_key_sig = sign_aa_tx_with_p256_access_key(
+        &after_expiry_tx,
+        &short_expiry_signing,
+        &short_expiry_pub_x,
+        &short_expiry_pub_y,
+        root_addr,
+    )?;
+
+    let signed_tx = AASigned::new_unhashed(after_expiry_tx, expired_key_sig);
+    let envelope: TempoTxEnvelope = signed_tx.into();
+    let tx_hash = *envelope.tx_hash();
+    let mut encoded = Vec::new();
+    envelope.encode_2718(&mut encoded);
+
+    // The tx should be accepted into the pool (pool doesn't check expiry in detail)
+    // but should fail when included in a block
+    setup.node.rpc.inject_tx(encoded.into()).await?;
+    setup.node.advance_block().await?;
+
+    // Check if transaction was included and reverted
+    let receipt: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+        .await?;
+
+    // The tx might not be included at all (rejected by builder) or included but reverted
+    if let Some(receipt_json) = receipt {
+        let status = receipt_json
+            .get("status")
+            .and_then(|v| v.as_str())
+            .expect("Receipt must have status field");
+
+        assert_eq!(
+            status, "0x0",
+            "Expired key transaction must revert if included"
+        );
+        println!("✓ Expired key transaction was included but reverted (status: 0x0)");
+    } else {
+        println!("✓ Expired key transaction was rejected by block builder (not included)");
+    }
+
+    // Verify recipient3 received NO tokens
+    let recipient3_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(recipient3)
+        .call()
+        .await?;
+
+    assert_eq!(
+        recipient3_balance,
+        U256::ZERO,
+        "Recipient must not receive tokens from expired key"
+    );
+
+    // The expired key tx is stuck in mempool, so we need to skip that nonce
+    nonce += 1;
+
+    // ========================================
+    // TEST 3: expiry in the past (should fail during block building)
+    // ========================================
+    println!("\n=== TEST 3: Authorize Key with expiry in the past ===");
+
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let block_timestamp = block.header.timestamp;
+    println!("Block timestamp: {block_timestamp}, using nonce: {nonce}");
+
+    // Use expiry = 1 which is definitely in the past
+    let past_expiry = 1u64;
+    println!("Setting past expiry to: {past_expiry}");
+
+    let past_expiry_key_auth = create_key_authorization(
+        &root_signer,
+        past_expiry_addr,
+        create_mock_p256_sig(past_expiry_pub_x, past_expiry_pub_y),
+        chain_id,
+        Some(past_expiry), // Expiry in the past
+        Some(create_default_token_limit()),
+    )?;
+
+    let mut past_expiry_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_balance_of_call(root_addr)],
+        400_000,
+    );
+    past_expiry_tx.fee_token = None;
+    past_expiry_tx.key_authorization = Some(past_expiry_key_auth);
+
+    let root_sig = sign_aa_tx_secp256k1(&past_expiry_tx, &root_signer)?;
+    let signed_tx = AASigned::new_unhashed(past_expiry_tx, root_sig);
+    let envelope: TempoTxEnvelope = signed_tx.into();
+    let tx_hash = *envelope.tx_hash();
+    let mut encoded = Vec::new();
+    envelope.encode_2718(&mut encoded);
+
+    // Expiry check happens during block building
+    // Transaction may be accepted to pool but will fail during block building
+    setup.node.rpc.inject_tx(encoded.into()).await?;
+    setup.node.advance_block().await?;
+
+    // Check if transaction was included (it should fail or not be included)
+    let receipt: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+        .await?;
+
+    if let Some(receipt_json) = receipt {
+        let status = receipt_json
+            .get("status")
+            .and_then(|v| v.as_str())
+            .expect("Receipt must have status field");
+
+        // If included, it must have failed
+        assert_eq!(
+            status, "0x0",
+            "Past expiry key transaction must fail if included. Receipt: {receipt_json}"
+        );
+        println!("✓ Past expiry key transaction was included but failed (status: 0x0)");
+    } else {
+        println!("✓ Past expiry key transaction was rejected by block builder (not included)");
+    }
+
+    Ok(())
+}
+
 /// Test RPC validation of Keychain signatures - ensures proper validation in transaction pool
 /// Tests both positive (authorized key) and negative (unauthorized key) cases in a single test
 #[tokio::test]
@@ -4031,8 +4698,8 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         authorized_key_addr,
         mock_p256_sig,
         chain_id,
-        u64::MAX,
-        spending_limits.clone(),
+        None, // Never expires
+        Some(spending_limits.clone()),
     )?;
 
     let recipient1 = Address::random();
@@ -4226,7 +4893,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
 
     // Verify the error message contains the expected validation failure details
     assert!(
-        error_msg.contains("Keychain signature validation failed: access key is not active"),
+        error_msg.contains("Keychain signature validation failed: access key does not exist"),
         "Error must mention 'Keychain signature validation failed'. Got: {error_msg}"
     );
 
@@ -4256,8 +4923,8 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         chain_id,
         tempo_primitives::transaction::SignatureType::P256,
         addr_3,
-        u64::MAX,
-        &spending_limits,
+        None, // Never expires
+        Some(&spending_limits),
     );
 
     // Sign with wrong key (should be root_key_signer)
@@ -4270,8 +4937,6 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
     let invalid_key_auth = KeyAuthorization {
         chain_id,
         key_type: tempo_primitives::transaction::SignatureType::P256,
-        expiry: u64::MAX,
-        limits: spending_limits.clone(),
         key_id: addr_3,
         signature: PrimitiveSignature::P256(P256SignatureWithPreHash {
             r: B256::from_slice(&wrong_sig_bytes[0..32]),
@@ -4280,6 +4945,8 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
             pub_key_y: unauthorized_pub_key_y,
             pre_hash: true,
         }),
+        expiry: None, // Never expires
+        limits: Some(spending_limits.clone()),
     };
 
     let invalid_auth_tx = TxAA {
