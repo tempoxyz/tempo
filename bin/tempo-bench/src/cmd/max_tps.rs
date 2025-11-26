@@ -260,22 +260,28 @@ impl MaxTpsArgs {
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         let sample_size = pending_txs.len().min(self.sample_size);
-        let mut end_block_number = start_block_number;
         info!(sample_size, "Collecting a sample of receipts");
-
-        let progress = ProgressBar::new(sample_size as u64);
-        for _ in 0..sample_size {
-            let idx = random_range(0..pending_txs.len());
-            let receipt = pending_txs.remove(idx).get_receipt().await?;
-            progress.inc(1);
-
-            if let Some(block_number) = receipt.block_number
-                && block_number > end_block_number
-            {
-                end_block_number = block_number;
-            }
-        }
-        drop(progress);
+        let end_block_number = stream::iter(
+            (0..sample_size)
+                .map(|_| {
+                    let idx = random_range(0..pending_txs.len());
+                    pending_txs.remove(idx)
+                })
+                .progress(),
+        )
+        .map(async |pending_tx| {
+            pending_tx
+                .get_receipt()
+                .await
+                .map(|receipt| receipt.block_number)
+        })
+        .buffered(self.max_concurrent_requests)
+        .try_collect::<Vec<_>>()
+        .await?
+        .last()
+        .copied()
+        .flatten()
+        .unwrap_or(start_block_number);
 
         generate_report(&target_url, start_block_number, end_block_number, &self).await?;
 
