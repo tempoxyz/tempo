@@ -64,7 +64,8 @@ async fn test_create_token() -> eyre::Result<()> {
     assert_eq!(token.symbol().call().await?, symbol);
     assert_eq!(token.decimals().call().await?, 6);
     assert_eq!(token.currency().call().await?, currency);
-    assert_eq!(token.supplyCap().call().await?, U256::MAX);
+    // Supply cap is u128::MAX post-allegretto
+    assert_eq!(token.supplyCap().call().await?, U256::from(u128::MAX));
     assert_eq!(token.transferPolicyId().call().await?, 1);
 
     Ok(())
