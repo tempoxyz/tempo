@@ -290,7 +290,7 @@ where
         };
         let gas_per_subblock = self.shared_gas_limit / validator_set.len() as u64;
 
-        let mut incentive_gas = gas_per_subblock;
+        let mut incentive_gas = 0;
         let mut seen = HashSet::new();
         let mut next_non_empty = 0;
         for metadata in metadata {
