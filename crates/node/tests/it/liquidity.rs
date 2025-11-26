@@ -1,56 +1,16 @@
 use alloy::{
-    primitives::{Address, U256},
+    primitives::U256,
     providers::{Provider, ProviderBuilder},
     signers::local::MnemonicBuilder,
-    sol_types::{SolCall, SolEvent},
+    sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
 use alloy_network::TxSignerSync;
-use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20, ITIP20Factory};
-use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
-    tip20::{ISSUER_ROLE, token_id_to_address},
-};
+use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20};
+use tempo_precompiles::DEFAULT_FEE_TOKEN;
 use tempo_primitives::TxFeeToken;
 
-/// Creates a test TIP20 token using pre-allegretto createToken_0
-async fn setup_test_token_pre_allegretto<P>(
-    provider: P,
-    caller: Address,
-) -> eyre::Result<ITIP20::ITIP20Instance<impl Clone + Provider>>
-where
-    P: Provider + Clone,
-{
-    use tempo_contracts::precompiles::IRolesAuth;
-
-    let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
-    let receipt = factory
-        .createToken_0(
-            "Test".to_string(),
-            "TEST".to_string(),
-            "USD".to_string(),
-            PATH_USD_ADDRESS,
-            caller,
-        )
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    let event = ITIP20Factory::TokenCreated_0::decode_log(&receipt.logs()[0].inner).unwrap();
-
-    let token_addr = token_id_to_address(event.tokenId.to());
-    let token = ITIP20::new(token_addr, provider.clone());
-    let roles = IRolesAuth::new(*token.address(), provider);
-
-    roles
-        .grantRole(*ISSUER_ROLE, caller)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    Ok(token)
-}
+use crate::utils::setup_test_token_pre_allegretto;
 
 /// Test block building when FeeAMM pool has insufficient liquidity for payment transactions
 /// Note: This test runs without allegretto to use the old balanced `mint` function

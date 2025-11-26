@@ -9,7 +9,9 @@ use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{ITIP20, ITIP403Registry, TIP20Error};
 use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
 
-use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
+use crate::utils::{
+    TestNodeBuilder, await_receipts, setup_test_token, setup_test_token_pre_allegretto,
+};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_transfer() -> eyre::Result<()> {
@@ -675,14 +677,14 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     Ok(())
 }
 
+/// Test scheduled rewards functionality.
+/// Note: This test runs without Moderato since scheduled rewards are disabled post-Moderato.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_rewards() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    // Run without Moderato since scheduled rewards are disabled post-Moderato
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let admin_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -691,7 +693,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
         .wallet(admin_wallet)
         .connect_http(http_url.clone());
 
-    let token = setup_test_token(admin_provider.clone(), admin).await?;
+    let token = setup_test_token_pre_allegretto(admin_provider.clone(), admin).await?;
 
     let alice_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
         .index(1)

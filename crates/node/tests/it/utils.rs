@@ -74,6 +74,44 @@ where
     Ok(token)
 }
 
+/// Creates a test TIP20 token using pre-allegretto createToken_0
+/// Use this for tests that need to run without Moderato/Allegretto hardforks
+pub(crate) async fn setup_test_token_pre_allegretto<P>(
+    provider: P,
+    caller: Address,
+) -> eyre::Result<ITIP20Instance<impl Clone + Provider>>
+where
+    P: Provider + Clone,
+{
+    let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
+    let receipt = factory
+        .createToken_0(
+            "Test".to_string(),
+            "TEST".to_string(),
+            "USD".to_string(),
+            PATH_USD_ADDRESS,
+            caller,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    let event = ITIP20Factory::TokenCreated_0::decode_log(&receipt.logs()[0].inner).unwrap();
+
+    let token_addr = token_id_to_address(event.tokenId.to());
+    let token = ITIP20::new(token_addr, provider.clone());
+    let roles = IRolesAuth::new(*token.address(), provider);
+
+    roles
+        .grantRole(*ISSUER_ROLE, caller)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    Ok(token)
+}
+
 /// Node source for integration testing
 pub(crate) enum NodeSource {
     ExternalRpc(Url),
