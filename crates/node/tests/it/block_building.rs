@@ -53,12 +53,13 @@ where
     };
 
     // Create token
-    let create_tx = factory.createToken(
+    let create_tx = factory.createToken_1(
         "Test".to_string(),
         "TEST".to_string(),
         "USD".to_string(),
         PATH_USD_ADDRESS,
         sender_address,
+        Address::ZERO,
     );
     let create_bytes = sign_and_encode(create_tx.into_transaction_request(), 0).await?;
     node.rpc.inject_tx(create_bytes).await?;
@@ -75,7 +76,7 @@ where
         .find(|r| !r.inner.logs().is_empty())
         .ok_or_else(|| eyre::eyre!("No receipt with logs found"))?;
     let event =
-        ITIP20Factory::TokenCreated::decode_log(&token_create_receipt.inner.logs()[0].inner)?;
+        ITIP20Factory::TokenCreated_1::decode_log(&token_create_receipt.inner.logs()[0].inner)?;
     let token_addr = token_id_to_address(event.tokenId.to());
 
     // Grant issuer role
@@ -181,6 +182,7 @@ async fn test_block_building_few_mixed_txs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = crate::utils::TestNodeBuilder::new()
+        .allegretto_activated()
         .build_with_node_access()
         .await?;
 
@@ -266,6 +268,7 @@ async fn test_block_building_only_payment_txs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = crate::utils::TestNodeBuilder::new()
+        .allegretto_activated()
         .build_with_node_access()
         .await?;
 
@@ -334,6 +337,7 @@ async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = crate::utils::TestNodeBuilder::new()
+        .allegretto_activated()
         .build_with_node_access()
         .await?;
 
@@ -405,6 +409,7 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
 
     // Use lower gas limit to ensure transactions overflow to multiple blocks
     let mut setup = crate::utils::TestNodeBuilder::new()
+        .allegretto_activated()
         .with_gas_limit("0xf4240") // 1,000,000 gas
         .build_with_node_access()
         .await?;

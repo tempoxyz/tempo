@@ -5,14 +5,30 @@ sol! {
   #[derive(Debug, PartialEq, Eq)]
     #[sol(rpc, abi)]
     interface ITIP20Factory {
+        /// TokenCreated event pre Allegretto hardfork (without feeRecipient)
         event TokenCreated(address indexed token, uint256 indexed tokenId, string name, string symbol, string currency, address quoteToken, address admin);
 
+        /// TokenCreated event post Allegretto hardfork (with feeRecipient)
+        event TokenCreated(address indexed token, uint256 indexed tokenId, string name, string symbol, string currency, address quoteToken, address admin, address feeRecipient);
+
+
+        /// createToken call pre Allegretto hardfork
         function createToken(
             string memory name,
             string memory symbol,
             string memory currency,
             address quoteToken,
-            address admin
+            address admin,
+        ) external returns (address);
+
+        /// createToken call post Allegretto hardfork
+        function createToken(
+            string memory name,
+            string memory symbol,
+            string memory currency,
+            address quoteToken,
+            address admin,
+            address feeRecipient
         ) external returns (address);
 
         function tokenIdCounter() external view returns (uint256);

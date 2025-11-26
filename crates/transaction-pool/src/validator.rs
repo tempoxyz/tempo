@@ -148,7 +148,7 @@ where
         if !transaction.inner().value().is_zero() {
             return TransactionValidationOutcome::Invalid(
                 transaction,
-                InvalidTransactionError::TxTypeNotSupported.into(),
+                InvalidPoolTransactionError::other(TempoPoolTransactionError::NonZeroValue),
             );
         }
 
@@ -159,7 +159,7 @@ where
         {
             return TransactionValidationOutcome::Error(
                 *transaction.hash(),
-                InvalidTransactionError::TxTypeNotSupported.into(),
+                InvalidPoolTransactionError::other(TempoPoolTransactionError::NonZeroValue).into(),
             );
         }
 
@@ -313,8 +313,7 @@ mod tests {
     use reth_primitives_traits::SignedTransaction;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_transaction_pool::{
-        PoolTransaction, blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
-        validate::EthTransactionValidatorBuilder,
+        PoolTransaction, blobstore::InMemoryBlobStore, validate::EthTransactionValidatorBuilder,
     };
     use std::sync::Arc;
     use tempo_chainspec::spec::ANDANTINO;
@@ -365,10 +364,10 @@ mod tests {
             .await;
 
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
-            assert!(matches!(
-                err,
-                InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported)
-            ),);
+            assert!(
+                err.to_string()
+                    .contains("Native transfers are not supported")
+            );
         } else {
             panic!("Expected Invalid outcome with InsufficientFunds error");
         }

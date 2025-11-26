@@ -1,4 +1,4 @@
-use crate::utils::{NodeSource, setup_test_node, setup_test_token};
+use crate::utils::{TestNodeBuilder, setup_test_token};
 use alloy::{
     providers::{Provider, ProviderBuilder, WalletProvider},
     signers::{SignerSync, local::MnemonicBuilder},
@@ -7,7 +7,7 @@ use alloy::{
 };
 use alloy_primitives::{Address, B256, U256, b256};
 use reth_evm::revm::state::Bytecode;
-use std::{env, str::FromStr};
+use std::str::FromStr;
 use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, IthacaAccount};
 use tempo_precompiles::{TIP_ACCOUNT_REGISTRAR, tip_account_registrar::ITipAccountRegistrar};
 
@@ -23,12 +23,11 @@ sol! {
 async fn test_auto_7702_delegation() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _node_handle) = setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let alice = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let provider = ProviderBuilder::new()
@@ -145,12 +144,11 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
 async fn test_ensure_7702_delegation_on_revert() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _node_handle) = setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let alice = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let provider = ProviderBuilder::new()
@@ -204,12 +202,11 @@ async fn test_ensure_7702_delegation_on_revert() -> eyre::Result<()> {
 async fn test_default_account_registrar() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        NodeSource::LocalNode(include_str!("../assets/test-genesis-moderato.json").to_string())
-    };
-    let (http_url, _node_handle) = setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let alice = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let provider = ProviderBuilder::new()

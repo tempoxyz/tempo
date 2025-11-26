@@ -305,7 +305,7 @@ where
 {
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
     let receipt = factory
-        .createToken(
+        .createToken_0(
             "Test".to_owned(),
             "TEST".to_owned(),
             "USD".to_owned(),
@@ -317,7 +317,7 @@ where
         .get_receipt()
         .await?;
     tx_count.inc(1);
-    let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[0].inner)?;
+    let event = ITIP20Factory::TokenCreated_0::decode_log(&receipt.logs()[0].inner)?;
 
     let token_addr = token_id_to_address(event.tokenId.to());
     let token = ITIP20::new(token_addr, provider.clone());

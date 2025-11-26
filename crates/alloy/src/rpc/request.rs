@@ -4,7 +4,7 @@ use alloy_primitives::{Address, Bytes};
 use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use tempo_primitives::{
-    SignatureType, TempoTxEnvelope, TxAA, TxFeeToken,
+    AASigned, SignatureType, TempoTxEnvelope, TxAA, TxFeeToken,
     transaction::{AASignedAuthorization, Call, TempoTypedTransaction},
 };
 
@@ -239,9 +239,8 @@ impl<T: TransactionTrait + FeeToken> From<Signed<T>> for TempoTransactionRequest
     }
 }
 
-impl From<tempo_primitives::AASigned> for TempoTransactionRequest {
-    fn from(tx: tempo_primitives::AASigned) -> Self {
-        let (tx, _, _) = tx.into_parts();
+impl From<TxAA> for TempoTransactionRequest {
+    fn from(tx: TxAA) -> Self {
         Self {
             fee_token: tx.fee_token,
             inner: TransactionRequest {
@@ -267,6 +266,12 @@ impl From<tempo_primitives::AASigned> for TempoTransactionRequest {
             key_type: None,
             key_data: None,
         }
+    }
+}
+
+impl From<AASigned> for TempoTransactionRequest {
+    fn from(value: AASigned) -> Self {
+        value.into_parts().0.into()
     }
 }
 
