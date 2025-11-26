@@ -4,10 +4,10 @@ use std::pin::Pin;
 use tempo_contracts::precompiles::{IStablecoinExchange, PATH_USD_ADDRESS};
 
 /// This method performs a one-time setup for sending a lot of transactions:
-/// * Adds a quote token and a couple of user tokens paired with the quote token.
-/// * Mints some large amount for all `signers` and approves unlimited spending for stablecoin
-///   exchange contract.
-/// * Seeds initial liquidity by placing flip orders
+/// * Deploys the specified number of user tokens.
+/// * Creates DEX pairs of user tokens with the quote token.
+/// * Mints user tokens for all signers and approves unlimited spending for DEX.
+/// * Seeds initial liquidity by placing DEX flip orders.
 pub(super) async fn setup(
     signer_providers: &[(PrivateKeySigner, DynProvider<TempoNetwork>)],
     user_tokens: usize,

@@ -396,6 +396,7 @@ async fn generate_transactions(
     let transactions: Vec<_> = params
         .into_par_iter()
         .map(|(provider, token)| -> eyre::Result<BoxFuture<'static, _>> {
+            // TODO: can be improved with an enum per transaction type
             let tx_index = tx_weights
                 .iter()
                 .enumerate()
