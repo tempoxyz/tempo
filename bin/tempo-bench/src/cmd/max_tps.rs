@@ -391,8 +391,6 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
         }
     }
 
-    let user_tokens_count = user_tokens.len();
-
     println!(
         "Pregenerating {} transactions",
         txs_per_sender as usize * accounts,
@@ -401,55 +399,55 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
     let transfers = Arc::new(AtomicUsize::new(0));
     let swaps = Arc::new(AtomicUsize::new(0));
     let orders = Arc::new(AtomicUsize::new(0));
-    let transactions: Vec<_> = stream::iter(params.into_iter().progress())
-        .then(async |(signer, nonce)| {
-            #[expect(clippy::type_complexity)]
-            let tx_factories: [(Box<dyn Fn() -> BoxFuture<'static, _>>, u64); 3] = [
-                (
-                    Box::new(|| {
-                        transfers.fetch_add(1, Ordering::Relaxed);
-                        Box::pin(tip20::transfer(
-                            signer.clone(),
-                            nonce,
-                            user_tokens[random::<u16>() as usize % user_tokens_count].clone(),
-                        ))
-                    }),
-                    tip20_weight,
-                ),
-                (
-                    Box::new(|| {
-                        swaps.fetch_add(1, Ordering::Relaxed);
-                        Box::pin(dex::swap_in(
-                            exchange.clone(),
-                            signer.clone(),
-                            nonce,
-                            *user_tokens[random::<u16>() as usize % user_tokens_count].address(),
-                            quote,
-                        ))
-                    }),
-                    swap_weight,
-                ),
-                (
-                    Box::new(|| {
-                        orders.fetch_add(1, Ordering::Relaxed);
-                        Box::pin(dex::place(
-                            exchange.clone(),
-                            signer.clone(),
-                            nonce,
-                            *user_tokens[random::<u16>() as usize % user_tokens_count].address(),
-                        ))
-                    }),
-                    place_order_weight,
-                ),
-            ];
-            let mut rng = rand::rng();
-            let tx = tx_factories
-                .choose_weighted(&mut rng, |item| item.1)
-                .map(|item| &item.0)?;
-            tx().await
-        })
-        .try_collect::<Vec<_>>()
-        .await?;
+    let transactions: Vec<_> = stream::iter(
+        params
+            .into_iter()
+            .progress()
+            .zip(std::iter::repeat_with(|| user_tokens.choose(&mut rand::rng())).flatten()),
+    )
+    .then(async |((signer, nonce), token)| {
+        #[expect(clippy::type_complexity)]
+        let tx_factories: [(Box<dyn Fn() -> BoxFuture<'static, _>>, u64); 3] = [
+            (
+                Box::new(|| {
+                    transfers.fetch_add(1, Ordering::Relaxed);
+                    Box::pin(tip20::transfer(signer.clone(), nonce, token.clone()))
+                }),
+                tip20_weight,
+            ),
+            (
+                Box::new(|| {
+                    swaps.fetch_add(1, Ordering::Relaxed);
+                    Box::pin(dex::swap_in(
+                        exchange.clone(),
+                        signer.clone(),
+                        nonce,
+                        *token.address(),
+                        quote,
+                    ))
+                }),
+                swap_weight,
+            ),
+            (
+                Box::new(|| {
+                    orders.fetch_add(1, Ordering::Relaxed);
+                    Box::pin(dex::place(
+                        exchange.clone(),
+                        signer.clone(),
+                        nonce,
+                        *token.address(),
+                    ))
+                }),
+                place_order_weight,
+            ),
+        ];
+        let tx = tx_factories
+            .choose_weighted(&mut rand::rng(), |item| item.1)
+            .map(|item| &item.0)?;
+        tx().await
+    })
+    .try_collect::<Vec<_>>()
+    .await?;
 
     println!(
         "Generated {} transactions [{} transfers, {} swaps, {} orders]",
