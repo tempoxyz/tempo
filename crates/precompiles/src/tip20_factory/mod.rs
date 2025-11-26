@@ -82,12 +82,15 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
             }
         }
 
+        // Initialize with default fee_recipient (Address::ZERO)
+        // Fee recipient can be set later via setFeeRecipient()
         TIP20Token::new(token_id, self.storage).initialize(
             &call.name,
             &call.symbol,
             &call.currency,
             call.quoteToken,
             call.admin,
+            Address::ZERO,
         )?;
 
         let token_address = token_id_to_address(token_id);

@@ -8,7 +8,7 @@ pub use tempo_contracts::precompiles::{
 };
 
 use crate::{
-    DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS,
+    DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, PATH_USD_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{PrecompileStorageProvider, Slot, Storable, VecSlotExt},
     tip_fee_manager::amm::Pool,
@@ -60,11 +60,21 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         )
     }
 
+    /// Returns the default fee token based on the current hardfork.
+    /// Post-Allegretto returns PathUSD, pre-Allegretto returns the first TIP20 after PathUSD.
+    fn default_fee_token(&self) -> Address {
+        if self.storage.spec().is_allegretto() {
+            DEFAULT_FEE_TOKEN_POST_ALLEGRETTO
+        } else {
+            DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO
+        }
+    }
+
     pub fn get_validator_token(&mut self, beneficiary: Address) -> Result<Address> {
         let token = self.sload_validator_tokens(beneficiary)?;
 
         if token.is_zero() {
-            Ok(DEFAULT_FEE_TOKEN)
+            Ok(self.default_fee_token())
         } else {
             Ok(token)
         }
@@ -308,7 +318,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         let token = self.sload_validator_tokens(call.validator)?;
 
         if token.is_zero() {
-            Ok(DEFAULT_FEE_TOKEN)
+            Ok(self.default_fee_token())
         } else {
             Ok(token)
         }
@@ -369,7 +379,14 @@ mod tests {
 
         // Initialize token
         tip20_token
-            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, user)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                user,
+                Address::ZERO,
+            )
             .unwrap();
 
         // Grant issuer role to user and mint tokens
@@ -403,7 +420,14 @@ mod tests {
         let token = token_id_to_address(1);
         let mut tip20_token = TIP20Token::from_address(token, &mut storage);
         tip20_token
-            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, user)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                user,
+                Address::ZERO,
+            )
             .unwrap();
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
@@ -480,7 +504,14 @@ mod tests {
         let token = token_id_to_address(1);
         let mut tip20_token = TIP20Token::from_address(token, &mut storage);
         tip20_token
-            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
@@ -567,7 +598,14 @@ mod tests {
             initialize_path_usd(&mut storage, admin).unwrap();
             let mut tip20_token = TIP20Token::from_address(token, &mut storage);
             tip20_token
-                .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)
+                .initialize(
+                    "TestToken",
+                    "TEST",
+                    "USD",
+                    PATH_USD_ADDRESS,
+                    admin,
+                    Address::ZERO,
+                )
                 .unwrap();
 
             tip20_token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -625,7 +663,14 @@ mod tests {
         let token = token_id_to_address(rand::random::<u64>());
         let mut tip20_token = TIP20Token::from_address(token, &mut storage);
         tip20_token
-            .initialize("NonUSD", "NonUSD", "NonUSD", PATH_USD_ADDRESS, admin)
+            .initialize(
+                "NonUSD",
+                "NonUSD",
+                "NonUSD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let validator = Address::random();
@@ -668,7 +713,14 @@ mod tests {
             // Initialize token
             initialize_path_usd(&mut storage, admin)?;
             let mut tip20_token = TIP20Token::from_address(token, &mut storage);
-            tip20_token.initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin)?;
+            tip20_token.initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )?;
             tip20_token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
             // Mint tokens simulating `collected fees - attack burn`

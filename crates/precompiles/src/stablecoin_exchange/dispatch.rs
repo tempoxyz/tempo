@@ -253,7 +253,7 @@ mod tests {
         // Initialize base token
         let quote_address = quote.token.address();
         let mut base = TIP20Token::new(1, quote.token.storage());
-        base.initialize("BASE", "BASE", "USD", quote_address, admin)
+        base.initialize("BASE", "BASE", "USD", quote_address, admin, Address::ZERO)
             .unwrap();
 
         base.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
