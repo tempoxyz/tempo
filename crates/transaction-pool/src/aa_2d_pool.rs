@@ -41,8 +41,8 @@ pub struct AA2dPool {
     ///
     /// This way we can determine when transactions were submitted to the pool.
     submission_id: u64,
-    /// independent, pending, executable transactions.
-    independent_transactions: HashMap<AA2dTransactionId, PendingTransaction<Ordering>>,
+    /// independent, pending, executable transactions, one per sequence id.
+    independent_transactions: HashMap<AASequenceId, PendingTransaction<Ordering>>,
     /// _All_ transactions that are currently inside the pool grouped by their unique identifier.
     by_id: BTreeMap<AA2dTransactionId, AA2dInternalTransaction>,
     /// _All_ transactions by hash.
@@ -165,8 +165,9 @@ impl AA2dPool {
 
         // clean up replaced
         if let Some(replaced) = &replaced {
+            // we only need to remove it from the hash list, because we already replaced it in the by id set,
+            // and if this is the independent transaction, it will be replaced by the new transaction below
             self.by_hash.remove(replaced.inner.transaction.hash());
-            self.independent_transactions.remove(&tx_id);
         }
 
         // insert transaction by hash
@@ -201,15 +202,15 @@ impl AA2dPool {
 
         // Record metrics
         self.metrics.inc_inserted();
-        if !promoted.is_empty() {
-            self.metrics.inc_promoted(promoted.len());
-        }
         self.update_metrics();
 
         if inserted_as_pending {
+            if !promoted.is_empty() {
+                self.metrics.inc_promoted(promoted.len());
+            }
             // if this is the next nonce in line we can mark it as independent
             if tx_id.nonce == on_chain_nonce {
-                self.independent_transactions.insert(tx_id, tx.inner);
+                self.independent_transactions.insert(tx_id.seq_id, tx.inner);
             }
 
             return Ok(AddedTransaction::Pending(AddedPendingTransaction {
@@ -387,7 +388,14 @@ impl AA2dPool {
         id: &AA2dTransactionId,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let tx = self.by_id.remove(id)?;
-        self.independent_transactions.remove(id);
+
+        // Only remove from independent_transactions if this is the independent transaction
+        if let Some(independent_tx) = self.independent_transactions.get(&id.seq_id)
+            && independent_tx.transaction.hash() == tx.inner.transaction.hash()
+        {
+            self.independent_transactions.remove(&id.seq_id);
+        }
+
         self.by_hash.remove(tx.inner.transaction.hash());
         Some(tx.inner.transaction)
     }
@@ -431,7 +439,14 @@ impl AA2dPool {
         // Now we can safely remove from all data structures
         let tx = self.by_hash.remove(tx_hash).expect("just checked");
         self.by_id.remove(&id).expect("just checked");
-        self.independent_transactions.remove(&id);
+
+        // Only remove from independent_transactions if this is the independent transaction
+        if let Some(independent_tx) = self.independent_transactions.get(&id.seq_id)
+            && independent_tx.transaction.hash() == tx_hash
+        {
+            self.independent_transactions.remove(&id.seq_id);
+        }
+
         Some(tx)
     }
 
@@ -555,7 +570,7 @@ impl AA2dPool {
                     if existing_id.nonce == on_chain_nonce {
                         // if this is the on chain nonce we can mark it as the next independent transaction
                         self.independent_transactions
-                            .insert(*existing_id, existing_tx.inner.clone());
+                            .insert(existing_id.seq_id, existing_tx.inner.clone());
                     }
 
                     next_nonce = next_nonce.saturating_add(1);
@@ -661,24 +676,33 @@ impl AA2dPool {
         );
 
         // All independent transactions must exist in by_id
-        for (id, independent_tx) in &self.independent_transactions {
+        for (seq_id, independent_tx) in &self.independent_transactions {
+            let tx_id = independent_tx
+                .transaction
+                .transaction
+                .aa_transaction_id()
+                .expect("Independent transaction must have AA transaction ID");
             assert!(
-                self.by_id.contains_key(id),
-                "Independent transaction {id:?} not in by_id"
+                self.by_id.contains_key(&tx_id),
+                "Independent transaction {tx_id:?} not in by_id"
+            );
+            assert_eq!(
+                seq_id, &tx_id.seq_id,
+                "Independent transactions sequence ID {seq_id:?} does not match transaction sequence ID {tx_id:?}"
             );
 
             // Independent transactions must be pending
-            let tx_in_pool = self.by_id.get(id).unwrap();
+            let tx_in_pool = self.by_id.get(&tx_id).unwrap();
             assert!(
                 tx_in_pool.is_pending,
-                "Independent transaction {id:?} is not pending"
+                "Independent transaction {tx_id:?} is not pending"
             );
 
             // Independent transaction should match the one in by_id
             assert_eq!(
                 independent_tx.transaction.hash(),
                 tx_in_pool.inner.transaction.hash(),
-                "Independent transaction hash mismatch for {id:?}"
+                "Independent transaction hash mismatch for {tx_id:?}"
             );
         }
 
@@ -686,9 +710,8 @@ impl AA2dPool {
         let mut seen_senders = std::collections::HashSet::new();
         for id in self.independent_transactions.keys() {
             assert!(
-                seen_senders.insert(id.seq_id),
-                "Duplicate sender {:?} in independent transactions",
-                id.seq_id
+                seen_senders.insert(*id),
+                "Duplicate sender {id:?} in independent transactions"
             );
         }
 
@@ -743,8 +766,10 @@ impl AA2dPool {
                 "Transaction ID mismatch: expected {id:?}, got {tx_id:?}"
             );
 
-            // If transaction is in independent set, it must be pending
-            if self.independent_transactions.contains_key(id) {
+            // If THIS transaction is the independent transaction for its sequence, it must be pending
+            if let Some(independent_tx) = self.independent_transactions.get(&id.seq_id)
+                && independent_tx.transaction.hash() == tx.inner.transaction.hash()
+            {
                 assert!(
                     tx.is_pending,
                     "Transaction {id:?} is in independent set but not pending"
@@ -1174,10 +1199,10 @@ mod tests {
         assert_eq!(queued_count, 1, "Should have 1 queued transaction");
 
         // Verify tx1 is NOT in independent set
-        let sender_id = AASequenceId::new(sender, nonce_key);
-        let tx1_id = AA2dTransactionId::new(sender_id, 1);
+        let seq_id = AASequenceId::new(sender, nonce_key);
+        let tx1_id = AA2dTransactionId::new(seq_id, 1);
         assert!(
-            !pool.independent_transactions.contains_key(&tx1_id),
+            !pool.independent_transactions.contains_key(&tx1_id.seq_id),
             "Transaction 1 should not be in independent set yet"
         );
 
@@ -1221,7 +1246,7 @@ mod tests {
         assert_eq!(queued_count, 0, "Should have 0 queued transactions");
 
         // Verify both transactions are now pending
-        let tx0_id = AA2dTransactionId::new(sender_id, 0);
+        let tx0_id = AA2dTransactionId::new(seq_id, 0);
         assert!(
             pool.by_id.get(&tx0_id).unwrap().is_pending,
             "Transaction 0 should be pending"
@@ -1233,14 +1258,16 @@ mod tests {
 
         // Verify tx0 (at on-chain nonce) is in independent set
         assert!(
-            pool.independent_transactions.contains_key(&tx0_id),
+            pool.independent_transactions.contains_key(&tx0_id.seq_id),
             "Transaction 0 should be in independent set (at on-chain nonce)"
         );
 
-        // Verify tx1 is NOT in independent set (depends on tx0)
-        assert!(
-            !pool.independent_transactions.contains_key(&tx1_id),
-            "Transaction 1 should NOT be in independent set (depends on tx0)"
+        // Verify the independent transaction for this sequence is tx0, not tx1
+        let independent_tx = pool.independent_transactions.get(&seq_id).unwrap();
+        assert_eq!(
+            independent_tx.transaction.hash(),
+            &tx0_hash,
+            "Independent transaction should be tx0, not tx1"
         );
 
         pool.assert_invariants();
@@ -1283,15 +1310,15 @@ mod tests {
         assert_eq!(queued_count, 0, "Should have 0 queued transactions");
 
         // Verify tx_low is in independent set
-        let sender_id = AASequenceId::new(sender, nonce_key);
-        let tx_id = AA2dTransactionId::new(sender_id, 0);
+        let seq_id = AASequenceId::new(sender, nonce_key);
+        let tx_id = AA2dTransactionId::new(seq_id, 0);
         assert!(
-            pool.independent_transactions.contains_key(&tx_id),
+            pool.independent_transactions.contains_key(&tx_id.seq_id),
             "Initial transaction should be in independent set"
         );
 
         // Verify the transaction in independent set is tx_low
-        let independent_tx = pool.independent_transactions.get(&tx_id).unwrap();
+        let independent_tx = pool.independent_transactions.get(&tx_id.seq_id).unwrap();
         assert_eq!(
             independent_tx.transaction.hash(),
             &tx_low_hash,
@@ -1358,11 +1385,11 @@ mod tests {
 
         // Verify independent set is updated with new transaction
         assert!(
-            pool.independent_transactions.contains_key(&tx_id),
+            pool.independent_transactions.contains_key(&tx_id.seq_id),
             "Transaction ID should still be in independent set"
         );
 
-        let independent_tx_after = pool.independent_transactions.get(&tx_id).unwrap();
+        let independent_tx_after = pool.independent_transactions.get(&tx_id.seq_id).unwrap();
         assert_eq!(
             independent_tx_after.transaction.hash(),
             &tx_high_hash,
@@ -1435,10 +1462,10 @@ mod tests {
         );
 
         // Verify tx0 is in independent set
-        let sender_id = AASequenceId::new(sender, nonce_key);
-        let tx0_id = AA2dTransactionId::new(sender_id, 0);
+        let seq_id = AASequenceId::new(sender, nonce_key);
+        let tx0_id = AA2dTransactionId::new(seq_id, 0);
         assert!(
-            pool.independent_transactions.contains_key(&tx0_id),
+            pool.independent_transactions.contains_key(&tx0_id.seq_id),
             "Transaction 0 should be in independent set"
         );
 
@@ -1447,7 +1474,7 @@ mod tests {
         // Step 1: Simulate mining block with nonces 0 and 1
         // New on-chain nonce becomes 2
         let mut on_chain_ids = HashMap::new();
-        on_chain_ids.insert(sender_id, 2u64);
+        on_chain_ids.insert(seq_id, 2u64);
 
         let (promoted, mined) = pool.on_aa_2d_nonce_changes(on_chain_ids);
 
@@ -1491,9 +1518,9 @@ mod tests {
         assert!(pool.contains(&tx6_hash), "Transaction 6 should remain");
 
         // Verify all remaining transactions are queued (not pending)
-        let tx3_id = AA2dTransactionId::new(sender_id, 3);
-        let tx4_id = AA2dTransactionId::new(sender_id, 4);
-        let tx6_id = AA2dTransactionId::new(sender_id, 6);
+        let tx3_id = AA2dTransactionId::new(seq_id, 3);
+        let tx4_id = AA2dTransactionId::new(seq_id, 4);
+        let tx6_id = AA2dTransactionId::new(seq_id, 6);
 
         assert!(
             !pool.by_id.get(&tx3_id).unwrap().is_pending,
@@ -1519,7 +1546,7 @@ mod tests {
         // Step 2: Simulate mining block with nonce 2
         // New on-chain nonce becomes 3
         let mut on_chain_ids = HashMap::new();
-        on_chain_ids.insert(sender_id, 3u64);
+        on_chain_ids.insert(seq_id, 3u64);
 
         let (promoted, mined) = pool.on_aa_2d_nonce_changes(on_chain_ids);
 
@@ -1566,22 +1593,18 @@ mod tests {
             "Transaction 6 should still be queued (gap at nonce 5)"
         );
 
-        // Verify transaction 3 is in independent set (at on-chain nonce)
+        // Verify transaction 3 is the independent transaction (at on-chain nonce)
         assert!(
-            pool.independent_transactions.contains_key(&tx3_id),
+            pool.independent_transactions.contains_key(&tx3_id.seq_id),
             "Transaction 3 should be in independent set (at on-chain nonce 3)"
         );
 
-        // Verify transaction 4 is NOT in independent set (depends on tx3)
-        assert!(
-            !pool.independent_transactions.contains_key(&tx4_id),
-            "Transaction 4 should NOT be in independent set (depends on tx3)"
-        );
-
-        // Verify transaction 6 is NOT in independent set
-        assert!(
-            !pool.independent_transactions.contains_key(&tx6_id),
-            "Transaction 6 should NOT be in independent set (still queued)"
+        // Verify the independent transaction is tx3 specifically, not tx4 or tx6
+        let independent_tx = pool.independent_transactions.get(&seq_id).unwrap();
+        assert_eq!(
+            independent_tx.transaction.hash(),
+            &tx3_hash,
+            "Independent transaction should be tx3 (nonce 3), not tx4 or tx6"
         );
 
         pool.assert_invariants();
@@ -1721,10 +1744,10 @@ mod tests {
         assert_eq!(queued_count, 0, "No transactions should be queued");
 
         // Verify tx0 is in independent set
-        let sender_id = AASequenceId::new(sender, nonce_key);
-        let tx0_id = AA2dTransactionId::new(sender_id, 0);
+        let seq_id = AASequenceId::new(sender, nonce_key);
+        let tx0_id = AA2dTransactionId::new(seq_id, 0);
         assert!(
-            pool.independent_transactions.contains_key(&tx0_id),
+            pool.independent_transactions.contains_key(&tx0_id.seq_id),
             "tx0 should be in independent set"
         );
 
@@ -1762,9 +1785,9 @@ mod tests {
         assert_eq!(pending_count, 3, "All 3 should be pending");
         assert_eq!(queued_count, 0, "None should be queued");
 
-        let sender_id = AASequenceId::new(sender, nonce_key);
-        let tx1_id = AA2dTransactionId::new(sender_id, 1);
-        let tx2_id = AA2dTransactionId::new(sender_id, 2);
+        let seq_id = AASequenceId::new(sender, nonce_key);
+        let tx1_id = AA2dTransactionId::new(seq_id, 1);
+        let tx2_id = AA2dTransactionId::new(seq_id, 2);
 
         // Verify tx2 is pending before removal
         assert!(
@@ -1839,11 +1862,11 @@ mod tests {
             "Should have 2 independent transactions"
         );
         assert!(
-            pool.independent_transactions.contains_key(&tx_a0_id),
+            pool.independent_transactions.contains_key(&tx_a0_id.seq_id),
             "Sender A's tx0 should be independent"
         );
         assert!(
-            pool.independent_transactions.contains_key(&tx_b0_id),
+            pool.independent_transactions.contains_key(&tx_b0_id.seq_id),
             "Sender B's tx0 should be independent"
         );
 
@@ -1877,11 +1900,11 @@ mod tests {
             "Should still have 2 independent transactions"
         );
         assert!(
-            pool.independent_transactions.contains_key(&tx_a1_id),
+            pool.independent_transactions.contains_key(&tx_a1_id.seq_id),
             "Sender A's tx1 should now be independent"
         );
         assert!(
-            pool.independent_transactions.contains_key(&tx_b0_id),
+            pool.independent_transactions.contains_key(&tx_b0_id.seq_id),
             "Sender B's tx0 should still be independent"
         );
 
@@ -1894,7 +1917,7 @@ mod tests {
         let nonces = pool.nonce_keys.clone();
         let sender = Address::random();
         let nonce_key = U256::from(42);
-        let sender_id = AASequenceId {
+        let seq_id = AASequenceId {
             address: sender,
             nonce_key,
         };
@@ -1959,8 +1982,8 @@ mod tests {
         );
 
         // Verify independent set has the final replacement
-        let tx0_id = AA2dTransactionId::new(sender_id, 0);
-        assert!(pool.independent_transactions.contains_key(&tx0_id));
+        let tx0_id = AA2dTransactionId::new(seq_id, 0);
+        assert!(pool.independent_transactions.contains_key(&tx0_id.seq_id));
 
         pool.assert_invariants();
     }
@@ -1971,7 +1994,7 @@ mod tests {
         let nonces = pool.nonce_keys.clone();
         let sender = Address::random();
         let nonce_key = U256::from(42);
-        let sender_id = AASequenceId {
+        let seq_id = AASequenceId {
             address: sender,
             nonce_key,
         };
@@ -1999,26 +2022,26 @@ mod tests {
         assert_eq!(pending_count + queued_count, 4);
 
         // Only tx0 should be pending, rest should be queued
-        let tx0_id = AA2dTransactionId::new(sender_id, 0);
+        let tx0_id = AA2dTransactionId::new(seq_id, 0);
         assert!(pool.by_id.get(&tx0_id).unwrap().is_pending);
         assert!(
             !pool
                 .by_id
-                .get(&AA2dTransactionId::new(sender_id, 5))
+                .get(&AA2dTransactionId::new(seq_id, 5))
                 .unwrap()
                 .is_pending
         );
         assert!(
             !pool
                 .by_id
-                .get(&AA2dTransactionId::new(sender_id, 10))
+                .get(&AA2dTransactionId::new(seq_id, 10))
                 .unwrap()
                 .is_pending
         );
         assert!(
             !pool
                 .by_id
-                .get(&AA2dTransactionId::new(sender_id, 15))
+                .get(&AA2dTransactionId::new(seq_id, 15))
                 .unwrap()
                 .is_pending
         );
@@ -2036,7 +2059,7 @@ mod tests {
 
         // Now [0,1,2,3,4,5] should be pending
         for nonce in 0..=5 {
-            let id = AA2dTransactionId::new(sender_id, nonce);
+            let id = AA2dTransactionId::new(seq_id, nonce);
             assert!(
                 pool.by_id.get(&id).unwrap().is_pending,
                 "Nonce {nonce} should be pending"
@@ -2046,14 +2069,14 @@ mod tests {
         assert!(
             !pool
                 .by_id
-                .get(&AA2dTransactionId::new(sender_id, 10))
+                .get(&AA2dTransactionId::new(seq_id, 10))
                 .unwrap()
                 .is_pending
         );
         assert!(
             !pool
                 .by_id
-                .get(&AA2dTransactionId::new(sender_id, 15))
+                .get(&AA2dTransactionId::new(seq_id, 15))
                 .unwrap()
                 .is_pending
         );
@@ -2070,7 +2093,7 @@ mod tests {
 
         // Now [0..=10] should be pending
         for nonce in 0..=10 {
-            let id = AA2dTransactionId::new(sender_id, nonce);
+            let id = AA2dTransactionId::new(seq_id, nonce);
             assert!(
                 pool.by_id.get(&id).unwrap().is_pending,
                 "Nonce {nonce} should be pending"
@@ -2080,7 +2103,7 @@ mod tests {
         assert!(
             !pool
                 .by_id
-                .get(&AA2dTransactionId::new(sender_id, 15))
+                .get(&AA2dTransactionId::new(seq_id, 15))
                 .unwrap()
                 .is_pending
         );
@@ -2097,7 +2120,7 @@ mod tests {
 
         // All should be pending now
         for nonce in 0..=15 {
-            let id = AA2dTransactionId::new(sender_id, nonce);
+            let id = AA2dTransactionId::new(seq_id, nonce);
             assert!(
                 pool.by_id.get(&id).unwrap().is_pending,
                 "Nonce {nonce} should be pending"
@@ -2113,7 +2136,7 @@ mod tests {
         let nonces = pool.nonce_keys.clone();
         let sender = Address::random();
         let nonce_key = U256::from(42);
-        let sender_id = AASequenceId {
+        let seq_id = AASequenceId {
             address: sender,
             nonce_key,
         };
@@ -2136,14 +2159,14 @@ mod tests {
         for nonce in 0..=4 {
             assert!(
                 pool.by_id
-                    .get(&AA2dTransactionId::new(sender_id, nonce))
+                    .get(&AA2dTransactionId::new(seq_id, nonce))
                     .unwrap()
                     .is_pending
             );
         }
 
         // Remove nonce 2 from the middle
-        let tx2_id = AA2dTransactionId::new(sender_id, 2);
+        let tx2_id = AA2dTransactionId::new(seq_id, 2);
         let tx2_hash = *pool.by_id.get(&tx2_id).unwrap().inner.transaction.hash();
         let removed = pool.remove_transactions([&tx2_hash].into_iter());
         assert_eq!(removed.len(), 1, "Should remove transaction");
@@ -2167,7 +2190,7 @@ mod tests {
         let nonces = pool.nonce_keys.clone();
         let sender = Address::random();
         let nonce_key = U256::from(42);
-        let sender_id = AASequenceId {
+        let seq_id = AASequenceId {
             address: sender,
             nonce_key,
         };
@@ -2190,10 +2213,7 @@ mod tests {
 
         // Only tx0 should be in independent set
         assert_eq!(pool.independent_transactions.len(), 1);
-        assert!(
-            pool.independent_transactions
-                .contains_key(&AA2dTransactionId::new(sender_id, 0))
-        );
+        assert!(pool.independent_transactions.contains_key(&seq_id));
 
         // Verify initial state: tx0 pending, tx2 and tx4 queued
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
@@ -2212,10 +2232,7 @@ mod tests {
 
         // Still only tx0 in independent set
         assert_eq!(pool.independent_transactions.len(), 1);
-        assert!(
-            pool.independent_transactions
-                .contains_key(&AA2dTransactionId::new(sender_id, 0))
-        );
+        assert!(pool.independent_transactions.contains_key(&seq_id));
 
         // Fill second gap: insert [3]
         let tx3 = create_aa_tx(sender, nonce_key, 3);
@@ -2229,7 +2246,7 @@ mod tests {
 
         // Simulate mining [0,1]
         let mut on_chain_ids = HashMap::new();
-        on_chain_ids.insert(sender_id, 2u64);
+        on_chain_ids.insert(seq_id, 2u64);
         let (promoted, mined) = pool.on_aa_2d_nonce_changes(on_chain_ids);
 
         // Should have mined [0,1], no promotions (already pending)
@@ -2238,10 +2255,7 @@ mod tests {
 
         // Now tx2 should be in independent set
         assert_eq!(pool.independent_transactions.len(), 1);
-        assert!(
-            pool.independent_transactions
-                .contains_key(&AA2dTransactionId::new(sender_id, 2))
-        );
+        assert!(pool.independent_transactions.contains_key(&seq_id));
 
         // Verify [2,3,4] remain in pool
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
@@ -2285,12 +2299,12 @@ mod tests {
 
         // Each sender should have all transactions pending
         for (sender, nonce_key) in &senders {
-            let sender_id = AASequenceId {
+            let seq_id = AASequenceId {
                 address: *sender,
                 nonce_key: *nonce_key,
             };
             for nonce in 0..TXS_PER_SENDER {
-                let id = AA2dTransactionId::new(sender_id, nonce);
+                let id = AA2dTransactionId::new(seq_id, nonce);
                 assert!(pool.by_id.get(&id).unwrap().is_pending);
             }
         }
@@ -2298,13 +2312,13 @@ mod tests {
         // Independent set should have exactly NUM_SENDERS transactions (one per sender at nonce 0)
         assert_eq!(pool.independent_transactions.len(), NUM_SENDERS);
         for (sender, nonce_key) in &senders {
-            let sender_id = AASequenceId {
+            let seq_id = AASequenceId {
                 address: *sender,
                 nonce_key: *nonce_key,
             };
-            let tx0_id = AA2dTransactionId::new(sender_id, 0);
+            let tx0_id = AA2dTransactionId::new(seq_id, 0);
             assert!(
-                pool.independent_transactions.contains_key(&tx0_id),
+                pool.independent_transactions.contains_key(&tx0_id.seq_id),
                 "Sender {sender:?} should have tx0 in independent set"
             );
         }
@@ -2312,11 +2326,11 @@ mod tests {
         // Simulate mining first transaction for each sender
         let mut on_chain_ids = HashMap::new();
         for (sender, nonce_key) in &senders {
-            let sender_id = AASequenceId {
+            let seq_id = AASequenceId {
                 address: *sender,
                 nonce_key: *nonce_key,
             };
-            on_chain_ids.insert(sender_id, 1u64);
+            on_chain_ids.insert(seq_id, 1u64);
         }
 
         let (promoted, mined) = pool.on_aa_2d_nonce_changes(on_chain_ids);
@@ -2336,13 +2350,13 @@ mod tests {
         // Independent set should still have NUM_SENDERS transactions (now at nonce 1)
         assert_eq!(pool.independent_transactions.len(), NUM_SENDERS);
         for (sender, nonce_key) in &senders {
-            let sender_id = AASequenceId {
+            let seq_id = AASequenceId {
                 address: *sender,
                 nonce_key: *nonce_key,
             };
-            let tx1_id = AA2dTransactionId::new(sender_id, 1);
+            let tx1_id = AA2dTransactionId::new(seq_id, 1);
             assert!(
-                pool.independent_transactions.contains_key(&tx1_id),
+                pool.independent_transactions.contains_key(&tx1_id.seq_id),
                 "Sender {sender:?} should have tx1 in independent set"
             );
         }
@@ -2356,7 +2370,7 @@ mod tests {
         let nonces = pool.nonce_keys.clone();
         let sender = Address::random();
         let nonce_key = U256::from(42);
-        let sender_id = AASequenceId {
+        let seq_id = AASequenceId {
             address: sender,
             nonce_key,
         };
@@ -2380,10 +2394,7 @@ mod tests {
 
         // Only tx0 should be in independent set
         assert_eq!(pool.independent_transactions.len(), 1);
-        assert!(
-            pool.independent_transactions
-                .contains_key(&AA2dTransactionId::new(sender_id, 0))
-        );
+        assert!(pool.independent_transactions.contains_key(&seq_id));
 
         // Verify initial state: tx0 pending, tx3 and tx5 queued
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
@@ -2406,13 +2417,10 @@ mod tests {
 
         // Still only tx0 in independent set (at on-chain nonce 0)
         assert_eq!(pool.independent_transactions.len(), 1);
-        assert!(
-            pool.independent_transactions
-                .contains_key(&AA2dTransactionId::new(sender_id, 0))
-        );
+        assert!(pool.independent_transactions.contains_key(&seq_id));
 
         let mut on_chain_ids = HashMap::new();
-        on_chain_ids.insert(sender_id, 3u64);
+        on_chain_ids.insert(seq_id, 3u64);
         nonces.insert(sender, nonce_key, 3, storage_slot);
         let (_promoted, mined) = pool.on_aa_2d_nonce_changes(on_chain_ids);
 
@@ -2426,9 +2434,9 @@ mod tests {
             1,
             "Should have one independent transaction"
         );
-        let key = AA2dTransactionId::new(sender_id, 3);
+        let key = AA2dTransactionId::new(seq_id, 3);
         assert!(
-            pool.independent_transactions.contains_key(&key),
+            pool.independent_transactions.contains_key(&key.seq_id),
             "tx3 should be in independent set"
         );
 
