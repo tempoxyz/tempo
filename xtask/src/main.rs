@@ -12,7 +12,6 @@ use alloy::signers::{
 };
 use clap::Parser as _;
 use commonware_codec::DecodeExt;
-use commonware_cryptography::Signer;
 use eyre::Context;
 
 mod generate_devnet;
@@ -62,10 +61,13 @@ enum Action {
 #[derive(Debug, clap::Args)]
 struct GenerateAddPeer {
     #[arg(long)]
-    signer: String,
+    public_key: String,
 
     #[arg(long)]
-    addr: SocketAddr,
+    inbound_address: SocketAddr,
+
+    #[arg(long)]
+    rpc_endpoint: String,
 
     #[arg(long, default_value_t = 0)]
     admin_index: u32,
@@ -81,29 +83,38 @@ struct GenerateAddPeer {
     pub mnemonic: String,
 }
 
-fn generate_config_to_add_peer(cfg: GenerateAddPeer) -> eyre::Result<()> {
+fn generate_config_to_add_peer(
+    GenerateAddPeer {
+        public_key,
+        inbound_address,
+        admin_index,
+        validator_index,
+        rpc_endpoint,
+        mnemonic,
+    }: GenerateAddPeer,
+) -> eyre::Result<()> {
     use tempo_precompiles::VALIDATOR_CONFIG_ADDRESS;
-    let signer_bytes = const_hex::decode(&cfg.signer)?;
-    let signer = commonware_cryptography::ed25519::PrivateKey::decode(&signer_bytes[..])?;
+    let public_key_bytes = const_hex::decode(&public_key)?;
+    let public_key = commonware_cryptography::ed25519::PublicKey::decode(&public_key_bytes[..])?;
 
     let admin_key = MnemonicBuilder::<English>::default()
-        .phrase(cfg.mnemonic.clone())
-        .index(cfg.admin_index)?
+        .phrase(mnemonic.clone())
+        .index(admin_index)?
         .build()?;
 
     let admin_key = const_hex::encode(admin_key.credential().to_bytes());
 
     let validator_address = {
         let key = MnemonicBuilder::<English>::default()
-            .phrase(cfg.mnemonic.clone())
-            .index(cfg.validator_index)?
+            .phrase(mnemonic.clone())
+            .index(validator_index)?
             .build()?;
         secret_key_to_address(key.credential())
     };
-    let public_key = signer.public_key();
-    let inbound = cfg.addr.to_string();
-    let outbound = cfg.addr.to_string();
-    println!("
+    let inbound = inbound_address.to_string();
+    let outbound = inbound_address.to_string();
+    println!(
+        "\
         cast send {VALIDATOR_CONFIG_ADDRESS} \
         \\\n\"addValidator(address newValidatorAddress, bytes32 publicKey, bool active, string calldata inboundAddress, string calldata outboundAddress)\" \
         \\\n\"{validator_address}\" \
@@ -112,6 +123,7 @@ fn generate_config_to_add_peer(cfg: GenerateAddPeer) -> eyre::Result<()> {
         \\\n\"{inbound}\" \
         \\\n\"{outbound}\" \
         \\\n--private-key {admin_key} \
-        \\\n-r 127.0.0.1:8545");
+        \\\n-r {rpc_endpoint}"
+    );
     Ok(())
 }
