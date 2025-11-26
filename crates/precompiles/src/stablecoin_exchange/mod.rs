@@ -4219,7 +4219,7 @@ mod tests {
 
     #[test]
     fn test_best_tick_updates_on_fill() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -4303,7 +4303,7 @@ mod tests {
 
     #[test]
     fn test_best_tick_updates_on_cancel() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
