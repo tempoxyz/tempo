@@ -106,7 +106,7 @@ fn generate_config_to_add_peer(
 
     let validator_address = {
         let key = MnemonicBuilder::<English>::default()
-            .phrase(mnemonic.clone())
+            .phrase(mnemonic)
             .index(validator_index)?
             .build()?;
         secret_key_to_address(key.credential())

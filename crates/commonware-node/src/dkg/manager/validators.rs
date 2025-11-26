@@ -402,7 +402,7 @@ mod tests {
         let private_key = PrivateKey::from_seed(42);
         let decoded_validator = DecodedValidator {
             public_key: private_key.public_key(),
-            inbound: "localhost:1234".parse().unwrap(),
+            inbound: "192.168.0.1:1234".parse().unwrap(),
             outbound: "127.0.0.1:4321".parse().unwrap(),
             index: 42,
             address: alloy_primitives::Address::ZERO,
