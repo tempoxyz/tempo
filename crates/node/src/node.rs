@@ -9,8 +9,7 @@ use crate::{
 use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use reth_chainspec::EthChainSpec;
 use reth_engine_local::LocalPayloadAttributesBuilder;
-use reth_ethereum::{provider::CanonStateSubscriptions, tasks::TaskSpawner};
-use reth_ethereum_engine_primitives::EthPayloadAttributes;
+use reth_ethereum::provider::CanonStateSubscriptions;
 use reth_evm::revm::primitives::Address;
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodePrimitives, NodeTypes,
@@ -431,7 +430,7 @@ impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, Tem
 where
     Node: FullNodeTypes<Types = TempoNode>,
 {
-    type PayloadBuilder = TempoPayloadBuilder<Node::Provider, TempoTransactionPool<Node::Provider>>;
+    type PayloadBuilder = TempoPayloadBuilder<Node::Provider>;
 
     async fn build_payload_builder(
         self,

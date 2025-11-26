@@ -34,10 +34,7 @@ use std::{
 use tempo_chainspec::TempoChainSpec;
 
 /// Tempo transaction pool that routes based on nonce_key
-pub struct TempoTransactionPool<Client>
-where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
-{
+pub struct TempoTransactionPool<Client> {
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
     protocol_pool: Pool<
         TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
@@ -48,10 +45,7 @@ where
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
 }
 
-impl<Client> TempoTransactionPool<Client>
-where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
-{
+impl<Client> TempoTransactionPool<Client> {
     pub fn new(
         protocol_pool: Pool<
             TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
@@ -70,7 +64,11 @@ where
     pub fn aa_2d_nonce_keys(&self) -> AA2dNonceKeys {
         self.aa_2d_pool.read().aa_2d_nonce_keys().clone()
     }
-
+}
+impl<Client> TempoTransactionPool<Client>
+where
+    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
+{
     /// Updates the 2d nonce pool with the given state changes.
     pub(crate) fn on_aa_2d_nonce_changes(&self, on_chain_ids: HashMap<AASenderId, u64>) {
         if on_chain_ids.is_empty() {
@@ -181,10 +179,7 @@ where
 }
 
 // Manual Clone implementation
-impl<Client> Clone for TempoTransactionPool<Client>
-where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
-{
+impl<Client> Clone for TempoTransactionPool<Client> {
     fn clone(&self) -> Self {
         Self {
             protocol_pool: self.protocol_pool.clone(),
@@ -194,15 +189,12 @@ where
 }
 
 // Manual Debug implementation
-impl<Client> std::fmt::Debug for TempoTransactionPool<Client>
-where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
-{
+impl<Client> std::fmt::Debug for TempoTransactionPool<Client> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TempoTransactionPool")
             .field("protocol_pool", &"Pool<...>")
-            .field("user_nonce_pool", &"Pool2D<...>")
-            .finish()
+            .field("aa_2d_nonce_pool", &"AA2dPool<...>")
+            .finish_non_exhaustive()
     }
 }
 
