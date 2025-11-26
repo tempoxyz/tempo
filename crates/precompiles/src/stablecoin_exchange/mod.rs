@@ -4568,4 +4568,36 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_find_trade_path_rejects_non_tip20_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let admin = Address::random();
+        let user = Address::random();
+
+        let (_, quote_token) = setup_test_tokens(
+            exchange.storage,
+            admin,
+            user,
+            exchange.address,
+            MIN_ORDER_AMOUNT,
+        );
+
+        let non_tip20_address = Address::random();
+        let result = exchange.find_trade_path(non_tip20_address, quote_token);
+        assert!(
+            matches!(
+                result,
+                Err(TempoPrecompileError::StablecoinExchange(
+                    StablecoinExchangeError::InvalidToken(_)
+                ))
+            ),
+            "Should return InvalidToken error for non-TIP20 token post-Allegretto"
+        );
+
+        Ok(())
+    }
 }
