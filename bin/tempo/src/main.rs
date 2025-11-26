@@ -36,7 +36,7 @@ use tempo_faucet::{
     args::FaucetArgs,
     faucet::{TempoFaucetExt, TempoFaucetExtApiServer},
 };
-use tempo_node::{TempoFullNode, node::TempoNode};
+use tempo_node::{TempoFullNode, TempoNodeArgs, node::TempoNode};
 use tokio::sync::oneshot;
 use tracing::{info, info_span};
 
@@ -57,6 +57,9 @@ struct TempoArgs {
 
     #[command(flatten)]
     pub faucet_args: FaucetArgs,
+
+    #[command(flatten)]
+    pub node_args: TempoNodeArgs,
 }
 
 fn main() -> eyre::Result<()> {
@@ -185,7 +188,7 @@ fn main() -> eyre::Result<()> {
             node,
             node_exit_future,
         } = builder
-            .node(TempoNode::new())
+            .node(TempoNode::new(&args.node_args))
             .apply(|mut builder: WithLaunchContext<_>| {
                 if let Some(follow_url) = &args.follow {
                     builder.config_mut().debug.rpc_consensus_url = Some(follow_url.clone());
