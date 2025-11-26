@@ -874,8 +874,8 @@ impl AA2dNonceKeysInner {
         changed_slots: impl IntoIterator<Item = (U256, U256)>,
     ) -> HashMap<AASenderId, u64> {
         let mut ids = HashMap::new();
-        for (accout_nonce_key_slot, nonce) in changed_slots {
-            if let Some((address, nonce_key)) = self.address_slots.get(&accout_nonce_key_slot)
+        for (account_nonce_key_slot, nonce) in changed_slots {
+            if let Some((address, nonce_key)) = self.address_slots.get(&account_nonce_key_slot)
                 && let Some(nonce_keys) = self.address_to_nonce_keys.get_mut(address)
             {
                 match nonce_keys.entry(*nonce_key) {

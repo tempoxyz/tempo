@@ -389,7 +389,7 @@ where
         }
 
         let aa_2d_config = AA2dPoolConfig {
-            price_bump_config: pool_config.price_bumps.clone(),
+            price_bump_config: pool_config.price_bumps,
             // TODO: configure dedicated limit
             aa_2d_limit: pool_config.pending_limit,
         };

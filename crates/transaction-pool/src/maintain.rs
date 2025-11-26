@@ -1,4 +1,4 @@
-//! Maintainence loops for the tempo pool
+//! Maintenance loops for the tempo pool
 
 use crate::TempoTransactionPool;
 use futures::{Stream, StreamExt};
