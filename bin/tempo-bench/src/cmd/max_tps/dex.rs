@@ -18,7 +18,6 @@ const GAS_LIMIT: u64 = 500_000;
 /// * Seeds initial liquidity by placing flip orders
 pub(super) async fn setup(
     url: Url,
-    chain_id: ChainId,
     mnemonic: &str,
     signers: Vec<PrivateKeySigner>,
     max_concurrent_requests: usize,
@@ -64,7 +63,7 @@ pub(super) async fn setup(
 
     for (i, &token) in user_tokens.iter().enumerate() {
         let provider = provider.clone();
-        let tx = create_pair(&exchange, wallet.clone(), nonce + i as u64, chain_id, token).await?;
+        let tx = create_pair(&exchange, wallet.clone(), nonce + i as u64, token).await?;
 
         futures.push(Box::pin(async move {
             alloy::contract::Result::Ok(provider.send_raw_transaction(tx.as_slice()).await?)
@@ -81,7 +80,6 @@ pub(super) async fn setup(
                 token,
                 wallet.clone(),
                 nonce + (i as u64 * tokens.len() as u64) + j as u64,
-                chain_id,
                 recipient,
                 mint_amount,
             )
@@ -111,7 +109,7 @@ pub(super) async fn setup(
 
         for (i, token) in tokens.enumerate() {
             let provider = provider.clone();
-            let tx = approve(&token, signer.clone(), nonce + i as u64, chain_id).await?;
+            let tx = approve(&token, signer.clone(), nonce + i as u64).await?;
             futures.push(Box::pin(async move {
                 alloy::contract::Result::Ok(provider.send_raw_transaction(tx.as_slice()).await?)
             }) as Pin<Box<dyn Future<Output = _>>>);
@@ -140,7 +138,6 @@ pub(super) async fn setup(
                 &exchange,
                 signer.clone(),
                 nonce + i as u64,
-                chain_id,
                 token,
                 first_order_amount,
                 tick_under,
@@ -171,13 +168,11 @@ pub(super) async fn approve(
     token: &TIP20Instance,
     signer: PrivateKeySigner,
     nonce: u64,
-    chain_id: ChainId,
 ) -> eyre::Result<Vec<u8>> {
     Ok(token
         .approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
         .gas(GAS_LIMIT)
         .gas_price(TEMPO_BASE_FEE as u128)
-        .chain_id(chain_id)
         .nonce(nonce)
         .build_raw_transaction(signer)
         .await?)
@@ -187,7 +182,6 @@ pub(super) async fn mint(
     token: &TIP20Instance,
     signer: PrivateKeySigner,
     nonce: u64,
-    chain_id: ChainId,
     recipient: Address,
     mint_amount: U256,
 ) -> eyre::Result<Vec<u8>> {
@@ -195,18 +189,15 @@ pub(super) async fn mint(
         .mint(recipient, mint_amount)
         .gas(GAS_LIMIT)
         .gas_price(TEMPO_BASE_FEE as u128)
-        .chain_id(chain_id)
         .nonce(nonce)
         .build_raw_transaction(signer)
         .await?)
 }
 
-#[expect(clippy::too_many_arguments)]
 pub(super) async fn place_flip(
     exchange: &StablecoinExchangeInstance,
     signer: PrivateKeySigner,
     nonce: u64,
-    chain_id: ChainId,
     token: Address,
     amount: u128,
     tick_under: i16,
@@ -216,7 +207,6 @@ pub(super) async fn place_flip(
         .placeFlip(token, amount, true, tick_under, tick_over)
         .gas(GAS_LIMIT)
         .gas_price(TEMPO_BASE_FEE as u128)
-        .chain_id(chain_id)
         .nonce(nonce)
         .build_raw_transaction(signer)
         .await?)
@@ -226,18 +216,13 @@ pub(super) async fn create_pair(
     exchange: &StablecoinExchangeInstance,
     signer: PrivateKeySigner,
     nonce: u64,
-    chain_id: ChainId,
     token_address: Address,
 ) -> eyre::Result<Vec<u8>> {
     Ok(exchange
         .createPair(token_address)
-        .map(|request| {
-            request
-                .with_gas_limit(GAS_LIMIT)
-                .with_gas_price(TEMPO_BASE_FEE as u128)
-                .with_chain_id(chain_id)
-                .with_nonce(nonce)
-        })
+        .gas(GAS_LIMIT)
+        .gas_price(TEMPO_BASE_FEE as u128)
+        .nonce(nonce)
         .build_raw_transaction(signer)
         .await?)
 }
@@ -246,7 +231,6 @@ pub(super) async fn place(
     exchange: &StablecoinExchangeInstance,
     signer: PrivateKeySigner,
     nonce: u64,
-    chain_id: ChainId,
     token_address: Address,
 ) -> eyre::Result<Vec<u8>> {
     let tick = (random::<u16>() % (MAX_TICK - MIN_TICK) as u16) as i16 + MIN_TICK;
@@ -256,7 +240,6 @@ pub(super) async fn place(
         .place(token_address, MIN_ORDER_AMOUNT, true, tick)
         .gas(GAS_LIMIT)
         .gas_price(TEMPO_BASE_FEE as u128)
-        .chain_id(chain_id)
         .nonce(nonce)
         .build_raw_transaction(signer)
         .await?)
@@ -266,7 +249,6 @@ pub(super) async fn swap_in(
     exchange: &StablecoinExchangeInstance,
     signer: PrivateKeySigner,
     nonce: u64,
-    chain_id: ChainId,
     token_in: Address,
     token_out: Address,
 ) -> eyre::Result<Vec<u8>> {
@@ -275,7 +257,6 @@ pub(super) async fn swap_in(
         .swapExactAmountIn(token_in, token_out, MIN_ORDER_AMOUNT, 0)
         .gas(GAS_LIMIT)
         .gas_price(TEMPO_BASE_FEE as u128)
-        .chain_id(chain_id)
         .nonce(nonce)
         .build_raw_transaction(signer)
         .await?)

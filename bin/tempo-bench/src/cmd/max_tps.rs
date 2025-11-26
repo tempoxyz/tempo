@@ -6,8 +6,8 @@ use tempo_alloy::TempoNetwork;
 use alloy::{
     consensus::BlockHeader,
     eips::{BlockNumberOrTag::Latest, Decodable2718},
-    network::{ReceiptResponse, TransactionBuilder},
-    primitives::{Address, BlockNumber, ChainId, U256},
+    network::ReceiptResponse,
+    primitives::{Address, BlockNumber, U256},
     providers::{PendingTransactionBuilder, Provider, ProviderBuilder},
     sol_types::SolEvent,
     transports::http::reqwest::Url,
@@ -76,10 +76,6 @@ pub struct MaxTpsArgs {
 
     #[arg(short, long, default_value = "0")]
     from_mnemonic_index: u32,
-
-    /// Chain ID
-    #[arg(long, default_value = "1337")]
-    chain_id: u64,
 
     /// Token address used when creating TIP20 transfer calldata
     #[arg(long, default_value = "0x20c0000000000000000000000000000000000000")]
@@ -170,7 +166,6 @@ impl MaxTpsArgs {
                 total_txs,
                 num_accounts: self.accounts,
                 mnemonic: &self.mnemonic,
-                chain_id: self.chain_id,
                 rpc_url: target_urls[0].clone(),
                 from_mnemonic_index: self.from_mnemonic_index,
                 max_concurrent_requests: self.total_connections as usize,
@@ -338,7 +333,6 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
         num_accounts,
         mnemonic,
         from_mnemonic_index,
-        chain_id,
         rpc_url,
         max_concurrent_requests,
         max_concurrent_transactions,
@@ -369,7 +363,6 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
 
     let (exchange, quote, user_tokens) = dex::setup(
         rpc_url.clone(),
-        chain_id,
         mnemonic,
         signers.clone(),
         max_concurrent_requests,
@@ -421,7 +414,6 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
                         Box::pin(tip20::transfer(
                             signer,
                             nonce,
-                            chain_id,
                             user_tokens[random::<u16>() as usize % user_tokens_count].clone(),
                         ))
                     }),
@@ -434,7 +426,6 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
                             &exchange,
                             signer,
                             nonce,
-                            chain_id,
                             *user_tokens[random::<u16>() as usize % user_tokens_count].address(),
                             quote,
                         ))
@@ -448,7 +439,6 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
                             &exchange,
                             signer,
                             nonce,
-                            chain_id,
                             *user_tokens[random::<u16>() as usize % user_tokens_count].address(),
                         ))
                     }),
@@ -597,7 +587,7 @@ pub async fn generate_report(
         run_duration_secs: args.duration,
         num_accounts: args.accounts,
         num_workers: args.workers,
-        chain_id: args.chain_id,
+        chain_id: provider.get_chain_id().await?,
         total_connections: args.total_connections,
         start_block,
         end_block,
@@ -685,7 +675,6 @@ struct GenerateTransactionsInput<'input> {
     total_txs: u64,
     num_accounts: u64,
     mnemonic: &'input str,
-    chain_id: u64,
     rpc_url: Url,
     from_mnemonic_index: u32,
     max_concurrent_requests: usize,
