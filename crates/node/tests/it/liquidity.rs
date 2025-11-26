@@ -1,22 +1,65 @@
 use alloy::{
-    primitives::U256,
+    primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
     signers::local::MnemonicBuilder,
-    sol_types::SolCall,
+    sol_types::{SolCall, SolEvent},
 };
 use alloy_eips::Encodable2718;
 use alloy_network::TxSignerSync;
-use tempo_contracts::precompiles::IFeeManager::setUserTokenCall;
-use tempo_precompiles::DEFAULT_FEE_TOKEN;
+use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20, ITIP20Factory};
+use tempo_precompiles::{
+    DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
+    tip20::{ISSUER_ROLE, token_id_to_address},
+};
 use tempo_primitives::TxFeeToken;
 
+/// Creates a test TIP20 token using pre-allegretto createToken_0
+async fn setup_test_token_pre_allegretto<P>(
+    provider: P,
+    caller: Address,
+) -> eyre::Result<ITIP20::ITIP20Instance<impl Clone + Provider>>
+where
+    P: Provider + Clone,
+{
+    use tempo_contracts::precompiles::IRolesAuth;
+
+    let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
+    let receipt = factory
+        .createToken_0(
+            "Test".to_string(),
+            "TEST".to_string(),
+            "USD".to_string(),
+            PATH_USD_ADDRESS,
+            caller,
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    let event = ITIP20Factory::TokenCreated_0::decode_log(&receipt.logs()[0].inner).unwrap();
+
+    let token_addr = token_id_to_address(event.tokenId.to());
+    let token = ITIP20::new(token_addr, provider.clone());
+    let roles = IRolesAuth::new(*token.address(), provider);
+
+    roles
+        .grantRole(*ISSUER_ROLE, caller)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    Ok(token)
+}
+
 /// Test block building when FeeAMM pool has insufficient liquidity for payment transactions
+/// Note: This test runs without allegretto to use the old balanced `mint` function
 #[tokio::test(flavor = "multi_thread")]
 async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
+    // Run without allegretto to use the old `mint` function that creates balanced pools
     let setup = crate::utils::TestNodeBuilder::new()
-        .allegretto_activated()
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -29,8 +72,8 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         .wallet(wallet.clone())
         .connect_http(http_url);
 
-    // Setup payment token
-    let payment_token = crate::utils::setup_test_token(provider.clone(), sender_address).await?;
+    // Setup payment token using pre-allegretto createToken_0
+    let payment_token = setup_test_token_pre_allegretto(provider.clone(), sender_address).await?;
     let payment_token_addr = *payment_token.address();
 
     // Get validator token address (USDC from genesis)
@@ -39,8 +82,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     let validator_token_addr = DEFAULT_FEE_TOKEN;
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-    let validator_token =
-        tempo_contracts::precompiles::ITIP20::new(validator_token_addr, provider.clone());
+    let validator_token = ITIP20::new(validator_token_addr, provider.clone());
 
     let liquidity_amount = U256::from(10_000_000);
 
@@ -62,11 +104,13 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         .get_receipt()
         .await?;
 
-    // Create pool by minting liquidity (use mintWithValidatorToken as mint is disabled post-Moderato)
+    // Create pool by minting liquidity with both tokens (balanced pool)
+    // This requires pre-Moderato spec since mint is disabled post-Moderato
     fee_amm
-        .mintWithValidatorToken(
+        .mint(
             payment_token_addr,
             validator_token_addr,
+            liquidity_amount,
             liquidity_amount,
             sender_address,
         )
