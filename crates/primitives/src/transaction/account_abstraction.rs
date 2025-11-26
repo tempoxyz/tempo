@@ -1712,11 +1712,11 @@ mod tests {
         let key_auth = KeyAuthorization {
             chain_id: 1, // Test chain ID
             key_type: SignatureType::Secp256k1,
-            expiry: 1234567890,
-            limits: vec![crate::transaction::TokenLimit {
+            expiry: Some(1234567890),
+            limits: Some(vec![crate::transaction::TokenLimit {
                 token: address!("0000000000000000000000000000000000000003"),
                 limit: U256::from(10000),
-            }],
+            }]),
             key_id: address!("0000000000000000000000000000000000000004"),
             signature: PrimitiveSignature::Secp256k1(Signature::test_signature()),
         };
@@ -1738,7 +1738,10 @@ mod tests {
         let decoded_key_auth = decoded_with.key_authorization.unwrap();
         assert_eq!(decoded_key_auth.key_type, key_auth.key_type);
         assert_eq!(decoded_key_auth.expiry, key_auth.expiry);
-        assert_eq!(decoded_key_auth.limits.len(), key_auth.limits.len());
+        assert_eq!(
+            decoded_key_auth.limits.as_ref().map(|l| l.len()),
+            key_auth.limits.as_ref().map(|l| l.len())
+        );
         assert_eq!(decoded_key_auth.key_id, key_auth.key_id);
 
         // Important: The encoded transaction WITHOUT key_authorization should be shorter
