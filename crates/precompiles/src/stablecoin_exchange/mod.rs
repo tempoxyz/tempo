@@ -4225,10 +4225,8 @@ mod tests {
         let amount = MIN_ORDER_AMOUNT;
 
         // Use different ticks for bids (100, 90) and asks (50, 60)
-        let bid_tick_1 = 100i16; // Best bid (highest)
-        let bid_tick_2 = 90i16; // Second best bid
-        let ask_tick_1 = 50i16; // Best ask (lowest)
-        let ask_tick_2 = 60i16; // Second best ask
+        let (bid_tick_1, bid_tick_2) = (100_i16, 90_i16); // (best, second best)
+        let (ask_tick_1, ask_tick_2) = (50_i16, 60_i16); // (best, second best)
 
         // Calculate escrow for all orders
         let bid_price_1 = orderbook::tick_to_price(bid_tick_1);
@@ -4270,29 +4268,28 @@ mod tests {
         assert_eq!(orderbook.best_bid_tick, bid_tick_1);
         assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
-        // Fill all bids at tick 100 - bob sells base to fill the bid
+        // Fill all bids at tick 100 (bob sells base)
         exchange.set_balance(bob, base_token, amount)?;
         exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
-
-        // Verify best_bid_tick moved to tick 90
+        // Verify best_bid_tick moved to tick 90, best_ask_tick unchanged
         let orderbook = exchange.sload_books(book_key)?;
         assert_eq!(orderbook.best_bid_tick, bid_tick_2);
+        assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
         // Fill remaining bid at tick 90
         exchange.set_balance(bob, base_token, amount)?;
         exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
-
-        // Verify best_bid_tick is now i16::MIN (no more bids)
+        // Verify best_bid_tick is now i16::MIN, best_ask_tick unchanged
         let orderbook = exchange.sload_books(book_key)?;
         assert_eq!(orderbook.best_bid_tick, i16::MIN);
+        assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
-        // Fill all asks at tick 50 - bob buys base to fill the ask
+        // Fill all asks at tick 50 (bob buys base)
         let ask_price_1 = orderbook::tick_to_price(ask_tick_1);
         let quote_needed = (amount * ask_price_1 as u128) / orderbook::PRICE_SCALE as u128;
         exchange.set_balance(bob, quote_token, quote_needed)?;
         exchange.swap_exact_amount_in(bob, quote_token, base_token, quote_needed, 0)?;
-
-        // Verify best_ask_tick moved to tick 60, and best_bid_tick is unchanged
+        // Verify best_ask_tick moved to tick 60, best_bid_tick unchanged
         let orderbook = exchange.sload_books(book_key)?;
         assert_eq!(orderbook.best_ask_tick, ask_tick_2);
         assert_eq!(orderbook.best_bid_tick, i16::MIN);
@@ -4310,12 +4307,12 @@ mod tests {
         let admin = Address::random();
         let amount = MIN_ORDER_AMOUNT;
 
-        let tick_1 = 100i16; // Best bid (highest)
-        let tick_2 = 90i16; // Second best bid
+        let (bid_tick_1, bid_tick_2) = (100_i16, 90_i16); // (best, second best)
+        let (ask_tick_1, ask_tick_2) = (50_i16, 60_i16); // (best, second best)
 
         // Calculate escrow for 3 bid orders (2 at tick 100, 1 at tick 90)
-        let price_1 = orderbook::tick_to_price(tick_1);
-        let price_2 = orderbook::tick_to_price(tick_2);
+        let price_1 = orderbook::tick_to_price(bid_tick_1);
+        let price_2 = orderbook::tick_to_price(bid_tick_2);
         let escrow_1 = (amount * price_1 as u128) / orderbook::PRICE_SCALE as u128;
         let escrow_2 = (amount * price_2 as u128) / orderbook::PRICE_SCALE as u128;
         let total_escrow = escrow_1 * 2 + escrow_2;
@@ -4331,83 +4328,62 @@ mod tests {
         let book_key = compute_book_key(base_token, quote_token);
 
         // Place 2 bid orders at tick 100, 1 at tick 90
-        let order_id_1 = exchange.place(alice, base_token, amount, true, tick_1)?;
-        let order_id_2 = exchange.place(alice, base_token, amount, true, tick_1)?;
-        let order_id_3 = exchange.place(alice, base_token, amount, true, tick_2)?;
+        let bid_order_1 = exchange.place(alice, base_token, amount, true, bid_tick_1)?;
+        let bid_order_2 = exchange.place(alice, base_token, amount, true, bid_tick_1)?;
+        let bid_order_3 = exchange.place(alice, base_token, amount, true, bid_tick_2)?;
+
+        // Place 2 ask orders at tick 50 and tick 60
+        mint_and_approve_token(
+            exchange.storage,
+            1,
+            admin,
+            alice,
+            exchange.address,
+            amount * 2,
+        );
+        let ask_order_1 = exchange.place(alice, base_token, amount, false, ask_tick_1)?;
+        let ask_order_2 = exchange.place(alice, base_token, amount, false, ask_tick_2)?;
 
         exchange.execute_block(Address::ZERO)?;
 
-        // Verify initial best_bid_tick
+        // Verify initial best ticks
         let orderbook = exchange.sload_books(book_key)?;
-        assert_eq!(orderbook.best_bid_tick, tick_1);
+        assert_eq!(orderbook.best_bid_tick, bid_tick_1);
+        assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
-        // Cancel one order at tick 100 - best_bid_tick should remain 100
-        exchange.cancel(alice, order_id_1)?;
+        // Cancel one bid at tick 100
+        exchange.cancel(alice, bid_order_1)?;
+        // Verify best_bid_tick remains 100, best_ask_tick unchanged
         let orderbook = exchange.sload_books(book_key)?;
-        assert_eq!(orderbook.best_bid_tick, tick_1);
+        assert_eq!(orderbook.best_bid_tick, bid_tick_1);
+        assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
-        // Cancel remaining order at tick 100 - best_bid_tick should move to 90
-        exchange.cancel(alice, order_id_2)?;
+        // Cancel remaining bid at tick 100
+        exchange.cancel(alice, bid_order_2)?;
+        // Verify best_bid_tick moved to 90, best_ask_tick unchanged
         let orderbook = exchange.sload_books(book_key)?;
-        assert_eq!(orderbook.best_bid_tick, tick_2);
+        assert_eq!(orderbook.best_bid_tick, bid_tick_2);
+        assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
-        // Cancel order at tick 90 - best_bid_tick should become i16::MIN
-        exchange.cancel(alice, order_id_3)?;
+        // Cancel ask at tick 50
+        exchange.cancel(alice, ask_order_1)?;
+        // Verify best_ask_tick moved to 60, best_bid_tick unchanged
         let orderbook = exchange.sload_books(book_key)?;
-        assert_eq!(orderbook.best_bid_tick, i16::MIN);
+        assert_eq!(orderbook.best_bid_tick, bid_tick_2);
+        assert_eq!(orderbook.best_ask_tick, ask_tick_2);
 
-        Ok(())
-    }
-
-    #[test]
-    fn test_best_tick_bid_ask_independence() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize()?;
-
-        let alice = Address::random();
-        let bob = Address::random();
-        let admin = Address::random();
-        let amount = MIN_ORDER_AMOUNT;
-
-        let bid_tick = 100i16;
-        let ask_tick = 50i16;
-
-        // Calculate escrow
-        let bid_price = orderbook::tick_to_price(bid_tick);
-        let bid_escrow = (amount * bid_price as u128) / orderbook::PRICE_SCALE as u128;
-
-        let (base_token, quote_token) =
-            setup_test_tokens(exchange.storage, admin, alice, exchange.address, bid_escrow);
-        exchange.create_pair(base_token)?;
-        let book_key = compute_book_key(base_token, quote_token);
-
-        // Place one bid and one ask
-        exchange.place(alice, base_token, amount, true, bid_tick)?;
-
-        exchange.set_balance(alice, base_token, amount)?;
-        let ask_order_id = exchange.place(alice, base_token, amount, false, ask_tick)?;
-
-        exchange.execute_block(Address::ZERO)?;
-
-        // Verify initial state
-        let orderbook = exchange.sload_books(book_key)?;
-        assert_eq!(orderbook.best_bid_tick, bid_tick);
-        assert_eq!(orderbook.best_ask_tick, ask_tick);
-
-        // Fill the bid - verify best_ask_tick is unchanged
-        exchange.set_balance(bob, base_token, amount)?;
-        exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
-
+        // Cancel bid at tick 90
+        exchange.cancel(alice, bid_order_3)?;
+        // Verify best_bid_tick is now i16::MIN, best_ask_tick unchanged
         let orderbook = exchange.sload_books(book_key)?;
         assert_eq!(orderbook.best_bid_tick, i16::MIN);
-        assert_eq!(orderbook.best_ask_tick, ask_tick); // Unchanged
+        assert_eq!(orderbook.best_ask_tick, ask_tick_2);
 
-        // Cancel the ask - verify best_bid_tick is unchanged
-        exchange.cancel(alice, ask_order_id)?;
-
+        // Cancel ask at tick 60
+        exchange.cancel(alice, ask_order_2)?;
+        // Verify best_ask_tick is now i16::MAX, best_bid_tick unchanged
         let orderbook = exchange.sload_books(book_key)?;
-        assert_eq!(orderbook.best_bid_tick, i16::MIN); // Unchanged
+        assert_eq!(orderbook.best_bid_tick, i16::MIN);
         assert_eq!(orderbook.best_ask_tick, i16::MAX);
 
         Ok(())
