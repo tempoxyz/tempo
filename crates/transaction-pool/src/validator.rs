@@ -19,7 +19,7 @@ use reth_transaction_pool::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, compute_keys_slot,
-    storage::double_mapping_slot,
+    nonce::slots, storage::double_mapping_slot,
 };
 use tempo_primitives::subblock::has_sub_block_nonce_key_prefix;
 use tempo_revm::TempoStateAccess;
@@ -61,7 +61,7 @@ where
         let slot = double_mapping_slot(
             address.as_slice(),
             nonce_key.to_be_bytes::<32>(),
-            U256::ZERO,
+            slots::NONCES,
         );
         let nonce_value = state_provider.storage(NONCE_PRECOMPILE_ADDRESS, slot.into())?;
 

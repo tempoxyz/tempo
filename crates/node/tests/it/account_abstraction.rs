@@ -972,7 +972,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         nonce_key: u64,
         nonce: u64,
         priority_fee: u128,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<B256> {
         let tx = TxAA {
             chain_id,
             max_priority_fee_per_gas: priority_fee,
@@ -1000,47 +1000,62 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         let envelope: TempoTxEnvelope = signed_tx.into();
         let encoded = envelope.encoded_2718();
 
-        setup.node.rpc.inject_tx(encoded.into()).await?;
+        let tx_hash = setup.node.rpc.inject_tx(encoded.into()).await?;
         println!(
             "  ✓ Sent tx: nonce_key={}, nonce={}, priority_fee={} gwei",
             nonce_key,
             nonce,
             priority_fee / 1_000_000_000
         );
-        Ok(())
+        Ok(tx_hash)
     }
 
     // Send 3 transactions with different nonce_keys
-    send_tx(
-        &mut setup,
-        &alice_signer,
-        chain_id,
-        recipient,
-        0,
-        initial_nonce,
-        TEMPO_BASE_FEE as u128,
-    )
-    .await?; // Protocol pool
-    send_tx(
-        &mut setup,
-        &alice_signer,
-        chain_id,
-        recipient,
-        1,
-        0,
-        TEMPO_BASE_FEE as u128,
-    )
-    .await?; // 2D pool
-    send_tx(
-        &mut setup,
-        &alice_signer,
-        chain_id,
-        recipient,
-        2,
-        0,
-        TEMPO_BASE_FEE as u128,
-    )
-    .await?; // 2D pool
+    let mut sent = vec![];
+    sent.push(
+        send_tx(
+            &mut setup,
+            &alice_signer,
+            chain_id,
+            recipient,
+            0,
+            initial_nonce,
+            TEMPO_BASE_FEE as u128,
+        )
+        .await?,
+    ); // Protocol pool
+    sent.push(
+        send_tx(
+            &mut setup,
+            &alice_signer,
+            chain_id,
+            recipient,
+            1,
+            0,
+            TEMPO_BASE_FEE as u128,
+        )
+        .await?,
+    ); // 2D pool
+    sent.push(
+        send_tx(
+            &mut setup,
+            &alice_signer,
+            chain_id,
+            recipient,
+            2,
+            0,
+            TEMPO_BASE_FEE as u128,
+        )
+        .await?,
+    ); // 2D pool
+
+    for tx_hash in &sent {
+        // Assert that transactions are in the pool
+        assert!(
+            setup.node.inner.pool.contains(tx_hash),
+            "Transaction should be in the pool"
+        );
+    }
 
     // Mine block
     let payload1 = setup.node.advance_block().await?;
@@ -1066,6 +1081,12 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         "Protocol nonce should increment only once"
     );
     println!("  ✓ Protocol nonce: {initial_nonce} → {protocol_nonce_after}",);
+
+    for tx_hash in &sent {
+        // Assert that transactions were removed from the pool and included in the block
+        assert!(block1_txs.iter().any(|tx| tx.tx_hash() == tx_hash));
+        assert!(!setup.node.inner.pool.contains(&tx_hash));
+    }
     println!("  ✓ All 3 transactions from different pools included in block");
 
     // ===========================================================================
@@ -1078,36 +1099,51 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
     let mid_fee = 5_000_000_000u128; // 5 gwei
     let high_fee = 10_000_000_000u128; // 10 gwei
 
-    send_tx(
-        &mut setup,
-        &alice_signer,
-        chain_id,
-        recipient,
-        0,
-        protocol_nonce_after,
-        low_fee,
-    )
-    .await?; // Protocol pool, low fee
-    send_tx(
-        &mut setup,
-        &alice_signer,
-        chain_id,
-        recipient,
-        1,
-        1,
-        high_fee,
-    )
-    .await?; // 2D pool, highest fee
-    send_tx(
-        &mut setup,
-        &alice_signer,
-        chain_id,
-        recipient,
-        2,
-        1,
-        mid_fee,
-    )
-    .await?; // 2D pool, medium fee
+    let mut sent = vec![];
+    sent.push(
+        send_tx(
+            &mut setup,
+            &alice_signer,
+            chain_id,
+            recipient,
+            0,
+            protocol_nonce_after,
+            low_fee,
+        )
+        .await?,
+    ); // Protocol pool, low fee
+    sent.push(
+        send_tx(
+            &mut setup,
+            &alice_signer,
+            chain_id,
+            recipient,
+            1,
+            1,
+            high_fee,
+        )
+        .await?,
+    ); // 2D pool, highest fee
+    sent.push(
+        send_tx(
+            &mut setup,
+            &alice_signer,
+            chain_id,
+            recipient,
+            2,
+            1,
+            mid_fee,
+        )
+        .await?,
+    ); // 2D pool, medium fee
+
+    for tx_hash in &sent {
+        // Assert that transactions are in the pool
+        assert!(
+            setup.node.inner.pool.contains(tx_hash),
+            "Transaction should be in the pool"
+        );
+    }
 
     // Mine block
     let payload2 = setup.node.advance_block().await?;
@@ -1119,14 +1155,14 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         block2_txs.len()
     );
 
+    assert_eq!(provider.get_transaction_count(alice_addr).await?, 2);
+
     // Verify transactions are ordered by priority fee (highest first)
     // Skip system tx at index 0
     if block2_txs.len() >= 4 {
-        let user_txs: Vec<_> = block2_txs.iter().skip(1).take(3).collect();
-
         // Extract priority fees from transactions
         let mut priority_fees = Vec::new();
-        for tx in &user_txs {
+        for tx in block2_txs.iter() {
             if let TempoTxEnvelope::AA(aa_tx) = tx {
                 priority_fees.push(aa_tx.tx().max_priority_fee_per_gas);
                 println!(
@@ -1157,13 +1193,18 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         );
     }
 
+    for tx_hash in &sent {
+        // Assert that transactions were removed from the pool
+        assert!(!setup.node.inner.pool.contains(&tx_hash));
+    }
+
     // ===========================================================================
     // Scenario 3: Nonce Gap Handling
     // ===========================================================================
     println!("\n--- Scenario 3: Nonce Gap Handling ---");
 
     // Send nonce=0 for nonce_key=3 (should be pending)
-    send_tx(
+    let pending = send_tx(
         &mut setup,
         &alice_signer,
         chain_id,
@@ -1176,7 +1217,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
     println!("  Sent nonce_key=3, nonce=0 (should be pending)");
 
     // Send nonce=2 for nonce_key=3 (should be queued - gap at nonce=1)
-    send_tx(
+    let queued = send_tx(
         &mut setup,
         &alice_signer,
         chain_id,
@@ -1187,6 +1228,26 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
     )
     .await?;
     println!("  Sent nonce_key=3, nonce=2 (should be queued - gap at nonce=1)");
+
+    // Assert that both transactions are in the pool and tracked correctly
+    assert!(
+        setup
+            .node
+            .inner
+            .pool
+            .pending_transactions()
+            .iter()
+            .any(|tx| tx.hash() == &pending)
+    );
+    assert!(
+        setup
+            .node
+            .inner
+            .pool
+            .queued_transactions()
+            .iter()
+            .any(|tx| tx.hash() == &queued)
+    );
 
     // Mine block - only nonce=0 should be included
     let payload3 = setup.node.advance_block().await?;
@@ -1226,7 +1287,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
     println!("  ✓ Only nonce=0 included, nonce=2 correctly queued due to gap");
 
     // Fill the gap - send nonce=1
-    send_tx(
+    let new_pending = send_tx(
         &mut setup,
         &alice_signer,
         chain_id,
@@ -1237,6 +1298,25 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
     )
     .await?;
     println!("\n  Sent nonce_key=3, nonce=1 (fills the gap)");
+
+    assert!(
+        setup
+            .node
+            .inner
+            .pool
+            .pending_transactions()
+            .iter()
+            .any(|tx| tx.hash() == &new_pending)
+    );
+    assert!(
+        setup
+            .node
+            .inner
+            .pool
+            .pending_transactions()
+            .iter()
+            .any(|tx| tx.hash() == &queued)
+    );
 
     // Mine block - both nonce=1 and nonce=2 should be included now
     let payload4 = setup.node.advance_block().await?;
@@ -1282,6 +1362,11 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
     } else {
         println!("  ✓ Both nonce=1 and nonce=2 included");
     }
+
+    // Assert that all transactions are removed from the pool
+    assert!(!setup.node.inner.pool.contains(&pending));
+    assert!(!setup.node.inner.pool.contains(&queued));
+    assert!(!setup.node.inner.pool.contains(&new_pending));
 
     println!("\n=== All Scenarios Passed ===");
     println!("✅ Pool routing works correctly");
