@@ -14,14 +14,15 @@ use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
 use reth_ethereum::evm::primitives::eth::spec::EthExecutorSpec;
 use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
+use tempo_commonware_node_config::{Peers, PublicPolynomial};
 use tempo_primitives::TempoHeader;
 
 pub const TEMPO_BASE_FEE: u64 = 10_000_000_000;
 
 /// Tempo genesis info extracted from genesis extra_fields
-#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct TempoGenesisInfo {
+pub struct TempoGenesisInfo {
     /// Timestamp of Adagio hardfork activation
     #[serde(skip_serializing_if = "Option::is_none")]
     adagio_time: Option<u64>,
@@ -33,6 +34,18 @@ struct TempoGenesisInfo {
     /// Timestamp of Allegretto hardfork activation
     #[serde(skip_serializing_if = "Option::is_none")]
     allegretto_time: Option<u64>,
+
+    /// The epoch length used by consensus.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    epoch_length: Option<u64>,
+
+    /// The public polynomial all nodes are to use at genesis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public_polynomial: Option<PublicPolynomial>,
+
+    /// The initial set of peers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    validators: Option<Peers>,
 }
 
 impl TempoGenesisInfo {
@@ -43,6 +56,18 @@ impl TempoGenesisInfo {
             .extra_fields
             .deserialize_as::<Self>()
             .unwrap_or_default()
+    }
+
+    pub fn epoch_length(&self) -> Option<u64> {
+        self.epoch_length
+    }
+
+    pub fn public_polynomial(&self) -> &Option<PublicPolynomial> {
+        &self.public_polynomial
+    }
+
+    pub fn validators(&self) -> &Option<Peers> {
+        &self.validators
     }
 }
 
@@ -99,22 +124,23 @@ pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
 pub struct TempoChainSpec {
     /// [`ChainSpec`].
     pub inner: ChainSpec<TempoHeader>,
+    pub info: TempoGenesisInfo,
 }
 
 impl TempoChainSpec {
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
         // Extract Tempo genesis info from extra_fields
-        let TempoGenesisInfo {
+        let info @ TempoGenesisInfo {
             adagio_time,
             moderato_time,
             allegretto_time,
+            ..
         } = TempoGenesisInfo::extract_from(&genesis);
 
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
 
-        // Collect Tempo hardforks to insert
         let tempo_forks = vec![
             (TempoHardfork::Adagio, adagio_time),
             (TempoHardfork::Moderato, moderato_time),
@@ -132,6 +158,7 @@ impl TempoChainSpec {
                 shared_gas_limit: 0,
                 inner,
             }),
+            info,
         }
     }
 }
@@ -147,6 +174,7 @@ impl From<ChainSpec> for TempoChainSpec {
                 inner,
                 shared_gas_limit: 0,
             }),
+            info: TempoGenesisInfo::default(),
         }
     }
 }
@@ -335,7 +363,7 @@ mod tests {
                 "cancunTime": 0,
                 "adagioTime": 1000,
                 "moderatoTime": 2000,
-                "allegrettoTime": 3000
+                "allegrettoTime": 3000,
             },
             "alloc": {}
         });
@@ -442,7 +470,7 @@ mod tests {
                 "terminalTotalDifficultyPassed": true,
                 "shanghaiTime": 0,
                 "cancunTime": 2000,
-                "adagioTime": 1000
+                "adagioTime": 1000,
             },
             "alloc": {}
         });

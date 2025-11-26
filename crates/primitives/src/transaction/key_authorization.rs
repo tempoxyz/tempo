@@ -33,6 +33,9 @@ pub struct TokenLimit {
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub struct KeyAuthorization {
+    /// Chain ID for replay protection (0 = valid on any chain)
+    pub chain_id: u64,
+
     /// Type of key being authorized (Secp256k1, P256, or WebAuthn)
     pub key_type: SignatureType,
 
@@ -55,15 +58,23 @@ impl KeyAuthorization {
     /// This is a convenience method that calls [`Self::authorization_message_hash`]
     /// with this instance's fields.
     pub fn sig_hash(&self) -> B256 {
-        Self::authorization_message_hash(self.key_type, self.key_id, self.expiry, &self.limits)
+        Self::authorization_message_hash(
+            self.chain_id,
+            self.key_type,
+            self.key_id,
+            self.expiry,
+            &self.limits,
+        )
     }
 
     /// Computes the authorization message hash to be signed by the root key.
     ///
-    /// The message format is: `keccak256(rlp([key_type, key_id, expiry, limits]))`
+    /// The message format is: `keccak256(rlp([chain_id, key_type, key_id, expiry, limits]))`
     ///
     /// Note: The signature field is NOT included in this hash, as it signs this hash.
+    /// Note: chain_id of 0 allows replay on any chain (wildcard).
     pub fn authorization_message_hash(
+        chain_id: u64,
         key_type: SignatureType,
         key_id: Address,
         expiry: u64,
@@ -73,8 +84,11 @@ impl KeyAuthorization {
         let key_type_byte: u8 = key_type.into();
 
         // Calculate payload length
-        let payload_length =
-            key_type_byte.length() + key_id.length() + expiry.length() + list_length(limits);
+        let payload_length = chain_id.length()
+            + key_type_byte.length()
+            + key_id.length()
+            + expiry.length()
+            + list_length(limits);
 
         // Encode outer list header
         alloy_rlp::Header {
@@ -84,6 +98,7 @@ impl KeyAuthorization {
         .encode(&mut auth_message);
 
         // Encode fields
+        chain_id.encode(&mut auth_message);
         key_type_byte.encode(&mut auth_message);
         key_id.encode(&mut auth_message);
         expiry.encode(&mut auth_message);
@@ -118,6 +133,7 @@ impl reth_codecs::Compact for KeyAuthorization {
 
 impl reth_primitives_traits::InMemorySize for KeyAuthorization {
     fn size(&self) -> usize {
+        mem::size_of::<u64>() + // chain_id
         mem::size_of::<u8>() + // key_type
         mem::size_of::<u64>() + // expiry
         mem::size_of::<Address>() + // key_id
