@@ -60,15 +60,15 @@ pub struct MaxTpsArgs {
     tps: u64,
 
     /// Test duration in seconds
-    #[arg(short, long, default_value = "30")]
+    #[arg(short, long, default_value_t = 30)]
     duration: u64,
 
     /// Number of accounts for pre-generation
-    #[arg(short, long, default_value = "100")]
+    #[arg(short, long, default_value_t = 100)]
     accounts: u64,
 
     /// Number of workers to send transactions
-    #[arg(short, long, default_value = "10")]
+    #[arg(short, long, default_value_t = 10)]
     workers: usize,
 
     /// Mnemonic for generating accounts
@@ -79,26 +79,26 @@ pub struct MaxTpsArgs {
     )]
     mnemonic: String,
 
-    #[arg(short, long, default_value = "1")]
+    #[arg(short, long, default_value_t = 0)]
     from_mnemonic_index: u32,
 
     #[arg(long, default_value_t = DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)]
     fee_token: Address,
 
     /// Target URLs for network connections
-    #[arg(long, default_values_t = vec!["http://localhost:8545".to_string()])]
-    target_urls: Vec<String>,
+    #[arg(long, default_values_t = vec!["http://localhost:8545".parse::<Url>().unwrap()])]
+    target_urls: Vec<Url>,
 
     /// A limit of the maximum number of concurrent requests, prevents issues with too many
     /// connections open at once.
-    #[arg(long, default_value = "100")]
+    #[arg(long, default_value_t = 100)]
     max_concurrent_requests: usize,
 
     /// A number of transaction to send, before waiting for their receipts, that should be likely
     /// safe.
     ///
     /// Large amount of transactions in a block will result in system transaction OutOfGas error.
-    #[arg(long, default_value = "10000")]
+    #[arg(long, default_value_t = 10000)]
     max_concurrent_transactions: usize,
 
     /// Disable binding worker threads to specific CPU cores, letting the OS scheduler handle placement.
@@ -122,19 +122,19 @@ pub struct MaxTpsArgs {
     benchmark_mode: Option<String>,
 
     /// A weight that determines the likelihood of generating a TIP-20 transfer transaction.
-    #[arg(long, default_value = "0.8")]
+    #[arg(long, default_value_t = 0.8)]
     tip20_weight: f64,
 
     /// A weight that determines the likelihood of generating a DEX place transaction.
-    #[arg(long, default_value = "0.01")]
+    #[arg(long, default_value_t = 0.01)]
     place_order_weight: f64,
 
     /// A weight that determines the likelihood of generating a DEX swapExactAmountIn transaction.
-    #[arg(long, default_value = "0.19")]
+    #[arg(long, default_value_t = 0.19)]
     swap_weight: f64,
 
     /// An amount of receipts to wait for after sending all the transactions.
-    #[arg(long, default_value = "100")]
+    #[arg(long, default_value_t = 100)]
     sample_size: usize,
 
     /// Fund accounts from the faucet before running the benchmark.
@@ -154,22 +154,14 @@ impl MaxTpsArgs {
             increase_nofile_limit(fd_limit).context("Failed to increase nofile limit")?;
         }
 
+        let target_url = self.target_urls[0].clone();
+        if self.target_urls.len() > 1 {
+            warn!("Multiple target URLs provided, but only the first one will be used")
+        }
+
         let tip20_weight = (self.tip20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let place_order_weight = (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
-
-        let target_urls: Vec<Url> = self
-            .target_urls
-            .iter()
-            .map(|s| {
-                s.parse::<Url>()
-                    .wrap_err_with(|| format!("failed to parse `{s}` as URL"))
-            })
-            .collect::<eyre::Result<Vec<_>>>()
-            .wrap_err("failed parsing input target URLs")?;
-        if target_urls.len() > 1 {
-            warn!("Multiple target URLs provided, but only the first one will be used")
-        }
 
         info!(accounts = self.accounts, "Creating signers and providers");
         let signer_providers = (self.from_mnemonic_index
@@ -184,7 +176,7 @@ impl MaxTpsArgs {
                 let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
                     .wallet(signer.clone())
                     .with_cached_nonce_management()
-                    .connect_http(target_urls[0].clone())
+                    .connect_http(target_url.clone())
                     .erased();
                 Ok((signer, provider))
             })
@@ -196,7 +188,7 @@ impl MaxTpsArgs {
 
         // Fund accounts from faucet if requested
         if self.faucet {
-            let provider = ProviderBuilder::new().connect_http(target_urls[0].clone());
+            let provider = ProviderBuilder::new().connect_http(target_url.clone());
             fund_accounts(
                 &provider,
                 &signer_providers
@@ -226,7 +218,7 @@ impl MaxTpsArgs {
         .context("Failed to generate transactions")?;
 
         // Get first block height before sending transactions
-        let provider = ProviderBuilder::new().connect_http(target_urls[0].clone());
+        let provider = ProviderBuilder::new().connect_http(target_url.clone());
         let start_block = provider
             .get_block(Latest.into())
             .await?
@@ -270,13 +262,7 @@ impl MaxTpsArgs {
         }
         drop(progress);
 
-        generate_report(
-            &target_urls[0].clone(),
-            start_block_number,
-            end_block_number,
-            &self,
-        )
-        .await?;
+        generate_report(&target_url, start_block_number, end_block_number, &self).await?;
 
         Ok(())
     }
