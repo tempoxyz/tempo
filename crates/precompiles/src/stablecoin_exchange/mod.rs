@@ -458,7 +458,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Post allegretto, enfoce that the tick adheres to tick spacing
-        if self.storage.spec().is_allegretto() && tick as u64 % TICK_SPACING != 0 {
+        if self.storage.spec().is_allegretto() && (tick as u64).is_multiple_of(TICK_SPACING) {
             return Err(StablecoinExchangeError::invalid_tick().into());
         }
 
@@ -548,7 +548,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Post allegretto, enfoce that the tick adheres to tick spacing
-        if self.storage.spec().is_allegretto() && tick as u64 % TICK_SPACING != 0 {
+        if self.storage.spec().is_allegretto() && (tick as u64).is_multiple_of(TICK_SPACING) {
             return Err(StablecoinExchangeError::invalid_tick().into());
         }
 
@@ -557,7 +557,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Post allegretto, enfoce that the tick adheres to tick spacing
-        if self.storage.spec().is_allegretto() && flip_tick as u64 % TICK_SPACING != 0 {
+        if self.storage.spec().is_allegretto() && (tick as u64).is_multiple_of(TICK_SPACING) {
             return Err(StablecoinExchangeError::invalid_flip_tick().into());
         }
 
