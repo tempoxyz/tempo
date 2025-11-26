@@ -7,8 +7,6 @@ pub(crate) type TIP20Instance = ITIP20Instance<DynProvider<TempoNetwork>, TempoN
 type StablecoinExchangeInstance =
     IStablecoinExchangeInstance<DynProvider<TempoNetwork>, TempoNetwork>;
 
-const GAS_LIMIT: u64 = 500_000;
-
 /// This method performs a one-time setup for sending a lot of transactions:
 /// * Adds a quote token and a couple of user tokens paired with the quote token.
 /// * Mints some large amount for all `signers` and approves unlimited spending for stablecoin
@@ -44,10 +42,7 @@ pub(super) async fn setup(
     for token in &user_tokens {
         let exchange = exchange.clone();
         futures.push(Box::pin(async move {
-            let tx = exchange
-                .createPair(*token.address())
-                .gas(GAS_LIMIT)
-                .gas_price(TEMPO_BASE_FEE as u128);
+            let tx = exchange.createPair(*token.address());
             tx.send().await
         }) as Pin<Box<dyn Future<Output = _>>>);
     }
@@ -57,10 +52,7 @@ pub(super) async fn setup(
         for token in &user_tokens {
             let token = token.clone();
             futures.push(Box::pin(async move {
-                let tx = token
-                    .mint(signer.address(), mint_amount)
-                    .gas(GAS_LIMIT)
-                    .gas_price(TEMPO_BASE_FEE as u128);
+                let tx = token.mint(signer.address(), mint_amount);
                 tx.send().await
             }) as Pin<Box<dyn Future<Output = _>>>);
         }
@@ -75,10 +67,7 @@ pub(super) async fn setup(
         for token in &tokens {
             let token = ITIP20Instance::new(*token, provider.clone());
             futures.push(Box::pin(async move {
-                let tx = token
-                    .approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
-                    .gas(GAS_LIMIT)
-                    .gas_price(TEMPO_BASE_FEE as u128);
+                let tx = token.approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX);
                 tx.send().await
             }) as Pin<Box<dyn Future<Output = _>>>);
         }
@@ -101,10 +90,8 @@ pub(super) async fn setup(
             let exchange =
                 StablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
             futures.push(Box::pin(async move {
-                let tx = exchange
-                    .placeFlip(*token, first_order_amount, true, tick_under, tick_over)
-                    .gas(GAS_LIMIT)
-                    .gas_price(TEMPO_BASE_FEE as u128);
+                let tx =
+                    exchange.placeFlip(*token, first_order_amount, true, tick_under, tick_over);
                 tx.send().await
             }) as Pin<Box<dyn Future<Output = _>>>);
         }

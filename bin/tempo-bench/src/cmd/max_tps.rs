@@ -408,10 +408,7 @@ async fn generate_transactions(
                     Box::pin(async move {
                         let token = ITIP20Instance::new(token, provider);
 
-                        let tx = token
-                            .transfer(Address::random(), U256::ONE)
-                            .gas(GAS_LIMIT)
-                            .gas_price(TEMPO_BASE_FEE as u128);
+                        let tx = token.transfer(Address::random(), U256::ONE);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 }),
@@ -422,10 +419,7 @@ async fn generate_transactions(
                         let exchange =
                             IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider);
 
-                        let tx = exchange
-                            .swapExactAmountIn(token, quote, MIN_ORDER_AMOUNT, 0)
-                            .gas(GAS_LIMIT)
-                            .gas_price(TEMPO_BASE_FEE as u128);
+                        let tx = exchange.swapExactAmountIn(token, quote, MIN_ORDER_AMOUNT, 0);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 }),
@@ -439,10 +433,7 @@ async fn generate_transactions(
                         // Place an order at exactly the dust limit
                         let tick =
                             (random::<u16>() % (MAX_TICK - MIN_TICK) as u16) as i16 + MIN_TICK;
-                        let tx = exchange
-                            .place(token, MIN_ORDER_AMOUNT, true, tick)
-                            .gas(GAS_LIMIT)
-                            .gas_price(TEMPO_BASE_FEE as u128);
+                        let tx = exchange.place(token, MIN_ORDER_AMOUNT, true, tick);
                         tx.send().await
                     })
                 }),
