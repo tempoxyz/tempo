@@ -296,6 +296,85 @@ fn node_recovers_after_finalizing_ceremony() {
     });
 }
 
+// NOTE: ceremonies are finalized on the pre-to-last block.
+#[test_traced]
+fn node_recovers_after_finalizing_last_block() {
+    let prefix = format!("{CONSENSUS_NODE_PREFIX}-");
+
+    let setup = Setup::new();
+
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+    let executor = Runner::from(cfg);
+
+    executor.start(|context| async move {
+        let (nodes, _execution_runtime) = setup_validators(context.clone(), setup.clone()).await;
+
+        let mut running = join_all(nodes.into_iter().map(|node| node.start())).await;
+
+        // Catch a node right after it processed the pre-to-boundary height.
+        // Best-effort: we hot-loop in 100ms steps, but if processing is too
+        // fast we might miss the window and the test will succeed no matter
+        // what.
+        let (metric, height) = 'wait_to_boundary: loop {
+            let metrics = context.encode();
+            'lines: for line in metrics.lines() {
+                if !line.starts_with(&prefix) {
+                    continue 'lines;
+                }
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                if metric.ends_with("_marshal_processed_height") {
+                    let height = value.parse::<u64>().unwrap();
+                    if height
+                        >= commonware_consensus::utils::last_block_in_epoch(setup.epoch_length, 0)
+                    {
+                        break 'wait_to_boundary (metric.to_string(), height);
+                    }
+                }
+            }
+            context.sleep(Duration::from_millis(100)).await;
+        };
+
+        tracing::debug!(
+            metric,
+            height,
+            "found a node that reached the pre-to-last height; restarting it"
+        );
+        // Now restart the node for which we found the metric.
+        let idx = running
+            .iter()
+            .position(|node| metric.contains(&node.uid))
+            .unwrap();
+        let _node = running.remove(idx).stop().start().await;
+
+        let mut iteration = 0;
+        'look_for_progress: loop {
+            context.sleep(Duration::from_secs(1)).await;
+            let metrics = context.encode();
+            'lines: for line in metrics.lines() {
+                if !line.starts_with(&prefix) {
+                    continue 'lines;
+                }
+                if line.starts_with(&metric) {
+                    let mut parts = line.split_whitespace();
+                    let _ = parts.next().unwrap();
+                    let value = parts.next().unwrap();
+                    if value.parse::<u64>().unwrap() > height {
+                        break 'look_for_progress;
+                    }
+                }
+            }
+            iteration += 1;
+            assert!(
+                iteration < 10,
+                "node did not progress for 10 iterations; restart on boundary likely failed"
+            );
+        }
+    });
+}
+
 #[test_traced]
 fn validator_catches_up_to_network_during_epoch() {
     let _ = tempo_eyre::install();
