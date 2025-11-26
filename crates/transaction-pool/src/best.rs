@@ -77,14 +77,9 @@ where
                 // both iters are done
                 None
             }
-            // Only left has an item - take it
-            (Some(_), None) => {
+            // Only one item available - take it
+            (Some(item), None) | (None, Some(item)) => {
                 let (item, priority) = self.next_left.take()?;
-                Some((item, priority))
-            }
-            // Only right has an item - take it
-            (None, Some(_)) => {
-                let (item, priority) = self.next_right.take()?;
                 Some((item, priority))
             }
 
