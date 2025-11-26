@@ -358,7 +358,7 @@ impl GenesisArgs {
         if let Some(consensus_config) = &consensus_config {
             chain_config
                 .extra_fields
-                .insert_value("peers".to_string(), consensus_config.peers.clone())?;
+                .insert_value("validators".to_string(), consensus_config.peers.clone())?;
             chain_config.extra_fields.insert_value(
                 "publicPolynomial".to_string(),
                 consensus_config.public_polynomial.clone(),
