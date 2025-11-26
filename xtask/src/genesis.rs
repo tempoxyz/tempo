@@ -23,7 +23,7 @@ use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, DEFAULT_7702_DELEGATE_ADDRESS,
     MULTICALL_ADDRESS, PERMIT2_ADDRESS, SAFE_DEPLOYER_ADDRESS,
-    contracts::ARACHNID_CREATE2_FACTORY_BYTECODE,
+    contracts::ARACHNID_CREATE2_FACTORY_BYTECODE, precompiles::ITIP20Factory,
 };
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
@@ -372,12 +372,13 @@ fn create_and_mint_token(
         let token_address = factory
             .create_token(
                 admin,
-                name.into(),
-                symbol.into(),
-                currency.into(),
-                PATH_USD_ADDRESS,
-                admin,
-                Address::ZERO,
+                ITIP20Factory::createTokenCall {
+                    name: name.into(),
+                    symbol: symbol.into(),
+                    currency: currency.into(),
+                    quoteToken: PATH_USD_ADDRESS,
+                    admin,
+                },
             )
             .expect("Could not create token");
 
