@@ -55,7 +55,7 @@ where
                 track_expiry(&mut expiry_map, tx.inner().as_aa());
             }
 
-            // Check for expired txs when a new block is commited
+            // Check for expired txs when a new block is committed
             Some(event) = chain_events.next() => {
                 let CanonStateNotification::Commit { new } = event else {
                     continue;
