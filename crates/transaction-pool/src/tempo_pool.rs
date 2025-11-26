@@ -250,6 +250,7 @@ where
             .validator()
             .validate_transaction(origin, transaction)
             .await;
+        dbg!(&tx);
         self.add_validated_transaction(origin, tx)
     }
 
@@ -267,6 +268,7 @@ where
             .validate_transactions_with_origin(origin, transactions)
             .await;
 
+        dbg!(&validated);
         self.add_validated_transactions(origin, validated)
     }
 
@@ -495,7 +497,7 @@ where
     fn retain_unknown<A: HandleMempoolData>(&self, announcement: &mut A) {
         self.protocol_pool.retain_unknown(announcement);
         let aa_pool = self.aa_2d_pool.read();
-        announcement.retain_by_hash(|tx| aa_pool.contains(tx))
+        announcement.retain_by_hash(|tx| !aa_pool.contains(tx))
     }
 
     fn contains(&self, tx_hash: &B256) -> bool {

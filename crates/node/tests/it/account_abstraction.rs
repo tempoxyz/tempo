@@ -9,7 +9,10 @@ use alloy::{
 use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::TxKind;
 use p256::ecdsa::signature::hazmat::PrehashSigner;
+use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_primitives_traits::transaction::TxHashRef;
+use reth_transaction_pool::TransactionPool;
+use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN,
@@ -987,8 +990,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
             AASignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
         );
         let envelope: TempoTxEnvelope = signed_tx.into();
-        let mut encoded = Vec::new();
-        envelope.encode_2718(&mut encoded);
+        let encoded = envelope.encoded_2718();
 
         setup.node.rpc.inject_tx(encoded.into()).await?;
         println!(
@@ -1315,8 +1317,7 @@ async fn send_tx(
         AASignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
     );
     let envelope: TempoTxEnvelope = signed_tx.into();
-    let mut encoded = Vec::new();
-    envelope.encode_2718(&mut encoded);
+    let encoded = envelope.encoded_2718();
 
     setup.node.rpc.inject_tx(encoded.into()).await?;
     println!(
@@ -4213,6 +4214,84 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         error_msg.contains("Invalid KeyAuthorization signature"),
         "Error must mention 'Invalid KeyAuthorization signature'. Got: {error_msg}"
     );
+
+    Ok(())
+}
+
+/// Test that verifies that we can propagate 2d transactions
+#[tokio::test(flavor = "multi_thread")]
+async fn test_propagate_2d_transactions() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    // Create wallet from mnemonic
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(0)?
+        .build()?;
+
+    let mut setup = crate::utils::TestNodeBuilder::new()
+        .with_node_count(2)
+        .build_multi_node()
+        .await?;
+
+    let tx = TxAA {
+        chain_id: 1337,
+        max_priority_fee_per_gas: 1_000_000_000u128,
+        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        gas_limit: 100_000,
+        calls: vec![Call {
+            to: Address::random().into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        nonce_key: U256::from(123),
+        nonce: 0,
+        ..Default::default()
+    };
+
+    let sig_hash = tx.signature_hash();
+    let signature = wallet.sign_hash_sync(&sig_hash)?;
+    let signed_tx = AASigned::new_unhashed(
+        tx,
+        AASignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+    );
+    let envelope: TempoTxEnvelope = signed_tx.into();
+    let encoded = envelope.encoded_2718();
+
+    let node1 = setup.nodes.remove(0);
+    let node2 = setup.nodes.remove(0);
+
+    // make sure both nodes are ready to broadcast
+    node1.inner.network.update_sync_state(SyncState::Idle);
+    node2.inner.network.update_sync_state(SyncState::Idle);
+
+    let mut tx_listener1 = node1.inner.pool.pending_transactions_listener();
+    let mut tx_listener2 = node2.inner.pool.pending_transactions_listener();
+
+    // Submitting transaction to first peer
+    let provider1 =
+        ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(node1.rpc_url());
+    let _ = provider1.send_raw_transaction(&encoded).await.unwrap();
+    println!("Sent tx");
+
+    // ensure we see it as pending from the first peer
+    let pending_hash1 = tx_listener1.recv().await.unwrap();
+    assert_eq!(pending_hash1, *envelope.tx_hash());
+    let _rpc_tx = provider1
+        .get_transaction_by_hash(pending_hash1)
+        .await
+        .unwrap();
+
+    // ensure we see it as pending on the second peer as well (should be broadcasted from first to second)
+    let pending_hash2 = tx_listener2.recv().await.unwrap();
+    assert_eq!(pending_hash2, *envelope.tx_hash());
+
+    // check we can fetch it from the second peer now
+    let provider2 =
+        ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(node2.rpc_url());
+    let _rpc_tx = provider2
+        .get_transaction_by_hash(pending_hash2)
+        .await
+        .unwrap();
 
     Ok(())
 }
