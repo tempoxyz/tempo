@@ -58,7 +58,7 @@ where
     ) -> ProviderResult<(U256, u64)> {
         // Compute storage slot for 2D nonce
         // Based on: mapping(address => mapping(uint256 => uint64)) at slot 0
-        let slot = double_mapping_slot(address.as_slice(), nonce_key.as_le_bytes(), U256::ZERO);
+        let slot = double_mapping_slot(address.as_slice(), nonce_key.to_be_bytes::<32>(), U256::ZERO);
         let nonce_value = state_provider.storage(NONCE_PRECOMPILE_ADDRESS, slot.into())?;
 
         Ok((slot, nonce_value.unwrap_or_default().saturating_to()))
