@@ -21,6 +21,7 @@ alloy = { workspace = true, default-features = false, features = [
     "signer-mnemonic",
     "rand",
 ] }
+tempo-alloy.workspace = true
 dashmap = "6.1"
 eyre.workspace = true
 futures.workspace = true
