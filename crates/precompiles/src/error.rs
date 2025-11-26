@@ -97,13 +97,27 @@ pub fn add_errors_to_registry<T: SolInterface>(
         let converter = Arc::clone(&converter);
         registry.insert(
             selector.into(),
-            Box::new(move |data: &[u8]| T::abi_decode(data).ok().map(|error| converter(error))),
+            Box::new(move |data: &[u8]| {
+                T::abi_decode(data)
+                    .ok()
+                    .map(|error| DecodedTempoPrecompileError {
+                        error: converter(error),
+                        revert_bytes: data,
+                    })
+            }),
         );
     }
 }
 
-pub type TempoPrecompileErrorRegistry =
-    HashMap<Selector, Box<dyn Fn(&[u8]) -> Option<TempoPrecompileError> + Send + Sync>>;
+pub struct DecodedTempoPrecompileError<'a> {
+    pub error: TempoPrecompileError,
+    pub revert_bytes: &'a [u8],
+}
+
+pub type TempoPrecompileErrorRegistry = HashMap<
+    Selector,
+    Box<dyn for<'a> Fn(&'a [u8]) -> Option<DecodedTempoPrecompileError<'a>> + Send + Sync>,
+>;
 
 /// Returns a HashMap mapping error selectors to their decoder functions
 /// The decoder returns a `TempoPrecompileError` variant for the decoded error
@@ -132,7 +146,7 @@ pub static ERROR_REGISTRY: LazyLock<TempoPrecompileErrorRegistry> =
     LazyLock::new(error_decoder_registry);
 
 /// Decode an error from raw bytes using the selector
-pub fn decode_error(data: &[u8]) -> Option<TempoPrecompileError> {
+pub fn decode_error<'a>(data: &'a [u8]) -> Option<DecodedTempoPrecompileError<'a>> {
     if data.len() < 4 {
         return None;
     }

@@ -3,6 +3,7 @@ use std::convert::Infallible;
 use alloy_primitives::Bytes;
 use reth_errors::ProviderError;
 use reth_evm::revm::context::result::{EVMError, HaltReason};
+use reth_node_core::rpc::result::rpc_err;
 use reth_rpc_eth_api::{AsEthApiError, TransactionConversionError};
 use reth_rpc_eth_types::{
     EthApiError, RpcInvalidTransactionError,
@@ -72,9 +73,11 @@ impl FromEvmHalt<HaltReason> for TempoEthApiError {
 impl FromRevert for TempoEthApiError {
     fn from_revert(revert: Bytes) -> Self {
         match tempo_precompiles::error::decode_error(&revert.0) {
-            Some(error) => Self::EthApiError(EthApiError::from_revert(Bytes::copy_from_slice(
-                error.to_string().as_bytes(),
-            ))),
+            Some(error) => Self::EthApiError(EthApiError::Other(Box::new(rpc_err(
+                3,
+                format!("execution reverted: {}", error.error.to_string()),
+                Some(&error.revert_bytes),
+            )))),
             None => Self::EthApiError(EthApiError::from_revert(revert)),
         }
     }
