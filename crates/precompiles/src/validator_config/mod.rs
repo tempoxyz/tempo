@@ -143,7 +143,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         }
 
         // Validate addresses
-        ensure_is_host_port(&call.inboundAddress).map_err(|err| {
+        ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
             ValidatorConfigError::not_host_port(
                 "inboundAddress".to_string(),
                 call.inboundAddress.clone(),
@@ -151,7 +151,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
             )
         })?;
 
-        ensure_is_ip_port(&call.outboundAddress).map_err(|err| {
+        ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
             ValidatorConfigError::not_ip_port(
                 "outboundAddress".to_string(),
                 call.outboundAddress.clone(),
@@ -215,7 +215,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
             self.clear_validators(sender)?;
         }
 
-        ensure_is_host_port(&call.inboundAddress).map_err(|err| {
+        ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
             ValidatorConfigError::not_host_port(
                 "inboundAddress".to_string(),
                 call.inboundAddress.clone(),
@@ -223,7 +223,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
             )
         })?;
 
-        ensure_is_ip_port(&call.outboundAddress).map_err(|err| {
+        ensure_address_is_ip_port(&call.outboundAddress).map_err(|err| {
             ValidatorConfigError::not_ip_port(
                 "outboundAddress".to_string(),
                 call.outboundAddress.clone(),
@@ -266,37 +266,13 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
 }
 
 #[derive(Debug, thiserror::Error)]
-enum HostWithPortParseError {
-    #[error("failed to parse host segment of input")]
-    HostNotFqdn(#[from] fqdn::Error),
-    #[error("failed to parse port segment of input")]
-    BadPort(#[from] std::num::ParseIntError),
-    #[error("input has no colon and cannot be of the form <host>:<port>")]
-    NoColon,
+#[error("input was not of the form `<ip>:<port>`")]
+pub struct IpWithPortParseError {
+    #[from]
+    source: std::net::AddrParseError,
 }
 
-#[derive(Debug, thiserror::Error)]
-enum IpWithPortParseError {
-    #[error("input must be an IP address with port")]
-    NotIpPort(#[from] std::net::AddrParseError),
-}
-
-fn ensure_is_host_port(input: &str) -> Result<(), HostWithPortParseError> {
-    // First, attempt to parse it as a socket addr; this covers the ipv4, ipv6 cases.
-    if input.parse::<std::net::SocketAddr>().is_ok() {
-        Ok(())
-    } else {
-        // If that fails, try to parse the parts individually
-        let (maybe_host, maybe_port) = input
-            .rsplit_once(':')
-            .ok_or(HostWithPortParseError::NoColon)?;
-        maybe_host.parse::<fqdn::FQDN>()?;
-        maybe_port.parse::<u16>()?;
-        Ok(())
-    }
-}
-
-fn ensure_is_ip_port(input: &str) -> Result<(), IpWithPortParseError> {
+pub fn ensure_address_is_ip_port(input: &str) -> Result<(), IpWithPortParseError> {
     // Only accept IP addresses (v4 or v6) with port
     input.parse::<std::net::SocketAddr>()?;
     Ok(())
@@ -443,21 +419,19 @@ mod tests {
         let mut validator_config = ValidatorConfig::new(&mut storage);
         validator_config.initialize(owner).unwrap();
 
-        // Add first validator with long inbound address (100+ bytes)
         let validator1 = Address::from([0x11; 20]);
         let public_key1 = FixedBytes::<32>::from([0x21; 32]);
-        let long_host1 = "a.".repeat(100);
-        let long_inbound1 = format!("{long_host1}:8000");
-        let long_outbound1 = "192.168.1.1:9000".to_string();
+        let inbound1 = "192.168.1.1:8000".to_string();
+        let outbound1 = "192.168.1.1:9000".to_string();
         validator_config
             .add_validator(
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator1,
                     publicKey: public_key1,
-                    inboundAddress: long_inbound1.clone(),
+                    inboundAddress: inbound1.clone(),
                     active: true,
-                    outboundAddress: long_outbound1,
+                    outboundAddress: outbound1,
                 },
             )
             .expect("should add validator1");
@@ -468,9 +442,9 @@ mod tests {
             IValidatorConfig::addValidatorCall {
                 newValidatorAddress: validator1,
                 publicKey: FixedBytes::<32>::from([0x22; 32]),
-                inboundAddress: "192.168.1.2:8000".to_string(),
+                inboundAddress: "192.168.1.1:8000".to_string(),
                 active: true,
-                outboundAddress: "192.168.1.2:9000".to_string(),
+                outboundAddress: "192.168.1.1:9000".to_string(),
             },
         );
         assert!(result.is_err(), "Should not allow duplicate validator");
@@ -555,7 +529,7 @@ mod tests {
         // Verify each validator
         assert_eq!(validators[0].validatorAddress, validator1);
         assert_eq!(validators[0].publicKey, public_key1);
-        assert_eq!(validators[0].inboundAddress, long_inbound1);
+        assert_eq!(validators[0].inboundAddress, inbound1);
         assert!(validators[0].active);
 
         assert_eq!(validators[1].validatorAddress, validator2);
@@ -610,8 +584,7 @@ mod tests {
 
         // Validator3 rotates to new address with long host (tests delete_string on old slot)
         let validator3_new = Address::from([0x23; 20]);
-        let long_host3 = "b.".repeat(125);
-        let long_inbound3 = format!("{long_host3}:8000");
+        let long_inbound3 = "192.169.1.3:8000".to_string();
         let long_outbound3 = "192.168.1.3:9000".to_string();
         validator_config
             .update_validator(
@@ -732,81 +705,6 @@ mod tests {
     }
 
     #[test]
-    fn test_max_length_dns_hostname() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::from([0x01; 20]);
-        let validator = Address::from([0x11; 20]);
-
-        let mut validator_config = ValidatorConfig::new(&mut storage);
-        validator_config.initialize(owner).unwrap();
-
-        // Create a 253-character hostname (max valid DNS length) for inbound
-        // Using valid DNS characters: a-z, 0-9, hyphens, dots
-        let aaa = "a".repeat(63);
-        let bbb = "b".repeat(63);
-        let ccc = "c".repeat(63);
-        let ddd = "d".repeat(61);
-        let inbound_address = format!("{aaa}.{bbb}.{ccc}.{ddd}:8000");
-        // Outbound must be IP address
-        let outbound_address = "192.168.1.1:9000".to_string();
-
-        // Add validator with max-length hostname - should succeed
-        let public_key = FixedBytes::<32>::from([0x21; 32]);
-        validator_config
-            .add_validator(
-                owner,
-                IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: validator,
-                    publicKey: public_key,
-                    inboundAddress: inbound_address.clone(),
-                    active: true,
-                    outboundAddress: outbound_address.clone(),
-                },
-            )
-            .expect("should accept a 253 character hostname");
-
-        // Read back and verify
-        let validators = validator_config
-            .get_validators(IValidatorConfig::getValidatorsCall {})
-            .expect("Should get validators");
-        assert_eq!(validators.len(), 1, "Should have 1 validator");
-        assert_eq!(validators[0].inboundAddress, inbound_address);
-        assert_eq!(validators[0].outboundAddress, outbound_address);
-    }
-
-    #[test]
-    fn test_too_long_dns_hostname() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::from([0x01; 20]);
-        let validator = Address::from([0x11; 20]);
-
-        let mut validator_config = ValidatorConfig::new(&mut storage);
-        validator_config.initialize(owner).unwrap();
-
-        // Create a 254-character hostname (exceeds max DNS length)
-        let too_long_host = "a".repeat(254);
-        let inbound_address = format!("{too_long_host}:8000");
-        let outbound_address = format!("{too_long_host}:9000");
-
-        // Try to add validator with too-long hostname - should fail
-        let public_key = FixedBytes::<32>::from([0x21; 32]);
-        let result = validator_config.add_validator(
-            owner,
-            IValidatorConfig::addValidatorCall {
-                newValidatorAddress: validator,
-                publicKey: public_key,
-                inboundAddress: inbound_address,
-                active: true,
-                outboundAddress: outbound_address,
-            },
-        );
-        assert!(
-            result.is_err(),
-            "Should reject 254-character hostname (exceeds DNS limit)"
-        );
-    }
-
-    #[test]
     fn test_validator_rotation_clears_all_slots() {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::from([0x01; 20]);
@@ -817,8 +715,7 @@ mod tests {
         validator_config.initialize(owner).unwrap();
 
         // Add validator with long inbound address that uses multiple slots
-        let long_host = "a.".repeat(100);
-        let long_inbound = format!("{long_host}:8000");
+        let long_inbound = "192.168.1.1:8000".to_string();
         let long_outbound = "192.168.1.1:9000".to_string();
         let public_key = FixedBytes::<32>::from([0x21; 32]);
 
@@ -879,121 +776,12 @@ mod tests {
     }
 
     #[test]
-    fn test_update_string_various_lengths() {
-        let mut storage = HashMapStorageProvider::new(1);
-        let owner = Address::from([0x01; 20]);
-        let validator = Address::from([0x11; 20]);
-
-        let mut validator_config = ValidatorConfig::new(&mut storage);
-        validator_config.initialize(owner).unwrap();
-
-        // Start with a long address
-        let long_host = "a.".repeat(100);
-        let initial_inbound = format!("{long_host}:8000");
-        let public_key = FixedBytes::<32>::from([0x21; 32]);
-
-        validator_config
-            .add_validator(
-                owner,
-                IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: validator,
-                    publicKey: public_key,
-                    inboundAddress: initial_inbound.clone(),
-                    active: true,
-                    outboundAddress: "10.0.0.1:9000".to_string(),
-                },
-            )
-            .expect("Should add validator");
-
-        // Update to same value - should still work
-        validator_config
-            .update_validator(
-                validator,
-                IValidatorConfig::updateValidatorCall {
-                    newValidatorAddress: validator,
-                    publicKey: public_key,
-                    inboundAddress: initial_inbound.clone(),
-                    outboundAddress: "10.0.0.1:9000".to_string(),
-                },
-            )
-            .expect("Should update with same address");
-
-        let validators = validator_config
-            .get_validators(IValidatorConfig::getValidatorsCall {})
-            .unwrap();
-        assert_eq!(validators[0].inboundAddress, initial_inbound);
-
-        // Update to shorter address - should clear extra slots
-        let short_inbound = "192.168.1.1:8000".to_string();
-        validator_config
-            .update_validator(
-                validator,
-                IValidatorConfig::updateValidatorCall {
-                    newValidatorAddress: validator,
-                    publicKey: public_key,
-                    inboundAddress: short_inbound.clone(),
-                    outboundAddress: "10.0.0.1:9000".to_string(),
-                },
-            )
-            .expect("Should update to shorter address");
-
-        let validators = validator_config
-            .get_validators(IValidatorConfig::getValidatorsCall {})
-            .unwrap();
-        assert_eq!(validators[0].inboundAddress, short_inbound);
-
-        // Verify the validator's address was updated successfully
-        let validators = validator_config
-            .get_validators(IValidatorConfig::getValidatorsCall {})
-            .unwrap();
-        assert_eq!(validators.len(), 1, "Should still have 1 validator");
-        assert_eq!(
-            validators[0].inboundAddress, short_inbound,
-            "Address should be updated to short version"
-        );
-        assert_eq!(
-            validators[0].publicKey, public_key,
-            "Public key should remain unchanged"
-        );
-
-        // Update to medium-length address
-        let medium_host = "b.".repeat(50);
-        let medium_inbound = format!("{medium_host}:8000");
-        validator_config
-            .update_validator(
-                validator,
-                IValidatorConfig::updateValidatorCall {
-                    newValidatorAddress: validator,
-                    publicKey: public_key,
-                    inboundAddress: medium_inbound.clone(),
-                    outboundAddress: "10.0.0.1:9000".to_string(),
-                },
-            )
-            .expect("Should update to medium-length address");
-
-        let validators = validator_config
-            .get_validators(IValidatorConfig::getValidatorsCall {})
-            .unwrap();
-        assert_eq!(validators[0].inboundAddress, medium_inbound);
-    }
-
-    #[test]
     fn ipv4_with_port_is_host_port() {
-        ensure_is_host_port("127.0.0.1:8000").unwrap();
+        ensure_address_is_ip_port("127.0.0.1:8000").unwrap();
     }
 
     #[test]
     fn ipv6_with_port_is_host_port() {
-        ensure_is_host_port("[::1]:8000").unwrap();
-    }
-
-    #[test]
-    fn hostname_with_port_is_host_port() {
-        ensure_is_host_port("localhost:8000").unwrap();
-    }
-
-    #[test]
-    fn k8s_style_with_port_is_host_port() {
-        ensure_is_host_port("service.namespace:8000").unwrap();
+        ensure_address_is_ip_port("[::1]:8000").unwrap();
     }
 }

@@ -2,12 +2,10 @@ use commonware_consensus::{Reporter, marshal::Update, types::Epoch};
 use commonware_utils::acknowledgement::Exact;
 use eyre::WrapErr as _;
 use futures::channel::{mpsc, oneshot};
+use tempo_dkg_onchain_artifacts::{IntermediateOutcome, PublicOutcome};
 use tracing::{Span, warn};
 
-use crate::{
-    consensus::block::Block,
-    dkg::ceremony::{IntermediateOutcome, PublicOutcome},
-};
+use crate::consensus::block::Block;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Mailbox {
@@ -34,13 +32,10 @@ impl Mailbox {
             .wrap_err("actor dropped channel before responding with ceremony deal outcome")
     }
 
-    pub(crate) async fn get_public_ceremony_outcome(
-        &self,
-        epoch: Epoch,
-    ) -> eyre::Result<Option<PublicOutcome>> {
+    pub(crate) async fn get_public_ceremony_outcome(&self) -> eyre::Result<PublicOutcome> {
         let (response, rx) = oneshot::channel();
         self.inner
-            .unbounded_send(Message::in_current_span(GetOutcome { epoch, response }))
+            .unbounded_send(Message::in_current_span(GetOutcome { response }))
             .wrap_err("failed sending message to actor")?;
         rx.await
             .wrap_err("actor dropped channel before responding with ceremony deal outcome")
@@ -96,15 +91,15 @@ pub(super) struct GetIntermediateDealing {
 }
 
 pub(super) struct GetOutcome {
-    pub(super) epoch: Epoch,
-    pub(super) response: oneshot::Sender<Option<PublicOutcome>>,
+    pub(super) response: oneshot::Sender<PublicOutcome>,
 }
 
 impl Reporter for Mailbox {
-    type Activity = Update<Block>;
+    type Activity = Update<Block, Exact>;
 
     async fn report(&mut self, update: Self::Activity) {
         let Update::Block(block, acknowledgment) = update else {
+            tracing::trace!("dropping tip update; DKG manager is only interested in blocks");
             return;
         };
         if let Err(error) = self

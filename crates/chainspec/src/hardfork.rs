@@ -37,6 +37,7 @@ hardfork!(
 
 impl TempoHardfork {
     /// Returns `true` if this hardfork is Moderato or later.
+    #[inline]
     pub fn is_moderato(self) -> bool {
         self >= Self::Moderato
     }
@@ -144,7 +145,6 @@ mod tests {
     #[test]
     fn test_is_moderato() {
         assert!(!TempoHardfork::Adagio.is_moderato());
-
         assert!(TempoHardfork::Moderato.is_moderato());
     }
 

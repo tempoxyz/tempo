@@ -145,6 +145,15 @@ pub enum TempoInvalidTransaction {
     /// Keychain operations are only supported after Allegretto.
     #[error("keychain operations are only supported after Allegretto")]
     KeychainOpBeforeAllegretto,
+
+    /// KeyAuthorization chain_id does not match the current chain.
+    #[error("KeyAuthorization chain_id mismatch: expected {expected}, got {got}")]
+    KeyAuthorizationChainIdMismatch {
+        /// The expected chain ID (current chain).
+        expected: u64,
+        /// The chain ID from the KeyAuthorization.
+        got: u64,
+    },
 }
 
 impl InvalidTxError for TempoInvalidTransaction {

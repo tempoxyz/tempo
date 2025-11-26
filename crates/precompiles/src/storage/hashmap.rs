@@ -135,7 +135,15 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         Ok(())
     }
 
+    fn refund_gas(&mut self, _gas: i64) {
+        // No-op
+    }
+
     fn gas_used(&self) -> u64 {
+        0
+    }
+
+    fn gas_refunded(&self) -> i64 {
         0
     }
 
