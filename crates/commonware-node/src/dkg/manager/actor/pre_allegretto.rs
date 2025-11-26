@@ -14,7 +14,7 @@ use commonware_utils::{
     sequence::U64,
     set::{Ordered, OrderedAssociated},
 };
-use eyre::{WrapErr as _, ensure};
+use eyre::WrapErr as _;
 use rand_core::CryptoRngCore;
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_dkg_onchain_artifacts::PublicOutcome;
@@ -32,8 +32,6 @@ use crate::{
 
 const CURRENT_EPOCH_KEY: U64 = U64::new(0);
 const PREVIOUS_EPOCH_KEY: U64 = U64::new(1);
-
-const CEREMONY_SUCCESS_KEY: U64 = U64::new(0);
 
 impl<TContext, TPeerManager> super::Actor<TContext, TPeerManager>
 where
@@ -283,11 +281,6 @@ where
 
         let ceremony_outcome = match ceremony.finalize() {
             Ok(outcome) => {
-                self.pre_allegretto_metadatas
-                    .ceremony_success_metadata
-                    .put_sync(CEREMONY_SUCCESS_KEY, true)
-                    .await
-                    .expect("must always be able to persist state");
                 self.metrics.ceremony_successes.inc();
                 info!(
                     "ceremony was successful; using the new participants, polynomial and secret key"
@@ -295,11 +288,6 @@ where
                 outcome
             }
             Err(outcome) => {
-                self.pre_allegretto_metadatas
-                    .ceremony_success_metadata
-                    .put_sync(CEREMONY_SUCCESS_KEY, false)
-                    .await
-                    .expect("must always be able to persist state");
                 self.metrics.ceremony_failures.inc();
                 warn!(
                     "ceremony was a failure; using the old participants, polynomial and secret key"
@@ -417,16 +405,6 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        ensure!(
-            self.pre_allegretto_metadatas
-                .ceremony_success_metadata
-                .get(&CEREMONY_SUCCESS_KEY)
-                .copied()
-                .unwrap_or_default(),
-            "last DKG ceremony was not successful; waiting another epoch before \
-            transitioning"
-        );
-
         let epoch_state = self
             .pre_allegretto_metadatas
             .epoch_metadata
@@ -453,11 +431,6 @@ where
     /// Persisted information on the current epoch for DKG ceremonies that were
     /// started after the allegretto hardfork.
     epoch_metadata: Metadata<TContext, U64, EpochState>,
-
-    /// Persisted information on whether the last ceremony was successful or not.
-    /// The network transitions to dynamic validator sets only if the last
-    /// ceremony was successful.
-    ceremony_success_metadata: Metadata<TContext, U64, bool>,
 }
 
 impl<TContext> Metadatas<TContext>
@@ -480,22 +453,7 @@ where
         .await
         .expect("must be able to initialize metadata on disk to function");
 
-        let ceremony_success_metadata = Metadata::init(
-            context.with_label("post_allegretto_ceremony_success_metadata"),
-            commonware_storage::metadata::Config {
-                // XXX: the prefix of this partition must stay fixed to be
-                // backward compatible with the pre-allegretto hardfork.
-                partition: format!("{partition_prefix}_ceremony_success"),
-                codec_config: (),
-            },
-        )
-        .await
-        .expect("must be able to initialize metadata on disk to function");
-
-        Self {
-            epoch_metadata,
-            ceremony_success_metadata,
-        }
+        Self { epoch_metadata }
     }
 
     pub(super) fn dkg_outcome(&self) -> Option<PublicOutcome> {
