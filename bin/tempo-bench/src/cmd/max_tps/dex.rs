@@ -1,3 +1,5 @@
+use crate::cmd::max_tps::tip20::TIP20Instance;
+
 use super::*;
 use alloy::providers::DynProvider;
 use std::pin::Pin;
@@ -6,7 +8,6 @@ use tempo_precompiles::stablecoin_exchange::{MAX_TICK, MIN_TICK};
 
 type StablecoinExchangeInstance =
     IStablecoinExchangeInstance<DynProvider<TempoNetwork>, TempoNetwork>;
-type TIP20Instance = ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>;
 
 const GAS_LIMIT: u64 = 500_000;
 
@@ -22,7 +23,7 @@ pub(super) async fn setup(
     signers: Vec<PrivateKeySigner>,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
-) -> eyre::Result<(StablecoinExchangeInstance, Address, Vec<Address>)> {
+) -> eyre::Result<(StablecoinExchangeInstance, Address, Vec<TIP20Instance>)> {
     println!("Sending DEX setup transactions...");
 
     let user_tokens_count = 2;
@@ -48,7 +49,7 @@ pub(super) async fn setup(
     let base1 = setup_test_token(provider.clone(), caller, &tx_count).await?;
     let base2 = setup_test_token(provider.clone(), caller, &tx_count).await?;
     let user_tokens = [*base1.address(), *base2.address()];
-    let base = [base1.clone(), base2.clone()];
+    let base = vec![base1.clone(), base2.clone()];
 
     let quote_address = token_id_to_address(0);
 
@@ -63,7 +64,7 @@ pub(super) async fn setup(
 
     for (i, &token) in user_tokens.iter().enumerate() {
         let provider = provider.clone();
-        let tx = create_pair(&exchange, &wallet, nonce + i as u64, chain_id, token)?;
+        let tx = create_pair(&exchange, wallet.clone(), nonce + i as u64, chain_id, token).await?;
 
         futures.push(Box::pin(async move {
             alloy::contract::Result::Ok(provider.send_raw_transaction(tx.as_slice()).await?)
@@ -78,12 +79,13 @@ pub(super) async fn setup(
             let recipient = signer.address();
             let tx = mint(
                 token,
-                &wallet,
+                wallet.clone(),
                 nonce + (i as u64 * tokens.len() as u64) + j as u64,
                 chain_id,
                 recipient,
                 mint_amount,
-            )?;
+            )
+            .await?;
             futures.push(Box::pin(async move {
                 alloy::contract::Result::Ok(provider.send_raw_transaction(tx.as_slice()).await?)
             }) as Pin<Box<dyn Future<Output = _>>>);
@@ -109,7 +111,7 @@ pub(super) async fn setup(
 
         for (i, token) in tokens.enumerate() {
             let provider = provider.clone();
-            let tx = approve(&token, &signer, nonce + i as u64, chain_id)?;
+            let tx = approve(&token, signer.clone(), nonce + i as u64, chain_id).await?;
             futures.push(Box::pin(async move {
                 alloy::contract::Result::Ok(provider.send_raw_transaction(tx.as_slice()).await?)
             }) as Pin<Box<dyn Future<Output = _>>>);
@@ -136,14 +138,15 @@ pub(super) async fn setup(
             let provider = provider.clone();
             let tx = place_flip(
                 &exchange,
-                &signer,
+                signer.clone(),
                 nonce + i as u64,
                 chain_id,
                 token,
                 first_order_amount,
                 tick_under,
                 tick_over,
-            )?;
+            )
+            .await?;
 
             futures.push(Box::pin(async move {
                 alloy::contract::Result::Ok(provider.send_raw_transaction(tx.as_slice()).await?)
@@ -161,55 +164,47 @@ pub(super) async fn setup(
 
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone().erased());
 
-    Ok((
-        exchange,
-        quote_address,
-        base.into_iter().map(|base| *base.address()).collect(),
-    ))
+    Ok((exchange, quote_address, base))
 }
 
-pub(super) fn approve(
+pub(super) async fn approve(
     token: &TIP20Instance,
-    signer: &PrivateKeySigner,
+    signer: PrivateKeySigner,
     nonce: u64,
     chain_id: ChainId,
 ) -> eyre::Result<Vec<u8>> {
-    let tx = token
+    Ok(token
         .approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
-        .into_transaction_request()
-        .with_gas_limit(GAS_LIMIT)
-        .with_gas_price(TEMPO_BASE_FEE as u128)
-        .with_chain_id(chain_id)
-        .with_nonce(nonce)
-        .build_fee_token()?;
-
-    into_signed_encoded(tx, signer)
+        .gas(GAS_LIMIT)
+        .gas_price(TEMPO_BASE_FEE as u128)
+        .chain_id(chain_id)
+        .nonce(nonce)
+        .build_raw_transaction(signer)
+        .await?)
 }
 
-pub(super) fn mint(
+pub(super) async fn mint(
     token: &TIP20Instance,
-    signer: &PrivateKeySigner,
+    signer: PrivateKeySigner,
     nonce: u64,
     chain_id: ChainId,
     recipient: Address,
     mint_amount: U256,
 ) -> eyre::Result<Vec<u8>> {
-    let tx = token
+    Ok(token
         .mint(recipient, mint_amount)
-        .into_transaction_request()
-        .with_gas_limit(GAS_LIMIT)
-        .with_gas_price(TEMPO_BASE_FEE as u128)
-        .with_chain_id(chain_id)
-        .with_nonce(nonce)
-        .build_fee_token()?;
-
-    into_signed_encoded(tx, signer)
+        .gas(GAS_LIMIT)
+        .gas_price(TEMPO_BASE_FEE as u128)
+        .chain_id(chain_id)
+        .nonce(nonce)
+        .build_raw_transaction(signer)
+        .await?)
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(super) fn place_flip(
+pub(super) async fn place_flip(
     exchange: &StablecoinExchangeInstance,
-    signer: &PrivateKeySigner,
+    signer: PrivateKeySigner,
     nonce: u64,
     chain_id: ChainId,
     token: Address,
@@ -217,82 +212,73 @@ pub(super) fn place_flip(
     tick_under: i16,
     tick_over: i16,
 ) -> eyre::Result<Vec<u8>> {
-    let tx = exchange
+    Ok(exchange
         .placeFlip(token, amount, true, tick_under, tick_over)
-        .into_transaction_request()
-        .with_gas_limit(GAS_LIMIT)
-        .with_gas_price(TEMPO_BASE_FEE as u128)
-        .with_chain_id(chain_id)
-        .with_nonce(nonce)
-        .build_fee_token()?;
-
-    into_signed_encoded(tx, signer)
+        .gas(GAS_LIMIT)
+        .gas_price(TEMPO_BASE_FEE as u128)
+        .chain_id(chain_id)
+        .nonce(nonce)
+        .build_raw_transaction(signer)
+        .await?)
 }
 
-pub(super) fn create_pair(
+pub(super) async fn create_pair(
     exchange: &StablecoinExchangeInstance,
-    signer: &PrivateKeySigner,
+    signer: PrivateKeySigner,
     nonce: u64,
     chain_id: ChainId,
     token_address: Address,
 ) -> eyre::Result<Vec<u8>> {
-    let tx = exchange
+    Ok(exchange
         .createPair(token_address)
-        .into_transaction_request()
-        .with_gas_limit(GAS_LIMIT)
-        .with_gas_price(TEMPO_BASE_FEE as u128)
-        .with_chain_id(chain_id)
-        .with_nonce(nonce)
-        .build_fee_token()?;
-
-    into_signed_encoded(tx, signer)
+        .map(|request| {
+            request
+                .with_gas_limit(GAS_LIMIT)
+                .with_gas_price(TEMPO_BASE_FEE as u128)
+                .with_chain_id(chain_id)
+                .with_nonce(nonce)
+        })
+        .build_raw_transaction(signer)
+        .await?)
 }
 
-pub(super) fn place(
+pub(super) async fn place(
     exchange: &StablecoinExchangeInstance,
-    signer: &PrivateKeySigner,
+    signer: PrivateKeySigner,
     nonce: u64,
     chain_id: ChainId,
     token_address: Address,
 ) -> eyre::Result<Vec<u8>> {
-    let min_order_amount = MIN_ORDER_AMOUNT;
     let tick = (random::<u16>() % (MAX_TICK - MIN_TICK) as u16) as i16 + MIN_TICK;
 
     // Place an order at exactly the dust limit (should succeed)
-    let tx = exchange
-        .place(token_address, min_order_amount, true, tick)
-        .into_transaction_request()
-        .with_gas_limit(GAS_LIMIT)
-        .with_gas_price(TEMPO_BASE_FEE as u128)
-        .with_chain_id(chain_id)
-        .with_nonce(nonce)
-        .build_fee_token()?;
-
-    into_signed_encoded(tx, signer)
+    Ok(exchange
+        .place(token_address, MIN_ORDER_AMOUNT, true, tick)
+        .gas(GAS_LIMIT)
+        .gas_price(TEMPO_BASE_FEE as u128)
+        .chain_id(chain_id)
+        .nonce(nonce)
+        .build_raw_transaction(signer)
+        .await?)
 }
 
-pub(super) fn swap_in(
+pub(super) async fn swap_in(
     exchange: &StablecoinExchangeInstance,
-    signer: &PrivateKeySigner,
+    signer: PrivateKeySigner,
     nonce: u64,
     chain_id: ChainId,
     token_in: Address,
     token_out: Address,
 ) -> eyre::Result<Vec<u8>> {
-    let min_amount_out = 0;
-    let min_order_amount = MIN_ORDER_AMOUNT;
-
     // Place an order at exactly the dust limit (should succeed)
-    let tx = exchange
-        .swapExactAmountIn(token_in, token_out, min_order_amount, min_amount_out)
-        .into_transaction_request()
-        .with_gas_limit(GAS_LIMIT)
-        .with_gas_price(TEMPO_BASE_FEE as u128)
-        .with_chain_id(chain_id)
-        .with_nonce(nonce)
-        .build_fee_token()?;
-
-    into_signed_encoded(tx, signer)
+    Ok(exchange
+        .swapExactAmountIn(token_in, token_out, MIN_ORDER_AMOUNT, 0)
+        .gas(GAS_LIMIT)
+        .gas_price(TEMPO_BASE_FEE as u128)
+        .chain_id(chain_id)
+        .nonce(nonce)
+        .build_raw_transaction(signer)
+        .await?)
 }
 
 /// Creates a test TIP20 token with issuer role granted to the caller

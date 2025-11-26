@@ -37,12 +37,6 @@ pub struct TempoTransactionRequest {
 }
 
 impl TempoTransactionRequest {
-    /// Builder-pattern method for setting the fee token.
-    pub fn with_fee_token(mut self, fee_token: Address) -> Self {
-        self.fee_token = Some(fee_token);
-        self
-    }
-
     pub fn build_fee_token(self) -> Result<TxFeeToken, ValueError<Self>> {
         let Some(to) = self.inner.to else {
             return Err(ValueError::new(
