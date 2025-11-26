@@ -1362,15 +1362,22 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         println!("  ✓ Both nonce=1 and nonce=2 included");
     }
 
+    // Wait for the 2D pool maintenance task to process the canonical state notification.
+    // The maintenance task runs asynchronously, so we poll until transactions are removed.
+    for _ in 0..100 {
+        if !setup.node.inner.pool.contains(&pending)
+            && !setup.node.inner.pool.contains(&queued)
+            && !setup.node.inner.pool.contains(&new_pending)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
     // Assert that all transactions are removed from the pool
     assert!(!setup.node.inner.pool.contains(&pending));
     assert!(!setup.node.inner.pool.contains(&queued));
     assert!(!setup.node.inner.pool.contains(&new_pending));
-
-    println!("\n=== All Scenarios Passed ===");
-    println!("✅ Pool routing works correctly");
-    println!("✅ Priority fee ordering works across pools");
-    println!("✅ Nonce gap detection and filling works correctly");
 
     Ok(())
 }
