@@ -315,7 +315,6 @@ fn send_transactions(
     transactions: Vec<
         BoxFuture<'static, alloy::contract::Result<PendingTransactionBuilder<TempoNetwork>>>,
     >,
-
     num_workers: usize,
     tps: u64,
     disable_thread_pinning: bool,
