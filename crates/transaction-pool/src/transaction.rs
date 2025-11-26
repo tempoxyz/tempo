@@ -1,3 +1,4 @@
+use crate::aa_2d_pool::{AA2dTransactionId, AASequenceId};
 use alloy_consensus::{BlobTransactionValidationError, Transaction, transaction::TxHashRef};
 use alloy_eips::{
     eip2718::{Encodable2718, Typed2718},
@@ -55,11 +56,44 @@ impl TempoPooledTransaction {
         &self.inner.transaction
     }
 
+    /// Returns true if this is an AA transaction
+    pub fn is_aa(&self) -> bool {
+        self.inner().is_aa()
+    }
+
+    /// Returns the nonce key of this transaction if it's an [`AASigned`](tempo_primitives::AASigned) transaction.
+    pub fn nonce_key(&self) -> Option<U256> {
+        self.inner.transaction.nonce_key()
+    }
+
     /// Returns whether this is a payment transaction.
     ///
     /// Based on classifier v1: payment if tx.to has TIP20 reserved prefix.
     pub fn is_payment(&self) -> bool {
         self.is_payment
+    }
+
+    /// Returns true if this transaction belongs into the 2D nonce pool:
+    /// - AA transaction with a `nonce key != 0`
+    pub(crate) fn is_aa_2d(&self) -> bool {
+        self.inner
+            .transaction
+            .as_aa()
+            .map(|tx| !tx.tx().nonce_key.is_zero())
+            .unwrap_or(false)
+    }
+
+    /// Returns the unique identifier for this AA transaction.
+    pub(crate) fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
+        let nonce_key = self.nonce_key()?;
+        let sender = AASequenceId {
+            address: self.sender(),
+            nonce_key,
+        };
+        Some(AA2dTransactionId {
+            seq_id: sender,
+            nonce: self.nonce(),
+        })
     }
 }
 
@@ -71,11 +105,17 @@ pub enum TempoPoolTransactionError {
     #[error("Invalid fee token: {0}")]
     InvalidFeeToken(Address),
 
-    #[error("No fee token preference configured")]
-    MissingFeeToken,
-
     #[error("Keychain signature validation failed: {0}")]
     Keychain(&'static str),
+
+    #[error(
+        "Native transfers are not supported, if you were trying to transfer a stablecoin, please call TIP20::Transfer"
+    )]
+    NonZeroValue,
+
+    /// Thrown if a AA transaction with a nonce key prefixed with the sub-block prefix marker added to the pool
+    #[error("AA transaction with subblock nonce key prefix aren't supported in the pool")]
+    SubblockNonceKey,
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -83,8 +123,9 @@ impl PoolTransactionError for TempoPoolTransactionError {
         match self {
             Self::ExceedsNonPaymentLimit => false,
             Self::InvalidFeeToken(_) => false,
-            Self::MissingFeeToken => false,
             Self::Keychain(_) => true, // Bad transaction - invalid signature
+            Self::NonZeroValue => true,
+            Self::SubblockNonceKey => true,
         }
     }
 
@@ -154,6 +195,17 @@ impl PoolTransaction for TempoPooledTransaction {
 
     fn encoded_length(&self) -> usize {
         self.inner.encoded_length
+    }
+
+    fn requires_nonce_check(&self) -> bool {
+        self.inner
+            .transaction()
+            .as_aa()
+            .map(|tx| {
+                // for AA transaction with a custom nonce key we can skip the nonce validation
+                tx.tx().nonce_key.is_zero()
+            })
+            .unwrap_or(true)
     }
 }
 

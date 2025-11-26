@@ -1,17 +1,27 @@
-use crate::transaction::{TempoPoolTransactionError, TempoPooledTransaction};
+use crate::{
+    aa_2d_pool::AA2dNonceKeys,
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+};
 use alloy_consensus::Transaction;
-use alloy_primitives::U256;
+use alloy_primitives::{Address, U256};
 use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
 };
-use reth_storage_api::{StateProvider, StateProviderFactory, errors::ProviderError};
+use reth_storage_api::{
+    StateProvider, StateProviderFactory,
+    errors::{ProviderError, ProviderResult},
+};
 use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, AuthorizedKey, compute_keys_slot};
+use tempo_precompiles::{
+    ACCOUNT_KEYCHAIN_ADDRESS, AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, compute_keys_slot,
+    nonce::slots, storage::double_mapping_slot,
+};
+use tempo_primitives::subblock::has_sub_block_nonce_key_prefix;
 use tempo_revm::TempoStateAccess;
 
 /// Validator for Tempo transactions.
@@ -19,14 +29,43 @@ use tempo_revm::TempoStateAccess;
 pub struct TempoTransactionValidator<Client> {
     /// Inner validator that performs default Ethereum tx validation.
     pub(crate) inner: EthTransactionValidator<Client, TempoPooledTransaction>,
+    /// Keeps tracks of known nonce keys for AA transactions.
+    pub(crate) aa_nonce_keys: AA2dNonceKeys,
 }
 
 impl<Client> TempoTransactionValidator<Client>
 where
     Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
 {
-    pub fn new(inner: EthTransactionValidator<Client, TempoPooledTransaction>) -> Self {
-        Self { inner }
+    pub fn new(
+        inner: EthTransactionValidator<Client, TempoPooledTransaction>,
+        aa_nonce_keys: AA2dNonceKeys,
+    ) -> Self {
+        Self {
+            inner,
+            aa_nonce_keys,
+        }
+    }
+
+    /// Get the 2D nonce from state for (address, nonce_key) and the slot
+    ///
+    /// Returns `(slot, nonce)` for the given address and nonce key.
+    fn get_2d_nonce(
+        &self,
+        state_provider: &impl StateProvider,
+        address: alloy_primitives::Address,
+        nonce_key: U256,
+    ) -> ProviderResult<(U256, u64)> {
+        // Compute storage slot for 2D nonce
+        // Based on: mapping(address => mapping(uint256 => uint64)) at slot 0
+        let slot = double_mapping_slot(
+            address.as_slice(),
+            nonce_key.to_be_bytes::<32>(),
+            slots::NONCES,
+        );
+        let nonce_value = state_provider.storage(NONCE_PRECOMPILE_ADDRESS, slot.into())?;
+
+        Ok((slot, nonce_value.unwrap_or_default().saturating_to()))
     }
 
     /// Check if a transaction requires keychain validation
@@ -148,18 +187,7 @@ where
         if !transaction.inner().value().is_zero() {
             return TransactionValidationOutcome::Invalid(
                 transaction,
-                InvalidTransactionError::TxTypeNotSupported.into(),
-            );
-        }
-
-        // Reject AA transactions with non-zero nonce keys, we don't have
-        // a nice way to track them in the pool yet.
-        if let Some(tx) = transaction.inner().as_aa()
-            && !tx.tx().nonce_key.is_zero()
-        {
-            return TransactionValidationOutcome::Error(
-                *transaction.hash(),
-                InvalidTransactionError::TxTypeNotSupported.into(),
+                InvalidPoolTransactionError::other(TempoPoolTransactionError::NonZeroValue),
             );
         }
 
@@ -170,24 +198,21 @@ where
             }
         };
 
-        let fee_token = match state_provider.user_or_tx_fee_token(transaction.inner(), fee_payer) {
-            Ok(Some(fee_token)) => fee_token,
-            Ok(None) => {
-                // If no fee token preference was specified at transaction or user level, this means that we will
-                // fallback to validator token. On Andantino testnet, all validators use LINKING_USD as their fee token,
-                // which will cause the transaction to be rejected because it can't be used to pay fees.
-                return TransactionValidationOutcome::Invalid(
-                    transaction,
-                    InvalidPoolTransactionError::other(TempoPoolTransactionError::MissingFeeToken),
-                );
-            }
-            Err(err) => {
-                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-            }
-        };
+        let spec = self
+            .inner
+            .chain_spec()
+            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
+        let fee_token =
+            match state_provider.get_fee_token(transaction.inner(), Address::ZERO, fee_payer, spec)
+            {
+                Ok(fee_token) => fee_token,
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+                }
+            };
 
         // Ensure that fee token is valid.
-        match state_provider.is_valid_fee_token(fee_token) {
+        match state_provider.is_valid_fee_token(fee_token, spec) {
             Ok(valid) => {
                 if !valid {
                     return TransactionValidationOutcome::Invalid(
@@ -226,7 +251,76 @@ where
             );
         }
 
-        self.inner.validate_one(origin, transaction)
+        match self.inner.validate_one(origin, transaction) {
+            TransactionValidationOutcome::Valid {
+                balance,
+                state_nonce,
+                bytecode_hash,
+                transaction,
+                propagate,
+                authorities,
+            } => {
+                // Additional 2D nonce validations
+                // Check for 2D nonce validation (nonce_key > 0)
+                if let Some(nonce_key) = transaction.transaction().nonce_key()
+                    && !nonce_key.is_zero()
+                {
+                    // ensure the nonce key isn't prefixed with the sub-block prefix
+                    if has_sub_block_nonce_key_prefix(&nonce_key) {
+                        return TransactionValidationOutcome::Invalid(
+                            transaction.into_transaction(),
+                            InvalidPoolTransactionError::other(
+                                TempoPoolTransactionError::SubblockNonceKey,
+                            ),
+                        );
+                    }
+
+                    // This is a 2D nonce transaction - validate against 2D nonce
+                    let (nonce_key_slot, on_chain_2d_nonce) = match self.get_2d_nonce(
+                        &state_provider,
+                        transaction.transaction().sender(),
+                        nonce_key,
+                    ) {
+                        Ok(nonce) => nonce,
+                        Err(err) => {
+                            return TransactionValidationOutcome::Error(
+                                *transaction.hash(),
+                                Box::new(err),
+                            );
+                        }
+                    };
+                    let tx_nonce = transaction.nonce();
+                    if tx_nonce < on_chain_2d_nonce {
+                        return TransactionValidationOutcome::Invalid(
+                            transaction.into_transaction(),
+                            InvalidTransactionError::NonceNotConsistent {
+                                tx: tx_nonce,
+                                state: on_chain_2d_nonce,
+                            }
+                            .into(),
+                        );
+                    }
+
+                    // since we've just fetched the most recent on chain nonce for this valid transaction, we can update the tracker.
+                    self.aa_nonce_keys.insert(
+                        transaction.transaction().sender(),
+                        nonce_key,
+                        on_chain_2d_nonce,
+                        nonce_key_slot,
+                    );
+                }
+
+                TransactionValidationOutcome::Valid {
+                    balance,
+                    state_nonce,
+                    bytecode_hash,
+                    transaction,
+                    propagate,
+                    authorities,
+                }
+            }
+            outcome => outcome,
+        }
     }
 }
 
@@ -313,8 +407,7 @@ mod tests {
     use reth_primitives_traits::SignedTransaction;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_transaction_pool::{
-        PoolTransaction, blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
-        validate::EthTransactionValidatorBuilder,
+        PoolTransaction, blobstore::InMemoryBlobStore, validate::EthTransactionValidatorBuilder,
     };
     use std::sync::Arc;
     use tempo_chainspec::spec::ANDANTINO;
@@ -358,17 +451,17 @@ mod tests {
         let inner = EthTransactionValidatorBuilder::new(provider.clone())
             .disable_balance_check()
             .build(InMemoryBlobStore::default());
-        let validator = TempoTransactionValidator::new(inner);
+        let validator = TempoTransactionValidator::new(inner, Default::default());
 
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, transaction.clone())
             .await;
 
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
-            assert!(matches!(
-                err,
-                InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported)
-            ),);
+            assert!(
+                err.to_string()
+                    .contains("Native transfers are not supported")
+            );
         } else {
             panic!("Expected Invalid outcome with InsufficientFunds error");
         }

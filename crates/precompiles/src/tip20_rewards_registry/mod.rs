@@ -296,7 +296,7 @@ mod tests {
 
         // Create a TIP20 token and start a reward stream
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
         let token_addr = token.address();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;

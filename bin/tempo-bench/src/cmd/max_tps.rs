@@ -6,22 +6,20 @@ use tempo_alloy::TempoNetwork;
 use alloy::{
     consensus::BlockHeader,
     eips::{BlockNumberOrTag::Latest, Decodable2718},
-    network::{Ethereum, Network, ReceiptResponse, TransactionBuilder, TxSignerSync},
-    primitives::{Address, BlockNumber, ChainId, Signature, TxKind, U256},
+    network::ReceiptResponse,
+    primitives::{Address, BlockNumber, U256},
     providers::{PendingTransactionBuilder, Provider, ProviderBuilder},
-    sol_types::{SolCall, SolEvent},
+    sol_types::SolEvent,
     transports::http::reqwest::Url,
 };
-use alloy_consensus::{
-    EthereumTxEnvelope, SignableTransaction, TxEip4844, TxLegacy, transaction::RlpEcdsaEncodableTx,
-};
+use alloy_consensus::{EthereumTxEnvelope, TxEip4844};
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
 use clap::Parser;
 use core_affinity::CoreId;
 use eyre::{Context, OptionExt, ensure};
-use futures::{StreamExt, stream};
+use futures::{StreamExt, TryStreamExt, future::BoxFuture, stream};
 use governor::{Quota, RateLimiter};
-use indicatif::{ParallelProgressIterator, ProgressBar};
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator};
 use rand::{random, seq::IndexedRandom};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rlimit::Resource;
@@ -32,7 +30,7 @@ use std::{
     num::NonZeroU32,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     thread,
     time::Duration,
@@ -77,10 +75,6 @@ pub struct MaxTpsArgs {
 
     #[arg(short, long, default_value = "0")]
     from_mnemonic_index: u32,
-
-    /// Chain ID
-    #[arg(long, default_value = "1337")]
-    chain_id: u64,
 
     /// Token address used when creating TIP20 transfer calldata
     #[arg(long, default_value = "0x20c0000000000000000000000000000000000000")]
@@ -171,9 +165,8 @@ impl MaxTpsArgs {
                 total_txs,
                 num_accounts: self.accounts,
                 mnemonic: &self.mnemonic,
-                from_mnemonic_index: self.from_mnemonic_index,
-                chain_id: self.chain_id,
                 rpc_url: target_urls[0].clone(),
+                from_mnemonic_index: self.from_mnemonic_index,
                 max_concurrent_requests: self.total_connections as usize,
                 max_concurrent_transactions: self.max_concurrent_transactions,
                 tip20_weight,
@@ -339,12 +332,11 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
         num_accounts,
         mnemonic,
         from_mnemonic_index,
-        chain_id,
         rpc_url,
         max_concurrent_requests,
         max_concurrent_transactions,
-        tip20_weight: transfer_weight,
-        place_order_weight: place_weight,
+        tip20_weight,
+        place_order_weight,
         swap_weight,
     } = input;
     println!("Generating {num_accounts} accounts...");
@@ -370,7 +362,6 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
 
     let (exchange, quote, user_tokens) = dex::setup(
         rpc_url.clone(),
-        chain_id,
         mnemonic,
         signers.clone(),
         max_concurrent_requests,
@@ -400,77 +391,70 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
         }
     }
 
-    let user_tokens_count = user_tokens.len();
-
     println!(
         "Pregenerating {} transactions",
         txs_per_sender as usize * accounts,
     );
 
-    let transactions: Vec<_> = params
-        .into_par_iter()
-        .progress()
-        .map(|(signer, nonce)| {
-            let tx_factory: [Box<dyn Fn(PrivateKeySigner, u64) -> _>; 3] = [
-                Box::new(|signer: PrivateKeySigner, nonce: u64| {
-                    tip20::transfer(
-                        &signer,
-                        nonce,
-                        chain_id,
-                        user_tokens[random::<u16>() as usize % user_tokens_count],
-                    )
+    let transfers = Arc::new(AtomicUsize::new(0));
+    let swaps = Arc::new(AtomicUsize::new(0));
+    let orders = Arc::new(AtomicUsize::new(0));
+    let transactions: Vec<_> = stream::iter(
+        params
+            .into_iter()
+            .progress()
+            .zip(std::iter::repeat_with(|| user_tokens.choose(&mut rand::rng())).flatten()),
+    )
+    .then(async |((signer, nonce), token)| {
+        #[expect(clippy::type_complexity)]
+        let tx_factories: [(Box<dyn Fn() -> BoxFuture<'static, _>>, u64); 3] = [
+            (
+                Box::new(|| {
+                    transfers.fetch_add(1, Ordering::Relaxed);
+                    Box::pin(tip20::transfer(signer.clone(), nonce, token.clone()))
                 }),
-                Box::new(|signer: PrivateKeySigner, nonce: u64| {
-                    dex::swap_in(
-                        &exchange,
-                        &signer,
+                tip20_weight,
+            ),
+            (
+                Box::new(|| {
+                    swaps.fetch_add(1, Ordering::Relaxed);
+                    Box::pin(dex::swap_in(
+                        exchange.clone(),
+                        signer.clone(),
                         nonce,
-                        chain_id,
-                        user_tokens[random::<u16>() as usize % user_tokens_count],
+                        *token.address(),
                         quote,
-                    )
+                    ))
                 }),
-                Box::new(|signer: PrivateKeySigner, nonce: u64| {
-                    dex::place(
-                        &exchange,
-                        &signer,
+                swap_weight,
+            ),
+            (
+                Box::new(|| {
+                    orders.fetch_add(1, Ordering::Relaxed);
+                    Box::pin(dex::place(
+                        exchange.clone(),
+                        signer.clone(),
                         nonce,
-                        chain_id,
-                        user_tokens[random::<u16>() as usize % user_tokens_count],
-                    )
+                        *token.address(),
+                    ))
                 }),
-            ];
-            let weights = [(0, transfer_weight), (1, swap_weight), (2, place_weight)];
-
-            let mut rng = rand::rng();
-            let index = weights.choose_weighted(&mut rng, |item| item.1)?.0;
-            let f = &tx_factory[index];
-
-            f(signer, nonce).map(|tx| (index, tx))
-        })
-        .collect::<eyre::Result<Vec<_>>>()?;
-
-    let mut swaps = 0;
-    let mut transfers = 0;
-    let mut orders = 0;
-
-    let transactions: Vec<_> = transactions
-        .into_iter()
-        .map(|(index, tx)| {
-            match index {
-                0 => transfers += 1,
-                1 => swaps += 1,
-                2 => orders += 1,
-                v => unreachable!("Unknown index {v}"),
-            };
-
-            tx
-        })
-        .collect();
+                place_order_weight,
+            ),
+        ];
+        let tx = tx_factories
+            .choose_weighted(&mut rand::rng(), |item| item.1)
+            .map(|item| &item.0)?;
+        tx().await
+    })
+    .try_collect::<Vec<_>>()
+    .await?;
 
     println!(
-        "Generated {} transactions [{transfers} transfers, {swaps} swaps, {orders} orders]",
-        transactions.len()
+        "Generated {} transactions [{} transfers, {} swaps, {} orders]",
+        transactions.len(),
+        transfers.load(Ordering::Relaxed),
+        swaps.load(Ordering::Relaxed),
+        orders.load(Ordering::Relaxed)
     );
 
     Ok(transactions)
@@ -598,7 +582,7 @@ pub async fn generate_report(
         run_duration_secs: args.duration,
         num_accounts: args.accounts,
         num_workers: args.workers,
-        chain_id: args.chain_id,
+        chain_id: provider.get_chain_id().await?,
         total_connections: args.total_connections,
         start_block,
         end_block,
@@ -643,7 +627,7 @@ fn monitor_tps(tx_counter: Arc<AtomicU64>, target_count: u64) -> thread::JoinHan
 }
 
 async fn join_all<
-    T: Future<Output = alloy::contract::Result<PendingTransactionBuilder<Ethereum>>>,
+    T: Future<Output = alloy::contract::Result<PendingTransactionBuilder<TempoNetwork>>>,
 >(
     futures: impl IntoIterator<Item = T>,
     tx_count: &ProgressBar,
@@ -682,23 +666,10 @@ async fn join_all<
     Ok(())
 }
 
-fn into_signed_encoded(
-    mut tx: impl SignableTransaction<Signature> + RlpEcdsaEncodableTx,
-    signer: &PrivateKeySigner,
-) -> eyre::Result<Vec<u8>> {
-    let signature = signer
-        .sign_transaction_sync(&mut tx)
-        .map_err(|e| eyre::eyre!("Failed to sign transaction: {e}"))?;
-    let mut payload = Vec::new();
-    tx.into_signed(signature).eip2718_encode(&mut payload);
-    Ok(payload)
-}
-
 struct GenerateTransactionsInput<'input> {
     total_txs: u64,
     num_accounts: u64,
     mnemonic: &'input str,
-    chain_id: u64,
     rpc_url: Url,
     from_mnemonic_index: u32,
     max_concurrent_requests: usize,
