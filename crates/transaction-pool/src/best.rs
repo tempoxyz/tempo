@@ -27,8 +27,8 @@ impl BestPriorityTransactions<CoinbaseTipOrdering<TempoPooledTransaction>>
     }
 }
 
-/// A [`BestTransactions`] iterator that combines two individual implementations and always yields the next best item from either of the iterators.
-pub struct BiBestTransactions<L, R, T>
+/// A [`BestTransactions`] iterator that merges two individual implementations and always yields the next best item from either of the iterators.
+pub struct MergeBestTransactions<L, R, T>
 where
     L: BestPriorityTransactions<T>,
     R: BestPriorityTransactions<T, Item = L::Item>,
@@ -40,7 +40,7 @@ where
     next_right: Option<(L::Item, Priority<T::PriorityValue>)>,
 }
 
-impl<L, R, T> BiBestTransactions<L, R, T>
+impl<L, R, T> MergeBestTransactions<L, R, T>
 where
     L: BestPriorityTransactions<T>,
     R: BestPriorityTransactions<T, Item = L::Item>,
@@ -57,7 +57,7 @@ where
     }
 }
 
-impl<L, R, T> BiBestTransactions<L, R, T>
+impl<L, R, T> MergeBestTransactions<L, R, T>
 where
     L: BestPriorityTransactions<T>,
     R: BestPriorityTransactions<T, Item = L::Item>,
@@ -103,7 +103,7 @@ where
     }
 }
 
-impl<L, R, T> Iterator for BiBestTransactions<L, R, T>
+impl<L, R, T> Iterator for MergeBestTransactions<L, R, T>
 where
     L: BestPriorityTransactions<T>,
     R: BestPriorityTransactions<T, Item = L::Item>,
@@ -116,7 +116,7 @@ where
     }
 }
 
-impl<L, R, T> BestTransactions for BiBestTransactions<L, R, T>
+impl<L, R, T> BestTransactions for MergeBestTransactions<L, R, T>
 where
     L: BestPriorityTransactions<T, Item: Send> + Send,
     R: BestPriorityTransactions<T, Item = L::Item> + Send,

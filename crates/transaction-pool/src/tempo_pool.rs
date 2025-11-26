@@ -4,7 +4,7 @@
 
 use crate::{
     aa_2d_pool::{AA2dNonceKeys, AA2dPool, AASenderId},
-    best::BiBestTransactions,
+    best::MergeBestTransactions,
     transaction::TempoPooledTransaction,
     validator::TempoTransactionValidator,
 };
@@ -371,7 +371,7 @@ where
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
         let left = self.protocol_pool.inner().best_transactions();
         let right = self.aa_2d_pool.read().best_transactions();
-        Box::new(BiBestTransactions::new(left, right))
+        Box::new(MergeBestTransactions::new(left, right))
     }
 
     fn best_transactions_with_attributes(
