@@ -203,7 +203,7 @@ impl MaxTpsArgs {
         let _monitor_handle = monitor_tps(tx_counter.clone(), total_txs);
 
         // Spawn workers and send transactions
-        let mut pending_transactions = send_transactions(
+        let mut pending_txs = send_transactions(
             transactions,
             self.workers,
             self.tps,
@@ -215,14 +215,14 @@ impl MaxTpsArgs {
         // Graceful period of 1 second for `monitor_tps` to print out last statement
         tokio::time::sleep(Duration::from_secs(1)).await;
 
-        let sample_size = pending_transactions.len().min(self.sample_size);
+        let sample_size = pending_txs.len().min(self.sample_size);
         let mut end_block_number = start_block_number;
         info!(sample_size, "Collecting a sample of receipts");
 
         let progress = ProgressBar::new(sample_size as u64);
         for _ in 0..sample_size {
-            let idx = random_range(0..pending_transactions.len());
-            let receipt = pending_transactions.remove(idx).get_receipt().await?;
+            let idx = random_range(0..pending_txs.len());
+            let receipt = pending_txs.remove(idx).get_receipt().await?;
             progress.inc(1);
 
             if let Some(block_number) = receipt.block_number
@@ -268,7 +268,7 @@ fn send_transactions(
         NonZeroU32::new(tps as u32).unwrap(),
     )));
 
-    let (pending_transactions_tx, pending_transactions_rx) = mpsc::channel();
+    let (pending_txs_tx, pending_txs_rx) = mpsc::channel();
     transactions
         .into_iter()
         .chunks(chunk_size)
@@ -283,7 +283,7 @@ fn send_transactions(
             let rate_limiter = rate_limiter.clone();
             let transactions = transactions.collect::<Vec<_>>();
             let tx_counter = tx_counter.clone();
-            let pending_transactions_tx = pending_transactions_tx.clone();
+            let pending_txs_tx = pending_txs_tx.clone();
 
             // Spawn thread and send transactions over specified duration
             thread::spawn(move || {
@@ -309,7 +309,7 @@ fn send_transactions(
                         match timeout(Duration::from_secs(1), tx).await {
                             Ok(Ok(pending_tx)) => {
                                 tx_counter.fetch_add(1, Ordering::Relaxed);
-                                pending_transactions_tx.send(pending_tx).unwrap();
+                                pending_txs_tx.send(pending_tx).unwrap();
                             }
                             Ok(Err(err)) => error!(?err, "Failed to send transaction"),
                             Err(_) => error!("Transaction sending timed out"),
@@ -318,10 +318,10 @@ fn send_transactions(
                 })
             });
         });
-    drop(pending_transactions_tx);
+    drop(pending_txs_tx);
 
-    let pending_transactions = pending_transactions_rx.into_iter().collect();
-    Ok(pending_transactions)
+    let pending_txs = pending_txs_rx.into_iter().collect();
+    Ok(pending_txs)
 }
 
 async fn generate_transactions(
@@ -387,17 +387,24 @@ async fn generate_transactions(
         .collect::<Vec<_>>();
     params.shuffle(&mut rand::rng());
 
+    const TX_TYPES: usize = 3;
+    let tx_weights: [u64; TX_TYPES] = [tip20_weight, swap_weight, place_order_weight];
+
     let transfers = Arc::new(AtomicUsize::new(0));
     let swaps = Arc::new(AtomicUsize::new(0));
     let orders = Arc::new(AtomicUsize::new(0));
     let transactions: Vec<_> = params
         .into_par_iter()
-        .map(|(provider, token)| {
-            const TX_TYPES: usize = 3;
+        .map(|(provider, token)| -> eyre::Result<BoxFuture<'static, _>> {
+            let tx_index = tx_weights
+                .iter()
+                .enumerate()
+                .collect::<Vec<_>>()
+                .choose_weighted(&mut rand::rng(), |(_, weight)| *weight)?
+                .0;
 
-            let tx_weights: [u64; TX_TYPES] = [tip20_weight, swap_weight, place_order_weight];
-            let tx_futures: [Box<dyn FnOnce() -> BoxFuture<'static, _>>; TX_TYPES] = [
-                Box::new(|| {
+            let tx: BoxFuture<'static, _> = match tx_index {
+                0 => {
                     transfers.fetch_add(1, Ordering::Relaxed);
                     let provider = provider.clone();
                     Box::pin(async move {
@@ -405,9 +412,9 @@ async fn generate_transactions(
 
                         let tx = token.transfer(Address::random(), U256::ONE);
                         tx.send().await
-                    }) as BoxFuture<'static, _>
-                }),
-                Box::new(|| {
+                    })
+                }
+                1 => {
                     swaps.fetch_add(1, Ordering::Relaxed);
                     let provider = provider.clone();
                     Box::pin(async move {
@@ -416,9 +423,9 @@ async fn generate_transactions(
 
                         let tx = exchange.swapExactAmountIn(token, quote, MIN_ORDER_AMOUNT, 0);
                         tx.send().await
-                    }) as BoxFuture<'static, _>
-                }),
-                Box::new(|| {
+                    })
+                }
+                2 => {
                     orders.fetch_add(1, Ordering::Relaxed);
                     let provider = provider.clone();
                     Box::pin(async move {
@@ -431,16 +438,11 @@ async fn generate_transactions(
                         let tx = exchange.place(token, MIN_ORDER_AMOUNT, true, tick);
                         tx.send().await
                     })
-                }),
-            ];
+                }
+                _ => unreachable!("Only {TX_TYPES} transaction types are supported"),
+            };
 
-            let tx_index = tx_weights
-                .into_iter()
-                .enumerate()
-                .collect::<Vec<_>>()
-                .choose_weighted(&mut rand::rng(), |(_, weight)| *weight)?
-                .0;
-            Ok(Vec::from(tx_futures).remove(tx_index)())
+            Ok(tx)
         })
         .progress_count(total_txs)
         .collect::<eyre::Result<Vec<_>>>()?;
