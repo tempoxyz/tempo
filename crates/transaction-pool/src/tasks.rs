@@ -69,16 +69,9 @@ where
                 let tip_timestamp = new.tip().header().timestamp();
 
                 // Gather expired tx hashes and evict them
-                let expired: Vec<u64> = expiry_map
-                    .range(..=tip_timestamp)
-                    .map(|(ts, _)| *ts)
-                    .collect();
-
                 let mut to_remove = Vec::new();
-                for ts in expired {
-                    if let Some(hashes) = expiry_map.remove(&ts) {
-                        to_remove.extend(hashes);
-                    }
+                while let Some(entry) = expiry_map.first_entry() && *entry.key() <= tip_timestamp {
+                    to_remove.extend(entry.remove());
                 }
 
                 if !to_remove.is_empty() {
