@@ -30,7 +30,7 @@ use tempo_precompiles_macros::contract;
 pub const MIN_ORDER_AMOUNT: u128 = 10_000_000;
 
 /// Allowed tick spacing for order placement
-pub const TICK_SPACING: u64 = 10;
+pub const TICK_SPACING: i16 = 10;
 
 /// Calculate quote amount using floor division (rounds down)
 /// Pre-Moderato behavior
@@ -458,7 +458,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Post allegretto, enforce that the tick adheres to tick spacing
-        if self.storage.spec().is_allegretto() && !(tick as u64).is_multiple_of(TICK_SPACING) {
+        if self.storage.spec().is_allegretto() && !tick % TICK_SPACING != 0 {
             return Err(StablecoinExchangeError::invalid_tick().into());
         }
 
@@ -548,7 +548,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Post allegretto, enforce that the tick adheres to tick spacing
-        if self.storage.spec().is_allegretto() && !(tick as u64).is_multiple_of(TICK_SPACING) {
+        if self.storage.spec().is_allegretto() && !tick % TICK_SPACING != 0 {
             return Err(StablecoinExchangeError::invalid_tick().into());
         }
 
@@ -557,7 +557,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Post allegretto, enforce that the tick adheres to tick spacing
-        if self.storage.spec().is_allegretto() && !(flip_tick as u64).is_multiple_of(TICK_SPACING) {
+        if self.storage.spec().is_allegretto() && !flip_tick % TICK_SPACING != 0 {
             return Err(StablecoinExchangeError::invalid_flip_tick().into());
         }
 
