@@ -664,6 +664,18 @@ where
                 ));
             }
 
+            // Validate KeyAuthorization chain_id (following EIP-7702 pattern)
+            // chain_id == 0 allows replay on any chain (wildcard)
+            let expected_chain_id = cfg.chain_id();
+            if key_auth.chain_id != 0 && key_auth.chain_id != expected_chain_id {
+                return Err(EVMError::Transaction(
+                    TempoInvalidTransaction::KeyAuthorizationChainIdMismatch {
+                        expected: expected_chain_id,
+                        got: key_auth.chain_id,
+                    },
+                ));
+            }
+
             // Now authorize the key in the precompile
             let internals = EvmInternals::new(journal, block);
             let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
@@ -1639,6 +1651,7 @@ mod tests {
         };
 
         // Create test data
+        let chain_id = 1u64;
         let key_type = SignatureType::Secp256k1;
         let key_id = Address::random();
         let expiry = 1000u64;
@@ -1654,12 +1667,24 @@ mod tests {
         ];
 
         // Compute hash using the helper function
-        let hash1 = KeyAuthorization::authorization_message_hash(key_type, key_id, expiry, &limits);
+        let hash1 = KeyAuthorization::authorization_message_hash(
+            chain_id, key_type, key_id, expiry, &limits,
+        );
 
         // Compute again to verify consistency
-        let hash2 = KeyAuthorization::authorization_message_hash(key_type, key_id, expiry, &limits);
+        let hash2 = KeyAuthorization::authorization_message_hash(
+            chain_id, key_type, key_id, expiry, &limits,
+        );
 
         assert_eq!(hash1, hash2, "Hash computation should be deterministic");
+
+        // Verify that different chain_id produces different hash
+        let hash3 =
+            KeyAuthorization::authorization_message_hash(2, key_type, key_id, expiry, &limits);
+        assert_ne!(
+            hash1, hash3,
+            "Different chain_id should produce different hash"
+        );
     }
 
     #[test]

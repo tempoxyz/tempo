@@ -1710,6 +1710,7 @@ mod tests {
 
         // Create transaction WITH key_authorization (new format)
         let key_auth = KeyAuthorization {
+            chain_id: 1, // Test chain ID
             key_type: SignatureType::Secp256k1,
             expiry: 1234567890,
             limits: vec![crate::transaction::TokenLimit {
