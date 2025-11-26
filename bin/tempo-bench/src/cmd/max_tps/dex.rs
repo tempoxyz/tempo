@@ -1,6 +1,5 @@
 use super::*;
 use alloy::providers::DynProvider;
-use std::pin::Pin;
 use tempo_contracts::precompiles::{IStablecoinExchange, PATH_USD_ADDRESS};
 
 /// This method performs a one-time setup for sending a lot of transactions:
@@ -37,25 +36,29 @@ pub(super) async fn setup(
 
     // Create exchange pairs for each user token
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
-    futures.extend(user_tokens.iter().map(|token| {
+    futures.extend(user_token_addresses.iter().copied().map(|token| {
         let exchange = exchange.clone();
         Box::pin(async move {
-            let tx = exchange.createPair(*token.address());
+            let tx = exchange.createPair(token);
             tx.send().await
-        }) as Pin<Box<dyn Future<Output = _>>>
+        }) as BoxFuture<'static, _>
     }));
 
     // Mint user tokens to each signer
     let mint_amount = U256::MAX / U256::from(signer_providers.len());
-    futures.extend(signer_providers.iter().flat_map(|(signer, _)| {
-        user_tokens.iter().map(move |token| {
-            let token = token.clone();
-            Box::pin(async move {
-                let tx = token.mint(signer.address(), mint_amount);
-                tx.send().await
-            }) as Pin<Box<dyn Future<Output = _>>>
-        })
-    }));
+    futures.extend(
+        signer_providers
+            .iter()
+            .map(|(signer, _)| signer.address())
+            .flat_map(|signer| {
+                user_tokens.iter().cloned().map(move |token| {
+                    Box::pin(async move {
+                        let tx = token.mint(signer, mint_amount);
+                        tx.send().await
+                    }) as BoxFuture<'static, _>
+                })
+            }),
+    );
 
     // Approve for each signer quote token and each user token to spend by exchange
     futures.extend(signer_providers.iter().flat_map(|(_, provider)| {
@@ -68,7 +71,7 @@ pub(super) async fn setup(
                 Box::pin(async move {
                     let tx = token.approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX);
                     tx.send().await
-                }) as Pin<Box<dyn Future<Output = _>>>
+                }) as BoxFuture<'static, _>
             })
     }));
 
@@ -86,13 +89,13 @@ pub(super) async fn setup(
     let tick_over = exchange.priceToTick(100010).call().await?;
     let tick_under = exchange.priceToTick(99990).call().await?;
     futures.extend(signer_providers.iter().flat_map(|(_, provider)| {
-        user_token_addresses.iter().map(move |token| {
+        user_token_addresses.iter().copied().map(move |token| {
             let exchange =
                 IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
             Box::pin(async move {
-                let tx = exchange.placeFlip(*token, order_amount, true, tick_under, tick_over);
+                let tx = exchange.placeFlip(token, order_amount, true, tick_under, tick_over);
                 tx.send().await
-            }) as Pin<Box<dyn Future<Output = _>>>
+            }) as BoxFuture<'static, _>
         })
     }));
 
