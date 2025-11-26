@@ -1055,10 +1055,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         initial_nonce + 1,
         "Protocol nonce should increment only once"
     );
-    println!(
-        "  ✓ Protocol nonce: {} → {}",
-        initial_nonce, protocol_nonce_after
-    );
+    println!("  ✓ Protocol nonce: {initial_nonce} → {protocol_nonce_after}",);
     println!("  ✓ All 3 transactions from different pools included in block");
 
     // ===========================================================================
