@@ -118,9 +118,7 @@ impl Read for PublicOutcome {
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
         let epoch = UInt::read(buf)?.into();
-        let max_participants: usize = u16::MAX
-            .try_into()
-            .expect("must always be able to convert u16 to usize");
+        let max_participants: usize = u16::MAX.into();
         let participants = Ordered::read_cfg(buf, &(RangeCfg::from(1..=max_participants), ()))?;
         let public =
             Public::<MinSig>::read_cfg(buf, &(quorum(participants.len() as u32) as usize))?;
