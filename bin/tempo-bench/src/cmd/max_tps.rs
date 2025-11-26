@@ -1,6 +1,10 @@
 mod dex;
 mod tip20;
 
+use reth_tracing::{
+    RethTracer, Tracer,
+    tracing::{error, info, warn},
+};
 use tempo_alloy::TempoNetwork;
 
 use alloy::{
@@ -41,6 +45,7 @@ use tempo_contracts::precompiles::{
     ITIP20Factory, STABLECOIN_EXCHANGE_ADDRESS, TIP20_FACTORY_ADDRESS,
 };
 use tempo_precompiles::{
+    DEFAULT_FEE_TOKEN,
     stablecoin_exchange::MIN_ORDER_AMOUNT,
     tip20::{ISSUER_ROLE, token_id_to_address},
 };
@@ -76,6 +81,9 @@ pub struct MaxTpsArgs {
     #[arg(short, long, default_value = "0")]
     from_mnemonic_index: u32,
 
+    #[arg(long, default_value_t = DEFAULT_FEE_TOKEN)]
+    fee_token: Address,
+
     /// Token address used when creating TIP20 transfer calldata
     #[arg(long, default_value = "0x20c0000000000000000000000000000000000000")]
     token_address: Address,
@@ -84,11 +92,17 @@ pub struct MaxTpsArgs {
     #[arg(long, default_values_t = vec!["http://localhost:8545".to_string()])]
     target_urls: Vec<String>,
 
-    /// Total network connections
-    /// A limit of the maximum amount of concurrent requests, prevents issues with too many
+    /// A limit of the maximum number of concurrent requests, prevents issues with too many
     /// connections open at once.
     #[arg(long, default_value = "100")]
-    total_connections: u64,
+    max_concurrent_requests: usize,
+
+    /// A number of transaction to send, before waiting for their receipts, that should be likely
+    /// safe.
+    ///
+    /// Large amount of transactions in a block will result in system transaction OutOfGas error.
+    #[arg(long, default_value = "10000")]
+    max_concurrent_transactions: usize,
 
     /// Disable binding worker threads to specific CPU cores, letting the OS scheduler handle placement.
     #[arg(long)]
@@ -109,14 +123,6 @@ pub struct MaxTpsArgs {
     /// Benchmark mode for metadata (e.g., "max_tps", "stress_test")
     #[arg(long)]
     benchmark_mode: Option<String>,
-
-    /// A number of transaction to send, before waiting for their receipts, that should be likely
-    /// safe.
-    ///
-    /// Large amount of transactions in a block will result in system transaction OutOfGas error.
-    /// Large amount of transactions sent very quickly can overflow the txpool.
-    #[arg(long, default_value = "10000")]
-    max_concurrent_transactions: usize,
 
     /// A weight that determines the likelihood of generating a TIP-20 transfer transaction.
     #[arg(long, default_value = "0.8")]
@@ -139,6 +145,8 @@ impl MaxTpsArgs {
     const WEIGHT_PRECISION: f64 = 1000.0;
 
     pub async fn run(self) -> eyre::Result<()> {
+        RethTracer::new().init()?;
+
         // Set file descriptor limit if provided
         if let Some(fd_limit) = self.fd_limit {
             increase_nofile_limit(fd_limit).context("Failed to increase nofile limit")?;
@@ -158,16 +166,20 @@ impl MaxTpsArgs {
             .collect::<eyre::Result<Vec<_>>>()
             .wrap_err("failed parsing input target URLs")?;
 
+        if target_urls.len() > 1 {
+            warn!("Multiple target URLs provided, but only the first one will be used")
+        }
+
         // Generate all transactions
         let total_txs = self.tps * self.duration;
         let transactions = Arc::new(
             generate_transactions(GenerateTransactionsInput {
                 total_txs,
                 num_accounts: self.accounts,
-                mnemonic: &self.mnemonic,
-                rpc_url: target_urls[0].clone(),
+                mnemonic: self.mnemonic.clone(),
                 from_mnemonic_index: self.from_mnemonic_index,
-                max_concurrent_requests: self.total_connections as usize,
+                rpc_url: target_urls[0].clone(),
+                max_concurrent_requests: self.max_concurrent_requests,
                 max_concurrent_transactions: self.max_concurrent_transactions,
                 tip20_weight,
                 place_order_weight,
@@ -195,7 +207,6 @@ impl MaxTpsArgs {
         send_transactions(
             transactions.clone(),
             self.workers,
-            self.total_connections,
             target_urls.clone(),
             self.tps,
             self.disable_thread_pinning,
@@ -209,7 +220,7 @@ impl MaxTpsArgs {
         let mut rng = rand::rng();
         let sample_size = transactions.len().min(self.sample_size);
         let mut end_block_number = start_block_number;
-        println!("Collecting a sample of {sample_size} receipts");
+        info!(sample_size, "Collecting a sample of receipts");
         let progress = ProgressBar::new(sample_size as u64);
         progress.tick();
 
@@ -245,7 +256,6 @@ impl MaxTpsArgs {
 fn send_transactions(
     transactions: Arc<Vec<Vec<u8>>>,
     num_workers: usize,
-    _num_connections: u64,
     target_urls: Vec<Url>,
     tps: u64,
     disable_thread_pinning: bool,
@@ -254,7 +264,7 @@ fn send_transactions(
     // Get available cores
     let core_ids =
         core_affinity::get_core_ids().ok_or_else(|| eyre::eyre!("Failed to get core IDs"))?;
-    println!("Detected {} effective cores.", core_ids.len());
+    info!(cores = core_ids.len(), "Detected effective cores");
 
     let num_sender_threads = num_workers.min(core_ids.len());
     let chunk_size = transactions.len().div_ceil(num_sender_threads);
@@ -310,8 +320,8 @@ fn send_transactions(
                             Ok(Ok(_)) => {
                                 tx_counter.fetch_add(1, Ordering::Relaxed);
                             }
-                            Ok(Err(e)) => eprintln!("Failed to send transaction: {e}"),
-                            Err(_) => eprintln!("Tx send timed out"),
+                            Ok(Err(err)) => error!(?err, "Failed to send transaction"),
+                            Err(_) => error!("Transaction sending timed out"),
                         }
                     }
                 });
@@ -326,7 +336,7 @@ fn send_transactions(
     Ok(())
 }
 
-async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Result<Vec<Vec<u8>>> {
+async fn generate_transactions(input: GenerateTransactionsInput) -> eyre::Result<Vec<Vec<u8>>> {
     let GenerateTransactionsInput {
         total_txs,
         num_accounts,
@@ -339,20 +349,21 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
         place_order_weight,
         swap_weight,
     } = input;
-    println!("Generating {num_accounts} accounts...");
 
+    info!(num_accounts, "Generating accounts");
     let signers: Vec<PrivateKeySigner> = (from_mnemonic_index
         ..(from_mnemonic_index + num_accounts as u32))
         .into_par_iter()
         .progress()
         .map(|i| -> eyre::Result<PrivateKeySigner> {
             let signer = MnemonicBuilder::<English>::default()
-                .phrase(mnemonic)
+                .phrase(&mnemonic)
                 .index(i)?
                 .build()?;
             Ok(signer)
         })
         .collect::<eyre::Result<Vec<_>>>()?;
+    info!(signers = signers.len(), "Finished generating accounts");
 
     let txs_per_sender = total_txs / num_accounts;
     ensure!(
@@ -360,58 +371,36 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
         "txs per sender is 0, increase tps or decrease senders"
     );
 
+    info!("Setting up DEX");
     let (exchange, quote, user_tokens) = dex::setup(
         rpc_url.clone(),
-        mnemonic,
+        &mnemonic,
         signers.clone(),
+        2,
         max_concurrent_requests,
         max_concurrent_transactions,
     )
     .await?;
 
-    let accounts = signers.len();
-    // Fetch current nonces for all accounts
-    let provider = ProviderBuilder::new().connect_http(rpc_url);
-
-    println!("Fetching nonces for {accounts} accounts...");
-
-    let mut futures = Vec::new();
-    let mut params = Vec::new();
-    for signer in signers {
-        let address = signer.address();
-        let current_nonce = provider.get_transaction_count(address);
-        futures.push(async move { (signer, current_nonce.await) });
-    }
-
-    let mut iter = stream::iter(futures).buffer_unordered(max_concurrent_requests);
-    while let Some((signer, nonce)) = iter.next().await {
-        let nonce = nonce.context("Failed to get transaction count")?;
-        for i in 0..txs_per_sender {
-            params.push((signer.clone(), nonce + i));
-        }
-    }
-
-    println!(
-        "Pregenerating {} transactions",
-        txs_per_sender as usize * accounts,
-    );
+    info!(transactions = total_txs, "Pregenerating transactions");
 
     let transfers = Arc::new(AtomicUsize::new(0));
     let swaps = Arc::new(AtomicUsize::new(0));
     let orders = Arc::new(AtomicUsize::new(0));
     let transactions: Vec<_> = stream::iter(
-        params
+        signers
             .into_iter()
-            .progress()
-            .zip(std::iter::repeat_with(|| user_tokens.choose(&mut rand::rng())).flatten()),
+            .flat_map(|signer| std::iter::repeat_n(signer, txs_per_sender as usize))
+            .zip(std::iter::repeat_with(|| user_tokens.choose(&mut rand::rng())).flatten())
+            .progress_count(total_txs),
     )
-    .then(async |((signer, nonce), token)| {
+    .then(async |(signer, token)| {
         #[expect(clippy::type_complexity)]
         let tx_factories: [(Box<dyn Fn() -> BoxFuture<'static, _>>, u64); 3] = [
             (
                 Box::new(|| {
                     transfers.fetch_add(1, Ordering::Relaxed);
-                    Box::pin(tip20::transfer(signer.clone(), nonce, token.clone()))
+                    Box::pin(tip20::transfer(signer.clone(), token.clone()))
                 }),
                 tip20_weight,
             ),
@@ -421,7 +410,6 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
                     Box::pin(dex::swap_in(
                         exchange.clone(),
                         signer.clone(),
-                        nonce,
                         *token.address(),
                         quote,
                     ))
@@ -434,7 +422,6 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
                     Box::pin(dex::place(
                         exchange.clone(),
                         signer.clone(),
-                        nonce,
                         *token.address(),
                     ))
                 }),
@@ -449,12 +436,12 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
     .try_collect::<Vec<_>>()
     .await?;
 
-    println!(
-        "Generated {} transactions [{} transfers, {} swaps, {} orders]",
-        transactions.len(),
-        transfers.load(Ordering::Relaxed),
-        swaps.load(Ordering::Relaxed),
-        orders.load(Ordering::Relaxed)
+    info!(
+        transactions = transactions.len(),
+        transfers = transfers.load(Ordering::Relaxed),
+        swaps = swaps.load(Ordering::Relaxed),
+        orders = orders.load(Ordering::Relaxed),
+        "Generated transactions",
     );
 
     Ok(transactions)
@@ -462,18 +449,18 @@ async fn generate_transactions(input: GenerateTransactionsInput<'_>) -> eyre::Re
 
 pub fn increase_nofile_limit(min_limit: u64) -> eyre::Result<u64> {
     let (soft, hard) = Resource::NOFILE.get()?;
-    println!("[*] At startup, file descriptor limit:      soft = {soft}, hard = {hard}");
+    info!(soft, hard, "File descriptor limit at startup");
 
     if hard < min_limit {
         panic!(
-            "[!] File descriptor hard limit is too low. Please increase it to at least {min_limit}."
+            "File descriptor hard limit is too low. Please increase it to at least {min_limit}."
         );
     }
 
     if soft != hard {
         Resource::NOFILE.set(hard, hard)?; // Just max things out to give us plenty of overhead.
         let (soft, hard) = Resource::NOFILE.get()?;
-        println!("[+] After increasing file descriptor limit: soft = {soft}, hard = {hard}");
+        info!(soft, hard, "After increasing file descriptor limit");
     }
 
     Ok(soft)
@@ -484,7 +471,7 @@ pub fn increase_nofile_limit(min_limit: u64) -> eyre::Result<u64> {
 pub fn pin_thread(core_id: CoreId) {
     if !core_affinity::set_for_current(core_id) {
         panic!(
-            "[!] Failed to pin thread to core {}. Try disabling thread_pinning in your config.",
+            "Failed to pin thread to core {}. Try disabling thread_pinning in your config.",
             core_id.id
         );
     }
@@ -508,7 +495,7 @@ struct BenchmarkMetadata {
     num_accounts: u64,
     num_workers: usize,
     chain_id: u64,
-    total_connections: u64,
+    max_concurrent_requests: usize,
     start_block: BlockNumber,
     end_block: BlockNumber,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -583,7 +570,7 @@ pub async fn generate_report(
         num_accounts: args.accounts,
         num_workers: args.workers,
         chain_id: provider.get_chain_id().await?,
-        total_connections: args.total_connections,
+        max_concurrent_requests: args.max_concurrent_requests,
         start_block,
         end_block,
         node_commit_sha: args.node_commit_sha.clone(),
@@ -603,7 +590,7 @@ pub async fn generate_report(
     let writer = BufWriter::new(file);
     serde_json::to_writer_pretty(writer, &report)?;
 
-    println!("Report written to report.json");
+    info!("Report written to report.json");
 
     Ok(())
 }
@@ -616,7 +603,7 @@ fn monitor_tps(tx_counter: Arc<AtomicU64>, target_count: u64) -> thread::JoinHan
             let tps = current_count - last_count;
             last_count = current_count;
 
-            println!("TPS Sent: {tps}, Total Txs Sent: {current_count}");
+            info!(tps, total = current_count, "Status");
             thread::sleep(Duration::from_secs(1));
 
             if current_count == target_count {
@@ -666,12 +653,12 @@ async fn join_all<
     Ok(())
 }
 
-struct GenerateTransactionsInput<'input> {
+struct GenerateTransactionsInput {
     total_txs: u64,
     num_accounts: u64,
-    mnemonic: &'input str,
-    rpc_url: Url,
+    mnemonic: String,
     from_mnemonic_index: u32,
+    rpc_url: Url,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
     tip20_weight: u64,
