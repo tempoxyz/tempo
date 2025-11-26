@@ -214,8 +214,11 @@ where
     type Transaction = TempoPooledTransaction;
 
     fn pool_size(&self) -> PoolSize {
-        // TODO: support aa 2d pool
-        self.protocol_pool.pool_size()
+        let mut size = self.protocol_pool.pool_size();
+        let (pending, queued) = self.aa_2d_pool.read().pending_and_queued_txn_count();
+        size.pending += pending;
+        size.queued += queued;
+        size
     }
 
     fn block_info(&self) -> BlockInfo {
