@@ -1,4 +1,4 @@
-use crate::aa_2d_pool::{AA2dTransactionId, AASenderId};
+use crate::aa_2d_pool::{AA2dTransactionId, AASequenceId};
 use alloy_consensus::{BlobTransactionValidationError, Transaction, transaction::TxHashRef};
 use alloy_eips::{
     eip2718::{Encodable2718, Typed2718},
@@ -86,12 +86,12 @@ impl TempoPooledTransaction {
     /// Returns the unique identifier for this AA transaction.
     pub(crate) fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
         let nonce_key = self.nonce_key()?;
-        let sender = AASenderId {
+        let sender = AASequenceId {
             address: self.sender(),
             nonce_key,
         };
         Some(AA2dTransactionId {
-            sender,
+            seq_id: sender,
             nonce: self.nonce(),
         })
     }

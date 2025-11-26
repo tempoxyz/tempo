@@ -110,7 +110,7 @@ impl AA2dPool {
             .nonce_keys
             .current_nonce(
                 transaction.transaction.sender_ref(),
-                &tx_id.sender.nonce_key,
+                &tx_id.seq_id.nonce_key,
             )
             .unwrap_or_default();
 
@@ -175,25 +175,27 @@ impl AA2dPool {
 
         let mut promoted = Vec::new();
         // now we need to scan the range and mark transactions as pending, if any
-        let on_chain_id = AA2dTransactionId::new(tx_id.sender, on_chain_nonce);
+        let on_chain_id = AA2dTransactionId::new(tx_id.seq_id, on_chain_nonce);
         // track the next nonce we expect if the transactions are gapless
         let mut next_nonce = on_chain_id.nonce;
 
         // scan all the transactions with the same nonce key starting with the on chain nonce
         for (existing_id, existing_tx) in self.descendant_txs_mut(&on_chain_id) {
-            let mut is_promoted = false;
             if existing_id.nonce == next_nonce {
                 // if this was previously not pending we need to promote the transaction
-                is_promoted = !std::mem::replace(&mut existing_tx.is_pending, true);
+                let is_promoted = !std::mem::replace(&mut existing_tx.is_pending, true);
+
+                if existing_id.nonce == tx_id.nonce {
+                    // we found our transaction and keep track of whether it's pending
+                    inserted_as_pending = existing_tx.is_pending;
+                } else if is_promoted {
+                    promoted.push(existing_tx.inner.transaction.clone());
+                }
+
                 next_nonce = existing_id.nonce.saturating_add(1);
             } else {
-                existing_tx.is_pending = false;
-            }
-            if existing_id.nonce == tx_id.nonce {
-                // we found our transaction and keep track of whether it's pending
-                inserted_as_pending = existing_tx.is_pending;
-            } else if is_promoted {
-                promoted.push(existing_tx.inner.transaction.clone());
+                // can exit early here because we hit a nonce gap
+                break;
             }
         }
 
@@ -365,7 +367,7 @@ impl AA2dPool {
     ) -> impl Iterator<Item = (&'a AA2dTransactionId, &'a mut AA2dInternalTransaction)> + 'a {
         self.by_id
             .range_mut(id..)
-            .take_while(|(other, _)| id.sender == other.sender)
+            .take_while(|(other, _)| id.seq_id == other.seq_id)
     }
 
     /// Returns all transactions that _follow_ after the given id and have the same sender.
@@ -377,7 +379,7 @@ impl AA2dPool {
     ) -> impl Iterator<Item = (&'a AA2dTransactionId, &'a AA2dInternalTransaction)> + 'a {
         self.by_id
             .range((Excluded(id), Unbounded))
-            .take_while(|(other, _)| id.sender == other.sender)
+            .take_while(|(other, _)| id.seq_id == other.seq_id)
     }
 
     fn remove_transaction_by_id(
@@ -502,13 +504,13 @@ impl AA2dPool {
 
     /// Updates the internal state based on the state changes of the `NonceManager` [`NONCE_PRECOMPILE_ADDRESS`](tempo_precompiles::NONCE_PRECOMPILE_ADDRESS).
     ///
-    /// This takes a vec of changed [`AASenderId`] with their current on chain nonce.
+    /// This takes a vec of changed [`AASequenceId`] with their current on chain nonce.
     ///
     /// This will prune mined transactions and promote unblocked transactions if any, returns `(promoted, mined)`
     #[allow(clippy::type_complexity)]
     pub(crate) fn on_aa_2d_nonce_changes(
         &mut self,
-        on_chain_ids: HashMap<AASenderId, u64>,
+        on_chain_ids: HashMap<AASequenceId, u64>,
     ) -> (
         Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
         Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
@@ -521,7 +523,7 @@ impl AA2dPool {
             let mut iter = self
                 .by_id
                 .range_mut((sender_id.start_bound(), Unbounded))
-                .take_while(move |(other, _)| sender_id == other.sender)
+                .take_while(move |(other, _)| sender_id == other.seq_id)
                 .peekable();
 
             let Some(mut current) = iter.next() else {
@@ -560,6 +562,7 @@ impl AA2dPool {
                 } else {
                     // Gap detected - remaining transactions should not be pending
                     existing_tx.is_pending = false;
+                    break;
                 }
             }
         }
@@ -683,9 +686,9 @@ impl AA2dPool {
         let mut seen_senders = std::collections::HashSet::new();
         for id in self.independent_transactions.keys() {
             assert!(
-                seen_senders.insert(id.sender),
+                seen_senders.insert(id.seq_id),
                 "Duplicate sender {:?} in independent transactions",
-                id.sender
+                id.seq_id
             );
         }
 
@@ -804,7 +807,7 @@ impl AA2dNonceKeys {
     pub(crate) fn update_tracked(
         &self,
         changed_slots: impl IntoIterator<Item = (U256, U256)>,
-    ) -> HashMap<AASenderId, u64> {
+    ) -> HashMap<AASequenceId, u64> {
         self.inner.write().update_tracked(changed_slots)
     }
 
@@ -872,7 +875,7 @@ impl AA2dNonceKeysInner {
     fn update_tracked(
         &mut self,
         changed_slots: impl IntoIterator<Item = (U256, U256)>,
-    ) -> HashMap<AASenderId, u64> {
+    ) -> HashMap<AASequenceId, u64> {
         let mut ids = HashMap::new();
         for (account_nonce_key_slot, nonce) in changed_slots {
             if let Some((address, nonce_key)) = self.address_slots.get(&account_nonce_key_slot)
@@ -882,7 +885,7 @@ impl AA2dNonceKeysInner {
                     hash_map::Entry::Occupied(mut entry) => {
                         let new_nonce = nonce.saturating_to();
                         entry.insert(new_nonce);
-                        ids.insert(AASenderId::new(*address, *nonce_key), new_nonce);
+                        ids.insert(AASequenceId::new(*address, *nonce_key), new_nonce);
                     }
                     hash_map::Entry::Vacant(_) => {
                         // we haven't tracked this key yet, so we ignore
@@ -915,7 +918,7 @@ pub(crate) struct BestAA2dTransactions {
     by_id: BTreeMap<AA2dTransactionId, PendingTransaction<Ordering>>,
 
     /// There might be the case where a yielded transactions is invalid, this will track it.
-    invalid: HashSet<AASenderId>,
+    invalid: HashSet<AASequenceId>,
 }
 
 impl BestAA2dTransactions {
@@ -940,7 +943,7 @@ impl BestAA2dTransactions {
     )> {
         loop {
             let (id, best) = self.pop_best()?;
-            if self.invalid.contains(&id.sender) {
+            if self.invalid.contains(&id.seq_id) {
                 continue;
             }
             // Advance transaction that just got unlocked, if any.
@@ -963,7 +966,7 @@ impl Iterator for BestAA2dTransactions {
 impl BestTransactions for BestAA2dTransactions {
     fn mark_invalid(&mut self, transaction: &Self::Item, _kind: &InvalidPoolTransactionError) {
         if let Some(id) = transaction.transaction.aa_transaction_id() {
-            self.invalid.insert(id.sender);
+            self.invalid.insert(id.seq_id);
         }
     }
 
@@ -972,14 +975,16 @@ impl BestTransactions for BestAA2dTransactions {
     fn set_skip_blobs(&mut self, _skip_blobs: bool) {}
 }
 
-/// Key for identifying a unique sender in 2D nonce system
+/// Key for identifying a unique sender sequence in 2D nonce system.
+///
+/// This combines the sender address with its nonce key, which
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub(crate) struct AASenderId {
+pub(crate) struct AASequenceId {
     pub(crate) address: Address,
     pub(crate) nonce_key: U256,
 }
 
-impl AASenderId {
+impl AASequenceId {
     /// Creates a new instance with the address and nonce key.
     pub(crate) const fn new(address: Address, nonce_key: U256) -> Self {
         Self { address, nonce_key }
@@ -995,19 +1000,21 @@ impl AASenderId {
 /// Identified by its sender, nonce key and nonce for that nonce key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub(crate) struct AA2dTransactionId {
-    pub(crate) sender: AASenderId,
+    /// Uniquely identifies the accounts nonce key sequence
+    pub(crate) seq_id: AASequenceId,
+    /// The nonce in that sequence
     pub(crate) nonce: u64,
 }
 
 impl AA2dTransactionId {
     /// Creates a new identifier.
-    pub(crate) const fn new(sender: AASenderId, nonce: u64) -> Self {
-        Self { sender, nonce }
+    pub(crate) const fn new(seq_id: AASequenceId, nonce: u64) -> Self {
+        Self { seq_id, nonce }
     }
 
     /// Returns the next transaction in the sequence.
     pub(crate) fn unlocks(&self) -> Self {
-        Self::new(self.sender, self.nonce.saturating_add(1))
+        Self::new(self.seq_id, self.nonce.saturating_add(1))
     }
 }
 
@@ -1167,7 +1174,7 @@ mod tests {
         assert_eq!(queued_count, 1, "Should have 1 queued transaction");
 
         // Verify tx1 is NOT in independent set
-        let sender_id = AASenderId::new(sender, nonce_key);
+        let sender_id = AASequenceId::new(sender, nonce_key);
         let tx1_id = AA2dTransactionId::new(sender_id, 1);
         assert!(
             !pool.independent_transactions.contains_key(&tx1_id),
@@ -1276,7 +1283,7 @@ mod tests {
         assert_eq!(queued_count, 0, "Should have 0 queued transactions");
 
         // Verify tx_low is in independent set
-        let sender_id = AASenderId::new(sender, nonce_key);
+        let sender_id = AASequenceId::new(sender, nonce_key);
         let tx_id = AA2dTransactionId::new(sender_id, 0);
         assert!(
             pool.independent_transactions.contains_key(&tx_id),
@@ -1428,7 +1435,7 @@ mod tests {
         );
 
         // Verify tx0 is in independent set
-        let sender_id = AASenderId::new(sender, nonce_key);
+        let sender_id = AASequenceId::new(sender, nonce_key);
         let tx0_id = AA2dTransactionId::new(sender_id, 0);
         assert!(
             pool.independent_transactions.contains_key(&tx0_id),
@@ -1714,7 +1721,7 @@ mod tests {
         assert_eq!(queued_count, 0, "No transactions should be queued");
 
         // Verify tx0 is in independent set
-        let sender_id = AASenderId::new(sender, nonce_key);
+        let sender_id = AASequenceId::new(sender, nonce_key);
         let tx0_id = AA2dTransactionId::new(sender_id, 0);
         assert!(
             pool.independent_transactions.contains_key(&tx0_id),
@@ -1755,7 +1762,7 @@ mod tests {
         assert_eq!(pending_count, 3, "All 3 should be pending");
         assert_eq!(queued_count, 0, "None should be queued");
 
-        let sender_id = AASenderId::new(sender, nonce_key);
+        let sender_id = AASequenceId::new(sender, nonce_key);
         let tx1_id = AA2dTransactionId::new(sender_id, 1);
         let tx2_id = AA2dTransactionId::new(sender_id, 2);
 
@@ -1821,8 +1828,8 @@ mod tests {
         pool.add_transaction(Arc::new(valid_tx_b1)).unwrap();
 
         // Both senders' tx0 should be in independent set
-        let sender_a_id = AASenderId::new(sender_a, nonce_key_a);
-        let sender_b_id = AASenderId::new(sender_b, nonce_key_b);
+        let sender_a_id = AASequenceId::new(sender_a, nonce_key_a);
+        let sender_b_id = AASequenceId::new(sender_b, nonce_key_b);
         let tx_a0_id = AA2dTransactionId::new(sender_a_id, 0);
         let tx_b0_id = AA2dTransactionId::new(sender_b_id, 0);
 
@@ -1887,7 +1894,7 @@ mod tests {
         let nonces = pool.nonce_keys.clone();
         let sender = Address::random();
         let nonce_key = U256::from(42);
-        let sender_id = AASenderId {
+        let sender_id = AASequenceId {
             address: sender,
             nonce_key,
         };
@@ -1964,7 +1971,7 @@ mod tests {
         let nonces = pool.nonce_keys.clone();
         let sender = Address::random();
         let nonce_key = U256::from(42);
-        let sender_id = AASenderId {
+        let sender_id = AASequenceId {
             address: sender,
             nonce_key,
         };
@@ -2106,7 +2113,7 @@ mod tests {
         let nonces = pool.nonce_keys.clone();
         let sender = Address::random();
         let nonce_key = U256::from(42);
-        let sender_id = AASenderId {
+        let sender_id = AASequenceId {
             address: sender,
             nonce_key,
         };
@@ -2160,7 +2167,7 @@ mod tests {
         let nonces = pool.nonce_keys.clone();
         let sender = Address::random();
         let nonce_key = U256::from(42);
-        let sender_id = AASenderId {
+        let sender_id = AASequenceId {
             address: sender,
             nonce_key,
         };
@@ -2278,7 +2285,7 @@ mod tests {
 
         // Each sender should have all transactions pending
         for (sender, nonce_key) in &senders {
-            let sender_id = AASenderId {
+            let sender_id = AASequenceId {
                 address: *sender,
                 nonce_key: *nonce_key,
             };
@@ -2291,7 +2298,7 @@ mod tests {
         // Independent set should have exactly NUM_SENDERS transactions (one per sender at nonce 0)
         assert_eq!(pool.independent_transactions.len(), NUM_SENDERS);
         for (sender, nonce_key) in &senders {
-            let sender_id = AASenderId {
+            let sender_id = AASequenceId {
                 address: *sender,
                 nonce_key: *nonce_key,
             };
@@ -2305,7 +2312,7 @@ mod tests {
         // Simulate mining first transaction for each sender
         let mut on_chain_ids = HashMap::new();
         for (sender, nonce_key) in &senders {
-            let sender_id = AASenderId {
+            let sender_id = AASequenceId {
                 address: *sender,
                 nonce_key: *nonce_key,
             };
@@ -2329,7 +2336,7 @@ mod tests {
         // Independent set should still have NUM_SENDERS transactions (now at nonce 1)
         assert_eq!(pool.independent_transactions.len(), NUM_SENDERS);
         for (sender, nonce_key) in &senders {
-            let sender_id = AASenderId {
+            let sender_id = AASequenceId {
                 address: *sender,
                 nonce_key: *nonce_key,
             };
@@ -2349,7 +2356,7 @@ mod tests {
         let nonces = pool.nonce_keys.clone();
         let sender = Address::random();
         let nonce_key = U256::from(42);
-        let sender_id = AASenderId {
+        let sender_id = AASequenceId {
             address: sender,
             nonce_key,
         };

@@ -3,7 +3,7 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    aa_2d_pool::{AA2dNonceKeys, AA2dPool, AASenderId},
+    aa_2d_pool::{AA2dNonceKeys, AA2dPool, AASequenceId},
     best::MergeBestTransactions,
     transaction::TempoPooledTransaction,
     validator::TempoTransactionValidator,
@@ -70,7 +70,7 @@ where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
 {
     /// Updates the 2d nonce pool with the given state changes.
-    pub(crate) fn on_aa_2d_nonce_changes(&self, on_chain_ids: HashMap<AASenderId, u64>) {
+    pub(crate) fn on_aa_2d_nonce_changes(&self, on_chain_ids: HashMap<AASequenceId, u64>) {
         if on_chain_ids.is_empty() {
             return;
         }
