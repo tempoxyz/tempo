@@ -4439,4 +4439,128 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_place_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+
+        let (base_token, _quote_token) = setup_test_tokens(
+            exchange.storage,
+            admin,
+            alice,
+            exchange.address,
+            1_000_000_000,
+        );
+        exchange.create_pair(base_token)?;
+
+        // Give alice base tokens
+        mint_and_approve_token(
+            exchange.storage,
+            1,
+            admin,
+            alice,
+            exchange.address,
+            1_000_000_000,
+        );
+
+        // Test invalid tick spacing
+        let invalid_tick = 15i16;
+        let result = exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, invalid_tick);
+
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::InvalidTick(_))
+        ));
+
+        // Test valid tick spacing
+        let valid_tick = 20i16;
+        let result = exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, valid_tick);
+        assert!(result.is_ok());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_place_flip_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+
+        let (base_token, _quote_token) = setup_test_tokens(
+            exchange.storage,
+            admin,
+            alice,
+            exchange.address,
+            1_000_000_000,
+        );
+        exchange.create_pair(base_token)?;
+
+        // Give alice base tokens
+        mint_and_approve_token(
+            exchange.storage,
+            1,
+            admin,
+            alice,
+            exchange.address,
+            1_000_000_000,
+        );
+
+        // Test invalid tick spacing
+        let invalid_tick = 15i16;
+        let invalid_flip_tick = 25i16;
+        let result = exchange.place_flip(
+            alice,
+            base_token,
+            MIN_ORDER_AMOUNT,
+            true,
+            invalid_tick,
+            invalid_flip_tick,
+        );
+
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::InvalidTick(_))
+        ));
+
+        // Test valid tick spacing
+        let valid_tick = 20i16;
+        let invalid_flip_tick = 25i16;
+        let result = exchange.place_flip(
+            alice,
+            base_token,
+            MIN_ORDER_AMOUNT,
+            true,
+            valid_tick,
+            invalid_flip_tick,
+        );
+
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::InvalidFlipTick(_))
+        ));
+
+        let valid_flip_tick = 30i16;
+        let result = exchange.place_flip(
+            alice,
+            base_token,
+            MIN_ORDER_AMOUNT,
+            true,
+            valid_tick,
+            valid_flip_tick,
+        );
+        assert!(result.is_ok());
+
+        Ok(())
+    }
 }
