@@ -18,10 +18,8 @@ use tempo_primitives::TempoPrimitives;
 ///
 /// where each slot tracks the current nonce for a nonce key assigned to the transaction.
 /// The next executable nonce is the current value of in the contract's state.
-pub async fn maintain_2d_nonce_pool<N, Client, P, St, Tasks>(
-    pool: TempoTransactionPool<Client>,
-    mut events: St,
-) where
+pub async fn maintain_2d_nonce_pool<Client, St>(pool: TempoTransactionPool<Client>, mut events: St)
+where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + 'static,
     St: Stream<Item = CanonStateNotification<TempoPrimitives>> + Send + Unpin + 'static,
 {

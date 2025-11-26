@@ -1,5 +1,5 @@
 use crate::{
-    pool_2d::AA2dNonceKeys,
+    aa_2d_pool::AA2dNonceKeys,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use alloy_consensus::Transaction;
@@ -13,10 +13,7 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
-use tempo_precompiles::{
-    NONCE_PRECOMPILE_ADDRESS,
-    storage::{double_mapping_slot, slots::mapping_slot},
-};
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, storage::double_mapping_slot};
 use tempo_primitives::subblock::has_sub_block_nonce_key_prefix;
 use tempo_revm::TempoStateAccess;
 

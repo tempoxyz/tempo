@@ -3,7 +3,8 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    pool_2d::{AA2dNonceKeys, AASenderId, Pool2D},
+    aa_2d_pool::{AA2dNonceKeys, AA2dPool, AASenderId},
+    best::BiBestTransactions,
     transaction::TempoPooledTransaction,
     validator::TempoTransactionValidator,
 };
@@ -36,15 +37,14 @@ pub struct TempoTransactionPool<Client>
 where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec: EthereumHardforks> + 'static,
 {
-    /// Reth pool for protocol nonces (nonce_key = 0)
+    /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
     protocol_pool: Pool<
         TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
         CoinbaseTipOrdering<TempoPooledTransaction>,
         DiskFileBlobStore,
     >,
-
     /// Minimal pool for 2D nonces (nonce_key > 0)
-    aa_2d_pool: Arc<RwLock<Pool2D>>,
+    aa_2d_pool: Arc<RwLock<AA2dPool>>,
 }
 
 impl<Client> TempoTransactionPool<Client>
@@ -57,10 +57,11 @@ where
             CoinbaseTipOrdering<TempoPooledTransaction>,
             DiskFileBlobStore,
         >,
+        aa_2d_pool: AA2dPool,
     ) -> Self {
         Self {
             protocol_pool,
-            aa_2d_pool: Arc::new(RwLock::new(Default::default())),
+            aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
         }
     }
 
@@ -375,7 +376,9 @@ where
     fn best_transactions(
         &self,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
-        todo!()
+        let left = self.protocol_pool.inner().best_transactions();
+        let right = self.aa_2d_pool.read().best_transactions();
+        Box::new(BiBestTransactions::new(left, right))
     }
 
     fn best_transactions_with_attributes(
@@ -442,39 +445,34 @@ where
 
     fn remove_transactions(
         &self,
-        _hashes: Vec<B256>,
+        hashes: Vec<B256>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let removed = vec![];
-
-        removed
+        let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
+        txs.extend(self.protocol_pool.remove_transactions(hashes));
+        txs
     }
 
     fn remove_transactions_and_descendants(
         &self,
-        _hashes: Vec<B256>,
+        hashes: Vec<B256>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let removed = vec![];
-
-        removed
+        // TODO
+        self.protocol_pool
+            .remove_transactions_and_descendants(hashes)
     }
 
     fn remove_transactions_by_sender(
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        // removed.extend(self.aa_2d_pool.remove_all_for_sender(&sender));
-        //
-        // // Clean up tx_location
-        // for tx in &removed {
-        //     self.tx_location.write().remove(tx.hash());
-        // }
-
+        // TODO
         self.protocol_pool.remove_transactions_by_sender(sender)
     }
 
     fn retain_unknown<A: HandleMempoolData>(&self, announcement: &mut A) {
-        // TODO
         self.protocol_pool.retain_unknown(announcement);
+        let aa_pool = self.aa_2d_pool.read();
+        announcement.retain_by_hash(|tx| aa_pool.contains(tx))
     }
 
     fn contains(&self, tx_hash: &B256) -> bool {

@@ -4,13 +4,15 @@ use alloy_primitives::{Address, B256, TxHash, U256};
 use parking_lot::RwLock;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
-    CoinbaseTipOrdering, PoolResult, PoolTransaction, PriceBumpConfig, SubPool, SubPoolLimit,
-    TransactionOrdering, TransactionOrigin, ValidPoolTransaction,
+    BestTransactions, CoinbaseTipOrdering, PoolResult, PoolTransaction, PriceBumpConfig, Priority,
+    SubPool, SubPoolLimit, TransactionOrdering, TransactionOrigin, ValidPoolTransaction,
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
     pool::{AddedPendingTransaction, AddedTransaction, QueuedReason, pending::PendingTransaction},
 };
 use std::{
-    collections::{BTreeMap, BTreeSet, Bound::Unbounded, HashMap, btree_map::Entry, hash_map},
+    collections::{
+        BTreeMap, BTreeSet, Bound::Unbounded, HashMap, HashSet, btree_map::Entry, hash_map,
+    },
     sync::Arc,
 };
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
@@ -29,7 +31,7 @@ type Ordering = CoinbaseTipOrdering<TempoPooledTransaction>;
 ///
 /// * We assume new AA transactions either create a new nonce key (nonce 0) or use an existing nonce key. To keep track of the known keys by accounts this pool relies on state changes to promote transactions to pending.
 #[derive(Debug, Default)]
-pub(super) struct Pool2D {
+pub struct AA2dPool {
     /// Keeps track of transactions inserted in the pool.
     ///
     /// This way we can determine when transactions were submitted to the pool.
@@ -43,10 +45,22 @@ pub(super) struct Pool2D {
     /// Keeps track of the known nonce key values per account.
     nonce_keys: AA2dNonceKeys,
     /// Settings for this sub-pool.
-    config: Pool2DConfig,
+    config: AA2dPoolConfig,
 }
 
-impl Pool2D {
+impl AA2dPool {
+    /// Creates a new instance with the givenconfig and nonce keys
+    pub fn new(config: AA2dPoolConfig, nonce_keys: AA2dNonceKeys) -> Self {
+        Self {
+            submission_id: 0,
+            independent: Default::default(),
+            by_id: Default::default(),
+            by_hash: Default::default(),
+            nonce_keys,
+            config,
+        }
+    }
+
     /// Entrypoint for adding a 2d AA transaction.
     ///
     /// ## Limitations
@@ -226,7 +240,7 @@ impl Pool2D {
     ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         self.by_id
             .values()
-            .filter(|tx| tx.inner.transaction.sender() == sender)
+            .filter(move |tx| tx.inner.transaction.sender() == sender)
             .map(|tx| tx.inner.transaction.clone())
     }
 
@@ -256,12 +270,17 @@ impl Pool2D {
     }
 
     /// Returns the best, executable transactions for this sub-pool
-    pub(crate) fn best(&self) -> BestAATransactions {
-        todo!()
-        // BestAATransactions {
-        //     pending: self.independent.clone(),
-        //     by_id: self.by_id.clone(),
-        // }
+    pub(crate) fn best_transactions(&self) -> BestAA2dTransactions {
+        BestAA2dTransactions {
+            independent: self.independent.values().cloned().collect(),
+            by_id: self
+                .by_id
+                .iter()
+                .filter(|(_, tx)| tx.is_pending)
+                .map(|(id, tx)| (*id, tx.inner.clone()))
+                .collect(),
+            invalid: Default::default(),
+        }
     }
 
     /// Returns the transaction by hash.
@@ -300,7 +319,7 @@ impl Pool2D {
     ///
     /// NOTE: The range is _inclusive_: if the transaction that belongs to `id` it field be the
     /// first value.
-    pub(crate) fn descendant_txs_mut<'a, 'b: 'a>(
+    fn descendant_txs_mut<'a, 'b: 'a>(
         &'a mut self,
         id: &'b AA2dTransactionId,
     ) -> impl Iterator<Item = (&'a AA2dTransactionId, &'a mut AA2dInternalTransaction)> + 'a {
@@ -319,6 +338,22 @@ impl Pool2D {
         Some(tx.inner.transaction)
     }
 
+    /// Removes the transaction by its hash from all internal sets.
+    pub(crate) fn remove_transactions<'a, I>(
+        &mut self,
+        tx_hashes: I,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>
+    where
+        I: Iterator<Item = &'a TxHash> + 'a,
+    {
+        let mut txs = Vec::new();
+        for tx_hash in tx_hashes {
+            if let Some(tx) = self.by_hash.remove(tx_hash) {
+                txs.push(tx);
+            }
+        }
+        txs
+    }
     /// Removes the transaction by its hash from all internal sets.
     fn remove_transaction_by_hash(
         &mut self,
@@ -444,9 +479,9 @@ impl Pool2D {
     }
 }
 
-/// Settings for the [`Pool2DConfig`]
+/// Settings for the [`AA2dPoolConfig`]
 #[derive(Debug, Clone, Default)]
-pub struct Pool2DConfig {
+pub struct AA2dPoolConfig {
     /// Price bump (in %) for the transaction pool underpriced check.
     pub price_bump_config: PriceBumpConfig,
     /// How many transactions
@@ -556,14 +591,65 @@ struct AA2dInternalTransaction {
 
 /// A snapshot of the sub-pool containing all executable transactions.
 #[derive(Debug)]
-pub(crate) struct BestAATransactions {
+pub(crate) struct BestAA2dTransactions {
     /// pending, executable transactions sorted by their priority.
-    pending: BTreeSet<PendingTransaction<Ordering>>,
+    independent: BTreeSet<PendingTransaction<Ordering>>,
     /// _All_ transactions that are currently inside the pool grouped by their unique identifier.
     by_id: BTreeMap<AA2dTransactionId, PendingTransaction<Ordering>>,
+
+    /// There might be the case where a yielded transactions is invalid, this will track it.
+    pub(crate) invalid: HashSet<AASenderId>,
 }
 
-impl BestAATransactions {}
+impl BestAA2dTransactions {
+    /// Removes the best transaction from the set
+    fn pop_best(&mut self) -> Option<(AA2dTransactionId, PendingTransaction<Ordering>)> {
+        let tx = self.independent.pop_last()?;
+        let id = tx.transaction.transaction.aa_transaction_id().unwrap();
+        self.by_id.remove(&id);
+        Some((id, tx))
+    }
+
+    /// Returns the next best transaction with its priority.
+    pub(crate) fn next_tx_and_priority(
+        &mut self,
+    ) -> Option<(
+        Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+        Priority<u128>,
+    )> {
+        loop {
+            let (id, best) = self.pop_best()?;
+            if self.invalid.contains(&id.sender) {
+                continue;
+            }
+            // Advance transaction that just got unlocked, if any.
+            if let Some(unlocked) = self.by_id.get(&id.unlocks()) {
+                self.independent.insert(unlocked.clone());
+            }
+            return Some((best.transaction, best.priority));
+        }
+    }
+}
+
+impl Iterator for BestAA2dTransactions {
+    type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_tx_and_priority().map(|(tx, _)| tx)
+    }
+}
+
+impl BestTransactions for BestAA2dTransactions {
+    fn mark_invalid(&mut self, transaction: &Self::Item, _kind: &InvalidPoolTransactionError) {
+        if let Some(id) = transaction.transaction.aa_transaction_id() {
+            self.invalid.insert(id.sender);
+        }
+    }
+
+    fn no_updates(&mut self) {}
+
+    fn set_skip_blobs(&mut self, _skip_blobs: bool) {}
+}
 
 /// Key for identifying a unique sender in 2D nonce system
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -597,4 +683,16 @@ impl AA2dTransactionId {
     pub(crate) const fn new(sender: AASenderId, nonce: u64) -> Self {
         Self { sender, nonce }
     }
+
+    /// Returns the next transaction in the sequence.
+    pub(crate) fn unlocks(&self) -> Self {
+        Self::new(self.sender, self.nonce.saturating_add(1))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn insert_pending() {}
 }

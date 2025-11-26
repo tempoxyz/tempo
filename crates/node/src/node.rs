@@ -9,6 +9,7 @@ use crate::{
 use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_engine_local::LocalPayloadAttributesBuilder;
+use reth_ethereum::{provider::CanonStateSubscriptions, tasks::TaskSpawner};
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_evm::revm::primitives::Address;
 use reth_node_api::{
@@ -38,7 +39,10 @@ use tempo_consensus::TempoConsensus;
 use tempo_evm::{TempoEvmConfig, evm::TempoEvmFactory};
 use tempo_payload_builder::TempoPayloadBuilder;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
-use tempo_transaction_pool::{TempoTransactionPool, validator::TempoTransactionValidator};
+use tempo_transaction_pool::{
+    AA2dNonceKeys, AA2dPool, AA2dPoolConfig, TempoTransactionPool,
+    validator::TempoTransactionValidator,
+};
 
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone)]
@@ -374,16 +378,31 @@ where
             });
         }
 
-        let validator = validator.map(TempoTransactionValidator::new);
-        // Reuse the same validator for Pool2D - TransactionValidationTaskExecutor implements TransactionValidator
-        let validator_clone = validator.clone();
+        let aa_2d_config = AA2dPoolConfig {
+            price_bump_config: pool_config.price_bumps.clone(),
+            // TODO: configure dedicated limit
+            aa_2d_limit: pool_config.pending_limit,
+        };
+        let nonce_keys = AA2dNonceKeys::default();
+        let aa_2d_pool = AA2dPool::new(aa_2d_config, nonce_keys.clone());
 
+        let validator = validator
+            .map(|validator| TempoTransactionValidator::new(validator, nonce_keys.clone()));
         let protocol_pool = TxPoolBuilder::new(ctx)
             .with_validator(validator)
             .build_and_spawn_maintenance_task(blob_store, pool_config)?;
 
         // Wrap the protocol pool in our hybrid TempoTransactionPool
-        let transaction_pool = TempoTransactionPool::new(protocol_pool, validator_clone);
+        let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);
+
+        // spawn the 2d nonce maintenance task
+        ctx.task_executor().spawn_critical(
+            "AA 2d nonce transactions maintenance",
+            Box::pin(tempo_transaction_pool::maintain::maintain_2d_nonce_pool(
+                transaction_pool.clone(),
+                ctx.provider().canonical_state_stream(),
+            )),
+        );
 
         info!(target: "reth::cli", "Transaction pool initialized");
         debug!(target: "reth::cli", "Spawned txpool maintenance task");

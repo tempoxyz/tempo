@@ -5,9 +5,7 @@ use alloy_rlp::{Buf, BufMut, Decodable, EMPTY_STRING_CODE, Encodable};
 use core::mem;
 
 use crate::{
-    subblock::{
-        PartialValidatorKey, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX, has_sub_block_nonce_key_prefix,
-    },
+    subblock::{PartialValidatorKey, has_sub_block_nonce_key_prefix},
     transaction::{AASignature, AASigned, AASignedAuthorization},
 };
 

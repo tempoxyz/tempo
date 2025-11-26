@@ -1,4 +1,4 @@
-use crate::pool_2d::{AA2dTransactionId, AASenderId};
+use crate::aa_2d_pool::{AA2dTransactionId, AASenderId};
 use alloy_consensus::{BlobTransactionValidationError, Transaction, transaction::TxHashRef};
 use alloy_eips::{
     eip2718::{Encodable2718, Typed2718},
@@ -119,7 +119,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             Self::ExceedsNonPaymentLimit => false,
             Self::InvalidFeeToken(_) => false,
             Self::MissingFeeToken => false,
-            TempoPoolTransactionError::SubblockNonceKey => true,
+            Self::SubblockNonceKey => true,
         }
     }
 

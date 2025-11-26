@@ -260,3 +260,57 @@ commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev =
 commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "b9740e83dbdacc45acc2dd14fcbaddc2f02e8252" }
 commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "b9740e83dbdacc45acc2dd14fcbaddc2f02e8252" }
 commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "b9740e83dbdacc45acc2dd14fcbaddc2f02e8252" }
+
+[patch."https://github.com/paradigmxyz/reth"]
+reth-basic-payload-builder = { path = "../reth/crates/payload/basic" }
+reth-chainspec = { path = "../reth/crates/chainspec" }
+reth-cli = { path = "../reth/crates/cli/cli" }
+reth-cli-commands = { path = "../reth/crates/cli/commands" }
+reth-cli-runner = { path = "../reth/crates/cli/runner" }
+reth-cli-util = { path = "../reth/crates/cli/util" }
+reth-codecs = { path = "../reth/crates/storage/codecs" }
+reth-codecs-derive = { path = "../reth/crates/storage/codecs/derive" }
+reth-consensus = { path = "../reth/crates/consensus/consensus" }
+reth-consensus-common = { path = "../reth/crates/consensus/common" }
+reth-db = { path = "../reth/crates/storage/db" }
+reth-db-api = { path = "../reth/crates/storage/db-api" }
+reth-e2e-test-utils = { path = "../reth/crates/e2e-test-utils" }
+reth-engine-local = { path = "../reth/crates/engine/local" }
+reth-engine-primitives = { path = "../reth/crates/engine/primitives" }
+reth-errors = { path = "../reth/crates/errors" }
+reth-eth-wire-types = { path = "../reth/crates/net/eth-wire-types" }
+reth-ethereum = { path = "../reth/crates/ethereum/reth" }
+reth-ethereum-cli = { path = "../reth/crates/ethereum/cli" }
+reth-ethereum-consensus = { path = "../reth/crates/ethereum/consensus" }
+reth-ethereum-engine-primitives = { path = "../reth/crates/ethereum/engine-primitives" }
+reth-ethereum-forks = { path = "../reth/crates/ethereum/hardforks" }
+reth-ethereum-primitives = { path = "../reth/crates/ethereum/primitives" }
+reth-evm = { path = "../reth/crates/evm/evm" }
+reth-evm-ethereum = { path = "../reth/crates/ethereum/evm" }
+reth-execution-types = { path = "../reth/crates/evm/execution-types" }
+reth-metrics = { path = "../reth/crates/metrics" }
+reth-network = { path = "../reth/crates/net/network" }
+reth-network-peers = { path = "../reth/crates/net/peers" }
+reth-node-api = { path = "../reth/crates/node/api" }
+reth-node-builder = { path = "../reth/crates/node/builder" }
+reth-node-core = { path = "../reth/crates/node/core" }
+reth-node-ethereum = { path = "../reth/crates/ethereum/node" }
+reth-node-metrics = { path = "../reth/crates/node/metrics" }
+reth-payload-builder = { path = "../reth/crates/payload/builder" }
+reth-payload-primitives = { path = "../reth/crates/payload/primitives" }
+reth-primitives-traits = { path = "../reth/crates/primitives-traits" }
+reth-provider = { path = "../reth/crates/storage/provider" }
+reth-revm = { path = "../reth/crates/revm" }
+reth-rpc = { path = "../reth/crates/rpc/rpc" }
+reth-rpc-api = { path = "../reth/crates/rpc/rpc-api" }
+reth-rpc-builder = { path = "../reth/crates/rpc/rpc-builder" }
+reth-rpc-convert = { path = "../reth/crates/rpc/rpc-convert" }
+reth-rpc-eth-api = { path = "../reth/crates/rpc/rpc-eth-api" }
+reth-rpc-eth-types = { path = "../reth/crates/rpc/rpc-eth-types" }
+reth-rpc-server-types = { path = "../reth/crates/rpc/rpc-server-types" }
+reth-storage-api = { path = "../reth/crates/storage/storage-api" }
+reth-tasks = { path = "../reth/crates/tasks" }
+reth-tracing = { path = "../reth/crates/tracing" }
+reth-transaction-pool = { path = "../reth/crates/transaction-pool" }
+reth-trie-db = { path = "../reth/crates/trie/db" }
+
