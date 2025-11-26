@@ -27,7 +27,7 @@ use tracing::{Level, debug, error, info, instrument, warn};
 
 use tempo_dkg_onchain_artifacts::{Ack, IntermediateOutcome};
 
-use crate::consensus::block::Block;
+use crate::{consensus::block::Block, dkg::HardforkRegime};
 
 mod payload;
 mod persisted;
@@ -556,7 +556,11 @@ where
     /// If the block contains this outcome, the ceremony will verify it and
     /// track it in its arbiter.
     #[instrument(skip_all, fields(epoch = self.epoch(), block.height = block.height()), err)]
-    pub(super) async fn process_dealings_in_block(&mut self, block: &Block) -> eyre::Result<()> {
+    pub(super) async fn process_dealings_in_block(
+        &mut self,
+        block: &Block,
+        hardfork_regime: HardforkRegime,
+    ) -> eyre::Result<()> {
         let Some(block_outcome) = block.try_read_ceremony_deal_outcome() else {
             info!("block contained no usable intermediate deal outcome");
             return Ok(());
@@ -571,10 +575,21 @@ where
         );
 
         // Verify the dealer's signature before considering processing the outcome.
-        ensure!(
-            block_outcome.verify(&union(&self.config.namespace, OUTCOME_NAMESPACE)),
-            "invalid dealer signature; ignoring deal outcome",
-        );
+        match hardfork_regime {
+            HardforkRegime::PostAllegretto => {
+                ensure!(
+                    block_outcome.verify(&union(&self.config.namespace, OUTCOME_NAMESPACE)),
+                    "invalid dealer signature; ignoring deal outcome",
+                );
+            }
+            HardforkRegime::PreAllegretto => {
+                ensure!(
+                    block_outcome
+                        .verify_pre_allegretto(&union(&self.config.namespace, OUTCOME_NAMESPACE)),
+                    "invalid dealer signature; ignoring deal outcome",
+                );
+            }
+        }
 
         // Verify all ack signatures
         if !block_outcome.acks().iter().all(|ack| {
@@ -661,7 +676,10 @@ where
     ///
     /// If the node is not a dealer, then this is a no-op.
     #[instrument(skip_all, fields(epoch = self.epoch()), err)]
-    pub(super) async fn construct_intermediate_outcome(&mut self) -> eyre::Result<()> {
+    pub(super) async fn construct_intermediate_outcome(
+        &mut self,
+        hardfork_regime: HardforkRegime,
+    ) -> eyre::Result<()> {
         let Some(dealer_me) = &mut self.dealer_me else {
             debug!("not a dealer; skipping construction of deal outcome");
             return Ok(());
@@ -682,19 +700,34 @@ where
             "too many reveals; skipping deal outcome construction",
         );
 
-        let dealing_outcome = Some(IntermediateOutcome::new(
-            self.config
-                .players
-                .len()
-                .try_into()
-                .expect("we should never have more than u16::MAX validators/players"),
-            &self.config.me,
-            &union(&self.config.namespace, OUTCOME_NAMESPACE),
-            self.config.epoch,
-            dealer_me.commitment.clone(),
-            dealer_me.acks.values().cloned().collect(),
-            reveals,
-        ));
+        let dealing_outcome = match hardfork_regime {
+            HardforkRegime::PostAllegretto => Some(IntermediateOutcome::new(
+                self.config
+                    .players
+                    .len()
+                    .try_into()
+                    .expect("we should never have more than u16::MAX validators/players"),
+                &self.config.me,
+                &union(&self.config.namespace, OUTCOME_NAMESPACE),
+                self.config.epoch,
+                dealer_me.commitment.clone(),
+                dealer_me.acks.values().cloned().collect(),
+                reveals,
+            )),
+            HardforkRegime::PreAllegretto => Some(IntermediateOutcome::new_pre_allegretto(
+                self.config
+                    .players
+                    .len()
+                    .try_into()
+                    .expect("we should never have more than u16::MAX validators/players"),
+                &self.config.me,
+                &union(&self.config.namespace, OUTCOME_NAMESPACE),
+                self.config.epoch,
+                dealer_me.commitment.clone(),
+                dealer_me.acks.values().cloned().collect(),
+                reveals,
+            )),
+        };
 
         self.ceremony_metadata
             .lock()

@@ -21,6 +21,7 @@ use tracing::{Span, info, instrument, warn};
 use crate::{
     consensus::block::Block,
     dkg::{
+        HardforkRegime,
         ceremony::{self, Ceremony},
         manager::{
             actor::{DkgOutcome, pre_allegretto},
@@ -151,10 +152,14 @@ where
             }
             epoch::RelativePosition::Middle => {
                 let _ = ceremony.process_messages().await;
-                let _ = ceremony.construct_intermediate_outcome().await;
+                let _ = ceremony
+                    .construct_intermediate_outcome(HardforkRegime::PostAllegretto)
+                    .await;
             }
             epoch::RelativePosition::SecondHalf => {
-                let _ = ceremony.process_dealings_in_block(&block).await;
+                let _ = ceremony
+                    .process_dealings_in_block(&block, HardforkRegime::PostAllegretto)
+                    .await;
             }
         }
 
