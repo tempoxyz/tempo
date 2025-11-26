@@ -30,7 +30,7 @@ hardfork!(
         Adagio,
         /// Testnet hardfork for Andantino. To be removed before mainnet launch.
         Moderato,
-        /// Hardfork that introduces TIP20 token validation in precompiles.
+        /// Allegretto hardfork.
         Allegretto,
     }
 );
@@ -146,7 +146,6 @@ mod tests {
     fn test_is_moderato() {
         assert!(!TempoHardfork::Adagio.is_moderato());
         assert!(TempoHardfork::Moderato.is_moderato());
-        assert!(TempoHardfork::Allegretto.is_moderato());
     }
 
     #[test]
@@ -155,6 +154,7 @@ mod tests {
         assert!(!TempoHardfork::Moderato.is_allegretto());
 
         assert!(TempoHardfork::Allegretto.is_allegretto());
+
         assert!(TempoHardfork::Allegretto.is_moderato());
     }
 }
