@@ -14,7 +14,7 @@ use revm::{
     },
     handler::{
         EvmTr, FrameResult, FrameTr, Handler, MainnetHandler,
-        pre_execution::{self},
+        pre_execution::{self, calculate_caller_fee},
         validation,
     },
     inspector::{Inspector, InspectorHandler},
@@ -521,6 +521,9 @@ where
     ) -> Result<(), Self::Error> {
         let (block, tx, cfg, journal, _, _) = evm.ctx().all_mut();
 
+        // Load the fee payer balance
+        let account_balance = get_token_balance(journal, self.fee_token, self.fee_payer)?;
+
         // Load caller's account
         let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
 
@@ -604,6 +607,12 @@ where
                 caller_account.bump_nonce();
             }
         }
+
+        // calculate the new balance after the fee is collected.
+        let new_balance = calculate_caller_fee(account_balance, tx, block, cfg)?;
+        // doing max to avoid underflow as new_balance can be more than
+        // account balance if `cfg.is_balance_check_disabled()` is true.
+        let gas_balance_spending = core::cmp::max(account_balance, new_balance) - new_balance;
 
         // Note: Signature verification happens during recover_signer() before entering the pool
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
@@ -812,12 +821,7 @@ where
                 .map_err(|e| EVMError::Custom(e.to_string()))?;
         }
 
-        let balance_spending = tx.effective_balance_spending(
-            block.basefee as u128,
-            block.blob_gasprice().unwrap_or_default(),
-        )?;
-
-        if balance_spending.is_zero() {
+        if gas_balance_spending.is_zero() {
             return Ok(());
         }
 
@@ -829,7 +833,7 @@ where
             TipFeeManager::new(&mut storage_provider).collect_fee_pre_tx(
                 self.fee_payer,
                 self.fee_token,
-                balance_spending,
+                gas_balance_spending,
                 block.beneficiary(),
             )
         };
@@ -844,7 +848,7 @@ where
             return Err(match err {
                 TempoPrecompileError::TIPFeeAMMError(TIPFeeAMMError::InsufficientLiquidity(_)) => {
                     FeePaymentError::InsufficientAmmLiquidity {
-                        fee: balance_spending,
+                        fee: gas_balance_spending,
                     }
                     .into()
                 }
@@ -853,7 +857,7 @@ where
                     InsufficientBalance { available, .. },
                 )) => EVMError::Transaction(
                     FeePaymentError::InsufficientFeeTokenBalance {
-                        fee: balance_spending,
+                        fee: gas_balance_spending,
                         balance: available,
                     }
                     .into(),
@@ -1024,7 +1028,12 @@ where
         // For subblock transactions that failed `collectFeePreTx` call we catch error and treat such transactions as valid.
         if evm.ctx.tx.is_subblock_transaction()
             && evm.cfg.spec.is_allegretto()
-            && let Some(TempoInvalidTransaction::CollectFeePreTx(_)) = error.as_invalid_tx_err()
+            && let Some(
+                TempoInvalidTransaction::CollectFeePreTx(_)
+                | TempoInvalidTransaction::EthInvalidTransaction(
+                    InvalidTransaction::LackOfFundForMaxFee { .. },
+                ),
+            ) = error.as_invalid_tx_err()
         {
             // Commit the transaction.
             //
