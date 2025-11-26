@@ -5,6 +5,7 @@ use futures::{Stream, StreamExt};
 use reth_chainspec::ChainSpecProvider;
 use reth_provider::CanonStateNotification;
 use reth_storage_api::StateProviderFactory;
+use reth_tracing::tracing::trace;
 use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 use tempo_primitives::TempoPrimitives;
@@ -46,6 +47,7 @@ where
 
         // we can now map the slots back to addresses and nonce keys and then update the pool
         let updates = nonce_keys.update_tracked(changed_slots);
+        trace!(target: "txpool::2d",  ?updates, "update tracked 2d nonce changes");
 
         pool.on_aa_2d_nonce_changes(updates);
     }
