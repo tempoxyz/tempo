@@ -840,7 +840,7 @@ mod tests {
             )?;
 
             // Simulate collected fees
-            fee_manager.sstore_collected_fees(validator, collected_fees)?;
+            fee_manager.increment_collected_fees(validator, collected_fees)?;
 
             // Execute block
             let result = fee_manager.execute_block(Address::ZERO, validator);
