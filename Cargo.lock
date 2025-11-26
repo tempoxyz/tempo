@@ -3829,12 +3829,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fqdn"
-version = "0.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0f5d7f7b3eed2f771fc7f6fcb651f9560d7b0c483d75876082acb4649d266b3"
-
-[[package]]
 name = "fsevent-sys"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4920,8 +4914,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49cce2b81f2098e7e3efc35bc2e0a6b7abec9d34128283d7a26fa8f32a6dbb35"
 dependencies = [
  "jiff-static",
+ "log",
  "portable-atomic",
  "portable-atomic-util",
+ "serde_core",
 ]
 
 [[package]]
@@ -11232,7 +11228,6 @@ dependencies = [
 name = "tempo"
 version = "0.5.3"
 dependencies = [
- "camino",
  "clap",
  "commonware-runtime",
  "eyre",
@@ -11244,7 +11239,6 @@ dependencies = [
  "reth-node-builder",
  "tempo-chainspec",
  "tempo-commonware-node",
- "tempo-commonware-node-config",
  "tempo-consensus",
  "tempo-evm",
  "tempo-eyre",
@@ -11338,6 +11332,7 @@ dependencies = [
  "reth-network-peers",
  "serde",
  "serde_json",
+ "tempo-commonware-node-config",
  "tempo-primitives",
 ]
 
@@ -11346,11 +11341,13 @@ name = "tempo-commonware-node"
 version = "0.5.3"
 dependencies = [
  "alloy-consensus",
+ "alloy-evm",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-engine",
  "axum",
  "bytes",
+ "clap",
  "commonware-broadcast",
  "commonware-codec",
  "commonware-consensus",
@@ -11364,21 +11361,27 @@ dependencies = [
  "futures",
  "governor",
  "indexmap 2.12.1",
+ "jiff",
  "parking_lot",
  "prometheus-client",
  "rand 0.8.5",
  "rand_core 0.6.4",
  "reth-consensus-common",
+ "reth-ethereum",
  "reth-evm",
  "reth-node-builder",
  "reth-node-core",
  "reth-primitives-traits",
  "reth-provider",
  "reth-revm",
+ "tempo-chainspec",
  "tempo-commonware-node-config",
+ "tempo-dkg-onchain-artifacts",
  "tempo-node",
  "tempo-payload-types",
+ "tempo-precompiles",
  "tempo-primitives",
+ "tempo-telemetry-util",
  "tokio",
  "tracing",
 ]
@@ -11387,18 +11390,15 @@ dependencies = [
 name = "tempo-commonware-node-config"
 version = "0.5.3"
 dependencies = [
- "alloy-primitives",
- "camino",
  "commonware-codec",
  "commonware-cryptography",
  "commonware-utils",
  "const-hex",
- "humantime-serde",
  "indexmap 2.12.1",
- "reth-consensus-common",
+ "rand 0.8.5",
  "serde",
+ "serde_json",
  "thiserror 2.0.17",
- "toml",
 ]
 
 [[package]]
@@ -11425,6 +11425,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-dkg-onchain-artifacts"
+version = "0.5.3"
+dependencies = [
+ "alloy-rlp",
+ "bytes",
+ "commonware-codec",
+ "commonware-consensus",
+ "commonware-cryptography",
+ "commonware-utils",
+ "rand 0.8.5",
+]
+
+[[package]]
 name = "tempo-e2e"
 version = "0.5.3"
 dependencies = [
@@ -11445,8 +11458,6 @@ dependencies = [
  "rand 0.8.5",
  "reth-db",
  "reth-ethereum",
- "reth-evm",
- "reth-network-peers",
  "reth-node-builder",
  "reth-node-core",
  "reth-node-metrics",
@@ -11455,8 +11466,8 @@ dependencies = [
  "tempfile",
  "tempo-chainspec",
  "tempo-commonware-node",
+ "tempo-commonware-node-config",
  "tempo-contracts",
- "tempo-evm",
  "tempo-eyre",
  "tempo-node",
  "tempo-precompiles",
@@ -11635,7 +11646,6 @@ dependencies = [
  "criterion",
  "derive_more",
  "eyre",
- "fqdn",
  "proptest",
  "rand 0.8.5",
  "revm",
@@ -11783,10 +11793,11 @@ version = "0.5.3"
 dependencies = [
  "alloy",
  "alloy-primitives",
- "camino",
  "clap",
+ "commonware-codec",
  "commonware-cryptography",
  "commonware-utils",
+ "const-hex",
  "eyre",
  "indexmap 2.12.1",
  "indicatif",
@@ -11803,6 +11814,7 @@ dependencies = [
  "tempo-contracts",
  "tempo-evm",
  "tempo-precompiles",
+ "thiserror 2.0.17",
  "tokio",
  "toml",
 ]
