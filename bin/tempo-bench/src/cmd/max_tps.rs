@@ -13,7 +13,6 @@ use alloy::{
     network::ReceiptResponse,
     primitives::{Address, BlockNumber, U256},
     providers::{PendingTransactionBuilder, Provider, ProviderBuilder},
-    sol_types::SolEvent,
     transports::http::reqwest::Url,
 };
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
@@ -42,7 +41,6 @@ use std::{
     thread,
     time::Duration,
 };
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{
     IRolesAuth, IStablecoinExchange::IStablecoinExchangeInstance, ITIP20, ITIP20::ITIP20Instance,
     ITIP20Factory, STABLECOIN_EXCHANGE_ADDRESS, TIP20_FACTORY_ADDRESS,
@@ -53,8 +51,6 @@ use tempo_precompiles::{
     tip20::{ISSUER_ROLE, token_id_to_address},
 };
 use tokio::time::timeout;
-
-const GAS_LIMIT: u64 = 500_000;
 
 /// Run maximum TPS throughput benchmarking
 #[derive(Parser, Debug)]
@@ -272,7 +268,6 @@ fn send_transactions(
         NonZeroU32::new(tps as u32).unwrap(),
     )));
 
-    info!(transactions = transactions.len(), "Sending transactions");
     let (pending_transactions_tx, pending_transactions_rx) = mpsc::channel();
     transactions
         .into_iter()
@@ -636,25 +631,24 @@ async fn join_all<
     max_concurrent_transactions: usize,
 ) -> eyre::Result<()> {
     let chunks = futures.into_iter().chunks(max_concurrent_transactions);
-    for chunk in chunks.into_iter() {
-        let mut receipts = Vec::new();
-        let mut iter = stream::iter(chunk)
-            .map(|receipt| async { eyre::Ok(receipt.await?) })
-            .buffer_unordered(max_concurrent_requests);
-        while let Some(receipt) = iter.next().await {
-            tx_count.inc(1);
-            receipts.push(receipt);
-        }
 
-        let mut iter = stream::iter(
-            receipts
-                .into_iter()
-                .map(|receipt| async { eyre::Ok(receipt?.get_receipt().await?) }),
-        )
-        .buffer_unordered(max_concurrent_requests);
-        while let Some(receipt) = iter.next().await {
-            assert!(receipt?.status());
-        }
+    for chunk in chunks.into_iter() {
+        // Send transactions and collect pending builders
+        let pending_txs = stream::iter(chunk)
+            .buffer_unordered(max_concurrent_requests)
+            .inspect_ok(|_| tx_count.inc(1))
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        // Fetch receipts and verify status
+        stream::iter(pending_txs)
+            .map(|tx| async move { Ok(tx.get_receipt().await?) })
+            .buffer_unordered(max_concurrent_requests)
+            .try_for_each(|receipt| async move {
+                eyre::ensure!(receipt.status(), "Transaction failed");
+                Ok(())
+            })
+            .await?;
     }
 
     Ok(())
