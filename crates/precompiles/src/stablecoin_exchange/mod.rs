@@ -791,13 +791,15 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             let (tick, has_liquidity) =
                 Orderbook::next_initialized_tick(self, book_key, order.is_bid(), order.tick());
 
-            // Update best_tick when tick is exhausted
-            if order.is_bid() {
-                let new_best = if has_liquidity { tick } else { i16::MIN };
-                Orderbook::update_best_bid_tick(self, book_key, new_best)?;
-            } else {
-                let new_best = if has_liquidity { tick } else { i16::MAX };
-                Orderbook::update_best_ask_tick(self, book_key, new_best)?;
+            if self.storage.spec().is_allegretto() {
+                // Update best_tick when tick is exhausted
+                if order.is_bid() {
+                    let new_best = if has_liquidity { tick } else { i16::MIN };
+                    Orderbook::update_best_bid_tick(self, book_key, new_best)?;
+                } else {
+                    let new_best = if has_liquidity { tick } else { i16::MAX };
+                    Orderbook::update_best_ask_tick(self, book_key, new_best)?;
+                }
             }
 
             if !has_liquidity {
@@ -1222,28 +1224,30 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             Orderbook::clear_tick_bit(self, order.book_key(), order.tick(), order.is_bid())
                 .expect("Tick is valid");
 
-            // If this was the best tick, update it
-            let orderbook = self.sload_books(order.book_key())?;
-            let best_tick = if order.is_bid() {
-                orderbook.best_bid_tick
-            } else {
-                orderbook.best_ask_tick
-            };
-
-            if best_tick == order.tick() {
-                let (next_tick, has_liquidity) = Orderbook::next_initialized_tick(
-                    self,
-                    order.book_key(),
-                    order.is_bid(),
-                    order.tick(),
-                );
-
-                if order.is_bid() {
-                    let new_best = if has_liquidity { next_tick } else { i16::MIN };
-                    Orderbook::update_best_bid_tick(self, order.book_key(), new_best)?;
+            if self.storage.spec().is_allegretto() {
+                // If this was the best tick, update it
+                let orderbook = self.sload_books(order.book_key())?;
+                let best_tick = if order.is_bid() {
+                    orderbook.best_bid_tick
                 } else {
-                    let new_best = if has_liquidity { next_tick } else { i16::MAX };
-                    Orderbook::update_best_ask_tick(self, order.book_key(), new_best)?;
+                    orderbook.best_ask_tick
+                };
+
+                if best_tick == order.tick() {
+                    let (next_tick, has_liquidity) = Orderbook::next_initialized_tick(
+                        self,
+                        order.book_key(),
+                        order.is_bid(),
+                        order.tick(),
+                    );
+
+                    if order.is_bid() {
+                        let new_best = if has_liquidity { next_tick } else { i16::MIN };
+                        Orderbook::update_best_bid_tick(self, order.book_key(), new_best)?;
+                    } else {
+                        let new_best = if has_liquidity { next_tick } else { i16::MAX };
+                        Orderbook::update_best_ask_tick(self, order.book_key(), new_best)?;
+                    }
                 }
             }
         }
