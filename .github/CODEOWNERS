@@ -5,7 +5,7 @@ bin/tempo-sidecar @Zygimantass
 contrib/ @Zygimantass
 scripts/ @0xKitsune
 xtask/ @0xKitsune @Zygimantass @SuperFluffy 
-crates/alloy/ @klkvr @onbjerg
+crates/alloy/ @klkvr @onbjerg @mattsse
 crates/chainspec/ @0xKitsune @klkvr @mattsse
 crates/commonware-node/ @joshieDo @SuperFluffy
 crates/commonware-node-config/ @joshieDo @SuperFluffy
