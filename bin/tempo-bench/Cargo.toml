@@ -27,6 +27,7 @@ clap = { workspace = true, features = ["derive", "env"] }
 eyre.workspace = true
 futures.workspace = true
 hex.workspace = true
+itertools.workspace = true
 parking_lot.workspace = true
 reth-tracing.workspace = true
 serde.workspace = true
