@@ -1217,20 +1217,20 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             .ok_or(TempoPrecompileError::under_overflow())?;
         level.total_liquidity = new_liquidity;
 
-        // If this was the last order at this tick, clear the bitmap bit and update best_tick if needed
+        // If this was the last order at this tick, clear the bitmap bit
         if level.head == 0 {
             Orderbook::clear_tick_bit(self, order.book_key(), order.tick(), order.is_bid())
                 .expect("Tick is valid");
 
-            // Update best_tick only if this was the best tick
+            // If this was the best tick, update it
             let orderbook = self.sload_books(order.book_key())?;
-            let is_best_tick = if order.is_bid() {
-                order.tick() == orderbook.best_bid_tick
+            let best_tick = if order.is_bid() {
+                orderbook.best_bid_tick
             } else {
-                order.tick() == orderbook.best_ask_tick
+                orderbook.best_ask_tick
             };
 
-            if is_best_tick {
+            if best_tick == order.tick() {
                 let (next_tick, has_liquidity) = Orderbook::next_initialized_tick(
                     self,
                     order.book_key(),
@@ -4252,7 +4252,7 @@ mod tests {
         exchange.place(alice, base_token, amount, true, bid_tick_2)?;
 
         // Place ask orders at two different ticks
-        exchange.set_balance(alice, base_token, amount * 2)?;
+        mint_and_approve_token(exchange.storage, 1, admin, alice, exchange.address, amount * 2);
         exchange.place(alice, base_token, amount, false, ask_tick_1)?;
         exchange.place(alice, base_token, amount, false, ask_tick_2)?;
 
