@@ -5,6 +5,7 @@
 
 mod metrics;
 
+use crate::metrics::TempoPayloadBuilderMetrics;
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
 use alloy_primitives::{Address, U256};
 use alloy_rlp::{Decodable, Encodable};
@@ -52,6 +53,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoTxEnvelope,
+    subblock::PartialValidatorKey,
     transaction::{
         calc_gas_balance_spending,
         envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
@@ -62,8 +64,6 @@ use tempo_transaction_pool::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tracing::{Level, debug, error, info, instrument, trace, warn};
-
-use crate::metrics::TempoPayloadBuilderMetrics;
 
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
@@ -340,35 +340,6 @@ where
         let mut payment_transactions = 0;
         let mut total_fees = U256::ZERO;
 
-        let mut builder = self
-            .evm_config
-            .builder_for_next_block(
-                &mut db,
-                &parent_header,
-                TempoNextBlockEnvAttributes {
-                    inner: NextBlockEnvAttributes {
-                        timestamp: attributes.timestamp(),
-                        suggested_fee_recipient: attributes.suggested_fee_recipient(),
-                        prev_randao: attributes.prev_randao(),
-                        gas_limit: block_gas_limit,
-                        parent_beacon_block_root: attributes.parent_beacon_block_root(),
-                        withdrawals: Some(attributes.withdrawals().clone()),
-                    },
-                    general_gas_limit,
-                    shared_gas_limit,
-                    timestamp_millis_part: attributes.timestamp_millis_part(),
-                    extra_data: attributes.extra_data().clone(),
-                },
-            )
-            .map_err(PayloadBuilderError::other)?;
-
-        builder.apply_pre_execution_changes().map_err(|err| {
-            warn!(%err, "failed to apply pre-execution changes");
-            PayloadBuilderError::Internal(err.into())
-        })?;
-
-        debug!("building new payload");
-
         // If building an empty payload, don't include any subblocks
         //
         // Also don't include any subblocks if we've seen an invalid subblock
@@ -403,6 +374,46 @@ where
             true
         });
 
+        let subblock_fee_recipients = subblocks
+            .iter()
+            .map(|subblock| {
+                (
+                    PartialValidatorKey::from_slice(&subblock.validator()[..15]),
+                    subblock.fee_recipient,
+                )
+            })
+            .collect();
+
+        let mut builder = self
+            .evm_config
+            .builder_for_next_block(
+                &mut db,
+                &parent_header,
+                TempoNextBlockEnvAttributes {
+                    inner: NextBlockEnvAttributes {
+                        timestamp: attributes.timestamp(),
+                        suggested_fee_recipient: attributes.suggested_fee_recipient(),
+                        prev_randao: attributes.prev_randao(),
+                        gas_limit: block_gas_limit,
+                        parent_beacon_block_root: attributes.parent_beacon_block_root(),
+                        withdrawals: Some(attributes.withdrawals().clone()),
+                    },
+                    general_gas_limit,
+                    shared_gas_limit,
+                    timestamp_millis_part: attributes.timestamp_millis_part(),
+                    extra_data: attributes.extra_data().clone(),
+                    subblock_fee_recipients,
+                },
+            )
+            .map_err(PayloadBuilderError::other)?;
+
+        builder.apply_pre_execution_changes().map_err(|err| {
+            warn!(%err, "failed to apply pre-execution changes");
+            PayloadBuilderError::Internal(err.into())
+        })?;
+
+        debug!("building new payload");
+
         // Prepare system transactions before actual block building and account for their size.
         let system_txs = self.build_seal_block_txs(builder.evm().block(), &subblocks);
         for tx in &system_txs {
@@ -436,7 +447,7 @@ where
                 // The iterator will handle lane switching internally when appropriate
                 best_txs.mark_invalid(
                     &pool_tx,
-                    InvalidPoolTransactionError::ExceedsGasLimit(
+                    &InvalidPoolTransactionError::ExceedsGasLimit(
                         pool_tx.gas_limit(),
                         non_shared_gas_limit - cumulative_gas_used,
                     ),
@@ -451,7 +462,7 @@ where
             {
                 best_txs.mark_invalid(
                     &pool_tx,
-                    InvalidPoolTransactionError::Other(Box::new(
+                    &InvalidPoolTransactionError::Other(Box::new(
                         TempoPoolTransactionError::ExceedsNonPaymentLimit,
                     )),
                 );
@@ -482,7 +493,7 @@ where
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
                 best_txs.mark_invalid(
                     &pool_tx,
-                    InvalidPoolTransactionError::OversizedData {
+                    &InvalidPoolTransactionError::OversizedData {
                         size: estimated_block_size_with_tx,
                         limit: MAX_RLP_BLOCK_SIZE,
                     },
@@ -513,7 +524,7 @@ where
                         trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
                         best_txs.mark_invalid(
                             &pool_tx,
-                            InvalidPoolTransactionError::Consensus(
+                            &InvalidPoolTransactionError::Consensus(
                                 InvalidTransactionError::TxTypeNotSupported,
                             ),
                         );

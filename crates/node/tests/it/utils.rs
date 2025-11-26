@@ -30,9 +30,9 @@ use tempo_contracts::precompiles::{
     ITIP20Factory,
 };
 use tempo_node::node::TempoNode;
-use tempo_payload_types::TempoPayloadBuilderAttributes;
+use tempo_payload_types::{TempoPayloadAttributes, TempoPayloadBuilderAttributes};
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     tip20::{ISSUER_ROLE, token_id_to_address},
 };
 
@@ -50,7 +50,7 @@ where
             "Test".to_string(),
             "TEST".to_string(),
             "USD".to_string(),
-            LINKING_USD_ADDRESS,
+            PATH_USD_ADDRESS,
             caller,
         )
         .send()
@@ -71,6 +71,17 @@ where
         .await?;
 
     Ok(token)
+}
+
+/// Creates a test TIP20 token (same as setup_test_token, kept for compatibility)
+pub(crate) async fn setup_test_token_pre_allegretto<P>(
+    provider: P,
+    caller: Address,
+) -> eyre::Result<ITIP20Instance<impl Clone + Provider>>
+where
+    P: Provider + Clone,
+{
+    setup_test_token(provider, caller).await
 }
 
 /// Node source for integration testing
@@ -154,6 +165,8 @@ pub(crate) struct HttpOnlySetup {
 pub(crate) struct TestNodeBuilder {
     genesis_content: String,
     custom_gas_limit: Option<String>,
+    moderato_time: Option<u64>,
+    allegretto_time: Option<u64>,
     node_count: usize,
     is_dev: bool,
     external_rpc: Option<Url>,
@@ -168,6 +181,8 @@ impl TestNodeBuilder {
             node_count: 1,
             is_dev: true,
             external_rpc: None,
+            allegretto_time: None,
+            moderato_time: None,
         }
     }
 
@@ -193,6 +208,28 @@ impl TestNodeBuilder {
     pub(crate) fn with_external_rpc(mut self, url: Url) -> Self {
         self.external_rpc = Some(url);
         self
+    }
+
+    /// Set Moderato hardfork activation time
+    pub(crate) fn with_moderato_time(mut self, time: u64) -> Self {
+        self.moderato_time = Some(time);
+        self
+    }
+
+    /// Set Allegretto hardfork activation time
+    pub(crate) fn with_allegretto_time(mut self, time: u64) -> Self {
+        self.allegretto_time = Some(time);
+        self
+    }
+
+    /// Set Moderato hardfork activation time to 0.
+    pub(crate) fn moderato_activated(self) -> Self {
+        self.with_moderato_time(0)
+    }
+
+    /// Set Allegretto hardfork activation time to 0.
+    pub(crate) fn allegretto_activated(self) -> Self {
+        self.moderato_activated().with_allegretto_time(0)
     }
 
     /// Build a single node with direct access (NodeHelperType)
@@ -307,28 +344,33 @@ impl TestNodeBuilder {
 
     /// Helper to build chain spec from genesis
     fn build_chain_spec(&self) -> eyre::Result<TempoChainSpec> {
+        let mut genesis: serde_json::Value = serde_json::from_str(&self.genesis_content)?;
         if let Some(gas_limit) = &self.custom_gas_limit {
-            let mut genesis: serde_json::Value = serde_json::from_str(&self.genesis_content)?;
             genesis["gasLimit"] = serde_json::json!(gas_limit);
-            Ok(TempoChainSpec::from_genesis(serde_json::from_value(
-                genesis,
-            )?))
-        } else {
-            Ok(TempoChainSpec::from_genesis(serde_json::from_str(
-                &self.genesis_content,
-            )?))
         }
+        if let Some(moderato_time) = &self.moderato_time {
+            genesis["config"]["moderatoTime"] = serde_json::json!(moderato_time);
+        }
+        if let Some(allegretto_time) = &self.allegretto_time {
+            genesis["config"]["allegrettoTime"] = serde_json::json!(allegretto_time);
+        }
+        Ok(TempoChainSpec::from_genesis(serde_json::from_value(
+            genesis,
+        )?))
     }
 }
 
 /// Default attributes generator for payload building
 fn default_attributes_generator(timestamp: u64) -> TempoPayloadBuilderAttributes {
-    let attributes = PayloadAttributes {
-        timestamp,
-        prev_randao: alloy::primitives::B256::ZERO,
-        suggested_fee_recipient: alloy::primitives::Address::ZERO,
-        withdrawals: Some(vec![]),
-        parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
+    let attributes = TempoPayloadAttributes {
+        inner: PayloadAttributes {
+            timestamp,
+            prev_randao: alloy::primitives::B256::ZERO,
+            suggested_fee_recipient: alloy::primitives::Address::ZERO,
+            withdrawals: Some(vec![]),
+            parent_beacon_block_root: Some(alloy::primitives::B256::ZERO),
+        },
+        timestamp_millis_part: 0,
     };
 
     TempoPayloadBuilderAttributes::try_new(B256::ZERO, attributes, 0).unwrap()

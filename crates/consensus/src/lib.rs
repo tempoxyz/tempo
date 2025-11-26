@@ -30,6 +30,9 @@ const END_OF_BLOCK_SYSTEM_TX_ADDRESSES: [Address; END_OF_BLOCK_SYSTEM_TX_COUNT] 
     Address::ZERO,
 ];
 
+/// How far in the future the block timestamp can be.
+pub const ALLOWED_FUTURE_BLOCK_TIME_SECONDS: u64 = 3;
+
 /// Tempo consensus implementation.
 #[derive(Debug, Clone)]
 pub struct TempoConsensus {
@@ -50,6 +53,18 @@ impl TempoConsensus {
 impl HeaderValidator<TempoHeader> for TempoConsensus {
     fn validate_header(&self, header: &SealedHeader<TempoHeader>) -> Result<(), ConsensusError> {
         self.inner.validate_header(header)?;
+
+        let present_timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("system time should never be before UNIX EPOCH")
+            .as_secs();
+
+        if header.timestamp() > present_timestamp + ALLOWED_FUTURE_BLOCK_TIME_SECONDS {
+            return Err(ConsensusError::TimestampIsInFuture {
+                timestamp: header.timestamp(),
+                present_timestamp,
+            });
+        }
 
         if header.shared_gas_limit != header.gas_limit() / TEMPO_SHARED_GAS_DIVISOR {
             return Err(ConsensusError::Other(

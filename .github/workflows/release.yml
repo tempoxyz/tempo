@@ -186,3 +186,34 @@ jobs:
             --notes "" \
             $PRERELEASE \
             artifacts/**/*
+  upload-cloudflare:
+    name: Upload to R2 bucket
+    needs: [get-version, build-release]
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
+    runs-on: depot-ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create binary directory
+        env:
+          VERSION: ${{ needs.get-version.outputs.version }}
+        run: |
+          mkdir $VERSION
+          mv artifacts/**/* $VERSION/
+
+      - uses: shallwefootball/s3-upload-action@master
+        with:
+          aws_key_id: ${{ secrets.R2_BINARIES_KEY_ID }}
+          aws_secret_access_key: ${{ secrets.R2_BINARIES_SECRET_KEY }}
+          aws_bucket: ${{ secrets.R2_BINARIES_BUCKET }}
+          endpoint: ${{ secrets.R2_BINARIES_ENDPOINT }}
+          source_dir: '${{ needs.get-version.outputs.version }}'
+          destination_dir: 'binaries/${{ needs.get-version.outputs.version }}'

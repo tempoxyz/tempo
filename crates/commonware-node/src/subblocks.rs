@@ -45,6 +45,12 @@ use tempo_primitives::{
 use tokio::sync::broadcast;
 use tracing::{Instrument, Level, Span, debug, instrument, warn};
 
+/// Maximum number of stored subblock transactions. Used to prevent DOS attacks.
+///
+/// NOTE: included txs are organically cleared when building the next subblock
+/// because they become invalid once their nonce is used.
+const MAX_SUBBLOCK_TXS: usize = 100_000;
+
 pub(crate) struct Config<TContext> {
     pub(crate) context: TContext,
     pub(crate) signer: PrivateKey,
@@ -202,9 +208,11 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         {
             return;
         }
-        self.subblock_transactions
-            .lock()
-            .insert(*transaction.tx_hash(), Arc::new(transaction));
+        let mut txs = self.subblock_transactions.lock();
+        if txs.len() >= MAX_SUBBLOCK_TXS {
+            return;
+        }
+        txs.insert(*transaction.tx_hash(), Arc::new(transaction));
     }
 
     /// Tracking of the current sconsensus state by listening to notarizations and nullifications.
@@ -342,6 +350,8 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             "invalid subblock parent, expected {tip}, got {}",
             subblock.parent_hash
         );
+
+        debug!("validating new subblock");
 
         // Spawn task to validate the subblock.
         let node = self.node.clone();

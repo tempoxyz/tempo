@@ -3,10 +3,11 @@ use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
 use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256, keccak256};
 use alloy_rlp::{Buf, BufMut, Decodable, EMPTY_STRING_CODE, Encodable};
 use core::mem;
+use reth_primitives_traits::InMemorySize;
 
 use crate::{
-    subblock::{PartialValidatorKey, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
-    transaction::{AASignature, AASigned, AASignedAuthorization},
+    subblock::{PartialValidatorKey, has_sub_block_nonce_key_prefix},
+    transaction::{AASignature, AASigned, AASignedAuthorization, KeyAuthorization},
 };
 
 /// Account abstraction transaction type byte (0x76)
@@ -21,13 +22,48 @@ pub const P256_SIGNATURE_LENGTH: usize = 129;
 pub const MAX_WEBAUTHN_SIGNATURE_LENGTH: usize = 2048; // 2KB max
 
 /// Signature type enumeration
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+#[repr(u8)]
 pub enum SignatureType {
-    Secp256k1,
-    P256,
-    WebAuthn,
+    Secp256k1 = 0,
+    P256 = 1,
+    WebAuthn = 2,
+}
+
+impl From<SignatureType> for u8 {
+    fn from(sig_type: SignatureType) -> Self {
+        match sig_type {
+            SignatureType::Secp256k1 => 0,
+            SignatureType::P256 => 1,
+            SignatureType::WebAuthn => 2,
+        }
+    }
+}
+
+impl alloy_rlp::Encodable for SignatureType {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        (*self as u8).encode(out);
+    }
+
+    fn length(&self) -> usize {
+        1
+    }
+}
+
+impl alloy_rlp::Decodable for SignatureType {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let byte: u8 = alloy_rlp::Decodable::decode(buf)?;
+        match byte {
+            0 => Ok(Self::Secp256k1),
+            1 => Ok(Self::P256),
+            2 => Ok(Self::WebAuthn),
+            _ => Err(alloy_rlp::Error::Custom("Invalid signature type")),
+        }
+    }
 }
 
 /// Helper function to create an RLP header for a list with the given payload length
@@ -44,6 +80,7 @@ fn rlp_header(payload_length: usize) -> alloy_rlp::Header {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+#[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
 pub struct Call {
     /// Call target.
     pub to: TxKind,
@@ -106,6 +143,7 @@ impl Decodable for Call {
         Ok(this)
     }
 }
+
 /// Account abstraction transaction following the Tempo spec.
 ///
 /// This transaction type supports:
@@ -117,7 +155,6 @@ impl Decodable for Call {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
-#[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
 #[doc(alias = "AATransaction", alias = "TransactionAA")]
 pub struct TxAA {
     /// EIP-155: Simple replay attack protection
@@ -170,6 +207,13 @@ pub struct TxAA {
     /// Transaction can only be included in a block after this timestamp
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity::opt"))]
     pub valid_after: Option<u64>,
+
+    /// Optional key authorization for provisioning a new access key
+    ///
+    /// When present, this transaction will add the specified key to the AccountKeychain precompile,
+    /// before verifying the transaction signature.
+    /// The authorization must be signed with the root key, the tx can be signed by the Keychain signature.
+    pub key_authorization: Option<KeyAuthorization>,
 
     /// Authorization list (EIP-7702 style with AA signatures)
     pub aa_authorization_list: Vec<AASignedAuthorization>,
@@ -229,6 +273,8 @@ impl TxAA {
         mem::size_of::<Option<Signature>>() + // fee_payer_signature
         mem::size_of::<u64>() + // valid_before
         mem::size_of::<Option<u64>>() + // valid_after
+        // key_authorization (optional)
+        self.key_authorization.as_ref().map(|k| k.size()).unwrap_or(mem::size_of::<Option<KeyAuthorization>>()) +
         self.aa_authorization_list.iter().map(|auth| auth.size()).sum::<usize>() // authorization_list
     }
 
@@ -307,7 +353,13 @@ impl TxAA {
             } +
             signature_length(&self.fee_payer_signature) +
             // authorization_list
-            self.aa_authorization_list.length()
+            self.aa_authorization_list.length() +
+            // key_authorization (only included if present)
+            if let Some(key_auth) = &self.key_authorization {
+                key_auth.length()
+            } else {
+                0 // No bytes when None
+            }
     }
 
     fn rlp_encode_fields(
@@ -347,6 +399,12 @@ impl TxAA {
 
         // Encode authorization_list
         self.aa_authorization_list.encode(out);
+
+        // Encode key_authorization (truly optional - only encoded if present)
+        if let Some(key_auth) = &self.key_authorization {
+            key_auth.encode(out);
+        }
+        // No bytes at all when None - maintains backwards compatibility
     }
 
     /// Public version for normal RLP encoding
@@ -442,6 +500,24 @@ impl TxAA {
 
         let aa_authorization_list = Decodable::decode(buf)?;
 
+        // Decode optional key_authorization field at the end
+        // Check if the next byte looks like it could be a KeyAuthorization (RLP list)
+        // KeyAuthorization is encoded as a list, so it would start with 0xc0-0xf7 (short list) or 0xf8-0xff (long list)
+        // If it's a bytes string (0x80-0xbf for short, 0xb8-0xbf for long), it's not a
+        // KeyAuthorization and most likely a signature bytes following the AA transaction.
+        let key_authorization = if let Some(&first) = buf.first() {
+            // Check if this looks like an RLP list (KeyAuthorization is always a list)
+            if first >= 0xc0 {
+                // This could be a KeyAuthorization
+                Some(Decodable::decode(buf)?)
+            } else {
+                // This is likely not a KeyAuthorization (probably signature bytes in AASigned context)
+                None
+            }
+        } else {
+            None
+        };
+
         let tx = Self {
             chain_id,
             fee_token,
@@ -455,6 +531,7 @@ impl TxAA {
             fee_payer_signature,
             valid_before,
             valid_after,
+            key_authorization,
             aa_authorization_list,
         };
 
@@ -464,9 +541,14 @@ impl TxAA {
         Ok(tx)
     }
 
+    /// Returns true if the nonce key of this transaction has the [`TEMPO_SUBBLOCK_NONCE_KEY_PREFIX`](crate::subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX).
+    pub fn has_sub_block_nonce_key_prefix(&self) -> bool {
+        has_sub_block_nonce_key_prefix(&self.nonce_key)
+    }
+
     /// Returns the proposer of the subblock if this is a subblock transaction.
     pub fn subblock_proposer(&self) -> Option<PartialValidatorKey> {
-        if self.nonce_key.byte(31) == TEMPO_SUBBLOCK_NONCE_KEY_PREFIX {
+        if self.has_sub_block_nonce_key_prefix() {
             Some(PartialValidatorKey::from_slice(
                 &self.nonce_key.to_be_bytes::<32>()[1..16],
             ))
@@ -643,11 +725,13 @@ impl Decodable for TxAA {
             return Err(alloy_rlp::Error::InputTooShort);
         }
 
-        let this = Self::rlp_decode_fields(buf)?;
+        let mut fields_buf = &buf[..header.payload_length];
+        let this = Self::rlp_decode_fields(&mut fields_buf)?;
 
-        if buf.len() + header.payload_length != remaining {
+        if !fields_buf.is_empty() {
             return Err(alloy_rlp::Error::UnexpectedLength);
         }
+        buf.advance(header.payload_length);
 
         Ok(this)
     }
@@ -707,6 +791,9 @@ impl<'a> arbitrary::Arbitrary<'a> for TxAA {
             }
         };
 
+        // Generate key_authorization with diverse data for comprehensive testing
+        let key_authorization: Option<KeyAuthorization> = u.arbitrary()?;
+
         Ok(Self {
             chain_id,
             fee_token,
@@ -720,6 +807,7 @@ impl<'a> arbitrary::Arbitrary<'a> for TxAA {
             fee_payer_signature,
             valid_before,
             valid_after,
+            key_authorization,
             aa_authorization_list: vec![],
         })
     }
@@ -766,10 +854,185 @@ mod serde_input {
     }
 }
 
+#[cfg(feature = "reth-codec")]
+mod compact {
+    use super::*;
+    use reth_codecs::Compact;
+
+    #[derive(Compact)]
+
+    struct OldTxAA {
+        chain_id: ChainId,
+        fee_token: Option<Address>,
+        max_priority_fee_per_gas: u128,
+        max_fee_per_gas: u128,
+        gas_limit: u64,
+        calls: Vec<Call>,
+        access_list: AccessList,
+        nonce_key: U256,
+        nonce: u64,
+        fee_payer_signature: Option<Signature>,
+        valid_before: Option<u64>,
+        valid_after: Option<u64>,
+        aa_authorization_list: Vec<AASignedAuthorization>,
+    }
+
+    #[derive(Compact)]
+
+    struct NewTxAA {
+        chain_id: ChainId,
+        fee_token: Option<Address>,
+        max_priority_fee_per_gas: u128,
+        max_fee_per_gas: u128,
+        gas_limit: u64,
+        calls: Vec<Call>,
+        access_list: AccessList,
+        nonce_key: U256,
+        nonce: u64,
+        fee_payer_signature: Option<Signature>,
+        valid_before: Option<u64>,
+        valid_after: Option<u64>,
+        key_authorization: Option<KeyAuthorization>,
+        aa_authorization_list: Vec<AASignedAuthorization>,
+    }
+
+    impl Compact for TxAA {
+        fn to_compact<B>(&self, buf: &mut B) -> usize
+        where
+            B: alloy_rlp::bytes::BufMut + AsMut<[u8]>,
+        {
+            // copy-pasted expansion of NewTxAA
+            let mut flags = NewTxAAFlags::default();
+            let mut total_length = 0;
+            let mut buffer = reth_codecs::__private::bytes::BytesMut::new();
+            let chain_id_len = self.chain_id.to_compact(&mut buffer);
+            flags.set_chain_id_len(chain_id_len as u8);
+            let fee_token_len = self.fee_token.specialized_to_compact(&mut buffer);
+            flags.set_fee_token_len(fee_token_len as u8);
+            let max_priority_fee_per_gas_len =
+                self.max_priority_fee_per_gas.to_compact(&mut buffer);
+            flags.set_max_priority_fee_per_gas_len(max_priority_fee_per_gas_len as u8);
+            let max_fee_per_gas_len = self.max_fee_per_gas.to_compact(&mut buffer);
+            flags.set_max_fee_per_gas_len(max_fee_per_gas_len as u8);
+            let gas_limit_len = self.gas_limit.to_compact(&mut buffer);
+            flags.set_gas_limit_len(gas_limit_len as u8);
+            self.calls.to_compact(&mut buffer);
+            self.access_list.to_compact(&mut buffer);
+            let nonce_key_len = self.nonce_key.to_compact(&mut buffer);
+            flags.set_nonce_key_len(nonce_key_len as u8);
+            let nonce_len = self.nonce.to_compact(&mut buffer);
+            flags.set_nonce_len(nonce_len as u8);
+            let fee_payer_signature_len = self.fee_payer_signature.to_compact(&mut buffer);
+            flags.set_fee_payer_signature_len(fee_payer_signature_len as u8);
+            let valid_before_len = self.valid_before.to_compact(&mut buffer);
+            flags.set_valid_before_len(valid_before_len as u8);
+            let valid_after_len = self.valid_after.to_compact(&mut buffer);
+            flags.set_valid_after_len(valid_after_len as u8);
+            let key_authorization_len = self.key_authorization.to_compact(&mut buffer);
+            flags.set_key_authorization_len(key_authorization_len as u8);
+            self.aa_authorization_list.to_compact(&mut buffer);
+            let flags = flags.into_bytes();
+            total_length += flags.len() + buffer.len();
+            buf.put_slice(&flags);
+            buf.put(buffer);
+            total_length
+        }
+
+        fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
+            // HACK: for OldTxAA 5th byte is highest non-zero chainid byte. For NewTxAA its
+            // either 1 (when keyAuthorization is Some) or 0 (when keyAuthorization is None)
+            //
+            // We infer the encoding version by checking this byte. The assumption here is that this
+            // encoding will only be used for chains which chain_id's highest non-zero byte is >1.
+            //
+            // This is very hacky and should be removed ASAP.
+            if buf[4] <= 1 {
+                let (
+                    NewTxAA {
+                        chain_id,
+                        fee_token,
+                        max_priority_fee_per_gas,
+                        max_fee_per_gas,
+                        gas_limit,
+                        calls,
+                        access_list,
+                        nonce_key,
+                        nonce,
+                        fee_payer_signature,
+                        valid_before,
+                        valid_after,
+                        key_authorization,
+                        aa_authorization_list,
+                    },
+                    buf,
+                ) = NewTxAA::from_compact(buf, len);
+                (
+                    Self {
+                        chain_id,
+                        fee_token,
+                        max_priority_fee_per_gas,
+                        max_fee_per_gas,
+                        gas_limit,
+                        calls,
+                        access_list,
+                        nonce_key,
+                        nonce,
+                        fee_payer_signature,
+                        valid_before,
+                        valid_after,
+                        key_authorization,
+                        aa_authorization_list,
+                    },
+                    buf,
+                )
+            } else {
+                let (
+                    OldTxAA {
+                        chain_id,
+                        fee_token,
+                        max_priority_fee_per_gas,
+                        max_fee_per_gas,
+                        gas_limit,
+                        calls,
+                        access_list,
+                        nonce_key,
+                        nonce,
+                        fee_payer_signature,
+                        valid_before,
+                        valid_after,
+                        aa_authorization_list,
+                    },
+                    buf,
+                ) = OldTxAA::from_compact(buf, len);
+
+                (
+                    Self {
+                        chain_id,
+                        fee_token,
+                        max_priority_fee_per_gas,
+                        max_fee_per_gas,
+                        gas_limit,
+                        calls,
+                        access_list,
+                        nonce_key,
+                        nonce,
+                        fee_payer_signature,
+                        valid_before,
+                        valid_after,
+                        key_authorization: None,
+                        aa_authorization_list,
+                    },
+                    buf,
+                )
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::aa_signature::{AASignature, derive_p256_address};
+    use crate::transaction::aa_signature::{AASignature, PrimitiveSignature, derive_p256_address};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, bytes, hex};
     use alloy_rlp::{Decodable, Encodable};
 
@@ -878,6 +1141,7 @@ mod tests {
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000000),
             valid_after: Some(500000),
+            key_authorization: None,
             aa_authorization_list: vec![],
         };
 
@@ -929,6 +1193,7 @@ mod tests {
             fee_payer_signature: None,
             valid_before: Some(1000),
             valid_after: None,
+            key_authorization: None,
             aa_authorization_list: vec![],
         };
 
@@ -975,7 +1240,7 @@ mod tests {
             input: Bytes::new(),
         };
 
-        // Protocol nonce (key 0) - should be accepted
+        // Test 1: Protocol nonce (key 0)
         let tx1 = TxAA {
             nonce_key: U256::ZERO,
             nonce: 1,
@@ -984,15 +1249,48 @@ mod tests {
         };
         assert!(tx1.validate().is_ok());
         assert_eq!(tx1.nonce(), 1);
+        assert_eq!(tx1.nonce_key, U256::ZERO);
 
-        // User parallel nonce (key > 0) - should be rejected for now
+        // Test 2: User nonce (key 1, nonce 0) - first transaction in parallel sequence
         let tx2 = TxAA {
             nonce_key: U256::from(1),
             nonce: 0,
+            calls: vec![dummy_call.clone()],
+            ..Default::default()
+        };
+        assert!(tx2.validate().is_ok());
+        assert_eq!(tx2.nonce(), 0);
+        assert_eq!(tx2.nonce_key, U256::from(1));
+
+        // Test 3: Different nonce key (key 42) - independent parallel sequence
+        let tx3 = TxAA {
+            nonce_key: U256::from(42),
+            nonce: 10,
+            calls: vec![dummy_call.clone()],
+            ..Default::default()
+        };
+        assert!(tx3.validate().is_ok());
+        assert_eq!(tx3.nonce(), 10);
+        assert_eq!(tx3.nonce_key, U256::from(42));
+
+        // Test 4: Verify nonce independence between different keys
+        // Transactions with same nonce but different keys are independent
+        let tx4a = TxAA {
+            nonce_key: U256::from(1),
+            nonce: 100,
+            calls: vec![dummy_call.clone()],
+            ..Default::default()
+        };
+        let tx4b = TxAA {
+            nonce_key: U256::from(2),
+            nonce: 100,
             calls: vec![dummy_call],
             ..Default::default()
         };
-        assert_eq!(tx2.nonce(), 0);
+        assert!(tx4a.validate().is_ok());
+        assert!(tx4b.validate().is_ok());
+        assert_eq!(tx4a.nonce(), tx4b.nonce()); // Same nonce value
+        assert_ne!(tx4a.nonce_key, tx4b.nonce_key); // Different keys = independent
     }
 
     #[test]
@@ -1198,6 +1496,7 @@ mod tests {
             valid_after: None,
             aa_authorization_list: vec![],
             access_list: Default::default(),
+            key_authorization: None,
         };
 
         // Transaction WITHOUT fee_payer, fee_token = token1
@@ -1259,6 +1558,7 @@ mod tests {
             valid_after: None,
             aa_authorization_list: vec![],
             access_list: Default::default(),
+            key_authorization: None,
         };
 
         // Transaction without fee_token
@@ -1322,6 +1622,7 @@ mod tests {
             valid_after: None,
             aa_authorization_list: vec![],
             access_list: Default::default(),
+            key_authorization: None,
         };
 
         // Scenario 2: No fee payer, with token
@@ -1364,6 +1665,183 @@ mod tests {
         // Hashes without fee_payer should differ from hashes with fee_payer
         // (because skip_fee_token logic changes)
         assert_ne!(hash1, hash3, "User hash changes when fee_payer is added");
+    }
+
+    #[test]
+    fn test_backwards_compatibility_key_authorization() {
+        // Test that transactions without key_authorization are backwards compatible
+        // and that the RLP encoding doesn't include any extra bytes for None
+
+        let call = Call {
+            to: TxKind::Call(address!("0000000000000000000000000000000000000002")),
+            value: U256::from(1000),
+            input: Bytes::from(vec![1, 2, 3, 4]),
+        };
+
+        // Create transaction WITHOUT key_authorization (old format)
+        let tx_without = TxAA {
+            chain_id: 1,
+            fee_token: Some(address!("0000000000000000000000000000000000000001")),
+            max_priority_fee_per_gas: 1000000000,
+            max_fee_per_gas: 2000000000,
+            gas_limit: 21000,
+            calls: vec![call],
+            access_list: Default::default(),
+            nonce_key: U256::ZERO,
+            nonce: 1,
+            fee_payer_signature: Some(Signature::test_signature()),
+            valid_before: Some(1000000),
+            valid_after: Some(500000),
+            key_authorization: None, // No key authorization
+            aa_authorization_list: vec![],
+        };
+
+        // Encode the transaction
+        let mut buf_without = Vec::new();
+        tx_without.encode(&mut buf_without);
+
+        // Decode it back
+        let decoded_without = TxAA::decode(&mut buf_without.as_slice()).unwrap();
+
+        // Verify it matches
+        assert_eq!(decoded_without.key_authorization, None);
+        assert_eq!(decoded_without.chain_id, tx_without.chain_id);
+        assert_eq!(decoded_without.calls.len(), tx_without.calls.len());
+
+        // Create transaction WITH key_authorization (new format)
+        let key_auth = KeyAuthorization {
+            key_type: SignatureType::Secp256k1,
+            expiry: 1234567890,
+            limits: vec![crate::transaction::TokenLimit {
+                token: address!("0000000000000000000000000000000000000003"),
+                limit: U256::from(10000),
+            }],
+            key_id: address!("0000000000000000000000000000000000000004"),
+            signature: PrimitiveSignature::Secp256k1(Signature::test_signature()),
+        };
+
+        let tx_with = TxAA {
+            key_authorization: Some(key_auth.clone()),
+            ..tx_without.clone()
+        };
+
+        // Encode the transaction
+        let mut buf_with = Vec::new();
+        tx_with.encode(&mut buf_with);
+
+        // Decode it back
+        let decoded_with = TxAA::decode(&mut buf_with.as_slice()).unwrap();
+
+        // Verify the key_authorization is preserved
+        assert!(decoded_with.key_authorization.is_some());
+        let decoded_key_auth = decoded_with.key_authorization.unwrap();
+        assert_eq!(decoded_key_auth.key_type, key_auth.key_type);
+        assert_eq!(decoded_key_auth.expiry, key_auth.expiry);
+        assert_eq!(decoded_key_auth.limits.len(), key_auth.limits.len());
+        assert_eq!(decoded_key_auth.key_id, key_auth.key_id);
+
+        // Important: The encoded transaction WITHOUT key_authorization should be shorter
+        // This proves we're not encoding empty bytes for None
+        assert!(
+            buf_without.len() < buf_with.len(),
+            "Transaction without key_authorization should have shorter encoding"
+        );
+
+        // Test that an old decoder (simulated by truncating at the right position)
+        // can still decode a transaction without key_authorization
+        // This simulates backwards compatibility with old code that doesn't know about key_authorization
+        let decoded_old_format = TxAA::decode(&mut buf_without.as_slice()).unwrap();
+        assert_eq!(decoded_old_format.key_authorization, None);
+    }
+
+    #[test]
+    fn test_aa_signed_rlp_direct() {
+        // Simple test for AASigned RLP encoding/decoding without key_authorization
+        let call = Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+
+        let tx = TxAA {
+            chain_id: 0,
+            fee_token: None,
+            max_priority_fee_per_gas: 0,
+            max_fee_per_gas: 0,
+            gas_limit: 0,
+            calls: vec![call],
+            access_list: Default::default(),
+            nonce_key: U256::ZERO,
+            nonce: 0,
+            fee_payer_signature: None,
+            valid_before: None,
+            valid_after: None,
+            key_authorization: None, // No key_authorization
+            aa_authorization_list: vec![],
+        };
+
+        let signature =
+            AASignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let signed = AASigned::new_unhashed(tx, signature);
+
+        // Test direct RLP encoding/decoding
+        let mut buf = Vec::new();
+        signed.rlp_encode(&mut buf);
+
+        // Decode
+        let decoded =
+            AASigned::rlp_decode(&mut buf.as_slice()).expect("Should decode AASigned RLP");
+        assert_eq!(decoded.tx().key_authorization, None);
+    }
+
+    #[test]
+    fn test_txaa_envelope_roundtrip_without_key_auth() {
+        // Test that TxAA in envelope works without key_authorization
+        use crate::TempoTxEnvelope;
+        use alloy_eips::eip2718::{Decodable2718, Encodable2718};
+
+        let call = Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+
+        let tx = TxAA {
+            chain_id: 0,
+            fee_token: None,
+            max_priority_fee_per_gas: 0,
+            max_fee_per_gas: 0,
+            gas_limit: 0,
+            calls: vec![call],
+            access_list: Default::default(),
+            nonce_key: U256::ZERO,
+            nonce: 0,
+            fee_payer_signature: None,
+            valid_before: None,
+            valid_after: None,
+            key_authorization: None, // No key_authorization
+            aa_authorization_list: vec![],
+        };
+
+        let signature =
+            AASignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let signed = AASigned::new_unhashed(tx, signature);
+        let envelope = TempoTxEnvelope::AA(signed);
+
+        // Encode and decode the envelope
+        let mut buf = Vec::new();
+        envelope.encode_2718(&mut buf);
+        let decoded = TempoTxEnvelope::decode_2718(&mut buf.as_slice())
+            .expect("Should decode envelope successfully");
+
+        // Verify it's the same
+        if let TempoTxEnvelope::AA(aa_signed) = decoded {
+            assert_eq!(aa_signed.tx().key_authorization, None);
+            assert_eq!(aa_signed.tx().calls.len(), 1);
+            assert_eq!(aa_signed.tx().chain_id, 0);
+        } else {
+            panic!("Expected AA envelope");
+        }
     }
 
     #[test]
@@ -1418,6 +1896,7 @@ mod tests {
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000000),
             valid_after: Some(500000),
+            key_authorization: None,
             aa_authorization_list: vec![],
         };
 

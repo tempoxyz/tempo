@@ -22,12 +22,12 @@ use std::sync::OnceLock;
 /// A transaction with an AA signature and hash seal.
 ///
 /// This wraps a TxAA transaction with its multi-signature-type signature
-/// (secp256k1, P256, or WebAuthn) and provides a cached transaction hash.
+/// (secp256k1, P256, Webauthn, Keychain) and provides a cached transaction hash.
 #[derive(Clone, Debug)]
 pub struct AASigned {
     /// The inner AA transaction
     tx: TxAA,
-    /// The signature (can be secp256k1, P256, or WebAuthn)
+    /// The signature (can be secp256k1, P256, Webauthn, Keychain)
     signature: AASignature,
     /// Cached transaction hash
     #[doc(alias = "tx_hash", alias = "transaction_hash")]
@@ -109,7 +109,7 @@ impl AASigned {
     }
 
     /// Encode the transaction fields and signature as RLP list (without type byte)
-    fn rlp_encode(&self, out: &mut dyn BufMut) {
+    pub fn rlp_encode(&self, out: &mut dyn BufMut) {
         // RLP header
         self.rlp_header().encode(out);
 
@@ -145,7 +145,7 @@ impl AASigned {
     }
 
     /// Decode the RLP fields (without type byte).
-    fn rlp_decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+    pub fn rlp_decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let header = alloy_rlp::Header::decode(buf)?;
         if !header.list {
             return Err(alloy_rlp::Error::UnexpectedString);
@@ -156,13 +156,15 @@ impl AASigned {
             return Err(alloy_rlp::Error::InputTooShort);
         }
 
-        // Decode transaction fields
+        // Decode transaction fields directly from the buffer
         let tx = TxAA::rlp_decode_fields(buf)?;
 
         // Decode signature bytes
         let sig_bytes: Bytes = Decodable::decode(buf)?;
 
-        if buf.len() + header.payload_length != remaining {
+        // Check that we consumed the expected amount
+        let consumed = remaining - buf.len();
+        if consumed != header.payload_length {
             return Err(alloy_rlp::Error::UnexpectedLength);
         }
 
@@ -410,7 +412,7 @@ mod serde_impl {
     #[cfg(test)]
     mod tests {
         use crate::transaction::{
-            aa_signature::AASignature,
+            aa_signature::{AASignature, PrimitiveSignature},
             account_abstraction::{Call, TxAA},
         };
         use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
@@ -435,7 +437,8 @@ mod serde_impl {
             };
 
             // Create a secp256k1 signature
-            let signature = AASignature::Secp256k1(Signature::test_signature());
+            let signature =
+                AASignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
 
             let aa_signed = super::super::AASigned::new_unhashed(tx, signature);
 

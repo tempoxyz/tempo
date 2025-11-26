@@ -6,9 +6,13 @@ use revm::{
     Database, context::JournalTr, interpreter::instructions::utility::IntoAddress,
     state::AccountInfo,
 };
-use tempo_contracts::precompiles::IFeeManager;
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_contracts::precompiles::{
+    DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, IFeeManager,
+    IStablecoinExchange, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
+};
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS,
     storage::slots::mapping_slot,
     tip_fee_manager,
     tip20::{self, is_tip20},
@@ -90,14 +94,16 @@ pub trait TempoStateAccess<T> {
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error>;
 
     /// Resolves user-level of transaction-level fee token preference.
-    fn user_or_tx_fee_token(
+    fn get_fee_token(
         &mut self,
         tx: impl TempoTx,
+        validator: Address,
         fee_payer: Address,
-    ) -> Result<Option<Address>, Self::Error> {
+        spec: TempoHardfork,
+    ) -> Result<Address, Self::Error> {
         // If there is a fee token explicitly set on the tx type, use that.
         if let Some(fee_token) = tx.fee_token() {
-            return Ok(Some(fee_token));
+            return Ok(fee_token);
         }
 
         // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
@@ -109,7 +115,7 @@ pub trait TempoStateAccess<T> {
             && kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
             && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
         {
-            return Ok(Some(call.token));
+            return Ok(call.token);
         }
 
         let user_slot = mapping_slot(fee_payer, tip_fee_manager::slots::USER_TOKENS);
@@ -120,50 +126,71 @@ pub trait TempoStateAccess<T> {
             .into_address();
 
         if !stored_user_token.is_zero() {
-            return Ok(Some(stored_user_token));
+            return Ok(stored_user_token);
         }
 
         // If tx.to() is a TIP-20 token, use that token as the fee token
         if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied())
             && tx.calls().all(|(kind, _)| kind.to() == Some(&to))
-            && self.is_valid_fee_token(to)?
+            && self.is_valid_fee_token(to, spec)?
         {
-            return Ok(Some(to));
+            return Ok(to);
         }
 
-        Ok(None)
-    }
-
-    /// Resolves fee token for the given transaction. Same as `user_or_tx_fee_token`, but also
-    /// falls back to the validator fee token preference.
-    fn get_fee_token(
-        &mut self,
-        tx: impl TempoTx,
-        validator: Address,
-        fee_payer: Address,
-    ) -> Result<Address, Self::Error> {
-        // First check transaction or user preference
-        if let Some(fee_token) = self.user_or_tx_fee_token(tx, fee_payer)? {
-            return Ok(fee_token);
+        // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin Exchange,
+        // use the input token as the fee token (the token that will be pulled from the user).
+        // For AA transactions, this only applies if there's exactly one call.
+        if spec.is_allegretto() {
+            let mut calls = tx.calls();
+            if let Some((kind, input)) = calls.next()
+                && kind.to() == Some(&STABLECOIN_EXCHANGE_ADDRESS)
+                && (!tx.is_aa() || calls.next().is_none())
+            {
+                if let Ok(call) = IStablecoinExchange::swapExactAmountInCall::abi_decode(input)
+                    && self.is_valid_fee_token(call.tokenIn, spec)?
+                {
+                    return Ok(call.tokenIn);
+                } else if let Ok(call) =
+                    IStablecoinExchange::swapExactAmountOutCall::abi_decode(input)
+                    && self.is_valid_fee_token(call.tokenIn, spec)?
+                {
+                    return Ok(call.tokenIn);
+                }
+            }
         }
 
-        // Otherwise fall back to the validator fee token preference
-        let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
-        let validator_fee_token = self
-            .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
-            .into_address();
+        // Post-allegretto, if no fee token is found, default to the first deployed TIP20
+        if spec.is_allegretto() {
+            Ok(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO)
+        } else {
+            // Pre-allegretto fall back to the validator fee token preference or the default to the
+            // first TIP20 deployed after PathUSD
+            let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
+            let validator_fee_token = self
+                .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
+                .into_address();
 
-        if !validator_fee_token.is_zero() {
-            return Ok(validator_fee_token);
+            if validator_fee_token.is_zero() {
+                Ok(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)
+            } else {
+                Ok(validator_fee_token)
+            }
         }
-
-        Ok(DEFAULT_FEE_TOKEN)
     }
 
     /// Checks if the given token can be used as a fee token.
-    fn is_valid_fee_token(&mut self, fee_token: Address) -> Result<bool, Self::Error> {
+    fn is_valid_fee_token(
+        &mut self,
+        fee_token: Address,
+        spec: TempoHardfork,
+    ) -> Result<bool, Self::Error> {
         // Ensure it's a TIP20
-        if !is_tip20(fee_token) || fee_token == LINKING_USD_ADDRESS {
+        if !is_tip20(fee_token) {
+            return Ok(false);
+        }
+
+        // Pre-Allegretto: PathUSD cannot be used as fee token
+        if !spec.is_allegretto() && fee_token == PATH_USD_ADDRESS {
             return Ok(false);
         }
 
@@ -220,5 +247,157 @@ impl<T: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for T {
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
         self.storage(address, key.into())
             .map(Option::unwrap_or_default)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use revm::{context::TxEnv, database::EmptyDB};
+
+    #[test]
+    fn test_get_fee_token_fee_token_set() -> eyre::Result<()> {
+        let caller = Address::random();
+        let fee_token = Address::random();
+
+        let tx_env = TxEnv {
+            data: Bytes::new(),
+            caller,
+            ..Default::default()
+        };
+        let tx = TempoTxEnv {
+            inner: tx_env,
+            fee_token: Some(fee_token),
+            ..Default::default()
+        };
+
+        let mut db = EmptyDB::default();
+        let token = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::default())?;
+        assert_eq!(token, fee_token);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_fee_token_fee_manager() -> eyre::Result<()> {
+        let caller = Address::random();
+        let token = Address::random();
+
+        let call = IFeeManager::setUserTokenCall { token };
+        let tx_env = TxEnv {
+            data: call.abi_encode().into(),
+            kind: TxKind::Call(TIP_FEE_MANAGER_ADDRESS),
+            caller,
+            ..Default::default()
+        };
+        let tx = TempoTxEnv {
+            inner: tx_env,
+            ..Default::default()
+        };
+
+        let mut db = EmptyDB::default();
+        let result_token =
+            db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
+        assert_eq!(result_token, token);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_fee_token_tip20() -> eyre::Result<()> {
+        let caller = Address::random();
+        let tip20_token = Address::random();
+
+        let tx_env = TxEnv {
+            data: Bytes::from_static(b"transfer_data"),
+            kind: TxKind::Call(tip20_token),
+            caller,
+            ..Default::default()
+        };
+        let tx = TempoTxEnv {
+            inner: tx_env,
+            ..Default::default()
+        };
+
+        let mut db = EmptyDB::default();
+        let result_token =
+            db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
+        assert_eq!(result_token, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_fee_token_fallback() -> eyre::Result<()> {
+        let caller = Address::random();
+        let tx_env = TxEnv {
+            caller,
+            ..Default::default()
+        };
+        let tx = TempoTxEnv {
+            inner: tx_env,
+            ..Default::default()
+        };
+
+        let mut db = EmptyDB::default();
+        let result_token =
+            db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
+        // Should fallback to DEFAULT_FEE_TOKEN when no preferences are found
+        assert_eq!(result_token, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_fee_token_stablecoin_exchange() -> eyre::Result<()> {
+        let caller = Address::random();
+        // Use PathUSD as token_in since it's a known valid USD fee token
+        let token_in = DEFAULT_FEE_TOKEN_POST_ALLEGRETTO;
+        let token_out = DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO;
+
+        // Test swapExactAmountIn
+        let call = IStablecoinExchange::swapExactAmountInCall {
+            tokenIn: token_in,
+            tokenOut: token_out,
+            amountIn: 1000,
+            minAmountOut: 900,
+        };
+
+        let tx_env = TxEnv {
+            data: call.abi_encode().into(),
+            kind: TxKind::Call(STABLECOIN_EXCHANGE_ADDRESS),
+            caller,
+            ..Default::default()
+        };
+        let tx = TempoTxEnv {
+            inner: tx_env,
+            ..Default::default()
+        };
+
+        let mut db = EmptyDB::default();
+        // Stablecoin exchange fee token inference requires Allegretto hardfork
+        let token = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
+        assert_eq!(token, token_in);
+
+        // Test swapExactAmountOut
+        let call = IStablecoinExchange::swapExactAmountOutCall {
+            tokenIn: token_in,
+            tokenOut: token_out,
+            amountOut: 900,
+            maxAmountIn: 1000,
+        };
+
+        let tx_env = TxEnv {
+            data: call.abi_encode().into(),
+            kind: TxKind::Call(STABLECOIN_EXCHANGE_ADDRESS),
+            caller,
+            ..Default::default()
+        };
+
+        let tx = TempoTxEnv {
+            inner: tx_env,
+            ..Default::default()
+        };
+
+        let token = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
+        assert_eq!(token, token_in);
+
+        Ok(())
     }
 }
