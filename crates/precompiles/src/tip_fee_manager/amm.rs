@@ -18,6 +18,7 @@ pub const SQRT_SCALE: U256 = uint!(100000_U256);
 pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
 
 /// Compute amount out for a fee swap
+#[inline]
 pub fn compute_amount_out(amount_in: U256) -> Result<U256> {
     amount_in
         .checked_mul(M)
