@@ -34,6 +34,20 @@ sol! {
         // Fee functions
         function getFeeTokenBalance(address sender, address validator) external view returns (address, uint256);
         function executeBlock() external;
+        function collectFeePreTx(
+            address user,
+            address txToAddress,
+            uint256 maxAmount,
+            address feeRecipient
+        ) external returns (address userToken);
+        function collectFeePostTx(
+            address user,
+            uint256 maxAmount,
+            uint256 actualUsed,
+            address userToken,
+            address validatorToken,
+            address feeRecipient
+        ) external;
 
         // Events
         event UserTokenSet(address indexed user, address indexed token);
@@ -47,6 +61,7 @@ sol! {
         error InsufficientFeeTokenBalance();
         error InternalError();
         error CannotChangeWithinBlock();
+        error CannotChangeWithPendingFees();
         error TokenPolicyForbids();
     }
 
@@ -73,6 +88,9 @@ sol! {
 
 
         // Constants
+        function M() external view returns (uint256);
+        function N() external view returns (uint256);
+        function SCALE() external view returns (uint256);
         function MIN_LIQUIDITY() external view returns (uint256);
 
         // Pool Management
@@ -162,6 +180,11 @@ impl FeeManagerError {
     /// Creates an error for cannot change within block.
     pub const fn cannot_change_within_block() -> Self {
         Self::CannotChangeWithinBlock(IFeeManager::CannotChangeWithinBlock {})
+    }
+
+    /// Creates an error for cannot change with pending fees.
+    pub const fn cannot_change_with_pending_fees() -> Self {
+        Self::CannotChangeWithPendingFees(IFeeManager::CannotChangeWithPendingFees {})
     }
 
     /// Creates an error for token policy forbids.

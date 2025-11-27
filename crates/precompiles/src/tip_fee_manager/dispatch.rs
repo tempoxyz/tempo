@@ -3,7 +3,10 @@ use crate::{
     error::TempoPrecompileError,
     fill_precompile_output, input_cost, mutate, mutate_void,
     storage::PrecompileStorageProvider,
-    tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager, amm::MIN_LIQUIDITY},
+    tip_fee_manager::{
+        IFeeManager, ITIPFeeAMM, TipFeeManager,
+        amm::{M, MIN_LIQUIDITY, N, SCALE},
+    },
     unknown_selector, view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
@@ -71,6 +74,11 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
                     self.sload_liquidity_balances(call.poolId, call.user)
                 })
             }
+            ITIPFeeAMM::MCall::SELECTOR => view::<ITIPFeeAMM::MCall>(calldata, |_call| Ok(M)),
+            ITIPFeeAMM::NCall::SELECTOR => view::<ITIPFeeAMM::NCall>(calldata, |_call| Ok(N)),
+            ITIPFeeAMM::SCALECall::SELECTOR => {
+                view::<ITIPFeeAMM::SCALECall>(calldata, |_call| Ok(SCALE))
+            }
             ITIPFeeAMM::MIN_LIQUIDITYCall::SELECTOR => {
                 view::<ITIPFeeAMM::MIN_LIQUIDITYCall>(calldata, |_call| Ok(MIN_LIQUIDITY))
             }
@@ -91,6 +99,41 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
             IFeeManager::executeBlockCall::SELECTOR => {
                 mutate_void::<IFeeManager::executeBlockCall>(calldata, msg_sender, |s, _call| {
                     self.execute_block(s, self.storage.beneficiary())
+                })
+            }
+            // Protocol-only functions - these are called directly by the protocol,
+            // not through external transactions. Return error if called externally.
+            IFeeManager::collectFeePreTxCall::SELECTOR => {
+                mutate::<IFeeManager::collectFeePreTxCall>(calldata, msg_sender, |s, call| {
+                    if s != Address::ZERO {
+                        return Err(
+                            crate::tip_fee_manager::FeeManagerError::only_system_contract().into(),
+                        );
+                    }
+                    // Determine fee token from user preferences or default
+                    let user_token = self.sload_user_tokens(call.user)?;
+                    let fee_token = if user_token.is_zero() {
+                        self.default_fee_token()
+                    } else {
+                        user_token
+                    };
+                    self.collect_fee_pre_tx(call.user, fee_token, call.maxAmount, call.feeRecipient)
+                })
+            }
+            IFeeManager::collectFeePostTxCall::SELECTOR => {
+                mutate_void::<IFeeManager::collectFeePostTxCall>(calldata, msg_sender, |s, call| {
+                    if s != Address::ZERO {
+                        return Err(
+                            crate::tip_fee_manager::FeeManagerError::only_system_contract().into(),
+                        );
+                    }
+                    self.collect_fee_post_tx(
+                        call.user,
+                        call.actualUsed,
+                        call.maxAmount - call.actualUsed,
+                        call.userToken,
+                        call.feeRecipient,
+                    )
                 })
             }
             ITIPFeeAMM::mintCall::SELECTOR => {
