@@ -145,11 +145,19 @@ fn assert_static_transitions(how_many: u32, epoch_length: u64, transitions: u64)
             dealings_read_seen |= value > 0;
         }
 
+        // In single-validator scenarios, acks_received and acks_sent will always be 0
+        // because there are no other validators to exchange messages with.
+        // These metrics are only incremented when receiving/sending messages over p2p.
+        let acks_condition = if how_many == 1 {
+            true // Skip ack checks for single validator
+        } else {
+            acks_received_seen && acks_sent_seen
+        };
+
         epoch_reached
             && dkg_successful
             && shares_distributed_seen
-            && acks_received_seen
-            && acks_sent_seen
+            && acks_condition
             && dealings_read_seen
     });
 }
