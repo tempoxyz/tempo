@@ -5648,12 +5648,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "minicbor"
-version = "0.25.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0452a60c1863c1f50b5f77cd295e8d2786849f35883f0b9e18e7e6e1b5691b0"
-
-[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11681,7 +11675,6 @@ dependencies = [
  "arbitrary",
  "base64 0.22.1",
  "derive_more",
- "minicbor",
  "modular-bitfield",
  "p256",
  "proptest",

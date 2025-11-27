@@ -38,7 +38,6 @@ modular-bitfield = { version = "0.11.2", optional = true }
 p256 = { workspace = true, features = ["ecdsa"] }
 sha2.workspace = true
 base64.workspace = true
-minicbor = { version = "0.25", default-features = false }
 
 [dev-dependencies]
 arbitrary.workspace = true

@@ -711,8 +711,9 @@ fn verify_webauthn_data_internal(
         // If ED flag is not set, exactly 37 bytes (no extensions)
         MIN_AUTH_DATA_LEN
     } else {
-        // Otherwise, we need to parse CBOR data
-        parse_auth_data_length_with_ed(webauthn_data)?
+        // ED flag must NOT be set, as Tempo AA doesn't support extensions
+        // NOTE: If we ever want to support extensions, we will have to parse CBOR data
+        return Err("ED flag must not be set, as Tempo doesn't support extensions");
     };
 
     // Ensure that we have clientDataJSON after authenticatorData
@@ -754,27 +755,6 @@ fn verify_webauthn_data_internal(
     let message_hash = final_hasher.finalize();
 
     Ok(B256::from_slice(&message_hash))
-}
-
-/// Parse authenticatorData length when ED flag is set.
-/// ref: <https://www.w3.org/TR/webauthn-2/#sctn-authenticator-data>
-///
-/// When the ED (Extension Data) flag is set, authenticatorData contains:
-/// - 37 bytes base (rpIdHash + flags + signCount)
-/// - CBOR-encoded extensions (variable length)
-fn parse_auth_data_length_with_ed(webauthn_data: &[u8]) -> Result<usize, &'static str> {
-    // Extensions must have at least 1 byte of CBOR data
-    if webauthn_data.len() <= MIN_AUTH_DATA_LEN {
-        return Err("AuthenticatorData too short for ED flag");
-    }
-
-    // Extensions start right after the base authenticatorData (because AT flag is false)
-    let mut decoder = minicbor::Decoder::new(&webauthn_data[MIN_AUTH_DATA_LEN..]);
-    decoder
-        .skip()
-        .map_err(|_| "Invalid CBOR data in extensions")?;
-
-    Ok(MIN_AUTH_DATA_LEN + decoder.position())
 }
 
 #[cfg(test)]
@@ -1223,16 +1203,16 @@ mod tests {
         let err = verify_webauthn_data_internal(&data, &tx_hash).unwrap_err();
         assert!(err.contains("AT flag"), "Should reject AT flag");
 
-        // ED flag with valid CBOR extensions should work
+        // ED flag must be rejected, as extensions are not supported
         let data = build_webauthn_data(0x81, Some(&[0xa0]), &tx_hash); // UP + ED, empty map
+        let err = verify_webauthn_data_internal(&data, &tx_hash).unwrap_err();
+        assert!(err.contains("ED flag"), "Should reject ED flag");
+
+        // Valid with only UP flag set
+        let data = build_webauthn_data(0x01, None, &tx_hash); // UP only
         assert!(
             verify_webauthn_data_internal(&data, &tx_hash).is_ok(),
-            "ED flag with valid CBOR should work"
+            "Should accept valid webauthn data with only UP flag"
         );
-
-        // ED flag with invalid CBOR should be rejected
-        let data = build_webauthn_data(0x81, Some(&[0x1F]), &tx_hash); // UP + ED, invalid CBOR
-        let err = verify_webauthn_data_internal(&data, &tx_hash).unwrap_err();
-        assert!(err.contains("CBOR"), "Should reject invalid CBOR");
     }
 }
