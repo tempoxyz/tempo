@@ -845,7 +845,7 @@ where
             // Map fee collection errors to transaction validation errors since they
             // indicate the transaction cannot be included (e.g., insufficient liquidity
             // in FeeAMM pool for fee swaps)
-            return Err(match err {
+            Err(match err {
                 TempoPrecompileError::TIPFeeAMMError(TIPFeeAMMError::InsufficientLiquidity(_)) => {
                     FeePaymentError::InsufficientAmmLiquidity {
                         fee: gas_balance_spending,
@@ -866,10 +866,12 @@ where
                 TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
 
                 _ => EVMError::Transaction(FeePaymentError::Other(err.to_string()).into()),
-            });
-        }
+            })
+        } else {
+            journal.checkpoint_commit();
 
-        Ok(())
+            Ok(())
+        }
     }
 
     fn reimburse_caller(
