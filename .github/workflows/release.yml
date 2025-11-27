@@ -14,10 +14,11 @@ on:
         type: string
       profile:
         description: "Build profile"
-        default: "maxperf"
+        default: "profiling"
         type: choice
         options:
           - "release"
+          - "profiling"
           - "maxperf"
       dry_run:
         description: "Dry run (build binaries without creating release)"
