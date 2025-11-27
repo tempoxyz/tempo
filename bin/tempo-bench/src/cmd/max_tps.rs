@@ -20,10 +20,9 @@ use alloy_signer_local::{
     coins_bip39::{English, Mnemonic, MnemonicError},
 };
 use clap::Parser;
-use core_affinity::CoreId;
 use eyre::{Context, OptionExt, ensure};
 use futures::{StreamExt, TryStreamExt, future::BoxFuture, stream};
-use governor::{Quota, RateLimiter};
+use governor::{Quota, RateLimiter, state::StreamRateLimitExt};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator};
 use rand::{
     random, random_range,
@@ -40,7 +39,6 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicU64, AtomicUsize, Ordering},
-        mpsc,
     },
     thread,
     time::Duration,
@@ -57,7 +55,7 @@ use tempo_precompiles::{
     stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK},
     tip20::{ISSUER_ROLE, token_id_to_address},
 };
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 
 /// Run maximum TPS throughput benchmarking
 #[derive(Parser, Debug)]
@@ -73,10 +71,6 @@ pub struct MaxTpsArgs {
     /// Number of accounts for pre-generation
     #[arg(short, long, default_value_t = 100)]
     accounts: u64,
-
-    /// Number of workers to send transactions
-    #[arg(short, long, default_value_t = 10)]
-    workers: usize,
 
     /// Mnemonic for generating accounts
     #[arg(short, long, default_value = "random")]
@@ -103,10 +97,6 @@ pub struct MaxTpsArgs {
     /// Large amount of transactions in a block will result in system transaction OutOfGas error.
     #[arg(long, default_value_t = 10000)]
     max_concurrent_transactions: usize,
-
-    /// Disable binding worker threads to specific CPU cores, letting the OS scheduler handle placement.
-    #[arg(long)]
-    disable_thread_pinning: bool,
 
     /// File descriptor limit to set
     #[arg(long)]
@@ -246,15 +236,15 @@ impl MaxTpsArgs {
         // Spawn monitoring thread for TPS tracking
         let _monitor_handle = monitor_tps(tx_counter.clone(), total_txs);
 
-        // Spawn workers and send transactions
+        // Send transactions
         let mut pending_txs = send_transactions(
             transactions,
-            self.workers,
+            self.max_concurrent_requests,
             self.tps,
-            self.disable_thread_pinning,
             tx_counter,
+            sleep(Duration::from_secs(self.duration)),
         )
-        .context("Failed to send transactions")?;
+        .await;
 
         // Graceful period of 1 second for `monitor_tps` to print out last statement
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -317,87 +307,47 @@ impl MnemonicArg {
     }
 }
 
-fn send_transactions(
+/// Awaits pending transactions with up to `tps` per second and `max_concurrent_requests` simultaneous in-flight requests. Stops when `deadline` future resolves.
+async fn send_transactions(
     transactions: Vec<
         BoxFuture<'static, alloy::contract::Result<PendingTransactionBuilder<TempoNetwork>>>,
     >,
-    num_workers: usize,
+    max_concurrent_requests: usize,
     tps: u64,
-    disable_thread_pinning: bool,
     tx_counter: Arc<AtomicU64>,
-) -> eyre::Result<Vec<PendingTransactionBuilder<TempoNetwork>>> {
+    deadline: impl Future<Output = ()>,
+) -> Vec<PendingTransactionBuilder<TempoNetwork>> {
     info!(
         transactions = transactions.len(),
-        num_workers, tps, "Sending transactions"
+        max_concurrent_requests, tps, "Sending transactions"
     );
 
-    // Get available cores
-    let core_ids =
-        core_affinity::get_core_ids().ok_or_else(|| eyre::eyre!("Failed to get core IDs"))?;
-    info!(cores = core_ids.len(), "Detected effective cores");
-
-    let num_sender_threads = num_workers.min(core_ids.len());
-    let chunk_size = transactions.len().div_ceil(num_sender_threads);
-
     // Create a shared rate limiter for all threads
-    let rate_limiter = Arc::new(RateLimiter::direct(Quota::per_second(
-        NonZeroU32::new(tps as u32).unwrap(),
-    )));
+    let rate_limiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(tps as u32).unwrap()));
 
-    let (pending_txs_tx, pending_txs_rx) = mpsc::channel();
-    transactions
-        .into_iter()
-        .chunks(chunk_size)
-        .into_iter()
-        .enumerate()
-        .for_each(|(thread_id, transactions)| {
-            if !disable_thread_pinning {
-                let core_id = core_ids[thread_id % core_ids.len()];
-                pin_thread(core_id);
+    stream::iter(transactions)
+        .ratelimit_stream(&rate_limiter)
+        .map(|transaction| timeout(Duration::from_secs(1), transaction))
+        .buffer_unordered(max_concurrent_requests)
+        .filter_map(|result| async {
+            match result {
+                Ok(Ok(pending_tx)) => {
+                    tx_counter.fetch_add(1, Ordering::Relaxed);
+                    Some(pending_tx)
+                }
+                Ok(Err(err)) => {
+                    error!(?err, "Failed to send transaction");
+                    None
+                }
+                Err(_) => {
+                    error!("Transaction sending timed out");
+                    None
+                }
             }
-
-            let rate_limiter = rate_limiter.clone();
-            let transactions = transactions.collect::<Vec<_>>();
-            let tx_counter = tx_counter.clone();
-            let pending_txs_tx = pending_txs_tx.clone();
-
-            // Spawn thread and send transactions over specified duration
-            thread::spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("Failed to build tokio runtime");
-
-                rt.block_on(async {
-                    // TODO: Send txs from multiple senders
-                    // Create multiple connections for this thread
-                    // let mut providers = Vec::new();
-                    // for i in 0..num_connections {
-                    //     println!("{i:?}");
-                    //     let url = &target_urls[(i as usize) % target_urls.len()];
-                    //     let provider = ProviderBuilder::new().connect_http(url.clone());
-                    //     providers.push(provider);
-                    // }
-
-                    for tx in transactions {
-                        rate_limiter.until_ready().await;
-
-                        match timeout(Duration::from_secs(1), tx).await {
-                            Ok(Ok(pending_tx)) => {
-                                tx_counter.fetch_add(1, Ordering::Relaxed);
-                                pending_txs_tx.send(pending_tx).unwrap();
-                            }
-                            Ok(Err(err)) => error!(?err, "Failed to send transaction"),
-                            Err(_) => error!("Transaction sending timed out"),
-                        }
-                    }
-                })
-            });
-        });
-    drop(pending_txs_tx);
-
-    let pending_txs = pending_txs_rx.into_iter().collect();
-    Ok(pending_txs)
+        })
+        .take_until(deadline)
+        .collect()
+        .await
 }
 
 async fn generate_transactions(
@@ -574,17 +524,6 @@ pub fn increase_nofile_limit(min_limit: u64) -> eyre::Result<u64> {
     Ok(soft)
 }
 
-/// Pin the current thread to the given core ID if enabled.
-/// Panics if the thread fails to pin.
-pub fn pin_thread(core_id: CoreId) {
-    if !core_affinity::set_for_current(core_id) {
-        panic!(
-            "Failed to pin thread to core {}. Try disabling thread_pinning in your config.",
-            core_id.id
-        );
-    }
-}
-
 #[derive(Serialize)]
 struct BenchmarkedBlock {
     number: BlockNumber,
@@ -601,7 +540,6 @@ struct BenchmarkMetadata {
     target_tps: u64,
     run_duration_secs: u64,
     num_accounts: u64,
-    num_workers: usize,
     chain_id: u64,
     max_concurrent_requests: usize,
     start_block: BlockNumber,
@@ -676,7 +614,6 @@ pub async fn generate_report(
         target_tps: args.tps,
         run_duration_secs: args.duration,
         num_accounts: args.accounts,
-        num_workers: args.workers,
         chain_id: provider.get_chain_id().await?,
         max_concurrent_requests: args.max_concurrent_requests,
         start_block,
