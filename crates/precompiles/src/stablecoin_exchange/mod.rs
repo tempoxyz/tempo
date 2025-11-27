@@ -29,6 +29,9 @@ use tempo_precompiles_macros::contract;
 /// Minimum order size of $10 USD
 pub const MIN_ORDER_AMOUNT: u128 = 10_000_000;
 
+/// Allowed tick spacing for order placement
+pub const TICK_SPACING: i16 = 10;
+
 /// Calculate quote amount using floor division (rounds down)
 /// Pre-Moderato behavior
 fn calculate_quote_amount_floor(amount: u128, tick: i16) -> Option<u128> {
@@ -454,6 +457,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             return Err(StablecoinExchangeError::tick_out_of_bounds(tick).into());
         }
 
+        // Post allegretto, enforce that the tick adheres to tick spacing
+        if self.storage.spec().is_allegretto() && tick % TICK_SPACING != 0 {
+            return Err(StablecoinExchangeError::invalid_tick().into());
+        }
+
         // Validate order amount meets minimum requirement
         if amount < MIN_ORDER_AMOUNT {
             return Err(StablecoinExchangeError::below_minimum_order_size(amount).into());
@@ -538,8 +546,19 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
             return Err(StablecoinExchangeError::tick_out_of_bounds(tick).into());
         }
+
+        // Post allegretto, enforce that the tick adheres to tick spacing
+        if self.storage.spec().is_allegretto() && tick % TICK_SPACING != 0 {
+            return Err(StablecoinExchangeError::invalid_tick().into());
+        }
+
         if !(MIN_TICK..=MAX_TICK).contains(&flip_tick) {
             return Err(StablecoinExchangeError::tick_out_of_bounds(flip_tick).into());
+        }
+
+        // Post allegretto, enforce that the tick adheres to tick spacing
+        if self.storage.spec().is_allegretto() && flip_tick % TICK_SPACING != 0 {
+            return Err(StablecoinExchangeError::invalid_flip_tick().into());
         }
 
         // Validate flip_tick relationship to tick based on order side
@@ -1397,6 +1416,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         // Cannot trade same token
         if token_in == token_out {
             return Err(StablecoinExchangeError::identical_tokens().into());
+        }
+
+        // Validate that both tokens are TIP20 tokens
+        if self.storage.spec().is_allegretto() && (!is_tip20(token_in) || !is_tip20(token_out)) {
+            return Err(StablecoinExchangeError::invalid_token().into());
         }
 
         // Check if direct or reverse pair exists
@@ -4417,6 +4441,162 @@ mod tests {
         let orderbook = exchange.sload_books(book_key)?;
         assert_eq!(orderbook.best_bid_tick, i16::MIN);
         assert_eq!(orderbook.best_ask_tick, i16::MAX);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_place_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+
+        let (base_token, _quote_token) = setup_test_tokens(
+            exchange.storage,
+            admin,
+            alice,
+            exchange.address,
+            1_000_000_000,
+        );
+        exchange.create_pair(base_token)?;
+
+        // Give alice base tokens
+        mint_and_approve_token(
+            exchange.storage,
+            1,
+            admin,
+            alice,
+            exchange.address,
+            1_000_000_000,
+        );
+
+        // Test invalid tick spacing
+        let invalid_tick = 15i16;
+        let result = exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, invalid_tick);
+
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::InvalidTick(_))
+        ));
+
+        // Test valid tick spacing
+        let valid_tick = -20i16;
+        let result = exchange.place(alice, base_token, MIN_ORDER_AMOUNT, true, valid_tick);
+        assert!(result.is_ok());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_place_flip_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+
+        let (base_token, _quote_token) = setup_test_tokens(
+            exchange.storage,
+            admin,
+            alice,
+            exchange.address,
+            1_000_000_000,
+        );
+        exchange.create_pair(base_token)?;
+
+        // Give alice base tokens
+        mint_and_approve_token(
+            exchange.storage,
+            1,
+            admin,
+            alice,
+            exchange.address,
+            1_000_000_000,
+        );
+
+        // Test invalid tick spacing
+        let invalid_tick = 15i16;
+        let invalid_flip_tick = 25i16;
+        let result = exchange.place_flip(
+            alice,
+            base_token,
+            MIN_ORDER_AMOUNT,
+            true,
+            invalid_tick,
+            invalid_flip_tick,
+        );
+
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::InvalidTick(_))
+        ));
+
+        // Test valid tick spacing
+        let valid_tick = 20i16;
+        let invalid_flip_tick = 25i16;
+        let result = exchange.place_flip(
+            alice,
+            base_token,
+            MIN_ORDER_AMOUNT,
+            true,
+            valid_tick,
+            invalid_flip_tick,
+        );
+
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::InvalidFlipTick(_))
+        ));
+
+        let valid_flip_tick = 30i16;
+        let result = exchange.place_flip(
+            alice,
+            base_token,
+            MIN_ORDER_AMOUNT,
+            true,
+            valid_tick,
+            valid_flip_tick,
+        );
+        assert!(result.is_ok());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_trade_path_rejects_non_tip20_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let admin = Address::random();
+        let user = Address::random();
+
+        let (_, quote_token) = setup_test_tokens(
+            exchange.storage,
+            admin,
+            user,
+            exchange.address,
+            MIN_ORDER_AMOUNT,
+        );
+
+        let non_tip20_address = Address::random();
+        let result = exchange.find_trade_path(non_tip20_address, quote_token);
+        assert!(
+            matches!(
+                result,
+                Err(TempoPrecompileError::StablecoinExchange(
+                    StablecoinExchangeError::InvalidToken(_)
+                ))
+            ),
+            "Should return InvalidToken error for non-TIP20 token post-Allegretto"
+        );
 
         Ok(())
     }

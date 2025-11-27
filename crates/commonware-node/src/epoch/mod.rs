@@ -9,6 +9,7 @@
 pub(crate) mod manager;
 mod scheme_provider;
 
+use commonware_consensus::types::Epoch;
 pub(crate) use manager::ingress::{Enter, Exit};
 pub(crate) use scheme_provider::SchemeProvider;
 
@@ -48,8 +49,23 @@ pub(crate) fn relative_position(height: u64, epoch_length: u64) -> RelativePosit
     }
 }
 
+/// Returns `Some(epoch)` if `height` is the last block in an epoch of `epoch_length`.
+///
+/// # Panics
+///
+/// Panics if `epoch_length = 0` and `height = 0`.
+pub(crate) fn is_first_block_in_epoch(epoch_length: u64, height: u64) -> Option<Epoch> {
+    // NOTE: `commonware_consensus::utils::epoch` pancis on epoch_length = 0,
+    // but `u64::is_multiple_of = true` only if both values are 0.
+    height
+        .is_multiple_of(epoch_length)
+        .then(|| commonware_consensus::utils::epoch(epoch_length, height))
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::epoch::is_first_block_in_epoch;
+
     use super::{RelativePosition, relative_position};
 
     #[track_caller]
@@ -98,5 +114,26 @@ mod tests {
         assert_relative_position(SecondHalf, 198, 199);
 
         assert_relative_position(FirstHalf, 199, 199);
+    }
+
+    #[should_panic]
+    #[test]
+    fn is_first_block_in_epoch_panics_on_epoch_length_0_height_0() {
+        is_first_block_in_epoch(0, 0);
+    }
+
+    #[test]
+    fn is_first_block_in_epoch_identifies_first_block() {
+        assert_eq!(is_first_block_in_epoch(10, 0), Some(0));
+        assert_eq!(is_first_block_in_epoch(10, 10), Some(1));
+        assert_eq!(is_first_block_in_epoch(10, 20), Some(2));
+        assert_eq!(is_first_block_in_epoch(5, 215), Some(43));
+    }
+
+    #[test]
+    fn is_first_block_in_epoch_returns_none_when_not_first_block() {
+        assert_eq!(is_first_block_in_epoch(10, 1), None);
+        assert_eq!(is_first_block_in_epoch(10, 9), None);
+        assert_eq!(is_first_block_in_epoch(10, 18), None);
     }
 }
