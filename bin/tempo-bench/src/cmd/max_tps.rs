@@ -38,7 +38,7 @@ use std::{
     str::FromStr,
     sync::{
         Arc,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     thread,
     time::Duration,
@@ -230,18 +230,11 @@ impl MaxTpsArgs {
             .ok_or_eyre("failed to fetch start block")?;
         let start_block_number = start_block.header.number;
 
-        // Create shared transaction counter and monitoring
-        let tx_counter = Arc::new(AtomicU64::new(0));
-
-        // Spawn monitoring thread for TPS tracking
-        let _monitor_handle = monitor_tps(tx_counter.clone(), total_txs);
-
         // Send transactions
         let mut pending_txs = send_transactions(
             transactions,
             self.max_concurrent_requests,
             self.tps,
-            tx_counter,
             sleep(Duration::from_secs(self.duration)),
         )
         .await;
@@ -314,7 +307,6 @@ async fn send_transactions(
     >,
     max_concurrent_requests: usize,
     tps: u64,
-    tx_counter: Arc<AtomicU64>,
     deadline: impl Future<Output = ()>,
 ) -> Vec<PendingTransactionBuilder<TempoNetwork>> {
     info!(
@@ -322,7 +314,13 @@ async fn send_transactions(
         max_concurrent_requests, tps, "Sending transactions"
     );
 
-    // Create a shared rate limiter for all threads
+    // Create shared transaction counter and monitoring
+    let tx_counter = Arc::new(AtomicUsize::new(0));
+
+    // Spawn monitoring thread for TPS tracking
+    let _monitor_handle = monitor_tps(tx_counter.clone(), transactions.len());
+
+    // Create a rate limiter
     let rate_limiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(tps as u32).unwrap()));
 
     stream::iter(transactions)
@@ -640,9 +638,9 @@ pub async fn generate_report(
     Ok(())
 }
 
-fn monitor_tps(tx_counter: Arc<AtomicU64>, target_count: u64) -> thread::JoinHandle<()> {
+fn monitor_tps(tx_counter: Arc<AtomicUsize>, target_count: usize) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        let mut last_count = 0u64;
+        let mut last_count = 0;
         loop {
             let current_count = tx_counter.load(Ordering::Relaxed);
             let tps = current_count - last_count;
