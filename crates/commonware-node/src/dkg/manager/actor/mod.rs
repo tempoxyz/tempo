@@ -245,10 +245,12 @@ where
             pre_allegretto_ceremonies,
             post_allegretto_ceremonies,
             failed_allegretto_transitions,
-            shares_distributed,
-            acks_received,
-            acks_sent,
-            dealings_read,
+            ceremony_metrics: CeremonyMetrics {
+                shares_distributed,
+                acks_received,
+                acks_sent,
+                dealings_read,
+            },
         };
 
         Ok(Self {
@@ -701,28 +703,16 @@ struct Metrics {
     post_allegretto_ceremonies: Counter,
     failed_allegretto_transitions: Counter,
     syncing_players: Gauge,
-    shares_distributed: Gauge,
-    acks_received: Gauge,
-    acks_sent: Gauge,
-    dealings_read: Gauge,
+    ceremony_metrics: CeremonyMetrics,
 }
 
 impl Metrics {
-    fn ceremony_metrics(&self) -> CeremonyMetrics {
-        CeremonyMetrics {
-            shares_distributed: self.shares_distributed.clone(),
-            acks_received: self.acks_received.clone(),
-            acks_sent: self.acks_sent.clone(),
-            dealings_read: self.dealings_read.clone(),
-        }
-    }
-
     /// Resets ceremony-specific metrics to zero at the start of a new ceremony.
     fn reset_ceremony_metrics(&self) {
-        self.shares_distributed.set(0);
-        self.acks_received.set(0);
-        self.acks_sent.set(0);
-        self.dealings_read.set(0);
+        self.ceremony_metrics.shares_distributed.set(0);
+        self.ceremony_metrics.acks_received.set(0);
+        self.ceremony_metrics.acks_sent.set(0);
+        self.ceremony_metrics.dealings_read.set(0);
     }
 }
 
