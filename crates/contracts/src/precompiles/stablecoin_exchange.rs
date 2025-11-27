@@ -91,7 +91,7 @@ sol! {
         /// Pre-Allegretto: OrderFilled event without taker parameter
         event OrderFilled(uint128 indexed orderId, address indexed maker, uint128 amountFilled, bool partialFill);
         /// Post-Allegretto: OrderFilled event with taker parameter
-        event OrderFilledWithTaker(uint128 indexed orderId, address indexed maker, address indexed taker, uint128 amountFilled, bool partialFill);
+        event OrderFilled(uint128 indexed orderId, address indexed maker, address indexed taker, uint128 amountFilled, bool partialFill);
         event OrderCancelled(uint128 indexed orderId);
 
         // Errors

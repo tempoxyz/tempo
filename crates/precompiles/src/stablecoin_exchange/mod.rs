@@ -168,7 +168,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     /// Emit the appropriate OrderFilled event based on hardfork
     /// Pre-Allegretto: emits OrderFilled (without taker)
-    /// Post-Allegretto: emits OrderFilledWithTaker (with taker)
+    /// Post-Allegretto: emits OrderFilled (with taker)
     fn emit_order_filled(
         &mut self,
         order_id: u128,
@@ -180,21 +180,19 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         if self.storage.spec().is_allegretto() {
             self.storage.emit_event(
                 self.address,
-                StablecoinExchangeEvents::OrderFilledWithTaker(
-                    IStablecoinExchange::OrderFilledWithTaker {
-                        orderId: order_id,
-                        maker,
-                        taker,
-                        amountFilled: amount_filled,
-                        partialFill: partial_fill,
-                    },
-                )
+                StablecoinExchangeEvents::OrderFilled_1(IStablecoinExchange::OrderFilled_1 {
+                    orderId: order_id,
+                    maker,
+                    taker,
+                    amountFilled: amount_filled,
+                    partialFill: partial_fill,
+                })
                 .into_log_data(),
             )?;
         } else {
             self.storage.emit_event(
                 self.address,
-                StablecoinExchangeEvents::OrderFilled(IStablecoinExchange::OrderFilled {
+                StablecoinExchangeEvents::OrderFilled_0(IStablecoinExchange::OrderFilled_0 {
                     orderId: order_id,
                     maker,
                     amountFilled: amount_filled,
