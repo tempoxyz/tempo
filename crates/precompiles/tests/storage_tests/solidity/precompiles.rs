@@ -13,11 +13,12 @@ use utils::*;
 fn test_tip20_factory_layout() {
     use tempo_precompiles::tip20_factory::slots;
 
-    let solc_layout = load_solc_layout(&testdata("tip20_factory.sol"));
+    let sol_path = testdata("tip20_factory.sol");
+    let solc_layout = load_solc_layout(&sol_path);
     let rust_layout = layout_fields!(token_id_counter);
 
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 }
 
@@ -25,11 +26,12 @@ fn test_tip20_factory_layout() {
 fn test_tip20_rewards_registry_layout() {
     use tempo_precompiles::tip20_rewards_registry::slots;
 
-    let solc_layout = load_solc_layout(&testdata("tip20_rewards_registry.sol"));
+    let sol_path = testdata("tip20_rewards_registry.sol");
+    let solc_layout = load_solc_layout(&sol_path);
     let rust_layout = layout_fields!(last_updated_timestamp, streams_ending_at, stream_index);
 
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 }
 
@@ -37,27 +39,31 @@ fn test_tip20_rewards_registry_layout() {
 fn test_tip403_registry_layout() {
     use tempo_precompiles::tip403_registry::{__packing_policy_data::*, slots};
 
-    let solc_layout = load_solc_layout(&testdata("tip403_registry.sol"));
+    let sol_path = testdata("tip403_registry.sol");
+    let solc_layout = load_solc_layout(&sol_path);
 
     // Verify top-level fields
     let rust_layout = layout_fields!(policy_id_counter, policy_data, policy_set);
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 
     // Verify `PolicyData` struct members
     let base_slot = slots::POLICY_DATA;
     let rust_struct = struct_fields!(base_slot, policy_type, admin);
     if let Err(errors) = compare_struct_members(&solc_layout, "policyData", &rust_struct) {
-        panic!("Struct member layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Struct member layout", errors, &sol_path);
     }
 }
 
 #[test]
 fn test_fee_manager_layout() {
-    use tempo_precompiles::tip_fee_manager::{amm::__packing_pool::*, slots};
+    use tempo_precompiles::tip_fee_manager::{
+        __packing_token_pair::*, amm::__packing_pool::*, slots,
+    };
 
-    let solc_layout = load_solc_layout(&testdata("fee_manager.sol"));
+    let sol_path = testdata("fee_manager.sol");
+    let solc_layout = load_solc_layout(&sol_path);
 
     // Verify top-level fields
     let rust_layout = layout_fields!(
@@ -69,17 +75,28 @@ fn test_fee_manager_layout() {
         pools,
         pending_fee_swap_in,
         total_supply,
-        liquidity_balances
+        liquidity_balances,
+        pools_with_fees,
+        pool_in_fees_array,
+        validators_with_fees,
+        validator_in_fees_array
     );
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 
-    // Verify `Pool` struct members
-    let base_slot = slots::POOLS;
-    let rust_struct = struct_fields!(base_slot, reserve_user_token, reserve_validator_token);
-    if let Err(errors) = compare_struct_members(&solc_layout, "pools", &rust_struct) {
-        panic!("Struct member layout mismatch:\n{}", errors.join("\n"));
+    // Verify `Pool` struct members (used in mapping)
+    let pool_base_slot = slots::POOLS;
+    let rust_pool = struct_fields!(pool_base_slot, reserve_user_token, reserve_validator_token);
+    if let Err(errors) = compare_struct_members(&solc_layout, "pools", &rust_pool) {
+        panic_layout_mismatch("Pool struct member layout", errors, &sol_path);
+    }
+
+    // Verify `TokenPair` struct members
+    let token_pair_base_slot = slots::POOLS_WITH_FEES;
+    let rust_token_pair = struct_fields!(token_pair_base_slot, user_token, validator_token);
+    if let Err(errors) = compare_struct_members(&solc_layout, "poolsWithFees", &rust_token_pair) {
+        panic_layout_mismatch("TokenPair struct member layout", errors, &sol_path);
     }
 }
 
@@ -89,7 +106,8 @@ fn test_stablecoin_exchange_layout() {
         order::__packing_order::*, orderbook::__packing_orderbook::*, slots,
     };
 
-    let solc_layout = load_solc_layout(&testdata("stablecoin_exchange.sol"));
+    let sol_path = testdata("stablecoin_exchange.sol");
+    let solc_layout = load_solc_layout(&sol_path);
 
     // Verify top-level fields
     let rust_layout = layout_fields!(
@@ -101,7 +119,7 @@ fn test_stablecoin_exchange_layout() {
         book_keys
     );
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 
     // Verify `Order` struct members
@@ -121,10 +139,7 @@ fn test_stablecoin_exchange_layout() {
         flip_tick
     );
     if let Err(errors) = compare_struct_members(&solc_layout, "orders", &rust_order) {
-        panic!(
-            "Order struct member layout mismatch:\n{}",
-            errors.join("\n")
-        );
+        panic_layout_mismatch("Order struct member layout", errors, &sol_path);
     }
 
     // Verify `Orderbook` struct members (only the non-mapping fields)
@@ -141,10 +156,7 @@ fn test_stablecoin_exchange_layout() {
         ask_bitmap
     );
     if let Err(errors) = compare_struct_members(&solc_layout, "books", &rust_orderbook) {
-        panic!(
-            "Orderbook struct member layout mismatch:\n{}",
-            errors.join("\n")
-        );
+        panic_layout_mismatch("Orderbook struct member layout", errors, &sol_path);
     }
 }
 
@@ -155,7 +167,8 @@ fn test_tip20_layout() {
         slots,
     };
 
-    let solc_layout = load_solc_layout(&testdata("tip20.sol"));
+    let sol_path = testdata("tip20.sol");
+    let solc_layout = load_solc_layout(&sol_path);
 
     // Verify top-level fields
     let rust_layout = layout_fields!(
@@ -189,7 +202,7 @@ fn test_tip20_layout() {
         user_reward_info
     );
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 
     // Verify `RewardStream` struct members
@@ -203,10 +216,7 @@ fn test_tip20_layout() {
         amount_total
     );
     if let Err(errors) = compare_struct_members(&solc_layout, "streams", &rust_stream) {
-        panic!(
-            "RewardStream struct member layout mismatch:\n{}",
-            errors.join("\n")
-        );
+        panic_layout_mismatch("RewardStream struct member layout", errors, &sol_path);
     }
 
     // Verify `UserRewardInfo` struct members
@@ -218,10 +228,7 @@ fn test_tip20_layout() {
         reward_balance
     );
     if let Err(errors) = compare_struct_members(&solc_layout, "userRewardInfo", &rust_user_info) {
-        panic!(
-            "UserRewardInfo struct member layout mismatch:\n{}",
-            errors.join("\n")
-        );
+        panic_layout_mismatch("UserRewardInfo struct member layout", errors, &sol_path);
     }
 }
 

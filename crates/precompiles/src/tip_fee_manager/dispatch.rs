@@ -1,7 +1,7 @@
 use crate::{
     Precompile,
     error::TempoPrecompileError,
-    input_cost, mutate, mutate_void,
+    fill_precompile_output, input_cost, mutate, mutate_void,
     storage::PrecompileStorageProvider,
     tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager, amm::MIN_LIQUIDITY},
     unknown_selector, view,
@@ -153,10 +153,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
             _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
-        result.map(|mut res| {
-            res.gas_used = self.storage.gas_used();
-            res
-        })
+        result.map(|res| fill_precompile_output(res, self.storage))
     }
 }
 
@@ -164,16 +161,14 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
 mod tests {
     use super::*;
     use crate::{
-        LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, expect_precompile_revert,
+        PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, expect_precompile_revert,
         storage::hashmap::HashMapStorageProvider,
         test_util::check_selector_coverage,
         tip_fee_manager::{
             TIPFeeAMMError, TipFeeManager,
             amm::{MIN_LIQUIDITY, PoolKey},
         },
-        tip20::{
-            ISSUER_ROLE, ITIP20, TIP20Token, tests::initialize_linking_usd, token_id_to_address,
-        },
+        tip20::{ISSUER_ROLE, ITIP20, TIP20Token, tests::initialize_path_usd, token_id_to_address},
     };
     use alloy::{
         primitives::{Address, B256, Bytes, U256},
@@ -191,12 +186,19 @@ mod tests {
         user: Address,
         amount: U256,
     ) {
-        initialize_linking_usd(storage, user).unwrap();
+        initialize_path_usd(storage, user).unwrap();
         let mut tip20_token = TIP20Token::from_address(token, storage);
 
         // Initialize token
         tip20_token
-            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, user)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                user,
+                Address::ZERO,
+            )
             .unwrap();
 
         // Grant issuer role to user and mint tokens
@@ -224,14 +226,21 @@ mod tests {
         let validator = Address::random();
         let admin = Address::random();
 
-        // Initialize LinkingUSD first
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        // Initialize PathUSD first
+        initialize_path_usd(&mut storage, admin).unwrap();
 
         // Create a USD token to use as fee token
         let token = token_id_to_address(1);
         let mut tip20_token = TIP20Token::from_address(token, &mut storage);
         tip20_token
-            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
@@ -274,14 +283,21 @@ mod tests {
         let user = Address::random();
         let admin = Address::random();
 
-        // Initialize LinkingUSD first
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        // Initialize PathUSD first
+        initialize_path_usd(&mut storage, admin).unwrap();
 
         // Create a USD token to use as fee token
         let token = token_id_to_address(1);
         let mut tip20_token = TIP20Token::from_address(token, &mut storage);
         tip20_token
-            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
@@ -469,8 +485,8 @@ mod tests {
         let user = Address::random();
         let admin = Address::random();
 
-        // Initialize LinkingUSD first
-        initialize_linking_usd(&mut storage, admin)?;
+        // Initialize PathUSD first
+        initialize_path_usd(&mut storage, admin)?;
 
         // Create two USD tokens
         let user_token = token_id_to_address(1);
@@ -606,7 +622,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
         let user = Address::random();
         let admin = Address::random();
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
 
         let user_token = token_id_to_address(1);
         let validator_token = token_id_to_address(2);

@@ -14,7 +14,7 @@ use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{IRolesAuth, ITIP20, ITIP20Factory};
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     tip20::{ISSUER_ROLE, token_id_to_address},
 };
 use tempo_primitives::TempoTxEnvelope;
@@ -57,7 +57,7 @@ where
         "Test".to_string(),
         "TEST".to_string(),
         "USD".to_string(),
-        LINKING_USD_ADDRESS,
+        PATH_USD_ADDRESS,
         sender_address,
     );
     let create_bytes = sign_and_encode(create_tx.into_transaction_request(), 0).await?;
@@ -181,6 +181,7 @@ async fn test_block_building_few_mixed_txs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = crate::utils::TestNodeBuilder::new()
+        .allegretto_activated()
         .build_with_node_access()
         .await?;
 
@@ -266,6 +267,7 @@ async fn test_block_building_only_payment_txs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = crate::utils::TestNodeBuilder::new()
+        .allegretto_activated()
         .build_with_node_access()
         .await?;
 
@@ -334,6 +336,7 @@ async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = crate::utils::TestNodeBuilder::new()
+        .allegretto_activated()
         .build_with_node_access()
         .await?;
 
@@ -405,6 +408,7 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
 
     // Use lower gas limit to ensure transactions overflow to multiple blocks
     let mut setup = crate::utils::TestNodeBuilder::new()
+        .allegretto_activated()
         .with_gas_limit("0xf4240") // 1,000,000 gas
         .build_with_node_access()
         .await?;

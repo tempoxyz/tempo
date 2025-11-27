@@ -24,7 +24,6 @@ tempo-primitives = { workspace = true, features = ["default"] }
 thiserror.workspace = true
 
 reth-errors.workspace = true
-reth-ethereum-engine-primitives.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }
 reth-primitives-traits = { workspace = true, features = ["secp256k1", "rayon"] }
 reth-node-builder.workspace = true
@@ -49,6 +48,7 @@ alloy.workspace = true
 alloy-primitives.workspace = true
 
 async-trait.workspace = true
+clap.workspace = true
 eyre.workspace = true
 futures.workspace = true
 tokio.workspace = true

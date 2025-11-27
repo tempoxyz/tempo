@@ -3,27 +3,29 @@ pub mod dispatch;
 use crate::{
     STABLECOIN_EXCHANGE_ADDRESS,
     error::Result,
-    storage::PrecompileStorageProvider,
+    storage::{ContractStorage, PrecompileStorageProvider},
     tip20::{ITIP20, TIP20Token},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use std::sync::LazyLock;
-pub use tempo_contracts::precompiles::ILinkingUSD;
+pub use tempo_contracts::precompiles::IPathUSD;
 use tempo_contracts::precompiles::TIP20Error;
 
 pub static TRANSFER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"TRANSFER_ROLE"));
 pub static RECEIVE_WITH_MEMO_ROLE: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"RECEIVE_WITH_MEMO_ROLE"));
 
-const NAME: &str = "linkingUSD";
-const SYMBOL: &str = "linkingUSD";
+/// Name of TIP20 post allegretto. Note that the name and symbol are the same value
+const NAME_POST_ALLEGRETTO: &str = "pathUSD";
+/// Name of TIP20 pre allegretto. Note that the name and symbol are the same value
+const NAME_PRE_ALLEGRETTO: &str = "linkingUSD";
 const CURRENCY: &str = "USD";
 
-pub struct LinkingUSD<'a, S: PrecompileStorageProvider> {
+pub struct PathUSD<'a, S: PrecompileStorageProvider> {
     pub token: TIP20Token<'a, S>,
 }
 
-impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
+impl<'a, S: PrecompileStorageProvider> PathUSD<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
         Self {
             token: TIP20Token::new(0, storage),
@@ -31,8 +33,14 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
     }
 
     pub fn initialize(&mut self, admin: Address) -> Result<()> {
+        let (name, symbol) = if self.token.storage().spec().is_allegretto() {
+            (NAME_POST_ALLEGRETTO, NAME_POST_ALLEGRETTO)
+        } else {
+            (NAME_PRE_ALLEGRETTO, NAME_PRE_ALLEGRETTO)
+        };
+
         self.token
-            .initialize(NAME, SYMBOL, CURRENCY, Address::ZERO, admin)
+            .initialize(name, symbol, CURRENCY, Address::ZERO, admin, Address::ZERO)
     }
 
     fn is_transfer_authorized(&mut self, sender: Address) -> Result<bool> {
@@ -78,6 +86,11 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
     }
 
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
+        // Post allegretto, use default tip20 logic
+        if self.token.storage().spec().is_allegretto() {
+            return self.token.transfer(msg_sender, call);
+        }
+
         if self.is_transfer_authorized(msg_sender)? {
             self.token.transfer(msg_sender, call)
         } else {
@@ -90,6 +103,11 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         msg_sender: Address,
         call: ITIP20::transferFromCall,
     ) -> Result<bool> {
+        // Post allegretto, use default tip20 logic
+        if self.token.storage().spec().is_allegretto() {
+            return self.token.transfer_from(msg_sender, call);
+        }
+
         if self.is_transfer_from_authorized(msg_sender, call.from)?
             || msg_sender == STABLECOIN_EXCHANGE_ADDRESS
         {
@@ -104,6 +122,11 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         msg_sender: Address,
         call: ITIP20::transferWithMemoCall,
     ) -> Result<()> {
+        // Post allegretto, use default tip20 logic
+        if self.token.storage().spec().is_allegretto() {
+            return self.token.transfer_with_memo(msg_sender, call);
+        }
+
         if self.is_transfer_with_memo_authorized(msg_sender, call.to)? {
             self.token.transfer_with_memo(msg_sender, call)
         } else {
@@ -116,6 +139,11 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
         msg_sender: Address,
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool> {
+        // Post allegretto, use default tip20 logic
+        if self.token.storage().spec().is_allegretto() {
+            return self.token.transfer_from_with_memo(msg_sender, call);
+        }
+
         if self.is_transfer_from_with_memo_authorized(msg_sender, call.from, call.to)?
             || msg_sender == STABLECOIN_EXCHANGE_ADDRESS
         {
@@ -126,11 +154,19 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
     }
 
     pub fn name(&mut self) -> Result<String> {
-        self.token.name()
+        if self.token.storage().spec().is_allegretto() {
+            Ok(NAME_POST_ALLEGRETTO.to_string())
+        } else {
+            self.token.name()
+        }
     }
 
     pub fn symbol(&mut self) -> Result<String> {
-        self.token.symbol()
+        if self.token.storage().spec().is_allegretto() {
+            Ok(NAME_POST_ALLEGRETTO.to_string())
+        } else {
+            self.token.symbol()
+        }
     }
 
     pub fn currency(&mut self) -> Result<String> {
@@ -211,7 +247,7 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 
     /// Returns the TRANSFER_ROLE constant
     ///
-    /// This role identifier grants permission to transfer linkingUSD tokens.
+    /// This role identifier grants permission to transfer pathUSD tokens.
     /// The role is computed as `keccak256("TRANSFER_ROLE")`.
     pub fn transfer_role() -> B256 {
         *TRANSFER_ROLE
@@ -219,7 +255,7 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 
     /// Returns the RECEIVE_WITH_MEMO_ROLE constant
     ///
-    /// This role identifier grants permission to receive linkingUSD tokens.
+    /// This role identifier grants permission to receive pathUSD tokens.
     /// The role is computed as `keccak256("RECEIVE_WITH_MEMO_ROLE")`.
     pub fn receive_with_memo_role() -> B256 {
         *RECEIVE_WITH_MEMO_ROLE
@@ -230,6 +266,7 @@ impl<'a, S: PrecompileStorageProvider> LinkingUSD<'a, S> {
 mod tests {
 
     use alloy_primitives::uint;
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::RolesAuthError;
 
     use super::*;
@@ -241,39 +278,50 @@ mod tests {
 
     fn transfer_test_setup(
         storage: &mut HashMapStorageProvider,
-    ) -> (LinkingUSD<'_, HashMapStorageProvider>, Address) {
-        let mut linking_usd = LinkingUSD::new(storage);
+    ) -> (PathUSD<'_, HashMapStorageProvider>, Address) {
+        let mut path_usd = PathUSD::new(storage);
         let admin = Address::random();
 
-        linking_usd
+        path_usd
             .initialize(admin)
             .expect("Could not initialize linking usd");
 
-        linking_usd
+        path_usd
             .token
             .grant_role_internal(admin, *ISSUER_ROLE)
             .unwrap();
 
-        (linking_usd, admin)
+        (path_usd, admin)
     }
 
     #[test]
     fn test_metadata() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let (mut linking_usd, _admin) = transfer_test_setup(&mut storage);
+        let (mut path_usd, _admin) = transfer_test_setup(&mut storage);
 
-        assert_eq!(linking_usd.name()?, "linkingUSD");
-        assert_eq!(linking_usd.symbol()?, "linkingUSD");
-        assert_eq!(linking_usd.currency()?, "USD");
+        assert_eq!(path_usd.name()?, NAME_PRE_ALLEGRETTO);
+        assert_eq!(path_usd.symbol()?, NAME_PRE_ALLEGRETTO);
+        assert_eq!(path_usd.currency()?, "USD");
+        Ok(())
+    }
+
+    #[test]
+    fn test_metadata_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let (mut path_usd, _admin) = transfer_test_setup(&mut storage);
+
+        assert_eq!(path_usd.name()?, NAME_POST_ALLEGRETTO);
+        assert_eq!(path_usd.symbol()?, NAME_POST_ALLEGRETTO);
+        assert_eq!(path_usd.currency()?, "USD");
         Ok(())
     }
 
     #[test]
     fn test_transfer_reverts() {
         let mut storage = HashMapStorageProvider::new(1);
-        let (mut linking_usd, _admin) = transfer_test_setup(&mut storage);
+        let (mut path_usd, _admin) = transfer_test_setup(&mut storage);
 
-        let result = linking_usd.transfer(
+        let result = path_usd.transfer(
             Address::random(),
             ITIP20::transferCall {
                 to: Address::random(),
@@ -290,9 +338,9 @@ mod tests {
     #[test]
     fn test_transfer_from_reverts() {
         let mut storage = HashMapStorageProvider::new(1);
-        let (mut linking_usd, _admin) = transfer_test_setup(&mut storage);
+        let (mut path_usd, _admin) = transfer_test_setup(&mut storage);
 
-        let result = linking_usd.transfer_from(
+        let result = path_usd.transfer_from(
             Address::random(),
             ITIP20::transferFromCall {
                 from: Address::random(),
@@ -309,9 +357,9 @@ mod tests {
     #[test]
     fn test_transfer_with_memo_reverts() {
         let mut storage = HashMapStorageProvider::new(1);
-        let (mut linking_usd, _admin) = transfer_test_setup(&mut storage);
+        let (mut path_usd, _admin) = transfer_test_setup(&mut storage);
 
-        let result = linking_usd.transfer_with_memo(
+        let result = path_usd.transfer_with_memo(
             Address::random(),
             ITIP20::transferWithMemoCall {
                 to: Address::random(),
@@ -328,9 +376,9 @@ mod tests {
     #[test]
     fn test_transfer_from_with_memo_reverts() {
         let mut storage = HashMapStorageProvider::new(1);
-        let (mut linking_usd, _admin) = transfer_test_setup(&mut storage);
+        let (mut path_usd, _admin) = transfer_test_setup(&mut storage);
 
-        let result = linking_usd.transfer_from_with_memo(
+        let result = path_usd.transfer_from_with_memo(
             Address::random(),
             ITIP20::transferFromWithMemoCall {
                 from: Address::random(),
@@ -348,14 +396,13 @@ mod tests {
     #[test]
     fn test_mint() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let (mut linking_usd, admin) = transfer_test_setup(&mut storage);
+        let (mut path_usd, admin) = transfer_test_setup(&mut storage);
         let recipient = Address::random();
         let amount = U256::from(1000);
 
-        let balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+        let balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
-        linking_usd.mint(
+        path_usd.mint(
             admin,
             ITIP20::mintCall {
                 to: recipient,
@@ -363,7 +410,7 @@ mod tests {
             },
         )?;
 
-        let balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+        let balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
         assert_eq!(balance_after, balance_before + amount);
         Ok(())
@@ -372,20 +419,20 @@ mod tests {
     #[test]
     fn test_burn() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let amount = U256::from(1000);
 
-        linking_usd.initialize(admin)?;
-        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        path_usd.initialize(admin)?;
+        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
-        linking_usd.mint(admin, ITIP20::mintCall { to: admin, amount })?;
+        path_usd.mint(admin, ITIP20::mintCall { to: admin, amount })?;
 
-        let balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: admin })?;
+        let balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: admin })?;
 
-        linking_usd.burn(admin, ITIP20::burnCall { amount })?;
+        path_usd.burn(admin, ITIP20::burnCall { amount })?;
 
-        let balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: admin })?;
+        let balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: admin })?;
         assert_eq!(balance_after, balance_before - amount);
         Ok(())
     }
@@ -393,19 +440,19 @@ mod tests {
     #[test]
     fn test_approve() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let owner = Address::random();
         let spender = Address::random();
         let amount = U256::from(1000);
 
-        linking_usd.initialize(admin)?;
+        path_usd.initialize(admin)?;
 
-        let result = linking_usd.approve(owner, ITIP20::approveCall { spender, amount })?;
+        let result = path_usd.approve(owner, ITIP20::approveCall { spender, amount })?;
 
         assert!(result);
 
-        let allowance = linking_usd.allowance(ITIP20::allowanceCall { owner, spender })?;
+        let allowance = path_usd.allowance(ITIP20::allowanceCall { owner, spender })?;
         assert_eq!(allowance, amount);
         Ok(())
     }
@@ -413,15 +460,15 @@ mod tests {
     #[test]
     fn test_transfer_with_stablecoin_exchange() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let recipient = Address::random();
         let amount = U256::from(1000);
 
-        linking_usd.initialize(admin)?;
-        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        path_usd.initialize(admin)?;
+        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
-        linking_usd.mint(
+        path_usd.mint(
             admin,
             ITIP20::mintCall {
                 to: STABLECOIN_EXCHANGE_ADDRESS,
@@ -429,14 +476,14 @@ mod tests {
             },
         )?;
 
-        let dex_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall {
+        let dex_balance_before = path_usd.balance_of(ITIP20::balanceOfCall {
             account: STABLECOIN_EXCHANGE_ADDRESS,
         })?;
 
         let recipient_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+            path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
-        let result = linking_usd.transfer(
+        let result = path_usd.transfer(
             STABLECOIN_EXCHANGE_ADDRESS,
             ITIP20::transferCall {
                 to: recipient,
@@ -445,12 +492,12 @@ mod tests {
         )?;
         assert!(result);
 
-        let dex_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall {
+        let dex_balance_after = path_usd.balance_of(ITIP20::balanceOfCall {
             account: STABLECOIN_EXCHANGE_ADDRESS,
         })?;
 
         let recipient_balance_after =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+            path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
         assert_eq!(dex_balance_after, dex_balance_before - amount);
         assert_eq!(recipient_balance_after, recipient_balance_before + amount);
@@ -460,18 +507,18 @@ mod tests {
     #[test]
     fn test_transfer_from_with_stablecoin_exchange() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let from = Address::random();
         let to = Address::random();
         let amount = U256::from(1000);
 
-        linking_usd.initialize(admin)?;
-        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        path_usd.initialize(admin)?;
+        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
-        linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
+        path_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
-        linking_usd.approve(
+        path_usd.approve(
             from,
             ITIP20::approveCall {
                 spender: STABLECOIN_EXCHANGE_ADDRESS,
@@ -479,28 +526,27 @@ mod tests {
             },
         )?;
 
-        let from_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
+        let from_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
 
-        let to_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
+        let to_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
 
-        let allowance_before = linking_usd.allowance(ITIP20::allowanceCall {
+        let allowance_before = path_usd.allowance(ITIP20::allowanceCall {
             owner: from,
             spender: STABLECOIN_EXCHANGE_ADDRESS,
         })?;
 
-        let result = linking_usd.transfer_from(
+        let result = path_usd.transfer_from(
             STABLECOIN_EXCHANGE_ADDRESS,
             ITIP20::transferFromCall { from, to, amount },
         )?;
 
         assert!(result);
 
-        let from_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
+        let from_balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
 
-        let to_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
+        let to_balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
 
-        let allowance_after = linking_usd.allowance(ITIP20::allowanceCall {
+        let allowance_after = path_usd.allowance(ITIP20::allowanceCall {
             owner: from,
             spender: STABLECOIN_EXCHANGE_ADDRESS,
         })?;
@@ -514,27 +560,25 @@ mod tests {
     #[test]
     fn test_transfer_with_transfer_role() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let sender = Address::random();
         let recipient = Address::random();
         let amount = U256::from(1000);
 
-        linking_usd.initialize(admin)?;
-        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        linking_usd
-            .token
-            .grant_role_internal(sender, *TRANSFER_ROLE)?;
+        path_usd.initialize(admin)?;
+        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        path_usd.token.grant_role_internal(sender, *TRANSFER_ROLE)?;
 
-        linking_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
+        path_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
         let sender_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
+            path_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
 
         let recipient_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+            path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
-        let result = linking_usd.transfer(
+        let result = path_usd.transfer(
             sender,
             ITIP20::transferCall {
                 to: recipient,
@@ -544,9 +588,9 @@ mod tests {
         assert!(result);
 
         let sender_balance_after =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
+            path_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
         let recipient_balance_after =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+            path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
         assert_eq!(sender_balance_after, sender_balance_before - amount);
         assert_eq!(recipient_balance_after, recipient_balance_before + amount);
@@ -556,22 +600,22 @@ mod tests {
     #[test]
     fn test_transfer_with_receive_role_reverts() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let sender = Address::random();
         let recipient = Address::random();
         let amount = U256::from(1000);
 
-        linking_usd.initialize(admin)?;
+        path_usd.initialize(admin)?;
 
-        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        linking_usd
+        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        path_usd
             .token
             .grant_role_internal(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
 
-        linking_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
+        path_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
-        let result = linking_usd.transfer(
+        let result = path_usd.transfer(
             sender,
             ITIP20::transferCall {
                 to: recipient,
@@ -590,41 +634,38 @@ mod tests {
     #[test]
     fn test_transfer_from_with_transfer_role() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let from = Address::random();
         let to = Address::random();
         let spender = Address::random();
         let amount = U256::from(1000);
 
-        linking_usd.initialize(admin)?;
-        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        linking_usd
-            .token
-            .grant_role_internal(from, *TRANSFER_ROLE)?;
+        path_usd.initialize(admin)?;
+        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        path_usd.token.grant_role_internal(from, *TRANSFER_ROLE)?;
 
-        linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
+        path_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
-        linking_usd.approve(from, ITIP20::approveCall { spender, amount })?;
+        path_usd.approve(from, ITIP20::approveCall { spender, amount })?;
 
-        let from_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
+        let from_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
 
-        let to_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
+        let to_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
 
-        let allowance_before = linking_usd.allowance(ITIP20::allowanceCall {
+        let allowance_before = path_usd.allowance(ITIP20::allowanceCall {
             owner: from,
             spender,
         })?;
 
         let result =
-            linking_usd.transfer_from(spender, ITIP20::transferFromCall { from, to, amount })?;
+            path_usd.transfer_from(spender, ITIP20::transferFromCall { from, to, amount })?;
 
         assert!(result);
 
-        let from_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
-        let to_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
-        let allowance_after = linking_usd.allowance(ITIP20::allowanceCall {
+        let from_balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
+        let to_balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
+        let allowance_after = path_usd.allowance(ITIP20::allowanceCall {
             owner: from,
             spender,
         })?;
@@ -638,25 +679,24 @@ mod tests {
     #[test]
     fn test_transfer_from_with_receive_role_reverts() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let from = Address::random();
         let to = Address::random();
         let spender = Address::random();
         let amount = U256::from(1000);
 
-        linking_usd.initialize(admin)?;
-        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        linking_usd
+        path_usd.initialize(admin)?;
+        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        path_usd
             .token
             .grant_role_internal(to, *RECEIVE_WITH_MEMO_ROLE)?;
 
-        linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
+        path_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
-        linking_usd.approve(from, ITIP20::approveCall { spender, amount })?;
+        path_usd.approve(from, ITIP20::approveCall { spender, amount })?;
 
-        let result =
-            linking_usd.transfer_from(spender, ITIP20::transferFromCall { from, to, amount });
+        let result = path_usd.transfer_from(spender, ITIP20::transferFromCall { from, to, amount });
 
         assert_eq!(
             result.unwrap_err(),
@@ -669,27 +709,25 @@ mod tests {
     #[test]
     fn test_transfer_with_memo_with_transfer_role() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let sender = Address::random();
         let recipient = Address::random();
         let amount = U256::from(1000);
         let memo = [1u8; 32];
 
-        linking_usd.initialize(admin)?;
-        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        linking_usd
-            .token
-            .grant_role_internal(sender, *TRANSFER_ROLE)?;
+        path_usd.initialize(admin)?;
+        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        path_usd.token.grant_role_internal(sender, *TRANSFER_ROLE)?;
 
-        linking_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
+        path_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
         let sender_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
+            path_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
         let recipient_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+            path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
-        linking_usd.transfer_with_memo(
+        path_usd.transfer_with_memo(
             sender,
             ITIP20::transferWithMemoCall {
                 to: recipient,
@@ -699,9 +737,9 @@ mod tests {
         )?;
 
         let sender_balance_after =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
+            path_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
         let recipient_balance_after =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+            path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
         assert_eq!(sender_balance_after, sender_balance_before - amount);
         assert_eq!(recipient_balance_after, recipient_balance_before + amount);
@@ -711,27 +749,27 @@ mod tests {
     #[test]
     fn test_transfer_with_memo_with_receive_role() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let sender = Address::random();
         let recipient = Address::random();
         let amount = U256::from(1000);
         let memo = [1u8; 32];
 
-        linking_usd.initialize(admin)?;
-        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        linking_usd
+        path_usd.initialize(admin)?;
+        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        path_usd
             .token
             .grant_role_internal(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
 
-        linking_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
+        path_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
         let sender_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
+            path_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
         let recipient_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+            path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
-        linking_usd.transfer_with_memo(
+        path_usd.transfer_with_memo(
             sender,
             ITIP20::transferWithMemoCall {
                 to: recipient,
@@ -741,9 +779,9 @@ mod tests {
         )?;
 
         let sender_balance_after =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
+            path_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
         let recipient_balance_after =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+            path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
         assert_eq!(sender_balance_after, sender_balance_before - amount);
         assert_eq!(recipient_balance_after, recipient_balance_before + amount);
@@ -753,19 +791,19 @@ mod tests {
     #[test]
     fn test_transfer_from_with_memo_with_stablecoin_exchange() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let from = Address::random();
         let to = Address::random();
         let amount = U256::from(1000);
         let memo = [1u8; 32];
 
-        linking_usd.initialize(admin)?;
-        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        path_usd.initialize(admin)?;
+        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
-        linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
+        path_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
-        linking_usd.approve(
+        path_usd.approve(
             from,
             ITIP20::approveCall {
                 spender: STABLECOIN_EXCHANGE_ADDRESS,
@@ -773,15 +811,14 @@ mod tests {
             },
         )?;
 
-        let from_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
-        let to_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
-        let allowance_before = linking_usd.allowance(ITIP20::allowanceCall {
+        let from_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
+        let to_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
+        let allowance_before = path_usd.allowance(ITIP20::allowanceCall {
             owner: from,
             spender: STABLECOIN_EXCHANGE_ADDRESS,
         })?;
 
-        let result = linking_usd.transfer_from_with_memo(
+        let result = path_usd.transfer_from_with_memo(
             STABLECOIN_EXCHANGE_ADDRESS,
             ITIP20::transferFromWithMemoCall {
                 from,
@@ -793,9 +830,9 @@ mod tests {
 
         assert!(result);
 
-        let from_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
-        let to_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
-        let allowance_after = linking_usd.allowance(ITIP20::allowanceCall {
+        let from_balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
+        let to_balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
+        let allowance_after = path_usd.allowance(ITIP20::allowanceCall {
             owner: from,
             spender: STABLECOIN_EXCHANGE_ADDRESS,
         })?;
@@ -809,7 +846,7 @@ mod tests {
     #[test]
     fn test_transfer_from_with_memo_with_transfer_role() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let from = Address::random();
         let to = Address::random();
@@ -817,25 +854,22 @@ mod tests {
         let amount = U256::from(1000);
         let memo = [1u8; 32];
 
-        linking_usd.initialize(admin)?;
-        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        linking_usd
-            .token
-            .grant_role_internal(from, *TRANSFER_ROLE)?;
+        path_usd.initialize(admin)?;
+        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        path_usd.token.grant_role_internal(from, *TRANSFER_ROLE)?;
 
-        linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
+        path_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
-        linking_usd.approve(from, ITIP20::approveCall { spender, amount })?;
+        path_usd.approve(from, ITIP20::approveCall { spender, amount })?;
 
-        let from_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
-        let to_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
-        let allowance_before = linking_usd.allowance(ITIP20::allowanceCall {
+        let from_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
+        let to_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
+        let allowance_before = path_usd.allowance(ITIP20::allowanceCall {
             owner: from,
             spender,
         })?;
 
-        let result = linking_usd.transfer_from_with_memo(
+        let result = path_usd.transfer_from_with_memo(
             spender,
             ITIP20::transferFromWithMemoCall {
                 from,
@@ -847,9 +881,9 @@ mod tests {
 
         assert!(result);
 
-        let from_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
-        let to_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
-        let allowance_after = linking_usd.allowance(ITIP20::allowanceCall {
+        let from_balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
+        let to_balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
+        let allowance_after = path_usd.allowance(ITIP20::allowanceCall {
             owner: from,
             spender,
         })?;
@@ -863,7 +897,7 @@ mod tests {
     #[test]
     fn test_transfer_from_with_memo_with_receive_role() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let from = Address::random();
         let to = Address::random();
@@ -871,25 +905,24 @@ mod tests {
         let amount = U256::from(1000);
         let memo = [1u8; 32];
 
-        linking_usd.initialize(admin)?;
-        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        linking_usd
+        path_usd.initialize(admin)?;
+        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        path_usd
             .token
             .grant_role_internal(to, *RECEIVE_WITH_MEMO_ROLE)?;
 
-        linking_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
+        path_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
-        linking_usd.approve(from, ITIP20::approveCall { spender, amount })?;
+        path_usd.approve(from, ITIP20::approveCall { spender, amount })?;
 
-        let from_balance_before =
-            linking_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
-        let to_balance_before = linking_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
-        let allowance_before = linking_usd.allowance(ITIP20::allowanceCall {
+        let from_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
+        let to_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
+        let allowance_before = path_usd.allowance(ITIP20::allowanceCall {
             owner: from,
             spender,
         })?;
 
-        let result = linking_usd.transfer_from_with_memo(
+        let result = path_usd.transfer_from_with_memo(
             spender,
             ITIP20::transferFromWithMemoCall {
                 from,
@@ -901,9 +934,9 @@ mod tests {
 
         assert!(result);
 
-        let from_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
-        let to_balance_after = linking_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
-        let allowance_after = linking_usd.allowance(ITIP20::allowanceCall {
+        let from_balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
+        let to_balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
+        let allowance_after = path_usd.allowance(ITIP20::allowanceCall {
             owner: from,
             spender,
         })?;
@@ -917,45 +950,43 @@ mod tests {
     #[test]
     fn test_pause_and_unpause() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let pauser = Address::random();
         let unpauser = Address::random();
 
-        linking_usd.initialize(admin).unwrap();
+        path_usd.initialize(admin).unwrap();
 
         // Grant PAUSE_ROLE and UNPAUSE_ROLE
-        linking_usd.token.grant_role_internal(pauser, *PAUSE_ROLE)?;
-        linking_usd
+        path_usd.token.grant_role_internal(pauser, *PAUSE_ROLE)?;
+        path_usd
             .token
             .grant_role_internal(unpauser, *UNPAUSE_ROLE)?;
 
         // Verify initial state (not paused)
-        assert!(!linking_usd.paused().unwrap());
+        assert!(!path_usd.paused().unwrap());
 
         // Pause the token
-        linking_usd.pause(pauser, ITIP20::pauseCall {}).unwrap();
-        assert!(linking_usd.paused().unwrap());
+        path_usd.pause(pauser, ITIP20::pauseCall {}).unwrap();
+        assert!(path_usd.paused().unwrap());
 
         // Unpause the token
-        linking_usd
-            .unpause(unpauser, ITIP20::unpauseCall {})
-            .unwrap();
-        assert!(!linking_usd.paused().unwrap());
+        path_usd.unpause(unpauser, ITIP20::unpauseCall {}).unwrap();
+        assert!(!path_usd.paused().unwrap());
         Ok(())
     }
 
     #[test]
     fn test_role_management() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let user = Address::random();
 
-        linking_usd.initialize(admin).unwrap();
+        path_usd.initialize(admin).unwrap();
 
         // Grant ISSUER_ROLE to user
-        linking_usd
+        path_usd
             .token
             .grant_role(
                 admin,
@@ -968,7 +999,7 @@ mod tests {
 
         // Check that user has the role
         assert!(
-            linking_usd
+            path_usd
                 .token
                 .has_role(IRolesAuth::hasRoleCall {
                     role: *ISSUER_ROLE,
@@ -978,7 +1009,7 @@ mod tests {
         );
 
         // Revoke the role
-        linking_usd
+        path_usd
             .token
             .revoke_role(
                 admin,
@@ -991,7 +1022,7 @@ mod tests {
 
         // Check that user no longer has the role
         assert!(
-            !linking_usd
+            !path_usd
                 .token
                 .has_role(IRolesAuth::hasRoleCall {
                     role: *ISSUER_ROLE,
@@ -1005,17 +1036,17 @@ mod tests {
     #[test]
     fn test_supply_cap() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let recipient = Address::random();
         let supply_cap = U256::from(1000);
 
-        linking_usd.initialize(admin).unwrap();
+        path_usd.initialize(admin).unwrap();
 
-        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         // Set supply cap
-        linking_usd
+        path_usd
             .token
             .set_supply_cap(
                 admin,
@@ -1025,10 +1056,10 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(linking_usd.token.supply_cap().unwrap(), supply_cap);
+        assert_eq!(path_usd.token.supply_cap().unwrap(), supply_cap);
 
         // Try to mint more than supply cap
-        let result = linking_usd.mint(
+        let result = path_usd.mint(
             admin,
             ITIP20::mintCall {
                 to: recipient,
@@ -1046,18 +1077,18 @@ mod tests {
     #[test]
     fn test_invalid_supply_caps() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let recipient = Address::random();
         let supply_cap = U256::from(1000);
         let bad_supply_cap = uint!(0x100000000000000000000000000000000_U256);
 
-        linking_usd.initialize(admin).unwrap();
+        path_usd.initialize(admin).unwrap();
 
-        linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         // Set supply cap to u128 max plus one
-        let result = linking_usd.token.set_supply_cap(
+        let result = path_usd.token.set_supply_cap(
             admin,
             ITIP20::setSupplyCapCall {
                 newSupplyCap: bad_supply_cap,
@@ -1070,7 +1101,7 @@ mod tests {
         );
 
         // Set supply cap
-        linking_usd
+        path_usd
             .token
             .set_supply_cap(
                 admin,
@@ -1081,7 +1112,7 @@ mod tests {
             .unwrap();
 
         // Try to mint the exact supply cap
-        linking_usd
+        path_usd
             .mint(
                 admin,
                 ITIP20::mintCall {
@@ -1093,7 +1124,7 @@ mod tests {
 
         // Try to set the supply cap to something lower than the total supply
         let smaller_supply_cap = U256::from(999);
-        let result = linking_usd.token.set_supply_cap(
+        let result = path_usd.token.set_supply_cap(
             admin,
             ITIP20::setSupplyCapCall {
                 newSupplyCap: smaller_supply_cap,
@@ -1110,14 +1141,14 @@ mod tests {
     #[test]
     fn test_change_transfer_policy_id() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut linking_usd = LinkingUSD::new(&mut storage);
+        let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let new_policy_id = 42u64;
 
-        linking_usd.initialize(admin).unwrap();
+        path_usd.initialize(admin).unwrap();
 
         // Admin can change transfer policy ID
-        linking_usd
+        path_usd
             .token
             .change_transfer_policy_id(
                 admin,
@@ -1128,7 +1159,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            linking_usd
+            path_usd
                 .token
                 .transfer_policy_id()
                 .expect("Could not get policy"),
@@ -1137,7 +1168,7 @@ mod tests {
 
         // Non-admin cannot change transfer policy ID
         let non_admin = Address::random();
-        let result = linking_usd.token.change_transfer_policy_id(
+        let result = path_usd.token.change_transfer_policy_id(
             non_admin,
             ITIP20::changeTransferPolicyIdCall { newPolicyId: 100 },
         );
@@ -1146,6 +1177,154 @@ mod tests {
             result.unwrap_err(),
             TempoPrecompileError::RolesAuthError(RolesAuthError::unauthorized())
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Allegretto);
+        let mut path_usd = PathUSD::new(&mut storage);
+        let admin = Address::random();
+        let sender = Address::random();
+        let recipient = Address::random();
+        let amount = U256::from(1000);
+
+        path_usd.initialize(admin)?;
+        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        // Mint to sender without any special roles
+        path_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
+
+        // Post-Allegretto: transfer should work without TRANSFER_ROLE
+        let result = path_usd.transfer(
+            sender,
+            ITIP20::transferCall {
+                to: recipient,
+                amount,
+            },
+        )?;
+
+        assert!(result);
+
+        let sender_balance = path_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
+        let recipient_balance =
+            path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+
+        assert_eq!(sender_balance, U256::ZERO);
+        assert_eq!(recipient_balance, amount);
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_from_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Allegretto);
+        let mut path_usd = PathUSD::new(&mut storage);
+        let admin = Address::random();
+        let owner = Address::random();
+        let spender = Address::random();
+        let recipient = Address::random();
+        let amount = U256::from(1000);
+
+        path_usd.initialize(admin)?;
+        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        // Mint to owner and approve spender
+        path_usd.mint(admin, ITIP20::mintCall { to: owner, amount })?;
+        path_usd.approve(owner, ITIP20::approveCall { spender, amount })?;
+
+        // Post-Allegretto: transfer_from should work without TRANSFER_ROLE
+        let result = path_usd.transfer_from(
+            spender,
+            ITIP20::transferFromCall {
+                from: owner,
+                to: recipient,
+                amount,
+            },
+        )?;
+
+        assert!(result);
+
+        let owner_balance = path_usd.balance_of(ITIP20::balanceOfCall { account: owner })?;
+        let recipient_balance =
+            path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+
+        assert_eq!(owner_balance, U256::ZERO);
+        assert_eq!(recipient_balance, amount);
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_with_memo_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Allegretto);
+        let mut path_usd = PathUSD::new(&mut storage);
+        let admin = Address::random();
+        let sender = Address::random();
+        let recipient = Address::random();
+        let amount = U256::from(1000);
+        let memo = [1u8; 32];
+
+        path_usd.initialize(admin)?;
+        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        // Mint to sender without any special roles
+        path_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
+
+        // Post-Allegretto: transfer_with_memo should work without TRANSFER_ROLE or RECEIVE_WITH_MEMO_ROLE
+        path_usd.transfer_with_memo(
+            sender,
+            ITIP20::transferWithMemoCall {
+                to: recipient,
+                amount,
+                memo: memo.into(),
+            },
+        )?;
+
+        let sender_balance = path_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;
+        let recipient_balance =
+            path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+
+        assert_eq!(sender_balance, U256::ZERO);
+        assert_eq!(recipient_balance, amount);
+        Ok(())
+    }
+
+    #[test]
+    fn test_transfer_from_with_memo_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Allegretto);
+        let mut path_usd = PathUSD::new(&mut storage);
+        let admin = Address::random();
+        let owner = Address::random();
+        let spender = Address::random();
+        let recipient = Address::random();
+        let amount = U256::from(1000);
+        let memo = [1u8; 32];
+
+        path_usd.initialize(admin)?;
+        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        // Mint to owner and approve spender
+        path_usd.mint(admin, ITIP20::mintCall { to: owner, amount })?;
+        path_usd.approve(owner, ITIP20::approveCall { spender, amount })?;
+
+        // Post-Allegretto: transfer_from_with_memo should work without any special roles
+        let result = path_usd.transfer_from_with_memo(
+            spender,
+            ITIP20::transferFromWithMemoCall {
+                from: owner,
+                to: recipient,
+                amount,
+                memo: memo.into(),
+            },
+        )?;
+
+        assert!(result);
+
+        let owner_balance = path_usd.balance_of(ITIP20::balanceOfCall { account: owner })?;
+        let recipient_balance =
+            path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+
+        assert_eq!(owner_balance, U256::ZERO);
+        assert_eq!(recipient_balance, amount);
         Ok(())
     }
 }

@@ -1,7 +1,7 @@
 use commonware_macros::test_traced;
 use reth_ethereum::{rpc::types::engine::ForkchoiceState, storage::BlockReader as _};
 
-use crate::ExecutionRuntime;
+use crate::{ExecutionRuntime, execution_runtime::chainspec};
 
 mod backfill;
 mod dkg;
@@ -28,11 +28,10 @@ fn spawning_execution_node_works() {
     //     .try_init();
     // <rest>
 
-    let runtime = ExecutionRuntime::new();
-    let handle = runtime.handle();
+    let runtime = ExecutionRuntime::with_chain_spec(chainspec());
 
-    futures::executor::block_on(async move {
-        let node = handle
+    let runtime = futures::executor::block_on(async move {
+        let node = runtime
             .spawn_node("node-1")
             .await
             .expect("a running execution runtime must be able to spawn nodes");
@@ -59,6 +58,7 @@ fn spawning_execution_node_works() {
             updated.is_valid(),
             "setting the forkchoice state to genesis should always work; response\n{updated:?}"
         );
+        runtime
     });
 
     runtime.stop().expect("runtime must stop");

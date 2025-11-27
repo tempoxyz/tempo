@@ -4,19 +4,17 @@ use alloy::{
     signers::local::MnemonicBuilder,
     sol_types::SolEvent,
 };
-use std::env;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{ITIP20, ITIP20Factory};
-use tempo_precompiles::{LINKING_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::token_id_to_address};
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::token_id_to_address};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_create_token() -> eyre::Result<()> {
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = crate::utils::TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
@@ -37,7 +35,7 @@ async fn test_create_token() -> eyre::Result<()> {
             "Test".to_string(),
             "TEST".to_string(),
             "USD".to_string(),
-            LINKING_USD_ADDRESS,
+            PATH_USD_ADDRESS,
             caller,
         )
         .gas_price(TEMPO_BASE_FEE as u128)
@@ -64,7 +62,8 @@ async fn test_create_token() -> eyre::Result<()> {
     assert_eq!(token.symbol().call().await?, symbol);
     assert_eq!(token.decimals().call().await?, 6);
     assert_eq!(token.currency().call().await?, currency);
-    assert_eq!(token.supplyCap().call().await?, U256::MAX);
+    // Supply cap is u128::MAX post-allegretto
+    assert_eq!(token.supplyCap().call().await?, U256::from(u128::MAX));
     assert_eq!(token.transferPolicyId().call().await?, 1);
 
     Ok(())

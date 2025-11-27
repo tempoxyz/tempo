@@ -1,6 +1,6 @@
 use super::ITIP20;
 use crate::{
-    Precompile, input_cost, metadata, mutate, mutate_void,
+    Precompile, fill_precompile_output, input_cost, metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
     tip20::{IRolesAuth, TIP20Token},
     unknown_selector, view,
@@ -113,6 +113,30 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                     |s, call| self.complete_quote_token_update(s, call),
                 )
             }
+
+            ITIP20::feeRecipientCall::SELECTOR => {
+                if !self.storage.spec().is_allegretto() {
+                    return unknown_selector(
+                        selector,
+                        self.storage.gas_used(),
+                        self.storage.spec(),
+                    );
+                }
+                view::<ITIP20::feeRecipientCall>(calldata, |_call| self.sload_fee_recipient())
+            }
+            ITIP20::setFeeRecipientCall::SELECTOR => {
+                if !self.storage.spec().is_allegretto() {
+                    return unknown_selector(
+                        selector,
+                        self.storage.gas_used(),
+                        self.storage.spec(),
+                    );
+                }
+                mutate_void::<ITIP20::setFeeRecipientCall>(calldata, msg_sender, |s, call| {
+                    self.set_fee_recipient(s, call.newRecipient)
+                })
+            }
+
             ITIP20::mintCall::SELECTOR => {
                 mutate_void::<ITIP20::mintCall>(calldata, msg_sender, |s, call| self.mint(s, call))
             }
@@ -227,19 +251,16 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
-        result.map(|mut res| {
-            res.gas_used = self.storage.gas_used();
-            res
-        })
+        result.map(|res| fill_precompile_output(res, self.storage))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{
-        LINKING_USD_ADDRESS,
+        PATH_USD_ADDRESS,
         storage::hashmap::HashMapStorageProvider,
-        tip20::{TIP20Token, tests::initialize_linking_usd},
+        tip20::{TIP20Token, tests::initialize_path_usd},
     };
 
     use alloy::{
@@ -273,11 +294,11 @@ mod tests {
         let sender = Address::from([1u8; 20]);
         let account = Address::from([2u8; 20]);
 
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         // Grant ISSUER_ROLE to admin
@@ -326,11 +347,11 @@ mod tests {
         let recipient = Address::from([2u8; 20]);
         let mint_amount = U256::from(500);
 
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         // Grant ISSUER_ROLE to sender
@@ -378,11 +399,11 @@ mod tests {
         let transfer_amount = U256::from(300);
         let initial_sender_balance = U256::from(1000);
 
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         // Grant ISSUER_ROLE to admin
@@ -460,11 +481,11 @@ mod tests {
         let transfer_amount = U256::from(300);
         let initial_owner_balance = U256::from(1000);
 
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         // Grant ISSUER_ROLE to admin
@@ -543,11 +564,11 @@ mod tests {
         let pauser = Address::from([1u8; 20]);
         let unpauser = Address::from([2u8; 20]);
 
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         // Grant PAUSE_ROLE to pauser and UNPAUSE_ROLE to unpauser
@@ -609,11 +630,11 @@ mod tests {
         let initial_balance = U256::from(1000);
         let burn_amount = U256::from(300);
 
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         // Grant ISSUER_ROLE to admin and burner
@@ -683,11 +704,18 @@ mod tests {
         let admin = Address::from([0u8; 20]);
         let caller = Address::from([1u8; 20]);
 
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token
         token
-            .initialize("Test Token", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize(
+                "Test Token",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         // Test name()
@@ -744,11 +772,11 @@ mod tests {
         let supply_cap = U256::from(1000);
         let mint_amount = U256::from(1001);
 
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         // Grant ISSUER_ROLE to admin
@@ -797,11 +825,11 @@ mod tests {
         let user2 = Address::from([2u8; 20]);
         let unauthorized = Address::from([3u8; 20]);
 
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         // Grant a role to user1
@@ -867,11 +895,11 @@ mod tests {
         let transfer_amount = U256::from(100);
         let initial_balance = U256::from(500);
 
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize and setup
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         use alloy::primitives::keccak256;
@@ -929,11 +957,11 @@ mod tests {
         let non_admin = Address::from([1u8; 20]);
         let new_policy_id = 42u64;
 
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         // Admin can change transfer policy ID
@@ -962,14 +990,23 @@ mod tests {
     #[test]
     fn tip20_test_selector_coverage() {
         use crate::test_util::{assert_full_coverage, check_selector_coverage};
+        use tempo_chainspec::hardfork::TempoHardfork;
         use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
 
-        let mut storage = HashMapStorageProvider::new(1);
+        // Use allegretto to cover hardfork-gated selectors (feeRecipient, setFeeRecipient)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
 
-        initialize_linking_usd(&mut storage, Address::ZERO).unwrap();
+        initialize_path_usd(&mut storage, Address::ZERO).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, Address::ZERO)
+            .initialize(
+                "Test",
+                "TST",
+                "USD",
+                PATH_USD_ADDRESS,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
 
         let itip20_unsupported =

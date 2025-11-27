@@ -1,5 +1,5 @@
 use crate::TempoTxEnvelope;
-use alloy_primitives::{Address, B256, Bytes, keccak256, wrap_fixed_bytes};
+use alloy_primitives::{Address, B256, Bytes, U256, keccak256, wrap_fixed_bytes};
 use alloy_rlp::{BufMut, Decodable, Encodable, RlpDecodable, RlpEncodable};
 use reth_primitives_traits::{Recovered, crypto::RecoveryError};
 
@@ -8,6 +8,12 @@ const SUBBLOCK_SIGNATURE_HASH_MAGIC_BYTE: u8 = 0x78;
 
 /// Nonce key prefix marking a subblock transaction.
 pub const TEMPO_SUBBLOCK_NONCE_KEY_PREFIX: u8 = 0x5b;
+
+/// Returns true if the given nonce key has the [`TEMPO_SUBBLOCK_NONCE_KEY_PREFIX`].
+#[inline]
+pub fn has_sub_block_nonce_key_prefix(nonce_key: &U256) -> bool {
+    nonce_key.byte(31) == TEMPO_SUBBLOCK_NONCE_KEY_PREFIX
+}
 
 wrap_fixed_bytes! {
     /// Partial validator public key encoded inside the nonce key.

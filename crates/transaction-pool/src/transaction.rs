@@ -1,3 +1,4 @@
+use crate::aa_2d_pool::{AA2dTransactionId, AASequenceId};
 use alloy_consensus::{BlobTransactionValidationError, Transaction, transaction::TxHashRef};
 use alloy_eips::{
     eip2718::{Encodable2718, Typed2718},
@@ -55,32 +56,94 @@ impl TempoPooledTransaction {
         &self.inner.transaction
     }
 
+    /// Returns true if this is an AA transaction
+    pub fn is_aa(&self) -> bool {
+        self.inner().is_aa()
+    }
+
+    /// Returns the nonce key of this transaction if it's an [`AASigned`](tempo_primitives::AASigned) transaction.
+    pub fn nonce_key(&self) -> Option<U256> {
+        self.inner.transaction.nonce_key()
+    }
+
     /// Returns whether this is a payment transaction.
     ///
     /// Based on classifier v1: payment if tx.to has TIP20 reserved prefix.
     pub fn is_payment(&self) -> bool {
         self.is_payment
     }
+
+    /// Returns true if this transaction belongs into the 2D nonce pool:
+    /// - AA transaction with a `nonce key != 0`
+    pub(crate) fn is_aa_2d(&self) -> bool {
+        self.inner
+            .transaction
+            .as_aa()
+            .map(|tx| !tx.tx().nonce_key.is_zero())
+            .unwrap_or(false)
+    }
+
+    /// Returns the unique identifier for this AA transaction.
+    pub(crate) fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
+        let nonce_key = self.nonce_key()?;
+        let sender = AASequenceId {
+            address: self.sender(),
+            nonce_key,
+        };
+        Some(AA2dTransactionId {
+            seq_id: sender,
+            nonce: self.nonce(),
+        })
+    }
 }
 
 #[derive(Debug, Error)]
 pub enum TempoPoolTransactionError {
-    #[error("Transaction exceeds non payment gas limit")]
+    #[error(
+        "Transaction exceeds non payment gas limit, please see https://docs.tempo.xyz/errors/tx/ExceedsNonPaymentLimit for more"
+    )]
     ExceedsNonPaymentLimit,
 
-    #[error("Invalid fee token: {0}")]
+    #[error(
+        "Invalid fee token: {0}, please see https://docs.tempo.xyz/errors/tx/InvalidFeeToken for more"
+    )]
     InvalidFeeToken(Address),
 
     #[error("No fee token preference configured")]
     MissingFeeToken,
+
+    #[error(
+        "'valid_before' {valid_before} is too close to current time (min allowed: {min_allowed})"
+    )]
+    InvalidValidBefore { valid_before: u64, min_allowed: u64 },
+
+    #[error("'valid_after' {valid_after} is too far in the future (max allowed: {max_allowed})")]
+    InvalidValidAfter { valid_after: u64, max_allowed: u64 },
+
+    #[error(
+        "Keychain signature validation failed: {0}, please see https://docs.tempo.xyz/errors/tx/Keychain for more"
+    )]
+    Keychain(&'static str),
+
+    #[error(
+        "Native transfers are not supported, if you were trying to transfer a stablecoin, please call TIP20::Transfer"
+    )]
+    NonZeroValue,
+
+    /// Thrown if a AA transaction with a nonce key prefixed with the sub-block prefix marker added to the pool
+    #[error("AA transaction with subblock nonce key prefix aren't supported in the pool")]
+    SubblockNonceKey,
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
     fn is_bad_transaction(&self) -> bool {
         match self {
-            Self::ExceedsNonPaymentLimit => false,
-            Self::InvalidFeeToken(_) => false,
-            Self::MissingFeeToken => false,
+            Self::ExceedsNonPaymentLimit
+            | Self::InvalidFeeToken(_)
+            | Self::MissingFeeToken
+            | Self::InvalidValidBefore { .. }
+            | Self::InvalidValidAfter { .. } => false,
+            Self::NonZeroValue | Self::Keychain(_) | Self::SubblockNonceKey => true,
         }
     }
 
@@ -150,6 +213,17 @@ impl PoolTransaction for TempoPooledTransaction {
 
     fn encoded_length(&self) -> usize {
         self.inner.encoded_length
+    }
+
+    fn requires_nonce_check(&self) -> bool {
+        self.inner
+            .transaction()
+            .as_aa()
+            .map(|tx| {
+                // for AA transaction with a custom nonce key we can skip the nonce validation
+                tx.tx().nonce_key.is_zero()
+            })
+            .unwrap_or(true)
     }
 }
 

@@ -34,7 +34,7 @@ jobs:
 
   fmt:
     name: fmt
-    runs-on: depot-ubuntu-latest-4
+    runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -42,9 +42,9 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all --check
-  
+
   crate-checks:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest-4
     timeout-minutes: 60
     if: github.event_name == 'push'
     steps:
@@ -57,20 +57,45 @@ jobs:
 
   docs:
     name: docs
-    runs-on: depot-ubuntu-latest-4
+    runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Check documentation
-        run: cargo doc --no-deps --document-private-items --all-features
+      - name: Build documentation
+        run: cargo doc --workspace --all-features --no-deps --document-private-items
         env:
-          RUSTDOCFLAGS: -D warnings
+          RUSTDOCFLAGS: --cfg docsrs -D warnings --show-type-layout --generate-link-to-definition --enable-index-page -Zunstable-options
+      - name: Setup Pages
+        if: github.ref_name == 'main' && github.event_name == 'push'
+        uses: actions/configure-pages@v5
+      - name: Upload artifact
+        if: github.ref_name == 'main' && github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ./target/doc
+
+  # Disabled until public
+  # deploy-docs:
+  #   if: github.ref_name == 'main' && github.event_name == 'push'
+  #   needs: [docs]
+  #   runs-on: depot-ubuntu-latest
+  #   timeout-minutes: 30
+  #   permissions:
+  #     pages: write
+  #     id-token: write
+  #   environment:
+  #     name: github-pages
+  #     url: ${{ steps.deployment.outputs.page_url }}
+  #   steps:
+  #     - name: Deploy to GitHub Pages
+  #       id: deployment
+  #       uses: actions/deploy-pages@v4
 
   typos:
-    runs-on: depot-ubuntu-latest-4
+    runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -81,7 +106,7 @@ jobs:
 
   zepter:
     name: zepter
-    runs-on: depot-ubuntu-latest-4
+    runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -97,7 +122,7 @@ jobs:
 
   lint-success:
     name: lint success
-    runs-on: depot-ubuntu-latest
+    runs-on: ubuntu-latest
     if: always()
     needs:
       - clippy

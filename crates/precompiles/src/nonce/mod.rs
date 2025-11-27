@@ -18,7 +18,7 @@ use alloy::primitives::{Address, IntoLogData, U256};
 /// Storage Layout (similar to Solidity contract):
 /// ```solidity
 /// contract Nonce {
-///     mapping(address => mapping(uint64 => uint64)) public nonces;      // slot 0
+///     mapping(address => mapping(uint256 => uint64)) public nonces;      // slot 0
 ///     mapping(address => uint256) public activeKeyCount;                  // slot 1
 /// }
 /// ```
@@ -71,7 +71,6 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
     /// Internal: Increment nonce for a specific account and nonce key
     pub fn increment_nonce(&mut self, account: Address, nonce_key: U256) -> Result<u64> {
         if nonce_key == 0 {
-            // TODO: Should this be a different error?
             return Err(NonceError::invalid_nonce_key().into());
         }
 
@@ -87,6 +86,18 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
             .ok_or_else(NonceError::nonce_overflow)?;
 
         self.sstore_nonces(account, nonce_key, new_nonce)?;
+
+        if self.storage.spec().is_allegretto() {
+            self.storage.emit_event(
+                self.address,
+                NonceEvent::NonceIncremented(INonce::NonceIncremented {
+                    account,
+                    nonceKey: nonce_key,
+                    newNonce: new_nonce,
+                })
+                .into_log_data(),
+            )?;
+        }
 
         Ok(new_nonce)
     }
@@ -293,36 +304,70 @@ mod tests {
 
     #[test]
     fn test_active_key_count_event_not_emitted_pre_moderato() {
-        // Test with Adagio (pre-Moderato) - event should NOT be emitted
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let account = address!("0x1111111111111111111111111111111111111111");
         let nonce_key = U256::from(5);
 
-        // First increment should NOT emit ActiveKeyCountChanged event pre-Moderato
         {
             let mut nonce_mgr = NonceManager::new(&mut storage);
             nonce_mgr.increment_nonce(account, nonce_key).unwrap();
         }
 
-        // Check that NO events were emitted
         let events = storage.events.get(&NONCE_PRECOMPILE_ADDRESS);
         assert!(
             events.is_none() || events.unwrap().is_empty(),
             "No events should be emitted pre-Moderato"
         );
 
-        // Increment on different key should also NOT emit event
         let nonce_key2 = U256::from(10);
         {
             let mut nonce_mgr = NonceManager::new(&mut storage);
             nonce_mgr.increment_nonce(account, nonce_key2).unwrap();
         }
 
-        // Still no events
         let events = storage.events.get(&NONCE_PRECOMPILE_ADDRESS);
         assert!(
             events.is_none() || events.unwrap().is_empty(),
             "No events should be emitted pre-Moderato"
         );
+    }
+
+    #[test]
+    fn test_increment_nonce_post_allegretto() {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let account = address!("0x1111111111111111111111111111111111111111");
+        let nonce_key = U256::from(5);
+
+        {
+            let mut nonce_mgr = NonceManager::new(&mut storage);
+            nonce_mgr.increment_nonce(account, nonce_key).unwrap();
+        }
+
+        let events = storage
+            .events
+            .get(&NONCE_PRECOMPILE_ADDRESS)
+            .expect("Could not get events");
+        assert_eq!(events.len(), 2,);
+
+        let expected_nonce_event = NonceEvent::NonceIncremented(INonce::NonceIncremented {
+            account,
+            nonceKey: nonce_key,
+            newNonce: 1,
+        });
+        assert_eq!(events[1], expected_nonce_event.into_log_data());
+
+        {
+            let mut nonce_mgr = NonceManager::new(&mut storage);
+            nonce_mgr.increment_nonce(account, nonce_key).unwrap();
+        }
+        let events = storage.events.get(&NONCE_PRECOMPILE_ADDRESS).unwrap();
+        assert_eq!(events.len(), 3);
+
+        let expected_nonce_event2 = NonceEvent::NonceIncremented(INonce::NonceIncremented {
+            account,
+            nonceKey: nonce_key,
+            newNonce: 2,
+        });
+        assert_eq!(events[2], expected_nonce_event2.into_log_data());
     }
 }

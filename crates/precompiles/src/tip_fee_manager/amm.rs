@@ -17,6 +17,15 @@ pub const SCALE: U256 = uint!(10000_U256);
 pub const SQRT_SCALE: U256 = uint!(100000_U256);
 pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
 
+/// Compute amount out for a fee swap
+#[inline]
+pub fn compute_amount_out(amount_in: U256) -> Result<U256> {
+    amount_in
+        .checked_mul(M)
+        .map(|product| product / SCALE)
+        .ok_or(TempoPrecompileError::under_overflow())
+}
+
 /// Pool structure matching the Solidity implementation
 #[derive(Debug, Clone, Default, Storable)]
 pub struct Pool {
@@ -33,7 +42,7 @@ impl From<Pool> for ITIPFeeAMM::Pool {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Storable)]
 pub struct PoolKey {
     pub user_token: Address,
     pub validator_token: Address,
@@ -78,10 +87,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         max_amount: U256,
     ) -> Result<()> {
         let pool_id = PoolKey::new(user_token, validator_token).get_id();
-        let amount_out = max_amount
-            .checked_mul(M)
-            .map(|product| product / SCALE)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let amount_out = compute_amount_out(max_amount)?;
         let available_validator_token = self.get_effective_validator_reserve(pool_id)?;
 
         if amount_out > available_validator_token {
@@ -107,10 +113,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     fn get_effective_validator_reserve(&mut self, pool_id: B256) -> Result<U256> {
         let pool = self.sload_pools(pool_id)?;
         let pending_fee_swap_in = self.get_pending_fee_swap_in(pool_id)?;
-        let pending_out = U256::from(pending_fee_swap_in)
-            .checked_mul(M)
-            .and_then(|product| product.checked_div(SCALE))
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let pending_out = compute_amount_out(U256::from(pending_fee_swap_in))?;
 
         U256::from(pool.reserve_validator_token)
             .checked_sub(pending_out)
@@ -593,18 +596,19 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             .and_then(|product| product.checked_div(total_supply))
             .ok_or(TempoPrecompileError::under_overflow())?;
 
-        if amount_user_token.is_zero() || amount_validator_token.is_zero() {
-            return Err(TIPFeeAMMError::insufficient_liquidity().into());
+        if !self.storage.spec().is_allegretto() {
+            if amount_user_token.is_zero() || amount_validator_token.is_zero() {
+                return Err(TIPFeeAMMError::insufficient_liquidity().into());
+            }
+
+            let available_user_token = self.get_effective_user_reserve(pool_id)?;
+            if amount_user_token > available_user_token {
+                return Err(TIPFeeAMMError::insufficient_reserves().into());
+            }
         }
 
         // Check that withdrawal does not violate pending swaps
-        let available_user_token = self.get_effective_user_reserve(pool_id)?;
         let available_validator_token = self.get_effective_validator_reserve(pool_id)?;
-
-        if amount_user_token > available_user_token {
-            return Err(TIPFeeAMMError::insufficient_reserves().into());
-        }
-
         if amount_validator_token > available_validator_token {
             return Err(TIPFeeAMMError::insufficient_reserves().into());
         }
@@ -622,10 +626,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         let mut pool = self.sload_pools(pool_id)?;
 
         let amount_in = U256::from(self.get_pending_fee_swap_in(pool_id)?);
-        let pending_out = amount_in
-            .checked_mul(M)
-            .and_then(|product| product.checked_div(SCALE))
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let pending_out = compute_amount_out(amount_in)?;
 
         // Use checked math for these operations
         let new_user_reserve = U256::from(pool.reserve_user_token)
@@ -713,10 +714,10 @@ pub fn sqrt(x: U256) -> U256 {
 mod tests {
     use super::*;
     use crate::{
-        LINKING_USD_ADDRESS,
+        PATH_USD_ADDRESS,
         error::TempoPrecompileError,
         storage::{ContractStorage, hashmap::HashMapStorageProvider},
-        tip20::{TIP20Token, tests::initialize_linking_usd, token_id_to_address},
+        tip20::{TIP20Token, tests::initialize_path_usd, token_id_to_address},
     };
     use alloy::primitives::{Address, uint};
     use tempo_contracts::precompiles::TIP20Error;
@@ -770,20 +771,34 @@ mod tests {
         let storage = Box::leak(Box::new(HashMapStorageProvider::new(1)));
         let admin = Address::random();
 
-        // Initialize LinkingUSD first
-        initialize_linking_usd(storage, admin).unwrap();
+        // Initialize PathUSD first
+        initialize_path_usd(storage, admin).unwrap();
 
         // Create USD tokens for user and validator
         let user_token = token_id_to_address(1);
         let mut user_tip20 = TIP20Token::from_address(user_token, storage);
         user_tip20
-            .initialize("UserToken", "UTK", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize(
+                "UserToken",
+                "UTK",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let validator_token = token_id_to_address(2);
         let mut validator_tip20 = TIP20Token::from_address(validator_token, storage);
         validator_tip20
-            .initialize("ValidatorToken", "VTK", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize(
+                "ValidatorToken",
+                "VTK",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let amm = TipFeeManager::new(storage);
@@ -1135,20 +1150,41 @@ mod tests {
         let to = Address::random();
 
         // Init Linking USD, user token and validator tokens
-        let mut linking_usd = TIP20Token::from_address(LINKING_USD_ADDRESS, &mut storage);
-        linking_usd
-            .initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
+        path_usd
+            .initialize(
+                "PathUSD",
+                "LUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let mut user_token = TIP20Token::new(1, &mut storage);
         user_token
-            .initialize("TestToken", "TEST", "EUR", LINKING_USD_ADDRESS, admin)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "EUR",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
         let user_token_address = user_token.address();
 
         let mut validator_token = TIP20Token::new(2, &mut storage);
         validator_token
-            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
         let validator_token_address = validator_token.address();
 
@@ -1192,20 +1228,41 @@ mod tests {
         let to = Address::random();
 
         // Init Linking USD, user token and validator tokens
-        let mut linking_usd = TIP20Token::from_address(LINKING_USD_ADDRESS, &mut storage);
-        linking_usd
-            .initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
+        path_usd
+            .initialize(
+                "PathUSD",
+                "LUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let mut user_token = TIP20Token::new(1, &mut storage);
         user_token
-            .initialize("TestToken", "TEST", "EUR", LINKING_USD_ADDRESS, admin)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "EUR",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
         let user_token_address = user_token.address();
 
         let mut validator_token = TIP20Token::new(2, &mut storage);
         validator_token
-            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
         let validator_token_address = validator_token.address();
 
@@ -1247,20 +1304,41 @@ mod tests {
         let to = Address::random();
 
         // Init Linking USD, user token and validator tokens
-        let mut linking_usd = TIP20Token::from_address(LINKING_USD_ADDRESS, &mut storage);
-        linking_usd
-            .initialize("LinkingUSD", "LUSD", "USD", Address::ZERO, admin)
+        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
+        path_usd
+            .initialize(
+                "PathUSD",
+                "LUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let mut user_token = TIP20Token::new(1, &mut storage);
         user_token
-            .initialize("TestToken", "TEST", "EUR", LINKING_USD_ADDRESS, admin)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "EUR",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
         let user_token_address = user_token.address();
 
         let mut validator_token = TIP20Token::new(2, &mut storage);
         validator_token
-            .initialize("TestToken", "TEST", "USD", LINKING_USD_ADDRESS, admin)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
         let validator_token_address = validator_token.address();
 

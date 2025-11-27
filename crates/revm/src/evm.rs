@@ -196,7 +196,7 @@ mod tests {
     use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
     use tempo_evm::TempoEvmFactory;
     use tempo_precompiles::{
-        LINKING_USD_ADDRESS, storage::evm::EvmPrecompileStorageProvider, tip20::TIP20Token,
+        PATH_USD_ADDRESS, storage::evm::EvmPrecompileStorageProvider, tip20::TIP20Token,
     };
 
     #[test]
@@ -204,17 +204,31 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut tempo_evm = TempoEvmFactory::default().create_evm(db, Default::default());
 
-        // HACK: initialize default fee token and linkingUSD so that fee token validation passes
+        // HACK: initialize default fee token and pathUSD so that fee token validation passes
         let ctx = tempo_evm.ctx_mut();
         let mut storage = EvmPrecompileStorageProvider::new_max_gas(
             EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
             &ctx.cfg,
         );
         TIP20Token::new(0, &mut storage)
-            .initialize("USD", "USD", "USD", Address::ZERO, Address::ZERO)
+            .initialize(
+                "USD",
+                "USD",
+                "USD",
+                Address::ZERO,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
         TIP20Token::new(1, &mut storage)
-            .initialize("USD", "USD", "USD", LINKING_USD_ADDRESS, Address::ZERO)
+            .initialize(
+                "USD",
+                "USD",
+                "USD",
+                PATH_USD_ADDRESS,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
         drop(storage);
 
@@ -248,10 +262,24 @@ mod tests {
             &ctx.cfg,
         );
         TIP20Token::new(0, &mut storage)
-            .initialize("USD", "USD", "USD", Address::ZERO, Address::ZERO)
+            .initialize(
+                "USD",
+                "USD",
+                "USD",
+                Address::ZERO,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
         TIP20Token::new(1, &mut storage)
-            .initialize("USD", "USD", "USD", LINKING_USD_ADDRESS, Address::ZERO)
+            .initialize(
+                "USD",
+                "USD",
+                "USD",
+                PATH_USD_ADDRESS,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
         drop(storage);
 

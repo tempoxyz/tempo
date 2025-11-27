@@ -46,8 +46,14 @@ pub trait PrecompileStorageProvider {
     /// Deducts gas from the remaining gas and return an error if the gas is insufficient.
     fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError>;
 
+    /// Add refund to the refund gas counter.
+    fn refund_gas(&mut self, gas: i64);
+
     /// Returns the gas used so far.
     fn gas_used(&self) -> u64;
+
+    /// Returns the gas refunded so far.
+    fn gas_refunded(&self) -> i64;
 
     /// Currently active hardfork.
     fn spec(&self) -> TempoHardfork;

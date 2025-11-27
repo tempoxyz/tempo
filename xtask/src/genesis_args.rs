@@ -1,12 +1,9 @@
 use alloy::{
     genesis::{ChainConfig, Genesis, GenesisAccount},
-    primitives::{Address, B256, Bytes, U256, address},
-    signers::{
-        local::{MnemonicBuilder, coins_bip39::English},
-        utils::secret_key_to_address,
-    },
+    primitives::{Address, U256, address},
+    signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
-use clap::Parser;
+use alloy_primitives::Bytes;
 use eyre::WrapErr as _;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use rayon::prelude::*;
@@ -17,54 +14,39 @@ use reth_evm::{
         inspector::JournalExt,
     },
 };
-use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_commonware_node_config::{Peers, PublicPolynomial, SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, DEFAULT_7702_DELEGATE_ADDRESS,
     MULTICALL_ADDRESS, PERMIT2_ADDRESS, SAFE_DEPLOYER_ADDRESS,
-    contracts::ARACHNID_CREATE2_FACTORY_BYTECODE,
+    contracts::ARACHNID_CREATE2_FACTORY_BYTECODE, precompiles::ITIP20Factory,
 };
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
-    LINKING_USD_ADDRESS,
-    linking_usd::{LinkingUSD, TRANSFER_ROLE},
+    PATH_USD_ADDRESS,
     nonce::NonceManager,
+    path_usd::PathUSD,
     stablecoin_exchange::StablecoinExchange,
     storage::{ContractStorage, evm::EvmPrecompileStorageProvider},
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token, address_to_token_id_unchecked},
-    tip20_factory::{ITIP20Factory, TIP20Factory},
+    tip20_factory::TIP20Factory,
     tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
-    validator_config::{IValidatorConfig, ValidatorConfig},
+    validator_config::ValidatorConfig,
 };
 
-/// Initial validator configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct InitialValidator {
-    /// Validator address
-    address: Address,
-    /// Communication key (32 bytes)
-    pub key: B256,
-    /// IP address or DNS name
-    inbound_address: String,
-    /// Outbound address
-    outbound_address: String,
-    /// Whether validator starts active
-    active: bool,
-}
-
 /// Generate genesis allocation file for testing
-#[derive(Parser, Debug)]
+#[derive(Debug, clap::Args)]
 pub(crate) struct GenesisArgs {
     /// Number of accounts to generate
     #[arg(short, long, default_value = "50000")]
-    pub accounts: u32,
-
-    /// Output file path
-    #[arg(short, long)]
-    pub output: PathBuf,
+    accounts: u32,
 
     /// Mnemonic to use for account generation
     #[arg(
@@ -72,35 +54,77 @@ pub(crate) struct GenesisArgs {
         long,
         default_value = "test test test test test test test test test test test junk"
     )]
-    pub mnemonic: String,
+    mnemonic: String,
 
     /// Balance for each account
     #[arg(long, default_value = "0xD3C21BCECCEDA1000000")]
-    pub balance: U256,
+    balance: U256,
 
     /// Coinbase address
     #[arg(long, default_value = "0x0000000000000000000000000000000000000000")]
-    pub coinbase: Address,
+    coinbase: Address,
 
     /// Chain ID
     #[arg(long, short, default_value = "1337")]
-    pub chain_id: u64,
+    chain_id: u64,
 
     /// Base fee
     #[arg(long, default_value_t = TEMPO_BASE_FEE.into())]
-    pub base_fee_per_gas: u128,
+    base_fee_per_gas: u128,
 
     /// Genesis block gas limit
     #[arg(long, default_value_t = 17000000000000)]
-    pub gas_limit: u64,
+    gas_limit: u64,
 
     /// Adagio hardfork activation timestamp (defaults to 0 = active at genesis)
     #[arg(long, default_value_t = 0)]
-    pub adagio_time: u64,
+    adagio_time: u64,
 
-    /// Path to validators config file (JSON)
+    /// Moderato hardfork activation timestamp (defaults to 0 = active at genesis)
+    #[arg(long, default_value_t = 0)]
+    pub moderato_time: u64,
+
+    /// Allegretto hardfork activation timestamp
     #[arg(long)]
-    pub validators_config: Option<PathBuf>,
+    pub allegretto_time: Option<u64>,
+
+    #[arg(long, default_value_t = 302_400)]
+    epoch_length: u64,
+
+    /// A comma-separated list of `<ip>:<port>`.
+    #[arg(long, value_name = "<ip>:<port>", value_delimiter = ',')]
+    validators: Vec<SocketAddr>,
+
+    /// A fixed seed to generate all signing keys and group shares. This is
+    /// intended for use in development and testing. Use at your own peril.
+    #[arg(long)]
+    pub(crate) seed: Option<u64>,
+}
+
+pub(crate) struct ConsensusConfig {
+    pub(crate) public_polynomial: PublicPolynomial,
+    pub(crate) peers: Peers,
+    pub(crate) validators: Vec<Validator>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Validator {
+    pub(crate) addr: SocketAddr,
+    pub(crate) signing_key: SigningKey,
+    pub(crate) signing_share: SigningShare,
+}
+
+impl Validator {
+    pub(crate) fn dst_dir(&self, path: impl AsRef<Path>) -> PathBuf {
+        path.as_ref().join(self.addr.to_string())
+    }
+    pub(crate) fn dst_signing_key(&self, path: impl AsRef<Path>) -> PathBuf {
+        self.dst_dir(path).join("signing.key")
+    }
+
+    pub(crate) fn dst_signing_share(&self, path: impl AsRef<Path>) -> PathBuf {
+        self.dst_dir(path).join("signing.share")
+    }
 }
 
 impl GenesisArgs {
@@ -108,17 +132,14 @@ impl GenesisArgs {
     ///
     /// It creates a new genesis allocation for the configured accounts.
     /// And creates accounts for system contracts.
-    pub(crate) async fn run(self) -> eyre::Result<()> {
+    pub(crate) async fn generate_genesis(self) -> eyre::Result<(Genesis, Option<ConsensusConfig>)> {
         println!("Generating {:?} accounts", self.accounts);
 
         let addresses: Vec<Address> = (0..self.accounts)
             .into_par_iter()
             .progress()
             .map(|worker_id| -> eyre::Result<Address> {
-                let signer = MnemonicBuilder::<English>::default()
-                    .phrase(self.mnemonic.clone())
-                    .index(worker_id)?
-                    .build()?;
+                let signer = MnemonicBuilder::from_phrase_nth(&self.mnemonic, worker_id);
                 let address = secret_key_to_address(signer.credential());
                 Ok(address)
             })
@@ -127,21 +148,21 @@ impl GenesisArgs {
         // system contracts/precompiles must be initialized bottom up, if an init function (e.g. mint_pairwise_liquidity) uses another system contract/precompiles internally (tip403 registry), the registry must be initialized first.
 
         // Deploy TestUSD fee token
-        // TODO: admin should be updated to be a cli arg so we can specify that
-        // linkingUSD admin for persistent testnet deployments
         let admin = addresses[0];
         let mut evm = setup_tempo_evm();
 
         println!("Initializing registry");
         initialize_registry(&mut evm)?;
 
-        println!("Initializing LinkingUSD");
-        initialize_linking_usd(admin, &addresses, &mut evm)?;
+        println!("Initializing PathUSD");
+        initialize_path_usd(admin, &addresses, &mut evm)?;
 
+        println!("Initializing TIP20 tokens");
         let (_, alpha_token_address) = create_and_mint_token(
             "AlphaUSD",
             "AlphaUSD",
             "USD",
+            PATH_USD_ADDRESS,
             admin,
             &addresses,
             U256::from(u64::MAX),
@@ -152,6 +173,7 @@ impl GenesisArgs {
             "BetaUSD",
             "BetaUSD",
             "USD",
+            PATH_USD_ADDRESS,
             admin,
             &addresses,
             U256::from(u64::MAX),
@@ -162,6 +184,7 @@ impl GenesisArgs {
             "ThetaUSD",
             "ThetaUSD",
             "USD",
+            PATH_USD_ADDRESS,
             admin,
             &addresses,
             U256::from(u64::MAX),
@@ -172,11 +195,16 @@ impl GenesisArgs {
         initialize_tip20_rewards_registry(&mut evm)?;
 
         println!("Initializing validator config");
-        let mut validators = initialize_validator_config(admin, self.validators_config, &mut evm)?;
-        validators.push(self.coinbase);
+        initialize_validator_config(admin, &mut evm)?;
 
         println!("Initializing fee manager");
-        initialize_fee_manager(alpha_token_address, addresses.clone(), validators, &mut evm);
+        initialize_fee_manager(
+            alpha_token_address,
+            addresses.clone(),
+            // TODO: also populate validators here, once the logic is back.
+            vec![self.coinbase],
+            &mut evm,
+        );
 
         println!("Initializing stablecoin exchange");
         initialize_stablecoin_exchange(&mut evm)?;
@@ -187,7 +215,7 @@ impl GenesisArgs {
         println!("Minting pairwise FeeAMM liquidity");
         mint_pairwise_liquidity(
             alpha_token_address,
-            vec![LINKING_USD_ADDRESS, beta_token_address, theta_token_address],
+            vec![PATH_USD_ADDRESS, beta_token_address, theta_token_address],
             U256::from(10u64.pow(10)),
             admin,
             &mut evm,
@@ -275,6 +303,12 @@ impl GenesisArgs {
             },
         );
 
+        println!(
+            "generating consensus config for validators: {:?}",
+            self.validators
+        );
+        let consensus_config = generate_consensus_config(&self.validators, self.seed);
+
         let mut chain_config = ChainConfig {
             chain_id: self.chain_id,
             homestead_block: Some(0),
@@ -303,6 +337,29 @@ impl GenesisArgs {
             "adagioTime".to_string(),
             serde_json::json!(self.adagio_time),
         );
+        chain_config.extra_fields.insert(
+            "moderatoTime".to_string(),
+            serde_json::json!(self.moderato_time),
+        );
+        if let Some(allegretto_time) = self.allegretto_time {
+            chain_config.extra_fields.insert(
+                "allegrettoTime".to_string(),
+                serde_json::json!(allegretto_time),
+            );
+        }
+
+        chain_config
+            .extra_fields
+            .insert_value("epochLength".to_string(), self.epoch_length)?;
+        if let Some(consensus_config) = &consensus_config {
+            chain_config
+                .extra_fields
+                .insert_value("validators".to_string(), consensus_config.peers.clone())?;
+            chain_config.extra_fields.insert_value(
+                "publicPolynomial".to_string(),
+                consensus_config.public_polynomial.clone(),
+            )?;
+        }
 
         let mut genesis = Genesis::default()
             .with_gas_limit(self.gas_limit)
@@ -314,10 +371,7 @@ impl GenesisArgs {
         genesis.alloc = genesis_alloc;
         genesis.config = chain_config;
 
-        let json = serde_json::to_string_pretty(&genesis)?;
-        fs::write(self.output, json)?;
-
-        Ok(())
+        Ok((genesis, consensus_config))
     }
 }
 
@@ -329,10 +383,12 @@ fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>> {
 }
 
 /// Initializes the TIP20 factory contract and creates a token
+#[expect(clippy::too_many_arguments)]
 fn create_and_mint_token(
     symbol: &str,
     name: &str,
     currency: &str,
+    _quote_token: Address,
     admin: Address,
     recipients: &[Address],
     mint_amount: U256,
@@ -354,7 +410,7 @@ fn create_and_mint_token(
                     name: name.into(),
                     symbol: symbol.into(),
                     currency: currency.into(),
-                    quoteToken: LINKING_USD_ADDRESS,
+                    quoteToken: PATH_USD_ADDRESS,
                     admin,
                 },
             )
@@ -399,7 +455,7 @@ fn create_and_mint_token(
     Ok((token_id, token.address()))
 }
 
-fn initialize_linking_usd(
+fn initialize_path_usd(
     admin: Address,
     recipients: &[Address],
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
@@ -408,23 +464,15 @@ fn initialize_linking_usd(
     let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
     let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
-    let mut linking_usd = LinkingUSD::new(&mut provider);
-    linking_usd
+    let mut path_usd = PathUSD::new(&mut provider);
+    path_usd
         .initialize(admin)
-        .expect("LinkingUSD initialization should succeed");
+        .expect("PathUSD initialization should succeed");
 
-    linking_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-    linking_usd
-        .token
-        .grant_role_internal(admin, *TRANSFER_ROLE)?;
-    for recipient in recipients.iter().progress() {
-        linking_usd
-            .token
-            .grant_role_internal(*recipient, *TRANSFER_ROLE)?;
-    }
+    path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
     for recipient in recipients.iter().progress() {
-        linking_usd
+        path_usd
             .mint(
                 admin,
                 ITIP20::mintCall {
@@ -432,7 +480,7 @@ fn initialize_linking_usd(
                     amount: U256::from(u64::MAX),
                 },
             )
-            .expect("Could not mint linkingUSD");
+            .expect("Could not mint pathUSD");
     }
 
     Ok(())
@@ -453,7 +501,7 @@ fn initialize_fee_manager(
     validators: Vec<Address>,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) {
-    // Update the beneficiary since the validator cant set the validator fee token for themselves
+    // Update the beneficiary since the validator can't set the validator fee token for themselves
     let ctx = evm.ctx_mut();
     let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
     let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
@@ -473,13 +521,13 @@ fn initialize_fee_manager(
             .expect("Could not set fee token");
     }
 
-    // Set validator fee tokens to linking USD
+    // Set validator fee tokens to PathUSD
     for validator in validators {
         fee_manager
             .set_validator_token(
                 validator,
                 IFeeManager::setValidatorTokenCall {
-                    token: LINKING_USD_ADDRESS,
+                    token: PATH_USD_ADDRESS,
                 },
                 // use random address to avoid `CannotChangeWithinBlock` error
                 Address::random(),
@@ -517,53 +565,70 @@ fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
     Ok(())
 }
 
-/// Initializes the initial set of validators with the specified validator config.
-/// Returns a vec of the validator public keys
+/// Initializes the initial validator config smart contract.
+///
+/// NOTE: Does not populate it at all because consensus does not read the
+/// validators at genesis.
 fn initialize_validator_config(
-    owner: Address,
-    validators_config: Option<PathBuf>,
+    admin: Address,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
-) -> eyre::Result<Vec<Address>> {
+) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
     let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
     let mut validator_config = ValidatorConfig::new(&mut provider);
     validator_config
-        .initialize(owner)
-        .wrap_err("Failed to initialize validator config")?;
+        .initialize(admin)
+        .wrap_err("failed to initialize validator config contract")?;
+    Ok(())
+}
 
-    // Load initial validators if config file provided
-    let initial_validators = if let Some(config_path) = validators_config {
-        println!("Loading validators from {config_path:?}");
-        let config_content = fs::read_to_string(config_path)?;
-        let validators: Vec<InitialValidator> = serde_json::from_str(&config_content)?;
-        println!("Loaded {} initial validators", validators.len());
-        validators
-    } else {
-        Vec::new()
-    };
+/// Generates the consensus configs of the validators.
+fn generate_consensus_config(
+    addresses: &[SocketAddr],
+    seed: Option<u64>,
+) -> Option<ConsensusConfig> {
+    use commonware_cryptography::{PrivateKeyExt as _, Signer as _, ed25519::PrivateKey};
+    use rand::SeedableRng as _;
 
-    // Add initial validators
-    let mut validator_addresses = Vec::new();
-    for validator in initial_validators.iter().progress() {
-        validator_config
-            .add_validator(
-                owner,
-                IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: validator.address,
-                    publicKey: validator.key,
-                    active: validator.active,
-                    inboundAddress: validator.inbound_address.to_string(),
-                    outboundAddress: validator.outbound_address.to_string(),
-                },
-            )
-            .wrap_err("Failed to add validator")?;
-
-        validator_addresses.push(validator.address);
+    if addresses.is_empty() {
+        println!("no validator socket addresses provided; not generating consensus config");
+        return None;
     }
 
-    Ok(validator_addresses)
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
+    let mut signers = (0..addresses.len())
+        .map(|_| PrivateKey::from_rng(&mut rng))
+        .collect::<Vec<_>>();
+
+    // generate consensus key
+    let threshold = commonware_utils::quorum(addresses.len() as u32);
+    let (polynomial, shares) = commonware_cryptography::bls12381::dkg::ops::generate_shares::<
+        _,
+        commonware_cryptography::bls12381::primitives::variant::MinSig,
+    >(&mut rng, None, addresses.len() as u32, threshold);
+
+    signers.sort_by_key(|signer| signer.public_key());
+    let peers = addresses
+        .iter()
+        .zip(signers.iter())
+        .map(|(addr, private_key)| (private_key.public_key(), *addr))
+        .collect::<commonware_utils::set::OrderedAssociated<_, _>>();
+
+    let mut validators = vec![];
+    for (addr, (signer, share)) in peers.values().iter().zip(signers.into_iter().zip(shares)) {
+        validators.push(Validator {
+            addr: *addr,
+            signing_key: SigningKey::from(signer),
+            signing_share: SigningShare::from(share),
+        });
+    }
+    Some(ConsensusConfig {
+        peers: peers.into(),
+        public_polynomial: polynomial.into(),
+        validators,
+    })
 }
 
 fn mint_pairwise_liquidity(

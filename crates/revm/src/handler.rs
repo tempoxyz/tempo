@@ -4,11 +4,12 @@ use std::{cmp::Ordering, fmt::Debug};
 
 use alloy_evm::EvmInternals;
 use alloy_primitives::{Address, B256, U256, b256};
+use reth_evm::EvmError;
 use revm::{
     Database,
     context::{
-        Block, Cfg, ContextTr, JournalTr, Transaction,
-        result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction},
+        Block, Cfg, ContextTr, JournalTr, LocalContextTr, Transaction,
+        result::{EVMError, ExecutionResult, InvalidTransaction},
         transaction::{AccessListItem, AccessListItemTr},
     },
     handler::{
@@ -30,18 +31,26 @@ use revm::{
 };
 use tempo_contracts::{
     DEFAULT_7702_DELEGATE_ADDRESS,
-    precompiles::{FeeManagerError, TIPFeeAMMError},
+    precompiles::{IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError},
 };
 use tempo_precompiles::{
+    account_keychain::{AccountKeychain, TokenLimit, authorizeKeyCall},
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{evm::EvmPrecompileStorageProvider, slots::mapping_slot},
     tip_fee_manager::TipFeeManager,
-    tip20::{self},
+    tip20::{self, ITIP20::InsufficientBalance, TIP20Error},
 };
-use tempo_primitives::transaction::{AASignature, calc_gas_balance_spending};
+use tempo_primitives::transaction::{
+    AASignature, PrimitiveSignature, SignatureType, calc_gas_balance_spending,
+};
 
-use crate::{TempoEvm, TempoInvalidTransaction, common::TempoStateAccess, evm::TempoContext};
+use crate::{
+    TempoEvm, TempoInvalidTransaction,
+    common::TempoStateAccess,
+    error::{FeePaymentError, TempoHaltReason},
+    evm::TempoContext,
+};
 
 /// Additional gas for P256 signature verification
 /// P256 precompile cost (6900 from EIP-7951) + 1100 for 129 bytes extra signature size - ecrecover savings (3000)
@@ -51,20 +60,35 @@ const P256_VERIFY_GAS: u64 = 5_000;
 const DEFAULT_7702_DELEGATE_CODE_HASH: B256 =
     b256!("e7b3e4597bdbdd0cc4eb42f9b799b580f23068f54e472bb802cb71efb1570482");
 
-/// Calculates the gas cost for verifying an AA signature.
+/// Calculates the gas cost for verifying a primitive signature.
 ///
 /// Returns the additional gas required beyond the base transaction cost:
 /// - Secp256k1: 0 (already included in base 21k)
 /// - P256: 5000 gas
 /// - WebAuthn: 5000 gas + calldata cost for webauthn_data
 #[inline]
-fn aa_signature_verification_gas(signature: &AASignature) -> u64 {
+fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
     match signature {
-        AASignature::Secp256k1(_) => 0,
-        AASignature::P256(_) => P256_VERIFY_GAS,
-        AASignature::WebAuthn(webauthn_sig) => {
+        PrimitiveSignature::Secp256k1(_) => 0,
+        PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
+        PrimitiveSignature::WebAuthn(webauthn_sig) => {
             let tokens = get_tokens_in_calldata(&webauthn_sig.webauthn_data, true);
             P256_VERIFY_GAS + tokens * STANDARD_TOKEN_COST
+        }
+    }
+}
+
+/// Calculates the gas cost for verifying an AA signature.
+///
+/// For Keychain signatures, unwraps to the inner primitive signature for gas calculation.
+/// Returns the additional gas required beyond the base transaction cost.
+#[inline]
+fn aa_signature_verification_gas(signature: &AASignature) -> u64 {
+    match signature {
+        AASignature::Primitive(prim_sig) => primitive_signature_verification_gas(prim_sig),
+        AASignature::Keychain(keychain_sig) => {
+            // Keychain wraps a primitive signature - calculate gas for the inner signature
+            primitive_signature_verification_gas(&keychain_sig.signature)
         }
     }
 }
@@ -101,13 +125,18 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         let ctx = evm.ctx_mut();
 
         self.fee_payer = ctx.tx.fee_payer()?;
-        self.fee_token =
-            ctx.journaled_state
-                .get_fee_token(&ctx.tx, ctx.block.beneficiary, self.fee_payer)?;
+        self.fee_token = ctx.journaled_state.get_fee_token(
+            &ctx.tx,
+            ctx.block.beneficiary,
+            self.fee_payer,
+            ctx.cfg.spec,
+        )?;
 
         // Skip fee token validity check for cases when the transaction is free and is not a part of a subblock.
         if (!ctx.tx.max_balance_spending()?.is_zero() || ctx.tx.is_subblock_transaction())
-            && !ctx.journaled_state.is_valid_fee_token(self.fee_token)?
+            && !ctx
+                .journaled_state
+                .is_valid_fee_token(self.fee_token, ctx.cfg.spec)?
         {
             return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
         }
@@ -343,7 +372,7 @@ where
 {
     type Evm = TempoEvm<DB, I>;
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
-    type HaltReason = HaltReason;
+    type HaltReason = TempoHaltReason;
 
     #[inline]
     fn run(
@@ -393,8 +422,9 @@ where
             evm.logs = evm.journal_mut().take_logs();
         }
 
-        let mut mainnet = MainnetHandler::default();
-        mainnet.execution_result(evm, result)
+        MainnetHandler::default()
+            .execution_result(evm, result)
+            .map(|result| result.map_haltreason(Into::into))
     }
 
     /// Override apply_eip7702_auth_list to support AA transactions with authorization lists.
@@ -587,57 +617,261 @@ where
         // Note: Signature verification happens during recover_signer() before entering the pool
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
 
-        // Create storage provider wrapper around journal
-        let internals = EvmInternals::new(journal, &block);
-        let beneficiary = internals.block_env().beneficiary();
-        let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
-        let mut fee_manager = TipFeeManager::new(&mut storage_provider);
+        // If the transaction includes a KeyAuthorization, validate and authorize the key
+        if let Some(aa_tx_env) = tx.aa_tx_env.as_ref()
+            && let Some(key_auth) = &aa_tx_env.key_authorization
+        {
+            // Check if this TX is using a Keychain signature (access key)
+            // Access keys cannot authorize new keys UNLESS it's the same key being authorized (same-tx auth+use)
+            if let Some(keychain_sig) = aa_tx_env.signature.as_keychain() {
+                // Get the access key address (recovered during Tx->TxEnv conversion and cached)
+                let access_key_addr =
+                    keychain_sig
+                        .key_id(&aa_tx_env.signature_hash)
+                        .map_err(|_| {
+                            EVMError::Transaction(
+                            TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                                reason:
+                                    "Failed to recover access key address from Keychain signature"
+                                        .to_string(),
+                            },
+                        )
+                        })?;
+
+                // Only allow if authorizing the same key that's being used (same-tx auth+use)
+                if access_key_addr != key_auth.key_id {
+                    return Err(EVMError::Transaction(
+                            TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                                reason: "Access keys cannot authorize other keys. Only the root key can authorize new keys.".to_string(),
+                            },
+                        ));
+                }
+            }
+
+            // Validate that the KeyAuthorization is signed by the root account
+            let root_account = &tx.caller;
+
+            // Recover the signer of the KeyAuthorization
+            let auth_signer = key_auth.recover_signer().map_err(|_| {
+                EVMError::Transaction(TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                    reason: "Failed to recover signer from KeyAuthorization signature".to_string(),
+                })
+            })?;
+
+            // Verify the KeyAuthorization is signed by the root account
+            if auth_signer != *root_account {
+                return Err(EVMError::Transaction(
+                    TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                        reason: format!(
+                            "KeyAuthorization must be signed by root account {root_account}, but was signed by {auth_signer}",
+                        ),
+                    },
+                ));
+            }
+
+            // Validate KeyAuthorization chain_id (following EIP-7702 pattern)
+            // chain_id == 0 allows replay on any chain (wildcard)
+            let expected_chain_id = cfg.chain_id();
+            if key_auth.chain_id != 0 && key_auth.chain_id != expected_chain_id {
+                return Err(EVMError::Transaction(
+                    TempoInvalidTransaction::KeyAuthorizationChainIdMismatch {
+                        expected: expected_chain_id,
+                        got: key_auth.chain_id,
+                    },
+                ));
+            }
+
+            // Now authorize the key in the precompile
+            let internals = EvmInternals::new(journal, block);
+            let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
+
+            let mut keychain = AccountKeychain::new(&mut storage_provider);
+
+            let access_key_addr = key_auth.key_id;
+
+            // Convert signature type to precompile SignatureType enum
+            // Use the key_type field which specifies the type of key being authorized
+            let signature_type = match key_auth.key_type {
+                SignatureType::Secp256k1 => PrecompileSignatureType::Secp256k1,
+                SignatureType::P256 => PrecompileSignatureType::P256,
+                SignatureType::WebAuthn => PrecompileSignatureType::WebAuthn,
+            };
+
+            // Handle expiry: None means never expires (store as u64::MAX)
+            let expiry = key_auth.expiry.unwrap_or(u64::MAX);
+
+            // Validate expiry is not in the past
+            let current_timestamp = block.timestamp().saturating_to::<u64>();
+            if expiry <= current_timestamp {
+                return Err(EVMError::Transaction(
+                    TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                        reason: format!(
+                            "Key expiry {expiry} is in the past (current timestamp: {current_timestamp})"
+                        ),
+                    },
+                ));
+            }
+
+            // Handle limits: None means unlimited spending (enforce_limits=false)
+            // Some([]) means no spending allowed (enforce_limits=true)
+            // Some([...]) means specific limits (enforce_limits=true)
+            let enforce_limits = key_auth.limits.is_some();
+            let precompile_limits: Vec<TokenLimit> = key_auth
+                .limits
+                .as_ref()
+                .map(|limits| {
+                    limits
+                        .iter()
+                        .map(|limit| TokenLimit {
+                            token: limit.token,
+                            amount: limit.limit,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // Create the authorize key call
+            let authorize_call = authorizeKeyCall {
+                keyId: access_key_addr,
+                signatureType: signature_type,
+                expiry,
+                enforceLimits: enforce_limits,
+                limits: precompile_limits,
+            };
+
+            // Call precompile to authorize the key (same phase as nonce increment)
+            keychain
+                .authorize_key(*root_account, authorize_call)
+                .map_err(|err| match err {
+                    TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                    err => TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                        reason: err.to_string(),
+                    }
+                    .into(),
+                })?;
+        }
+
+        // For Keychain signatures, validate that the keychain is authorized in the precompile
+        // UNLESS this transaction also includes a KeyAuthorization (same-tx auth+use case)
+        if let Some(aa_tx_env) = tx.aa_tx_env.as_ref()
+            && let Some(keychain_sig) = aa_tx_env.signature.as_keychain()
+        {
+            // The user_address is the root account this transaction is being executed for
+            // This should match tx.caller (which comes from recover_signer on the outer signature)
+            let user_address = &keychain_sig.user_address;
+
+            // Sanity check: user_address should match tx.caller
+            if *user_address != tx.caller {
+                return Err(EVMError::Transaction(
+                    TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                        reason: format!(
+                            "Keychain user_address {} does not match transaction caller {}",
+                            user_address, tx.caller
+                        ),
+                    },
+                ));
+            }
+
+            // Get the access key address (recovered during pool validation and cached)
+            let access_key_addr = keychain_sig
+                .key_id(&aa_tx_env.signature_hash)
+                .map_err(|_| {
+                    EVMError::Transaction(TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                        reason: "Failed to recover access key address from inner signature"
+                            .to_string(),
+                    })
+                })?;
+
+            // Check if this transaction includes a KeyAuthorization for the same key
+            // If so, skip validation here - the key was just validated and authorized
+            let is_authorizing_this_key = aa_tx_env
+                .key_authorization
+                .as_ref()
+                .map(|key_auth| key_auth.key_id == access_key_addr)
+                .unwrap_or(false);
+
+            // Always need to set the transaction key for Keychain signatures
+            let mut storage_provider =
+                EvmPrecompileStorageProvider::new_max_gas(EvmInternals::new(journal, &block), cfg);
+            let mut keychain = AccountKeychain::new(&mut storage_provider);
+
+            if !is_authorizing_this_key {
+                // Not authorizing this key in the same transaction, so validate it exists now
+                // Validate that user_address has authorized this access key in the keychain
+                keychain
+                    .validate_keychain_authorization(
+                        *user_address,
+                        access_key_addr,
+                        block.timestamp().to::<u64>(),
+                    )
+                    .map_err(|e| {
+                        EVMError::Transaction(
+                            TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                                reason: format!("Keychain validation failed: {e:?}"),
+                            },
+                        )
+                    })?;
+            }
+
+            // Set the transaction key in the keychain precompile
+            // This marks that the current transaction is using an access key
+            // The TIP20 precompile will read this during execution to enforce spending limits
+            keychain
+                .set_transaction_key(access_key_addr)
+                .map_err(|e| EVMError::Custom(e.to_string()))?;
+        }
 
         if gas_balance_spending.is_zero() {
             return Ok(());
         }
 
-        // Call the precompile function to collect the fee
-        // We specify the `to_addr` to account for the case where the to address is a tip20
-        // token and the fee token is not set for the specified caller.
-        // In this case, the collect_fee_pre_tx fn will set the fee token as the `to_addr`
-        let to_addr = tx.kind().into_to().unwrap_or_default();
-        fee_manager
-            .collect_fee_pre_tx(
+        let checkpoint = journal.checkpoint();
+
+        let result = {
+            let mut storage_provider =
+                EvmPrecompileStorageProvider::new_max_gas(EvmInternals::new(journal, &block), cfg);
+            TipFeeManager::new(&mut storage_provider).collect_fee_pre_tx(
                 self.fee_payer,
                 self.fee_token,
-                to_addr,
                 gas_balance_spending,
-                beneficiary,
+                block.beneficiary(),
             )
-            .map_err(|e| {
-                // Map fee collection errors to transaction validation errors since they
-                // indicate the transaction cannot be included (e.g., insufficient liquidity
-                // in FeeAMM pool for fee swaps)
-                match e {
-                    TempoPrecompileError::TIPFeeAMMError(
-                        TIPFeeAMMError::InsufficientLiquidity(_),
-                    ) => EVMError::Transaction(TempoInvalidTransaction::InsufficientAmmLiquidity {
-                        fee: Box::new(gas_balance_spending),
-                    }),
+        };
 
-                    TempoPrecompileError::FeeManagerError(
-                        FeeManagerError::InsufficientFeeTokenBalance(_),
-                    ) => EVMError::Transaction(
-                        TempoInvalidTransaction::InsufficientFeeTokenBalance {
-                            fee: Box::new(gas_balance_spending),
-                            balance: Box::new(account_balance),
-                        },
-                    ),
+        if let Err(err) = result {
+            // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
+            journal.checkpoint_revert(checkpoint);
 
-                    TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
-
-                    _ => EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTxError(
-                        e.to_string(),
-                    )),
+            // Map fee collection errors to transaction validation errors since they
+            // indicate the transaction cannot be included (e.g., insufficient liquidity
+            // in FeeAMM pool for fee swaps)
+            Err(match err {
+                TempoPrecompileError::TIPFeeAMMError(TIPFeeAMMError::InsufficientLiquidity(_)) => {
+                    FeePaymentError::InsufficientAmmLiquidity {
+                        fee: gas_balance_spending,
+                    }
+                    .into()
                 }
-            })?;
-        Ok(())
+
+                TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
+                    InsufficientBalance { available, .. },
+                )) => EVMError::Transaction(
+                    FeePaymentError::InsufficientFeeTokenBalance {
+                        fee: gas_balance_spending,
+                        balance: available,
+                    }
+                    .into(),
+                ),
+
+                TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
+
+                _ => EVMError::Transaction(FeePaymentError::Other(err.to_string()).into()),
+            })
+        } else {
+            journal.checkpoint_commit();
+
+            Ok(())
+        }
     }
 
     fn reimburse_caller(
@@ -662,7 +896,7 @@ where
 
         // Create storage provider and fee manager
         let (journal, block) = (&mut context.journaled_state, &context.block);
-        let internals = EvmInternals::new(journal, block);
+        let internals = EvmInternals::new(&mut *journal, block);
         let beneficiary = internals.block_env().beneficiary();
         let mut storage_provider =
             EvmPrecompileStorageProvider::new_max_gas(internals, &context.cfg);
@@ -680,6 +914,7 @@ where
                 )
                 .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
         }
+
         Ok(())
     }
 
@@ -716,14 +951,32 @@ where
         let tx = evm.ctx_ref().tx();
 
         if let Some(aa_env) = tx.aa_tx_env.as_ref() {
-            if aa_env.subblock_transaction && tx.max_fee_per_gas() > 0 {
-                return Err(TempoInvalidTransaction::SubblockTransactionMustHaveZeroFee.into());
+            let has_keychain_fields =
+                aa_env.key_authorization.is_some() || aa_env.signature.is_keychain();
+
+            // Validate that keychain operations are only supported after Allegretto
+            if has_keychain_fields && !cfg.spec.is_allegretto() {
+                return Err(TempoInvalidTransaction::KeychainOpBeforeAllegretto.into());
+            }
+
+            if aa_env.subblock_transaction {
+                if !cfg.spec.is_allegretto() {
+                    if tx.max_fee_per_gas() > 0 {
+                        return Err(
+                            TempoInvalidTransaction::SubblockTransactionMustHaveZeroFee.into()
+                        );
+                    }
+                } else if has_keychain_fields {
+                    return Err(TempoInvalidTransaction::KeychainOpInSubblockTransaction.into());
+                }
             }
 
             // Validate priority fee for AA transactions using revm's validate_priority_fee_tx
             //
-            // Skip basefee check for subblock transactions.
-            let base_fee = if cfg.is_base_fee_check_disabled() || aa_env.subblock_transaction {
+            // Skip basefee check for subblock transactions pre-Allegretto as they must always be free.
+            let base_fee = if cfg.is_base_fee_check_disabled()
+                || (aa_env.subblock_transaction && !cfg.spec.is_allegretto())
+            {
                 None
             } else {
                 Some(evm.ctx_ref().block().basefee() as u128)
@@ -766,6 +1019,40 @@ where
                 validation::validate_initial_tx_gas(tx, spec, evm.ctx.cfg.is_eip7623_disabled())
                     .map_err(TempoInvalidTransaction::EthInvalidTransaction)?,
             )
+        }
+    }
+
+    fn catch_error(
+        &self,
+        evm: &mut Self::Evm,
+        error: Self::Error,
+    ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
+        // For subblock transactions that failed `collectFeePreTx` call we catch error and treat such transactions as valid.
+        if evm.ctx.tx.is_subblock_transaction()
+            && evm.cfg.spec.is_allegretto()
+            && let Some(
+                TempoInvalidTransaction::CollectFeePreTx(_)
+                | TempoInvalidTransaction::EthInvalidTransaction(
+                    InvalidTransaction::LackOfFundForMaxFee { .. },
+                ),
+            ) = error.as_invalid_tx_err()
+        {
+            // Commit the transaction.
+            //
+            // `collectFeePreTx` call will happen after the nonce bump so this will only commit the nonce increment.
+            evm.ctx.journaled_state.commit_tx();
+
+            evm.ctx().local_mut().clear();
+            evm.frame_stack().clear();
+
+            Ok(ExecutionResult::Halt {
+                reason: TempoHaltReason::SubblockTxFeePayment,
+                gas_used: 0,
+            })
+        } else {
+            MainnetHandler::default()
+                .catch_error(evm, error)
+                .map(|result| result.map_haltreason(Into::into))
         }
     }
 }
@@ -1032,6 +1319,7 @@ mod tests {
         primitives::hardfork::SpecId,
         state::Account,
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, tip_fee_manager};
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
@@ -1087,9 +1375,12 @@ mod tests {
             )
             .unwrap();
 
-        let fee_token = ctx
-            .journaled_state
-            .get_fee_token(&ctx.tx, validator, user)?;
+        let fee_token = ctx.journaled_state.get_fee_token(
+            &ctx.tx,
+            validator,
+            user,
+            TempoHardfork::default(),
+        )?;
         assert_eq!(validator_fee_token, fee_token);
 
         // Set user token
@@ -1102,16 +1393,22 @@ mod tests {
             )
             .unwrap();
 
-        let fee_token = ctx
-            .journaled_state
-            .get_fee_token(&ctx.tx, validator, user)?;
+        let fee_token = ctx.journaled_state.get_fee_token(
+            &ctx.tx,
+            validator,
+            user,
+            TempoHardfork::Allegretto,
+        )?;
         assert_eq!(user_fee_token, fee_token);
 
         // Set tx fee token
         ctx.tx.fee_token = Some(tx_fee_token);
-        let fee_token = ctx
-            .journaled_state
-            .get_fee_token(&ctx.tx, validator, user)?;
+        let fee_token = ctx.journaled_state.get_fee_token(
+            &ctx.tx,
+            validator,
+            user,
+            TempoHardfork::Allegretto,
+        )?;
         assert_eq!(tx_fee_token, fee_token);
 
         Ok(())
@@ -1134,7 +1431,6 @@ mod tests {
         use tempo_primitives::transaction::{AASignature, Call};
 
         // Test that AA tx with secp256k1 and single call matches normal tx + per-call overhead
-        let spec = SpecId::CANCUN;
         let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
         let to = Address::random();
 
@@ -1146,12 +1442,17 @@ mod tests {
         };
 
         let aa_env = AATxEnv {
-            signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()), // dummy secp256k1 sig
+            signature: AASignature::Primitive(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            )), // dummy secp256k1 sig
             aa_calls: vec![call],
+            key_authorization: None,
+            signature_hash: B256::ZERO,
             ..Default::default()
         };
 
         // Calculate AA gas
+        let spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let aa_gas = calculate_aa_batch_intrinsic_gas(
             &aa_env.aa_calls,
             &aa_env.signature,
@@ -1162,7 +1463,9 @@ mod tests {
 
         // Calculate expected gas using revm's function for equivalent normal tx
         let normal_tx_gas = calculate_initial_tx_gas(
-            spec, &calldata, false, // not create
+            spec.into(),
+            &calldata,
+            false, // not create
             0,     // no access list accounts
             0,     // no access list storage
             0,     // no authorization list
@@ -1183,7 +1486,6 @@ mod tests {
         use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{AASignature, Call};
 
-        let spec = SpecId::CANCUN;
         let calldata = Bytes::from(vec![1, 2, 3]); // 3 non-zero bytes
 
         let calls = vec![
@@ -1205,11 +1507,16 @@ mod tests {
         ];
 
         let aa_env = AATxEnv {
-            signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+            signature: AASignature::Primitive(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            )),
             aa_calls: calls.clone(),
+            key_authorization: None,
+            signature_hash: B256::ZERO,
             ..Default::default()
         };
 
+        let spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let gas = calculate_aa_batch_intrinsic_gas(
             &calls,
             &aa_env.signature,
@@ -1219,7 +1526,7 @@ mod tests {
         .unwrap();
 
         // Calculate base gas for a single normal tx
-        let base_tx_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
+        let base_tx_gas = calculate_initial_tx_gas(spec.into(), &calldata, false, 0, 0, 0);
 
         // For 3 calls: base (21k) + 3*calldata + 3*per-call overhead
         // = 21k + 2*(calldata cost) + 3*COLD_ACCOUNT_ACCESS_COST
@@ -1251,14 +1558,16 @@ mod tests {
         };
 
         let aa_env = AATxEnv {
-            signature: AASignature::P256(P256SignatureWithPreHash {
+            signature: AASignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
                 r: B256::ZERO,
                 s: B256::ZERO,
                 pub_key_x: B256::ZERO,
                 pub_key_y: B256::ZERO,
                 pre_hash: false,
-            }),
+            })),
             aa_calls: vec![call],
+            key_authorization: None,
+            signature_hash: B256::ZERO,
             ..Default::default()
         };
 
@@ -1298,8 +1607,12 @@ mod tests {
         };
 
         let aa_env = AATxEnv {
-            signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+            signature: AASignature::Primitive(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            )),
             aa_calls: vec![call],
+            key_authorization: None,
+            signature_hash: B256::ZERO,
             ..Default::default()
         };
 
@@ -1337,8 +1650,12 @@ mod tests {
         };
 
         let aa_env = AATxEnv {
-            signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+            signature: AASignature::Primitive(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            )),
             aa_calls: vec![call],
+            key_authorization: None,
+            signature_hash: B256::ZERO,
             ..Default::default()
         };
 
@@ -1372,8 +1689,12 @@ mod tests {
         };
 
         let aa_env = AATxEnv {
-            signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+            signature: AASignature::Primitive(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            )),
             aa_calls: vec![call],
+            key_authorization: None,
+            signature_hash: B256::ZERO,
             ..Default::default()
         };
 
@@ -1398,6 +1719,66 @@ mod tests {
     }
 
     #[test]
+    fn test_key_authorization_rlp_encoding() {
+        use alloy_primitives::{Address, U256};
+        use tempo_primitives::transaction::{
+            SignatureType, TokenLimit, key_authorization::KeyAuthorization,
+        };
+
+        // Create test data
+        let chain_id = 1u64;
+        let key_type = SignatureType::Secp256k1;
+        let key_id = Address::random();
+        let expiry = 1000u64;
+        let limits = vec![
+            TokenLimit {
+                token: Address::random(),
+                limit: U256::from(100),
+            },
+            TokenLimit {
+                token: Address::random(),
+                limit: U256::from(200),
+            },
+        ];
+
+        // Compute hash using the helper function
+        let hash1 = KeyAuthorization {
+            chain_id,
+            key_type,
+            key_id,
+            expiry: Some(expiry),
+            limits: Some(limits.clone()),
+        }
+        .signature_hash();
+
+        // Compute again to verify consistency
+        let hash2 = KeyAuthorization {
+            chain_id,
+            key_type,
+            key_id,
+            expiry: Some(expiry),
+            limits: Some(limits.clone()),
+        }
+        .signature_hash();
+
+        assert_eq!(hash1, hash2, "Hash computation should be deterministic");
+
+        // Verify that different chain_id produces different hash
+        let hash3 = KeyAuthorization {
+            chain_id: 2,
+            key_type,
+            key_id,
+            expiry: Some(expiry),
+            limits: Some(limits),
+        }
+        .signature_hash();
+        assert_ne!(
+            hash1, hash3,
+            "Different chain_id should produce different hash"
+        );
+    }
+
+    #[test]
     fn test_aa_gas_floor_gas_prague() {
         use crate::AATxEnv;
         use alloy_primitives::{Bytes, TxKind};
@@ -1414,8 +1795,12 @@ mod tests {
         };
 
         let aa_env = AATxEnv {
-            signature: AASignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+            signature: AASignature::Primitive(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            )),
             aa_calls: vec![call],
+            key_authorization: None,
+            signature_hash: B256::ZERO,
             ..Default::default()
         };
 
