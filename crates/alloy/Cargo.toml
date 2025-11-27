@@ -17,6 +17,7 @@ tempo-evm = { workspace = true, optional = true }
 tempo-revm = { workspace = true, optional = true }
 
 alloy-consensus.workspace = true
+alloy-contract.workspace = true
 alloy-eips.workspace = true
 alloy-network.workspace = true
 alloy-primitives.workspace = true

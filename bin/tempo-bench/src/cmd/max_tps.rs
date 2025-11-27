@@ -11,17 +11,20 @@ use alloy::{
     consensus::BlockHeader,
     eips::BlockNumberOrTag::Latest,
     network::ReceiptResponse,
-    primitives::{Address, BlockNumber, U256},
-    providers::{PendingTransactionBuilder, Provider, ProviderBuilder},
+    primitives::{Address, B256, BlockNumber, U256},
+    providers::{DynProvider, PendingTransactionBuilder, Provider, ProviderBuilder},
     transports::http::reqwest::Url,
 };
-use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner, coins_bip39::English};
+use alloy_signer_local::{
+    MnemonicBuilder, PrivateKeySigner,
+    coins_bip39::{English, Mnemonic, MnemonicError},
+};
 use clap::Parser;
 use core_affinity::CoreId;
 use eyre::{Context, OptionExt, ensure};
 use futures::{StreamExt, TryStreamExt, future::BoxFuture, stream};
 use governor::{Quota, RateLimiter};
-use indicatif::{ParallelProgressIterator, ProgressBar};
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator};
 use rand::{
     random, random_range,
     seq::{IndexedRandom, SliceRandom},
@@ -33,6 +36,7 @@ use std::{
     fs::File,
     io::BufWriter,
     num::NonZeroU32,
+    str::FromStr,
     sync::{
         Arc,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -42,11 +46,14 @@ use std::{
     time::Duration,
 };
 use tempo_contracts::precompiles::{
-    IRolesAuth, IStablecoinExchange::IStablecoinExchangeInstance, ITIP20, ITIP20::ITIP20Instance,
+    IFeeManager::IFeeManagerInstance,
+    IRolesAuth,
+    IStablecoinExchange::IStablecoinExchangeInstance,
+    ITIP20::{self, ITIP20Instance},
     ITIP20Factory, STABLECOIN_EXCHANGE_ADDRESS, TIP20_FACTORY_ADDRESS,
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO,
+    DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS,
     stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK},
     tip20::{ISSUER_ROLE, token_id_to_address},
 };
@@ -60,45 +67,41 @@ pub struct MaxTpsArgs {
     tps: u64,
 
     /// Test duration in seconds
-    #[arg(short, long, default_value = "30")]
+    #[arg(short, long, default_value_t = 30)]
     duration: u64,
 
     /// Number of accounts for pre-generation
-    #[arg(short, long, default_value = "100")]
+    #[arg(short, long, default_value_t = 100)]
     accounts: u64,
 
     /// Number of workers to send transactions
-    #[arg(short, long, default_value = "10")]
+    #[arg(short, long, default_value_t = 10)]
     workers: usize,
 
     /// Mnemonic for generating accounts
-    #[arg(
-        short,
-        long,
-        default_value = "test test test test test test test test test test test junk"
-    )]
-    mnemonic: String,
+    #[arg(short, long, default_value = "random")]
+    mnemonic: MnemonicArg,
 
-    #[arg(short, long, default_value = "0")]
+    #[arg(short, long, default_value_t = 0)]
     from_mnemonic_index: u32,
 
     #[arg(long, default_value_t = DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)]
     fee_token: Address,
 
     /// Target URLs for network connections
-    #[arg(long, default_values_t = vec!["http://localhost:8545".to_string()])]
-    target_urls: Vec<String>,
+    #[arg(long, default_values_t = vec!["http://localhost:8545".parse::<Url>().unwrap()])]
+    target_urls: Vec<Url>,
 
     /// A limit of the maximum number of concurrent requests, prevents issues with too many
     /// connections open at once.
-    #[arg(long, default_value = "100")]
+    #[arg(long, default_value_t = 100)]
     max_concurrent_requests: usize,
 
     /// A number of transaction to send, before waiting for their receipts, that should be likely
     /// safe.
     ///
     /// Large amount of transactions in a block will result in system transaction OutOfGas error.
-    #[arg(long, default_value = "10000")]
+    #[arg(long, default_value_t = 10000)]
     max_concurrent_transactions: usize,
 
     /// Disable binding worker threads to specific CPU cores, letting the OS scheduler handle placement.
@@ -122,20 +125,26 @@ pub struct MaxTpsArgs {
     benchmark_mode: Option<String>,
 
     /// A weight that determines the likelihood of generating a TIP-20 transfer transaction.
-    #[arg(long, default_value = "0.8")]
+    #[arg(long, default_value_t = 0.8)]
     tip20_weight: f64,
 
     /// A weight that determines the likelihood of generating a DEX place transaction.
-    #[arg(long, default_value = "0.01")]
+    #[arg(long, default_value_t = 0.01)]
     place_order_weight: f64,
 
     /// A weight that determines the likelihood of generating a DEX swapExactAmountIn transaction.
-    #[arg(long, default_value = "0.19")]
+    #[arg(long, default_value_t = 0.19)]
     swap_weight: f64,
 
     /// An amount of receipts to wait for after sending all the transactions.
-    #[arg(long, default_value = "100")]
+    #[arg(long, default_value_t = 100)]
     sample_size: usize,
+
+    /// Fund accounts from the faucet before running the benchmark.
+    ///
+    /// Calls tempo_fundAddress for each account.
+    #[arg(long)]
+    faucet: bool,
 }
 
 impl MaxTpsArgs {
@@ -149,32 +158,71 @@ impl MaxTpsArgs {
             increase_nofile_limit(fd_limit).context("Failed to increase nofile limit")?;
         }
 
+        let target_url = self.target_urls[0].clone();
+        if self.target_urls.len() > 1 {
+            warn!("Multiple target URLs provided, but only the first one will be used")
+        }
+
         let tip20_weight = (self.tip20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let place_order_weight = (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
 
-        let target_urls: Vec<Url> = self
-            .target_urls
-            .iter()
-            .map(|s| {
-                s.parse::<Url>()
-                    .wrap_err_with(|| format!("failed to parse `{s}` as URL"))
+        info!(accounts = self.accounts, "Creating signers and providers");
+        let mnemonic = self.mnemonic.resolve();
+        let signer_providers = (self.from_mnemonic_index
+            ..(self.from_mnemonic_index + self.accounts as u32))
+            .into_par_iter()
+            .progress()
+            .map(|i| {
+                let signer = MnemonicBuilder::<English>::from_phrase_nth(&mnemonic, i);
+                let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+                    .wallet(signer.clone())
+                    .with_cached_nonce_management()
+                    .connect_http(target_url.clone())
+                    .erased();
+                Ok((signer, provider))
             })
-            .collect::<eyre::Result<Vec<_>>>()
-            .wrap_err("failed parsing input target URLs")?;
+            .collect::<eyre::Result<Vec<_>>>()?;
 
-        if target_urls.len() > 1 {
-            warn!("Multiple target URLs provided, but only the first one will be used")
+        // Fund accounts from faucet if requested
+        if self.faucet {
+            let provider = ProviderBuilder::new().connect_http(target_url.clone());
+            fund_accounts(
+                &provider,
+                &signer_providers
+                    .iter()
+                    .map(|(signer, _)| signer.address())
+                    .collect::<Vec<_>>(),
+                self.max_concurrent_requests,
+                self.max_concurrent_transactions,
+            )
+            .await
+            .context("Failed to fund accounts from faucet")?;
         }
+
+        info!(fee_token = %self.fee_token, "Setting default fee token");
+        join_all(
+            signer_providers
+                .iter()
+                .map(async |(_, provider)| {
+                    IFeeManagerInstance::new(TIP_FEE_MANAGER_ADDRESS, provider.clone())
+                        .setUserToken(self.fee_token)
+                        .send()
+                        .await
+                })
+                .progress(),
+            self.max_concurrent_requests,
+            self.max_concurrent_transactions,
+        )
+        .await
+        .context("Failed to set default fee token")?;
 
         // Generate all transactions
         let total_txs = self.tps * self.duration;
         let transactions = generate_transactions(GenerateTransactionsInput {
             total_txs,
             num_accounts: self.accounts,
-            mnemonic: self.mnemonic.clone(),
-            from_mnemonic_index: self.from_mnemonic_index,
-            rpc_url: target_urls[0].clone(),
+            signer_providers,
             max_concurrent_requests: self.max_concurrent_requests,
             max_concurrent_transactions: self.max_concurrent_transactions,
             tip20_weight,
@@ -185,7 +233,7 @@ impl MaxTpsArgs {
         .context("Failed to generate transactions")?;
 
         // Get first block height before sending transactions
-        let provider = ProviderBuilder::new().connect_http(target_urls[0].clone());
+        let provider = ProviderBuilder::new().connect_http(target_url.clone());
         let start_block = provider
             .get_block(Latest.into())
             .await?
@@ -212,32 +260,60 @@ impl MaxTpsArgs {
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         let sample_size = pending_txs.len().min(self.sample_size);
-        let mut end_block_number = start_block_number;
         info!(sample_size, "Collecting a sample of receipts");
-
-        let progress = ProgressBar::new(sample_size as u64);
-        for _ in 0..sample_size {
-            let idx = random_range(0..pending_txs.len());
-            let receipt = pending_txs.remove(idx).get_receipt().await?;
-            progress.inc(1);
-
-            if let Some(block_number) = receipt.block_number
-                && block_number > end_block_number
-            {
-                end_block_number = block_number;
-            }
-        }
-        drop(progress);
-
-        generate_report(
-            &target_urls[0].clone(),
-            start_block_number,
-            end_block_number,
-            &self,
+        let end_block_number = stream::iter(
+            (0..sample_size)
+                .map(|_| {
+                    let idx = random_range(0..pending_txs.len());
+                    pending_txs.remove(idx)
+                })
+                .progress(),
         )
-        .await?;
+        .map(async |pending_tx| {
+            pending_tx
+                .get_receipt()
+                .await
+                .map(|receipt| receipt.block_number)
+        })
+        .buffered(self.max_concurrent_requests)
+        .try_collect::<Vec<_>>()
+        .await?
+        .last()
+        .copied()
+        .flatten()
+        .unwrap_or(start_block_number);
+
+        generate_report(&target_url, start_block_number, end_block_number, &self).await?;
 
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+enum MnemonicArg {
+    Mnemonic(String),
+    Random,
+}
+
+impl FromStr for MnemonicArg {
+    type Err = MnemonicError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "random" => Ok(MnemonicArg::Random),
+            mnemonic => Ok(MnemonicArg::Mnemonic(
+                Mnemonic::<English>::from_str(mnemonic)?.to_phrase(),
+            )),
+        }
+    }
+}
+
+impl MnemonicArg {
+    fn resolve(&self) -> String {
+        match self {
+            MnemonicArg::Mnemonic(mnemonic) => mnemonic.clone(),
+            MnemonicArg::Random => Mnemonic::<English>::new(&mut rand_08::thread_rng()).to_phrase(),
+        }
     }
 }
 
@@ -245,12 +321,16 @@ fn send_transactions(
     transactions: Vec<
         BoxFuture<'static, alloy::contract::Result<PendingTransactionBuilder<TempoNetwork>>>,
     >,
-
     num_workers: usize,
     tps: u64,
     disable_thread_pinning: bool,
     tx_counter: Arc<AtomicU64>,
 ) -> eyre::Result<Vec<PendingTransactionBuilder<TempoNetwork>>> {
+    info!(
+        transactions = transactions.len(),
+        num_workers, tps, "Sending transactions"
+    );
+
     // Get available cores
     let core_ids =
         core_affinity::get_core_ids().ok_or_else(|| eyre::eyre!("Failed to get core IDs"))?;
@@ -328,37 +408,13 @@ async fn generate_transactions(
     let GenerateTransactionsInput {
         total_txs,
         num_accounts,
-        mnemonic,
-        from_mnemonic_index,
-        rpc_url,
+        signer_providers,
         max_concurrent_requests,
         max_concurrent_transactions,
         tip20_weight,
         place_order_weight,
         swap_weight,
     } = input;
-
-    info!(num_accounts, "Creating signers and providers");
-    let signer_providers = (from_mnemonic_index..(from_mnemonic_index + num_accounts as u32))
-        .into_par_iter()
-        .progress()
-        .map(|i| {
-            let signer = MnemonicBuilder::<English>::default()
-                .phrase(&mnemonic)
-                .index(i)?
-                .build()?;
-            let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-                .wallet(signer.clone())
-                .with_cached_nonce_management()
-                .connect_http(rpc_url.clone())
-                .erased();
-            Ok((signer, provider))
-        })
-        .collect::<eyre::Result<Vec<_>>>()?;
-    info!(
-        signer_providers = signer_providers.len(),
-        "Created signers and providers"
-    );
 
     let txs_per_sender = total_txs / num_accounts;
     ensure!(
@@ -407,6 +463,7 @@ async fn generate_transactions(
                     Box::pin(async move {
                         let token = ITIP20Instance::new(token, provider);
 
+                        // Transfer minimum possible amount
                         let tx = token.transfer(Address::random(), U256::ONE);
                         tx.send().await
                     })
@@ -418,7 +475,9 @@ async fn generate_transactions(
                         let exchange =
                             IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider);
 
-                        let tx = exchange.swapExactAmountIn(token, quote, MIN_ORDER_AMOUNT, 0);
+                        // Swap minimum possible amount
+                        let tx = exchange.quoteSwapExactAmountIn(token, quote, 1);
+
                         tx.send().await
                     })
                 }
@@ -433,6 +492,7 @@ async fn generate_transactions(
                         let tick =
                             (random::<u16>() % (MAX_TICK - MIN_TICK) as u16) as i16 + MIN_TICK;
                         let tx = exchange.place(token, MIN_ORDER_AMOUNT, true, tick);
+
                         tx.send().await
                     })
                 }
@@ -453,6 +513,46 @@ async fn generate_transactions(
     );
 
     Ok(transactions)
+}
+
+/// Funds accounts from the faucet using `temp_fundAddress` RPC.
+async fn fund_accounts(
+    provider: &impl Provider,
+    addresses: &[Address],
+    max_concurrent_requests: usize,
+    max_concurrent_transactions: usize,
+) -> eyre::Result<()> {
+    info!(accounts = addresses.len(), "Funding accounts from faucet");
+    let progress = ProgressBar::new(addresses.len() as u64);
+
+    let chunks = addresses
+        .iter()
+        .map(|address| {
+            let address = *address;
+            provider.raw_request::<_, Vec<B256>>("tempo_fundAddress".into(), (address,))
+        })
+        .chunks(max_concurrent_transactions);
+
+    for chunk in chunks.into_iter() {
+        let tx_hashes = stream::iter(chunk)
+            .buffer_unordered(max_concurrent_requests)
+            .try_collect::<Vec<_>>()
+            .await?
+            .into_iter()
+            .inspect(|_| progress.inc(1))
+            .flatten()
+            .map(async |hash| {
+                Ok(
+                    PendingTransactionBuilder::new(provider.root().clone(), hash)
+                        .get_receipt()
+                        .await?,
+                )
+            });
+        assert_receipts(tx_hashes, max_concurrent_requests)
+            .await
+            .expect("Failed to fund accounts");
+    }
+    Ok(())
 }
 
 pub fn increase_nofile_limit(min_limit: u64) -> eyre::Result<u64> {
@@ -625,7 +725,6 @@ async fn join_all<
     T: Future<Output = alloy::contract::Result<PendingTransactionBuilder<TempoNetwork>>>,
 >(
     futures: impl IntoIterator<Item = T>,
-    tx_count: &ProgressBar,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
 ) -> eyre::Result<()> {
@@ -635,30 +734,43 @@ async fn join_all<
         // Send transactions and collect pending builders
         let pending_txs = stream::iter(chunk)
             .buffer_unordered(max_concurrent_requests)
-            .inspect_ok(|_| tx_count.inc(1))
             .try_collect::<Vec<_>>()
             .await?;
 
-        // Fetch receipts and verify status
-        stream::iter(pending_txs)
-            .map(|tx| async move { Ok(tx.get_receipt().await?) })
-            .buffer_unordered(max_concurrent_requests)
-            .try_for_each(|receipt| async move {
-                eyre::ensure!(receipt.status(), "Transaction failed");
-                Ok(())
-            })
-            .await?;
+        // Fetch receipts and assert status
+        assert_receipts(
+            pending_txs
+                .into_iter()
+                .map(|tx| async move { Ok(tx.get_receipt().await?) }),
+            max_concurrent_requests,
+        )
+        .await?;
     }
 
     Ok(())
 }
 
+async fn assert_receipts<R: ReceiptResponse, F: Future<Output = eyre::Result<R>>>(
+    receipts: impl IntoIterator<Item = F>,
+    max_concurrent_requests: usize,
+) -> eyre::Result<()> {
+    stream::iter(receipts.into_iter())
+        .buffer_unordered(max_concurrent_requests)
+        .try_for_each(async |receipt| {
+            eyre::ensure!(
+                receipt.status(),
+                "Transaction {} failed",
+                receipt.transaction_hash()
+            );
+            Ok(())
+        })
+        .await
+}
+
 struct GenerateTransactionsInput {
     total_txs: u64,
     num_accounts: u64,
-    mnemonic: String,
-    from_mnemonic_index: u32,
-    rpc_url: Url,
+    signer_providers: Vec<(PrivateKeySigner, DynProvider<TempoNetwork>)>,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
     tip20_weight: u64,

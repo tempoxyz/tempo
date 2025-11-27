@@ -11254,6 +11254,7 @@ name = "tempo-alloy"
 version = "0.6.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-contract",
  "alloy-eips",
  "alloy-network",
  "alloy-primitives",
@@ -11299,6 +11300,7 @@ dependencies = [
  "itertools 0.14.0",
  "mimalloc",
  "parking_lot",
+ "rand 0.8.5",
  "rand 0.9.2",
  "rayon",
  "reth-tracing",
