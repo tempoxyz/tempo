@@ -18,6 +18,6 @@ mod instructions;
 mod tx;
 
 pub use block::TempoBlockEnv;
-pub use error::TempoInvalidTransaction;
+pub use error::{TempoHaltReason, TempoInvalidTransaction};
 pub use evm::TempoEvm;
 pub use tx::{AATxEnv, TempoTxEnv};

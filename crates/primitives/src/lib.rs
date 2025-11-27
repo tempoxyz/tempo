@@ -1,7 +1,7 @@
 //! Tempo primitive types
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg), allow(unexpected_cfgs))]
 
 pub use alloy_consensus::Header;
 use alloy_primitives::Log;
