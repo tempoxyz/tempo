@@ -22,7 +22,7 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{
-        KeyAuthorization, TxAA,
+        KeyAuthorization, SignedKeyAuthorization, TxAA,
         aa_signature::{
             AASignature, P256SignatureWithPreHash, PrimitiveSignature, WebAuthnSignature,
         },
@@ -540,31 +540,22 @@ fn create_key_authorization(
     chain_id: u64,
     expiry: Option<u64>,
     spending_limits: Option<Vec<tempo_primitives::transaction::TokenLimit>>,
-) -> eyre::Result<KeyAuthorization> {
+) -> eyre::Result<SignedKeyAuthorization> {
     // Infer key_type from the access key signature
     let key_type = access_key_signature.signature_type();
 
-    // Compute the authorization message hash using the helper function
-    // Message format: keccak256(rlp([chain_id, key_type, key_id, expiry, limits]))
-    let auth_message_hash = KeyAuthorization::authorization_message_hash(
+    let key_auth = KeyAuthorization {
         chain_id,
         key_type,
-        access_key_addr,
-        expiry,
-        spending_limits.as_deref(),
-    );
-
-    // Root key signs the authorization
-    let root_auth_signature = root_signer.sign_hash_sync(&auth_message_hash)?;
-
-    Ok(KeyAuthorization {
-        chain_id,
-        key_type, // Type of key being authorized
         key_id: access_key_addr,
-        signature: PrimitiveSignature::Secp256k1(root_auth_signature),
         expiry,
         limits: spending_limits,
-    })
+    };
+
+    // Root key signs the authorization
+    let root_auth_signature = root_signer.sign_hash_sync(&key_auth.signature_hash())?;
+
+    Ok(key_auth.into_signed(PrimitiveSignature::Secp256k1(root_auth_signature)))
 }
 
 /// Helper to submit and mine an AA transaction
@@ -3038,13 +3029,14 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     // Root key signs the key authorization data to authorize the access key
     // Compute the authorization message hash using the helper function
     // Message format: keccak256(rlp([chain_id, key_type, key_id, expiry, limits]))
-    let auth_message_hash = KeyAuthorization::authorization_message_hash(
+    let auth_message_hash = KeyAuthorization {
         chain_id,
-        tempo_primitives::transaction::SignatureType::P256,
-        access_key_addr,
-        None, // Never expires
-        Some(&spending_limits),
-    );
+        key_type: tempo_primitives::transaction::SignatureType::P256,
+        key_id: access_key_addr,
+        expiry: None, // Never expires
+        limits: Some(spending_limits.clone()),
+    }
+    .signature_hash();
 
     // Root key signs the authorization message
     let root_auth_signature = root_key_signer.sign_hash_sync(&auth_message_hash)?;
@@ -3054,10 +3046,10 @@ async fn test_aa_access_key() -> eyre::Result<()> {
         chain_id,
         key_type: tempo_primitives::transaction::SignatureType::P256, // Type of key being authorized
         key_id: access_key_addr, // Address derived from P256 public key
-        signature: PrimitiveSignature::Secp256k1(root_auth_signature), // Root key signature (secp256k1)
-        expiry: None,                                                  // Never expires
+        expiry: None,            // Never expires
         limits: Some(spending_limits),
-    };
+    }
+    .into_signed(PrimitiveSignature::Secp256k1(root_auth_signature));
 
     println!("✓ Key authorization created (never expires)");
     println!("✓ Key authorization signed by root key");
@@ -4896,13 +4888,14 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
 
     // Try to create a KeyAuthorization signed by the WRONG signer (not root key)
     // This simulates someone trying to authorize a key without root key permission
-    let auth_message_hash = KeyAuthorization::authorization_message_hash(
+    let auth_message_hash = KeyAuthorization {
         chain_id,
-        tempo_primitives::transaction::SignatureType::P256,
-        addr_3,
-        None, // Never expires
-        Some(&spending_limits),
-    );
+        key_type: tempo_primitives::transaction::SignatureType::P256,
+        key_id: addr_3,
+        expiry: None, // Never expires
+        limits: Some(spending_limits.clone()),
+    }
+    .signature_hash();
 
     // Sign with wrong key (should be root_key_signer)
     use sha2::{Digest, Sha256};
@@ -4915,16 +4908,16 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         chain_id,
         key_type: tempo_primitives::transaction::SignatureType::P256,
         key_id: addr_3,
-        signature: PrimitiveSignature::P256(P256SignatureWithPreHash {
-            r: B256::from_slice(&wrong_sig_bytes[0..32]),
-            s: B256::from_slice(&wrong_sig_bytes[32..64]),
-            pub_key_x: unauthorized_pub_key_x, // pub key of wrong signer
-            pub_key_y: unauthorized_pub_key_y,
-            pre_hash: true,
-        }),
         expiry: None, // Never expires
         limits: Some(spending_limits.clone()),
-    };
+    }
+    .into_signed(PrimitiveSignature::P256(P256SignatureWithPreHash {
+        r: B256::from_slice(&wrong_sig_bytes[0..32]),
+        s: B256::from_slice(&wrong_sig_bytes[32..64]),
+        pub_key_x: unauthorized_pub_key_x, // pub key of wrong signer
+        pub_key_y: unauthorized_pub_key_y,
+        pre_hash: true,
+    }));
 
     let invalid_auth_tx = TxAA {
         chain_id,
