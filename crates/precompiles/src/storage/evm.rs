@@ -13,6 +13,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
     chain_id: u64,
     gas_remaining: u64,
+    gas_refunded: i64,
     gas_limit: u64,
     spec: TempoHardfork,
 }
@@ -29,6 +30,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             internals,
             chain_id,
             gas_remaining: gas_limit,
+            gas_refunded: 0,
             gas_limit,
             spec,
         }
@@ -103,6 +105,12 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             result.is_cold,
         ))?;
 
+        // refund gas.
+        self.refund_gas(revm::interpreter::gas::sstore_refund(
+            SpecId::AMSTERDAM,
+            &result.data,
+        ));
+
         Ok(())
     }
 
@@ -166,8 +174,18 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
+    fn refund_gas(&mut self, gas: i64) {
+        self.gas_refunded = self.gas_refunded.saturating_add(gas);
+    }
+
+    #[inline]
     fn gas_used(&self) -> u64 {
         self.gas_limit - self.gas_remaining
+    }
+
+    #[inline]
+    fn gas_refunded(&self) -> i64 {
+        self.gas_refunded
     }
 
     #[inline]

@@ -1,4 +1,7 @@
-use crate::{Precompile, input_cost, mutate, storage::PrecompileStorageProvider, unknown_selector};
+use crate::{
+    Precompile, fill_precompile_output, input_cost, mutate, storage::PrecompileStorageProvider,
+    unknown_selector,
+};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
@@ -46,10 +49,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipAccountRegistrar<'a, S>
             _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
-        result.map(|mut res| {
-            res.gas_used = self.storage.gas_used();
-            res
-        })
+        result.map(|res| fill_precompile_output(res, self.storage))
     }
 }
 

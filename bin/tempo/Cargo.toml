@@ -16,13 +16,11 @@ workspace = true
 tempo-eyre.workspace = true
 tempo-node = { workspace = true, features = ["default"] }
 tempo-commonware-node.workspace = true
-tempo-commonware-node-config.workspace = true
 tempo-chainspec = { workspace = true, features = ["default"] }
 tempo-consensus.workspace = true
 tempo-evm.workspace = true
 tempo-faucet.workspace = true
 
-camino = { workspace = true, features = ["serde1"] }
 commonware-runtime = { workspace = true, features = ["external"] }
 futures = { workspace = true, features = ["executor"] }
 reth-cli-commands.workspace = true
@@ -41,7 +39,7 @@ name = "tempo"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["asm-keccak", "jemalloc"]
 
 asm-keccak = [
 	"tempo-node/asm-keccak",
@@ -96,4 +94,3 @@ min-trace-logs = [
 	"reth-ethereum-cli/min-trace-logs",
 	"tempo-node/min-trace-logs"
 ]
-

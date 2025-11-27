@@ -1,4 +1,4 @@
-use crate::{Precompile, input_cost, mutate_void, unknown_selector};
+use crate::{Precompile, fill_precompile_output, input_cost, mutate_void, unknown_selector};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::ITIP20RewardsRegistry;
@@ -30,10 +30,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20RewardsRegistry<'a, S
             _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
-        result.map(|mut res| {
-            res.gas_used = self.storage.gas_used();
-            res
-        })
+        result.map(|res| fill_precompile_output(res, self.storage))
     }
 }
 

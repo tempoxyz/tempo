@@ -25,13 +25,14 @@ on:
         type: boolean
 
 env:
-  RUSTC_WRAPPER: "sccache"
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  RUSTC_WRAPPER: "sccache"
 
 jobs:
   get-version:
     name: Get Version
-    runs-on: depot-ubuntu-latest
+    runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.get_version.outputs.version }}
     steps:
@@ -45,7 +46,7 @@ jobs:
           fi
   check-version:
     name: check version
-    runs-on: depot-ubuntu-latest
+    runs-on: ubuntu-latest
     needs: get-version
     if: ${{ github.event.inputs.dry_run != 'true' }}
     steps:
@@ -67,7 +68,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        binary: 
+        binary:
           - name: tempo
             features: "asm-keccak,jemalloc,otlp"
           - name: tempo-bench
@@ -215,5 +216,5 @@ jobs:
           aws_secret_access_key: ${{ secrets.R2_BINARIES_SECRET_KEY }}
           aws_bucket: ${{ secrets.R2_BINARIES_BUCKET }}
           endpoint: ${{ secrets.R2_BINARIES_ENDPOINT }}
-          source_dir: '${{ needs.get-version.outputs.version }}'
-          destination_dir: 'binaries/${{ needs.get-version.outputs.version }}'
+          source_dir: "${{ needs.get-version.outputs.version }}"
+          destination_dir: "binaries/${{ needs.get-version.outputs.version }}"

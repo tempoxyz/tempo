@@ -92,7 +92,7 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
 
     // Send transactions from multiple accounts in batches
     // Target ~3 full blocks (100-150 txs per block = ~300-450 total)
-    let txs_per_account = 10; // 10 txs per account = 100 total txs per batch
+    let txs_per_account = 20; // 10 txs per account = 100 total txs per batch
     let num_batches = 4; // 4 batches = 400 total txs
 
     println!(

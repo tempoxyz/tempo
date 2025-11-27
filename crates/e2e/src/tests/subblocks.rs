@@ -4,7 +4,6 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy_network::{TxSignerSync, eip2718::Encodable2718};
 use alloy_primitives::{Address, TxHash, U256};
 use commonware_macros::test_traced;
-use commonware_p2p::simulated::Link;
 use commonware_runtime::{
     Runner as _,
     deterministic::{self, Runner},
@@ -21,7 +20,7 @@ use tempo_node::primitives::{
     TempoTxEnvelope, TxAA, subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX, transaction::Call,
 };
 
-use crate::{ExecutionRuntime, RunningNode, Setup, link_validators, setup_validators};
+use crate::{RunningNode, Setup, setup_validators};
 
 #[test_traced]
 fn subblocks_are_included() {
@@ -30,23 +29,12 @@ fn subblocks_are_included() {
     Runner::from(deterministic::Config::default().with_seed(0)).start(|context| async move {
         let how_many_signers = 5;
 
-        let linkage = Link {
-            latency: Duration::from_millis(10),
-            jitter: Duration::from_millis(1),
-            success_rate: 1.0,
-        };
-        let setup = Setup {
-            how_many_signers,
-            seed: 0,
-            linkage: linkage.clone(),
-            epoch_length: 10,
-            connect_execution_layer_nodes: false,
-        };
+        let setup = Setup::new()
+            .how_many_signers(how_many_signers)
+            .epoch_length(10);
 
         // Setup and start all nodes.
-        let execution_runtime = ExecutionRuntime::new();
-        let (nodes, mut oracle) =
-            setup_validators(context.clone(), &execution_runtime, setup).await;
+        let (nodes, _execution_runtime) = setup_validators(context.clone(), setup.clone()).await;
 
         let running = join_all(
             nodes
@@ -60,8 +48,6 @@ fn subblocks_are_included() {
                 .collect::<Vec<_>>(),
         )
         .await;
-
-        link_validators(&mut oracle, &running, linkage.clone(), None).await;
 
         let mut stream = running[0]
             .execution_node
