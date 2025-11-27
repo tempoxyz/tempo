@@ -16,7 +16,7 @@ use commonware_p2p::{
     Receiver, Recipients, Sender,
     utils::mux::{MuxHandle, SubReceiver, SubSender},
 };
-use commonware_runtime::{Clock, Metrics, Storage};
+use commonware_runtime::{Clock, Storage};
 use commonware_storage::metadata::Metadata;
 use commonware_utils::{max_faults, sequence::U64, set::Ordered, union};
 use eyre::{WrapErr as _, bail, ensure};
@@ -69,7 +69,7 @@ pub(super) struct Config {
 }
 
 #[derive(Clone)]
-pub(super) struct CeremonyMetrics {
+pub(super) struct Metrics {
     pub(super) shares_distributed: Gauge,
     pub(super) acks_received: Gauge,
     pub(super) acks_sent: Gauge,
@@ -78,7 +78,7 @@ pub(super) struct CeremonyMetrics {
 
 pub(super) struct Ceremony<TContext, TReceiver, TSender>
 where
-    TContext: Clock + Metrics + Storage,
+    TContext: Clock + commonware_runtime::Metrics + Storage,
     TReceiver: Receiver,
     TSender: Sender,
 {
@@ -110,12 +110,12 @@ where
     ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, State>>>,
     receiver: SubReceiver<TReceiver>,
     sender: SubSender<TSender>,
-    metrics: CeremonyMetrics,
+    metrics: Metrics,
 }
 
 impl<TContext, TReceiver, TSender> Ceremony<TContext, TReceiver, TSender>
 where
-    TContext: Clock + CryptoRngCore + Metrics + Storage,
+    TContext: Clock + CryptoRngCore + commonware_runtime::Metrics + Storage,
     TReceiver: Receiver<PublicKey = PublicKey>,
     TSender: Sender<PublicKey = PublicKey>,
 {
@@ -126,7 +126,7 @@ where
         mux: &mut MuxHandle<TSender, TReceiver>,
         ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, State>>>,
         config: Config,
-        metrics: CeremonyMetrics,
+        metrics: Metrics,
     ) -> eyre::Result<Self> {
         let (sender, receiver) = mux
             .register(config.epoch)

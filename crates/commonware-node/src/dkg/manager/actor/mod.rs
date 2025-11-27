@@ -32,8 +32,7 @@ use tracing::{Span, info, instrument, warn};
 use crate::{
     consensus::block::Block,
     dkg::{
-        ceremony,
-        ceremony::{Ceremony, CeremonyMetrics},
+        ceremony::{self, Ceremony},
         manager::{
             DecodedValidator,
             ingress::{Finalize, GetIntermediateDealing, GetOutcome},
@@ -245,7 +244,7 @@ where
             pre_allegretto_ceremonies,
             post_allegretto_ceremonies,
             failed_allegretto_transitions,
-            ceremony_metrics: CeremonyMetrics {
+            ceremony_metrics: ceremony::Metrics {
                 shares_distributed,
                 acks_received,
                 acks_sent,
@@ -703,7 +702,7 @@ struct Metrics {
     post_allegretto_ceremonies: Counter,
     failed_allegretto_transitions: Counter,
     syncing_players: Gauge,
-    ceremony_metrics: CeremonyMetrics,
+    ceremony_metrics: ceremony::Metrics,
 }
 
 impl Metrics {
