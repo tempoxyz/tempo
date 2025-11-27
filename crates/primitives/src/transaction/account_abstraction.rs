@@ -7,7 +7,10 @@ use reth_primitives_traits::InMemorySize;
 
 use crate::{
     subblock::{PartialValidatorKey, has_sub_block_nonce_key_prefix},
-    transaction::{AASignature, AASigned, AASignedAuthorization, KeyAuthorization},
+    transaction::{
+        AASignature, AASigned, AASignedAuthorization, KeyAuthorization,
+        key_authorization::SignedKeyAuthorization,
+    },
 };
 
 /// Account abstraction transaction type byte (0x76)
@@ -213,7 +216,7 @@ pub struct TxAA {
     /// When present, this transaction will add the specified key to the AccountKeychain precompile,
     /// before verifying the transaction signature.
     /// The authorization must be signed with the root key, the tx can be signed by the Keychain signature.
-    pub key_authorization: Option<KeyAuthorization>,
+    pub key_authorization: Option<SignedKeyAuthorization>,
 
     /// Authorization list (EIP-7702 style with AA signatures)
     pub aa_authorization_list: Vec<AASignedAuthorization>,
@@ -791,9 +794,6 @@ impl<'a> arbitrary::Arbitrary<'a> for TxAA {
             }
         };
 
-        // Generate key_authorization with diverse data for comprehensive testing
-        let key_authorization: Option<KeyAuthorization> = u.arbitrary()?;
-
         Ok(Self {
             chain_id,
             fee_token,
@@ -807,7 +807,7 @@ impl<'a> arbitrary::Arbitrary<'a> for TxAA {
             fee_payer_signature,
             valid_before,
             valid_after,
-            key_authorization,
+            key_authorization: u.arbitrary()?,
             aa_authorization_list: vec![],
         })
     }
@@ -892,7 +892,7 @@ mod compact {
         fee_payer_signature: Option<Signature>,
         valid_before: Option<u64>,
         valid_after: Option<u64>,
-        key_authorization: Option<KeyAuthorization>,
+        key_authorization: Option<SignedKeyAuthorization>,
         aa_authorization_list: Vec<AASignedAuthorization>,
     }
 
@@ -1712,14 +1712,14 @@ mod tests {
         let key_auth = KeyAuthorization {
             chain_id: 1, // Test chain ID
             key_type: SignatureType::Secp256k1,
-            expiry: 1234567890,
-            limits: vec![crate::transaction::TokenLimit {
+            expiry: Some(1234567890),
+            limits: Some(vec![crate::transaction::TokenLimit {
                 token: address!("0000000000000000000000000000000000000003"),
                 limit: U256::from(10000),
-            }],
+            }]),
             key_id: address!("0000000000000000000000000000000000000004"),
-            signature: PrimitiveSignature::Secp256k1(Signature::test_signature()),
-        };
+        }
+        .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
 
         let tx_with = TxAA {
             key_authorization: Some(key_auth.clone()),
@@ -1738,7 +1738,10 @@ mod tests {
         let decoded_key_auth = decoded_with.key_authorization.unwrap();
         assert_eq!(decoded_key_auth.key_type, key_auth.key_type);
         assert_eq!(decoded_key_auth.expiry, key_auth.expiry);
-        assert_eq!(decoded_key_auth.limits.len(), key_auth.limits.len());
+        assert_eq!(
+            decoded_key_auth.limits.as_ref().map(|l| l.len()),
+            key_auth.limits.as_ref().map(|l| l.len())
+        );
         assert_eq!(decoded_key_auth.key_id, key_auth.key_id);
 
         // Important: The encoded transaction WITHOUT key_authorization should be shorter

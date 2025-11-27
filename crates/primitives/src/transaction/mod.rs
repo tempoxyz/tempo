@@ -18,7 +18,7 @@ pub use account_abstraction::{
 pub use alloy_eips::eip7702::Authorization;
 pub use envelope::{TempoTxEnvelope, TempoTxType, TempoTypedTransaction};
 pub use fee_token::{FEE_TOKEN_TX_TYPE_ID, TxFeeToken};
-pub use key_authorization::{KeyAuthorization, TokenLimit};
+pub use key_authorization::{KeyAuthorization, SignedKeyAuthorization, TokenLimit};
 
 use alloy_primitives::{U256, uint};
 

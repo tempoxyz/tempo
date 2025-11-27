@@ -162,12 +162,17 @@ where
         // Decode AuthorizedKey using helper
         let authorized_key = AuthorizedKey::decode_from_slot(slot_value);
 
-        // Validate - only check if key is active
-        // Expiry validation is done in the EVM handler where block timestamp is readily available
-        if !authorized_key.is_active {
-            return Ok(Err("access key is not active"));
+        // Check if key was revoked (revoked keys cannot be used)
+        if authorized_key.is_revoked {
+            return Ok(Err("access key has been revoked"));
         }
 
+        // Check if key exists (key exists if expiry > 0)
+        if authorized_key.expiry == 0 {
+            return Ok(Err("access key does not exist"));
+        }
+
+        // Expiry checks are skipped here, they are done in the EVM handler where block timestamp is easily available.
         Ok(Ok(()))
     }
 

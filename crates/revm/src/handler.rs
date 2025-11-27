@@ -692,21 +692,45 @@ where
                 SignatureType::WebAuthn => PrecompileSignatureType::WebAuthn,
             };
 
-            // Convert limits to the format expected by the precompile
+            // Handle expiry: None means never expires (store as u64::MAX)
+            let expiry = key_auth.expiry.unwrap_or(u64::MAX);
+
+            // Validate expiry is not in the past
+            let current_timestamp = block.timestamp().saturating_to::<u64>();
+            if expiry <= current_timestamp {
+                return Err(EVMError::Transaction(
+                    TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                        reason: format!(
+                            "Key expiry {expiry} is in the past (current timestamp: {current_timestamp})"
+                        ),
+                    },
+                ));
+            }
+
+            // Handle limits: None means unlimited spending (enforce_limits=false)
+            // Some([]) means no spending allowed (enforce_limits=true)
+            // Some([...]) means specific limits (enforce_limits=true)
+            let enforce_limits = key_auth.limits.is_some();
             let precompile_limits: Vec<TokenLimit> = key_auth
                 .limits
-                .iter()
-                .map(|limit| TokenLimit {
-                    token: limit.token,
-                    amount: limit.limit,
+                .as_ref()
+                .map(|limits| {
+                    limits
+                        .iter()
+                        .map(|limit| TokenLimit {
+                            token: limit.token,
+                            amount: limit.limit,
+                        })
+                        .collect()
                 })
-                .collect();
+                .unwrap_or_default();
 
             // Create the authorize key call
             let authorize_call = authorizeKeyCall {
                 keyId: access_key_addr,
                 signatureType: signature_type,
-                expiry: key_auth.expiry,
+                expiry,
+                enforceLimits: enforce_limits,
                 limits: precompile_limits,
             };
 
@@ -1667,20 +1691,36 @@ mod tests {
         ];
 
         // Compute hash using the helper function
-        let hash1 = KeyAuthorization::authorization_message_hash(
-            chain_id, key_type, key_id, expiry, &limits,
-        );
+        let hash1 = KeyAuthorization {
+            chain_id,
+            key_type,
+            key_id,
+            expiry: Some(expiry),
+            limits: Some(limits.clone()),
+        }
+        .signature_hash();
 
         // Compute again to verify consistency
-        let hash2 = KeyAuthorization::authorization_message_hash(
-            chain_id, key_type, key_id, expiry, &limits,
-        );
+        let hash2 = KeyAuthorization {
+            chain_id,
+            key_type,
+            key_id,
+            expiry: Some(expiry),
+            limits: Some(limits.clone()),
+        }
+        .signature_hash();
 
         assert_eq!(hash1, hash2, "Hash computation should be deterministic");
 
         // Verify that different chain_id produces different hash
-        let hash3 =
-            KeyAuthorization::authorization_message_hash(2, key_type, key_id, expiry, &limits);
+        let hash3 = KeyAuthorization {
+            chain_id: 2,
+            key_type,
+            key_id,
+            expiry: Some(expiry),
+            limits: Some(limits),
+        }
+        .signature_hash();
         assert_ne!(
             hash1, hash3,
             "Different chain_id should produce different hash"
