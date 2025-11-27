@@ -688,7 +688,8 @@ fn verify_webauthn_data_internal(
     webauthn_data: &[u8],
     tx_hash: &B256,
 ) -> Result<B256, &'static str> {
-    if webauthn_data.len() < MIN_AUTH_DATA_LEN {
+    // Ensure that we have clientDataJSON after authenticatorData
+    if webauthn_data.len() < MIN_AUTH_DATA_LEN + 32 {
         return Err("WebAuthn data too short");
     }
 
@@ -715,11 +716,6 @@ fn verify_webauthn_data_internal(
         // NOTE: If we ever want to support extensions, we will have to parse CBOR data
         return Err("ED flag must not be set, as Tempo doesn't support extensions");
     };
-
-    // Ensure that we have clientDataJSON after authenticatorData
-    if auth_data_len >= webauthn_data.len() {
-        return Err("No clientDataJSON after authenticatorData");
-    }
 
     let authenticator_data = &webauthn_data[..auth_data_len];
     let client_data_json = &webauthn_data[auth_data_len..];
