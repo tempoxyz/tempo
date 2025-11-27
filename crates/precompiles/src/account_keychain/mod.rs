@@ -26,18 +26,21 @@ use tempo_precompiles_macros::{Storable, contract};
 /// Storage layout (packed into single slot, right-aligned):
 /// - byte 0: signature_type (u8)
 /// - bytes 1-8: expiry (u64, little-endian)
-/// - byte 9: is_active (bool)
+/// - byte 9: enforce_limits (bool)
+/// - byte 10: is_revoked (bool)
 #[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
 pub struct AuthorizedKey {
     /// Signature type: 0 = secp256k1, 1 = P256, 2 = WebAuthn
     pub signature_type: u8,
     /// Block timestamp when key expires
     pub expiry: u64,
-    /// Whether key is active
-    pub is_active: bool,
+    /// Whether to enforce spending limits for this key
+    pub enforce_limits: bool,
+    /// Whether this key has been revoked. Once revoked, a key cannot be re-authorized
+    /// with the same key_id. This prevents replay attacks.
+    pub is_revoked: bool,
 }
 
-// TODO: Can we get some precompile macro utilities for this, which are compatible with read-only contexts?
 impl AuthorizedKey {
     /// Decode AuthorizedKey from a storage slot value
     ///
@@ -132,11 +135,15 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
             return Err(AccountKeychainError::zero_public_key().into());
         }
 
-        // Check if key already exists
+        // Check if key already exists (key exists if expiry > 0)
         let existing_key = self.sload_keys(msg_sender, call.keyId)?;
-
-        if existing_key.is_active {
+        if existing_key.expiry > 0 {
             return Err(AccountKeychainError::key_already_exists().into());
+        }
+
+        // Check if this key was previously revoked - prevents replay attacks
+        if existing_key.is_revoked {
+            return Err(AccountKeychainError::key_already_revoked().into());
         }
 
         // Convert SignatureType enum to u8 for storage
@@ -151,15 +158,18 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
         let new_key = AuthorizedKey {
             signature_type,
             expiry: call.expiry,
-            is_active: true,
+            enforce_limits: call.enforceLimits,
+            is_revoked: false,
         };
 
         self.sstore_keys(msg_sender, call.keyId, new_key)?;
 
-        // Set initial spending limits
-        let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
-        for limit in call.limits {
-            self.sstore_spending_limits(limit_key, limit.token, limit.amount)?;
+        // Set initial spending limits (only if enforce_limits is true)
+        if call.enforceLimits {
+            let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
+            for limit in call.limits {
+                self.sstore_spending_limits(limit_key, limit.token, limit.amount)?;
+            }
         }
 
         // Emit event
@@ -180,6 +190,10 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
     }
 
     /// Revoke an authorized key
+    ///
+    /// This marks the key as revoked by setting is_revoked to true and expiry to 0.
+    /// Once revoked, a key_id can never be re-authorized for this account, preventing
+    /// replay attacks where old KeyAuthorization signatures could be reused.
     pub fn revoke_key(&mut self, msg_sender: Address, call: revokeKeyCall) -> Result<()> {
         let transaction_key = self.tload_transaction_key()?;
 
@@ -187,15 +201,23 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
             return Err(AccountKeychainError::unauthorized_caller().into());
         }
 
-        let mut key = self.sload_keys(msg_sender, call.keyId)?;
+        let key = self.sload_keys(msg_sender, call.keyId)?;
 
-        if !key.is_active {
-            return Err(AccountKeychainError::key_inactive().into());
+        // Key exists if expiry > 0
+        if key.expiry == 0 {
+            return Err(AccountKeychainError::key_not_found().into());
         }
 
-        // Mark key as inactive
-        key.is_active = false;
-        self.sstore_keys(msg_sender, call.keyId, key)?;
+        // Mark the key as revoked - this prevents replay attacks by ensuring
+        // the same key_id can never be re-authorized for this account.
+        // We keep is_revoked=true but clear other fields.
+        let revoked_key = AuthorizedKey {
+            is_revoked: true,
+            ..Default::default()
+        };
+        self.sstore_keys(msg_sender, call.keyId, revoked_key)?;
+
+        // Note: We don't clear spending limits here - they become inaccessible
 
         // Emit event
         let mut public_key_bytes = [0u8; 32];
@@ -213,6 +235,9 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
     }
 
     /// Update spending limit for a key-token pair
+    ///
+    /// This can be used to add limits to an unlimited key (converting it to limited)
+    /// or to update existing limits.
     pub fn update_spending_limit(
         &mut self,
         msg_sender: Address,
@@ -224,11 +249,18 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
             return Err(AccountKeychainError::unauthorized_caller().into());
         }
 
-        // Verify key exists and is active
-        let key = self.sload_keys(msg_sender, call.keyId)?;
+        // Verify key exists, hasn't been revoked, and hasn't expired
+        let mut key = self.load_active_key(msg_sender, call.keyId)?;
 
-        if !key.is_active {
-            return Err(AccountKeychainError::key_inactive().into());
+        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+        if current_timestamp >= key.expiry {
+            return Err(AccountKeychainError::key_expired().into());
+        }
+
+        // If this key had unlimited spending (enforce_limits=false), enable limits now
+        if !key.enforce_limits {
+            key.enforce_limits = true;
+            self.sstore_keys(msg_sender, call.keyId, key)?;
         }
 
         // Update the spending limit
@@ -256,12 +288,14 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
     pub fn get_key(&mut self, call: getKeyCall) -> Result<KeyInfo> {
         let key = self.sload_keys(call.account, call.keyId)?;
 
-        // If the key is not active, return default (non-existent key)
-        if !key.is_active {
+        // Key doesn't exist if expiry == 0, or key has been revoked
+        if key.expiry == 0 || key.is_revoked {
             return Ok(KeyInfo {
                 signatureType: SignatureType::Secp256k1,
                 keyId: Address::ZERO,
                 expiry: 0,
+                enforceLimits: false,
+                isRevoked: key.is_revoked,
             });
         }
 
@@ -277,6 +311,8 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
             signatureType: signature_type,
             keyId: call.keyId,
             expiry: key.expiry,
+            enforceLimits: key.enforce_limits,
+            isRevoked: key.is_revoked,
         })
     }
 
@@ -310,7 +346,29 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
         Ok(())
     }
 
-    /// Validate keychain authorization (existence, active status, expiry)
+    /// Load and validate a key exists and is not revoked.
+    ///
+    /// Returns the key if valid, or an error if:
+    /// - Key doesn't exist (expiry == 0)
+    /// - Key has been revoked
+    ///
+    /// Note: This does NOT check expiry against current timestamp.
+    /// Callers should check expiry separately if needed.
+    fn load_active_key(&mut self, account: Address, key_id: Address) -> Result<AuthorizedKey> {
+        let key = self.sload_keys(account, key_id)?;
+
+        if key.is_revoked {
+            return Err(AccountKeychainError::key_already_revoked().into());
+        }
+
+        if key.expiry == 0 {
+            return Err(AccountKeychainError::key_not_found().into());
+        }
+
+        Ok(key)
+    }
+
+    /// Validate keychain authorization (existence, revocation, and expiry)
     ///
     /// This consolidates all validation checks into one method.
     /// Returns Ok(()) if the key is valid and authorized, Err otherwise.
@@ -320,13 +378,9 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
         key_id: Address,
         current_timestamp: u64,
     ) -> Result<()> {
-        let key = self.sload_keys(account, key_id)?;
+        let key = self.load_active_key(account, key_id)?;
 
-        if !key.is_active {
-            return Err(AccountKeychainError::key_inactive().into());
-        }
-
-        if key.expiry > 0 && current_timestamp >= key.expiry {
+        if current_timestamp >= key.expiry {
             return Err(AccountKeychainError::key_expired().into());
         }
 
@@ -346,11 +400,12 @@ impl<'a, S: PrecompileStorageProvider> AccountKeychain<'a, S> {
             return Ok(());
         }
 
-        // Check key is valid
-        let key = self.sload_keys(account, key_id)?;
+        // Check key is valid (exists and not revoked)
+        let key = self.load_active_key(account, key_id)?;
 
-        if !key.is_active {
-            return Err(AccountKeychainError::key_inactive().into());
+        // If enforce_limits is false, this key has unlimited spending
+        if !key.enforce_limits {
+            return Ok(());
         }
 
         // Check and update spending limit
@@ -511,6 +566,7 @@ mod tests {
             keyId: existing_key,
             signatureType: SignatureType::Secp256k1,
             expiry: u64::MAX,
+            enforceLimits: true,
             limits: vec![],
         };
         keychain.authorize_key(msg_sender, setup_call).unwrap();
@@ -523,6 +579,7 @@ mod tests {
             keyId: Address::from([0x05; 20]),
             signatureType: SignatureType::P256,
             expiry: u64::MAX,
+            enforceLimits: true,
             limits: vec![],
         };
         let auth_result = keychain.authorize_key(msg_sender, auth_call);
@@ -568,5 +625,120 @@ mod tests {
                 _ => panic!("Expected AccountKeychainError, got: {error:?}"),
             }
         }
+    }
+
+    #[test]
+    fn test_replay_protection_revoked_key_cannot_be_reauthorized() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut keychain = AccountKeychain::new(&mut storage);
+        keychain.initialize().unwrap();
+
+        let account = Address::from([0x01; 20]);
+        let key_id = Address::from([0x02; 20]);
+
+        // Use main key for all operations
+        keychain.set_transaction_key(Address::ZERO).unwrap();
+
+        // Step 1: Authorize a key
+        let auth_call = authorizeKeyCall {
+            keyId: key_id,
+            signatureType: SignatureType::Secp256k1,
+            expiry: u64::MAX,
+            enforceLimits: false,
+            limits: vec![],
+        };
+        keychain.authorize_key(account, auth_call.clone()).unwrap();
+
+        // Verify key exists
+        let key_info = keychain
+            .get_key(getKeyCall {
+                account,
+                keyId: key_id,
+            })
+            .unwrap();
+        assert_eq!(key_info.expiry, u64::MAX);
+        assert!(!key_info.isRevoked);
+
+        // Step 2: Revoke the key
+        let revoke_call = revokeKeyCall { keyId: key_id };
+        keychain.revoke_key(account, revoke_call).unwrap();
+
+        // Verify key is revoked
+        let key_info = keychain
+            .get_key(getKeyCall {
+                account,
+                keyId: key_id,
+            })
+            .unwrap();
+        assert_eq!(key_info.expiry, 0);
+        assert!(key_info.isRevoked);
+
+        // Step 3: Try to re-authorize the same key (replay attack)
+        // This should fail because the key was revoked
+        let replay_result = keychain.authorize_key(account, auth_call);
+        assert!(
+            replay_result.is_err(),
+            "Re-authorizing a revoked key should fail"
+        );
+
+        // Verify it's the correct error
+        match replay_result.unwrap_err() {
+            crate::error::TempoPrecompileError::AccountKeychainError(e) => {
+                assert!(
+                    matches!(e, AccountKeychainError::KeyAlreadyRevoked(_)),
+                    "Expected KeyAlreadyRevoked error, got: {e:?}"
+                );
+            }
+            e => panic!("Expected AccountKeychainError, got: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn test_different_key_id_can_be_authorized_after_revocation() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut keychain = AccountKeychain::new(&mut storage);
+        keychain.initialize().unwrap();
+
+        let account = Address::from([0x01; 20]);
+        let key_id_1 = Address::from([0x02; 20]);
+        let key_id_2 = Address::from([0x03; 20]);
+
+        // Use main key for all operations
+        keychain.set_transaction_key(Address::ZERO).unwrap();
+
+        // Authorize key 1
+        let auth_call_1 = authorizeKeyCall {
+            keyId: key_id_1,
+            signatureType: SignatureType::Secp256k1,
+            expiry: u64::MAX,
+            enforceLimits: false,
+            limits: vec![],
+        };
+        keychain.authorize_key(account, auth_call_1).unwrap();
+
+        // Revoke key 1
+        keychain
+            .revoke_key(account, revokeKeyCall { keyId: key_id_1 })
+            .unwrap();
+
+        // Authorizing a different key (key 2) should still work
+        let auth_call_2 = authorizeKeyCall {
+            keyId: key_id_2,
+            signatureType: SignatureType::P256,
+            expiry: 1000,
+            enforceLimits: true,
+            limits: vec![],
+        };
+        keychain.authorize_key(account, auth_call_2).unwrap();
+
+        // Verify key 2 is authorized
+        let key_info = keychain
+            .get_key(getKeyCall {
+                account,
+                keyId: key_id_2,
+            })
+            .unwrap();
+        assert_eq!(key_info.expiry, 1000);
+        assert!(!key_info.isRevoked);
     }
 }
