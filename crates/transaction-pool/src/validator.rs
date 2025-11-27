@@ -22,8 +22,11 @@ use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, compute_keys_slot,
     nonce::slots, storage::double_mapping_slot,
 };
-use tempo_primitives::subblock::has_sub_block_nonce_key_prefix;
+use tempo_primitives::{subblock::has_sub_block_nonce_key_prefix, transaction::TxAA};
 use tempo_revm::TempoStateAccess;
+
+// Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
+const AA_VALID_BEFORE_MIN_SECS: u64 = 3;
 
 /// Validator for Tempo transactions.
 #[derive(Debug)]
@@ -168,6 +171,40 @@ where
         Ok(Ok(()))
     }
 
+    /// Validates AA transaction time-bound conditionals
+    fn ensure_valid_conditionals(&self, tx: &TxAA) -> Result<(), TempoPoolTransactionError> {
+        // Reject AA txs where `valid_before` is too close to current time (or already expired).
+        if let Some(valid_before) = tx.valid_before {
+            // Uses tip_timestamp, as if the node is lagging lagging, the maintenance task will evict expired txs.
+            let current_time = self.inner.fork_tracker().tip_timestamp();
+            let min_allowed = current_time.saturating_add(AA_VALID_BEFORE_MIN_SECS);
+            if valid_before <= min_allowed {
+                return Err(TempoPoolTransactionError::InvalidValidBefore {
+                    valid_before,
+                    min_allowed,
+                });
+            }
+        }
+
+        // Reject AA txs where `valid_after` is too far in the future.
+        if let Some(valid_after) = tx.valid_after {
+            // Uses local time to avoid rejecting valid txs when node is lagging.
+            let current_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let max_allowed = current_time.saturating_add(self.aa_valid_after_max_secs);
+            if valid_after > max_allowed {
+                return Err(TempoPoolTransactionError::InvalidValidAfter {
+                    valid_after,
+                    max_allowed,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
     fn validate_one(
         &self,
         origin: TransactionOrigin,
@@ -206,23 +243,14 @@ where
             );
         }
 
-        // Reject AA transactions where `valid_after` is too far in the future to prevent mempool DOS.
+        // Validate AA transaction temporal conditionals (`valid_before` and `valid_after`).
         if let Some(tx) = transaction.inner().as_aa()
-            && let Some(valid_after) = tx.tx().valid_after
+            && let Err(err) = self.ensure_valid_conditionals(tx.tx())
         {
-            let current_time = self.inner.fork_tracker().tip_timestamp();
-            let max_allowed = current_time.saturating_add(self.aa_valid_after_max_secs);
-            if valid_after > max_allowed {
-                return TransactionValidationOutcome::Invalid(
-                    transaction,
-                    InvalidPoolTransactionError::other(
-                        TempoPoolTransactionError::InvalidValidAfter {
-                            valid_after,
-                            max_allowed,
-                        },
-                    ),
-                );
-            }
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
+            );
         }
 
         let fee_payer = match transaction.inner().fee_payer(transaction.sender()) {
@@ -486,8 +514,12 @@ mod tests {
         TempoPooledTransaction::new(tx.try_into_recovered().unwrap())
     }
 
-    /// Helper function to create an AA transaction with the given `valid_after` timestamp
-    fn create_aa_transaction(valid_after: Option<u64>) -> TempoPooledTransaction {
+    /// Helper function to create an AA transaction with the given `valid_after` and `valid_before`
+    /// timestamps
+    fn create_aa_transaction(
+        valid_after: Option<u64>,
+        valid_before: Option<u64>,
+    ) -> TempoPooledTransaction {
         use alloy_primitives::{Signature, TxKind, address};
         use tempo_primitives::transaction::{
             TxAA,
@@ -511,7 +543,7 @@ mod tests {
             fee_token: Some(address!("0000000000000000000000000000000000000002")),
             fee_payer_signature: None,
             valid_after,
-            valid_before: None,
+            valid_before,
             access_list: Default::default(),
             aa_authorization_list: vec![],
             key_authorization: None,
@@ -572,6 +604,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_aa_valid_before_check() {
+        // NOTE: `setup_validator` will turn `tip_timestamp` into `current_time`
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Test case 1: No `valid_before`
+        let tx_no_valid_before = create_aa_transaction(None, None);
+        let validator = setup_validator(&tx_no_valid_before, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_no_valid_before)
+            .await;
+
+        if let TransactionValidationOutcome::Invalid(_, err) = outcome {
+            let error_msg = format!("{err}");
+            assert!(!error_msg.contains("valid_before"));
+        }
+
+        // Test case 2: `valid_before` too small (at boundary)
+        let tx_too_close =
+            create_aa_transaction(None, Some(current_time + AA_VALID_BEFORE_MIN_SECS));
+        let validator = setup_validator(&tx_too_close, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_too_close)
+            .await;
+
+        if let TransactionValidationOutcome::Invalid(_, err) = outcome {
+            let error_msg = format!("{err}");
+            assert!(
+                error_msg.contains("valid_before"),
+                "Expected 'valid_before' got: {error_msg}"
+            );
+        } else {
+            panic!("Expected invalid outcome with InvalidValidBefore error");
+        }
+
+        // Test case 3: `valid_before` sufficiently in the future
+        let tx_valid =
+            create_aa_transaction(None, Some(current_time + AA_VALID_BEFORE_MIN_SECS + 1));
+        let validator = setup_validator(&tx_valid, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_valid)
+            .await;
+
+        if let TransactionValidationOutcome::Invalid(_, err) = outcome {
+            let error_msg = format!("{err}");
+            assert!(!error_msg.contains("valid_before"));
+        }
+    }
+
+    #[tokio::test]
     async fn test_aa_valid_after_check() {
         // NOTE: `setup_validator` will turn `tip_timestamp` into `current_time`
         let current_time = std::time::SystemTime::now()
@@ -580,7 +664,7 @@ mod tests {
             .as_secs();
 
         // Test case 1: No `valid_after`
-        let tx_no_valid_after = create_aa_transaction(None);
+        let tx_no_valid_after = create_aa_transaction(None, None);
         let validator = setup_validator(&tx_no_valid_after, current_time);
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, tx_no_valid_after)
@@ -588,13 +672,11 @@ mod tests {
 
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
             let error_msg = format!("{err}");
-            assert!(
-                !error_msg.contains("valid_after") || !error_msg.contains("too far in the future")
-            );
+            assert!(!error_msg.contains("valid_after"));
         }
 
         // Test case 2: `valid_after` within limit (30 minutes)
-        let tx_within_limit = create_aa_transaction(Some(current_time + 1800));
+        let tx_within_limit = create_aa_transaction(Some(current_time + 1800), None);
         let validator = setup_validator(&tx_within_limit, current_time);
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, tx_within_limit)
@@ -602,13 +684,11 @@ mod tests {
 
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
             let error_msg = format!("{err}");
-            assert!(
-                !error_msg.contains("valid_after") || !error_msg.contains("too far in the future")
-            );
+            assert!(!error_msg.contains("valid_after"));
         }
 
         // Test case 3: `valid_after` beyond limit (2 hours)
-        let tx_too_far = create_aa_transaction(Some(current_time + 7200));
+        let tx_too_far = create_aa_transaction(Some(current_time + 7200), None);
         let validator = setup_validator(&tx_too_far, current_time);
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, tx_too_far)
@@ -616,9 +696,7 @@ mod tests {
 
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
             let error_msg = format!("{err}");
-            assert!(
-                error_msg.contains("valid_after") && error_msg.contains("too far in the future")
-            );
+            assert!(error_msg.contains("valid_after"));
         } else {
             panic!("Expected invalid outcome with InvalidValidAfter error");
         }
