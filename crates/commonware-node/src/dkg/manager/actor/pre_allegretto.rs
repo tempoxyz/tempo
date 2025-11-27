@@ -192,6 +192,7 @@ where
                         .as_ref()
                         .is_some_and(|ceremony| ceremony.epoch() != epoch_state.epoch())
                 {
+                    self.metrics.reset_ceremony_metrics();
                     maybe_ceremony.replace(self.start_pre_allegretto_ceremony(ceremony_mux).await);
                 }
 

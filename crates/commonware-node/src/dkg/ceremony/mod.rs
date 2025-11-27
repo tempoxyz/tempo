@@ -22,7 +22,7 @@ use commonware_utils::{max_faults, sequence::U64, set::Ordered, union};
 use eyre::{WrapErr as _, bail, ensure};
 use futures::{FutureExt as _, lock::Mutex};
 use indexmap::IndexSet;
-use prometheus_client::metrics::counter::Counter;
+use prometheus_client::metrics::gauge::Gauge;
 use rand_core::CryptoRngCore;
 use tracing::{Level, debug, error, info, instrument, warn};
 
@@ -70,10 +70,10 @@ pub(super) struct Config {
 
 #[derive(Clone)]
 pub(super) struct CeremonyMetrics {
-    pub(super) shares_distributed: Counter,
-    pub(super) acks_received: Counter,
-    pub(super) acks_sent: Counter,
-    pub(super) dealings_read: Counter,
+    pub(super) shares_distributed: Gauge,
+    pub(super) acks_received: Gauge,
+    pub(super) acks_sent: Gauge,
+    pub(super) dealings_read: Gauge,
 }
 
 pub(super) struct Ceremony<TContext, TReceiver, TSender>

@@ -147,10 +147,10 @@ where
         let post_allegretto_ceremonies = Counter::default();
         let failed_allegretto_transitions = Counter::default();
 
-        let shares_distributed = Counter::default();
-        let acks_received = Counter::default();
-        let acks_sent = Counter::default();
-        let dealings_read = Counter::default();
+        let shares_distributed = Gauge::default();
+        let acks_received = Gauge::default();
+        let acks_sent = Gauge::default();
+        let dealings_read = Gauge::default();
 
         context.register(
             "ceremony_failures",
@@ -214,22 +214,22 @@ where
         );
         context.register(
             "shares_distributed",
-            "the number of shares distributed by this node as a dealer",
+            "the number of shares distributed by this node as a dealer in the current ceremony",
             shares_distributed.clone(),
         );
         context.register(
             "acks_received",
-            "the number of acknowledgments received by this node as a dealer",
+            "the number of acknowledgments received by this node as a dealer in the current ceremony",
             acks_received.clone(),
         );
         context.register(
             "acks_sent",
-            "the number of acknowledgments sent by this node as a player",
+            "the number of acknowledgments sent by this node as a player in the current ceremony",
             acks_sent.clone(),
         );
         context.register(
             "dealings_read",
-            "the number of dealings read from the blockchain",
+            "the number of dealings read from the blockchain in the current ceremony",
             dealings_read.clone(),
         );
 
@@ -460,6 +460,9 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
+        // Reset per-ceremony metrics at the start of each new ceremony
+        self.metrics.reset_ceremony_metrics();
+
         if self.post_allegretto_metadatas.exists() {
             self.start_post_allegretto_ceremony(mux).await
         } else {
@@ -698,10 +701,10 @@ struct Metrics {
     post_allegretto_ceremonies: Counter,
     failed_allegretto_transitions: Counter,
     syncing_players: Gauge,
-    shares_distributed: Counter,
-    acks_received: Counter,
-    acks_sent: Counter,
-    dealings_read: Counter,
+    shares_distributed: Gauge,
+    acks_received: Gauge,
+    acks_sent: Gauge,
+    dealings_read: Gauge,
 }
 
 impl Metrics {
@@ -712,6 +715,14 @@ impl Metrics {
             acks_sent: self.acks_sent.clone(),
             dealings_read: self.dealings_read.clone(),
         }
+    }
+
+    /// Resets ceremony-specific metrics to zero at the start of a new ceremony.
+    fn reset_ceremony_metrics(&self) {
+        self.shares_distributed.set(0);
+        self.acks_received.set(0);
+        self.acks_sent.set(0);
+        self.dealings_read.set(0);
     }
 }
 

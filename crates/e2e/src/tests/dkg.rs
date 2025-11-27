@@ -127,20 +127,21 @@ fn assert_static_transitions(how_many: u32, epoch_length: u64, transitions: u64)
             dkg_successful |= value >= transitions;
         }
 
-        // Verify new DKG ceremony metrics are exposed and incremented
-        if metric.ends_with("_dkg_manager_shares_distributed_total") {
+        // Verify new DKG ceremony metrics are exposed and incremented.
+        // These are gauges (reset per-ceremony), so they don't have the _total suffix.
+        if metric.ends_with("_dkg_manager_shares_distributed") {
             let value = value.parse::<u64>().unwrap();
             shares_distributed_seen |= value > 0;
         }
-        if metric.ends_with("_dkg_manager_acks_received_total") {
+        if metric.ends_with("_dkg_manager_acks_received") {
             let value = value.parse::<u64>().unwrap();
             acks_received_seen |= value > 0;
         }
-        if metric.ends_with("_dkg_manager_acks_sent_total") {
+        if metric.ends_with("_dkg_manager_acks_sent") {
             let value = value.parse::<u64>().unwrap();
             acks_sent_seen |= value > 0;
         }
-        if metric.ends_with("_dkg_manager_dealings_read_total") {
+        if metric.ends_with("_dkg_manager_dealings_read") {
             let value = value.parse::<u64>().unwrap();
             dealings_read_seen |= value > 0;
         }
