@@ -35,7 +35,7 @@ use tempo_precompiles::{
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, subblock::PartialValidatorKey,
 };
-use tempo_revm::evm::TempoContext;
+use tempo_revm::{TempoHaltReason, evm::TempoContext};
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -497,26 +497,29 @@ where
     fn execute_transaction_without_commit(
         &mut self,
         tx: impl ExecutableTx<Self>,
-    ) -> Result<ResultAndState, BlockExecutionError> {
+    ) -> Result<ResultAndState<TempoHaltReason>, BlockExecutionError> {
+        let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
         // If we are dealing with a subblock transaction, configure the fee recipient context.
-        if let Some(validator) = tx.tx().subblock_proposer() {
+        if self.evm().ctx().cfg.spec.is_allegretto()
+            && let Some(validator) = tx.tx().subblock_proposer()
+        {
             let fee_recipient = *self
                 .subblock_fee_recipients
                 .get(&validator)
                 .ok_or(BlockExecutionError::msg("invalid subblock transaction"))?;
 
-            self.evm_mut().set_subblock_fee_recipient(fee_recipient);
+            self.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
         }
         let result = self.inner.execute_transaction_without_commit(tx);
 
-        self.evm_mut().unset_subblock_fee_recipient();
+        self.evm_mut().ctx_mut().block.beneficiary = beneficiary;
 
         result
     }
 
     fn commit_transaction(
         &mut self,
-        output: ResultAndState,
+        output: ResultAndState<TempoHaltReason>,
         tx: impl ExecutableTx<Self>,
     ) -> Result<u64, BlockExecutionError> {
         let next_section = self.validate_tx(tx.tx(), output.result.gas_used())?;

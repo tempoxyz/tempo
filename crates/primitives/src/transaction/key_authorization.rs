@@ -37,7 +37,6 @@ pub struct TokenLimit {
 #[rlp(trailing)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
-#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
 pub struct KeyAuthorization {
     /// Chain ID for replay protection (0 = valid on any chain)
@@ -157,5 +156,19 @@ impl reth_codecs::Compact for SignedKeyAuthorization {
 impl reth_primitives_traits::InMemorySize for SignedKeyAuthorization {
     fn size(&self) -> usize {
         self.authorization.size() + self.signature.size()
+    }
+}
+
+#[cfg(any(test, feature = "arbitrary"))]
+impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self {
+            chain_id: u.arbitrary()?,
+            key_type: u.arbitrary()?,
+            key_id: u.arbitrary()?,
+            // Ensure that Some(0) is not generated as it's becoming `None` after RLP roundtrip.
+            expiry: u.arbitrary::<Option<u64>>()?.filter(|v| *v != 0),
+            limits: u.arbitrary()?,
+        })
     }
 }

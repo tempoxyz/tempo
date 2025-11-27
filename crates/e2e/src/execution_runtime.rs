@@ -71,7 +71,7 @@ impl ExecutionRuntime {
         let (to_runtime, mut from_handle) = tokio::sync::mpsc::unbounded_channel();
 
         let datadir = tempdir.path().to_path_buf();
-        let rt = std::thread::spawn(|| {
+        let rt = std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new()
                 .expect("must be able to initialize a runtime to run execution/reth nodes");
             let wallet = MnemonicBuilder::from_phrase(crate::execution_runtime::TEST_MNEMONIC)

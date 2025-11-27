@@ -47,4 +47,4 @@ alloy-genesis.workspace = true
 serde_json.workspace = true
 
 [features]
-rpc = ["dep:reth-rpc-eth-api"]
+rpc = ["dep:reth-rpc-eth-api", "tempo-revm/rpc"]

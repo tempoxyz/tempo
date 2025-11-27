@@ -11706,6 +11706,7 @@ dependencies = [
  "derive_more",
  "eyre",
  "reth-evm",
+ "reth-rpc-eth-types",
  "reth-storage-api",
  "revm",
  "tempo-chainspec",

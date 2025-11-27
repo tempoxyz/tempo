@@ -39,7 +39,7 @@ use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_revm::evm::TempoContext;
 
-pub use tempo_revm::{TempoBlockEnv, TempoStateAccess};
+pub use tempo_revm::{TempoBlockEnv, TempoHaltReason, TempoStateAccess};
 
 /// Tempo-related EVM configuration.
 #[derive(Debug, Clone)]

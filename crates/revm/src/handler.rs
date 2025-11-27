@@ -4,11 +4,12 @@ use std::{cmp::Ordering, fmt::Debug};
 
 use alloy_evm::EvmInternals;
 use alloy_primitives::{Address, B256, U256, b256};
+use reth_evm::EvmError;
 use revm::{
     Database,
     context::{
-        Block, Cfg, ContextTr, JournalTr, Transaction,
-        result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction},
+        Block, Cfg, ContextTr, JournalTr, LocalContextTr, Transaction,
+        result::{EVMError, ExecutionResult, InvalidTransaction},
         transaction::{AccessListItem, AccessListItemTr},
     },
     handler::{
@@ -30,9 +31,7 @@ use revm::{
 };
 use tempo_contracts::{
     DEFAULT_7702_DELEGATE_ADDRESS,
-    precompiles::{
-        FeeManagerError, IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
-    },
+    precompiles::{IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError},
 };
 use tempo_precompiles::{
     account_keychain::{AccountKeychain, TokenLimit, authorizeKeyCall},
@@ -40,13 +39,18 @@ use tempo_precompiles::{
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{evm::EvmPrecompileStorageProvider, slots::mapping_slot},
     tip_fee_manager::TipFeeManager,
-    tip20::{self},
+    tip20::{self, ITIP20::InsufficientBalance, TIP20Error},
 };
 use tempo_primitives::transaction::{
     AASignature, PrimitiveSignature, SignatureType, calc_gas_balance_spending,
 };
 
-use crate::{TempoEvm, TempoInvalidTransaction, common::TempoStateAccess, evm::TempoContext};
+use crate::{
+    TempoEvm, TempoInvalidTransaction,
+    common::TempoStateAccess,
+    error::{FeePaymentError, TempoHaltReason},
+    evm::TempoContext,
+};
 
 /// Additional gas for P256 signature verification
 /// P256 precompile cost (6900 from EIP-7951) + 1100 for 129 bytes extra signature size - ecrecover savings (3000)
@@ -368,7 +372,7 @@ where
 {
     type Evm = TempoEvm<DB, I>;
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
-    type HaltReason = HaltReason;
+    type HaltReason = TempoHaltReason;
 
     #[inline]
     fn run(
@@ -418,8 +422,9 @@ where
             evm.logs = evm.journal_mut().take_logs();
         }
 
-        let mut mainnet = MainnetHandler::default();
-        mainnet.execution_result(evm, result)
+        MainnetHandler::default()
+            .execution_result(evm, result)
+            .map(|result| result.map_haltreason(Into::into))
     }
 
     /// Override apply_eip7702_auth_list to support AA transactions with authorization lists.
@@ -746,11 +751,6 @@ where
                 })?;
         }
 
-        // Create storage provider wrapper around journal for fee manager
-        let internals = EvmInternals::new(journal, &block);
-        let beneficiary = internals.block_env().beneficiary();
-        let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
-
         // For Keychain signatures, validate that the keychain is authorized in the precompile
         // UNLESS this transaction also includes a KeyAuthorization (same-tx auth+use case)
         if let Some(aa_tx_env) = tx.aa_tx_env.as_ref()
@@ -791,6 +791,8 @@ where
                 .unwrap_or(false);
 
             // Always need to set the transaction key for Keychain signatures
+            let mut storage_provider =
+                EvmPrecompileStorageProvider::new_max_gas(EvmInternals::new(journal, &block), cfg);
             let mut keychain = AccountKeychain::new(&mut storage_provider);
 
             if !is_authorizing_this_key {
@@ -819,53 +821,57 @@ where
                 .map_err(|e| EVMError::Custom(e.to_string()))?;
         }
 
-        let mut fee_manager = TipFeeManager::new(&mut storage_provider);
-
         if gas_balance_spending.is_zero() {
             return Ok(());
         }
 
-        // Call the precompile function to collect the fee
-        // We specify the `to_addr` to account for the case where the to address is a tip20
-        // token and the fee token is not set for the specified caller.
-        // In this case, the collect_fee_pre_tx fn will set the fee token as the `to_addr`
-        let to_addr = tx.kind().into_to().unwrap_or_default();
-        fee_manager
-            .collect_fee_pre_tx(
+        let checkpoint = journal.checkpoint();
+
+        let result = {
+            let mut storage_provider =
+                EvmPrecompileStorageProvider::new_max_gas(EvmInternals::new(journal, &block), cfg);
+            TipFeeManager::new(&mut storage_provider).collect_fee_pre_tx(
                 self.fee_payer,
                 self.fee_token,
-                to_addr,
                 gas_balance_spending,
-                beneficiary,
+                block.beneficiary(),
             )
-            .map_err(|e| {
-                // Map fee collection errors to transaction validation errors since they
-                // indicate the transaction cannot be included (e.g., insufficient liquidity
-                // in FeeAMM pool for fee swaps)
-                match e {
-                    TempoPrecompileError::TIPFeeAMMError(
-                        TIPFeeAMMError::InsufficientLiquidity(_),
-                    ) => EVMError::Transaction(TempoInvalidTransaction::InsufficientAmmLiquidity {
-                        fee: Box::new(gas_balance_spending),
-                    }),
+        };
 
-                    TempoPrecompileError::FeeManagerError(
-                        FeeManagerError::InsufficientFeeTokenBalance(_),
-                    ) => EVMError::Transaction(
-                        TempoInvalidTransaction::InsufficientFeeTokenBalance {
-                            fee: Box::new(gas_balance_spending),
-                            balance: Box::new(account_balance),
-                        },
-                    ),
+        if let Err(err) = result {
+            // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
+            journal.checkpoint_revert(checkpoint);
 
-                    TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
-
-                    _ => EVMError::Transaction(TempoInvalidTransaction::CollectFeePreTxError(
-                        e.to_string(),
-                    )),
+            // Map fee collection errors to transaction validation errors since they
+            // indicate the transaction cannot be included (e.g., insufficient liquidity
+            // in FeeAMM pool for fee swaps)
+            Err(match err {
+                TempoPrecompileError::TIPFeeAMMError(TIPFeeAMMError::InsufficientLiquidity(_)) => {
+                    FeePaymentError::InsufficientAmmLiquidity {
+                        fee: gas_balance_spending,
+                    }
+                    .into()
                 }
-            })?;
-        Ok(())
+
+                TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
+                    InsufficientBalance { available, .. },
+                )) => EVMError::Transaction(
+                    FeePaymentError::InsufficientFeeTokenBalance {
+                        fee: gas_balance_spending,
+                        balance: available,
+                    }
+                    .into(),
+                ),
+
+                TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
+
+                _ => EVMError::Transaction(FeePaymentError::Other(err.to_string()).into()),
+            })
+        } else {
+            journal.checkpoint_commit();
+
+            Ok(())
+        }
     }
 
     fn reimburse_caller(
@@ -890,7 +896,7 @@ where
 
         // Create storage provider and fee manager
         let (journal, block) = (&mut context.journaled_state, &context.block);
-        let internals = EvmInternals::new(journal, block);
+        let internals = EvmInternals::new(&mut *journal, block);
         let beneficiary = internals.block_env().beneficiary();
         let mut storage_provider =
             EvmPrecompileStorageProvider::new_max_gas(internals, &context.cfg);
@@ -945,14 +951,32 @@ where
         let tx = evm.ctx_ref().tx();
 
         if let Some(aa_env) = tx.aa_tx_env.as_ref() {
-            if aa_env.subblock_transaction && tx.max_fee_per_gas() > 0 {
-                return Err(TempoInvalidTransaction::SubblockTransactionMustHaveZeroFee.into());
+            let has_keychain_fields =
+                aa_env.key_authorization.is_some() || aa_env.signature.is_keychain();
+
+            // Validate that keychain operations are only supported after Allegretto
+            if has_keychain_fields && !cfg.spec.is_allegretto() {
+                return Err(TempoInvalidTransaction::KeychainOpBeforeAllegretto.into());
+            }
+
+            if aa_env.subblock_transaction {
+                if !cfg.spec.is_allegretto() {
+                    if tx.max_fee_per_gas() > 0 {
+                        return Err(
+                            TempoInvalidTransaction::SubblockTransactionMustHaveZeroFee.into()
+                        );
+                    }
+                } else if has_keychain_fields {
+                    return Err(TempoInvalidTransaction::KeychainOpInSubblockTransaction.into());
+                }
             }
 
             // Validate priority fee for AA transactions using revm's validate_priority_fee_tx
             //
-            // Skip basefee check for subblock transactions.
-            let base_fee = if cfg.is_base_fee_check_disabled() || aa_env.subblock_transaction {
+            // Skip basefee check for subblock transactions pre-Allegretto as they must always be free.
+            let base_fee = if cfg.is_base_fee_check_disabled()
+                || (aa_env.subblock_transaction && !cfg.spec.is_allegretto())
+            {
                 None
             } else {
                 Some(evm.ctx_ref().block().basefee() as u128)
@@ -969,13 +993,6 @@ where
             // Validate time window for AA transactions
             let block_timestamp = evm.ctx_ref().block().timestamp().saturating_to();
             validate_time_window(aa_env.valid_after, aa_env.valid_before, block_timestamp)?;
-
-            // Validate that keychain operations are only supported after Allegretto
-            if (aa_env.key_authorization.is_some() || aa_env.signature.is_keychain())
-                && !cfg.spec.is_allegretto()
-            {
-                return Err(TempoInvalidTransaction::KeychainOpBeforeAllegretto.into());
-            }
         }
 
         Ok(())
@@ -1002,6 +1019,40 @@ where
                 validation::validate_initial_tx_gas(tx, spec, evm.ctx.cfg.is_eip7623_disabled())
                     .map_err(TempoInvalidTransaction::EthInvalidTransaction)?,
             )
+        }
+    }
+
+    fn catch_error(
+        &self,
+        evm: &mut Self::Evm,
+        error: Self::Error,
+    ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
+        // For subblock transactions that failed `collectFeePreTx` call we catch error and treat such transactions as valid.
+        if evm.ctx.tx.is_subblock_transaction()
+            && evm.cfg.spec.is_allegretto()
+            && let Some(
+                TempoInvalidTransaction::CollectFeePreTx(_)
+                | TempoInvalidTransaction::EthInvalidTransaction(
+                    InvalidTransaction::LackOfFundForMaxFee { .. },
+                ),
+            ) = error.as_invalid_tx_err()
+        {
+            // Commit the transaction.
+            //
+            // `collectFeePreTx` call will happen after the nonce bump so this will only commit the nonce increment.
+            evm.ctx.journaled_state.commit_tx();
+
+            evm.ctx().local_mut().clear();
+            evm.frame_stack().clear();
+
+            Ok(ExecutionResult::Halt {
+                reason: TempoHaltReason::SubblockTxFeePayment,
+                gas_used: 0,
+            })
+        } else {
+            MainnetHandler::default()
+                .catch_error(evm, error)
+                .map(|result| result.map_haltreason(Into::into))
         }
     }
 }
