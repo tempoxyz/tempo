@@ -2,6 +2,7 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
+use alloy_consensus::BlockHeader as _;
 use commonware_codec::{Decode as _, Encode as _};
 use commonware_consensus::{Block as _, types::Epoch};
 use commonware_cryptography::{
@@ -74,6 +75,8 @@ pub(super) struct Metrics {
     pub(super) acks_received: Gauge,
     pub(super) acks_sent: Gauge,
     pub(super) dealings_read: Gauge,
+    pub(super) dealings_empty: Gauge,
+    pub(super) dealings_failed: Gauge,
 }
 
 pub(super) struct Ceremony<TContext, TReceiver, TSender>
@@ -580,8 +583,17 @@ where
         block: &Block,
         hardfork_regime: HardforkRegime,
     ) -> eyre::Result<()> {
+        // Check if extra_data is empty before trying to read
+        if block.header().extra_data().is_empty() {
+            info!("block contained no dealing (extra_data empty)");
+            self.metrics.dealings_empty.inc();
+            return Ok(());
+        }
+
         let Some(block_outcome) = block.try_read_ceremony_deal_outcome() else {
-            info!("block contained no usable intermediate deal outcome");
+            // extra_data was not empty but decode failed
+            info!("block contained dealing data but failed to decode");
+            self.metrics.dealings_failed.inc();
             return Ok(());
         };
 

@@ -150,6 +150,8 @@ where
         let acks_received = Gauge::default();
         let acks_sent = Gauge::default();
         let dealings_read = Gauge::default();
+        let dealings_empty = Gauge::default();
+        let dealings_failed = Gauge::default();
 
         context.register(
             "ceremony_failures",
@@ -231,6 +233,16 @@ where
             "the number of dealings read from the blockchain in the current ceremony",
             dealings_read.clone(),
         );
+        context.register(
+            "dealings_empty",
+            "the number of blocks with empty extra_data (no dealing) in the current ceremony",
+            dealings_empty.clone(),
+        );
+        context.register(
+            "dealings_failed",
+            "the number of blocks where dealing decode failed in the current ceremony",
+            dealings_failed.clone(),
+        );
 
         let metrics = Metrics {
             how_often_dealer,
@@ -249,6 +261,8 @@ where
                 acks_received,
                 acks_sent,
                 dealings_read,
+                dealings_empty,
+                dealings_failed,
             },
         };
 
@@ -712,6 +726,8 @@ impl Metrics {
         self.ceremony_metrics.acks_received.set(0);
         self.ceremony_metrics.acks_sent.set(0);
         self.ceremony_metrics.dealings_read.set(0);
+        self.ceremony_metrics.dealings_empty.set(0);
+        self.ceremony_metrics.dealings_failed.set(0);
     }
 }
 

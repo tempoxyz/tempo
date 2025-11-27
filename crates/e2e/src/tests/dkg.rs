@@ -116,6 +116,8 @@ fn assert_static_transitions(how_many: u32, epoch_length: u64, transitions: u64)
     let mut acks_received_seen = false;
     let mut acks_sent_seen = false;
     let mut dealings_read_seen = false;
+    let mut dealings_empty_zero = false;
+    let mut dealings_failed_zero = false;
     let _first = run(setup, move |metric, value| {
         if metric.ends_with("_dkg_manager_ceremony_failures_total") {
             let value = value.parse::<u64>().unwrap();
@@ -149,6 +151,15 @@ fn assert_static_transitions(how_many: u32, epoch_length: u64, transitions: u64)
             let value = value.parse::<u64>().unwrap();
             dealings_read_seen |= value == expected_count;
         }
+        // In a successful ceremony, we expect no empty or failed dealings
+        if metric.ends_with("_dkg_manager_dealings_empty") {
+            let value = value.parse::<u64>().unwrap();
+            dealings_empty_zero |= value == 0;
+        }
+        if metric.ends_with("_dkg_manager_dealings_failed") {
+            let value = value.parse::<u64>().unwrap();
+            dealings_failed_zero |= value == 0;
+        }
 
         epoch_reached
             && dkg_successful
@@ -156,6 +167,8 @@ fn assert_static_transitions(how_many: u32, epoch_length: u64, transitions: u64)
             && acks_received_seen
             && acks_sent_seen
             && dealings_read_seen
+            && dealings_empty_zero
+            && dealings_failed_zero
     });
 }
 
