@@ -97,6 +97,7 @@ sol! {
         error PairAlreadyExists();
         error OrderDoesNotExist();
         error IdenticalTokens();
+        error InvalidToken();
         error TickOutOfBounds(int16 tick);
         error InvalidTick();
         error InvalidFlipTick();
@@ -133,6 +134,11 @@ impl StablecoinExchangeError {
     /// Creates an error when trying to swap identical tokens.
     pub const fn identical_tokens() -> Self {
         Self::IdenticalTokens(IStablecoinExchange::IdenticalTokens {})
+    }
+
+    /// Creates an error when a token address is not a valid TIP20 token.
+    pub const fn invalid_token() -> Self {
+        Self::InvalidToken(IStablecoinExchange::InvalidToken {})
     }
 
     /// Creates an error for tick out of bounds.

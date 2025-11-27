@@ -109,6 +109,17 @@ pub enum TempoPoolTransactionError {
     )]
     InvalidFeeToken(Address),
 
+    #[error("No fee token preference configured")]
+    MissingFeeToken,
+
+    #[error(
+        "'valid_before' {valid_before} is too close to current time (min allowed: {min_allowed})"
+    )]
+    InvalidValidBefore { valid_before: u64, min_allowed: u64 },
+
+    #[error("'valid_after' {valid_after} is too far in the future (max allowed: {max_allowed})")]
+    InvalidValidAfter { valid_after: u64, max_allowed: u64 },
+
     #[error(
         "Keychain signature validation failed: {0}, please see https://docs.tempo.xyz/errors/tx/Keychain for more"
     )]
@@ -127,11 +138,12 @@ pub enum TempoPoolTransactionError {
 impl PoolTransactionError for TempoPoolTransactionError {
     fn is_bad_transaction(&self) -> bool {
         match self {
-            Self::ExceedsNonPaymentLimit => false,
-            Self::InvalidFeeToken(_) => false,
-            Self::Keychain(_) => true, // Bad transaction - invalid signature
-            Self::NonZeroValue => true,
-            Self::SubblockNonceKey => true,
+            Self::ExceedsNonPaymentLimit
+            | Self::InvalidFeeToken(_)
+            | Self::MissingFeeToken
+            | Self::InvalidValidBefore { .. }
+            | Self::InvalidValidAfter { .. } => false,
+            Self::NonZeroValue | Self::Keychain(_) | Self::SubblockNonceKey => true,
         }
     }
 
