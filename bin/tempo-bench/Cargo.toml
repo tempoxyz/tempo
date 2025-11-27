@@ -39,7 +39,6 @@ toml.workspace = true
 
 # Bespoke dependencies
 alloy-signer-local = { version = "1", features = ["mnemonic"] }
-core_affinity = "0.8.3"
 crossbeam-utils = "0.8.21"
 dashmap = "6.1"
 fastrand = "2.1"
@@ -53,3 +52,4 @@ rayon = "1.10"
 rlimit = "0.10.2"
 governor = "0.10.1"
 rand = "0.9.2"
+rand_08 = { package = "rand", version = "0.8" }

@@ -6,10 +6,7 @@ use crate::{
     generate_localnet::GenerateLocalnet,
 };
 
-use alloy::signers::{
-    local::{MnemonicBuilder, coins_bip39::English},
-    utils::secret_key_to_address,
-};
+use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
 use clap::Parser as _;
 use commonware_codec::DecodeExt;
 use eyre::Context;
@@ -97,19 +94,16 @@ fn generate_config_to_add_peer(
     let public_key_bytes = const_hex::decode(&public_key)?;
     let public_key = commonware_cryptography::ed25519::PublicKey::decode(&public_key_bytes[..])?;
 
-    let admin_key = MnemonicBuilder::<English>::default()
-        .phrase(mnemonic.clone())
-        .index(admin_index)?
-        .build()?;
-
-    let admin_key = const_hex::encode(admin_key.credential().to_bytes());
+    let admin_key = const_hex::encode(
+        MnemonicBuilder::from_phrase_nth(&mnemonic, admin_index)
+            .credential()
+            .to_bytes(),
+    );
 
     let validator_address = {
-        let key = MnemonicBuilder::<English>::default()
-            .phrase(mnemonic)
-            .index(validator_index)?
-            .build()?;
-        secret_key_to_address(key.credential())
+        secret_key_to_address(
+            MnemonicBuilder::from_phrase_nth(mnemonic, validator_index).credential(),
+        )
     };
     let inbound = inbound_address.to_string();
     let outbound = inbound_address.to_string();

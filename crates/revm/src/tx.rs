@@ -13,7 +13,7 @@ use revm::context::{
 };
 use tempo_primitives::{
     AASignature, AASigned, TempoTxEnvelope, TxAA, TxFeeToken,
-    transaction::{AASignedAuthorization, Call, calc_gas_balance_spending},
+    transaction::{AASignedAuthorization, Call, SignedKeyAuthorization, calc_gas_balance_spending},
 };
 
 /// Account Abstraction transaction environment.
@@ -41,7 +41,7 @@ pub struct AATxEnv {
     pub subblock_transaction: bool,
 
     /// Optional key authorization for provisioning access keys
-    pub key_authorization: Option<tempo_primitives::transaction::KeyAuthorization>,
+    pub key_authorization: Option<SignedKeyAuthorization>,
 
     /// Transaction signature hash (for signature verification)
     pub signature_hash: B256,

@@ -4,10 +4,7 @@ use std::{net::SocketAddr, path::Path, sync::Arc, time::Duration};
 use alloy::{
     providers::ProviderBuilder,
     rpc::types::TransactionReceipt,
-    signers::{
-        local::{MnemonicBuilder, coins_bip39::English},
-        utils::secret_key_to_address,
-    },
+    signers::{local::MnemonicBuilder, utils::secret_key_to_address},
     transports::http::reqwest::Url,
 };
 use alloy_genesis::Genesis;
@@ -74,7 +71,7 @@ impl ExecutionRuntime {
         let (to_runtime, mut from_handle) = tokio::sync::mpsc::unbounded_channel();
 
         let datadir = tempdir.path().to_path_buf();
-        let rt = std::thread::spawn(|| {
+        let rt = std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new()
                 .expect("must be able to initialize a runtime to run execution/reth nodes");
             let wallet = MnemonicBuilder::from_phrase(crate::execution_runtime::TEST_MNEMONIC)
@@ -477,11 +474,5 @@ pub fn validator(idx: u32) -> Address {
 }
 
 pub fn address(index: u32) -> Address {
-    let signer = MnemonicBuilder::<English>::default()
-        .phrase(TEST_MNEMONIC)
-        .index(index)
-        .unwrap()
-        .build()
-        .unwrap();
-    secret_key_to_address(signer.credential())
+    secret_key_to_address(MnemonicBuilder::from_phrase_nth(TEST_MNEMONIC, index).credential())
 }

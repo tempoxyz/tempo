@@ -32,7 +32,7 @@ pub struct FaucetArgs {
     #[arg(long = "faucet.enabled", default_value_t = false)]
     pub enabled: bool,
 
-    /// Faucet funding mnemonic
+    /// Faucet funding private key
     #[arg(
         long = "faucet.private-key",
         requires = "enabled",

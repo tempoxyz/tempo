@@ -95,9 +95,7 @@ codegen-units = 1
 
 [workspace.dependencies]
 tempo-alloy = { path = "crates/alloy" }
-
 tempo-node = { path = "crates/node" }
-
 tempo-chainspec = { path = "crates/chainspec", default-features = false }
 tempo-commonware-node = { path = "crates/commonware-node", default-features = false }
 tempo-commonware-node-config = { path = "crates/commonware-node-config", default-features = false }
@@ -168,8 +166,6 @@ reth-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "2f58f67" }
 reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", rev = "2f58f67" }
 reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "2f58f67" }
 
-alloy-network = { version = "1.1.2" }
-alloy-rpc-types-eth = { version = "1.1.2" }
 reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "2f58f67", features = [
   "std",
   "optional-checks",
@@ -177,20 +173,22 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "2f58f67", feat
 revm = "33.1.0"
 
 alloy = { version = "1.1.2", default-features = false }
-alloy-evm = "0.24.2"
 alloy-consensus = "1.1.2"
+alloy-contract = "1.1.2"
 alloy-eips = "1.1.2"
+alloy-evm = "0.24.2"
 alloy-genesis = "1.1.2"
 alloy-hardforks = "0.4.4"
+alloy-network = { version = "1.1.2" }
 alloy-primitives = "1.4.1"
 alloy-provider = { version = "1.1.2", default-features = false }
-alloy-sol-types = "1.4.1"
 alloy-rlp = "0.3.12"
 alloy-rpc-types-engine = "1.1.2"
+alloy-rpc-types-eth = { version = "1.1.2" }
 alloy-serde = "1.1.2"
 alloy-signer = "1.1.2"
 alloy-signer-local = "1.1.2"
-arbitrary = { version = "1.3", features = ["derive"] }
+alloy-sol-types = "1.4.1"
 
 commonware-broadcast = "0.0.63"
 commonware-codec = "0.0.63"
@@ -203,8 +201,9 @@ commonware-storage = "0.0.63"
 commonware-utils = "0.0.63"
 
 anyhow = "1.0.98"
-auto_impl = "1"
+arbitrary = { version = "1.3", features = ["derive"] }
 async-trait = "0.1"
+auto_impl = "1"
 axum = "0.8.4"
 base64 = "0.22"
 bytes = "1.8"
@@ -314,4 +313,3 @@ commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "b
 #reth-tracing = { path = "../reth/crates/tracing" }
 #reth-transaction-pool = { path = "../reth/crates/transaction-pool" }
 #reth-trie-db = { path = "../reth/crates/trie/db" }
-
