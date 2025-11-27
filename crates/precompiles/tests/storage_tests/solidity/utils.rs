@@ -241,7 +241,7 @@ pub(super) fn compare_struct_members(
         )]
     })?;
 
-    // Handle both direct struct fields and mappings with struct values
+    // Handle direct struct fields, mappings with struct values, and arrays of structs
     let struct_type_def = if type_def.encoding == "mapping" {
         // It's a mapping - get the value type
         let value_type_name = type_def.value.as_ref().ok_or_else(|| {
@@ -256,6 +256,22 @@ pub(super) fn compare_struct_members(
             vec![format!(
                 "Value type '{}' not found in type definitions",
                 value_type_name
+            )]
+        })?
+    } else if type_def.encoding == "dynamic_array" {
+        // It's a dynamic array - get the base (element) type
+        let base_type_name = type_def.base.as_ref().ok_or_else(|| {
+            vec![format!(
+                "Array type '{}' does not have a base type",
+                struct_var.ty
+            )]
+        })?;
+
+        // Get the struct type definition from the base type
+        solc_layout.types.get(base_type_name).ok_or_else(|| {
+            vec![format!(
+                "Base type '{}' not found in type definitions",
+                base_type_name
             )]
         })?
     } else {
@@ -341,4 +357,28 @@ pub(super) fn compare_struct_members(
     } else {
         Err(errors)
     }
+}
+
+/// Panics with a detailed error message when a storage layout mismatch is detected.
+///
+/// Includes instructions for updating the Solidity test file when the spec changes.
+pub(super) fn panic_layout_mismatch(context: &str, errors: Vec<String>, sol_path: &Path) -> ! {
+    let json_path = sol_path.with_extension("layout.json");
+    panic!(
+        "{context} mismatch:\n{errors}\n\n\
+         To fix this mismatch:\n\n\
+         1. Update the Solidity file: {sol_path}\n\
+            - Add any new fields to match the Rust contract storage layout\n\
+            - Use the same field order and types as the Rust definition\n\n\
+         2. Update the Rust test (if needed):\n\
+            - Add new fields to the `layout_fields!()` macro call\n\
+            - For new structs, add a `compare_struct_members()` check using:\n\
+              `struct_fields!(slots::FIELD_NAME, member1, member2, ...)`\n\n\
+         3. Delete the cached layout: {json_path}\n\n\
+         4. Re-run the tests",
+        context = context,
+        errors = errors.join("\n"),
+        sol_path = sol_path.display(),
+        json_path = json_path.display(),
+    )
 }
