@@ -372,7 +372,10 @@ where
                     })
                     .await
                     .expect("must be able to persists acks");
+                // When self-distributing, we also "receive" the share and "send" an ack to ourselves
                 self.metrics.shares_distributed.inc();
+                self.metrics.acks_received.inc();
+                self.metrics.acks_sent.inc();
                 continue;
             }
 
