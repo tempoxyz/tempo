@@ -409,6 +409,10 @@ impl Orderbook {
         book_key: B256,
         tick: i16,
     ) -> (i16, bool) {
+        // Guard against overflow when tick is i16::MAX
+        if tick >= MAX_TICK {
+            return (MAX_TICK, false);
+        }
         let mut next_tick = tick + 1;
         while next_tick <= MAX_TICK {
             if Self::is_tick_initialized(storage, book_key, next_tick, false).unwrap_or(false) {
@@ -425,6 +429,10 @@ impl Orderbook {
         book_key: B256,
         tick: i16,
     ) -> (i16, bool) {
+        // Guard against underflow when tick is i16::MIN
+        if tick <= MIN_TICK {
+            return (MIN_TICK, false);
+        }
         let mut next_tick = tick - 1;
         while next_tick >= MIN_TICK {
             if Self::is_tick_initialized(storage, book_key, next_tick, true).unwrap_or(false) {
