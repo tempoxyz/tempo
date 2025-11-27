@@ -108,6 +108,10 @@ fn assert_static_transitions(how_many: u32, epoch_length: u64, transitions: u64)
 
     let mut epoch_reached = false;
     let mut dkg_successful = false;
+    // In a ceremony with N validators, each node distributes N shares (one to each player),
+    // receives N acks (one from each player), sends N acks (one to each dealer),
+    // and reads N dealings (one from each dealer).
+    let expected_count = how_many as u64;
     let mut shares_distributed_seen = false;
     let mut acks_received_seen = false;
     let mut acks_sent_seen = false;
@@ -127,23 +131,23 @@ fn assert_static_transitions(how_many: u32, epoch_length: u64, transitions: u64)
             dkg_successful |= value >= transitions;
         }
 
-        // Verify new DKG ceremony metrics are exposed and incremented.
+        // Verify new DKG ceremony metrics have expected counts.
         // These are gauges (reset per-ceremony), so they don't have the _total suffix.
         if metric.ends_with("_dkg_manager_shares_distributed") {
             let value = value.parse::<u64>().unwrap();
-            shares_distributed_seen |= value > 0;
+            shares_distributed_seen |= value == expected_count;
         }
         if metric.ends_with("_dkg_manager_acks_received") {
             let value = value.parse::<u64>().unwrap();
-            acks_received_seen |= value > 0;
+            acks_received_seen |= value == expected_count;
         }
         if metric.ends_with("_dkg_manager_acks_sent") {
             let value = value.parse::<u64>().unwrap();
-            acks_sent_seen |= value > 0;
+            acks_sent_seen |= value == expected_count;
         }
         if metric.ends_with("_dkg_manager_dealings_read") {
             let value = value.parse::<u64>().unwrap();
-            dealings_read_seen |= value > 0;
+            dealings_read_seen |= value == expected_count;
         }
 
         epoch_reached
