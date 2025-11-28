@@ -655,7 +655,7 @@ where
         let block_outcome = match block.try_read_ceremony_deal_outcome() {
             Ok(outcome) => outcome,
             Err(error) => {
-                info!(%error, "failed to decode ceremony deal outcome");
+                warn!(%error, "failed to decode ceremony deal outcome");
                 self.metrics.dealings_failed.inc();
                 return Ok(());
             }
