@@ -15,7 +15,7 @@ use tempo_revm::{AATxEnv, TempoTxEnv};
 
 impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
-        if !self.calls.is_empty() || self.nonce_key.is_some() {
+        if !self.calls.is_empty() {
             let tx = self.build_aa()?;
 
             // Create an empty signature for the transaction.
