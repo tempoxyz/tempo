@@ -9,13 +9,13 @@ use tempo_alloy::TempoNetwork;
 
 use alloy::{
     consensus::BlockHeader,
-    eips::BlockId,
     network::ReceiptResponse,
     primitives::{Address, B256, BlockNumber, U256},
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
         WatchTxError,
     },
+    rpc::client::NoParams,
     transports::http::reqwest::Url,
 };
 use alloy_signer_local::{
@@ -142,6 +142,12 @@ pub struct MaxTpsArgs {
     /// Calls tempo_fundAddress for each account.
     #[arg(long)]
     faucet: bool,
+
+    /// Clear the transaction pool before running the benchmark.
+    ///
+    /// Calls admin_clearTxpool.
+    #[arg(long)]
+    clear_txpool: bool,
 }
 
 impl MaxTpsArgs {
@@ -183,6 +189,16 @@ impl MaxTpsArgs {
                 Ok((signer, provider))
             })
             .collect::<eyre::Result<Vec<_>>>()?;
+
+        if self.clear_txpool {
+            let transactions: u64 = provider
+                .raw_request("admin_clearTxpool".into(), NoParams::default())
+                .await
+                .context(
+                    "Failed to clear transaction pool. Is `admin_clearTxpool` RPC method available?",
+                )?;
+            info!(transactions, "Cleared transaction pool");
+        }
 
         // Fund accounts from faucet if requested
         if self.faucet {
