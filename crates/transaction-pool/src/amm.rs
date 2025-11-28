@@ -35,6 +35,8 @@ impl AmmLiquidityCache {
         Self::default()
     }
 
+    /// Checks whether there's enough liquidity in at least one of the AMM pools 
+    /// used by recent validators for the given fee token and fee amount
     pub fn has_enough_liquidity(
         &self,
         user_token: Address,
@@ -45,8 +47,9 @@ impl AmmLiquidityCache {
         let amount_out = compute_amount_out(fee).map_err(ProviderError::other)?;
 
         let inner = self.inner.read();
-        let mut missing_liquidity = Vec::new();
+        let mut missing_in_cache = Vec::new();
 
+        // search through latest observed validator tokens and find any cached pools that have enough liquidity
         for token in &inner.validator_tokens {
             let validator_id = address_to_token_id_unchecked(*token);
 
@@ -55,12 +58,19 @@ impl AmmLiquidityCache {
                     return Ok(true);
                 }
             } else {
-                missing_liquidity.push(validator_id);
+                missing_in_cache.push(validator_id);
             }
         }
 
+        // If no cache misses were hit, just return false
+        if missing_in_cache.is_empty() {
+            return Ok(false);
+        }
+
+        // Otherwise, load pools that weren't found in cache and check if they have enough liquidity
         let mut inner = self.inner.write();
-        for token in missing_liquidity {
+        for token in missing_in_cache {
+            // There's a race condition here so check the cache again before loading the pool
             if let Some(validator_reserve) = inner.cache.get(&(user_id, token))
                 && *validator_reserve >= amount_out
             {
@@ -77,6 +87,8 @@ impl AmmLiquidityCache {
 
             inner.cache.insert((user_id, token), reserve);
             inner.slot_to_pool.insert(slot, (user_id, token));
+
+            // If the pool has enough liquidity, short circuit and return true
             if reserve >= amount_out {
                 return Ok(true);
             }
