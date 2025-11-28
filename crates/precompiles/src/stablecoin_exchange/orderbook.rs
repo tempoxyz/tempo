@@ -6,6 +6,7 @@ use crate::{
     storage::{Mapping, Slot, StorageOps, slots::mapping_slot},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::StablecoinExchangeError;
 use tempo_precompiles_macros::Storable;
 
@@ -372,11 +373,12 @@ impl Orderbook {
         book_key: B256,
         is_bid: bool,
         tick: i16,
+        spec: TempoHardfork,
     ) -> (i16, bool) {
         if is_bid {
-            Self::next_initialized_bid_tick(storage, book_key, tick)
+            Self::next_initialized_bid_tick(storage, book_key, tick, spec)
         } else {
-            Self::next_initialized_ask_tick(storage, book_key, tick)
+            Self::next_initialized_ask_tick(storage, book_key, tick, spec)
         }
     }
 
@@ -385,7 +387,12 @@ impl Orderbook {
         storage: &mut S,
         book_key: B256,
         tick: i16,
+        spec: TempoHardfork,
     ) -> (i16, bool) {
+        // Guard against overflow when tick is at or above MAX_TICK
+        if spec.is_allegretto() && tick >= MAX_TICK {
+            return (MAX_TICK, false);
+        }
         let mut next_tick = tick + 1;
         while next_tick <= MAX_TICK {
             if Self::is_tick_initialized(storage, book_key, next_tick, false).unwrap_or(false) {
@@ -401,7 +408,12 @@ impl Orderbook {
         storage: &mut S,
         book_key: B256,
         tick: i16,
+        spec: TempoHardfork,
     ) -> (i16, bool) {
+        // Guard against underflow when tick is at or below MIN_TICK
+        if spec.is_allegretto() && tick <= MIN_TICK {
+            return (MIN_TICK, false);
+        }
         let mut next_tick = tick - 1;
         while next_tick >= MIN_TICK {
             if Self::is_tick_initialized(storage, book_key, next_tick, true).unwrap_or(false) {

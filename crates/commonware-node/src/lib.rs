@@ -137,6 +137,10 @@ pub async fn run_consensus_stack(
             "failed converting argument time-to-build-subblock to regular \
             duration; was it negative or chosen too large",
         )?,
+        subblock_broadcast_interval: config.subblock_broadcast_interval.try_into().wrap_err(
+            "failed converting argument subblock-broadcast-interval to regular \
+            duration; was it negative or chosen too large",
+        )?,
     }
     .try_init()
     .await
