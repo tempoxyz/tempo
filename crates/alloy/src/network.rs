@@ -158,14 +158,15 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
             TempoTxType::AA
         } else if self.fee_token.is_some() {
             TempoTxType::FeeToken
-        } else if self.inner.authorization_list.is_some() {
-            TempoTxType::Eip7702
-        } else if self.inner.access_list.is_some() && self.inner.gas_price.is_some() {
-            TempoTxType::Eip2930
-        } else if self.inner.gas_price.is_some() {
-            TempoTxType::Legacy
         } else {
-            TempoTxType::Eip1559
+            match self.inner.output_tx_type() {
+                TxType::Legacy => TempoTxType::Legacy,
+                TxType::Eip2930 => TempoTxType::Eip2930,
+                TxType::Eip1559 => TempoTxType::Eip1559,
+                // EIP-4844 transactions are not supported on Tempo
+                TxType::Eip4844 => TempoTxType::Legacy,
+                TxType::Eip7702 => TempoTxType::Eip7702,
+            }
         }
     }
 
