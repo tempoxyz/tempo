@@ -430,6 +430,12 @@ impl From<TxFeeToken> for TempoTypedTransaction {
     }
 }
 
+impl From<TxAA> for TempoTypedTransaction {
+    fn from(value: TxAA) -> Self {
+        Self::AA(value)
+    }
+}
+
 #[cfg(feature = "rpc")]
 impl reth_rpc_convert::SignableTxRequest<TempoTxEnvelope>
     for alloy_rpc_types_eth::TransactionRequest

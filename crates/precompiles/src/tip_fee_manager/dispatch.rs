@@ -3,7 +3,10 @@ use crate::{
     error::TempoPrecompileError,
     fill_precompile_output, input_cost, mutate, mutate_void,
     storage::PrecompileStorageProvider,
-    tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager, amm::MIN_LIQUIDITY},
+    tip_fee_manager::{
+        IFeeManager, ITIPFeeAMM, TipFeeManager,
+        amm::{M, MIN_LIQUIDITY, N, SCALE},
+    },
     unknown_selector, view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
@@ -70,6 +73,11 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
                 view::<ITIPFeeAMM::liquidityBalancesCall>(calldata, |call| {
                     self.sload_liquidity_balances(call.poolId, call.user)
                 })
+            }
+            ITIPFeeAMM::MCall::SELECTOR => view::<ITIPFeeAMM::MCall>(calldata, |_call| Ok(M)),
+            ITIPFeeAMM::NCall::SELECTOR => view::<ITIPFeeAMM::NCall>(calldata, |_call| Ok(N)),
+            ITIPFeeAMM::SCALECall::SELECTOR => {
+                view::<ITIPFeeAMM::SCALECall>(calldata, |_call| Ok(SCALE))
             }
             ITIPFeeAMM::MIN_LIQUIDITYCall::SELECTOR => {
                 view::<ITIPFeeAMM::MIN_LIQUIDITYCall>(calldata, |_call| Ok(MIN_LIQUIDITY))
