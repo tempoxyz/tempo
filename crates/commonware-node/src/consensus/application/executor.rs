@@ -173,8 +173,12 @@ where
     }
 
     async fn run(mut self) {
-        // XXX: `run_pre_event_loop_init` is emitting an error event on failure.
-        if self.run_pre_event_loop_init().await.is_err() {
+        // XXX: `try_consensus_execution_mismatch_recovery` is emitting an error event on failure.
+        if self
+            .try_consensus_execution_mismatch_recovery()
+            .await
+            .is_err()
+        {
             return;
         };
 
@@ -194,8 +198,25 @@ where
         }
     }
 
+    /// Recovers from a consensus-execution layer height mismatch at startup and backfills missing blocks from CL to EL.
+    ///
+    /// Normally, Reth's EL P2P can handle backfilling missing blocks from other nodes just fine.
+    /// However, this function addresses a specific edge case that occurs when:
+    /// 1. All nodes in the network crash simultaneously (e.g., hitting the same bug at the same block)
+    /// 2. The execution layer (EL) failed to persist the last N finalized blocks before shutdown
+    ///    (e.g., due to --persistence-threshold, Reth may keep recent blocks in memory only)
+    /// 3. On restart, CL believes it sent block H to EL, but EL only has H-N
+    /// 4. Because all nodes experienced the same issue, no peer has these blocks persisted in their EL either
+    /// 5. Sending the finalized tip hash from CL to EL does not help - no node has the missing
+    ///    blocks persisted in EL
+    ///
+    /// Without backfilling the missing blocks, the network would deadlock: without the last finalized
+    /// block, no proposer can propose the next block. CL expects EL to have blocks it doesn't,
+    /// and EL's normal P2P backfill won't help because no peer has them in their execution
+    /// layer either.
     #[instrument(skip_all, err)]
-    async fn run_pre_event_loop_init(&mut self) -> eyre::Result<()> {
+    async fn try_consensus_execution_mismatch_recovery(&mut self) -> eyre::Result<()> {
+        // Fetches the last finalized block stored in the CL.
         let (consensus_height, consensus_digest) = self
             .marshal
             .get_info(Identifier::Latest)
@@ -266,14 +287,6 @@ where
                     (execution_height, block.digest(), false)
                 }
             };
-        self.canonicalize(
-            Span::current(),
-            HeadOrFinalized::Finalized,
-            finalized_height,
-            finalized_digest,
-        )
-        .await
-        .wrap_err("failed setting initial canonical state; can't go on like this")?;
 
         if do_backfill {
             self.backfill(execution_height.saturating_add(1), consensus_height)
@@ -282,6 +295,15 @@ where
                     "backfilling from consensus layer to execution layer \
                 failed; cannot recover from that",
                 )?;
+
+            self.canonicalize(
+                Span::current(),
+                HeadOrFinalized::Finalized,
+                finalized_height,
+                finalized_digest,
+            )
+            .await
+            .wrap_err("failed setting initial canonical state; can't go on like this")?;
         }
 
         Ok(())
