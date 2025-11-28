@@ -59,7 +59,7 @@ mod tests {
     use eyre;
 
     #[tokio::test]
-    async fn test_random_2d_nonce_fillter() -> eyre::Result<()> {
+    async fn test_random_2d_nonce_filler() -> eyre::Result<()> {
         let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
             .filler(Random2DNonceFiller)
             .connect_mocked_client(Asserter::default());
