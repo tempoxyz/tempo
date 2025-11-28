@@ -3,7 +3,7 @@ mod dex;
 use itertools::Itertools;
 use reth_tracing::{
     RethTracer, Tracer,
-    tracing::{error, info, warn},
+    tracing::{debug, error, info, warn},
 };
 use tempo_alloy::TempoNetwork;
 
@@ -35,6 +35,7 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rlimit::Resource;
 use serde::Serialize;
 use std::{
+    collections::VecDeque,
     fs::File,
     io::BufWriter,
     num::NonZeroU32,
@@ -163,7 +164,9 @@ impl MaxTpsArgs {
 
         let target_url = self.target_urls[0].clone();
         if self.target_urls.len() > 1 {
-            warn!("Multiple target URLs provided, but only the first one will be used")
+            warn!(
+                "Multiple target URLs provided, but only the first one will be used for sending transactions"
+            )
         }
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect_http(target_url.clone())
@@ -199,7 +202,7 @@ impl MaxTpsArgs {
                     .context(
                         "Failed to clear transaction pool for {target_url}. Is `admin_clearTxpool` RPC method available?",
                     )?;
-                info!(?target_url, transactions, "Cleared transaction pool");
+                info!(%target_url, transactions, "Cleared transaction pool");
             }
         }
 
@@ -251,7 +254,6 @@ impl MaxTpsArgs {
         .context("Failed to generate transactions")?;
 
         // Send transactions
-        let start_block_number = provider.get_block_number().await?;
         let mut pending_txs = send_transactions(
             transactions,
             self.max_concurrent_requests,
@@ -260,6 +262,25 @@ impl MaxTpsArgs {
         )
         .await;
         let end_block_number = provider.get_block_number().await?;
+
+        info!("Retrieving first block number from sent transactions");
+        let start_block_number = loop {
+            if let Some(first_tx) = pending_txs.pop_front() {
+                debug!(hash = %first_tx.tx_hash(), "Retrieving transaction receipt for first block number");
+                if let Ok(first_tx_receipt) = first_tx
+                    .with_timeout(Some(Duration::from_secs(5)))
+                    .get_receipt()
+                    .await
+                {
+                    break first_tx_receipt.block_number;
+                }
+            } else {
+                break None;
+            }
+        };
+        let Some(start_block_number) = start_block_number else {
+            eyre::bail!("Failed to retrieve start block number")
+        };
 
         // Collect a sample of receipts and print the stats
         let sample_size = pending_txs.len().min(self.sample_size);
@@ -270,7 +291,7 @@ impl MaxTpsArgs {
         stream::iter(0..sample_size)
             .map(|_| {
                 let idx = random_range(0..pending_txs.len());
-                pending_txs.remove(idx)
+                pending_txs.remove(idx).expect("index is in range")
             })
             .map(|pending_tx| {
                 let hash = *pending_tx.tx_hash();
@@ -345,7 +366,7 @@ async fn send_transactions(
     max_concurrent_requests: usize,
     tps: u64,
     deadline: Sleep,
-) -> Vec<PendingTransactionBuilder<TempoNetwork>> {
+) -> VecDeque<PendingTransactionBuilder<TempoNetwork>> {
     info!(
         transactions = transactions.len(),
         max_concurrent_requests, tps, "Sending transactions"
