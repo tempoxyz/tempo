@@ -835,8 +835,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             Orderbook::clear_tick_bit(self, order.book_key(), order.tick(), order.is_bid())
                 .expect("Tick is valid");
 
-            let (tick, has_liquidity) =
-                Orderbook::next_initialized_tick(self, book_key, order.is_bid(), order.tick());
+            let (tick, has_liquidity) = Orderbook::next_initialized_tick(
+                self,
+                book_key,
+                order.is_bid(),
+                order.tick(),
+                self.storage.spec(),
+            );
 
             if self.storage.spec().is_allegretto() {
                 // Update best_tick when tick is exhausted
@@ -1294,6 +1299,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                         order.book_key(),
                         order.is_bid(),
                         order.tick(),
+                        self.storage.spec(),
                     );
 
                     if order.is_bid() {
@@ -1361,7 +1367,10 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         } else {
             orderbook.best_ask_tick
         };
-        if current_tick == i16::MIN {
+        // Check for no liquidity: i16::MIN means no bids, i16::MAX means no asks
+        if current_tick == i16::MIN
+            || self.storage.spec().is_allegretto() && current_tick == i16::MAX
+        {
             return Err(StablecoinExchangeError::insufficient_liquidity().into());
         }
 
@@ -1370,8 +1379,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
             // If no liquidity at this level, move to next tick
             if level.total_liquidity == 0 {
-                let (next_tick, initialized) =
-                    Orderbook::next_initialized_tick(self, book_key, is_bid, current_tick);
+                let (next_tick, initialized) = Orderbook::next_initialized_tick(
+                    self,
+                    book_key,
+                    is_bid,
+                    current_tick,
+                    self.storage.spec(),
+                );
 
                 if !initialized {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
@@ -1426,8 +1440,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
             // If we exhausted this level or filled our requirement, move to next tick
             if fill_amount == level.total_liquidity {
-                let (next_tick, initialized) =
-                    Orderbook::next_initialized_tick(self, book_key, is_bid, current_tick);
+                let (next_tick, initialized) = Orderbook::next_initialized_tick(
+                    self,
+                    book_key,
+                    is_bid,
+                    current_tick,
+                    self.storage.spec(),
+                );
 
                 if !initialized && remaining_out > 0 {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
@@ -1556,7 +1575,10 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             orderbook.best_ask_tick
         };
 
-        if current_tick == i16::MIN {
+        // Check for no liquidity: i16::MIN means no bids, i16::MAX means no asks
+        if current_tick == i16::MIN
+            || self.storage.spec().is_allegretto() && current_tick == i16::MAX
+        {
             return Err(StablecoinExchangeError::insufficient_liquidity().into());
         }
 
@@ -1565,8 +1587,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
             // If no liquidity at this level, move to next tick
             if level.total_liquidity == 0 {
-                let (next_tick, initialized) =
-                    Orderbook::next_initialized_tick(self, book_key, is_bid, current_tick);
+                let (next_tick, initialized) = Orderbook::next_initialized_tick(
+                    self,
+                    book_key,
+                    is_bid,
+                    current_tick,
+                    self.storage.spec(),
+                );
 
                 if !initialized {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
@@ -1596,8 +1623,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
             // If we exhausted this level, move to next tick
             if fill_amount == level.total_liquidity {
-                let (next_tick, initialized) =
-                    Orderbook::next_initialized_tick(self, book_key, is_bid, current_tick);
+                let (next_tick, initialized) = Orderbook::next_initialized_tick(
+                    self,
+                    book_key,
+                    is_bid,
+                    current_tick,
+                    self.storage.spec(),
+                );
 
                 if !initialized && remaining_in > 0 {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
