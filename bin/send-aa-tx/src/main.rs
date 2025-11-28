@@ -16,7 +16,7 @@ use tempo_primitives::{
     TempoTxEnvelope,
 };
 
-const CHAIN_ID: u64 = 42427; // 0xa5bb - devnet chain ID
+const CHAIN_ID: u64 = 42429; // 0xa5bb - devnet chain ID
 const BASE_FEE: u128 = 10_000_000_000; // 10 gwei
 
 #[tokio::main]
