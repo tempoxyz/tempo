@@ -115,7 +115,6 @@ where
         if utils::is_last_block_in_epoch(self.config.epoch_length, block.height()).is_some() {
             self.update_and_register_current_epoch_state().await;
 
-            self.metrics.reset_ceremony_metrics();
             maybe_ceremony.replace(self.start_post_allegretto_ceremony(ceremony_mux).await);
             // Early return: start driving the ceremony on the first height of
             // the next epoch.
@@ -298,7 +297,6 @@ where
             .expect("syncing state must always work");
         self.register_current_epoch_state().await;
 
-        self.metrics.reset_ceremony_metrics();
         Ok(self.start_post_allegretto_ceremony(mux).await)
     }
 

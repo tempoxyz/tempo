@@ -146,12 +146,7 @@ where
         let post_allegretto_ceremonies = Counter::default();
         let failed_allegretto_transitions = Counter::default();
 
-        let shares_distributed = Gauge::default();
-        let acks_received = Gauge::default();
-        let acks_sent = Gauge::default();
-        let dealings_read = Gauge::default();
-        let dealings_empty = Gauge::default();
-        let dealings_failed = Gauge::default();
+        let ceremony_metrics = ceremony::Metrics::new(&context);
 
         context.register(
             "ceremony_failures",
@@ -213,36 +208,6 @@ where
             "how many transitions from pre- to post-allegretto failed",
             failed_allegretto_transitions.clone(),
         );
-        context.register(
-            "shares_distributed",
-            "the number of shares distributed by this node as a dealer in the current ceremony",
-            shares_distributed.clone(),
-        );
-        context.register(
-            "acks_received",
-            "the number of acknowledgments received by this node as a dealer in the current ceremony",
-            acks_received.clone(),
-        );
-        context.register(
-            "acks_sent",
-            "the number of acknowledgments sent by this node as a player in the current ceremony",
-            acks_sent.clone(),
-        );
-        context.register(
-            "dealings_read",
-            "the number of dealings read from the blockchain in the current ceremony",
-            dealings_read.clone(),
-        );
-        context.register(
-            "dealings_empty",
-            "the number of blocks with empty extra_data (no dealing) in the current ceremony",
-            dealings_empty.clone(),
-        );
-        context.register(
-            "dealings_failed",
-            "the number of blocks where dealing decode failed in the current ceremony",
-            dealings_failed.clone(),
-        );
 
         let metrics = Metrics {
             how_often_dealer,
@@ -256,14 +221,7 @@ where
             pre_allegretto_ceremonies,
             post_allegretto_ceremonies,
             failed_allegretto_transitions,
-            ceremony_metrics: ceremony::Metrics {
-                shares_distributed,
-                acks_received,
-                acks_sent,
-                dealings_read,
-                dealings_empty,
-                dealings_failed,
-            },
+            ceremony_metrics,
         };
 
         Ok(Self {
@@ -475,9 +433,6 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        // Reset per-ceremony metrics at the start of each new ceremony
-        self.metrics.reset_ceremony_metrics();
-
         if self.post_allegretto_metadatas.exists() {
             self.start_post_allegretto_ceremony(mux).await
         } else {
@@ -717,18 +672,6 @@ struct Metrics {
     failed_allegretto_transitions: Counter,
     syncing_players: Gauge,
     ceremony_metrics: ceremony::Metrics,
-}
-
-impl Metrics {
-    /// Resets ceremony-specific metrics to zero at the start of a new ceremony.
-    fn reset_ceremony_metrics(&self) {
-        self.ceremony_metrics.shares_distributed.set(0);
-        self.ceremony_metrics.acks_received.set(0);
-        self.ceremony_metrics.acks_sent.set(0);
-        self.ceremony_metrics.dealings_read.set(0);
-        self.ceremony_metrics.dealings_empty.set(0);
-        self.ceremony_metrics.dealings_failed.set(0);
-    }
 }
 
 /// Attempts to read the validator config from the smart contract until it becomes available.
