@@ -295,6 +295,26 @@ where
             }
         }
 
+        // Ensure that the fee payer is not blacklisted
+        match state_provider.is_valid_fee_payer(fee_token, fee_payer) {
+            Ok(valid) => {
+                if !valid {
+                    return TransactionValidationOutcome::Invalid(
+                        transaction,
+                        InvalidPoolTransactionError::other(
+                            TempoPoolTransactionError::BlackListedFeePayer {
+                                fee_token,
+                                fee_payer,
+                            },
+                        ),
+                    );
+                }
+            }
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        }
+
         let balance = match state_provider.get_token_balance(fee_token, fee_payer) {
             Ok(balance) => balance,
             Err(err) => {

@@ -109,6 +109,12 @@ pub enum TempoPoolTransactionError {
     )]
     InvalidFeeToken(Address),
 
+    #[error("Fee payer {fee_payer} is blacklisted for fee token: {fee_token}")]
+    BlackListedFeePayer {
+        fee_token: Address,
+        fee_payer: Address,
+    },
+
     #[error("No fee token preference configured")]
     MissingFeeToken,
 
@@ -141,6 +147,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             Self::ExceedsNonPaymentLimit
             | Self::InvalidFeeToken(_)
             | Self::MissingFeeToken
+            | Self::BlackListedFeePayer { .. }
             | Self::InvalidValidBefore { .. }
             | Self::InvalidValidAfter { .. } => false,
             Self::NonZeroValue | Self::Keychain(_) | Self::SubblockNonceKey => true,

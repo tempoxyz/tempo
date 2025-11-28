@@ -12,10 +12,11 @@ use tempo_contracts::precompiles::{
     IStablecoinExchange, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
 };
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
     storage::slots::mapping_slot,
     tip_fee_manager,
     tip20::{self, is_tip20},
+    tip403_registry,
 };
 use tempo_primitives::TempoTxEnvelope;
 
@@ -198,6 +199,31 @@ pub trait TempoStateAccess<T> {
         // load fee token account to ensure that we can load storage for it.
         self.basic(fee_token)?;
         Ok(self.sload(fee_token, tip20::slots::CURRENCY)? == USD_CURRENCY_SLOT_VALUE)
+    }
+
+    /// Checks if the fee payer is not blacklisted for the given token.
+    fn is_valid_fee_payer(
+        &mut self,
+        fee_token: Address,
+        fee_payer: Address,
+    ) -> Result<bool, Self::Error> {
+        // Ensure it's a TIP20
+        if !is_tip20(fee_token) {
+            return Ok(false);
+        }
+
+        // Ensure the fee payer is not blacklisted
+        let transfer_policy_id = self
+            .sload(fee_token, tip20::slots::TRANSFER_POLICY_ID)?
+            .to();
+        self.is_action_authorized(transfer_policy_id, fee_payer)
+    }
+
+    /// Checks if an action is authorized by the TIP403 registry
+    fn is_action_authorized(&mut self, policy_id: u64, user: Address) -> Result<bool, Self::Error> {
+        tip403_registry::is_authorized_with(policy_id, user, |slot| {
+            self.sload(TIP403_REGISTRY_ADDRESS, slot)
+        })
     }
 
     /// Returns the balance of the given token for the given account.

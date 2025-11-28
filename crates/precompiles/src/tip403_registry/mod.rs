@@ -6,9 +6,11 @@ use tempo_precompiles_macros::{Storable, contract};
 use crate::{
     TIP403_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::PrecompileStorageProvider,
+    storage::{
+        ContractStorage, PrecompileStorageProvider, Storable, double_mapping_slot, mapping_slot,
+    },
 };
-use alloy::primitives::{Address, Bytes, IntoLogData};
+use alloy::primitives::{Address, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
 
 #[contract]
@@ -307,28 +309,57 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
     }
 
     fn is_authorized_internal(&mut self, policy_id: u64, user: Address) -> Result<bool> {
-        // Special case for always-allow and always-reject policies
-        if policy_id < 2 {
-            // policyId == 0 is the "always-reject" policy
-            // policyId == 1 is the "always-allow" policy
-            return Ok(policy_id == 1);
-        }
-
-        let data = self.get_policy_data(policy_id)?;
-        let is_in_set = self.sload_policy_set(policy_id, user)?;
-
-        let auth = match data
-            .policy_type
-            .try_into()
-            .map_err(|_| TempoPrecompileError::under_overflow())?
-        {
-            ITIP403Registry::PolicyType::WHITELIST => is_in_set,
-            ITIP403Registry::PolicyType::BLACKLIST => !is_in_set,
-            ITIP403Registry::PolicyType::__Invalid => false,
-        };
-
-        Ok(auth)
+        let address = self.address();
+        is_authorized_with(policy_id, user, |slot| self.storage.sload(address, slot))
     }
+}
+
+/// Checks if a user is authorized by a policy using a closure for storage access.
+///
+/// Single source of truth for TIP403 authorization logic. Works with any storage
+/// provider by accepting a closure that loads a U256 value from a given storage slot.
+///
+/// # Returns
+/// - `Ok(true)` if the user is authorized
+/// - `Ok(false)` if not authorized or if policy data cannot be decoded
+/// - `Err(E)` if the storage loading operation fails
+pub fn is_authorized_with<E>(
+    policy_id: u64,
+    user: Address,
+    mut load_storage: impl FnMut(U256) -> core::result::Result<U256, E>,
+) -> core::result::Result<bool, E> {
+    // Special case for always-allow and always-reject policies
+    // policyId == 0 is the "always-reject" policy
+    // policyId == 1 is the "always-allow" policy
+    if policy_id < 2 {
+        return Ok(policy_id == 1);
+    }
+
+    // Load policy data
+    let policy_data_word = load_storage(mapping_slot(policy_id.to_be_bytes(), slots::POLICY_DATA))?;
+
+    let Ok(data) = PolicyData::from_evm_words([policy_data_word]) else {
+        return Ok(false);
+    };
+
+    // Load policy set membership
+    let is_in_set = load_storage(double_mapping_slot(
+        policy_id.to_be_bytes(),
+        user,
+        slots::POLICY_SET,
+    ))?
+    .to::<bool>();
+
+    // Apply policy type logic
+    let Ok(policy_type) = data.policy_type.try_into() else {
+        return Ok(false);
+    };
+
+    Ok(match policy_type {
+        ITIP403Registry::PolicyType::WHITELIST => is_in_set,
+        ITIP403Registry::PolicyType::BLACKLIST => !is_in_set,
+        ITIP403Registry::PolicyType::__Invalid => false,
+    })
 }
 
 #[cfg(test)]
