@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::sync::Arc;
 
 use alloy::{
     providers::{DynProvider, Provider, ProviderBuilder, fillers::CachedNonceManager},
     signers::local::{MnemonicBuilder, PrivateKeySigner},
     transports::http::reqwest::Url,
 };
+use dashmap::DashMap;
 use indicatif::ProgressIterator;
 use rand::seq::IndexedRandom;
 use tempo_alloy::TempoNetwork;
@@ -28,7 +29,7 @@ pub(crate) struct SignerProviderManager {
     /// Cache of previously created signer providers.
     ///
     /// The mapping is `(signer_idx, target_url_idx) => provider`
-    cached_signer_providers: HashMap<(usize, usize), DynProvider<TempoNetwork>>,
+    cached_signer_providers: Arc<DashMap<(usize, usize), DynProvider<TempoNetwork>>>,
 }
 
 impl SignerProviderManager {
@@ -60,7 +61,8 @@ impl SignerProviderManager {
                 (signer, provider)
             })
             .collect();
-        let cached_signer_providers = HashMap::with_capacity(signers.len() * target_urls.len());
+        let cached_signer_providers =
+            Arc::new(DashMap::with_capacity(signers.len() * target_urls.len()));
         Self {
             cached_nonce_manager,
             signers,
@@ -92,7 +94,7 @@ impl SignerProviderManager {
     /// Generates a single provider with random signer and random target URL.
     ///
     /// This method caches the generated provider to avoid redundant creation.
-    pub fn random_provider(&mut self) -> DynProvider<TempoNetwork> {
+    pub fn random_provider(&self) -> DynProvider<TempoNetwork> {
         let signer_idx = rand::random_range(0..self.signers.len());
         let target_url_idx = rand::random_range(0..self.target_urls.len());
         self.cached_signer_providers

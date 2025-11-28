@@ -28,7 +28,7 @@ use futures::{FutureExt, StreamExt, TryStreamExt, future::BoxFuture, stream};
 use governor::{Quota, RateLimiter, state::StreamRateLimitExt};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator};
 use rand::{random_range, seq::IndexedRandom};
-use rayon::iter::{ParallelBridge, ParallelIterator};
+use rayon::iter::ParallelIterator;
 use rlimit::Resource;
 use serde::Serialize;
 use std::{
@@ -423,8 +423,8 @@ async fn generate_transactions(
 > {
     let GenerateTransactionsInput {
         total_txs,
-        accounts: num_accounts,
-        mut signer_provider_manager,
+        accounts,
+        signer_provider_manager,
         max_concurrent_requests,
         max_concurrent_transactions,
         tip20_weight,
@@ -432,7 +432,7 @@ async fn generate_transactions(
         swap_weight,
     } = input;
 
-    let txs_per_sender = total_txs / num_accounts;
+    let txs_per_sender = total_txs / accounts;
     ensure!(
         txs_per_sender > 0,
         "txs per sender is 0, increase tps or decrease senders"
@@ -454,71 +454,67 @@ async fn generate_transactions(
     let transfers = Arc::new(AtomicUsize::new(0));
     let swaps = Arc::new(AtomicUsize::new(0));
     let orders = Arc::new(AtomicUsize::new(0));
-    let transactions: Vec<_> = std::iter::repeat_with(|| {
-        (
-            signer_provider_manager.random_provider(),
-            user_tokens.choose(&mut rand::rng()).copied().unwrap(),
-        )
-    })
-    .take(total_txs as usize)
-    .par_bridge()
-    .progress_count(total_txs)
-    .map(|(provider, token)| -> eyre::Result<BoxFuture<'static, _>> {
-        // TODO: can be improved with an enum per transaction type
-        let tx_index = tx_weights
-            .iter()
-            .enumerate()
-            .collect::<Vec<_>>()
-            .choose_weighted(&mut rand::rng(), |(_, weight)| *weight)?
-            .0;
+    let transactions = rayon::iter::repeat_n((), total_txs as usize)
+        .progress()
+        .map(|_| -> eyre::Result<BoxFuture<'static, _>> {
+            let provider = signer_provider_manager.random_provider();
+            let token = user_tokens.choose(&mut rand::rng()).copied().unwrap();
 
-        let tx: BoxFuture<'static, _> = match tx_index {
-            0 => {
-                transfers.fetch_add(1, Ordering::Relaxed);
-                let provider = provider.clone();
-                Box::pin(async move {
-                    let token = ITIP20Instance::new(token, provider);
+            // TODO: can be improved with an enum per transaction type
+            let tx_index = tx_weights
+                .iter()
+                .enumerate()
+                .collect::<Vec<_>>()
+                .choose_weighted(&mut rand::rng(), |(_, weight)| *weight)?
+                .0;
 
-                    // Transfer minimum possible amount
-                    let tx = token.transfer(Address::random(), U256::ONE);
-                    tx.send().await
-                })
-            }
-            1 => {
-                swaps.fetch_add(1, Ordering::Relaxed);
-                let provider = provider.clone();
-                Box::pin(async move {
-                    let exchange =
-                        IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider);
+            let tx: BoxFuture<'static, _> = match tx_index {
+                0 => {
+                    transfers.fetch_add(1, Ordering::Relaxed);
+                    let provider = provider.clone();
+                    Box::pin(async move {
+                        let token = ITIP20Instance::new(token, provider);
 
-                    // Swap minimum possible amount
-                    let tx = exchange.quoteSwapExactAmountIn(token, quote, 1);
+                        // Transfer minimum possible amount
+                        let tx = token.transfer(Address::random(), U256::ONE);
+                        tx.send().await
+                    })
+                }
+                1 => {
+                    swaps.fetch_add(1, Ordering::Relaxed);
+                    let provider = provider.clone();
+                    Box::pin(async move {
+                        let exchange =
+                            IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider);
 
-                    tx.send().await
-                })
-            }
-            2 => {
-                orders.fetch_add(1, Ordering::Relaxed);
-                let provider = provider.clone();
-                Box::pin(async move {
-                    let exchange =
-                        IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider);
+                        // Swap minimum possible amount
+                        let tx = exchange.quoteSwapExactAmountIn(token, quote, 1);
 
-                    // Place an order at a random tick that's a multiple of `TICK_SPACING`
-                    let tick =
-                        rand::random_range(MIN_TICK / TICK_SPACING..=MAX_TICK / TICK_SPACING)
-                            * TICK_SPACING;
-                    let tx = exchange.place(token, MIN_ORDER_AMOUNT, true, tick);
+                        tx.send().await
+                    })
+                }
+                2 => {
+                    orders.fetch_add(1, Ordering::Relaxed);
+                    let provider = provider.clone();
+                    Box::pin(async move {
+                        let exchange =
+                            IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider);
 
-                    tx.send().await
-                })
-            }
-            _ => unreachable!("Only {TX_TYPES} transaction types are supported"),
-        };
+                        // Place an order at a random tick that's a multiple of `TICK_SPACING`
+                        let tick =
+                            rand::random_range(MIN_TICK / TICK_SPACING..=MAX_TICK / TICK_SPACING)
+                                * TICK_SPACING;
+                        let tx = exchange.place(token, MIN_ORDER_AMOUNT, true, tick);
 
-        Ok(tx)
-    })
-    .collect::<eyre::Result<Vec<_>>>()?;
+                        tx.send().await
+                    })
+                }
+                _ => unreachable!("Only {TX_TYPES} transaction types are supported"),
+            };
+
+            Ok(tx)
+        })
+        .collect::<eyre::Result<Vec<_>>>()?;
 
     info!(
         transactions = transactions.len(),
@@ -607,7 +603,7 @@ struct BenchmarkMetadata {
     run_duration_secs: u64,
     accounts: u64,
     chain_id: u64,
-    max_concurrent_requests: usize,
+    total_connections: usize,
     start_block: BlockNumber,
     end_block: BlockNumber,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -680,7 +676,7 @@ pub async fn generate_report(
         run_duration_secs: args.duration,
         accounts: args.accounts.get(),
         chain_id: provider.get_chain_id().await?,
-        max_concurrent_requests: args.max_concurrent_requests,
+        total_connections: args.max_concurrent_requests,
         start_block,
         end_block,
         node_commit_sha: args.node_commit_sha.clone(),
