@@ -37,7 +37,9 @@ derive_more.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+eyre.workspace = true
 test-case.workspace = true
+tokio.workspace = true
 
 [features]
 default = []
