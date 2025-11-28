@@ -227,15 +227,19 @@ impl MaxTpsArgs {
         .context("Failed to set default fee token")?;
 
         // Generate all transactions
+        let total_txs = self.tps * self.duration;
+        let tip20_weight = (self.tip20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
+        let place_order_weight = (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64;
+        let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let transactions = generate_transactions(GenerateTransactionsInput {
-            total_txs: self.tps * self.duration,
+            total_txs,
             accounts,
             signer_provider_manager,
             max_concurrent_requests: self.max_concurrent_requests,
             max_concurrent_transactions: self.max_concurrent_transactions,
-            tip20_weight: (self.tip20_weight * Self::WEIGHT_PRECISION).trunc() as u64,
-            place_order_weight: (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64,
-            swap_weight: (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64,
+            tip20_weight,
+            place_order_weight,
+            swap_weight,
         })
         .await
         .context("Failed to generate transactions")?;
