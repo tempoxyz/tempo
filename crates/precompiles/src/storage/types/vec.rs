@@ -465,6 +465,12 @@ where
     Ok(())
 }
 
+/// A helper struct to support packing array elements into a single slot.
+///
+/// We used it when we operate on elements that are guaranteed to be packable.
+/// To avoid doing multiple storage reads/writes when packing those elements, we
+/// use this as an intermediate [`StorageOps`] implementation that can be passed to
+/// [`Storable::store`] and [`Storable::load`].
 struct PackedSlot(U256);
 
 impl StorageOps for PackedSlot {
