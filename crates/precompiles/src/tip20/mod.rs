@@ -528,11 +528,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     }
 
     /// Burns tokens from any address (requires BURN_FROM_ROLE)
-    pub fn burn_from(
-        &mut self,
-        msg_sender: Address,
-        call: ITIP20::burnFromCall,
-    ) -> Result<()> {
+    pub fn burn_from(&mut self, msg_sender: Address, call: ITIP20::burnFromCall) -> Result<()> {
         self.check_role(msg_sender, *BURN_FROM_ROLE)?;
 
         // Prevent burning from `FeeManager` and `StablecoinExchange` to protect accounting invariants
@@ -2730,9 +2726,12 @@ pub(crate) mod tests {
 
         let mut token = TIP20Token::new(token_id, &mut storage);
         token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
-        token.change_transfer_policy_id(admin, ITIP20::changeTransferPolicyIdCall {
-            newPolicyId: policy_id,
-        })?;
+        token.change_transfer_policy_id(
+            admin,
+            ITIP20::changeTransferPolicyIdCall {
+                newPolicyId: policy_id,
+            },
+        )?;
 
         // Grant BURN_FROM_ROLE to burner
         token.grant_role_internal(burner, *BURN_FROM_ROLE)?;
@@ -2815,9 +2814,12 @@ pub(crate) mod tests {
 
         let mut token = TIP20Token::new(token_id, &mut storage);
         token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
-        token.change_transfer_policy_id(admin, ITIP20::changeTransferPolicyIdCall {
-            newPolicyId: policy_id,
-        })?;
+        token.change_transfer_policy_id(
+            admin,
+            ITIP20::changeTransferPolicyIdCall {
+                newPolicyId: policy_id,
+            },
+        )?;
 
         // Grant BURN_FROM_ROLE to burner
         token.grant_role_internal(burner, *BURN_FROM_ROLE)?;
@@ -2890,7 +2892,9 @@ pub(crate) mod tests {
 
         assert!(matches!(
             result,
-            Err(TempoPrecompileError::RolesAuthError(RolesAuthError::Unauthorized(_)))
+            Err(TempoPrecompileError::RolesAuthError(
+                RolesAuthError::Unauthorized(_)
+            ))
         ));
 
         // Verify balance is unchanged
