@@ -19,7 +19,10 @@ impl TempoEngineValidator {
 impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
     type Block = Block;
 
-    fn convert_payload_to_block(&self, payload: TempoExecutionData) -> Result<SealedBlock<Self::Block>, NewPayloadError> {
+    fn convert_payload_to_block(
+        &self,
+        payload: TempoExecutionData,
+    ) -> Result<SealedBlock<Self::Block>, NewPayloadError> {
         let TempoExecutionData {
             block,
             validator_set: _,

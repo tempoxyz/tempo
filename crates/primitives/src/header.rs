@@ -1,5 +1,5 @@
 use alloy_consensus::{BlockHeader, Header, Sealable};
-use alloy_primitives::{Address, B64, B256, BlockNumber, Bloom, Bytes, U256, keccak256, BlockHash};
+use alloy_primitives::{Address, B64, B256, BlockHash, BlockNumber, Bloom, Bytes, U256, keccak256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use reth_primitives_traits::InMemorySize;
 
@@ -172,7 +172,7 @@ impl reth_primitives_traits::header::HeaderMut for TempoHeader {
     }
 
     fn set_state_root(&mut self, state_root: B256) {
-       self.inner.set_state_root(state_root);
+        self.inner.set_state_root(state_root);
     }
 
     fn set_difficulty(&mut self, difficulty: U256) {
