@@ -11240,6 +11240,7 @@ dependencies = [
  "alloy-serde",
  "alloy-signer",
  "alloy-signer-local",
+ "alloy-transport",
  "derive_more",
  "reth-evm",
  "reth-primitives-traits",
