@@ -33,6 +33,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
             let Self {
                 inner,
                 fee_token,
+                nonce_key,
                 calls,
                 key_type,
                 key_data,
@@ -46,6 +47,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                         return Err(e.map(|inner| Self {
                             inner,
                             fee_token,
+                            nonce_key,
                             calls,
                             key_type,
                             key_data,
@@ -60,6 +62,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     e.map(|_inner| Self {
                         inner,
                         fee_token,
+                        nonce_key,
                         calls,
                         key_type,
                         key_data,
@@ -84,6 +87,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             key_type,
             key_data,
             aa_authorization_list,
+            ..
         } = self;
         Ok(TempoTxEnv {
             inner: inner.try_into_tx_env(evm_env)?,
