@@ -1,5 +1,3 @@
-use std::future::ready;
-
 use super::*;
 use alloy::providers::DynProvider;
 use indicatif::ProgressIterator;
@@ -27,24 +25,11 @@ pub(super) async fn setup(
     info!("Creating tokens");
     let progress = ProgressBar::new(user_tokens as u64 + 1);
     // Create quote token
-    let quote_token = setup_test_token(
-        provider.clone(),
-        caller,
-        PATH_USD_ADDRESS,
-        max_concurrent_requests,
-    )
-    .await?;
+    let quote_token = setup_test_token(provider.clone(), caller, PATH_USD_ADDRESS).await?;
     progress.inc(1);
     // Create `user_tokens` tokens
     let user_tokens = stream::iter((0..user_tokens).progress_with(progress))
-        .map(|_| {
-            setup_test_token(
-                provider.clone(),
-                caller,
-                *quote_token.address(),
-                max_concurrent_requests,
-            )
-        })
+        .map(|_| setup_test_token(provider.clone(), caller, *quote_token.address()))
         .buffered(max_concurrent_requests)
         .try_collect::<Vec<_>>()
         .await?;
@@ -76,7 +61,8 @@ pub(super) async fn setup(
                     let tx = exchange
                         .createPair(token)
                         .nonce_key(U256::random())
-                        .nonce(0);
+                        .nonce(0)
+                        .gas(500_000);
 
                     tx.send().await
                 }) as BoxFuture<'static, _>
@@ -102,7 +88,8 @@ pub(super) async fn setup(
                         let tx = token
                             .mint(signer, mint_amount)
                             .nonce_key(U256::random())
-                            .nonce(0);
+                            .nonce(0)
+                            .gas(500_000);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 })
@@ -126,7 +113,8 @@ pub(super) async fn setup(
                         let tx = token
                             .approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
                             .nonce_key(U256::random())
-                            .nonce(0);
+                            .nonce(0)
+                            .gas(500_000);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 })
@@ -156,7 +144,8 @@ pub(super) async fn setup(
                         let tx = exchange
                             .placeFlip(token, order_amount, true, tick_under, tick_over)
                             .nonce_key(U256::random())
-                            .nonce(0);
+                            .nonce(0)
+                            .gas(500_000);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 })
@@ -176,7 +165,6 @@ async fn setup_test_token(
     provider: DynProvider<TempoNetwork>,
     admin: Address,
     quote_token: Address,
-    max_concurrent_requests: usize,
 ) -> eyre::Result<ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>>
 where
 {
@@ -199,6 +187,10 @@ where
         .decoded_log::<ITIP20Factory::TokenCreated>()
         .ok_or_eyre("Token creation event not found")?;
 
+    assert_receipt(receipt)
+        .await
+        .context("Failed to create token")?;
+
     let token_addr = token_id_to_address(event.tokenId.to());
     let token = ITIP20::new(token_addr, provider.clone());
     let roles = IRolesAuth::new(*token.address(), provider);
@@ -206,19 +198,14 @@ where
         .grantRole(*ISSUER_ROLE, admin)
         .nonce_key(U256::random())
         .nonce(0)
+        .gas(500_000)
         .send()
         .await?
         .get_receipt()
         .await?;
-
-    assert_receipts(
-        [receipt, grant_role_receipt]
-            .into_iter()
-            .map(eyre::Ok)
-            .map(ready),
-        max_concurrent_requests,
-    )
-    .await?;
+    assert_receipt(grant_role_receipt)
+        .await
+        .context("Failed to grant issuer role")?;
 
     Ok(token)
 }

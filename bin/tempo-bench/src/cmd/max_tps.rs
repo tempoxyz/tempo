@@ -782,15 +782,17 @@ async fn assert_receipts<R: ReceiptResponse, F: Future<Output = eyre::Result<R>>
 ) -> eyre::Result<()> {
     stream::iter(receipts.into_iter())
         .buffer_unordered(max_concurrent_requests)
-        .try_for_each(async |receipt| {
-            eyre::ensure!(
-                receipt.status(),
-                "Transaction {} failed",
-                receipt.transaction_hash()
-            );
-            Ok(())
-        })
+        .try_for_each(|receipt| assert_receipt(receipt))
         .await
+}
+
+async fn assert_receipt<R: ReceiptResponse>(receipt: R) -> eyre::Result<()> {
+    eyre::ensure!(
+        receipt.status(),
+        "Transaction {} failed",
+        receipt.transaction_hash()
+    );
+    Ok(())
 }
 
 struct GenerateTransactionsInput {
