@@ -32,11 +32,10 @@ use tracing::{Span, info, instrument, warn};
 use crate::{
     consensus::block::Block,
     dkg::{
-        ceremony,
-        ceremony::Ceremony,
+        ceremony::{self, Ceremony},
         manager::{
             DecodedValidator,
-            ingress::{Finalize, GetIntermediateDealing, GetOutcome},
+            ingress::{CeremonyInfo, Finalize, GetIntermediateDealing, GetOutcome},
             validators::{self, ValidatorState},
         },
     },
@@ -269,6 +268,26 @@ where
                             ceremony.as_mut(),
                         )
                         .await;
+                }
+                super::Command::GetCeremonyInfo(get_ceremony_info) => {
+                    let ceremony_info = if let Some(epoch_state) =
+                        self.post_allegretto_metadatas.current_epoch_state()
+                    {
+                        CeremonyInfo {
+                            epoch: epoch_state.epoch(),
+                            is_post_allegretto: true,
+                        }
+                    } else if let Some(epoch_state) =
+                        self.pre_allegretto_metadatas.current_epoch_state()
+                    {
+                        CeremonyInfo {
+                            epoch: epoch_state.epoch(),
+                            is_post_allegretto: false,
+                        }
+                    } else {
+                        continue;
+                    };
+                    let _ = get_ceremony_info.response.send(ceremony_info);
                 }
                 super::Command::GetOutcome(get_ceremony_outcome) => {
                     let _: Result<_, _> =

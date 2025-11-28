@@ -71,6 +71,7 @@ impl From<Broadcast> for Message {
 pub(super) struct Verify {
     pub(super) parent: (View, Digest),
     pub(super) payload: Digest,
+    pub(super) proposer: PublicKey,
     pub(super) response: oneshot::Sender<bool>,
     pub(super) round: Round,
 }
@@ -164,6 +165,7 @@ impl Automaton for Mailbox {
                 Verify {
                     parent: context.parent,
                     payload,
+                    proposer: context.leader,
                     round: context.round,
                     response: tx,
                 }

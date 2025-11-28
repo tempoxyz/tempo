@@ -22,6 +22,7 @@ use commonware_consensus::{
     types::{Epoch, Round, View},
     utils,
 };
+use commonware_cryptography::ed25519::PublicKey;
 use commonware_macros::select;
 use commonware_runtime::{
     ContextCell, FutureExt as _, Handle, Metrics, Pacer, Spawner, Storage, spawn_cell,
@@ -53,6 +54,7 @@ use super::{
 };
 use crate::{
     consensus::{Digest, block::Block},
+    dkg,
     epoch::SchemeProvider,
     subblocks,
 };
@@ -396,12 +398,14 @@ impl Inner<Init> {
             digest = %verify.payload,
             parent.view = verify.parent.0,
             parent.digest = %verify.parent.1,
+            proposer = %verify.proposer,
         ),
     )]
     async fn handle_verify<TContext: Pacer>(mut self, verify: Verify, context: TContext) {
         let Verify {
             parent,
             payload,
+            proposer,
             mut response,
             round,
         } = verify;
@@ -413,7 +417,7 @@ impl Inner<Init> {
                 ))
             },
 
-            res = self.clone().verify(context, parent, payload, round) => {
+            res = self.clone().verify(context, parent, payload, proposer, round) => {
                 res.wrap_err("block verification failed")
             }
         );
@@ -599,6 +603,7 @@ impl Inner<Init> {
         context: TContext,
         (parent_view, parent_digest): (View, Digest),
         payload: Digest,
+        proposer: PublicKey,
         round: Round,
     ) -> eyre::Result<(Block, bool)> {
         let genesis_block = self.genesis_block.clone();
@@ -638,40 +643,21 @@ impl Inner<Init> {
             }
         }
 
-        if utils::is_last_block_in_epoch(self.epoch_length, block.height())
-            .is_some_and(|e| e == round.epoch())
+        if let Err(reason) = verify_header_extra_data(
+            &block,
+            &self.state.dkg_manager,
+            self.epoch_length,
+            &proposer,
+            round,
+        )
+        .await
         {
-            let our_outcome = self
-                .state
-                .dkg_manager
-                .get_public_ceremony_outcome()
-                .await
-                .wrap_err(
-                    "failed getting public dkg ceremony outcome; cannot verify end of epoch block",
-                )?;
-            let block_outcome = match PublicOutcome::decode(block.header().extra_data().as_ref()) {
-                Err(error) => {
-                    warn!(
-                        error = %eyre::Report::new(error),
-                        "cannot decode extra data header field of boundary block as public ceremony outcome; failing block",
-                    );
-                    return Ok((block, false));
-                }
-                Ok(block_outcome) => block_outcome,
-            };
-            if our_outcome != block_outcome {
-                warn!(
-                    our.epoch = our_outcome.epoch,
-                    our.participants = ?our_outcome.participants,
-                    our.public = ?our_outcome.public,
-                    block.epoch = block_outcome.epoch,
-                    block.participants = ?block_outcome.participants,
-                    block.public = ?block_outcome.public,
-                    "our public dkg ceremony outcome does not match what's stored in the block; failing block",
-                );
-                return Ok((block, false));
-            }
-        };
+            warn!(
+                %reason,
+                "header extra data could not be verified; failing block",
+            );
+            return Ok((block, false));
+        }
 
         if let Err(error) = self
             .state
@@ -848,6 +834,95 @@ async fn verify_block<TContext: Pacer>(
         }
     }
 }
+
+#[instrument(skip_all, err(Display))]
+async fn verify_header_extra_data(
+    block: &Block,
+    dkg_manager: &crate::dkg::manager::Mailbox,
+    epoch_length: u64,
+    proposer: &PublicKey,
+    round: Round,
+) -> eyre::Result<()> {
+    if utils::is_last_block_in_epoch(epoch_length, block.height()).is_some() {
+        info!(
+            "on last block of epoch; verifying that the boundary block \
+            contains the correct DKG outcome",
+        );
+        let our_outcome = dkg_manager.get_public_ceremony_outcome().await.wrap_err(
+            "failed getting public dkg ceremony outcome; cannot verify end \
+                of epoch block",
+        )?;
+        let block_outcome = PublicOutcome::decode(block.header().extra_data().as_ref()).wrap_err(
+            "failed decoding extra data header as DKG ceremony \
+                outcome; cannot verify end of epoch block",
+        )?;
+        if our_outcome != block_outcome {
+            // Emit the log here so that it's structured. The error would be annoying to read.
+            warn!(
+                our.epoch = our_outcome.epoch,
+                our.participants = ?our_outcome.participants,
+                our.public = ?our_outcome.public,
+                block.epoch = block_outcome.epoch,
+                block.participants = ?block_outcome.participants,
+                block.public = ?block_outcome.public,
+                "our public dkg ceremony outcome does not match what's stored \
+                in the block",
+            );
+            return Err(eyre!(
+                "our public dkg ceremony outcome does not match what's \
+                stored in the block header extra_data field; they must \
+                match so that the end-of-block is valid",
+            ));
+        }
+    } else if let Some(dealing) = block.try_read_ceremony_deal_outcome() {
+        info!("block header extra_data header contained intermediate DKG dealing; verifying it");
+        ensure!(
+            dealing.dealer() == proposer,
+            "proposer `{proposer}` is not the dealer `{}` recorded in the \
+            intermediate DKG dealing",
+            dealing.dealer(),
+        );
+
+        let ceremony_info = dkg_manager
+            .get_ceremony_info()
+            .await
+            .wrap_err("DKG manager did not return information on the current ceremony state")?;
+        ensure!(
+            ceremony_info.epoch == round.epoch(),
+            "cermony info is for epoch `{}, but current round is `{}`; this is \
+            strange and should not happen, but it prevents rendering a \
+            decision on the intermediate DKG outcome block",
+            ceremony_info.epoch,
+            round.epoch(),
+        );
+        if ceremony_info.is_post_allegretto {
+            debug!(
+                ceremony.epoch = ceremony_info.epoch,
+                dkg_dealing.signature = %dealing.signature(),
+                "DKG manager returned that it is running post-allegretto \
+                ceremonies; using post-allegretto signature verification",
+            );
+            ensure!(
+                dkg::verify_dkg_dealing(&dealing, dkg::HardforkRegime::PostAllegretto),
+                "signature of intermediate DKG outcome could not be verified",
+            );
+        } else {
+            debug!(
+                ceremony.epoch = ceremony_info.epoch,
+                dkg_dealing.signature = %dealing.signature(),
+                "DKG manager returned that it is running pre-allegretto \
+                ceremonies; using post-allegretto signature verification",
+            );
+            ensure!(
+                dkg::verify_dkg_dealing(&dealing, dkg::HardforkRegime::PreAllegretto),
+                "signature of intermediate DKG outcome could not be verified",
+            );
+        }
+    }
+
+    Ok(())
+}
+
 /// Constructs a [`PayloadId`] from the first 8 bytes of `block_hash`.
 fn payload_id_from_block_hash(block_hash: &B256) -> PayloadId {
     PayloadId::new(

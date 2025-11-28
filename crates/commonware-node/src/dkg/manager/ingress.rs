@@ -13,6 +13,16 @@ pub(crate) struct Mailbox {
 }
 
 impl Mailbox {
+    /// Returns information about the currently running ceremony.
+    pub(crate) async fn get_ceremony_info(&self) -> eyre::Result<CeremonyInfo> {
+        let (response, rx) = oneshot::channel();
+        self.inner
+            .unbounded_send(Message::in_current_span(GetCeremonyInfo { response }))
+            .wrap_err("failed sending message to actor")?;
+        rx.await
+            .wrap_err("actor dropped channel before responding with ceremony info")
+    }
+
     /// Returns the intermediate dealing of this node's ceremony.
     ///
     /// Returns `None` if this node was not a dealer, or if the request is
@@ -59,12 +69,19 @@ impl Message {
 pub(super) enum Command {
     Finalize(Finalize),
     GetIntermediateDealing(GetIntermediateDealing),
+    GetCeremonyInfo(GetCeremonyInfo),
     GetOutcome(GetOutcome),
 }
 
 impl From<Finalize> for Command {
     fn from(value: Finalize) -> Self {
         Self::Finalize(value)
+    }
+}
+
+impl From<GetCeremonyInfo> for Command {
+    fn from(value: GetCeremonyInfo) -> Self {
+        Self::GetCeremonyInfo(value)
     }
 }
 
@@ -80,9 +97,25 @@ impl From<GetOutcome> for Command {
     }
 }
 
+/// Contains information about the currently running ceremony.
+pub(crate) struct CeremonyInfo {
+    /// The epoch of the currently running ceremony. If no cermony is running
+    /// (that's only the case after the pre-to-last block but before the
+    /// last block have been finalized), then this contains the epoch of the
+    /// last ceremony (derived from the epoch state).
+    pub(crate) epoch: Epoch,
+
+    /// If the current ceremony is a post-allegretto ceremony.
+    pub(crate) is_post_allegretto: bool,
+}
+
 pub(super) struct Finalize {
     pub(super) block: Box<Block>,
     pub(super) acknowledgment: Exact,
+}
+
+pub(super) struct GetCeremonyInfo {
+    pub(super) response: oneshot::Sender<CeremonyInfo>,
 }
 
 pub(super) struct GetIntermediateDealing {

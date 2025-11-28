@@ -38,7 +38,7 @@ use payload::{Message, Payload, Share};
 use persisted::Dealing;
 
 const ACK_NAMESPACE: &[u8] = b"_DKG_ACK";
-const OUTCOME_NAMESPACE: &[u8] = b"_DKG_OUTCOME";
+pub(super) const OUTCOME_NAMESPACE: &[u8] = b"_DKG_OUTCOME";
 
 /// Recovering public weights is a heavy operation. For simplicity, we use just
 /// 1 thread for now.
@@ -574,6 +574,12 @@ where
             self.epoch(),
         );
 
+        ensure!(
+            self.dealers().position(&block_outcome.dealer()).is_some(),
+            "dealer `{}` recorded in dealing outcome is not among the dealers of this ceremony",
+            block_outcome.dealer(),
+        );
+
         // Verify the dealer's signature before considering processing the outcome.
         match hardfork_regime {
             HardforkRegime::PostAllegretto => {
@@ -842,8 +848,8 @@ where
         dealer_me.outcome.as_ref()
     }
 
-    pub(super) fn dealers(&self) -> &[PublicKey] {
-        self.config.dealers.as_ref()
+    pub(super) fn dealers(&self) -> &Ordered<PublicKey> {
+        &self.config.dealers
     }
 
     pub(super) fn players(&self) -> &[PublicKey] {
