@@ -1387,7 +1387,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 let base_needed = remaining_out
                     .checked_mul(orderbook::PRICE_SCALE as u128)
                     .and_then(|v| v.checked_div(price as u128))
-                    .expect("Base needed calculation overflow");
+                    .ok_or(TempoPrecompileError::under_overflow())?;
                 let fill_amount = if base_needed > level.total_liquidity {
                     level.total_liquidity
                 } else {
@@ -1404,7 +1404,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 let quote_needed = fill_amount
                     .checked_mul(price as u128)
                     .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                    .expect("Quote needed calculation overflow");
+                    .ok_or(TempoPrecompileError::under_overflow())?;
                 (fill_amount, quote_needed)
             };
 
@@ -1412,7 +1412,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 fill_amount
                     .checked_mul(price as u128)
                     .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                    .expect("Amount out calculation overflow")
+                    .ok_or(TempoPrecompileError::under_overflow())?
             } else {
                 fill_amount
             };
@@ -1577,18 +1577,38 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
             let price = orderbook::tick_to_price(current_tick);
 
-            let fill_amount = if remaining_in > level.total_liquidity {
-                level.total_liquidity
+            let (fill_amount, amount_out_tick, amount_consumed) = if is_bid {
+                // For bids: remaining_in is base, amount_out is quote
+                let fill_amount = if remaining_in > level.total_liquidity {
+                    level.total_liquidity
+                } else {
+                    remaining_in
+                };
+                let quote_out = fill_amount
+                    .checked_mul(price as u128)
+                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                (fill_amount, quote_out, fill_amount)
             } else {
-                remaining_in
+                // For asks: remaining_in is quote, amount_out is base
+                let base_to_get = remaining_in
+                    .checked_mul(orderbook::PRICE_SCALE as u128)
+                    .and_then(|v| v.checked_div(price as u128))
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                let fill_amount = if base_to_get > level.total_liquidity {
+                    level.total_liquidity
+                } else {
+                    base_to_get
+                };
+                let quote_consumed = fill_amount
+                    .checked_mul(price as u128)
+                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                (fill_amount, fill_amount, quote_consumed)
             };
-            let amount_out_tick = fill_amount
-                .checked_mul(price as u128)
-                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                .expect("Amount out calculation overflow");
 
             remaining_in = remaining_in
-                .checked_sub(fill_amount)
+                .checked_sub(amount_consumed)
                 .ok_or(TempoPrecompileError::under_overflow())?;
             amount_out = amount_out
                 .checked_add(amount_out_tick)
@@ -4632,6 +4652,61 @@ mod tests {
                 ))
             ),
             "Should return InvalidToken error for non-TIP20 token post-Allegretto"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_quote_exact_in_handles_both_directions() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+        let amount = MIN_ORDER_AMOUNT;
+        let tick = 100_i16;
+        let price = orderbook::tick_to_price(tick);
+
+        // Calculate escrow for bid order (quote needed to buy `amount` base)
+        let bid_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+        let (base_token, quote_token) =
+            setup_test_tokens(exchange.storage, admin, alice, exchange.address, bid_escrow);
+        exchange.create_pair(base_token)?;
+        let book_key = compute_book_key(base_token, quote_token);
+        mint_and_approve_token(exchange.storage, 1, admin, alice, exchange.address, amount);
+
+        // Place a bid order (alice wants to buy base with quote)
+        exchange.place(alice, base_token, amount, true, tick)?;
+        exchange.execute_block(Address::ZERO)?;
+
+        // Test is_bid == true: base -> quote
+        let quoted_out_bid = exchange.quote_exact_in(book_key, amount, true)?;
+        let expected_quote_out = amount
+            .checked_mul(price as u128)
+            .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+            .expect("calculation");
+        assert_eq!(
+            quoted_out_bid, expected_quote_out,
+            "quote_exact_in with is_bid=true should return quote amount"
+        );
+
+        // Place an ask order (alice wants to sell base for quote)
+        exchange.place(alice, base_token, amount, false, tick)?;
+        exchange.execute_block(Address::ZERO)?;
+
+        // Test is_bid == false: quote -> base
+        let quote_in = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+        let quoted_out_ask = exchange.quote_exact_in(book_key, quote_in, false)?;
+        let expected_base_out = quote_in
+            .checked_mul(orderbook::PRICE_SCALE as u128)
+            .and_then(|v| v.checked_div(price as u128))
+            .expect("calculation");
+        assert_eq!(
+            quoted_out_ask, expected_base_out,
+            "quote_exact_in with is_bid=false should return base amount"
         );
 
         Ok(())
