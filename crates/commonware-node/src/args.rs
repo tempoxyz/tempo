@@ -104,4 +104,11 @@ pub struct Args {
     /// before the build is complete.
     #[arg(long = "consensus.time-to-build-subblock", default_value = "100ms")]
     pub time_to_build_subblock: jiff::SignedDuration,
+
+    /// Reduces security by disabling IP-based connection filtering.
+    /// Connections are still authenticated via public key cryptography, but
+    /// anyone can attempt handshakes, increasing exposure to DoS attacks.
+    /// Only enable in trusted network environments.
+    #[arg(long = "consensus.allow-unregistered-handshakes", default_value_t = false)]
+    pub allow_unregistered_handshakes: bool,
 }
