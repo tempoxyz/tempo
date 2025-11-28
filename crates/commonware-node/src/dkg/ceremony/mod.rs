@@ -646,15 +646,19 @@ where
         block: &Block,
         hardfork_regime: HardforkRegime,
     ) -> eyre::Result<()> {
-        // Track empty vs failed metrics separately (logging happens in try_read_ceremony_deal_outcome)
+        // Track empty vs failed metrics separately
         if block.header().extra_data().is_empty() {
             self.metrics.dealings_empty.inc();
             return Ok(());
         }
 
-        let Some(block_outcome) = block.try_read_ceremony_deal_outcome() else {
-            self.metrics.dealings_failed.inc();
-            return Ok(());
+        let block_outcome = match block.try_read_ceremony_deal_outcome() {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                info!(%error, "failed to decode ceremony deal outcome");
+                self.metrics.dealings_failed.inc();
+                return Ok(());
+            }
         };
 
         // Ensure the outcome is for the current round.
