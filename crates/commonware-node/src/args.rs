@@ -109,6 +109,9 @@ pub struct Args {
     /// Connections are still authenticated via public key cryptography, but
     /// anyone can attempt handshakes, increasing exposure to DoS attacks.
     /// Only enable in trusted network environments.
-    #[arg(long = "consensus.allow-unregistered-handshakes", default_value_t = false)]
+    #[arg(
+        long = "consensus.allow-unregistered-handshakes",
+        default_value_t = false
+    )]
     pub allow_unregistered_handshakes: bool,
 }
