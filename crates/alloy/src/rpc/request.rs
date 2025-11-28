@@ -331,10 +331,10 @@ impl From<TempoTypedTransaction> for TempoTransactionRequest {
 
 /// Extension trait for [`CallBuilder`]
 pub trait TempoCallBuilderExt {
-    /// Sets the `fee_token` field in the transaction to the provided value
+    /// Sets the `fee_token` field in the [`TxAA`] or [`TxFeeToken`] transaction to the provided value
     fn fee_token(self, fee_token: Address) -> Self;
 
-    /// Configures the nonce key for an [`TxAA`].
+    /// Sets the `nonce_key` field in the [`TxAA`] transaction to the provided value
     fn nonce_key(self, nonce_key: U256) -> Self;
 }
 
