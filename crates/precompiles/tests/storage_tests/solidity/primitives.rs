@@ -22,10 +22,11 @@ fn test_basic_types_layout() {
     let rust_layout = layout_fields!(field_a, field_b, field_c, field_d);
 
     // Compare against expected layout from Solidity
-    let solc_layout = load_solc_layout(&testdata("basic_types.sol"));
+    let sol_path = testdata("basic_types.sol");
+    let solc_layout = load_solc_layout(&sol_path);
 
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 }
 
@@ -40,10 +41,11 @@ fn test_mixed_slots_layout() {
     let rust_layout = layout_fields!(field_a, field_c);
 
     // Compare against expected layout from Solidity
-    let solc_layout = load_solc_layout(&testdata("mixed_slots.sol"));
+    let sol_path = testdata("mixed_slots.sol");
+    let solc_layout = load_solc_layout(&sol_path);
 
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 }
 
@@ -59,10 +61,11 @@ fn test_arrays_layout() {
     let rust_layout = layout_fields!(field_a, large_array, field_b);
 
     // Compare against expected layout from Solidity
-    let solc_layout = load_solc_layout(&testdata("arrays.sol"));
+    let sol_path = testdata("arrays.sol");
+    let solc_layout = load_solc_layout(&sol_path);
 
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 }
 
@@ -78,10 +81,11 @@ fn test_mappings_layout() {
     let rust_layout = layout_fields!(field_a, address_mapping, uint_mapping);
 
     // Compare against expected layout from Solidity
-    let solc_layout = load_solc_layout(&testdata("mappings.sol"));
+    let sol_path = testdata("mappings.sol");
+    let solc_layout = load_solc_layout(&sol_path);
 
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 }
 
@@ -97,13 +101,14 @@ fn test_structs_layout() {
         field_b: U256,
     }
 
-    let solc_layout = load_solc_layout(&testdata("structs.sol"));
+    let sol_path = testdata("structs.sol");
+    let solc_layout = load_solc_layout(&sol_path);
 
     // Verify top-level fields
     let rust_layout = layout_fields!(field_a, block_data, field_b);
 
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 
     // Verify struct member slots
@@ -111,7 +116,7 @@ fn test_structs_layout() {
     let rust_struct = struct_fields!(base_slot, field1, field2, field3);
 
     if let Err(errors) = compare_struct_members(&solc_layout, "blockData", &rust_struct) {
-        panic!("Struct member layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Struct member layout", errors, &sol_path);
     }
 }
 
@@ -130,10 +135,11 @@ fn test_enums_layout() {
     let rust_layout = layout_fields!(field_a, field_b, field_c);
 
     // Compare against expected layout from Solidity
-    let solc_layout = load_solc_layout(&testdata("enum.sol"));
+    let sol_path = testdata("enum.sol");
+    let solc_layout = load_solc_layout(&sol_path);
 
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 }
 
@@ -151,9 +157,10 @@ fn test_double_mappings_layout() {
     let rust_fields = layout_fields!(field_a, account_role, allowances);
 
     // Compare against expected layout from Solidity
-    let solc_layout = load_solc_layout(&testdata("double_mappings.sol"));
+    let sol_path = testdata("double_mappings.sol");
+    let solc_layout = load_solc_layout(&sol_path);
 
     if let Err(errors) = compare_layouts(&solc_layout, &rust_fields) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 }

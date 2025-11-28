@@ -10,11 +10,10 @@ use commonware_codec::{DecodeExt as _, EncodeSize, Read, Write};
 use commonware_cryptography::{Committable, Digestible};
 use eyre::WrapErr as _;
 use reth_node_core::primitives::SealedBlock;
+use tempo_dkg_onchain_artifacts::IntermediateOutcome;
 use tracing::info;
 
-use crate::{consensus::Digest, dkg::IntermediateOutcome};
-
-// use crate::consensus::{Finalization, Notarization};
+use crate::consensus::Digest;
 
 /// A Tempo block.
 ///

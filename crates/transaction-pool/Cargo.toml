@@ -12,22 +12,35 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tempo-chainspec.workspace = true
 tempo-primitives = { workspace = true, features = ["serde", "reth-codec"] }
 tempo-revm = { workspace = true, features = ["reth"] }
+tempo-precompiles.workspace = true
 
 reth-transaction-pool.workspace = true
 reth-chainspec.workspace = true
 reth-primitives-traits.workspace = true
 reth-storage-api.workspace = true
+reth-provider.workspace = true
+reth-eth-wire-types.workspace = true
+reth-tracing.workspace = true
+reth-metrics.workspace = true
 
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
 
+futures.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 thiserror.workspace = true
+metrics.workspace = true
 
 [dev-dependencies]
-reth-transaction-pool.workspace = true
+reth-transaction-pool = { workspace = true, features = ["test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
+reth-ethereum-primitives.workspace = true
 alloy-eips.workspace = true
+alloy-consensus.workspace = true
 tokio.workspace = true

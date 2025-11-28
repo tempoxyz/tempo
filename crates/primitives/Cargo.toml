@@ -12,7 +12,6 @@ workspace = true
 
 [dependencies]
 # Reth
-reth-cli-commands = { workspace = true, optional = true }
 reth-db-api = { workspace = true, optional = true }
 reth-ethereum-primitives.workspace = true
 reth-primitives-traits.workspace = true
@@ -51,7 +50,7 @@ rand = "0.9"
 serde_json.workspace = true
 
 [features]
-default = ["serde", "reth-codec", "serde-bincode-compat", "rpc", "cli"]
+default = ["serde", "reth-codec", "serde-bincode-compat", "rpc"]
 serde = [
 	"dep:serde",
 	"dep:alloy-serde",
@@ -93,7 +92,6 @@ arbitrary = [
 	"reth-primitives-traits/arbitrary",
 	"alloy-rpc-types-eth?/arbitrary",
 	"reth-db-api?/arbitrary",
-	"reth-cli-commands?/arbitrary"
 ]
 rpc = [
 	"reth-ethereum-primitives/rpc",
@@ -101,4 +99,3 @@ rpc = [
 	"dep:reth-rpc-convert",
 	"dep:alloy-network",
 ]
-cli = ["dep:reth-cli-commands", "serde", "serde-bincode-compat", "reth-codec"]

@@ -17,12 +17,12 @@ pub enum DexApiError {
 
     /// Provider error when getting header
     /// Boxed because Provider::Error is an associated type
-    #[error("failed to get header: {0}")]
+    #[error("internal node error: failed to get header: {0}")]
     Provider(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     /// Failed to create EVM context
     /// Boxed because ConfigureEvm::Error is an associated type
-    #[error("failed to create EVM")]
+    #[error("internal node error: failed to create EVM")]
     CreateEvm(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     /// Invalid hex string in order cursor
