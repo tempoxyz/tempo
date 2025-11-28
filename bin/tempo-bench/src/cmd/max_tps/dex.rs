@@ -198,7 +198,6 @@ where
         .grantRole(*ISSUER_ROLE, admin)
         .nonce_key(U256::random())
         .nonce(0)
-        .gas(500_000)
         .send()
         .await?
         .get_receipt()
