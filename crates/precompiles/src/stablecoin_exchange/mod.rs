@@ -1577,54 +1577,88 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
             let price = orderbook::tick_to_price(current_tick);
 
-            let (fill_amount, amount_out_tick, amount_consumed) = if is_bid {
-                // For bids: remaining_in is base, amount_out is quote
+            if self.storage.spec().is_allegretto() {
+                // Post-allegretto: logic accounts for `is_bid`
+                let (fill_amount, amount_out_tick, amount_consumed) = if is_bid {
+                    // For bids: remaining_in is base, amount_out is quote
+                    let fill_amount = if remaining_in > level.total_liquidity {
+                        level.total_liquidity
+                    } else {
+                        remaining_in
+                    };
+                    let quote_out = fill_amount
+                        .checked_mul(price as u128)
+                        .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                    (fill_amount, quote_out, fill_amount)
+                } else {
+                    // For asks: remaining_in is quote, amount_out is base
+                    let base_to_get = remaining_in
+                        .checked_mul(orderbook::PRICE_SCALE as u128)
+                        .and_then(|v| v.checked_div(price as u128))
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                    let fill_amount = if base_to_get > level.total_liquidity {
+                        level.total_liquidity
+                    } else {
+                        base_to_get
+                    };
+                    let quote_consumed = fill_amount
+                        .checked_mul(price as u128)
+                        .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                    (fill_amount, fill_amount, quote_consumed)
+                };
+
+                remaining_in = remaining_in
+                    .checked_sub(amount_consumed)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                amount_out = amount_out
+                    .checked_add(amount_out_tick)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+
+                // If we exhausted this level, move to next tick
+                if fill_amount == level.total_liquidity {
+                    let (next_tick, initialized) =
+                        Orderbook::next_initialized_tick(self, book_key, is_bid, current_tick);
+
+                    if !initialized && remaining_in > 0 {
+                        return Err(StablecoinExchangeError::insufficient_liquidity().into());
+                    }
+                    current_tick = next_tick;
+                } else {
+                    break;
+                }
+            } else {
+                // Pre-allegretto: doesn't account for `is_bid`
                 let fill_amount = if remaining_in > level.total_liquidity {
                     level.total_liquidity
                 } else {
                     remaining_in
                 };
-                let quote_out = fill_amount
+                let amount_out_tick = fill_amount
                     .checked_mul(price as u128)
                     .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
                     .ok_or(TempoPrecompileError::under_overflow())?;
-                (fill_amount, quote_out, fill_amount)
-            } else {
-                // For asks: remaining_in is quote, amount_out is base
-                let base_to_get = remaining_in
-                    .checked_mul(orderbook::PRICE_SCALE as u128)
-                    .and_then(|v| v.checked_div(price as u128))
+
+                remaining_in = remaining_in
+                    .checked_sub(fill_amount)
                     .ok_or(TempoPrecompileError::under_overflow())?;
-                let fill_amount = if base_to_get > level.total_liquidity {
-                    level.total_liquidity
+                amount_out = amount_out
+                    .checked_add(amount_out_tick)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+
+                // If we exhausted this level, move to next tick
+                if fill_amount == level.total_liquidity {
+                    let (next_tick, initialized) =
+                        Orderbook::next_initialized_tick(self, book_key, is_bid, current_tick);
+
+                    if !initialized && remaining_in > 0 {
+                        return Err(StablecoinExchangeError::insufficient_liquidity().into());
+                    }
+                    current_tick = next_tick;
                 } else {
-                    base_to_get
-                };
-                let quote_consumed = fill_amount
-                    .checked_mul(price as u128)
-                    .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-                (fill_amount, fill_amount, quote_consumed)
-            };
-
-            remaining_in = remaining_in
-                .checked_sub(amount_consumed)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            amount_out = amount_out
-                .checked_add(amount_out_tick)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-
-            // If we exhausted this level, move to next tick
-            if fill_amount == level.total_liquidity {
-                let (next_tick, initialized) =
-                    Orderbook::next_initialized_tick(self, book_key, is_bid, current_tick);
-
-                if !initialized && remaining_in > 0 {
-                    return Err(StablecoinExchangeError::insufficient_liquidity().into());
+                    break;
                 }
-                current_tick = next_tick;
-            } else {
-                break;
             }
         }
 
