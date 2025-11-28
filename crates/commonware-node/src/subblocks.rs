@@ -176,7 +176,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
                 },
                 // Handle messages from the network.
                 Ok((sender, message)) = network_rx.recv() => {
-                    let _ = self.on_network_message(sender, message);
+                    let _ = self.on_network_message(sender, message, &mut network_tx).await;
                 },
                 // Handle built subblocks.
                 subblock = if let Some(task) = subblock_task {
@@ -353,7 +353,28 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
     }
 
     #[instrument(skip_all, err(level = Level::WARN), fields(sender = %sender, msg_bytes = message.len()))]
-    fn on_network_message(&mut self, sender: PublicKey, message: bytes::Bytes) -> eyre::Result<()> {
+    async fn on_network_message(
+        &mut self,
+        sender: PublicKey,
+        message: bytes::Bytes,
+        network_tx: &mut impl Sender<PublicKey = PublicKey>,
+    ) -> eyre::Result<()> {
+        // Process acknowledgements
+        if message.len() == 32 {
+            let ack = B256::from_slice(&message);
+            if let PendingSubblock::Built(built) = &mut self.our_subblock
+                && built.proposer == sender
+                && ack == built.subblock.signature_hash()
+            {
+                debug!("received acknowledgement from the next proposer");
+                built.stop_broadcasting();
+            } else {
+                warn!(%ack, "received invalid acknowledgement");
+            }
+
+            return Ok(());
+        }
+
         let Ok(subblock) = SignedSubBlock::decode(&mut &*message) else {
             return Err(eyre::eyre!("failed to decode subblock"));
         };
@@ -368,6 +389,19 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             "invalid subblock parent, expected {tip}, got {}",
             subblock.parent_hash
         );
+
+        // Send acknowledgement to the sender.
+        //
+        // We only send it after we've validated the tip to make sure that our view
+        // of the chain matches the one of the view of subblock sender. Otherwise,
+        // we expect to receive the subblock again.
+        let _ = network_tx
+            .send(
+                Recipients::One(sender.clone()),
+                bytes::Bytes::copy_from_slice(subblock.signature_hash().as_ref()),
+                true,
+            )
+            .await;
 
         debug!("validating new subblock");
 
@@ -543,6 +577,13 @@ struct BuiltSubblock {
     proposer: PublicKey,
     /// Interval for subblock broadcast.
     broadcast_interval: Pin<Box<dyn Future<Output = ()> + Send>>,
+}
+
+impl BuiltSubblock {
+    /// Stops broadcasting the subblock once the acknowledgement is received.
+    fn stop_broadcasting(&mut self) {
+        self.broadcast_interval = Box::pin(futures::future::pending());
+    }
 }
 
 /// Handle to the spawned subblocks service.
