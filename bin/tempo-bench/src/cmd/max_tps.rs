@@ -392,12 +392,12 @@ async fn send_transactions(
                 }
                 Ok(Err(err)) => {
                     failed.fetch_add(1, Ordering::Relaxed);
-                    error!(?err, "Failed to send transaction");
+                    debug!(?err, "Failed to send transaction");
                     None
                 }
                 Err(_) => {
                     timeout.fetch_add(1, Ordering::Relaxed);
-                    error!("Transaction sending timed out");
+                    debug!("Transaction sending timed out");
                     None
                 }
             }
