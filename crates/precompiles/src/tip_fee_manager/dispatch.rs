@@ -101,46 +101,6 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
                     self.execute_block(s, self.storage.beneficiary())
                 })
             }
-            // Protocol-only functions - these are called directly by the protocol,
-            // not through external transactions. Return error if called externally.
-            IFeeManager::collectFeePreTxCall::SELECTOR => {
-                mutate::<IFeeManager::collectFeePreTxCall>(calldata, msg_sender, |s, call| {
-                    if s != Address::ZERO {
-                        return Err(
-                            crate::tip_fee_manager::FeeManagerError::only_system_contract().into(),
-                        );
-                    }
-                    // Determine fee token from user preferences or default
-                    let user_token = self.sload_user_tokens(call.user)?;
-                    let fee_token = if user_token.is_zero() {
-                        self.default_fee_token()
-                    } else {
-                        user_token
-                    };
-                    self.collect_fee_pre_tx(
-                        call.user,
-                        fee_token,
-                        call.maxAmount,
-                        self.storage.beneficiary(),
-                    )
-                })
-            }
-            IFeeManager::collectFeePostTxCall::SELECTOR => {
-                mutate_void::<IFeeManager::collectFeePostTxCall>(calldata, msg_sender, |s, call| {
-                    if s != Address::ZERO {
-                        return Err(
-                            crate::tip_fee_manager::FeeManagerError::only_system_contract().into(),
-                        );
-                    }
-                    self.collect_fee_post_tx(
-                        call.user,
-                        call.actualUsed,
-                        call.maxAmount - call.actualUsed,
-                        call.userToken,
-                        self.storage.beneficiary(),
-                    )
-                })
-            }
             ITIPFeeAMM::mintCall::SELECTOR => {
                 mutate::<ITIPFeeAMM::mintCall>(calldata, msg_sender, |s, call| {
                     if self.storage.spec().is_moderato() {

@@ -34,16 +34,8 @@ sol! {
         // Fee functions
         function getFeeTokenBalance(address sender, address validator) external view returns (address, uint256);
         function executeBlock() external;
-        function collectFeePreTx(
-            address user,
-            uint256 maxAmount
-        ) external returns (address userToken);
-        function collectFeePostTx(
-            address user,
-            uint256 maxAmount,
-            uint256 actualUsed,
-            address userToken
-        ) external;
+        // NOTE: collectFeePreTx and collectFeePostTx are protocol-internal functions
+        // called directly by the execution handler, not exposed via the dispatch interface.
 
         // Events
         event UserTokenSet(address indexed user, address indexed token);
