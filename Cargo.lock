@@ -11259,7 +11259,6 @@ version = "0.6.1"
 dependencies = [
  "alloy",
  "alloy-consensus",
- "alloy-signer-local",
  "clap",
  "crossbeam-utils",
  "dashmap 6.1.0",
