@@ -1356,12 +1356,12 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let mut amount_in = 0u128;
         let orderbook = self.sload_books(book_key)?;
 
-        let mut current_tick = if is_bid {
-            orderbook.best_bid_tick
+        let (mut current_tick, empty_book_tick) = if is_bid {
+            (orderbook.best_bid_tick, i16::MIN)
         } else {
-            orderbook.best_ask_tick
+            (orderbook.best_ask_tick, i16::MAX)
         };
-        if current_tick == i16::MIN {
+        if current_tick == empty_book_tick {
             return Err(StablecoinExchangeError::insufficient_liquidity().into());
         }
 
@@ -1550,13 +1550,12 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let mut amount_out = 0u128;
         let orderbook = self.sload_books(book_key)?;
 
-        let mut current_tick = if is_bid {
-            orderbook.best_bid_tick
+        let (mut current_tick, empty_book_tick) = if is_bid {
+            (orderbook.best_bid_tick, i16::MIN)
         } else {
-            orderbook.best_ask_tick
+            (orderbook.best_ask_tick, i16::MAX)
         };
-
-        if current_tick == i16::MIN {
+        if current_tick == empty_book_tick {
             return Err(StablecoinExchangeError::insufficient_liquidity().into());
         }
 
@@ -4632,6 +4631,45 @@ mod tests {
                 ))
             ),
             "Should return InvalidToken error for non-TIP20 token post-Allegretto"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_quote_functions_return_error_on_empty_orderbook() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+
+        let (base_token, quote_token) =
+            setup_test_tokens(exchange.storage, admin, alice, exchange.address, 0);
+        exchange.create_pair(base_token)?;
+        let book_key = compute_book_key(base_token, quote_token);
+
+        // Test that quote functions return insufficient liquidity when orderbook is empty
+        assert!(
+            exchange
+                .quote_exact_in(book_key, MIN_ORDER_AMOUNT, false)
+                .is_err_and(|err| err.to_string().contains("InsufficientLiquidity"))
+        );
+        assert!(
+            exchange
+                .quote_exact_out(book_key, MIN_ORDER_AMOUNT, false)
+                .is_err_and(|err| err.to_string().contains("InsufficientLiquidity"))
+        );
+        assert!(
+            exchange
+                .quote_exact_in(book_key, MIN_ORDER_AMOUNT, true)
+                .is_err_and(|err| err.to_string().contains("InsufficientLiquidity"))
+        );
+        assert!(
+            exchange
+                .quote_exact_out(book_key, MIN_ORDER_AMOUNT, true)
+                .is_err_and(|err| err.to_string().contains("InsufficientLiquidity"))
         );
 
         Ok(())
