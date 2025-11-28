@@ -17,9 +17,12 @@ tempo-contracts.workspace = true
 # Workspace dependencies
 alloy = { workspace = true, features = [
     "genesis",
-    "signers",
-    "signer-local",
+    "getrandom",
     "network",
+    "reqwest",
+    "signer-local",
+    "signers",
+    "signer-mnemonic",
     "sol-types",
 ] }
 alloy-consensus = { workspace = true, features = ["secp256k1"] }
@@ -38,7 +41,6 @@ tokio.workspace = true
 toml.workspace = true
 
 # Bespoke dependencies
-alloy-signer-local = { version = "1", features = ["mnemonic"] }
 crossbeam-utils = "0.8.21"
 dashmap = "6.1"
 fastrand = "2.1"
