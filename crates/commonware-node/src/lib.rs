@@ -69,6 +69,7 @@ pub async fn run_consensus_stack(
         config.listen_address,
         config.mailbox_size,
         config.max_message_size_bytes,
+        config.allow_unregistered_handshakes,
     )
     .await
     .wrap_err("failed to start network")?;
@@ -176,6 +177,7 @@ async fn instantiate_network(
     listen_addr: SocketAddr,
     mailbox_size: usize,
     max_message_size: usize,
+    allow_unregistered_handshakes: bool,
 ) -> eyre::Result<(
     lookup::Network<commonware_runtime::tokio::Context, PrivateKey>,
     lookup::Oracle<PublicKey>,
@@ -186,6 +188,7 @@ async fn instantiate_network(
     let p2p_cfg = lookup::Config {
         mailbox_size,
         tracked_peer_sets: PEERSETS_TO_TRACK,
+        attempt_unregistered_handshakes: allow_unregistered_handshakes,
         ..lookup::Config::local(signing_key, &p2p_namespace, listen_addr, max_message_size)
     };
 
