@@ -359,24 +359,25 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         message: bytes::Bytes,
         network_tx: &mut impl Sender<PublicKey = PublicKey>,
     ) -> eyre::Result<()> {
-        // Process acknowledgements
-        if message.len() == 32 {
-            let ack = B256::from_slice(&message);
-            if let PendingSubblock::Built(built) = &mut self.our_subblock
-                && built.proposer == sender
-                && ack == built.subblock.signature_hash()
-            {
-                debug!("received acknowledgement from the next proposer");
-                built.stop_broadcasting();
-            } else {
-                warn!(%ack, "received invalid acknowledgement");
+        let message =
+            SubblocksMessage::decode(message).wrap_err("failed to decode network message")?;
+
+        let subblock = match message {
+            SubblocksMessage::Subblock(subblock) => subblock,
+            // Process acknowledgements
+            SubblocksMessage::Ack(ack) => {
+                if let PendingSubblock::Built(built) = &mut self.our_subblock
+                    && built.proposer == sender
+                    && ack == built.subblock.signature_hash()
+                {
+                    debug!("received acknowledgement from the next proposer");
+                    built.stop_broadcasting();
+                } else {
+                    warn!(%ack, "received invalid acknowledgement");
+                }
+
+                return Ok(());
             }
-
-            return Ok(());
-        }
-
-        let Ok(subblock) = SignedSubBlock::decode(&mut &*message) else {
-            return Err(eyre::eyre!("failed to decode subblock"));
         };
 
         let Some(tip) = self.tip() else {
@@ -398,7 +399,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         let _ = network_tx
             .send(
                 Recipients::One(sender.clone()),
-                bytes::Bytes::copy_from_slice(subblock.signature_hash().as_ref()),
+                SubblocksMessage::Ack(subblock.signature_hash()).encode(),
                 true,
             )
             .await;
@@ -486,7 +487,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             let _ = network_tx
                 .send(
                     Recipients::One(built.proposer.clone()),
-                    alloy_rlp::encode(&*built.subblock).into(),
+                    SubblocksMessage::Subblock((*built.subblock).clone()).encode(),
                     true,
                 )
                 .await;
@@ -583,6 +584,36 @@ impl BuiltSubblock {
     /// Stops broadcasting the subblock once the acknowledgement is received.
     fn stop_broadcasting(&mut self) {
         self.broadcast_interval = Box::pin(futures::future::pending());
+    }
+}
+
+/// Network messages used in the subblocks service.
+#[derive(Debug)]
+enum SubblocksMessage {
+    /// A new subblock sent to the proposer.
+    Subblock(SignedSubBlock),
+    /// Acknowledgment about receiving a subblock with given hash.
+    Ack(B256),
+}
+
+impl SubblocksMessage {
+    /// Encodes the message into a [`bytes::Bytes`].
+    fn encode(self) -> bytes::Bytes {
+        match self {
+            Self::Subblock(subblock) => alloy_rlp::encode(&subblock).into(),
+            Self::Ack(hash) => bytes::Bytes::copy_from_slice(hash.as_ref()),
+        }
+    }
+
+    /// Decodes a message from the given [`bytes::Bytes`].
+    fn decode(message: bytes::Bytes) -> alloy_rlp::Result<Self> {
+        if message.len() == 32 {
+            let hash = B256::from_slice(&message);
+            Ok(Self::Ack(hash))
+        } else {
+            let subblock = SignedSubBlock::decode(&mut &*message)?;
+            Ok(Self::Subblock(subblock))
+        }
     }
 }
 
