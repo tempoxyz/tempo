@@ -16,11 +16,11 @@ use alloy::{
         WatchTxError,
     },
     rpc::client::NoParams,
+    signers::local::{
+        MnemonicBuilder, PrivateKeySigner,
+        coins_bip39::{English, Mnemonic, MnemonicError},
+    },
     transports::http::reqwest::Url,
-};
-use alloy_signer_local::{
-    MnemonicBuilder, PrivateKeySigner,
-    coins_bip39::{English, Mnemonic, MnemonicError},
 };
 use clap::Parser;
 use eyre::{Context, OptionExt, ensure};
@@ -28,7 +28,7 @@ use futures::{FutureExt, StreamExt, TryStreamExt, future::BoxFuture, stream};
 use governor::{Quota, RateLimiter, state::StreamRateLimitExt};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator};
 use rand::{
-    random, random_range,
+    random_range,
     seq::{IndexedRandom, SliceRandom},
 };
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
