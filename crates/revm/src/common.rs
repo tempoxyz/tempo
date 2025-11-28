@@ -9,11 +9,11 @@ use revm::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, IFeeManager,
-    IStablecoinExchange, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
+    IStablecoinExchange, ITIP403Registry, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
-    storage::{self, slots::mapping_slot},
+    storage::{self, Storable, double_mapping_slot, slots::mapping_slot},
     tip_fee_manager,
     tip20::{self, is_tip20},
     tip403_registry,
@@ -213,7 +213,7 @@ pub trait TempoStateAccess<T> {
         }
 
         // Ensure the fee payer is not blacklisted
-        let Ok(transfer_policy_id) = storage::packing::extract_packed_value(
+        let Ok(transfer_policy_id) = storage::packing::extract_packed_value::<u64>(
             self.sload(fee_token, tip20::slots::TRANSFER_POLICY_ID)?,
             tip20::slots::TRANSFER_POLICY_ID_OFFSET,
             tip20::slots::TRANSFER_POLICY_ID_BYTES,
@@ -222,9 +222,48 @@ pub trait TempoStateAccess<T> {
             return Ok(false);
         };
 
-        tip403_registry::is_authorized_with(transfer_policy_id, fee_payer, |slot| {
-            self.sload(TIP403_REGISTRY_ADDRESS, slot)
-        })
+        // NOTE: must be synced with `fn is_authorized_internal` @crates/precompiles/src/tip403_registry/mod.rs
+        let auth = {
+            // Special case for always-allow and always-reject policies
+            if transfer_policy_id < 2 {
+                // policyId == 0 is the "always-reject" policy
+                // policyId == 1 is the "always-allow" policy
+                return Ok(transfer_policy_id == 1);
+            }
+
+            let policy_data_word = self.sload(
+                TIP403_REGISTRY_ADDRESS,
+                mapping_slot(
+                    transfer_policy_id.to_be_bytes(),
+                    tip403_registry::slots::POLICY_DATA,
+                ),
+            )?;
+            let Ok(data) = tip403_registry::PolicyData::from_evm_words([policy_data_word]) else {
+                return Ok(false);
+            };
+            let Ok(policy_type) = data.policy_type.try_into() else {
+                return Ok(false);
+            };
+
+            let is_in_set = self
+                .sload(
+                    TIP403_REGISTRY_ADDRESS,
+                    double_mapping_slot(
+                        transfer_policy_id.to_be_bytes(),
+                        fee_payer,
+                        tip403_registry::slots::POLICY_SET,
+                    ),
+                )?
+                .to::<bool>();
+
+            match policy_type {
+                ITIP403Registry::PolicyType::WHITELIST => is_in_set,
+                ITIP403Registry::PolicyType::BLACKLIST => !is_in_set,
+                ITIP403Registry::PolicyType::__Invalid => false,
+            }
+        };
+
+        Ok(auth)
     }
 
     /// Returns the balance of the given token for the given account.
