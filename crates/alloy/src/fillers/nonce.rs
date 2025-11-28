@@ -7,9 +7,9 @@ use alloy_provider::{
 };
 use alloy_transport::TransportResult;
 
-/// A [`TxFiller`] that populates the `nonce_key` field with a random value for 2D nonce support.
+/// A [`TxFiller`] that populates the [`TxAA`](`tempo_primitives::TxAA`) transaction with a random `nonce_key`, and `nonce` set to `0`.
 ///
-/// The `nonce` field is set to 0 since the `nonce_key` determines the nonce sequence.
+/// This filler can be used to avoid nonce gaps by having a random 2D nonce key that doesn't conflict with any other transactions.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Random2DNonceFiller;
 
