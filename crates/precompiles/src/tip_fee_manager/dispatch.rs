@@ -117,7 +117,12 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
                     } else {
                         user_token
                     };
-                    self.collect_fee_pre_tx(call.user, fee_token, call.maxAmount, call.feeRecipient)
+                    self.collect_fee_pre_tx(
+                        call.user,
+                        fee_token,
+                        call.maxAmount,
+                        self.storage.beneficiary(),
+                    )
                 })
             }
             IFeeManager::collectFeePostTxCall::SELECTOR => {
@@ -132,7 +137,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
                         call.actualUsed,
                         call.maxAmount - call.actualUsed,
                         call.userToken,
-                        call.feeRecipient,
+                        self.storage.beneficiary(),
                     )
                 })
             }

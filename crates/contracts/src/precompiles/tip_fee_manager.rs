@@ -36,17 +36,13 @@ sol! {
         function executeBlock() external;
         function collectFeePreTx(
             address user,
-            address txToAddress,
-            uint256 maxAmount,
-            address feeRecipient
+            uint256 maxAmount
         ) external returns (address userToken);
         function collectFeePostTx(
             address user,
             uint256 maxAmount,
             uint256 actualUsed,
-            address userToken,
-            address validatorToken,
-            address feeRecipient
+            address userToken
         ) external;
 
         // Events
