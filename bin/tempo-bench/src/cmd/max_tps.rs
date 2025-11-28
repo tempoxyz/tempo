@@ -35,7 +35,7 @@ use std::{
     collections::VecDeque,
     fs::File,
     io::BufWriter,
-    num::NonZeroU32,
+    num::{NonZeroU32, NonZeroU64},
     str::FromStr,
     sync::{
         Arc,
@@ -76,8 +76,8 @@ pub struct MaxTpsArgs {
     duration: u64,
 
     /// Number of accounts for pre-generation
-    #[arg(short, long, default_value_t = 100)]
-    accounts: u64,
+    #[arg(short, long, default_value_t = NonZeroU64::new(100).unwrap())]
+    accounts: NonZeroU64,
 
     /// Mnemonic for generating accounts
     #[arg(short, long, default_value = "random")]
@@ -156,25 +156,18 @@ impl MaxTpsArgs {
     pub async fn run(self) -> eyre::Result<()> {
         RethTracer::new().init()?;
 
+        let accounts = self.accounts.get();
+
         // Set file descriptor limit if provided
         if let Some(fd_limit) = self.fd_limit {
             increase_nofile_limit(fd_limit).context("Failed to increase nofile limit")?;
         }
 
-        let target_url = self.target_urls[0].clone();
-        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-            .connect_http(target_url.clone())
-            .erased();
-
-        let tip20_weight = (self.tip20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
-        let place_order_weight = (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64;
-        let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
-
         info!(accounts = self.accounts, "Creating signers");
         let signer_provider_manager = SignerProviderManager::new(
             self.mnemonic.resolve(),
             self.from_mnemonic_index,
-            self.accounts,
+            accounts,
             self.target_urls.clone(),
             Box::new(|signer, target_url| {
                 ProviderBuilder::new_with_network::<TempoNetwork>()
@@ -197,6 +190,9 @@ impl MaxTpsArgs {
                 info!(%target_url, transactions, "Cleared transaction pool");
             }
         }
+
+        // Grab first provider to call some RPC methods
+        let provider = signer_providers[0].1.clone();
 
         // Fund accounts from faucet if requested
         if self.faucet {
@@ -231,16 +227,15 @@ impl MaxTpsArgs {
         .context("Failed to set default fee token")?;
 
         // Generate all transactions
-        let total_txs = self.tps * self.duration;
         let transactions = generate_transactions(GenerateTransactionsInput {
-            total_txs,
-            num_accounts: self.accounts,
+            total_txs: self.tps * self.duration,
+            accounts,
             signer_provider_manager,
             max_concurrent_requests: self.max_concurrent_requests,
             max_concurrent_transactions: self.max_concurrent_transactions,
-            tip20_weight,
-            place_order_weight,
-            swap_weight,
+            tip20_weight: (self.tip20_weight * Self::WEIGHT_PRECISION).trunc() as u64,
+            place_order_weight: (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64,
+            swap_weight: (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64,
         })
         .await
         .context("Failed to generate transactions")?;
@@ -424,7 +419,7 @@ async fn generate_transactions(
 > {
     let GenerateTransactionsInput {
         total_txs,
-        num_accounts,
+        accounts: num_accounts,
         mut signer_provider_manager,
         max_concurrent_requests,
         max_concurrent_transactions,
@@ -606,7 +601,7 @@ struct BenchmarkedBlock {
 struct BenchmarkMetadata {
     target_tps: u64,
     run_duration_secs: u64,
-    num_accounts: u64,
+    accounts: u64,
     chain_id: u64,
     max_concurrent_requests: usize,
     start_block: BlockNumber,
@@ -679,7 +674,7 @@ pub async fn generate_report(
     let metadata = BenchmarkMetadata {
         target_tps: args.tps,
         run_duration_secs: args.duration,
-        num_accounts: args.accounts,
+        accounts: args.accounts.get(),
         chain_id: provider.get_chain_id().await?,
         max_concurrent_requests: args.max_concurrent_requests,
         start_block,
@@ -780,7 +775,7 @@ async fn assert_receipts<R: ReceiptResponse, F: Future<Output = eyre::Result<R>>
 
 struct GenerateTransactionsInput {
     total_txs: u64,
-    num_accounts: u64,
+    accounts: u64,
     signer_provider_manager: SignerProviderManager,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
