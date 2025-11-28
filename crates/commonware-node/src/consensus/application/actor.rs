@@ -191,7 +191,7 @@ where
             Message::Verify(verify) => {
                 self.context.with_label("verify").spawn({
                     let inner = self.inner.clone();
-                    move |context| inner.handle_verify(verify, context)
+                    move |context| inner.handle_verify(*verify, context)
                 });
             }
         }

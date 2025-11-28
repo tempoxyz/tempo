@@ -575,7 +575,7 @@ where
         );
 
         ensure!(
-            self.dealers().position(&block_outcome.dealer()).is_some(),
+            self.dealers().position(block_outcome.dealer()).is_some(),
             "dealer `{}` recorded in dealing outcome is not among the dealers of this ceremony",
             block_outcome.dealer(),
         );

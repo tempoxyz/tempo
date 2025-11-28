@@ -32,7 +32,7 @@ pub(super) enum Message {
     Finalized(Box<Finalized>),
     Genesis(Genesis),
     Propose(Propose),
-    Verify(Verify),
+    Verify(Box<Verify>),
 }
 
 pub(super) struct Genesis {
@@ -78,7 +78,7 @@ pub(super) struct Verify {
 
 impl From<Verify> for Message {
     fn from(value: Verify) -> Self {
-        Self::Verify(value)
+        Self::Verify(Box::new(value))
     }
 }
 
