@@ -1361,7 +1361,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         } else {
             orderbook.best_ask_tick
         };
-        if current_tick == i16::MIN {
+        // Check for no liquidity: i16::MIN means no bids, i16::MAX means no asks
+        if current_tick == i16::MIN || current_tick == i16::MAX {
             return Err(StablecoinExchangeError::insufficient_liquidity().into());
         }
 
@@ -1556,7 +1557,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             orderbook.best_ask_tick
         };
 
-        if current_tick == i16::MIN {
+        // Check for no liquidity: i16::MIN means no bids, i16::MAX means no asks
+        if current_tick == i16::MIN || current_tick == i16::MAX {
             return Err(StablecoinExchangeError::insufficient_liquidity().into());
         }
 
