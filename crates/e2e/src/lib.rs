@@ -397,6 +397,7 @@ pub async fn setup_validators(
             views_until_leader_skip: 5,
             new_payload_wait_time: Duration::from_millis(200),
             time_to_build_subblock: Duration::from_millis(100),
+            subblock_broadcast_interval: Duration::from_millis(50),
         };
 
         nodes.push(PreparedNode {
@@ -435,6 +436,7 @@ pub async fn setup_validators(
             views_until_leader_skip: 5,
             new_payload_wait_time: Duration::from_millis(100),
             time_to_build_subblock: Duration::from_millis(100),
+            subblock_broadcast_interval: Duration::from_millis(50),
         };
 
         nodes.push(PreparedNode {

@@ -114,4 +114,12 @@ pub struct Args {
         default_value_t = false
     )]
     pub allow_unregistered_handshakes: bool,
+
+    /// The interval at which to broadcast subblocks to the next proposer.
+    /// Each built subblock is immediately broadcasted to the next proposer (if it's known).
+    /// We broadcast subblock every `subblock-broadcast-interval` to ensure the next
+    /// proposer is aware of the subblock even if they were slightly behind the chain
+    /// once we sent it in the first time.
+    #[arg(long = "consensus.subblock-broadcast-interval", default_value = "50ms")]
+    pub subblock_broadcast_interval: jiff::SignedDuration,
 }
