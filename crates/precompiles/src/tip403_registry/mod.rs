@@ -335,20 +335,24 @@ pub fn is_authorized_with<E>(
         return Ok(policy_id == 1);
     }
 
+    // NOTE(rusowsky): the macro-generated code is not as efficient as it could, and loads each field individually.
+    // So, to keep the gas usage constant, we need to replicate that pattern manually.
+    // TODO(rusowsky): this behavior should eventually be addressed with a hardfork.
     let policy_data_word = load_storage(mapping_slot(policy_id.to_be_bytes(), slots::POLICY_DATA))?;
-    let is_in_set = load_storage(double_mapping_slot(
-        policy_id.to_be_bytes(),
-        user,
-        slots::POLICY_SET,
-    ))?
-    .to::<bool>();
-
+    let _second_sload = load_storage(mapping_slot(policy_id.to_be_bytes(), slots::POLICY_DATA))?;
     let Ok(data) = PolicyData::from_evm_words([policy_data_word]) else {
         return Ok(false);
     };
     let Ok(policy_type) = data.policy_type.try_into() else {
         return Ok(false);
     };
+
+    let is_in_set = load_storage(double_mapping_slot(
+        policy_id.to_be_bytes(),
+        user,
+        slots::POLICY_SET,
+    ))?
+    .to::<bool>();
 
     let auth = match policy_type {
         ITIP403Registry::PolicyType::WHITELIST => is_in_set,
