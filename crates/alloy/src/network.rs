@@ -298,6 +298,9 @@ impl TempoTransactionRequest {
     fn complete_fee_token(&self) -> Result<(), Vec<&'static str>> {
         let mut fields = Vec::new();
 
+        if self.fee_token.is_none() {
+            fields.push("fee_token");
+        }
         if self.inner.gas.is_none() {
             fields.push("gas");
         }
