@@ -646,16 +646,13 @@ where
         block: &Block,
         hardfork_regime: HardforkRegime,
     ) -> eyre::Result<()> {
-        // Check if extra_data is empty before trying to read
+        // Track empty vs failed metrics separately (logging happens in try_read_ceremony_deal_outcome)
         if block.header().extra_data().is_empty() {
-            info!("block contained no dealing (extra_data empty)");
             self.metrics.dealings_empty.inc();
             return Ok(());
         }
 
         let Some(block_outcome) = block.try_read_ceremony_deal_outcome() else {
-            // extra_data was not empty but decode failed
-            info!("block contained dealing data but failed to decode");
             self.metrics.dealings_failed.inc();
             return Ok(());
         };
