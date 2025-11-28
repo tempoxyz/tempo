@@ -146,8 +146,6 @@ where
         let post_allegretto_ceremonies = Counter::default();
         let failed_allegretto_transitions = Counter::default();
 
-        let ceremony_metrics = ceremony::Metrics::new(&context);
-
         context.register(
             "ceremony_failures",
             "the number of failed ceremonies a node participated in",
@@ -221,7 +219,6 @@ where
             pre_allegretto_ceremonies,
             post_allegretto_ceremonies,
             failed_allegretto_transitions,
-            ceremony_metrics,
         };
 
         Ok(Self {
@@ -671,7 +668,6 @@ struct Metrics {
     post_allegretto_ceremonies: Counter,
     failed_allegretto_transitions: Counter,
     syncing_players: Gauge,
-    ceremony_metrics: ceremony::Metrics,
 }
 
 /// Attempts to read the validator config from the smart contract until it becomes available.

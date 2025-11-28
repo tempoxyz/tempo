@@ -80,7 +80,7 @@ pub(super) struct Metrics {
 }
 
 impl Metrics {
-    pub(super) fn new<C: commonware_runtime::Metrics>(context: &C) -> Self {
+    fn new<C: commonware_runtime::Metrics>(context: &C) -> Self {
         let shares_distributed = Gauge::default();
         let acks_received = Gauge::default();
         let acks_sent = Gauge::default();
@@ -89,32 +89,32 @@ impl Metrics {
         let dealings_failed = Gauge::default();
 
         context.register(
-            "shares_distributed",
+            "ceremony_shares_distributed",
             "the number of shares distributed by this node as a dealer in the current ceremony",
             shares_distributed.clone(),
         );
         context.register(
-            "acks_received",
+            "ceremony_acks_received",
             "the number of acknowledgments received by this node as a dealer in the current ceremony",
             acks_received.clone(),
         );
         context.register(
-            "acks_sent",
+            "ceremony_acks_sent",
             "the number of acknowledgments sent by this node as a player in the current ceremony",
             acks_sent.clone(),
         );
         context.register(
-            "dealings_read",
+            "ceremony_dealings_read",
             "the number of dealings read from the blockchain in the current ceremony",
             dealings_read.clone(),
         );
         context.register(
-            "dealings_empty",
+            "ceremony_dealings_empty",
             "the number of blocks with empty extra_data (no dealing) in the current ceremony",
             dealings_empty.clone(),
         );
         context.register(
-            "dealings_failed",
+            "ceremony_dealings_failed",
             "the number of blocks where dealing decode failed in the current ceremony",
             dealings_failed.clone(),
         );
@@ -127,15 +127,6 @@ impl Metrics {
             dealings_empty,
             dealings_failed,
         }
-    }
-
-    pub(super) fn reset(&self) {
-        self.shares_distributed.set(0);
-        self.acks_received.set(0);
-        self.acks_sent.set(0);
-        self.dealings_read.set(0);
-        self.dealings_empty.set(0);
-        self.dealings_failed.set(0);
     }
 }
 
@@ -189,10 +180,9 @@ where
         mux: &mut MuxHandle<TSender, TReceiver>,
         ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, State>>>,
         config: Config,
-        metrics: Metrics,
     ) -> eyre::Result<Self> {
-        // Reset per-ceremony metrics at the start of each new ceremony
-        metrics.reset();
+        // Create fresh metrics for this ceremony
+        let metrics = Metrics::new(context);
 
         let (sender, receiver) = mux
             .register(config.epoch)

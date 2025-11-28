@@ -134,29 +134,29 @@ fn assert_static_transitions(how_many: u32, epoch_length: u64, transitions: u64)
         }
 
         // Verify new DKG ceremony metrics have expected counts.
-        // These are gauges (reset per-ceremony), so they don't have the _total suffix.
-        if metric.ends_with("_dkg_manager_shares_distributed") {
+        // These are gauges (re-created per-ceremony), so they don't have the _total suffix.
+        if metric.ends_with("_dkg_manager_ceremony_shares_distributed") {
             let value = value.parse::<u64>().unwrap();
             shares_distributed_seen |= value == expected_count;
         }
-        if metric.ends_with("_dkg_manager_acks_received") {
+        if metric.ends_with("_dkg_manager_ceremony_acks_received") {
             let value = value.parse::<u64>().unwrap();
             acks_received_seen |= value == expected_count;
         }
-        if metric.ends_with("_dkg_manager_acks_sent") {
+        if metric.ends_with("_dkg_manager_ceremony_acks_sent") {
             let value = value.parse::<u64>().unwrap();
             acks_sent_seen |= value == expected_count;
         }
-        if metric.ends_with("_dkg_manager_dealings_read") {
+        if metric.ends_with("_dkg_manager_ceremony_dealings_read") {
             let value = value.parse::<u64>().unwrap();
             dealings_read_seen |= value == expected_count;
         }
         // In a successful ceremony, we expect no empty or failed dealings
-        if metric.ends_with("_dkg_manager_dealings_empty") {
+        if metric.ends_with("_dkg_manager_ceremony_dealings_empty") {
             let value = value.parse::<u64>().unwrap();
             dealings_empty_zero |= value == 0;
         }
-        if metric.ends_with("_dkg_manager_dealings_failed") {
+        if metric.ends_with("_dkg_manager_ceremony_dealings_failed") {
             let value = value.parse::<u64>().unwrap();
             dealings_failed_zero |= value == 0;
         }
