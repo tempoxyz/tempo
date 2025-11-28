@@ -232,11 +232,7 @@ impl MaxTpsArgs {
         .context("Failed to generate transactions")?;
 
         // Send transactions
-        let start_block_number = provider
-            .get_block(BlockId::latest())
-            .await?
-            .ok_or_eyre("Failed to get latest block number")?
-            .number();
+        let start_block_number = provider.get_block_number().await?;
         let mut pending_txs = send_transactions(
             transactions,
             self.max_concurrent_requests,
@@ -244,11 +240,7 @@ impl MaxTpsArgs {
             sleep(Duration::from_secs(self.duration)),
         )
         .await;
-        let end_block_number = provider
-            .get_block(BlockId::latest())
-            .await?
-            .ok_or_eyre("Failed to get latest block number")?
-            .number();
+        let end_block_number = provider.get_block_number().await?;
 
         // Collect a sample of receipts and print the stats
         let sample_size = pending_txs.len().min(self.sample_size);
@@ -256,38 +248,35 @@ impl MaxTpsArgs {
         let timeout = Arc::new(AtomicUsize::new(0));
         let failed = Arc::new(AtomicUsize::new(0));
         info!(sample_size, "Collecting a sample of receipts");
-        stream::iter(
-            (0..sample_size)
-                .map(|_| {
-                    let idx = random_range(0..pending_txs.len());
-                    pending_txs.remove(idx)
-                })
-                .progress(),
-        )
-        .map(|pending_tx| {
-            let hash = *pending_tx.tx_hash();
-            pending_tx
-                .with_timeout(Some(Duration::from_secs(5)))
-                .get_receipt()
-                .map(move |result| (hash, result))
-        })
-        .for_each_concurrent(self.max_concurrent_requests, async |result| {
-            let (hash, result) = result.await;
-            match result {
-                Ok(_) => {
-                    successful.fetch_add(1, Ordering::Relaxed);
+        stream::iter(0..sample_size)
+            .map(|_| {
+                let idx = random_range(0..pending_txs.len());
+                pending_txs.remove(idx)
+            })
+            .map(|pending_tx| {
+                let hash = *pending_tx.tx_hash();
+                pending_tx
+                    .with_timeout(Some(Duration::from_secs(5)))
+                    .get_receipt()
+                    .map(move |result| (hash, result))
+            })
+            .for_each_concurrent(self.max_concurrent_requests, async |result| {
+                let (hash, result) = result.await;
+                match result {
+                    Ok(_) => {
+                        successful.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(PendingTransactionError::TxWatcher(WatchTxError::Timeout)) => {
+                        timeout.fetch_add(1, Ordering::Relaxed);
+                        error!(?hash, "Transaction receipt retrieval timed out");
+                    }
+                    Err(err) => {
+                        failed.fetch_add(1, Ordering::Relaxed);
+                        error!(?hash, "Transaction receipt retrieval failed: {}", err);
+                    }
                 }
-                Err(PendingTransactionError::TxWatcher(WatchTxError::Timeout)) => {
-                    timeout.fetch_add(1, Ordering::Relaxed);
-                    error!(?hash, "Transaction receipt retrieval timed out");
-                }
-                Err(err) => {
-                    failed.fetch_add(1, Ordering::Relaxed);
-                    error!(?hash, "Transaction receipt retrieval failed: {}", err);
-                }
-            }
-        })
-        .await;
+            })
+            .await;
         info!(
             successful = successful.load(Ordering::Relaxed),
             timeout = timeout.load(Ordering::Relaxed),
@@ -358,7 +347,9 @@ async fn send_transactions(
     // Create a rate limiter
     let rate_limiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(tps as u32).unwrap()));
 
-    stream::iter(transactions)
+    let failed = Arc::new(AtomicUsize::new(0));
+    let timeout = Arc::new(AtomicUsize::new(0));
+    let transactions = stream::iter(transactions)
         .ratelimit_stream(&rate_limiter)
         .map(|transaction| tokio::time::timeout(Duration::from_secs(1), transaction))
         .buffer_unordered(max_concurrent_requests)
@@ -369,10 +360,12 @@ async fn send_transactions(
                     Some(pending_tx)
                 }
                 Ok(Err(err)) => {
+                    failed.fetch_add(1, Ordering::Relaxed);
                     error!(?err, "Failed to send transaction");
                     None
                 }
                 Err(_) => {
+                    timeout.fetch_add(1, Ordering::Relaxed);
                     error!("Transaction sending timed out");
                     None
                 }
@@ -380,7 +373,16 @@ async fn send_transactions(
         })
         .take_until(deadline)
         .collect()
-        .await
+        .await;
+
+    info!(
+        success = tx_counter.load(Ordering::Relaxed),
+        failed = failed.load(Ordering::Relaxed),
+        timeout = timeout.load(Ordering::Relaxed),
+        "Finished sending transactions"
+    );
+
+    transactions
 }
 
 async fn generate_transactions(
