@@ -36,6 +36,9 @@ get_shell_config() {
         bash)
             echo "$HOME/.bashrc"
             ;;
+        fish)
+            echo "$HOME/.config/fish/config.fish"
+            ;;
         *)
             echo "$HOME/.profile"
             ;;
@@ -66,6 +69,7 @@ main() {
     # Add to PATH if not already present
     if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
         SHELL_CONFIG=$(get_shell_config)
+        SHELL_NAME=$(basename "$SHELL")
 
         info "Adding $BIN_DIR to PATH in $SHELL_CONFIG"
 
@@ -73,7 +77,12 @@ main() {
 
         echo "" >> "$SHELL_CONFIG"
         echo "# Added by tempoup installer" >> "$SHELL_CONFIG"
-        echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$SHELL_CONFIG"
+
+        if [[ "$SHELL_NAME" == "fish" ]]; then
+            echo "fish_add_path -a \"$BIN_DIR\"" >> "$SHELL_CONFIG"
+        else
+            echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$SHELL_CONFIG"
+        fi
 
         echo ""
         warn "Please restart your shell or run:"
