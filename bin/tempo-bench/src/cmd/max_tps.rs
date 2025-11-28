@@ -16,11 +16,11 @@ use alloy::{
         WatchTxError,
     },
     rpc::client::NoParams,
+    signers::local::{
+        MnemonicBuilder, PrivateKeySigner,
+        coins_bip39::{English, Mnemonic, MnemonicError},
+    },
     transports::http::reqwest::Url,
-};
-use alloy_signer_local::{
-    MnemonicBuilder, PrivateKeySigner,
-    coins_bip39::{English, Mnemonic, MnemonicError},
 };
 use clap::Parser;
 use eyre::{Context, OptionExt, ensure};
@@ -28,7 +28,7 @@ use futures::{FutureExt, StreamExt, TryStreamExt, future::BoxFuture, stream};
 use governor::{Quota, RateLimiter, state::StreamRateLimitExt};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator};
 use rand::{
-    random, random_range,
+    random_range,
     seq::{IndexedRandom, SliceRandom},
 };
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -55,7 +55,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS,
-    stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK},
+    stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, TICK_SPACING},
     tip20::{ISSUER_ROLE, token_id_to_address},
 };
 use tokio::{
@@ -489,9 +489,10 @@ async fn generate_transactions(
                         let exchange =
                             IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider);
 
-                        // Place an order at exactly the dust limit
+                        // Place an order at a random tick that's a multiple of `TICK_SPACING`
                         let tick =
-                            (random::<u16>() % (MAX_TICK - MIN_TICK) as u16) as i16 + MIN_TICK;
+                            rand::random_range(MIN_TICK / TICK_SPACING..=MAX_TICK / TICK_SPACING)
+                                * TICK_SPACING;
                         let tx = exchange.place(token, MIN_ORDER_AMOUNT, true, tick);
 
                         tx.send().await
