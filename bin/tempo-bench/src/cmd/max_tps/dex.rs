@@ -1,6 +1,9 @@
+use std::future::ready;
+
 use super::*;
 use alloy::providers::DynProvider;
 use indicatif::ProgressIterator;
+use tempo_alloy::rpc::TempoCallBuilderExt;
 use tempo_contracts::precompiles::{IStablecoinExchange, PATH_USD_ADDRESS};
 use tempo_precompiles::tip20::U128_MAX;
 
@@ -15,23 +18,33 @@ pub(super) async fn setup(
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
 ) -> eyre::Result<(Address, Vec<Address>)> {
-    info!(
-        signers = signer_providers.len(),
-        user_tokens, "Setting up DEX"
-    );
-
     // Grab first signer provider
-    let (signer, provider) = signer_providers.first().unwrap();
+    let (signer, provider) = signer_providers
+        .first()
+        .ok_or_eyre("No signer providers found")?;
     let caller = signer.address();
 
     info!("Creating tokens");
     let progress = ProgressBar::new(user_tokens as u64 + 1);
     // Create quote token
-    let quote_token = setup_test_token(provider.clone(), caller, PATH_USD_ADDRESS).await?;
+    let quote_token = setup_test_token(
+        provider.clone(),
+        caller,
+        PATH_USD_ADDRESS,
+        max_concurrent_requests,
+    )
+    .await?;
     progress.inc(1);
     // Create `user_tokens` tokens
     let user_tokens = stream::iter((0..user_tokens).progress_with(progress))
-        .map(|_| setup_test_token(provider.clone(), caller, *quote_token.address()))
+        .map(|_| {
+            setup_test_token(
+                provider.clone(),
+                caller,
+                *quote_token.address(),
+                max_concurrent_requests,
+            )
+        })
         .buffered(max_concurrent_requests)
         .try_collect::<Vec<_>>()
         .await?;
@@ -51,7 +64,7 @@ pub(super) async fn setup(
         .collect::<Vec<_>>();
 
     // Create exchange pairs for each user token
-    info!("Creating exchange pairs");
+    // info!("Creating exchange pairs");
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
     join_all(
         user_token_addresses
@@ -60,7 +73,11 @@ pub(super) async fn setup(
             .map(|token| {
                 let exchange = exchange.clone();
                 Box::pin(async move {
-                    let tx = exchange.createPair(token);
+                    let tx = exchange
+                        .createPair(token)
+                        .nonce_key(U256::random())
+                        .nonce(0);
+
                     tx.send().await
                 }) as BoxFuture<'static, _>
             })
@@ -82,7 +99,10 @@ pub(super) async fn setup(
                 #[expect(clippy::redundant_iter_cloned)] // False positive
                 all_tokens.iter().cloned().map(move |token| {
                     Box::pin(async move {
-                        let tx = token.mint(signer, mint_amount);
+                        let tx = token
+                            .mint(signer, mint_amount)
+                            .nonce_key(U256::random())
+                            .nonce(0);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 })
@@ -103,7 +123,10 @@ pub(super) async fn setup(
                 all_token_addresses.iter().copied().map(move |token| {
                     let token = ITIP20Instance::new(token, provider.clone());
                     Box::pin(async move {
-                        let tx = token.approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX);
+                        let tx = token
+                            .approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
+                            .nonce_key(U256::random())
+                            .nonce(0);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 })
@@ -130,8 +153,10 @@ pub(super) async fn setup(
                         provider.clone(),
                     );
                     Box::pin(async move {
-                        let tx =
-                            exchange.placeFlip(token, order_amount, true, tick_under, tick_over);
+                        let tx = exchange
+                            .placeFlip(token, order_amount, true, tick_under, tick_over)
+                            .nonce_key(U256::random())
+                            .nonce(0);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 })
@@ -151,6 +176,7 @@ async fn setup_test_token(
     provider: DynProvider<TempoNetwork>,
     admin: Address,
     quote_token: Address,
+    max_concurrent_requests: usize,
 ) -> eyre::Result<ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>>
 where
 {
@@ -163,22 +189,36 @@ where
             quote_token,
             admin,
         )
+        .nonce_key(U256::random())
+        .nonce(0)
         .send()
         .await?
         .get_receipt()
         .await?;
-    let event = receipt.logs()[0].log_decode::<ITIP20Factory::TokenCreated>()?;
+    let event = receipt
+        .decoded_log::<ITIP20Factory::TokenCreated>()
+        .ok_or_eyre("Token creation event not found")?;
 
-    let token_addr = token_id_to_address(event.data().tokenId.to());
+    let token_addr = token_id_to_address(event.tokenId.to());
     let token = ITIP20::new(token_addr, provider.clone());
     let roles = IRolesAuth::new(*token.address(), provider);
-
-    roles
+    let grant_role_receipt = roles
         .grantRole(*ISSUER_ROLE, admin)
+        .nonce_key(U256::random())
+        .nonce(0)
         .send()
         .await?
         .get_receipt()
         .await?;
+
+    assert_receipts(
+        [receipt, grant_role_receipt]
+            .into_iter()
+            .map(eyre::Ok)
+            .map(ready),
+        max_concurrent_requests,
+    )
+    .await?;
 
     Ok(token)
 }

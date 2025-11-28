@@ -138,10 +138,13 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     fn complete_type(&self, ty: TempoTxType) -> Result<(), Vec<&'static str>> {
         match ty {
             TempoTxType::FeeToken => self.complete_fee_token(),
-            ty => self.inner.complete_type(
-                ty.try_into()
-                    .expect("should not be reachable with fee token tx"),
-            ),
+            TempoTxType::AA => self.complete_aa(),
+            TempoTxType::Legacy
+            | TempoTxType::Eip2930
+            | TempoTxType::Eip1559
+            | TempoTxType::Eip7702 => self
+                .inner
+                .complete_type(ty.try_into().expect("tempo tx types checked")),
         }
     }
 
@@ -184,7 +187,9 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn prep_for_submission(&mut self) {
-        self.inner.prep_for_submission()
+        self.inner.transaction_type = Some(self.output_tx_type() as u8);
+        self.inner.trim_conflicting_keys();
+        self.inner.populate_blob_hashes();
     }
 
     fn build_unsigned(self) -> BuildResult<TempoTypedTransaction, TempoNetwork> {

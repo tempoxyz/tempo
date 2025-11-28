@@ -19,10 +19,11 @@ alloy = { workspace = true, features = [
     "genesis",
     "getrandom",
     "network",
+    "rand",
     "reqwest",
     "signer-local",
-    "signers",
     "signer-mnemonic",
+    "signers",
     "sol-types",
 ] }
 alloy-consensus = { workspace = true, features = ["secp256k1"] }

@@ -9,7 +9,7 @@ use tempo_alloy::TempoNetwork;
 
 use alloy::{
     consensus::BlockHeader,
-    network::ReceiptResponse,
+    network::{ReceiptResponse, TransactionBuilder},
     primitives::{Address, B256, BlockNumber, U256},
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
@@ -20,7 +20,7 @@ use alloy::{
         MnemonicBuilder, PrivateKeySigner,
         coins_bip39::{English, Mnemonic, MnemonicError},
     },
-    transports::http::reqwest::Url,
+    transports::{TransportResult, http::reqwest::Url},
 };
 use clap::Parser;
 use eyre::{Context, OptionExt, ensure};
@@ -184,9 +184,12 @@ impl MaxTpsArgs {
             .progress()
             .map(|i| {
                 let signer = MnemonicBuilder::<English>::from_phrase_nth(&mnemonic, i);
-                let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+                let provider = ProviderBuilder::default()
                     .wallet(signer.clone())
-                    .with_cached_nonce_management()
+                    .fetch_chain_id()
+                    .with_gas_estimation()
+                    // TODO: use random 2D nonce filler
+                    // .with_cached_nonce_management()
                     .connect_http(target_url.clone())
                     .erased();
                 Ok((signer, provider))
@@ -228,6 +231,7 @@ impl MaxTpsArgs {
                 .map(async |(_, provider)| {
                     IFeeManagerInstance::new(TIP_FEE_MANAGER_ADDRESS, provider.clone())
                         .setUserToken(self.fee_token)
+                        .nonce(0)
                         .send()
                         .await
                 })
@@ -238,17 +242,28 @@ impl MaxTpsArgs {
         .await
         .context("Failed to set default fee token")?;
 
+        // Setup DEX
+        let user_tokens = 2;
+        info!(user_tokens, "Setting up DEX");
+        let (quote_token, user_tokens) = dex::setup(
+            &signer_providers,
+            user_tokens,
+            self.max_concurrent_requests,
+            self.max_concurrent_transactions,
+        )
+        .await?;
+
         // Generate all transactions
         let total_txs = self.tps * self.duration;
         let transactions = generate_transactions(GenerateTransactionsInput {
             total_txs,
             num_accounts: self.accounts,
             signer_providers,
-            max_concurrent_requests: self.max_concurrent_requests,
-            max_concurrent_transactions: self.max_concurrent_transactions,
             tip20_weight,
             place_order_weight,
             swap_weight,
+            quote_token,
+            user_tokens,
         })
         .await
         .context("Failed to generate transactions")?;
@@ -360,9 +375,7 @@ impl MnemonicArg {
 
 /// Awaits pending transactions with up to `tps` per second and `max_concurrent_requests` simultaneous in-flight requests. Stops when `deadline` future resolves.
 async fn send_transactions(
-    transactions: Vec<
-        BoxFuture<'static, alloy::contract::Result<PendingTransactionBuilder<TempoNetwork>>>,
-    >,
+    transactions: Vec<BoxFuture<'static, TransportResult<PendingTransactionBuilder<TempoNetwork>>>>,
     max_concurrent_requests: usize,
     tps: u64,
     deadline: Sleep,
@@ -427,18 +440,17 @@ async fn send_transactions(
 
 async fn generate_transactions(
     input: GenerateTransactionsInput,
-) -> eyre::Result<
-    Vec<BoxFuture<'static, alloy::contract::Result<PendingTransactionBuilder<TempoNetwork>>>>,
-> {
+) -> eyre::Result<Vec<BoxFuture<'static, TransportResult<PendingTransactionBuilder<TempoNetwork>>>>>
+{
     let GenerateTransactionsInput {
         total_txs,
         num_accounts,
         signer_providers,
-        max_concurrent_requests,
-        max_concurrent_transactions,
         tip20_weight,
         place_order_weight,
         swap_weight,
+        quote_token,
+        user_tokens,
     } = input;
 
     let txs_per_sender = total_txs / num_accounts;
@@ -446,14 +458,6 @@ async fn generate_transactions(
         txs_per_sender > 0,
         "txs per sender is 0, increase tps or decrease senders"
     );
-
-    let (quote, user_tokens) = dex::setup(
-        &signer_providers,
-        2,
-        max_concurrent_requests,
-        max_concurrent_transactions,
-    )
-    .await?;
 
     info!(transactions = total_txs, "Generating transactions");
 
@@ -481,51 +485,53 @@ async fn generate_transactions(
                 .choose_weighted(&mut rand::rng(), |(_, weight)| *weight)?
                 .0;
 
-            let tx: BoxFuture<'static, _> = match tx_index {
+            let mut request = match tx_index {
                 0 => {
                     transfers.fetch_add(1, Ordering::Relaxed);
-                    let provider = provider.clone();
-                    Box::pin(async move {
-                        let token = ITIP20Instance::new(token, provider);
+                    let token = ITIP20Instance::new(token, provider.clone());
 
-                        // Transfer minimum possible amount
-                        let tx = token.transfer(Address::random(), U256::ONE);
-                        tx.send().await
-                    })
+                    // Transfer minimum possible amount
+                    token
+                        .transfer(Address::random(), U256::ONE)
+                        .into_transaction_request()
                 }
                 1 => {
                     swaps.fetch_add(1, Ordering::Relaxed);
-                    let provider = provider.clone();
-                    Box::pin(async move {
-                        let exchange =
-                            IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider);
+                    let exchange = IStablecoinExchangeInstance::new(
+                        STABLECOIN_EXCHANGE_ADDRESS,
+                        provider.clone(),
+                    );
 
-                        // Swap minimum possible amount
-                        let tx = exchange.quoteSwapExactAmountIn(token, quote, 1);
-
-                        tx.send().await
-                    })
+                    // Swap minimum possible amount
+                    exchange
+                        .quoteSwapExactAmountIn(token, quote_token, 1)
+                        .into_transaction_request()
                 }
                 2 => {
                     orders.fetch_add(1, Ordering::Relaxed);
-                    let provider = provider.clone();
-                    Box::pin(async move {
-                        let exchange =
-                            IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider);
+                    let exchange = IStablecoinExchangeInstance::new(
+                        STABLECOIN_EXCHANGE_ADDRESS,
+                        provider.clone(),
+                    );
 
-                        // Place an order at a random tick that's a multiple of `TICK_SPACING`
-                        let tick =
-                            rand::random_range(MIN_TICK / TICK_SPACING..=MAX_TICK / TICK_SPACING)
-                                * TICK_SPACING;
-                        let tx = exchange.place(token, MIN_ORDER_AMOUNT, true, tick);
-
-                        tx.send().await
-                    })
+                    // Place an order at a random tick that's a multiple of `TICK_SPACING`
+                    let tick =
+                        rand::random_range(MIN_TICK / TICK_SPACING..=MAX_TICK / TICK_SPACING)
+                            * TICK_SPACING;
+                    exchange
+                        .place(token, MIN_ORDER_AMOUNT, true, tick)
+                        .into_transaction_request()
                 }
                 _ => unreachable!("Only {TX_TYPES} transaction types are supported"),
-            };
+            }
+            // Random nonce key to avoid nonce gaps in case some transactions do not land
+            .with_nonce_key(U256::random());
 
-            Ok(tx)
+            request.inner.set_nonce(0);
+
+            Ok(Box::pin(
+                async move { provider.send_transaction(request).await },
+            ))
         })
         .progress_count(total_txs)
         .collect::<eyre::Result<Vec<_>>>()?;
@@ -791,9 +797,9 @@ struct GenerateTransactionsInput {
     total_txs: u64,
     num_accounts: u64,
     signer_providers: Vec<(PrivateKeySigner, DynProvider<TempoNetwork>)>,
-    max_concurrent_requests: usize,
-    max_concurrent_transactions: usize,
     tip20_weight: u64,
     place_order_weight: u64,
     swap_weight: u64,
+    quote_token: Address,
+    user_tokens: Vec<Address>,
 }
