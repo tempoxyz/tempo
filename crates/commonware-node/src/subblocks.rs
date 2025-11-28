@@ -422,14 +422,12 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             return;
         }
 
-        self.our_subblock = PendingSubblock::Built(
-            BuiltSubblock {
-                subblock,
-                proposer: next_proposer,
-                // ticks immediately
-                broadcast_interval: Box::pin(futures::future::ready(())),
-            },
-        );
+        self.our_subblock = PendingSubblock::Built(BuiltSubblock {
+            subblock,
+            proposer: next_proposer,
+            // ticks immediately
+            broadcast_interval: Box::pin(futures::future::ready(())),
+        });
     }
 
     #[instrument(skip_all)]
