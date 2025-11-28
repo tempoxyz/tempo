@@ -889,7 +889,7 @@ async fn verify_header_extra_data(
             .wrap_err("DKG manager did not return information on the current ceremony state")?;
         ensure!(
             ceremony_info.epoch == round.epoch(),
-            "cermony info is for epoch `{}, but current round is `{}`; this is \
+            "ceremony info is for epoch `{}, but current round is `{}`; this is \
             strange and should not happen, but it prevents rendering a \
             decision on the intermediate DKG outcome block",
             ceremony_info.epoch,

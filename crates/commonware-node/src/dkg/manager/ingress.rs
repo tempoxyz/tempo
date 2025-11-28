@@ -99,7 +99,7 @@ impl From<GetOutcome> for Command {
 
 /// Contains information about the currently running ceremony.
 pub(crate) struct CeremonyInfo {
-    /// The epoch of the currently running ceremony. If no cermony is running
+    /// The epoch of the currently running ceremony. If no ceremony is running
     /// (that's only the case after the pre-to-last block but before the
     /// last block have been finalized), then this contains the epoch of the
     /// last ceremony (derived from the epoch state).
