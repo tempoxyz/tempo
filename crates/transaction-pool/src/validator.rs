@@ -1,5 +1,6 @@
 use crate::{
     aa_2d_pool::AA2dNonceKeys,
+    amm::AmmLiquidityCache,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use alloy_consensus::Transaction;
@@ -37,6 +38,8 @@ pub struct TempoTransactionValidator<Client> {
     pub(crate) aa_nonce_keys: AA2dNonceKeys,
     /// Maximum allowed `valid_after` offset for AA txs.
     pub(crate) aa_valid_after_max_secs: u64,
+    /// Cache of AMM liquidity for validator tokens.
+    pub(crate) amm_liquidity_cache: AmmLiquidityCache,
 }
 
 impl<Client> TempoTransactionValidator<Client>
@@ -47,11 +50,13 @@ where
         inner: EthTransactionValidator<Client, TempoPooledTransaction>,
         aa_nonce_keys: AA2dNonceKeys,
         aa_valid_after_max_secs: u64,
+        amm_liquidity_cache: AmmLiquidityCache,
     ) -> Self {
         Self {
             inner,
             aa_nonce_keys,
             aa_valid_after_max_secs,
+            amm_liquidity_cache,
         }
     }
 
@@ -318,6 +323,24 @@ where
             );
         }
 
+        match self
+            .amm_liquidity_cache
+            .has_enough_liquidity(fee_token, cost, &state_provider)
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(
+                        TempoPoolTransactionError::InsufficientLiquidity(fee_token),
+                    ),
+                );
+            }
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        }
+
         match self.inner.validate_one(origin, transaction) {
             TransactionValidationOutcome::Valid {
                 balance,
@@ -580,7 +603,8 @@ mod tests {
         let inner = EthTransactionValidatorBuilder::new(provider)
             .disable_balance_check()
             .build(InMemoryBlobStore::default());
-        let validator = TempoTransactionValidator::new(inner, Default::default(), 3600);
+        let validator =
+            TempoTransactionValidator::new(inner, Default::default(), 3600, Default::default());
 
         // Set the tip timestamp by simulating a new head block
         let mock_block = create_mock_block(tip_timestamp);

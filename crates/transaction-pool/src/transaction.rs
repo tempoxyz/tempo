@@ -133,6 +133,9 @@ pub enum TempoPoolTransactionError {
     /// Thrown if a AA transaction with a nonce key prefixed with the sub-block prefix marker added to the pool
     #[error("AA transaction with subblock nonce key prefix aren't supported in the pool")]
     SubblockNonceKey,
+
+    #[error("Insufficient liquidity for fee token: {0}")]
+    InsufficientLiquidity(Address),
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -142,8 +145,10 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::InvalidFeeToken(_)
             | Self::MissingFeeToken
             | Self::InvalidValidBefore { .. }
-            | Self::InvalidValidAfter { .. } => false,
-            Self::NonZeroValue | Self::Keychain(_) | Self::SubblockNonceKey => true,
+            | Self::InvalidValidAfter { .. }
+            | Self::Keychain(_)
+            | Self::InsufficientLiquidity(_) => false,
+            Self::NonZeroValue | Self::SubblockNonceKey => true,
         }
     }
 

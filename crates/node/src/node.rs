@@ -41,7 +41,7 @@ use tempo_payload_builder::TempoPayloadBuilder;
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
-    AA2dNonceKeys, AA2dPool, AA2dPoolConfig, TempoTransactionPool,
+    AA2dNonceKeys, AA2dPool, AA2dPoolConfig, TempoTransactionPool, amm::AmmLiquidityCache,
     validator::TempoTransactionValidator,
 };
 
@@ -442,9 +442,15 @@ where
         };
         let nonce_keys = AA2dNonceKeys::default();
         let aa_2d_pool = AA2dPool::new(aa_2d_config, nonce_keys.clone());
+        let amm_liquidity_cache = AmmLiquidityCache::new();
 
         let validator = validator.map(|v| {
-            TempoTransactionValidator::new(v, nonce_keys.clone(), self.aa_valid_after_max_secs)
+            TempoTransactionValidator::new(
+                v,
+                nonce_keys.clone(),
+                self.aa_valid_after_max_secs,
+                amm_liquidity_cache.clone(),
+            )
         });
         let protocol_pool = TxPoolBuilder::new(ctx)
             .with_validator(validator)
