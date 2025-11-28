@@ -413,11 +413,10 @@ impl Orderbook {
         spec: TempoHardfork,
     ) -> (i16, bool) {
         // Guard against overflow when tick is at or above MAX_TICK
-        if spec.is_allegretto() {
-            if tick >= MAX_TICK {
+        if spec.is_allegretto()
+            && tick >= MAX_TICK {
                 return (MAX_TICK, false);
             }
-        }
         let mut next_tick = tick + 1;
         while next_tick <= MAX_TICK {
             if Self::is_tick_initialized(storage, book_key, next_tick, false).unwrap_or(false) {
@@ -436,11 +435,10 @@ impl Orderbook {
         spec: TempoHardfork,
     ) -> (i16, bool) {
         // Guard against underflow when tick is at or below MIN_TICK
-        if spec.is_allegretto() {
-            if tick <= MIN_TICK {
+        if spec.is_allegretto()
+            && tick <= MIN_TICK {
                 return (MIN_TICK, false);
             }
-        }
         let mut next_tick = tick - 1;
         while next_tick >= MIN_TICK {
             if Self::is_tick_initialized(storage, book_key, next_tick, true).unwrap_or(false) {
