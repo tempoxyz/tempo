@@ -296,7 +296,7 @@ where
         }
 
         // Ensure that the fee payer is not blacklisted
-        match state_provider.is_valid_fee_payer(fee_token, fee_payer) {
+        match state_provider.can_fee_payer_transfer(fee_token, fee_payer) {
             Ok(valid) => {
                 if !valid {
                     return TransactionValidationOutcome::Invalid(

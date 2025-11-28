@@ -201,8 +201,8 @@ pub trait TempoStateAccess<T> {
         Ok(self.sload(fee_token, tip20::slots::CURRENCY)? == USD_CURRENCY_SLOT_VALUE)
     }
 
-    /// Checks if the fee payer is not blacklisted for the given token.
-    fn is_valid_fee_payer(
+    /// Checks if the fee payer can transfer a given token (is not blacklisted).
+    fn can_fee_payer_transfer(
         &mut self,
         fee_token: Address,
         fee_payer: Address,
@@ -221,12 +221,8 @@ pub trait TempoStateAccess<T> {
             // Should be infallible, but if unable to extract packed value, assume blacklisted.
             return Ok(false);
         };
-        self.is_action_authorized(transfer_policy_id, fee_payer)
-    }
 
-    /// Checks if an action is authorized by the TIP403 registry
-    fn is_action_authorized(&mut self, policy_id: u64, user: Address) -> Result<bool, Self::Error> {
-        tip403_registry::is_authorized_with(policy_id, user, |slot| {
+        tip403_registry::is_authorized_with(transfer_policy_id, fee_payer, |slot| {
             self.sload(TIP403_REGISTRY_ADDRESS, slot)
         })
     }

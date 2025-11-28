@@ -109,12 +109,6 @@ pub enum TempoPoolTransactionError {
     )]
     InvalidFeeToken(Address),
 
-    #[error("Fee payer {fee_payer} is blacklisted for fee token: {fee_token}")]
-    BlackListedFeePayer {
-        fee_token: Address,
-        fee_payer: Address,
-    },
-
     #[error("No fee token preference configured")]
     MissingFeeToken,
 
@@ -139,6 +133,13 @@ pub enum TempoPoolTransactionError {
     /// Thrown if a AA transaction with a nonce key prefixed with the sub-block prefix marker added to the pool
     #[error("AA transaction with subblock nonce key prefix aren't supported in the pool")]
     SubblockNonceKey,
+
+    /// Thrown if the fee payer of a transaction is blacklisted by the transaction's fee token
+    #[error("Fee payer {fee_payer} is blacklisted by fee token: {fee_token}")]
+    BlackListedFeePayer {
+        fee_token: Address,
+        fee_payer: Address,
+    },
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
