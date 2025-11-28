@@ -13,7 +13,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
-    storage::{packing, slots::mapping_slot},
+    storage::{self, slots::mapping_slot},
     tip_fee_manager,
     tip20::{self, is_tip20},
     tip403_registry,
@@ -213,7 +213,7 @@ pub trait TempoStateAccess<T> {
         }
 
         // Ensure the fee payer is not blacklisted
-        let Ok(transfer_policy_id) = packing::extract_packed_value(
+        let Ok(transfer_policy_id) = storage::packing::extract_packed_value(
             self.sload(fee_token, tip20::slots::TRANSFER_POLICY_ID)?,
             tip20::slots::TRANSFER_POLICY_ID_OFFSET,
             tip20::slots::TRANSFER_POLICY_ID_BYTES,
