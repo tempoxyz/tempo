@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use alloy::{
-    providers::{DynProvider, Provider, ProviderBuilder},
+    providers::{DynProvider, Provider, ProviderBuilder, fillers::CachedNonceManager},
     signers::local::{MnemonicBuilder, PrivateKeySigner},
     transports::http::reqwest::Url,
 };
@@ -9,8 +9,9 @@ use indicatif::ProgressIterator;
 use rand::seq::IndexedRandom;
 use tempo_alloy::TempoNetwork;
 
-type SignerProviderFactory =
-    Box<dyn Fn(PrivateKeySigner, Url) -> DynProvider<TempoNetwork> + Send + Sync>;
+type SignerProviderFactory = Box<
+    dyn Fn(PrivateKeySigner, Url, CachedNonceManager) -> DynProvider<TempoNetwork> + Send + Sync,
+>;
 
 /// Manages signers and target URLs for creating providers.
 pub(crate) struct SignerProviderManager {
@@ -18,6 +19,8 @@ pub(crate) struct SignerProviderManager {
     signers: Vec<PrivateKeySigner>,
     /// List of target URLs.
     target_urls: Vec<Url>,
+    /// Cached nonce manager shared among all providers.
+    cached_nonce_manager: CachedNonceManager,
     /// Factory function for creating providers.
     provider_factory: SignerProviderFactory,
     /// List of providers (one per signer) with random target URLs.
@@ -40,6 +43,7 @@ impl SignerProviderManager {
         target_urls: Vec<Url>,
         provider_factory: SignerProviderFactory,
     ) -> Self {
+        let cached_nonce_manager = CachedNonceManager::default();
         let signers = (from_mnemonic_index..)
             .take(accounts as usize)
             .progress_count(accounts)
@@ -47,15 +51,18 @@ impl SignerProviderManager {
             .collect::<Vec<_>>();
         let signer_providers = signers
             .iter()
+            .progress()
             .cloned()
             .map(|signer| {
                 let target_url = target_urls.choose(&mut rand::rng()).unwrap().clone();
-                let provider = (provider_factory)(signer.clone(), target_url);
+                let provider =
+                    (provider_factory)(signer.clone(), target_url, cached_nonce_manager.clone());
                 (signer, provider)
             })
             .collect();
         let cached_signer_providers = HashMap::with_capacity(signers.len() * target_urls.len());
         Self {
+            cached_nonce_manager,
             signers,
             target_urls,
             provider_factory,
@@ -93,7 +100,7 @@ impl SignerProviderManager {
             .or_insert_with(|| {
                 let signer = self.signers[signer_idx].clone();
                 let target_url = self.target_urls[target_url_idx].clone();
-                (self.provider_factory)(signer, target_url)
+                (self.provider_factory)(signer, target_url, self.cached_nonce_manager.clone())
             })
             .clone()
     }

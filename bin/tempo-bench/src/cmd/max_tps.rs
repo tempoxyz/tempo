@@ -13,7 +13,7 @@ use alloy::{
     primitives::{Address, B256, BlockNumber, U256},
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
-        WatchTxError,
+        WatchTxError, fillers::NonceFiller,
     },
     rpc::client::NoParams,
     signers::local::{
@@ -169,10 +169,10 @@ impl MaxTpsArgs {
             self.from_mnemonic_index,
             accounts,
             self.target_urls.clone(),
-            Box::new(|signer, target_url| {
+            Box::new(|signer, target_url, cached_nonce_manager| {
                 ProviderBuilder::new_with_network::<TempoNetwork>()
                     .wallet(signer)
-                    .with_cached_nonce_management()
+                    .filler(NonceFiller::new(cached_nonce_manager))
                     .connect_http(target_url)
                     .erased()
             }),
