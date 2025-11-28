@@ -329,20 +329,13 @@ pub fn is_authorized_with<E>(
     mut load_storage: impl FnMut(U256) -> core::result::Result<U256, E>,
 ) -> core::result::Result<bool, E> {
     // Special case for always-allow and always-reject policies
-    // policyId == 0 is the "always-reject" policy
-    // policyId == 1 is the "always-allow" policy
     if policy_id < 2 {
+        // policyId == 0 is the "always-reject" policy
+        // policyId == 1 is the "always-allow" policy
         return Ok(policy_id == 1);
     }
 
-    // Load policy data
     let policy_data_word = load_storage(mapping_slot(policy_id.to_be_bytes(), slots::POLICY_DATA))?;
-
-    let Ok(data) = PolicyData::from_evm_words([policy_data_word]) else {
-        return Ok(false);
-    };
-
-    // Load policy set membership
     let is_in_set = load_storage(double_mapping_slot(
         policy_id.to_be_bytes(),
         user,
@@ -350,16 +343,20 @@ pub fn is_authorized_with<E>(
     ))?
     .to::<bool>();
 
-    // Apply policy type logic
+    let Ok(data) = PolicyData::from_evm_words([policy_data_word]) else {
+        return Ok(false);
+    };
     let Ok(policy_type) = data.policy_type.try_into() else {
         return Ok(false);
     };
 
-    Ok(match policy_type {
+    let auth = match policy_type {
         ITIP403Registry::PolicyType::WHITELIST => is_in_set,
         ITIP403Registry::PolicyType::BLACKLIST => !is_in_set,
         ITIP403Registry::PolicyType::__Invalid => false,
-    })
+    };
+
+    Ok(auth)
 }
 
 #[cfg(test)]
