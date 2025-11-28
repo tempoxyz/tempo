@@ -191,13 +191,16 @@ impl MaxTpsArgs {
             .collect::<eyre::Result<Vec<_>>>()?;
 
         if self.clear_txpool {
-            let transactions: u64 = provider
-                .raw_request("admin_clearTxpool".into(), NoParams::default())
-                .await
-                .context(
-                    "Failed to clear transaction pool. Is `admin_clearTxpool` RPC method available?",
-                )?;
-            info!(transactions, "Cleared transaction pool");
+            for target_url in &self.target_urls {
+                let transactions: u64 = ProviderBuilder::new()
+                    .connect_http(target_url.clone())
+                    .raw_request("admin_clearTxpool".into(), NoParams::default())
+                    .await
+                    .context(
+                        "Failed to clear transaction pool for {target_url}. Is `admin_clearTxpool` RPC method available?",
+                    )?;
+                info!(?target_url, transactions, "Cleared transaction pool");
+            }
         }
 
         // Fund accounts from faucet if requested
