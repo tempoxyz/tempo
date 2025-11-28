@@ -117,25 +117,25 @@ impl TempoTransactionRequest {
         let Some(nonce) = self.inner.nonce else {
             return Err(ValueError::new(
                 self,
-                "Missing 'nonce' field for FeeToken transaction.",
+                "Missing 'nonce' field for AA transaction.",
             ));
         };
         let Some(gas_limit) = self.inner.gas else {
             return Err(ValueError::new(
                 self,
-                "Missing 'gas_limit' field for FeeToken transaction.",
+                "Missing 'gas_limit' field for AA transaction.",
             ));
         };
         let Some(max_fee_per_gas) = self.inner.max_fee_per_gas else {
             return Err(ValueError::new(
                 self,
-                "Missing 'max_fee_per_gas' field for FeeToken transaction.",
+                "Missing 'max_fee_per_gas' field for AA transaction.",
             ));
         };
         let Some(max_priority_fee_per_gas) = self.inner.max_priority_fee_per_gas else {
             return Err(ValueError::new(
                 self,
-                "Missing 'max_priority_fee_per_gas' field for FeeToken transaction.",
+                "Missing 'max_priority_fee_per_gas' field for AA transaction.",
             ));
         };
 

@@ -154,7 +154,9 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn output_tx_type(&self) -> TempoTxType {
-        if self.fee_token.is_some() {
+        if !self.calls.is_empty() || self.nonce_key.is_some() {
+            TempoTxType::AA
+        } else if self.fee_token.is_some() {
             TempoTxType::FeeToken
         } else if self.inner.authorization_list.is_some() {
             TempoTxType::Eip7702
@@ -168,15 +170,16 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn output_tx_type_checked(&self) -> Option<TempoTxType> {
-        if self.fee_token.is_some() {
-            return if self.can_build_fee_token() {
-                Some(TempoTxType::FeeToken)
-            } else {
-                None
-            };
+        match self.output_tx_type() {
+            TempoTxType::AA => Some(TempoTxType::AA).filter(|_| self.can_build_aa()),
+            TempoTxType::FeeToken => {
+                Some(TempoTxType::FeeToken).filter(|_| self.can_build_fee_token())
+            }
+            TempoTxType::Legacy
+            | TempoTxType::Eip2930
+            | TempoTxType::Eip1559
+            | TempoTxType::Eip7702 => self.inner.output_tx_type_checked()?.try_into().ok(),
         }
-
-        self.inner.output_tx_type_checked()?.try_into().ok()
     }
 
     fn prep_for_submission(&mut self) {
@@ -185,6 +188,14 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
 
     fn build_unsigned(self) -> BuildResult<TempoTypedTransaction, TempoNetwork> {
         match self.output_tx_type() {
+            TempoTxType::AA => match self.complete_aa() {
+                Ok(..) => Ok(self.build_aa().expect("checked by above condition").into()),
+                Err(missing) => Err(TransactionBuilderError::InvalidTransactionRequest(
+                    TempoTxType::AA,
+                    missing,
+                )
+                .into_unbuilt(self)),
+            },
             TempoTxType::FeeToken => match self.complete_fee_token() {
                 Ok(..) => Ok(self
                     .build_fee_token()
@@ -235,8 +246,18 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
 }
 
 impl TempoTransactionRequest {
+    fn can_build_aa(&self) -> bool {
+        (!self.calls.is_empty() || self.inner.to.is_some())
+            && self.inner.nonce.is_some()
+            && self.inner.gas.is_some()
+            && self.inner.max_fee_per_gas.is_some()
+            && self.inner.max_priority_fee_per_gas.is_some()
+    }
+
     fn can_build_fee_token(&self) -> bool {
         self.fee_token.is_some()
+            && self.inner.nonce.is_some()
+            && self.inner.gas.is_some()
             && self.inner.max_fee_per_gas.is_some()
             && self.inner.max_priority_fee_per_gas.is_some()
             && (self
@@ -248,11 +269,37 @@ impl TempoTransactionRequest {
                 || matches!(self.inner.to, Some(TxKind::Call(..))))
     }
 
+    fn complete_aa(&self) -> Result<(), Vec<&'static str>> {
+        let mut fields = Vec::new();
+
+        if self.calls.is_empty() && self.inner.to.is_none() {
+            fields.push("calls or to");
+        }
+        if self.inner.nonce.is_none() {
+            fields.push("nonce");
+        }
+        if self.inner.gas.is_none() {
+            fields.push("gas");
+        }
+        if self.inner.max_fee_per_gas.is_none() {
+            fields.push("max_fee_per_gas");
+        }
+        if self.inner.max_priority_fee_per_gas.is_none() {
+            fields.push("max_priority_fee_per_gas");
+        }
+
+        if fields.is_empty() {
+            Ok(())
+        } else {
+            Err(fields)
+        }
+    }
+
     fn complete_fee_token(&self) -> Result<(), Vec<&'static str>> {
         let mut fields = Vec::new();
 
-        if self.fee_token.is_none() {
-            fields.push("fee_token");
+        if self.inner.gas.is_none() {
+            fields.push("gas");
         }
         if self.inner.max_fee_per_gas.is_none() {
             fields.push("max_fee_per_gas");
