@@ -62,31 +62,37 @@ version_gt() {
     return 1  # Versions are equal
 }
 
-# Download file with progress
+# Download release asset using gh CLI
 download_file() {
-    local url="$1"
-    local output="$2"
+    local tag="$1"
+    local pattern="$2"
+    local output_dir="$3"
 
-    if command -v curl >/dev/null 2>&1; then
-        curl -# -L -f "$url" -o "$output"
-    elif command -v wget >/dev/null 2>&1; then
-        wget --show-progress -q -O "$output" "$url"
-    else
-        error "Neither curl nor wget found. Please install one of them."
+    if ! gh release download "$tag" \
+        --repo "$REPO" \
+        --pattern "$pattern" \
+        --dir "$output_dir" \
+        --clobber; then
+        error "Failed to download $pattern from release $tag"
     fi
 }
 
 # Check if tempoup installer is up to date
 check_installer_up_to_date() {
-    # Fetch the remote version
-    local remote_version
-    if command -v curl >/dev/null 2>&1; then
-        remote_version=$(curl -sSf "$TEMPOUP_BIN_URL" | grep '^TEMPOUP_INSTALLER_VERSION=' | sed -E 's/TEMPOUP_INSTALLER_VERSION="(.+)"/\1/')
-    elif command -v wget >/dev/null 2>&1; then
-        remote_version=$(wget -qO- "$TEMPOUP_BIN_URL" | grep '^TEMPOUP_INSTALLER_VERSION=' | sed -E 's/TEMPOUP_INSTALLER_VERSION="(.+)"/\1/')
-    else
-        # Can't check without curl or wget
+    # Skip check if gh CLI not available
+    if ! command -v gh >/dev/null 2>&1; then
         return
+    fi
+
+    # Fetch the remote version using gh CLI
+    # Try main branch first
+    local remote_version=$(gh api "repos/$REPO/contents/tempoup/tempoup?ref=main" \
+        --jq '.content' 2>/dev/null | base64 -d 2>/dev/null | grep '^TEMPOUP_INSTALLER_VERSION=' | sed -E 's/TEMPOUP_INSTALLER_VERSION="(.+)"/\1/')
+
+    # TODO: Remove this fallback after jenpaff/tempoup-installer is merged to main
+    if [[ -z "$remote_version" ]]; then
+        remote_version=$(gh api "repos/$REPO/contents/tempoup/tempoup?ref=jenpaff/tempoup-installer" \
+            --jq '.content' 2>/dev/null | base64 -d 2>/dev/null | grep '^TEMPOUP_INSTALLER_VERSION=' | sed -E 's/TEMPOUP_INSTALLER_VERSION="(.+)"/\1/')
     fi
 
     if [[ -z "$remote_version" ]]; then
@@ -107,13 +113,26 @@ check_installer_up_to_date() {
 update_tempoup() {
     info "Updating tempoup..."
 
+    if ! command -v gh >/dev/null 2>&1; then
+        error "gh CLI not found. Install from https://cli.github.com"
+    fi
+
     # Create temporary file
     local tmp_file=$(mktemp)
     trap "rm -f $tmp_file" EXIT
 
-    # Download latest tempoup script
-    info "Downloading latest tempoup from $TEMPOUP_BIN_URL..."
-    if ! download_file "$TEMPOUP_BIN_URL" "$tmp_file"; then
+    # Download latest tempoup script using gh CLI
+    info "Downloading latest tempoup..."
+
+    # Try main branch first
+    if gh api "repos/$REPO/contents/tempoup/tempoup?ref=main" \
+        --jq '.content' 2>/dev/null | base64 -d > "$tmp_file" 2>/dev/null; then
+        :  # Success, do nothing
+    # TODO: Remove this fallback after jenpaff/tempoup-installer is merged to main
+    elif gh api "repos/$REPO/contents/tempoup/tempoup?ref=jenpaff/tempoup-installer" \
+        --jq '.content' 2>/dev/null | base64 -d > "$tmp_file" 2>/dev/null; then
+        :  # Success from feature branch
+    else
         error "Failed to download tempoup update"
     fi
 
@@ -215,17 +234,56 @@ detect_arch() {
     esac
 }
 
-# Get latest release tag from GitHub
-get_latest_version() {
-    local url="https://api.github.com/repos/$REPO/releases/latest"
+# Detect Rust target triple for release assets
+detect_target() {
+    local platform="$1"
+    local arch="$2"
 
-    if command -v curl >/dev/null 2>&1; then
-        curl -sSf "$url" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/'
-    elif command -v wget >/dev/null 2>&1; then
-        wget -qO- "$url" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/'
-    else
-        error "Neither curl nor wget found. Please install one of them."
+    case "$platform" in
+        darwin)
+            case "$arch" in
+                arm64) echo "aarch64-apple-darwin" ;;
+                amd64) echo "x86_64-apple-darwin" ;;
+                *) error "Unsupported Darwin architecture: $arch" ;;
+            esac
+            ;;
+        linux)
+            case "$arch" in
+                arm64) echo "aarch64-unknown-linux-gnu" ;;
+                amd64) echo "x86_64-unknown-linux-gnu" ;;
+                *) error "Unsupported Linux architecture: $arch" ;;
+            esac
+            ;;
+        win32)
+            case "$arch" in
+                arm64) echo "aarch64-pc-windows-msvc" ;;
+                amd64) echo "x86_64-pc-windows-msvc" ;;
+                *) error "Unsupported Windows architecture: $arch" ;;
+            esac
+            ;;
+        *)
+            error "Unsupported platform: $platform"
+            ;;
+    esac
+}
+
+# Get latest release tag from GitHub using gh CLI
+get_latest_version() {
+    if ! command -v gh >/dev/null 2>&1; then
+        error "gh CLI not found. Install from https://cli.github.com"
     fi
+
+    if ! gh auth status >/dev/null 2>&1; then
+        error "gh CLI not authenticated. Run 'gh auth login'"
+    fi
+
+    local version=$(gh release view --repo "$REPO" --json tagName --jq '.tagName' 2>/dev/null)
+
+    if [[ -z "$version" ]]; then
+        error "Failed to fetch latest version from GitHub"
+    fi
+
+    echo "$version"
 }
 
 # Main installation logic
@@ -238,6 +296,7 @@ main() {
     # Detect system
     PLATFORM=$(detect_platform)
     ARCH=$(detect_arch)
+    TARGET=$(detect_target "$PLATFORM" "$ARCH")
     info "Detected platform: $PLATFORM ($ARCH)"
 
     # Determine version to install
@@ -255,29 +314,24 @@ main() {
 
     info "Installing tempo $VERSION_TAG"
 
-    # Construct download URL
-    # Format: tempo_{VERSION}_{PLATFORM}_{ARCH}.tar.gz
+    # Construct archive name
+    # Format: tempo-v{VERSION}-{TARGET}.tar.gz
     ARCHIVE_EXT="tar.gz"
     if [[ "$PLATFORM" == "win32" ]]; then
         ARCHIVE_EXT="zip"
     fi
 
-    ARCHIVE_NAME="tempo_${VERSION_NUMBER}_${PLATFORM}_${ARCH}.${ARCHIVE_EXT}"
-    DOWNLOAD_URL="https://github.com/$REPO/releases/download/$VERSION_TAG/$ARCHIVE_NAME"
-
-    info "Download URL: $DOWNLOAD_URL"
+    ARCHIVE_NAME="tempo-${VERSION_TAG}-${TARGET}.${ARCHIVE_EXT}"
 
     # Create temporary directory
     TMP_DIR=$(mktemp -d)
     trap "rm -rf $TMP_DIR" EXIT
 
-    ARCHIVE_PATH="$TMP_DIR/$ARCHIVE_NAME"
-
     # Download archive
     info "Downloading tempo binary..."
-    if ! download_file "$DOWNLOAD_URL" "$ARCHIVE_PATH"; then
-        error "Failed to download tempo from $DOWNLOAD_URL"
-    fi
+    download_file "$VERSION_TAG" "$ARCHIVE_NAME" "$TMP_DIR"
+
+    ARCHIVE_PATH="$TMP_DIR/$ARCHIVE_NAME"
 
     # Extract archive
     info "Extracting archive..."
@@ -288,15 +342,22 @@ main() {
     fi
 
     # Find tempo binary in extracted files
-    BINARY_NAME="tempo"
+    # Binary is named: tempo-{VERSION}-{TARGET}
+    BINARY_PATTERN="tempo-${VERSION_TAG}-${TARGET}"
     if [[ "$PLATFORM" == "win32" ]]; then
-        BINARY_NAME="tempo.exe"
+        BINARY_PATTERN="${BINARY_PATTERN}.exe"
     fi
 
-    BINARY_PATH=$(find "$TMP_DIR" -name "$BINARY_NAME" -type f | head -n 1)
+    BINARY_PATH=$(find "$TMP_DIR" -name "$BINARY_PATTERN" -type f | head -n 1)
 
     if [[ -z "$BINARY_PATH" ]]; then
         error "Could not find tempo binary in downloaded archive"
+    fi
+
+    # Final binary name (just "tempo" or "tempo.exe")
+    BINARY_NAME="tempo"
+    if [[ "$PLATFORM" == "win32" ]]; then
+        BINARY_NAME="tempo.exe"
     fi
 
     # Create installation directory
