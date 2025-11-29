@@ -2,7 +2,7 @@
 
 use crate::storage::{
     Handler, LayoutCtx, PrecompileStorageContext, Slot, Storable, hashmap::HashMapStorageProvider,
-    packing::extract_field,
+    packing::extract_packed_value,
 };
 use alloy::primitives::{Address, U256, keccak256};
 use proptest::prelude::*;

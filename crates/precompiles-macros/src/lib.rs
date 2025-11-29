@@ -214,14 +214,14 @@ pub fn derive_storage_block(input: TokenStream) -> TokenStream {
 
 // -- STORAGE PRIMITIVES TRAIT IMPLEMENTATIONS -------------------------------------------
 
-/// Generate `StorableType` and `Storable<1>` implementations for all standard integer types.
+/// Generate `StorableType` and `Storable` implementations for all standard integer types.
 ///
 /// Generates implementations for all standard Rust integer types:
 /// u8/i8, u16/i16, u32/i32, u64/i64, u128/i128.
 ///
 /// Each type gets:
 /// - `StorableType` impl with `BYTE_COUNT` constant
-/// - `Storable<1>` impl with `load()`, `store()`, `to_evm_words()`, `from_evm_words()` methods
+/// - `Storable` impl with `load()`, `store()` methods
 /// - `StorageKey` impl for use as mapping keys
 /// - Auto-generated tests that verify round-trip conversions with random values
 #[proc_macro]
@@ -229,14 +229,14 @@ pub fn storable_rust_ints(_input: TokenStream) -> TokenStream {
     storable_primitives::gen_storable_rust_ints().into()
 }
 
-/// Generate `StorableType` and `Storable<1>` implementations for alloy integer types.
+/// Generate `StorableType` and `Storable` implementations for alloy integer types.
 ///
 /// Generates implementations for all alloy integer types (both signed and unsigned):
 /// U8/I8, U16/I16, U32/I32, U64/I64, U128/I128, U256/I256.
 ///
 /// Each type gets:
 /// - `StorableType` impl with `BYTE_COUNT` constant
-/// - `Storable<1>` impl with `load()`, `store()`, `to_evm_words()`, `from_evm_words()` methods
+/// - `Storable` impl with `load()`, `store()` methods
 /// - `StorageKey` impl for use as mapping keys
 /// - Auto-generated tests that verify round-trip conversions using alloy's `.random()` method
 #[proc_macro]
@@ -244,14 +244,14 @@ pub fn storable_alloy_ints(_input: TokenStream) -> TokenStream {
     storable_primitives::gen_storable_alloy_ints().into()
 }
 
-/// Generate `StorableType` and `Storable<1>` implementations for alloy `FixedBytes<N>` types.
+/// Generate `StorableType` and `Storable` implementations for alloy `FixedBytes<N>` types.
 ///
 /// Generates implementations for all fixed-size byte arrays from `N = 1..32`
 /// All sizes fit within a single storage slot.
 ///
 /// Each type gets:
 /// - `StorableType` impl with `BYTE_COUNT` constant
-/// - `Storable<1>` impl with `load()`, `store()`, `to_evm_words()`, `from_evm_words()` methods
+/// - `Storable` impl with `load()`, `store()` methods
 /// - `StorageKey` impl for use as mapping keys
 /// - Auto-generated tests that verify round-trip conversions using alloy's `.random()` method
 ///
@@ -285,7 +285,7 @@ pub fn gen_storable_tests(_input: TokenStream) -> TokenStream {
 ///
 /// Each array gets:
 /// - `StorableType` impl with `LAYOUT = Layout::Slot`
-/// - `Storable<SLOTS>` impl where `SLOTS` is computed from element packing
+/// - `Storable`
 #[proc_macro]
 pub fn storable_arrays(_input: TokenStream) -> TokenStream {
     storable_primitives::gen_storable_arrays().into()

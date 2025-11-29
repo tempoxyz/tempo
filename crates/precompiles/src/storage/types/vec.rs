@@ -15,9 +15,9 @@ use alloy::primitives::{Address, U256};
 use std::{marker::PhantomData, rc::Rc};
 
 use crate::{
-    error::{Result, TempoPrecompileError},
+    error::Result,
     storage::{
-        Encodable, Handler, Layout, LayoutCtx, Storable, StorableType, StorageOps,
+        Handler, Layout, LayoutCtx, Storable, StorableType, StorageOps,
         packing::{calc_element_loc, calc_packed_slot_count},
         types::Slot,
     },
@@ -33,24 +33,6 @@ where
 
     fn handle(slot: U256, _ctx: LayoutCtx, address: Rc<Address>) -> Self::Handler {
         VecHandler::new(slot, address)
-    }
-}
-
-impl<T> Encodable<1> for Vec<T>
-where
-    T: Storable,
-{
-    const VALIDATE_LAYOUT: () = assert!(Self::SLOTS == 1, "SLOTS must equal WORDS");
-
-    fn to_evm_words(&self) -> Result<[U256; 1]> {
-        // Vec base slot representation: just the length
-        Ok([U256::from(self.len())])
-    }
-
-    fn from_evm_words(_words: [U256; 1]) -> Result<Self> {
-        Err(TempoPrecompileError::Fatal(
-            "Cannot reconstruct `Vec` from base slot data alone.".into(),
-        ))
     }
 }
 
@@ -1622,10 +1604,6 @@ mod tests {
                 }
             }
 
-            // EVM words roundtrip (should error)
-            let words = data.to_evm_words()?;
-            let result = Vec::<u8>::from_evm_words(words);
-            prop_assert!(result.is_err(), "Vec should not be reconstructable from base slot alone");
         }
 
         #[test]
@@ -1658,10 +1636,6 @@ mod tests {
                 }
             }
 
-            // EVM words roundtrip (should error)
-            let words = data.to_evm_words()?;
-            let result = Vec::<u16>::from_evm_words(words);
-            prop_assert!(result.is_err(), "Vec should not be reconstructable from base slot alone");
         }
 
         #[test]
@@ -1785,10 +1759,6 @@ mod tests {
                 }
             }
 
-            // EVM words roundtrip (should error)
-            let words = data.to_evm_words()?;
-            let result = Vec::<U256>::from_evm_words(words);
-            prop_assert!(result.is_err(), "Vec should not be reconstructable from base slot alone");
         }
 
         #[test]
@@ -1820,10 +1790,6 @@ mod tests {
                 }
             }
 
-            // EVM words roundtrip (should error)
-            let words = data.to_evm_words()?;
-            let result = Vec::<Address>::from_evm_words(words);
-            prop_assert!(result.is_err(), "Vec should not be reconstructable from base slot alone");
         }
 
         #[test]
@@ -1884,10 +1850,6 @@ mod tests {
                 }
             }
 
-            // EVM words roundtrip (should error)
-            let words = data.to_evm_words()?;
-            let result = Vec::<TestStruct>::from_evm_words(words);
-            prop_assert!(result.is_err(), "Vec should not be reconstructable from base slot alone");
         }
     }
 }

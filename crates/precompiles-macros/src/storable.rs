@@ -86,8 +86,6 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     // Generate load/store implementations for scalar fields only
     let load_impl = gen_storage_op_impl(&direct_fields, &mod_ident, true);
     let store_impl = gen_storage_op_impl(&direct_fields, &mod_ident, false);
-    let to_evm_words_impl = gen_to_evm_words_impl(&direct_fields, &mod_ident);
-    let from_evm_words_impl = gen_from_evm_words_impl(&direct_fields, &mod_ident);
 
     // Generate handler struct for field access
     let handler_struct = gen_handler_struct(strukt, &layout_fields, &mod_ident);
@@ -105,31 +103,6 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
 
             fn handle(slot: ::alloy::primitives::U256, _ctx: crate::storage::LayoutCtx, address: ::std::rc::Rc<::alloy::primitives::Address>) -> Self::Handler {
                 #handler_name::new(slot, address)
-            }
-        }
-
-        // `Encodable` implementation: pure EVM word encoding/decoding, no I/O
-        impl #impl_generics crate::storage::Encodable<{ #mod_ident::SLOT_COUNT }> for #strukt #ty_generics #where_clause {
-            const VALIDATE_LAYOUT: () = assert!(
-                <#strukt #ty_generics as crate::storage::StorableType>::SLOTS == #mod_ident::SLOT_COUNT,
-                "StorableType::SLOTS must equal Encodable WORDS parameter"
-            );
-
-            fn to_evm_words(&self) -> crate::error::Result<[::alloy::primitives::U256; { #mod_ident::SLOT_COUNT }]> {
-                use crate::storage::Encodable;
-
-                #to_evm_words_impl
-            }
-
-            fn from_evm_words(words: [::alloy::primitives::U256; { #mod_ident::SLOT_COUNT }]) -> crate::error::Result<Self> {
-                use crate::storage::Encodable;
-
-                #from_evm_words_impl
-
-                Ok(Self {
-                    #(#direct_names),*,
-                    #(#mapping_names: Default::default()),*
-                })
             }
         }
 
@@ -166,6 +139,18 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
             }
 
             // delete uses default implementation from trait
+        }
+
+        // `StorageKey` implementation: byte encoding for mapping keys
+        impl #impl_generics crate::storage::StorageKey for #strukt #ty_generics #where_clause {
+            fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
+                use crate::storage::StorageKey;
+                let mut bytes = Vec::with_capacity(#mod_ident::SLOT_COUNT * 32);
+                #(
+                    bytes.extend_from_slice(self.#direct_names.as_storage_bytes().as_ref());
+                )*
+                bytes
+            }
         }
     };
 
@@ -325,69 +310,5 @@ fn gen_storage_op_impl(fields: &[(&Ident, &Type)], packing: &Ident, iload: bool)
 
     quote! {
         #(#field_ops)*
-    }
-}
-
-/// Generate the `fn to_evm_words()` implementation that packs fields into an array of words.
-fn gen_to_evm_words_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
-    let pack_fields = fields.iter().map(|(name, ty)| {
-        let loc_const = PackingConstants::new(name).location();
-
-        quote! {{
-            const SLOT_COUNT: usize = <#ty as crate::storage::StorableType>::SLOTS;
-            if <#ty as crate::storage::StorableType>::IS_PACKABLE {
-                // MaybePackable primitive: use packing module (handles both packed and unpacked)
-                result[#packing::#loc_const.offset_slots] = crate::storage::packing::insert_packed_value::<SLOT_COUNT, #ty>(
-                    result[#packing::#loc_const.offset_slots],
-                    &self.#name,
-                    #packing::#loc_const.offset_bytes,
-                    #packing::#loc_const.size
-                )?;
-            } else {
-                let nested_words = self.#name.to_evm_words()?;
-                for (i, word) in nested_words.iter().enumerate() {
-                    result[#packing::#loc_const.offset_slots + i] = *word;
-                }
-            }
-        }}
-    });
-
-    quote! {
-        let mut result = [::alloy::primitives::U256::ZERO; #packing::SLOT_COUNT];
-        #(#pack_fields)*
-        Ok(result)
-    }
-}
-
-/// Generate the `fn from_evm_words()` implementation that unpacks fields from an array of words.
-fn gen_from_evm_words_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
-    let decode_fields = fields.iter().map(|(name, ty)| {
-        let loc_const = PackingConstants::new(name).location();
-
-        quote! {
-            let #name = {
-                const SLOT_COUNT: usize = <#ty as crate::storage::StorableType>::SLOTS;
-                if <#ty as crate::storage::StorableType>::IS_PACKABLE {
-                    // MaybePackable primitive: use packing module (handles both packed and unpacked)
-                    let word = words[#packing::#loc_const.offset_slots];
-                    crate::storage::packing::extract_packed_value::<SLOT_COUNT, #ty>(
-                        word,
-                        #packing::#loc_const.offset_bytes,
-                        #packing::#loc_const.size
-                    )?
-                } else {
-                    // Non-packable (structs, multi-slot types): use from_evm_words()
-                    let start = #packing::#loc_const.offset_slots;
-                    let nested_words = ::std::array::from_fn::<_, SLOT_COUNT, _>(|i| {
-                        words[start + i]
-                    });
-                    <#ty>::from_evm_words(nested_words)?
-                }
-            };
-        }
-    });
-
-    quote! {
-        #(#decode_fields)*
     }
 }

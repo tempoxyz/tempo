@@ -29,17 +29,22 @@ impl StorableType for bool {
     }
 }
 
-impl Encodable<1> for bool {
-    const VALIDATE_LAYOUT: () = assert!(Self::SLOTS == 1, "SLOTS must equal WORDS");
-
+impl Packable for bool {
     #[inline]
-    fn to_evm_words(&self) -> Result<[U256; 1]> {
-        Ok([if *self { U256::ONE } else { U256::ZERO }])
+    fn to_word(&self) -> U256 {
+        if *self { U256::ONE } else { U256::ZERO }
     }
 
     #[inline]
-    fn from_evm_words(words: [U256; 1]) -> Result<Self> {
-        Ok(!words[0].is_zero())
+    fn from_word(word: U256) -> Self {
+        !word.is_zero()
+    }
+}
+
+impl StorageKey for bool {
+    #[inline]
+    fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
+        if *self { [1u8] } else { [0u8] }
     }
 }
 
@@ -52,17 +57,15 @@ impl StorableType for Address {
     }
 }
 
-impl Encodable<1> for Address {
-    const VALIDATE_LAYOUT: () = assert!(Self::SLOTS == 1, "SLOTS must equal WORDS");
-
+impl Packable for Address {
     #[inline]
-    fn to_evm_words(&self) -> Result<[U256; 1]> {
-        Ok([self.into_u256()])
+    fn to_word(&self) -> U256 {
+        self.into_u256()
     }
 
     #[inline]
-    fn from_evm_words(words: [U256; 1]) -> Result<Self> {
-        Ok(words[0].into_address())
+    fn from_word(word: U256) -> Self {
+        word.into_address()
     }
 }
 
@@ -186,10 +189,10 @@ mod tests {
             let after_delete = slot.read().unwrap();
             assert_eq!(after_delete, Address::ZERO, "Address not zero after delete");
 
-            // EVM words roundtrip
-            let words = addr.to_evm_words().unwrap();
-            let recovered = Address::from_evm_words(words).unwrap();
-            assert_eq!(addr, recovered, "Address EVM words roundtrip failed");
+            // EVM word roundtrip
+            let word = addr.to_word();
+            let recovered = Address::from_word(word.into());
+            assert_eq!(addr, recovered, "Address EVM word roundtrip failed");
         }
 
         #[test]
@@ -208,10 +211,10 @@ mod tests {
             let after_delete = slot.read().unwrap();
             assert!(!after_delete, "Bool not false after delete");
 
-            // EVM words roundtrip
-            let words = b.to_evm_words().unwrap();
-            let recovered = bool::from_evm_words(words).unwrap();
-            assert_eq!(b, recovered, "Bool EVM words roundtrip failed");
+            // EVM word roundtrip
+            let word = b.to_word();
+            let recovered = bool::from_word(word);
+            assert_eq!(b, recovered, "Bool EVM word roundtrip failed");
         }
     }
 

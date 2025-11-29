@@ -1,6 +1,6 @@
 //! Type-safe wrapper for EVM storage mappings (hash-based key-value storage).
 
-use alloy::primitives::{Address, U256, keccak256};
+use alloy::primitives::{Address, U256};
 use std::{marker::PhantomData, rc::Rc};
 
 use crate::storage::{Layout, LayoutCtx, StorableType, StorageKey};
@@ -74,7 +74,7 @@ impl<K, V> Mapping<K, V> {
         V: StorableType,
     {
         V::handle(
-            mapping_slot(key.as_storage_bytes(), self.base_slot),
+            key.mapping_slot(self.base_slot),
             LayoutCtx::FULL,
             Rc::clone(&self.address),
         )
@@ -96,11 +96,7 @@ impl<K, V> Mapping<K, V> {
         V: StorableType,
     {
         let field_slot = struct_base_slot + U256::from(field_offset_slots);
-        V::handle(
-            mapping_slot(key.as_storage_bytes(), field_slot),
-            LayoutCtx::FULL,
-            address,
-        )
+        V::handle(key.mapping_slot(field_slot), LayoutCtx::FULL, address)
     }
 }
 
@@ -123,39 +119,20 @@ impl<K, V> StorableType for Mapping<K, V> {
     }
 }
 
-// -- HELPER FUNCTIONS ---------------------------------------------------------
-
-fn left_pad_to_32(data: &[u8]) -> [u8; 32] {
-    let mut buf = [0u8; 32];
-    buf[32 - data.len()..].copy_from_slice(data);
-    buf
-}
-
-/// Compute storage slot for a mapping
-#[inline]
-pub fn mapping_slot<T: AsRef<[u8]>>(key: T, mapping_slot: U256) -> U256 {
-    let mut buf = [0u8; 64];
-    buf[..32].copy_from_slice(&left_pad_to_32(key.as_ref()));
-    buf[32..].copy_from_slice(&mapping_slot.to_be_bytes::<32>());
-    U256::from_be_bytes(keccak256(buf).0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{Address, B256};
+    use crate::storage::StorageKey;
+    use alloy::primitives::{Address, B256, keccak256};
     use std::rc::Rc;
 
-    #[test]
-    fn test_left_padding_correctness() {
-        let addr = Address::random();
-        let bytes: &[u8] = addr.as_ref();
-        let padded = left_pad_to_32(bytes);
-
-        // First 12 bytes should be zeros (left padding)
-        assert_eq!(&padded[..12], &[0u8; 12]);
-        // Last 20 bytes should be the address
-        assert_eq!(&padded[12..], bytes);
+    // Backward compatibility helper to verify the trait impl.
+    fn old_mapping_slot<K: AsRef<[u8]>>(key: K, slot: U256) -> U256 {
+        let key = key.as_ref();
+        let mut buf = [0u8; 64];
+        buf[32 - key.len()..32].copy_from_slice(key);
+        buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
+        U256::from_be_bytes(keccak256(&buf).0)
     }
 
     #[test]
@@ -171,9 +148,32 @@ mod tests {
         buf[32..].copy_from_slice(&base_slot.to_be_bytes::<32>());
 
         let expected = U256::from_be_bytes(keccak256(buf).0);
-        let computed = mapping_slot(key, base_slot);
+        let computed = key.mapping_slot(base_slot);
 
         assert_eq!(computed, expected, "mapping_slot encoding mismatch");
+    }
+
+    #[test]
+    fn test_mapping_slot_matches_old_impl() {
+        let slot = U256::random();
+
+        let addr = Address::random();
+        assert_eq!(
+            addr.mapping_slot(slot),
+            old_mapping_slot(addr.as_slice(), slot),
+        );
+
+        let b256 = B256::random();
+        assert_eq!(
+            b256.mapping_slot(slot),
+            old_mapping_slot(b256.as_slice(), slot),
+        );
+
+        let u256 = U256::random();
+        assert_eq!(
+            u256.mapping_slot(slot),
+            old_mapping_slot(&u256.to_be_bytes::<32>(), slot),
+        );
     }
 
     #[test]
@@ -218,7 +218,7 @@ mod tests {
         // Property 3: Derived slot matches manual computation
         let test_key = Address::random();
         let derived_slot = mapping.at(test_key);
-        let expected_slot = mapping_slot(test_key, base_slot);
+        let expected_slot = test_key.mapping_slot(base_slot);
         assert_eq!(
             derived_slot.slot(),
             expected_slot,
@@ -238,7 +238,7 @@ mod tests {
 
         // Property 1: Chaining - first .at() returns intermediate Mapping with correct slot
         let intermediate = nested.at(key1);
-        let expected_intermediate_slot = mapping_slot(key1, base_slot);
+        let expected_intermediate_slot = key1.mapping_slot(base_slot);
         assert_eq!(
             intermediate.slot(),
             expected_intermediate_slot,
@@ -247,7 +247,7 @@ mod tests {
 
         // Property 2: Double-hash - second .at() returns final Slot with correct double-derived slot
         let final_slot = intermediate.at(key2);
-        let expected_final_slot = mapping_slot(key2, expected_intermediate_slot);
+        let expected_final_slot = key2.mapping_slot(expected_intermediate_slot);
         assert_eq!(
             final_slot.slot(),
             expected_final_slot,
@@ -291,14 +291,14 @@ mod tests {
         assert_eq!(zero_mapping.slot(), U256::ZERO);
         let user = Address::random();
         let slot = zero_mapping.at(user);
-        assert_eq!(slot.slot(), mapping_slot(user, U256::ZERO));
+        assert_eq!(slot.slot(), user.mapping_slot(U256::ZERO));
 
         // Test .slot() getter with MAX boundary
         let max_mapping = Mapping::<Address, U256>::new(U256::MAX, Rc::clone(&address));
         assert_eq!(max_mapping.slot(), U256::MAX);
         let user2 = Address::random();
         let slot2 = max_mapping.at(user2);
-        assert_eq!(slot2.slot(), mapping_slot(user2, U256::MAX));
+        assert_eq!(slot2.slot(), user2.mapping_slot(U256::MAX));
 
         // Test .slot() getter with arbitrary values
         let random_slot = U256::random();
@@ -312,7 +312,7 @@ mod tests {
         // where Orderbook has a mapping field `bids` at field offset 1
         let pair_key = B256::random();
         let books_base_slot = U256::random();
-        let orderbook_base_slot = mapping_slot(pair_key, books_base_slot);
+        let orderbook_base_slot = pair_key.mapping_slot(books_base_slot);
 
         // Test that Mapping::at_offset() computes the correct slot
         let tick: i16 = 123;
@@ -329,7 +329,7 @@ mod tests {
         // 1. Field slot = orderbook_base_slot + 1
         // 2. Mapping slot = keccak256(tick || field_slot)
         let field_slot = orderbook_base_slot + U256::from(1);
-        let expected_slot = mapping_slot(tick.to_be_bytes(), field_slot);
+        let expected_slot = tick.mapping_slot(field_slot);
         assert_eq!(slot.slot(), expected_slot);
     }
 
@@ -338,7 +338,7 @@ mod tests {
         // Simulate a struct with nested mapping at field offset 3
         let struct_key = B256::random();
         let mapping_base_slot = U256::random();
-        let struct_base_slot = mapping_slot(struct_key, mapping_base_slot);
+        let struct_base_slot = struct_key.mapping_slot(mapping_base_slot);
 
         let owner = Address::random();
         let spender = Address::random();
@@ -352,8 +352,8 @@ mod tests {
         let final_slot = nested_mapping.at(owner).at(spender);
 
         // Expected: keccak256(spender || keccak256(owner || field_slot))
-        let intermediate_slot = mapping_slot(owner, field_slot);
-        let expected_slot = mapping_slot(spender, intermediate_slot);
+        let intermediate_slot = owner.mapping_slot(field_slot);
+        let expected_slot = spender.mapping_slot(intermediate_slot);
         assert_eq!(final_slot.slot(), expected_slot);
     }
 
@@ -362,7 +362,7 @@ mod tests {
         // Simulate Orderbook with multiple mapping fields at different offsets
         let pair_key = B256::random();
         let books_base_slot = U256::random();
-        let orderbook_base = mapping_slot(pair_key, books_base_slot);
+        let orderbook_base = pair_key.mapping_slot(books_base_slot);
         let address = Rc::new(Address::random());
 
         // bids at offset 1
@@ -381,10 +381,9 @@ mod tests {
             Mapping::<i16, U256>::at_offset(orderbook_base, 3, Rc::clone(&address), bitmap_key);
 
         // Verify all fields compute different slots (they're independent)
-        let bids_expected = mapping_slot(tick1.to_be_bytes(), orderbook_base + U256::from(1));
-        let asks_expected = mapping_slot(tick2.to_be_bytes(), orderbook_base + U256::from(2));
-        let bitmap_expected =
-            mapping_slot(bitmap_key.to_be_bytes(), orderbook_base + U256::from(3));
+        let bids_expected = tick1.mapping_slot(orderbook_base + U256::from(1));
+        let asks_expected = tick2.mapping_slot(orderbook_base + U256::from(2));
+        let bitmap_expected = bitmap_key.mapping_slot(orderbook_base + U256::from(3));
 
         assert_eq!(bids_slot.slot(), bids_expected);
         assert_eq!(asks_slot.slot(), asks_expected);

@@ -16,7 +16,7 @@ use alloy::primitives::U256;
 
 use crate::{
     error::Result,
-    storage::{Encodable, Layout},
+    storage::{Layout, Packable},
 };
 
 /// Location information for a packed field within a storage slot.
@@ -42,15 +42,6 @@ impl FieldLocation {
     }
 }
 
-/// Whether a given amount of bytes can be packed with other types, or not.
-///
-/// NOTE: this doesn't necessarily mean that the type can be packed in array.
-/// For that to happen, the type must be packable AND its bytes <= 16.
-#[inline]
-pub fn is_packable(bytes: usize) -> bool {
-    bytes < 32 && 32 % bytes == 0
-}
-
 /// Create a bit mask for a value of the given byte size.
 ///
 /// For values less than 32 bytes, returns a mask with the appropriate number of bits set.
@@ -66,7 +57,7 @@ pub fn create_element_mask(byte_count: usize) -> U256 {
 
 /// Extract a packed value from a storage slot at a given byte offset.
 #[inline]
-pub fn extract_packed_value<const WORDS: usize, T: Encodable<WORDS>>(
+pub fn extract_packed_value<T: Packable>(
     slot_value: U256,
     offset: usize,
     bytes: usize,
@@ -88,21 +79,15 @@ pub fn extract_packed_value<const WORDS: usize, T: Encodable<WORDS>>(
 
     // Calculate how many bits to shift right to align the value
     let shift_bits = offset * 8;
-
-    // Create mask for the value's bit width
-    let mask = if bytes == 32 {
-        U256::MAX
-    } else {
-        (U256::ONE << (bytes * 8)) - U256::ONE
-    };
+    let mask = create_element_mask(bytes);
 
     // Extract and right-align the value
-    T::from_evm_words(std::array::from_fn(|_| (slot_value >> shift_bits) & mask))
+    Ok(T::from_word((slot_value >> shift_bits) & mask))
 }
 
 /// Insert a packed value into a storage slot at a given byte offset.
 #[inline]
-pub fn insert_packed_value<const WORDS: usize, T: Encodable<WORDS>>(
+pub fn insert_packed_value<T: Packable>(
     current: U256,
     value: &T,
     offset: usize,
@@ -124,15 +109,11 @@ pub fn insert_packed_value<const WORDS: usize, T: Encodable<WORDS>>(
     }
 
     // Encode field to its canonical right-aligned U256 representation
-    let field_value = value.to_evm_words()?[0];
+    let field_value = value.to_word();
 
     // Calculate shift and mask
     let shift_bits = offset * 8;
-    let mask = if bytes == 32 {
-        U256::MAX
-    } else {
-        (U256::ONE << (bytes * 8)) - U256::ONE
-    };
+    let mask = create_element_mask(bytes);
 
     // Clear the bits for this field in the current slot value
     let clear_mask = !(mask << shift_bits);
@@ -190,14 +171,6 @@ pub const fn calc_element_loc(idx: usize, elem_bytes: usize) -> FieldLocation {
 #[inline]
 pub const fn calc_packed_slot_count(n: usize, elem_bytes: usize) -> usize {
     (n * elem_bytes).div_ceil(32)
-}
-
-/// Extract a field value from a storage slot for testing purposes.
-///
-/// This is a convenience wrapper around `extract_packed_value` that's more
-/// ergonomic for use in test assertions.
-pub fn extract_field<T: Encodable<1>>(slot_value: U256, offset: usize, bytes: usize) -> Result<T> {
-    extract_packed_value(slot_value, offset, bytes)
 }
 
 /// Test helper function for constructing EVM words from hex string literals.
@@ -375,17 +348,6 @@ mod tests {
         assert_eq!(cleared, U256::ZERO, "Should zero entire slot");
     }
 
-    #[test]
-    fn test_extract_field_wrapper() {
-        let address = Address::random();
-        let mut slot = U256::ZERO;
-        slot = insert_packed_value(slot, &address, 0, 20).unwrap();
-
-        // Use extract_field wrapper
-        let extracted: Address = extract_field(slot, 0, 20).unwrap();
-        assert_eq!(extracted, address);
-    }
-
     // -- BOUNDARY VALIDATION ------------------------------------------------------
 
     #[test]
@@ -415,7 +377,7 @@ mod tests {
         );
 
         // Test extract as well
-        let result = extract_packed_value::<1, Address>(U256::ZERO, 13, 20);
+        let result = extract_packed_value::<Address>(U256::ZERO, 13, 20);
         assert!(
             result.is_err(),
             "Should reject extracting address from offset 13"
@@ -459,7 +421,7 @@ mod tests {
             slot, expected,
             "Single bool [true] should match Solidity layout"
         );
-        assert!(extract_packed_value::<1, bool>(slot, 0, 1).unwrap());
+        assert!(extract_packed_value::<bool>(slot, 0, 1).unwrap());
 
         // two bools
         let expected = gen_word_from(&[
@@ -471,8 +433,8 @@ mod tests {
         slot = insert_packed_value(slot, &true, 0, 1).unwrap();
         slot = insert_packed_value(slot, &true, 1, 1).unwrap();
         assert_eq!(slot, expected, "[true, true] should match Solidity layout");
-        assert!(extract_packed_value::<1, bool>(slot, 0, 1).unwrap());
-        assert!(extract_packed_value::<1, bool>(slot, 1, 1).unwrap());
+        assert!(extract_packed_value::<bool>(slot, 0, 1).unwrap());
+        assert!(extract_packed_value::<bool>(slot, 1, 1).unwrap());
     }
 
     #[test]
@@ -497,10 +459,10 @@ mod tests {
         slot = insert_packed_value(slot, &v4, 3, 1).unwrap();
 
         assert_eq!(slot, expected, "u8 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<1, u8>(slot, 0, 1).unwrap(), v1);
-        assert_eq!(extract_packed_value::<1, u8>(slot, 1, 1).unwrap(), v2);
-        assert_eq!(extract_packed_value::<1, u8>(slot, 2, 1).unwrap(), v3);
-        assert_eq!(extract_packed_value::<1, u8>(slot, 3, 1).unwrap(), v4);
+        assert_eq!(extract_packed_value::<u8>(slot, 0, 1).unwrap(), v1);
+        assert_eq!(extract_packed_value::<u8>(slot, 1, 1).unwrap(), v2);
+        assert_eq!(extract_packed_value::<u8>(slot, 2, 1).unwrap(), v3);
+        assert_eq!(extract_packed_value::<u8>(slot, 3, 1).unwrap(), v4);
     }
 
     #[test]
@@ -522,9 +484,9 @@ mod tests {
         slot = insert_packed_value(slot, &v3, 4, 2).unwrap();
 
         assert_eq!(slot, expected, "u16 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<1, u16>(slot, 0, 2).unwrap(), v1);
-        assert_eq!(extract_packed_value::<1, u16>(slot, 2, 2).unwrap(), v2);
-        assert_eq!(extract_packed_value::<1, u16>(slot, 4, 2).unwrap(), v3);
+        assert_eq!(extract_packed_value::<u16>(slot, 0, 2).unwrap(), v1);
+        assert_eq!(extract_packed_value::<u16>(slot, 2, 2).unwrap(), v2);
+        assert_eq!(extract_packed_value::<u16>(slot, 4, 2).unwrap(), v3);
     }
 
     #[test]
@@ -543,8 +505,8 @@ mod tests {
         slot = insert_packed_value(slot, &v2, 4, 4).unwrap();
 
         assert_eq!(slot, expected, "u32 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<1, u32>(slot, 0, 4).unwrap(), v1);
-        assert_eq!(extract_packed_value::<1, u32>(slot, 4, 4).unwrap(), v2);
+        assert_eq!(extract_packed_value::<u32>(slot, 0, 4).unwrap(), v1);
+        assert_eq!(extract_packed_value::<u32>(slot, 4, 4).unwrap(), v2);
     }
 
     #[test]
@@ -563,8 +525,8 @@ mod tests {
         slot = insert_packed_value(slot, &v2, 8, 8).unwrap();
 
         assert_eq!(slot, expected, "u64 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<1, u64>(slot, 0, 8).unwrap(), v1);
-        assert_eq!(extract_packed_value::<1, u64>(slot, 8, 8).unwrap(), v2);
+        assert_eq!(extract_packed_value::<u64>(slot, 0, 8).unwrap(), v1);
+        assert_eq!(extract_packed_value::<u64>(slot, 8, 8).unwrap(), v2);
     }
 
     #[test]
@@ -583,8 +545,8 @@ mod tests {
         slot = insert_packed_value(slot, &v2, 16, 16).unwrap();
 
         assert_eq!(slot, expected, "u128 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<1, u128>(slot, 0, 16).unwrap(), v1);
-        assert_eq!(extract_packed_value::<1, u128>(slot, 16, 16).unwrap(), v2);
+        assert_eq!(extract_packed_value::<u128>(slot, 0, 16).unwrap(), v1);
+        assert_eq!(extract_packed_value::<u128>(slot, 16, 16).unwrap(), v2);
     }
 
     #[test]
@@ -601,12 +563,12 @@ mod tests {
 
         let slot = insert_packed_value(U256::ZERO, &value, 0, 32).unwrap();
         assert_eq!(slot, expected, "u256 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<1, U256>(slot, 0, 32).unwrap(), value);
+        assert_eq!(extract_packed_value::<U256>(slot, 0, 32).unwrap(), value);
 
         // Test U256::MAX
         let slot = insert_packed_value(U256::ZERO, &U256::MAX, 0, 32).unwrap();
         assert_eq!(
-            extract_packed_value::<1, U256>(slot, 0, 32).unwrap(),
+            extract_packed_value::<U256>(slot, 0, 32).unwrap(),
             U256::MAX
         );
     }
@@ -633,10 +595,10 @@ mod tests {
         slot = insert_packed_value(slot, &v4, 3, 1).unwrap();
 
         assert_eq!(slot, expected, "i8 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<1, i8>(slot, 0, 1).unwrap(), v1);
-        assert_eq!(extract_packed_value::<1, i8>(slot, 1, 1).unwrap(), v2);
-        assert_eq!(extract_packed_value::<1, i8>(slot, 2, 1).unwrap(), v3);
-        assert_eq!(extract_packed_value::<1, i8>(slot, 3, 1).unwrap(), v4);
+        assert_eq!(extract_packed_value::<i8>(slot, 0, 1).unwrap(), v1);
+        assert_eq!(extract_packed_value::<i8>(slot, 1, 1).unwrap(), v2);
+        assert_eq!(extract_packed_value::<i8>(slot, 2, 1).unwrap(), v3);
+        assert_eq!(extract_packed_value::<i8>(slot, 3, 1).unwrap(), v4);
     }
 
     #[test]
@@ -658,9 +620,9 @@ mod tests {
         slot = insert_packed_value(slot, &v3, 4, 2).unwrap();
 
         assert_eq!(slot, expected, "i16 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<1, i16>(slot, 0, 2).unwrap(), v1);
-        assert_eq!(extract_packed_value::<1, i16>(slot, 2, 2).unwrap(), v2);
-        assert_eq!(extract_packed_value::<1, i16>(slot, 4, 2).unwrap(), v3);
+        assert_eq!(extract_packed_value::<i16>(slot, 0, 2).unwrap(), v1);
+        assert_eq!(extract_packed_value::<i16>(slot, 2, 2).unwrap(), v2);
+        assert_eq!(extract_packed_value::<i16>(slot, 4, 2).unwrap(), v3);
     }
 
     #[test]
@@ -679,8 +641,8 @@ mod tests {
         slot = insert_packed_value(slot, &v2, 4, 4).unwrap();
 
         assert_eq!(slot, expected, "i32 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<1, i32>(slot, 0, 4).unwrap(), v1);
-        assert_eq!(extract_packed_value::<1, i32>(slot, 4, 4).unwrap(), v2);
+        assert_eq!(extract_packed_value::<i32>(slot, 0, 4).unwrap(), v1);
+        assert_eq!(extract_packed_value::<i32>(slot, 4, 4).unwrap(), v2);
     }
 
     #[test]
@@ -699,8 +661,8 @@ mod tests {
         slot = insert_packed_value(slot, &v2, 8, 8).unwrap();
 
         assert_eq!(slot, expected, "i64 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<1, i64>(slot, 0, 8).unwrap(), v1);
-        assert_eq!(extract_packed_value::<1, i64>(slot, 8, 8).unwrap(), v2);
+        assert_eq!(extract_packed_value::<i64>(slot, 0, 8).unwrap(), v1);
+        assert_eq!(extract_packed_value::<i64>(slot, 8, 8).unwrap(), v2);
     }
 
     #[test]
@@ -719,8 +681,8 @@ mod tests {
         slot = insert_packed_value(slot, &v2, 16, 16).unwrap();
 
         assert_eq!(slot, expected, "i128 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<1, i128>(slot, 0, 16).unwrap(), v1);
-        assert_eq!(extract_packed_value::<1, i128>(slot, 16, 16).unwrap(), v2);
+        assert_eq!(extract_packed_value::<i128>(slot, 0, 16).unwrap(), v1);
+        assert_eq!(extract_packed_value::<i128>(slot, 16, 16).unwrap(), v2);
     }
 
     #[test]
@@ -748,10 +710,10 @@ mod tests {
             slot, expected,
             "Mixed types packing should match Solidity layout"
         );
-        assert_eq!(extract_packed_value::<1, u8>(slot, 0, 1).unwrap(), v1);
-        assert_eq!(extract_packed_value::<1, u16>(slot, 1, 2).unwrap(), v2);
-        assert_eq!(extract_packed_value::<1, u32>(slot, 3, 4).unwrap(), v3);
-        assert_eq!(extract_packed_value::<1, u64>(slot, 7, 8).unwrap(), v4);
+        assert_eq!(extract_packed_value::<u8>(slot, 0, 1).unwrap(), v1);
+        assert_eq!(extract_packed_value::<u16>(slot, 1, 2).unwrap(), v2);
+        assert_eq!(extract_packed_value::<u32>(slot, 3, 4).unwrap(), v3);
+        assert_eq!(extract_packed_value::<u64>(slot, 7, 8).unwrap(), v4);
     }
 
     #[test]
@@ -773,12 +735,9 @@ mod tests {
             slot, expected,
             "[bool, address, u8] should match Solidity layout"
         );
-        assert!(extract_packed_value::<1, bool>(slot, 0, 1).unwrap());
-        assert_eq!(
-            extract_packed_value::<1, Address>(slot, 1, 20).unwrap(),
-            addr
-        );
-        assert_eq!(extract_packed_value::<1, u8>(slot, 21, 1).unwrap(), number);
+        assert!(extract_packed_value::<bool>(slot, 0, 1).unwrap());
+        assert_eq!(extract_packed_value::<Address>(slot, 1, 20).unwrap(), addr);
+        assert_eq!(extract_packed_value::<u8>(slot, 21, 1).unwrap(), number);
     }
 
     #[test]
@@ -796,15 +755,15 @@ mod tests {
         slot = insert_packed_value(slot, &v3, 3, 4).unwrap();
 
         assert_eq!(slot, expected, "Zero values should produce zero slot");
-        assert_eq!(extract_packed_value::<1, u8>(slot, 0, 1).unwrap(), 0);
-        assert_eq!(extract_packed_value::<1, u16>(slot, 1, 2).unwrap(), 0);
-        assert_eq!(extract_packed_value::<1, u32>(slot, 3, 4).unwrap(), 0);
+        assert_eq!(extract_packed_value::<u8>(slot, 0, 1).unwrap(), 0);
+        assert_eq!(extract_packed_value::<u16>(slot, 1, 2).unwrap(), 0);
+        assert_eq!(extract_packed_value::<u32>(slot, 3, 4).unwrap(), 0);
 
         // Test that zeros don't interfere with non-zero values
         let v4: u8 = 0xff;
         slot = insert_packed_value(slot, &v4, 10, 1).unwrap();
-        assert_eq!(extract_packed_value::<1, u8>(slot, 0, 1).unwrap(), 0);
-        assert_eq!(extract_packed_value::<1, u8>(slot, 10, 1).unwrap(), 0xff);
+        assert_eq!(extract_packed_value::<u8>(slot, 0, 1).unwrap(), 0);
+        assert_eq!(extract_packed_value::<u8>(slot, 10, 1).unwrap(), 0xff);
     }
 
     // -- SLOT PACKED FIELD TESTS ------------------------------------------

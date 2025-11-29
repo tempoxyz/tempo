@@ -11,7 +11,7 @@ mod bytes_like;
 mod primitives;
 
 use crate::{error::Result, storage::StorageOps};
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, U256, keccak256};
 use std::rc::Rc;
 
 /// Describes how a type is laid out in EVM storage.
@@ -168,9 +168,6 @@ pub trait Handler<T: Storable> {
 ///
 /// This trait provides storage I/O operations: load, store, delete.
 /// Types implement their own logic for handling packed vs full-slot contexts.
-///
-/// The trait hides the const generic `WORDS` from [`Encodable<WORDS>`], allowing
-/// [`Handler<T>`] to work uniformly across all types.
 pub trait Storable: StorableType + Sized {
     /// Load this type from storage at the given slot.
     fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self>;
@@ -202,56 +199,26 @@ pub trait Storable: StorableType + Sized {
     }
 }
 
-/// Trait for encoding/decoding Rust types to/from EVM storage words.
+/// Trait for types that can be packed into EVM storage slots.
 ///
-/// This trait provides pure conversion between Rust types and arrays of U256 words.
+/// This trait is for primitive types that can be encoded to/from a single U256 word.
+/// Only types with `BYTES <= 32` should implement this trait.
 ///
-/// # Type Parameter
+/// # Usage
 ///
-/// - `WORDS`: The number of U256 words this type encodes to.
-///   For single-word types (Address, U256, bool), this is `1`.
-///   For fixed-size arrays, this depends on packing.
-///   For user-defined structs, this is between `1` and the number of fields.
+/// `Packable` is used by the storage packing system to efficiently pack multiple
+/// small values into a single 32-byte storage slot.
 ///
 /// # Safety
 ///
-/// Implementations must ensure that:
-/// - Round-trip conversions preserve data: `from_evm_words(to_evm_words(x)) == Ok(x)`
-/// - `WORDS` accurately reflects the number of words produced/consumed
-/// - `to_evm_words` and `from_evm_words` produce/consume exactly `WORDS` words
-pub trait Encodable<const WORDS: usize>: Sized + StorableType {
-    /// Compile-time validation that `SLOTS == WORDS`.
-    ///
-    /// Implementors must provide:
-    /// ```ignore
-    /// const VALIDATE_LAYOUT: () = assert!(Self::SLOTS == WORDS);
-    /// ```
-    const VALIDATE_LAYOUT: ();
+/// Implementations must ensure round-trip conversions preserve data:
+/// `from_word(to_word(x)) == x`
+pub trait Packable: Sized + StorableType {
+    /// Encode this type to a single U256 word.
+    fn to_word(&self) -> U256;
 
-    /// Encode this type to an array of U256 words.
-    ///
-    /// Returns exactly `WORDS` words, where each word represents one storage slot.
-    /// For single-slot types (`WORDS = 1`), returns a single-element array.
-    /// For multi-slot types, each array element corresponds to one slot's data.
-    ///
-    /// # Packed Storage
-    ///
-    /// When multiple small fields are packed into a single slot, they are
-    /// positioned and combined into a single U256 word according to their
-    /// byte offsets. The derive macro handles this automatically.
-    fn to_evm_words(&self) -> Result<[U256; WORDS]>;
-
-    /// Decode this type from an array of U256 words.
-    ///
-    /// Accepts exactly `WORDS` words, where each word represents one storage slot.
-    /// Constructs the complete type from all provided words.
-    ///
-    /// # Packed Storage
-    ///
-    /// When multiple small fields are packed into a single slot, they are
-    /// extracted from the appropriate word using bit shifts and masks.
-    /// The derive macro handles this automatically.
-    fn from_evm_words(words: [U256; WORDS]) -> Result<Self>;
+    /// Decode this type from a single U256 word.
+    fn from_word(word: U256) -> Self;
 }
 
 /// Trait for types that can be used as storage mapping keys.
@@ -260,5 +227,26 @@ pub trait Encodable<const WORDS: usize>: Sized + StorableType {
 /// to determine the final storage location. This trait provides the
 /// byte representation used in that hash.
 pub trait StorageKey {
+    /// Returns a byte slice for this type.
     fn as_storage_bytes(&self) -> impl AsRef<[u8]>;
+
+    /// Compute storage slot for a mapping with this key.
+    ///
+    /// Left-pads the key to the nearest 32-byte multiple, concatenates
+    /// with the slot, and hashes.
+    fn mapping_slot(&self, slot: U256) -> U256 {
+        let key_bytes = self.as_storage_bytes();
+        let key_bytes = key_bytes.as_ref();
+
+        // Pad key to nearest multiple of 32 bytes
+        let padded_len = key_bytes.len().div_ceil(32) * 32;
+        let mut buf = vec![0u8; padded_len + 32];
+
+        // Left-pad the key bytes
+        buf[padded_len - key_bytes.len()..padded_len].copy_from_slice(key_bytes);
+        // Append slot in big-endian
+        buf[padded_len..].copy_from_slice(&slot.to_be_bytes::<32>());
+
+        U256::from_be_bytes(keccak256(&buf).0)
+    }
 }

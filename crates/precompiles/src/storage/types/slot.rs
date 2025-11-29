@@ -194,8 +194,8 @@ impl<T> StorageOps for Slot<T> {
 mod tests {
     use super::*;
     use crate::storage::{
-        Handler, PrecompileStorageContext, PrecompileStorageProvider,
-        hashmap::HashMapStorageProvider, mapping_slot,
+        Handler, PrecompileStorageContext, PrecompileStorageProvider, StorageKey,
+        hashmap::HashMapStorageProvider,
     };
     use alloy::primitives::{Address, B256};
     use proptest::prelude::*;
@@ -431,7 +431,7 @@ mod tests {
         let _guard = storage.enter().unwrap();
 
         let pair_key = B256::random();
-        let orderbook_base_slot = mapping_slot(pair_key, U256::ZERO);
+        let orderbook_base_slot = pair_key.mapping_slot(U256::ZERO);
 
         let base_address = Address::random();
 
@@ -477,7 +477,7 @@ mod tests {
         let _guard = storage.enter().unwrap();
 
         let key = B256::random();
-        let base = mapping_slot(key, U256::ZERO);
+        let base = key.mapping_slot(U256::ZERO);
 
         // Simulate different primitive fields at different offsets
         let field_0 = Address::random();

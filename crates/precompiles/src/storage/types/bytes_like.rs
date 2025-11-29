@@ -28,44 +28,12 @@ impl StorableType for Bytes {
     }
 }
 
-impl Encodable<1> for Bytes {
-    const VALIDATE_LAYOUT: () = assert!(Self::SLOTS == 1, "SLOTS must equal WORDS");
-
-    #[inline]
-    fn to_evm_words(&self) -> Result<[U256; 1]> {
-        to_evm_words_bytes_like(self.as_ref())
-    }
-
-    #[inline]
-    fn from_evm_words(words: [U256; 1]) -> Result<Self> {
-        from_evm_words_bytes_like(words, |data| Ok(Self::from(data)))
-    }
-}
-
 impl StorableType for String {
     const LAYOUT: Layout = Layout::Slots(1);
     type Handler = Slot<Self>;
 
     fn handle(slot: U256, ctx: LayoutCtx, address: Rc<Address>) -> Self::Handler {
         Slot::new_with_ctx(slot, ctx, address)
-    }
-}
-
-impl Encodable<1> for String {
-    const VALIDATE_LAYOUT: () = assert!(Self::SLOTS == 1, "SLOTS must equal WORDS");
-
-    #[inline]
-    fn to_evm_words(&self) -> Result<[U256; 1]> {
-        to_evm_words_bytes_like(self.as_bytes())
-    }
-
-    #[inline]
-    fn from_evm_words(words: [U256; 1]) -> Result<Self> {
-        from_evm_words_bytes_like(words, |data| {
-            Self::from_utf8(data).map_err(|e| {
-                TempoPrecompileError::Fatal(format!("Invalid UTF-8 in stored string: {e}"))
-            })
-        })
     }
 }
 
@@ -212,42 +180,6 @@ fn delete_bytes_like<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<
 
     // Clear the main slot
     storage.sstore(base_slot, U256::ZERO)
-}
-
-/// Returns the encoded length for long strings or the inline data for short strings.
-#[inline]
-fn to_evm_words_bytes_like(bytes: &[u8]) -> Result<[U256; 1]> {
-    let length = bytes.len();
-
-    if length <= 31 {
-        Ok([encode_short_string(bytes)])
-    } else {
-        // Note: actual string data is in keccak256-addressed slots (not included here)
-        Ok([encode_long_string_length(length)])
-    }
-}
-
-/// The converter function transforms raw bytes into the target type.
-/// Returns an error for long strings, which require storage access to reconstruct.
-#[inline]
-fn from_evm_words_bytes_like<T, F>(words: [U256; 1], into: F) -> Result<T>
-where
-    F: FnOnce(Vec<u8>) -> Result<T>,
-{
-    let slot_value = words[0];
-    let is_long = is_long_string(slot_value);
-
-    if is_long {
-        // Long string: cannot reconstruct without storage access to keccak256-addressed data
-        Err(TempoPrecompileError::Fatal(
-            "Cannot reconstruct long string from single word. Use load() instead.".into(),
-        ))
-    } else {
-        // Short string: data is inline in the word
-        let length = calc_string_length(slot_value, false);
-        let bytes = slot_value.to_be_bytes::<32>();
-        into(bytes[..length].to_vec())
-    }
 }
 
 /// Compute the storage slot where long string data begins.
@@ -543,11 +475,6 @@ mod tests {
             slot.delete().unwrap();
             let after_delete = slot.read().unwrap();
             prop_assert_eq!(after_delete, String::new(), "Short string not empty after delete");
-
-            // EVM words roundtrip (only works for short strings ≤31 bytes)
-            let words = s.to_evm_words().unwrap();
-            let recovered = String::from_evm_words(words).unwrap();
-            prop_assert_eq!(s, recovered, "Short string EVM words roundtrip failed");
         }
 
         #[test]
@@ -570,12 +497,6 @@ mod tests {
             slot.delete().unwrap();
             let after_delete = slot.read().unwrap();
             prop_assert_eq!(after_delete, String::new(), "32-byte string not empty after delete");
-
-            // Note: 32-byte strings use long storage format and cannot be
-            // reconstructed from a single word without storage access
-            let words = s.to_evm_words().unwrap();
-            let result = String::from_evm_words(words);
-            prop_assert!(result.is_err(), "32-byte string should not be reconstructable from single word");
         }
 
         #[test]
@@ -605,19 +526,6 @@ mod tests {
                 let value = slot.read().unwrap();
                 prop_assert_eq!(value, U256::ZERO, "Data slot not cleared after delete");
             }
-
-            // Verify that strings >= 32 bytes cannot be reconstructed from single word
-            // Note: arb_long_string() may occasionally generate strings < 32 bytes due to Unicode
-            if s.len() >= 32 {
-                let words = s.to_evm_words().unwrap();
-                let result = String::from_evm_words(words);
-                prop_assert!(result.is_err(), "Long string (>= 32 bytes) should not be reconstructable from single word");
-            } else {
-                // For strings < 32 bytes, verify roundtrip works
-                let words = s.to_evm_words().unwrap();
-                let recovered = String::from_evm_words(words).unwrap();
-                prop_assert_eq!(s, recovered, "String < 32 bytes EVM words roundtrip failed");
-            }
         }
 
         #[test]
@@ -636,11 +544,6 @@ mod tests {
             slot.delete().unwrap();
             let after_delete = slot.read().unwrap();
             prop_assert_eq!(after_delete, Bytes::new(), "Short bytes not empty after delete");
-
-            // EVM words roundtrip (only works for short bytes ≤31 bytes)
-            let words = b.to_evm_words().unwrap();
-            let recovered = Bytes::from_evm_words(words).unwrap();
-            prop_assert_eq!(b, recovered, "Short bytes EVM words roundtrip failed");
         }
 
         #[test]
@@ -662,12 +565,6 @@ mod tests {
             slot.delete().unwrap();
             let after_delete = slot.read().unwrap();
             prop_assert_eq!(after_delete, Bytes::new(), "32-byte bytes not empty after delete");
-
-            // Note: 32-byte Bytes use long storage format and cannot be
-            // reconstructed from a single word without storage access
-            let words = b.to_evm_words().unwrap();
-            let result = Bytes::from_evm_words(words);
-            prop_assert!(result.is_err(), "32-byte Bytes should not be reconstructable from single word");
         }
 
         #[test]
@@ -696,18 +593,6 @@ mod tests {
                 let slot = Slot::<U256>::new_at_offset(data_slot_start, i, address.clone());
                 let value = slot.read().unwrap();
                 prop_assert_eq!(value, U256::ZERO, "Data slot not cleared after delete");
-            }
-
-            // Verify that bytes >= 32 bytes cannot be reconstructed from single word
-            if b.len() >= 32 {
-                let words = b.to_evm_words().unwrap();
-                let result = Bytes::from_evm_words(words);
-                prop_assert!(result.is_err(), "Long bytes (>= 32 bytes) should not be reconstructable from single word");
-            } else {
-                // For bytes < 32 bytes, verify roundtrip works
-                let words = b.to_evm_words().unwrap();
-                let recovered = Bytes::from_evm_words(words).unwrap();
-                prop_assert_eq!(b, recovered, "Bytes < 32 bytes EVM words roundtrip failed");
             }
         }
     }

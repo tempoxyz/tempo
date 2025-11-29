@@ -164,10 +164,10 @@ fn gen_rust_unsigned_tests() -> TokenStream {
                     let after_delete = slot.read().unwrap();
                     assert_eq!(after_delete, 0, concat!(#label, " not zero after delete"));
 
-                    // EVM words roundtrip
-                    let words = value.to_evm_words().unwrap();
-                    let recovered = #type_name::from_evm_words(words).unwrap();
-                    assert_eq!(value, recovered, concat!(#label, " EVM words roundtrip failed"));
+                    // EVM word roundtrip
+                    let word = value.to_word();
+                    let recovered = #type_name::from_word(word);
+                    assert_eq!(value, recovered, concat!(#label, " EVM word roundtrip failed"));
                 }
             }
         })
@@ -211,10 +211,10 @@ fn gen_rust_signed_tests() -> TokenStream {
                         let after_delete = slot.read().unwrap();
                         assert_eq!(after_delete, 0, concat!(#label, " not zero after delete"));
 
-                        // EVM words roundtrip
-                        let words = value.to_evm_words().unwrap();
-                        let recovered = #type_name::from_evm_words(words).unwrap();
-                        assert_eq!(value, recovered, concat!(#label, " positive EVM words roundtrip failed"));
+                        // EVM word roundtrip
+                        let word = value.to_word();
+                        let recovered = #type_name::from_word(word);
+                        assert_eq!(value, recovered, concat!(#label, " positive EVM word roundtrip failed"));
                     }
                 },
                 // Negative test
@@ -235,10 +235,10 @@ fn gen_rust_signed_tests() -> TokenStream {
                         let after_delete = slot.read().unwrap();
                         assert_eq!(after_delete, 0, concat!(#label, " not zero after delete"));
 
-                        // EVM words roundtrip
-                        let words = value.to_evm_words().unwrap();
-                        let recovered = #type_name::from_evm_words(words).unwrap();
-                        assert_eq!(value, recovered, concat!(#label, " negative EVM words roundtrip failed"));
+                        // EVM word roundtrip
+                        let word = value.to_word();
+                        let recovered = #type_name::from_word(word);
+                        assert_eq!(value, recovered, concat!(#label, " negative EVM word roundtrip failed"));
                     }
                 },
             ]
@@ -285,10 +285,10 @@ fn gen_alloy_unsigned_tests() -> TokenStream {
                         concat!(#label, " not zero after delete")
                     );
 
-                    // EVM words roundtrip
-                    let words = value.to_evm_words().unwrap();
-                    let recovered = ::alloy::primitives::#type_name::from_evm_words(words).unwrap();
-                    assert_eq!(value, recovered, concat!(#label, " EVM words roundtrip failed"));
+                    // EVM word roundtrip
+                    let word = value.to_word();
+                    let recovered = ::alloy::primitives::#type_name::from_word(word);
+                    assert_eq!(value, recovered, concat!(#label, " EVM word roundtrip failed"));
                 }
             }
         })
@@ -338,10 +338,10 @@ fn gen_alloy_signed_tests() -> TokenStream {
                             concat!(#label, " not zero after delete")
                         );
 
-                        // EVM words roundtrip
-                        let words = value.to_evm_words().unwrap();
-                        let recovered = ::alloy::primitives::#type_name::from_evm_words(words).unwrap();
-                        assert_eq!(value, recovered, concat!(#label, " positive EVM words roundtrip failed"));
+                        // EVM word roundtrip
+                        let word = value.to_word();
+                        let recovered = ::alloy::primitives::#type_name::from_word(word);
+                        assert_eq!(value, recovered, concat!(#label, " positive EVM word roundtrip failed"));
                     }
                 },
                 // Negative test
@@ -366,10 +366,10 @@ fn gen_alloy_signed_tests() -> TokenStream {
                             concat!(#label, " not zero after delete")
                         );
 
-                        // EVM words roundtrip
-                        let words = value.to_evm_words().unwrap();
-                        let recovered = ::alloy::primitives::#type_name::from_evm_words(words).unwrap();
-                        assert_eq!(value, recovered, concat!(#label, " negative EVM words roundtrip failed"));
+                        // EVM word roundtrip
+                        let word = value.to_word();
+                        let recovered = ::alloy::primitives::#type_name::from_word(word);
+                        assert_eq!(value, recovered, concat!(#label, " negative EVM word roundtrip failed"));
                     }
                 },
             ]
@@ -417,12 +417,12 @@ fn gen_fixed_bytes_tests() -> TokenStream {
                         concat!("FixedBytes<", stringify!(#size), "> not zero after delete")
                     );
 
-                    // EVM words roundtrip
-                    let words = value.to_evm_words().unwrap();
-                    let recovered = ::alloy::primitives::FixedBytes::<#size>::from_evm_words(words).unwrap();
+                    // EVM word roundtrip
+                    let word = value.to_word();
+                    let recovered = ::alloy::primitives::FixedBytes::<#size>::from_word(word);
                     assert_eq!(
                         value, recovered,
-                        concat!("FixedBytes<", stringify!(#size), "> EVM words roundtrip failed")
+                        concat!("FixedBytes<", stringify!(#size), "> EVM word roundtrip failed")
                     );
                 }
             }

@@ -3,7 +3,7 @@
 //! This module tests the Storable derive macro's implementation of storage packing,
 //! verifying that fields are correctly packed into slots according to Solidity's rules.
 
-use tempo_precompiles::storage::{Encodable, Layout, StorableType, packing::gen_word_from};
+use tempo_precompiles::storage::{Layout, StorableType, packing::gen_word_from};
 
 use super::*;
 
@@ -544,9 +544,9 @@ fn test_partial_update_preserves_adjacent_fields() {
         .read()
         .unwrap();
 
-    let extracted_a: u64 = extract_field(slot0, 0, 8).unwrap();
-    let extracted_b: u64 = extract_field(slot0, 8, 8).unwrap();
-    let extracted_c: u64 = extract_field(slot0, 16, 8).unwrap();
+    let extracted_a: u64 = extract_packed_value(slot0, 0, 8).unwrap();
+    let extracted_b: u64 = extract_packed_value(slot0, 8, 8).unwrap();
+    let extracted_c: u64 = extract_packed_value(slot0, 16, 8).unwrap();
 
     assert_eq!(extracted_a, 0x1111111111111111, "field a was corrupted");
     assert_eq!(extracted_b, 0x9999999999999999, "field b was not updated");

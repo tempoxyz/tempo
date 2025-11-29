@@ -189,7 +189,7 @@ where
 mod tests {
     use super::*;
     use crate::storage::{
-        Encodable, Layout, LayoutCtx, PrecompileStorageContext, PrecompileStorageProvider,
+        Layout, LayoutCtx, PrecompileStorageContext, PrecompileStorageProvider,
         hashmap::HashMapStorageProvider,
     };
     use proptest::prelude::*;
@@ -226,12 +226,6 @@ mod tests {
         slot.write(data).unwrap();
         let loaded = slot.read().unwrap();
         assert_eq!(loaded, data, "[u8; 32] roundtrip failed");
-
-        // Verify to_evm_words / from_evm_words
-        let words = data.to_evm_words().unwrap();
-        assert_eq!(words.len(), 1, "[u8; 32] should produce 1 word");
-        let recovered: [u8; 32] = Encodable::from_evm_words(words).unwrap();
-        assert_eq!(recovered, data, "[u8; 32] EVM words roundtrip failed");
 
         // Verify delete
         slot.delete().unwrap();
@@ -391,12 +385,6 @@ mod tests {
         let loaded = slot.read().unwrap();
         assert_eq!(loaded, data, "[[u8; 4]; 8] roundtrip failed");
 
-        // Verify to_evm_words / from_evm_words
-        let words = data.to_evm_words().unwrap();
-        assert_eq!(words.len(), 8, "[[u8; 4]; 8] should produce 8 words");
-        let recovered: [[u8; 4]; 8] = Encodable::from_evm_words(words).unwrap();
-        assert_eq!(recovered, data, "[[u8; 4]; 8] EVM words roundtrip failed");
-
         // Verify delete clears all 8 slots
         slot.delete().unwrap();
         std::mem::drop(guard);
@@ -436,12 +424,6 @@ mod tests {
         let loaded = slot.read().unwrap();
         assert_eq!(loaded, data, "[[u16; 2]; 8] roundtrip failed");
 
-        // Verify to_evm_words / from_evm_words
-        let words = data.to_evm_words().unwrap();
-        assert_eq!(words.len(), 8, "[[u16; 2]; 8] should produce 8 words");
-        let recovered: [[u16; 2]; 8] = Encodable::from_evm_words(words).unwrap();
-        assert_eq!(recovered, data, "[[u16; 2]; 8] EVM words roundtrip failed");
-
         // Verify delete clears all 8 slots
         slot.delete().unwrap();
         std::mem::drop(guard);
@@ -468,11 +450,6 @@ mod tests {
             let loaded = slot.read().unwrap();
             prop_assert_eq!(&loaded, &data, "[u8; 32] roundtrip failed");
 
-            // EVM words roundtrip
-            let words = data.to_evm_words().unwrap();
-            let recovered: [u8; 32] = Encodable::from_evm_words(words).unwrap();
-            prop_assert_eq!(&recovered, &data, "[u8; 32] EVM words roundtrip failed");
-
             // Delete
             slot.delete().unwrap();
             std::mem::drop(guard);
@@ -493,11 +470,6 @@ mod tests {
             slot.write(data).unwrap();
             let loaded = slot.read().unwrap();
             prop_assert_eq!(&loaded, &data, "[u16; 16] roundtrip failed");
-
-            // EVM words roundtrip
-            let words = data.to_evm_words().unwrap();
-            let recovered: [u16; 16] = Encodable::from_evm_words(words).unwrap();
-            prop_assert_eq!(&recovered, &data, "[u16; 16] EVM words roundtrip failed");
         }
 
         #[test]
@@ -520,11 +492,6 @@ mod tests {
                 let slot_value = storage.sload(*address, base_slot + U256::from(i)).unwrap();
                 prop_assert_eq!(slot_value, *expected_value, "Slot {} mismatch", i);
             }
-
-            // EVM words roundtrip
-            let words = data.to_evm_words().unwrap();
-            let recovered: [U256; 5] = Encodable::from_evm_words(words).unwrap();
-            prop_assert_eq!(&recovered, &data, "[U256; 5] EVM words roundtrip failed");
 
             // Delete
             let guard = storage.enter().unwrap();
