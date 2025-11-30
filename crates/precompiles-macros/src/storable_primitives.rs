@@ -163,7 +163,7 @@ fn gen_complete_impl_set(config: &TypeConfig) -> TokenStream {
     }
 }
 
-/// Generate `StorableType` and `Storable` implementations for all standard Rust integer types.
+/// Generate `StorableType`, `Packable`, and `StorageKey` for all standard Rust integer types.
 pub(crate) fn gen_storable_rust_ints() -> TokenStream {
     let mut impls = Vec::with_capacity(RUST_INT_SIZES.len() * 2);
 
@@ -196,7 +196,7 @@ pub(crate) fn gen_storable_rust_ints() -> TokenStream {
     }
 }
 
-/// Generate `StorableType` and `Storable` implementations for alloy integer types.
+/// Generate `StorableType`, `Packable`, and `StorageKey` for alloy integer types.
 fn gen_alloy_integers() -> Vec<TokenStream> {
     let mut impls = Vec::with_capacity(ALLOY_INT_SIZES.len() * 2);
 
@@ -231,7 +231,7 @@ fn gen_alloy_integers() -> Vec<TokenStream> {
     impls
 }
 
-/// Generate `StorableType` and `Storable` implementations for `FixedBytes<N>` types.
+/// Generate `StorableType`, `Packable`, and `StorageKey` for `FixedBytes<N>` types.
 fn gen_fixed_bytes(sizes: &[usize]) -> Vec<TokenStream> {
     let mut impls = Vec::with_capacity(sizes.len());
 
@@ -249,7 +249,7 @@ fn gen_fixed_bytes(sizes: &[usize]) -> Vec<TokenStream> {
     impls
 }
 
-/// Generate `StorableType` and `Storable` implementations for `FixedBytes<N>` types.
+/// Generate `StorableType`, `Packable`, and `StorageKey` for `FixedBytes<N>` types.
 pub(crate) fn gen_storable_alloy_bytes() -> TokenStream {
     let sizes: Vec<usize> = (1..=32).collect();
     let impls = gen_fixed_bytes(&sizes);
@@ -259,7 +259,7 @@ pub(crate) fn gen_storable_alloy_bytes() -> TokenStream {
     }
 }
 
-/// Generate `StorableType` and `Storable` implementations for all alloy integer types.
+/// Generate `StorableType`, `Packable`, and `StorageKey` for all alloy integer types.
 pub(crate) fn gen_storable_alloy_ints() -> TokenStream {
     let impls = gen_alloy_integers();
 
@@ -284,7 +284,7 @@ fn is_packable(byte_count: usize) -> bool {
     byte_count < 32 && 32 % byte_count == 0
 }
 
-/// Generate a complete `Encodable` and `Storable` implementation for a fixed-size array
+/// Generate `StorableType`, `Storable`, and `StorageKey` for a fixed-size array.
 fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
     let ArrayConfig {
         elem_type,
@@ -458,7 +458,7 @@ fn gen_arrays_for_type(
         .collect()
 }
 
-/// Generate `Encodable` and `Storable` implementations for fixed-size arrays of primitive types
+/// Generate `StorableType`, `Storable`, and `StorageKey` for fixed-size arrays of primitive types.
 pub(crate) fn gen_storable_arrays() -> TokenStream {
     let mut all_impls = Vec::new();
     let sizes: Vec<usize> = (1..=32).collect();
