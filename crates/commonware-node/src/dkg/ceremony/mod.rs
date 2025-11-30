@@ -590,12 +590,14 @@ where
             return Ok(());
         }
 
-        let block_outcome = match block.try_read_ceremony_deal_outcome() {
+        let block_outcome = match block
+            .try_read_ceremony_deal_outcome()
+            .wrap_err("failed reading intermediate DKG dealings from block")
+        {
             Ok(outcome) => outcome,
             Err(error) => {
-                warn!(%error, "failed to decode ceremony deal outcome");
-                self.metrics.dealings_failed.inc();
-                return Ok(());
+                self.metrics.bad_dealings.inc();
+                return Err(error);
             }
         };
 
@@ -608,20 +610,16 @@ where
         );
 
         // Verify the dealer's signature before considering processing the outcome.
-        match hardfork_regime {
+        let is_verified = match hardfork_regime {
             HardforkRegime::PostAllegretto => {
-                ensure!(
-                    block_outcome.verify(&union(&self.config.namespace, OUTCOME_NAMESPACE)),
-                    "invalid dealer signature; ignoring deal outcome",
-                );
+                block_outcome.verify(&union(&self.config.namespace, OUTCOME_NAMESPACE))
             }
-            HardforkRegime::PreAllegretto => {
-                ensure!(
-                    block_outcome
-                        .verify_pre_allegretto(&union(&self.config.namespace, OUTCOME_NAMESPACE)),
-                    "invalid dealer signature; ignoring deal outcome",
-                );
-            }
+            HardforkRegime::PreAllegretto => block_outcome
+                .verify_pre_allegretto(&union(&self.config.namespace, OUTCOME_NAMESPACE)),
+        };
+        if !is_verified {
+            self.metrics.bad_dealings.inc();
+            bail!("intermediate DKG dealing could not be verified");
         }
 
         // Verify all ack signatures
@@ -955,7 +953,7 @@ pub(super) struct Metrics {
     acks_sent: Gauge,
     dealings_read: Gauge,
     dealings_empty: Gauge,
-    dealings_failed: Gauge,
+    bad_dealings: Gauge,
 
     failures: Counter,
     successes: Counter,
@@ -987,7 +985,7 @@ impl Metrics {
         let acks_sent = Gauge::default();
         let dealings_read = Gauge::default();
         let dealings_empty = Gauge::default();
-        let dealings_failed = Gauge::default();
+        let bad_dealings = Gauge::default();
 
         context.register(
             "ceremony_failures",
@@ -1054,9 +1052,9 @@ impl Metrics {
             dealings_empty.clone(),
         );
         context.register(
-            "ceremony_dealings_failed",
-            "the number of blocks where dealing decode failed in the current ceremony",
-            dealings_failed.clone(),
+            "ceremony_bad_dealings",
+            "the number of blocks where decoding and verifying dealings failed in the current ceremony",
+            bad_dealings.clone(),
         );
 
         Self {
@@ -1066,7 +1064,7 @@ impl Metrics {
             acks_sent,
             dealings_read,
             dealings_empty,
-            dealings_failed,
+            bad_dealings,
             dealers,
             players,
             how_often_dealer,
@@ -1085,7 +1083,7 @@ impl Metrics {
         self.acks_sent.set(0);
         self.dealings_read.set(0);
         self.dealings_empty.set(0);
-        self.dealings_failed.set(0);
+        self.bad_dealings.set(0);
     }
 
     /// Increments the failed ceremonies counter.
