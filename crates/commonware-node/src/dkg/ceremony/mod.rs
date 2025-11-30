@@ -459,6 +459,7 @@ where
         ret,
     )]
     async fn process_ack(&mut self, peer: PublicKey, ack: Ack) -> eyre::Result<&'static str> {
+        self.metrics.acks_received.inc();
         let Some(dealer_me) = &mut self.dealer_me else {
             return Ok("not a dealer, dropping ack");
         };
@@ -509,7 +510,6 @@ where
             .await
             .expect("must always be able to persist tracked acks to disk");
 
-        self.metrics.acks_received.inc();
         Ok("ack recorded")
     }
 
@@ -527,6 +527,7 @@ where
         peer: PublicKey,
         Share { commitment, share }: Share,
     ) -> eyre::Result<&'static str> {
+        self.metrics.shares_received.inc();
         let Some(player_me) = &mut self.player_me else {
             return Ok("not a player, dropping share");
         };
@@ -949,6 +950,7 @@ impl Role {
 #[derive(Clone)]
 pub(super) struct Metrics {
     shares_distributed: Gauge,
+    shares_received: Gauge,
     acks_received: Gauge,
     acks_sent: Gauge,
     dealings_read: Gauge,
@@ -980,6 +982,7 @@ impl Metrics {
         let how_often_player = Counter::default();
 
         let shares_distributed = Gauge::default();
+        let shares_received = Gauge::default();
         let acks_received = Gauge::default();
         let acks_sent = Gauge::default();
         let dealings_read = Gauge::default();
@@ -1026,6 +1029,11 @@ impl Metrics {
             shares_distributed.clone(),
         );
         context.register(
+            "ceremony_shares_received",
+            "the number of shares received by this node as a playr in the current ceremony",
+            shares_received.clone(),
+        );
+        context.register(
             "ceremony_acks_received",
             "the number of acknowledgments received by this node as a dealer in the current ceremony",
             acks_received.clone(),
@@ -1053,6 +1061,7 @@ impl Metrics {
 
         Self {
             shares_distributed,
+            shares_received,
             acks_received,
             acks_sent,
             dealings_read,
@@ -1071,6 +1080,7 @@ impl Metrics {
     /// initialized.
     fn reset_per_ceremony_metrics(&self) {
         self.shares_distributed.set(0);
+        self.shares_received.set(0);
         self.acks_received.set(0);
         self.acks_sent.set(0);
         self.dealings_read.set(0);
