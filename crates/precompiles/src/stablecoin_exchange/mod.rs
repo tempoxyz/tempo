@@ -19,7 +19,7 @@ use crate::{
         MAX_PRICE_POST_MODERATO, MAX_PRICE_PRE_MODERATO, MIN_PRICE_POST_MODERATO,
         MIN_PRICE_PRE_MODERATO, compute_book_key,
     },
-    storage::{PrecompileStorageProvider, Slot, Storable, VecSlotExt},
+    storage::{Mapping, PrecompileStorageProvider, Slot, VecSlotExt},
     tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
@@ -53,11 +53,11 @@ pub struct StablecoinExchange {
     balances: Mapping<Address, Mapping<Address, u128>>,
     active_order_id: u128,
     pending_order_id: u128,
-    book_keys: Vec<B256>, // TODO(rusowsky): make sure this is in the correct slot
+    book_keys: Vec<B256>,
 }
 
 /// Helper type to easily interact with the `stream_ending_at` array
-type BookKeys = Slot<Vec<B256>, BookKeysSlot>;
+type BookKeys = Slot<Vec<B256>>;
 
 impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
@@ -447,7 +447,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         let book = Orderbook::new(base, quote);
         self.sstore_books(book_key, book)?;
-        BookKeys::push(self, book_key)?;
+        BookKeys::new(slots::BOOK_KEYS).push(self, book_key)?;
 
         // Emit PairCreated event
         self.storage.emit_event(
@@ -462,8 +462,6 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         Ok(book_key)
     }
-
-    // TODO(rusowsky): continue implementing below
 
     /// Place a limit order on the orderbook
     ///
