@@ -135,7 +135,8 @@ where
     }
 }
 
-/// An endless future that updates the [`AmmLiquidityCache`] based on the storage changes of the `FeeManager` precompile.
+/// An endless future that updates the [`crate::amm::AmmLiquidityCache`] based 
+/// on the storage changes of the `FeeManager` precompile.
 pub async fn maintain_amm_cache<Client>(pool: TempoTransactionPool<Client>)
 where
     Client: StateProviderFactory
