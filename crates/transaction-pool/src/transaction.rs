@@ -134,8 +134,11 @@ pub enum TempoPoolTransactionError {
     #[error("AA transaction with subblock nonce key prefix aren't supported in the pool")]
     SubblockNonceKey,
 
-    /// Thrown when it doesn't seem like
-    #[error("Insufficient liquidity for fee token: {0}")]
+    /// Thrown when we couldn't find a recently used validator token that has enough liquidity
+    /// in fee AMM pair with the user token this transaction will pay fees in.
+    #[error(
+        "Insufficient liquidity for fee token: {0}, please see https://docs.tempo.xyz/documentation/protocol/fees for more"
+    )]
     InsufficientLiquidity(Address),
 }
 
