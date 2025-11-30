@@ -11633,6 +11633,7 @@ dependencies = [
  "tempo-precompiles-macros",
  "thiserror 2.0.17",
  "tracing",
+ "tracing-subscriber 0.3.21",
 ]
 
 [[package]]
@@ -11678,6 +11679,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "test-fuzz",
+ "tracing-subscriber 0.3.21",
 ]
 
 [[package]]

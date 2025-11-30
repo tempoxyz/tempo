@@ -12,7 +12,7 @@ pub use tempo_contracts::precompiles::{
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
-    storage::{PrecompileStorageProvider, Storable, double_mapping_slot},
+    storage::{Mapping, PrecompileStorageProvider, Storable, double_mapping_slot},
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::{
