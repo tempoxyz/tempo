@@ -134,6 +134,7 @@ pub enum TempoPoolTransactionError {
     #[error("AA transaction with subblock nonce key prefix aren't supported in the pool")]
     SubblockNonceKey,
 
+    /// Thrown when it doesn't seem like
     #[error("Insufficient liquidity for fee token: {0}")]
     InsufficientLiquidity(Address),
 }

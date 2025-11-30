@@ -68,7 +68,14 @@ impl AmmLiquidityCache {
         // search through latest observed validator tokens and find any cached pools that have enough liquidity
         {
             let inner = self.inner.read();
-            for token in &inner.last_seen_tokens {
+            for token in &inner.unique_tokens {
+                // If user token matches one of the recently seen validator tokens,
+                // short circuit and return true. We assume that validators are willing to
+                // accept transactions that pay fees in their token directly.
+                if token == &user_token {
+                    return Ok(true);
+                }
+
                 let validator_id = address_to_token_id_unchecked(*token);
 
                 if let Some(validator_reserve) = inner.cache.get(&(user_id, validator_id)) {
