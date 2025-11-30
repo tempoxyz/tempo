@@ -49,9 +49,9 @@ impl Mailbox {
     /// assumptions:
     ///
     /// 1. only propoosals from the currently running and latest epoch will have
-    /// to be verified except for the last height.
-    /// 2. DKG dealings are only written into a block up to and exclusing the
-    /// last height of an epoch.
+    ///    to be verified except for the last height.
+    /// 2. DKG dealings are only written into a block up to and excluding the
+    ///    last height of an epoch.
     pub(crate) async fn verify_intermediate_dealings(
         &self,
         dealing: IntermediateOutcome,
