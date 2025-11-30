@@ -19,6 +19,7 @@ use commonware_utils::{
     Acknowledgement, quorum,
     sequence::U64,
     set::{Ordered, OrderedAssociated},
+    union,
 };
 
 use eyre::{OptionExt as _, eyre};
@@ -27,15 +28,15 @@ use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
 use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_node::TempoFullNode;
-use tracing::{Span, info, instrument, warn};
+use tracing::{Span, error, info, instrument, warn};
 
 use crate::{
     consensus::block::Block,
     dkg::{
-        ceremony::{self, Ceremony},
+        ceremony::{self, Ceremony, OUTCOME_NAMESPACE},
         manager::{
             DecodedValidator,
-            ingress::{CeremonyInfo, Finalize, GetIntermediateDealing, GetOutcome},
+            ingress::{Finalize, GetIntermediateDealing, GetOutcome},
             validators::{self, ValidatorState},
         },
     },
@@ -260,6 +261,10 @@ where
         while let Some(message) = self.mailbox.next().await {
             let cause = message.cause;
             match message.command {
+                super::Command::Finalize(finalize) => {
+                    self.handle_finalized(cause, finalize, &mut ceremony, &mut ceremony_mux)
+                        .await;
+                }
                 super::Command::GetIntermediateDealing(get_ceremony_deal) => {
                     let _: Result<_, _> = self
                         .handle_get_intermediate_dealing(
@@ -269,33 +274,44 @@ where
                         )
                         .await;
                 }
-                super::Command::GetCeremonyInfo(get_ceremony_info) => {
-                    let ceremony_info = if let Some(epoch_state) =
-                        self.post_allegretto_metadatas.current_epoch_state()
-                    {
-                        CeremonyInfo {
-                            epoch: epoch_state.epoch(),
-                            is_post_allegretto: true,
-                        }
-                    } else if let Some(epoch_state) =
-                        self.pre_allegretto_metadatas.current_epoch_state()
-                    {
-                        CeremonyInfo {
-                            epoch: epoch_state.epoch(),
-                            is_post_allegretto: false,
-                        }
-                    } else {
-                        continue;
-                    };
-                    let _ = get_ceremony_info.response.send(ceremony_info);
-                }
                 super::Command::GetOutcome(get_ceremony_outcome) => {
                     let _: Result<_, _> =
                         self.handle_get_outcome(cause, get_ceremony_outcome).await;
                 }
-                super::Command::Finalize(finalize) => {
-                    self.handle_finalized(cause, finalize, &mut ceremony, &mut ceremony_mux)
-                        .await;
+
+                // Verifies some DKG dealing based on the current state the DKG manager
+                // is in. This is a request when verifying proposals. It relies on the
+                // fact that a new epoch (and hence a different hardfork regime) will
+                // only be entered once the finalized height of the current epoch was seen.
+                //
+                // Furthermore, extra data headers are only checked for intermediate
+                // dealings up but excluding the last height of an epoch.
+                //
+                // In other words: no dealing will ever have to be verified if it is
+                // for another epoch than the currently latest one.
+                super::Command::VerifyDealing(verify_dealing) => {
+                    let outcome = if self
+                        .post_allegretto_metadatas
+                        .current_epoch_state()
+                        .is_some()
+                    {
+                        verify_dealing
+                            .dealing
+                            .verify(&union(&self.config.namespace, OUTCOME_NAMESPACE))
+                    } else if self
+                        .pre_allegretto_metadatas
+                        .current_epoch_state()
+                        .is_some()
+                    {
+                        verify_dealing.dealing.verify_pre_allegretto(&union(
+                            &self.config.namespace,
+                            OUTCOME_NAMESPACE,
+                        ))
+                    } else {
+                        error!("could not determine if we are running pre- or post allegretto;");
+                        continue;
+                    };
+                    let _ = verify_dealing.response.send(outcome);
                 }
             }
         }

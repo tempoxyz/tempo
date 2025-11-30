@@ -54,7 +54,6 @@ use super::{
 };
 use crate::{
     consensus::{Digest, block::Block},
-    dkg,
     epoch::SchemeProvider,
     subblocks,
 };
@@ -648,7 +647,6 @@ impl Inner<Init> {
             &self.state.dkg_manager,
             self.epoch_length,
             &proposer,
-            round,
         )
         .await
         {
@@ -841,7 +839,6 @@ async fn verify_header_extra_data(
     dkg_manager: &crate::dkg::manager::Mailbox,
     epoch_length: u64,
     proposer: &PublicKey,
-    round: Round,
 ) -> eyre::Result<()> {
     if utils::is_last_block_in_epoch(epoch_length, block.height()).is_some() {
         info!(
@@ -883,41 +880,13 @@ async fn verify_header_extra_data(
             dealing.dealer(),
         );
 
-        let ceremony_info = dkg_manager
-            .get_ceremony_info()
-            .await
-            .wrap_err("DKG manager did not return information on the current ceremony state")?;
         ensure!(
-            ceremony_info.epoch == round.epoch(),
-            "ceremony info is for epoch `{}, but current round is `{}`; this is \
-            strange and should not happen, but it prevents rendering a \
-            decision on the intermediate DKG outcome block",
-            ceremony_info.epoch,
-            round.epoch(),
+            dkg_manager
+                .verify_intermediate_dealings(dealing)
+                .await
+                .wrap_err("failed request to verify DKG dealing")?,
+            "signature of intermediate DKG outcome could not be verified",
         );
-        if ceremony_info.is_post_allegretto {
-            debug!(
-                ceremony.epoch = ceremony_info.epoch,
-                dkg_dealing.signature = %dealing.signature(),
-                "DKG manager returned that it is running post-allegretto \
-                ceremonies; using post-allegretto signature verification",
-            );
-            ensure!(
-                dkg::verify_dkg_dealing(&dealing, dkg::HardforkRegime::PostAllegretto),
-                "signature of intermediate DKG outcome could not be verified",
-            );
-        } else {
-            debug!(
-                ceremony.epoch = ceremony_info.epoch,
-                dkg_dealing.signature = %dealing.signature(),
-                "DKG manager returned that it is running pre-allegretto \
-                ceremonies; using post-allegretto signature verification",
-            );
-            ensure!(
-                dkg::verify_dkg_dealing(&dealing, dkg::HardforkRegime::PreAllegretto),
-                "signature of intermediate DKG outcome could not be verified",
-            );
-        }
     }
 
     Ok(())
