@@ -3,44 +3,46 @@ mod dex;
 use itertools::Itertools;
 use reth_tracing::{
     RethTracer, Tracer,
-    tracing::{error, info, warn},
+    tracing::{debug, error, info, warn},
 };
 use tempo_alloy::TempoNetwork;
 
 use alloy::{
     consensus::BlockHeader,
-    eips::BlockNumberOrTag::Latest,
     network::ReceiptResponse,
     primitives::{Address, B256, BlockNumber, U256},
-    providers::{DynProvider, PendingTransactionBuilder, Provider, ProviderBuilder},
+    providers::{
+        DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
+        WatchTxError,
+    },
+    rpc::client::NoParams,
+    signers::local::{
+        MnemonicBuilder, PrivateKeySigner,
+        coins_bip39::{English, Mnemonic, MnemonicError},
+    },
     transports::http::reqwest::Url,
 };
-use alloy_signer_local::{
-    MnemonicBuilder, PrivateKeySigner,
-    coins_bip39::{English, Mnemonic, MnemonicError},
-};
 use clap::Parser;
-use core_affinity::CoreId;
 use eyre::{Context, OptionExt, ensure};
-use futures::{StreamExt, TryStreamExt, future::BoxFuture, stream};
-use governor::{Quota, RateLimiter};
+use futures::{FutureExt, StreamExt, TryStreamExt, future::BoxFuture, stream};
+use governor::{Quota, RateLimiter, state::StreamRateLimitExt};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator};
 use rand::{
-    random, random_range,
+    random_range,
     seq::{IndexedRandom, SliceRandom},
 };
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rlimit::Resource;
 use serde::Serialize;
 use std::{
+    collections::VecDeque,
     fs::File,
     io::BufWriter,
     num::NonZeroU32,
     str::FromStr,
     sync::{
         Arc,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
-        mpsc,
+        atomic::{AtomicUsize, Ordering},
     },
     thread,
     time::Duration,
@@ -54,10 +56,14 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS,
-    stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK},
+    stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, TICK_SPACING},
     tip20::{ISSUER_ROLE, token_id_to_address},
 };
-use tokio::time::timeout;
+use tokio::{
+    select,
+    time::{Sleep, interval, sleep},
+};
+use tokio_util::sync::CancellationToken;
 
 /// Run maximum TPS throughput benchmarking
 #[derive(Parser, Debug)]
@@ -73,10 +79,6 @@ pub struct MaxTpsArgs {
     /// Number of accounts for pre-generation
     #[arg(short, long, default_value_t = 100)]
     accounts: u64,
-
-    /// Number of workers to send transactions
-    #[arg(short, long, default_value_t = 10)]
-    workers: usize,
 
     /// Mnemonic for generating accounts
     #[arg(short, long, default_value = "random")]
@@ -103,10 +105,6 @@ pub struct MaxTpsArgs {
     /// Large amount of transactions in a block will result in system transaction OutOfGas error.
     #[arg(long, default_value_t = 10000)]
     max_concurrent_transactions: usize,
-
-    /// Disable binding worker threads to specific CPU cores, letting the OS scheduler handle placement.
-    #[arg(long)]
-    disable_thread_pinning: bool,
 
     /// File descriptor limit to set
     #[arg(long)]
@@ -145,6 +143,12 @@ pub struct MaxTpsArgs {
     /// Calls tempo_fundAddress for each account.
     #[arg(long)]
     faucet: bool,
+
+    /// Clear the transaction pool before running the benchmark.
+    ///
+    /// Calls admin_clearTxpool.
+    #[arg(long)]
+    clear_txpool: bool,
 }
 
 impl MaxTpsArgs {
@@ -160,8 +164,13 @@ impl MaxTpsArgs {
 
         let target_url = self.target_urls[0].clone();
         if self.target_urls.len() > 1 {
-            warn!("Multiple target URLs provided, but only the first one will be used")
+            warn!(
+                "Multiple target URLs provided, but only the first one will be used for sending transactions"
+            )
         }
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_http(target_url.clone())
+            .erased();
 
         let tip20_weight = (self.tip20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let place_order_weight = (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64;
@@ -184,9 +193,21 @@ impl MaxTpsArgs {
             })
             .collect::<eyre::Result<Vec<_>>>()?;
 
+        if self.clear_txpool {
+            for target_url in &self.target_urls {
+                let transactions: u64 = ProviderBuilder::new()
+                    .connect_http(target_url.clone())
+                    .raw_request("admin_clearTxpool".into(), NoParams::default())
+                    .await
+                    .context(
+                        "Failed to clear transaction pool for {target_url}. Is `admin_clearTxpool` RPC method available?",
+                    )?;
+                info!(%target_url, transactions, "Cleared transaction pool");
+            }
+        }
+
         // Fund accounts from faucet if requested
         if self.faucet {
-            let provider = ProviderBuilder::new().connect_http(target_url.clone());
             fund_accounts(
                 &provider,
                 &signer_providers
@@ -232,58 +253,78 @@ impl MaxTpsArgs {
         .await
         .context("Failed to generate transactions")?;
 
-        // Get first block height before sending transactions
-        let provider = ProviderBuilder::new().connect_http(target_url.clone());
-        let start_block = provider
-            .get_block(Latest.into())
-            .await?
-            .ok_or_eyre("failed to fetch start block")?;
-        let start_block_number = start_block.header.number;
-
-        // Create shared transaction counter and monitoring
-        let tx_counter = Arc::new(AtomicU64::new(0));
-
-        // Spawn monitoring thread for TPS tracking
-        let _monitor_handle = monitor_tps(tx_counter.clone(), total_txs);
-
-        // Spawn workers and send transactions
+        // Send transactions
         let mut pending_txs = send_transactions(
             transactions,
-            self.workers,
+            self.max_concurrent_requests,
             self.tps,
-            self.disable_thread_pinning,
-            tx_counter,
+            sleep(Duration::from_secs(self.duration)),
         )
-        .context("Failed to send transactions")?;
+        .await;
+        let end_block_number = provider.get_block_number().await?;
 
-        // Graceful period of 1 second for `monitor_tps` to print out last statement
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        info!("Retrieving first block number from sent transactions");
+        let start_block_number = loop {
+            if let Some(first_tx) = pending_txs.pop_front() {
+                debug!(hash = %first_tx.tx_hash(), "Retrieving transaction receipt for first block number");
+                if let Ok(first_tx_receipt) = first_tx
+                    .with_timeout(Some(Duration::from_secs(5)))
+                    .get_receipt()
+                    .await
+                {
+                    break first_tx_receipt.block_number;
+                }
+            } else {
+                break None;
+            }
+        };
+        let Some(start_block_number) = start_block_number else {
+            eyre::bail!("Failed to retrieve start block number")
+        };
 
+        // Collect a sample of receipts and print the stats
         let sample_size = pending_txs.len().min(self.sample_size);
+        let successful = Arc::new(AtomicUsize::new(0));
+        let timeout = Arc::new(AtomicUsize::new(0));
+        let failed = Arc::new(AtomicUsize::new(0));
         info!(sample_size, "Collecting a sample of receipts");
-        let end_block_number = stream::iter(
-            (0..sample_size)
-                .map(|_| {
-                    let idx = random_range(0..pending_txs.len());
-                    pending_txs.remove(idx)
-                })
-                .progress(),
-        )
-        .map(async |pending_tx| {
-            pending_tx
-                .get_receipt()
-                .await
-                .map(|receipt| receipt.block_number)
-        })
-        .buffered(self.max_concurrent_requests)
-        .try_collect::<Vec<_>>()
-        .await?
-        .last()
-        .copied()
-        .flatten()
-        .unwrap_or(start_block_number);
+        stream::iter(0..sample_size)
+            .map(|_| {
+                let idx = random_range(0..pending_txs.len());
+                pending_txs.remove(idx).expect("index is in range")
+            })
+            .map(|pending_tx| {
+                let hash = *pending_tx.tx_hash();
+                pending_tx
+                    .with_timeout(Some(Duration::from_secs(5)))
+                    .get_receipt()
+                    .map(move |result| (hash, result))
+            })
+            .for_each_concurrent(self.max_concurrent_requests, async |result| {
+                let (hash, result) = result.await;
+                match result {
+                    Ok(_) => {
+                        successful.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(PendingTransactionError::TxWatcher(WatchTxError::Timeout)) => {
+                        timeout.fetch_add(1, Ordering::Relaxed);
+                        error!(?hash, "Transaction receipt retrieval timed out");
+                    }
+                    Err(err) => {
+                        failed.fetch_add(1, Ordering::Relaxed);
+                        error!(?hash, "Transaction receipt retrieval failed: {}", err);
+                    }
+                }
+            })
+            .await;
+        info!(
+            successful = successful.load(Ordering::Relaxed),
+            timeout = timeout.load(Ordering::Relaxed),
+            failed = failed.load(Ordering::Relaxed),
+            "Collected a sample of receipts"
+        );
 
-        generate_report(&target_url, start_block_number, end_block_number, &self).await?;
+        generate_report(provider, start_block_number, end_block_number, &self).await?;
 
         Ok(())
     }
@@ -317,87 +358,71 @@ impl MnemonicArg {
     }
 }
 
-fn send_transactions(
+/// Awaits pending transactions with up to `tps` per second and `max_concurrent_requests` simultaneous in-flight requests. Stops when `deadline` future resolves.
+async fn send_transactions(
     transactions: Vec<
         BoxFuture<'static, alloy::contract::Result<PendingTransactionBuilder<TempoNetwork>>>,
     >,
-    num_workers: usize,
+    max_concurrent_requests: usize,
     tps: u64,
-    disable_thread_pinning: bool,
-    tx_counter: Arc<AtomicU64>,
-) -> eyre::Result<Vec<PendingTransactionBuilder<TempoNetwork>>> {
+    deadline: Sleep,
+) -> VecDeque<PendingTransactionBuilder<TempoNetwork>> {
     info!(
         transactions = transactions.len(),
-        num_workers, tps, "Sending transactions"
+        max_concurrent_requests, tps, "Sending transactions"
     );
 
-    // Get available cores
-    let core_ids =
-        core_affinity::get_core_ids().ok_or_else(|| eyre::eyre!("Failed to get core IDs"))?;
-    info!(cores = core_ids.len(), "Detected effective cores");
+    // Create shared transaction counter and monitoring
+    let tx_counter = Arc::new(AtomicUsize::new(0));
 
-    let num_sender_threads = num_workers.min(core_ids.len());
-    let chunk_size = transactions.len().div_ceil(num_sender_threads);
+    // Spawn monitoring task for TPS reporting
+    let cancel = CancellationToken::new();
+    let _drop_guard = cancel.clone().drop_guard();
+    tokio::spawn(monitor_tps(
+        tx_counter.clone(),
+        transactions.len(),
+        cancel.clone(),
+    ));
 
-    // Create a shared rate limiter for all threads
-    let rate_limiter = Arc::new(RateLimiter::direct(Quota::per_second(
-        NonZeroU32::new(tps as u32).unwrap(),
-    )));
+    // Create a rate limiter
+    let rate_limiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(tps as u32).unwrap()));
 
-    let (pending_txs_tx, pending_txs_rx) = mpsc::channel();
-    transactions
-        .into_iter()
-        .chunks(chunk_size)
-        .into_iter()
-        .enumerate()
-        .for_each(|(thread_id, transactions)| {
-            if !disable_thread_pinning {
-                let core_id = core_ids[thread_id % core_ids.len()];
-                pin_thread(core_id);
+    let failed = Arc::new(AtomicUsize::new(0));
+    let timeout = Arc::new(AtomicUsize::new(0));
+    let transactions = stream::iter(transactions)
+        .ratelimit_stream(&rate_limiter)
+        .map(|transaction| tokio::time::timeout(Duration::from_secs(1), transaction))
+        .buffer_unordered(max_concurrent_requests)
+        .filter_map(|result| async {
+            match result {
+                Ok(Ok(pending_tx)) => {
+                    tx_counter.fetch_add(1, Ordering::Relaxed);
+                    Some(pending_tx)
+                }
+                Ok(Err(err)) => {
+                    failed.fetch_add(1, Ordering::Relaxed);
+                    error!(?err, "Failed to send transaction");
+                    None
+                }
+                Err(_) => {
+                    timeout.fetch_add(1, Ordering::Relaxed);
+                    error!("Transaction sending timed out");
+                    None
+                }
             }
+        })
+        .take_until(deadline)
+        .collect()
+        .await;
 
-            let rate_limiter = rate_limiter.clone();
-            let transactions = transactions.collect::<Vec<_>>();
-            let tx_counter = tx_counter.clone();
-            let pending_txs_tx = pending_txs_tx.clone();
+    info!(
+        success = tx_counter.load(Ordering::Relaxed),
+        failed = failed.load(Ordering::Relaxed),
+        timeout = timeout.load(Ordering::Relaxed),
+        "Finished sending transactions"
+    );
 
-            // Spawn thread and send transactions over specified duration
-            thread::spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("Failed to build tokio runtime");
-
-                rt.block_on(async {
-                    // TODO: Send txs from multiple senders
-                    // Create multiple connections for this thread
-                    // let mut providers = Vec::new();
-                    // for i in 0..num_connections {
-                    //     println!("{i:?}");
-                    //     let url = &target_urls[(i as usize) % target_urls.len()];
-                    //     let provider = ProviderBuilder::new().connect_http(url.clone());
-                    //     providers.push(provider);
-                    // }
-
-                    for tx in transactions {
-                        rate_limiter.until_ready().await;
-
-                        match timeout(Duration::from_secs(1), tx).await {
-                            Ok(Ok(pending_tx)) => {
-                                tx_counter.fetch_add(1, Ordering::Relaxed);
-                                pending_txs_tx.send(pending_tx).unwrap();
-                            }
-                            Ok(Err(err)) => error!(?err, "Failed to send transaction"),
-                            Err(_) => error!("Transaction sending timed out"),
-                        }
-                    }
-                })
-            });
-        });
-    drop(pending_txs_tx);
-
-    let pending_txs = pending_txs_rx.into_iter().collect();
-    Ok(pending_txs)
+    transactions
 }
 
 async fn generate_transactions(
@@ -488,9 +513,10 @@ async fn generate_transactions(
                         let exchange =
                             IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider);
 
-                        // Place an order at exactly the dust limit
+                        // Place an order at a random tick that's a multiple of `TICK_SPACING`
                         let tick =
-                            (random::<u16>() % (MAX_TICK - MIN_TICK) as u16) as i16 + MIN_TICK;
+                            rand::random_range(MIN_TICK / TICK_SPACING..=MAX_TICK / TICK_SPACING)
+                                * TICK_SPACING;
                         let tx = exchange.place(token, MIN_ORDER_AMOUNT, true, tick);
 
                         tx.send().await
@@ -517,7 +543,7 @@ async fn generate_transactions(
 
 /// Funds accounts from the faucet using `temp_fundAddress` RPC.
 async fn fund_accounts(
-    provider: &impl Provider,
+    provider: &DynProvider<TempoNetwork>,
     addresses: &[Address],
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
@@ -574,17 +600,6 @@ pub fn increase_nofile_limit(min_limit: u64) -> eyre::Result<u64> {
     Ok(soft)
 }
 
-/// Pin the current thread to the given core ID if enabled.
-/// Panics if the thread fails to pin.
-pub fn pin_thread(core_id: CoreId) {
-    if !core_affinity::set_for_current(core_id) {
-        panic!(
-            "Failed to pin thread to core {}. Try disabling thread_pinning in your config.",
-            core_id.id
-        );
-    }
-}
-
 #[derive(Serialize)]
 struct BenchmarkedBlock {
     number: BlockNumber,
@@ -601,7 +616,6 @@ struct BenchmarkMetadata {
     target_tps: u64,
     run_duration_secs: u64,
     num_accounts: u64,
-    num_workers: usize,
     chain_id: u64,
     max_concurrent_requests: usize,
     start_block: BlockNumber,
@@ -624,13 +638,12 @@ struct BenchmarkReport {
 }
 
 pub async fn generate_report(
-    rpc_url: &Url,
+    provider: DynProvider<TempoNetwork>,
     start_block: BlockNumber,
     end_block: BlockNumber,
     args: &MaxTpsArgs,
 ) -> eyre::Result<()> {
-    let provider =
-        ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(rpc_url.clone());
+    info!(start_block, end_block, "Generating report");
 
     let mut last_block_timestamp: Option<u64> = None;
 
@@ -640,11 +653,11 @@ pub async fn generate_report(
         let block = provider
             .get_block(number.into())
             .await?
-            .expect("we should always have this block number");
+            .ok_or_eyre("Block {number} not found")?;
         let receipts = provider
             .get_block_receipts(number.into())
             .await?
-            .expect("there should always be at least one receipt");
+            .ok_or_eyre("Receipts for block {number} not found")?;
         let timestamp = block.header.timestamp_millis();
 
         let latency_ms = last_block_timestamp.map(|last| timestamp - last);
@@ -676,7 +689,6 @@ pub async fn generate_report(
         target_tps: args.tps,
         run_duration_secs: args.duration,
         num_accounts: args.accounts,
-        num_workers: args.workers,
         chain_id: provider.get_chain_id().await?,
         max_concurrent_requests: args.max_concurrent_requests,
         start_block,
@@ -694,31 +706,39 @@ pub async fn generate_report(
         blocks: benchmarked_blocks,
     };
 
-    let file = File::create("report.json")?;
+    let path = "report.json";
+    let file = File::create(path)?;
     let writer = BufWriter::new(file);
     serde_json::to_writer_pretty(writer, &report)?;
 
-    info!("Report written to report.json");
+    info!(path, "Generated report");
 
     Ok(())
 }
 
-fn monitor_tps(tx_counter: Arc<AtomicU64>, target_count: u64) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        let mut last_count = 0u64;
-        loop {
-            let current_count = tx_counter.load(Ordering::Relaxed);
-            let tps = current_count - last_count;
-            last_count = current_count;
+async fn monitor_tps(tx_counter: Arc<AtomicUsize>, target_count: usize, token: CancellationToken) {
+    let mut last_count = 0;
+    let mut ticker = interval(Duration::from_secs(1));
 
-            info!(tps, total = current_count, "Status");
-            thread::sleep(Duration::from_secs(1));
+    loop {
+        select! {
+            _ = ticker.tick() => {
+                let current_count = tx_counter.load(Ordering::Relaxed);
+                let tps = current_count - last_count;
+                last_count = current_count;
 
-            if current_count == target_count {
+                info!(tps, total = current_count, "Status");
+                thread::sleep(Duration::from_secs(1));
+
+                if current_count == target_count {
+                    break;
+                }
+            }
+            _ = token.cancelled() => {
                 break;
             }
         }
-    })
+    }
 }
 
 async fn join_all<

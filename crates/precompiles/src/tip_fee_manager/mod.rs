@@ -10,7 +10,7 @@ pub use tempo_contracts::precompiles::{
 use crate::{
     DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, PATH_USD_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::{PrecompileStorageProvider, Slot, Storable, StorageKey, VecSlotExt},
+    storage::{Mapping, PrecompileStorageProvider, Slot, StorageKey, VecSlotExt},
     tip_fee_manager::amm::{Pool, compute_amount_out},
     tip20::{
         ITIP20, TIP20Token, address_to_token_id_unchecked, is_tip20, token_id_to_address,
@@ -24,13 +24,13 @@ use revm::state::Bytecode;
 use tempo_precompiles_macros::{Storable, contract};
 
 /// Helper type to easily interact with the `tokens_with_fees` array
-type TokensWithFees = Slot<Vec<Address>, TokensWithFeesSlot>;
+type TokensWithFees = Slot<Vec<Address>>;
 
 /// Helper type to easily interact with the `pools_with_fees` array
-type PoolsWithFees = Slot<Vec<TokenPair>, PoolsWithFeesSlot>;
+type PoolsWithFees = Slot<Vec<TokenPair>>;
 
 /// Helper type to easily interact with the `validators_with_fees` array
-type ValidatorsWithFees = Slot<Vec<Address>, ValidatorsWithFeesSlot>;
+type ValidatorsWithFees = Slot<Vec<Address>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Storable)]
 pub struct TokenPair {
@@ -118,10 +118,13 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             return Err(FeeManagerError::invalid_token().into());
         }
 
-        if sender == beneficiary
-            || (self.storage.spec().is_allegretto()
-                && self.sload_validator_in_fees_array(sender)?)
-        {
+        // Prevent changing if validator already has collected fees (post-Allegretto)
+        if self.storage.spec().is_allegretto() && self.sload_validator_in_fees_array(sender)? {
+            return Err(FeeManagerError::cannot_change_with_pending_fees().into());
+        }
+
+        // Prevent changing within the validator's own block
+        if sender == beneficiary {
             return Err(FeeManagerError::cannot_change_within_block().into());
         }
 
@@ -229,7 +232,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
                 if !self.storage.spec().is_allegretto() {
                     // Pre-Allegretto: track in buggy token_in_fees_array
                     if !self.sload_token_in_fees_array(fee_token)? {
-                        TokensWithFees::push(self, fee_token)?;
+                        TokensWithFees::new(slots::TOKENS_WITH_FEES).push(self, fee_token)?;
                         self.sstore_token_in_fees_array(fee_token, true)?;
                     }
                 } else {
@@ -343,7 +346,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         };
         if !self.sload_pool_in_fees_array(pair)? {
             self.sstore_pool_in_fees_array(pair, true)?;
-            PoolsWithFees::push(self, pair)?;
+            PoolsWithFees::new(slots::POOLS_WITH_FEES).push(self, pair)?;
         }
         Ok(())
     }
@@ -353,7 +356,8 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     /// Also sets token_in_fees_array to false for each token
     fn drain_tokens_with_fees(&mut self) -> Result<Vec<Address>> {
         let mut tokens = Vec::new();
-        while let Some(token) = TokensWithFees::pop(self)? {
+        let tokens_with_fees = TokensWithFees::new(slots::TOKENS_WITH_FEES);
+        while let Some(token) = tokens_with_fees.pop(self)? {
             tokens.push(token);
             if self.storage.spec().is_moderato() {
                 self.sstore_token_in_fees_array(token, false)?;
@@ -366,7 +370,8 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     /// Drain all validators with fees by popping from the back until empty
     fn drain_validators_with_fees(&mut self) -> Result<Vec<Address>> {
         let mut validators = Vec::new();
-        while let Some(validator) = ValidatorsWithFees::pop(self)? {
+        let validator_with_fees = ValidatorsWithFees::new(slots::VALIDATORS_WITH_FEES);
+        while let Some(validator) = validator_with_fees.pop(self)? {
             validators.push(validator);
             self.sstore_validator_in_fees_array(validator, false)?;
         }
@@ -376,7 +381,8 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     /// Drain all pools with fees by popping from the back until empty
     fn drain_pools_with_fees(&mut self) -> Result<Vec<TokenPair>> {
         let mut pools = Vec::new();
-        while let Some(pool) = PoolsWithFees::pop(self)? {
+        let pools_with_fees = PoolsWithFees::new(slots::POOLS_WITH_FEES);
+        while let Some(pool) = pools_with_fees.pop(self)? {
             pools.push(pool);
             self.sstore_pool_in_fees_array(pool, false)?;
         }
@@ -400,7 +406,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         // If this is the first fee for the validator, record it in validators with fees
         if collected_fees.is_zero() {
             self.sstore_validator_in_fees_array(validator, true)?;
-            ValidatorsWithFees::push(self, validator)?;
+            ValidatorsWithFees::new(slots::VALIDATORS_WITH_FEES).push(self, validator)?;
         }
 
         Ok(())
@@ -629,6 +635,67 @@ mod tests {
         let query_call = IFeeManager::validatorTokensCall { validator };
         let returned_token = fee_manager.validator_tokens(query_call)?;
         assert_eq!(returned_token, token);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_validator_token_cannot_change_with_pending_fees() -> eyre::Result<()> {
+        use tempo_chainspec::hardfork::TempoHardfork;
+
+        // Use Allegretto hardfork since the pending fees check is post-Allegretto
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Allegretto);
+        let validator = Address::random();
+        let beneficiary = Address::random(); // Different from validator
+        let admin = Address::random();
+
+        // Initialize PathUSD first
+        initialize_path_usd(&mut storage, admin).unwrap();
+
+        // Create a USD token to use as fee token
+        let token = token_id_to_address(1);
+        let mut tip20_token = TIP20Token::from_address(token, &mut storage);
+        tip20_token
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
+            .unwrap();
+
+        let mut fee_manager = TipFeeManager::new(&mut storage);
+
+        // Simulate validator having pending fees by setting validator_in_fees_array
+        fee_manager.sstore_validator_in_fees_array(validator, true)?;
+
+        // Try to set validator token when validator has pending fees (but is not the beneficiary)
+        let call = IFeeManager::setValidatorTokenCall { token };
+        let result = fee_manager.set_validator_token(validator, call.clone(), beneficiary);
+
+        // Should fail with CannotChangeWithPendingFees
+        assert_eq!(
+            result,
+            Err(TempoPrecompileError::FeeManagerError(
+                FeeManagerError::cannot_change_with_pending_fees()
+            ))
+        );
+
+        // Now clear the pending fees flag and try again - should succeed since validator != beneficiary
+        fee_manager.sstore_validator_in_fees_array(validator, false)?;
+        let result = fee_manager.set_validator_token(validator, call.clone(), beneficiary);
+        assert!(result.is_ok());
+
+        // But if validator is the beneficiary, should fail with CannotChangeWithinBlock
+        let result = fee_manager.set_validator_token(validator, call, validator);
+        assert_eq!(
+            result,
+            Err(TempoPrecompileError::FeeManagerError(
+                FeeManagerError::cannot_change_within_block()
+            ))
+        );
 
         Ok(())
     }

@@ -15,6 +15,7 @@ alloy = { workspace = true, default-features = false, features = [
     "rpc-types",
     "transports",
     "providers",
+    "provider-ws",
     "reqwest-rustls-tls",
     "signers",
     "signer-local",

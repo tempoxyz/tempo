@@ -158,6 +158,11 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                     Ok(crate::stablecoin_exchange::MAX_TICK)
                 })
             }
+            IStablecoinExchange::TICK_SPACINGCall::SELECTOR => {
+                view::<IStablecoinExchange::TICK_SPACINGCall>(calldata, |_call| {
+                    Ok(crate::stablecoin_exchange::TICK_SPACING)
+                })
+            }
             IStablecoinExchange::PRICE_SCALECall::SELECTOR => {
                 view::<IStablecoinExchange::PRICE_SCALECall>(calldata, |_call| {
                     Ok(crate::stablecoin_exchange::PRICE_SCALE)
@@ -399,6 +404,29 @@ mod tests {
         assert_eq!(
             returned_value, 98_000,
             "Post-moderato MIN_PRICE should be 98_000"
+        );
+    }
+
+    #[test]
+    fn test_tick_spacing() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize().unwrap();
+
+        let sender = Address::ZERO;
+        let call = IStablecoinExchange::TICK_SPACINGCall {};
+        let calldata = call.abi_encode();
+
+        let result = exchange.call(&Bytes::from(calldata), sender);
+        assert!(result.is_ok());
+
+        let output = result.unwrap().bytes;
+        let returned_value = i16::abi_decode(&output).unwrap();
+
+        let expected = crate::stablecoin_exchange::TICK_SPACING;
+        assert_eq!(
+            returned_value, expected,
+            "TICK_SPACING should be {expected}"
         );
     }
 
