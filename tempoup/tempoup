@@ -36,30 +36,27 @@ error() {
 # Compare SemVer versions
 # Returns 0 if $1 > $2, 1 otherwise
 version_gt() {
-    local ver1="$1"
-    local ver2="$2"
+    [ "$1" = "$2" ] && return 1
 
     # Remove 'v' prefix if present
-    ver1="${ver1#v}"
-    ver2="${ver2#v}"
+    local ver1="${1#v}"
+    local ver2="${2#v}"
 
-    # Split versions into arrays
-    IFS='.' read -ra v1 <<< "$ver1"
-    IFS='.' read -ra v2 <<< "$ver2"
+    IFS=. read -r major1 minor1 patch1 <<EOF
+$ver1
+EOF
+    IFS=. read -r major2 minor2 patch2 <<EOF
+$ver2
+EOF
 
-    # Compare major.minor.patch
-    for i in 0 1 2; do
-        local num1="${v1[$i]:-0}"
-        local num2="${v2[$i]:-0}"
+    [ "$major1" -gt "$major2" ] && return 0
+    [ "$major1" -lt "$major2" ] && return 1
+    [ "$minor1" -gt "$minor2" ] && return 0
+    [ "$minor1" -lt "$minor2" ] && return 1
+    [ "$patch1" -gt "$patch2" ] && return 0
+    [ "$patch1" -lt "$patch2" ] && return 1
 
-        if [[ $num1 -gt $num2 ]]; then
-            return 0
-        elif [[ $num1 -lt $num2 ]]; then
-            return 1
-        fi
-    done
-
-    return 1  # Versions are equal
+    return 1
 }
 
 # Download release asset using gh CLI
@@ -85,15 +82,8 @@ check_installer_up_to_date() {
     fi
 
     # Fetch the remote version using gh CLI
-    # Try main branch first
     local remote_version=$(gh api "repos/$REPO/contents/tempoup/tempoup?ref=main" \
         --jq '.content' 2>/dev/null | base64 -d 2>/dev/null | grep '^TEMPOUP_INSTALLER_VERSION=' | sed -E 's/TEMPOUP_INSTALLER_VERSION="(.+)"/\1/')
-
-    # TODO: Remove this fallback after jenpaff/tempoup-installer is merged to main
-    if [[ -z "$remote_version" ]]; then
-        remote_version=$(gh api "repos/$REPO/contents/tempoup/tempoup?ref=jenpaff/tempoup-installer" \
-            --jq '.content' 2>/dev/null | base64 -d 2>/dev/null | grep '^TEMPOUP_INSTALLER_VERSION=' | sed -E 's/TEMPOUP_INSTALLER_VERSION="(.+)"/\1/')
-    fi
 
     if [[ -z "$remote_version" ]]; then
         return
@@ -124,15 +114,8 @@ update_tempoup() {
     # Download latest tempoup script using gh CLI
     info "Downloading latest tempoup..."
 
-    # Try main branch first
-    if gh api "repos/$REPO/contents/tempoup/tempoup?ref=main" \
+    if ! gh api "repos/$REPO/contents/tempoup/tempoup?ref=main" \
         --jq '.content' 2>/dev/null | base64 -d > "$tmp_file" 2>/dev/null; then
-        :  # Success, do nothing
-    # TODO: Remove this fallback after jenpaff/tempoup-installer is merged to main
-    elif gh api "repos/$REPO/contents/tempoup/tempoup?ref=jenpaff/tempoup-installer" \
-        --jq '.content' 2>/dev/null | base64 -d > "$tmp_file" 2>/dev/null; then
-        :  # Success from feature branch
-    else
         error "Failed to download tempoup update"
     fi
 
@@ -243,7 +226,6 @@ detect_target() {
         darwin)
             case "$arch" in
                 arm64) echo "aarch64-apple-darwin" ;;
-                amd64) echo "x86_64-apple-darwin" ;;
                 *) error "Unsupported Darwin architecture: $arch" ;;
             esac
             ;;
@@ -332,6 +314,12 @@ main() {
     download_file "$VERSION_TAG" "$ARCHIVE_NAME" "$TMP_DIR"
 
     ARCHIVE_PATH="$TMP_DIR/$ARCHIVE_NAME"
+
+    # Download and verify checksum
+    info "Verifying checksum..."
+    download_file "$VERSION_TAG" "${ARCHIVE_NAME}.sha256" "$TMP_DIR"
+
+    (cd "$TMP_DIR" && shasum -a 256 -c "${ARCHIVE_NAME}.sha256") || error "Checksum verification failed"
 
     # Extract archive
     info "Extracting archive..."

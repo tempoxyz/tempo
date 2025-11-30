@@ -20,7 +20,7 @@ tempoup --help             # Show help
 ## Supported Platforms
 
 - **Linux**: x86_64, arm64
-- **macOS**: Intel (x86_64), Apple Silicon (arm64)
+- **macOS**: Apple Silicon (arm64)
 - **Windows**: x86_64, arm64
 
 ## Installation Directory
