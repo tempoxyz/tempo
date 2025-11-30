@@ -23,7 +23,7 @@ use commonware_utils::{max_faults, sequence::U64, set::Ordered, union};
 use eyre::{WrapErr as _, bail, ensure};
 use futures::{FutureExt as _, lock::Mutex};
 use indexmap::IndexSet;
-use prometheus_client::metrics::gauge::Gauge;
+use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
 use tracing::{Level, debug, error, info, instrument, warn};
 
@@ -71,22 +71,77 @@ pub(super) struct Config {
 
 #[derive(Clone)]
 pub(super) struct Metrics {
-    pub(super) shares_distributed: Gauge,
-    pub(super) acks_received: Gauge,
-    pub(super) acks_sent: Gauge,
-    pub(super) dealings_read: Gauge,
-    pub(super) dealings_empty: Gauge,
-    pub(super) dealings_failed: Gauge,
+    shares_distributed: Gauge,
+    acks_received: Gauge,
+    acks_sent: Gauge,
+    dealings_read: Gauge,
+    dealings_empty: Gauge,
+    dealings_failed: Gauge,
+
+    failures: Counter,
+    successes: Counter,
+    dealers: Gauge,
+    players: Gauge,
+
+    how_often_dealer: Counter,
+    how_often_player: Counter,
 }
 
 impl Metrics {
-    fn new<C: commonware_runtime::Metrics>(context: &C) -> Self {
+    /// Construct and register the ceremony-related metrics on `context`.
+    ///
+    /// Note: because there exists no long-lived ceremony specific context,
+    /// most of the metrics defined here carry a manual `ceremony` prefix.
+    pub(super) fn register<C: commonware_runtime::Metrics>(context: &C) -> Self {
+        let failures = Counter::default();
+        let successes = Counter::default();
+
+        let dealers = Gauge::default();
+        let players = Gauge::default();
+
+        let how_often_dealer = Counter::default();
+        let how_often_player = Counter::default();
+
         let shares_distributed = Gauge::default();
         let acks_received = Gauge::default();
         let acks_sent = Gauge::default();
         let dealings_read = Gauge::default();
         let dealings_empty = Gauge::default();
         let dealings_failed = Gauge::default();
+
+        context.register(
+            "ceremony_failures",
+            "the number of failed ceremonies a node participated in",
+            failures.clone(),
+        );
+        context.register(
+            "ceremony_successes",
+            "the number of successful ceremonies a node participated in",
+            successes.clone(),
+        );
+        context.register(
+            "ceremony_dealers",
+            "the number of dealers in the currently running ceremony",
+            dealers.clone(),
+        );
+        context.register(
+            "ceremony_players",
+            "the number of players in the currently running ceremony",
+            players.clone(),
+        );
+
+        // no prefix for legacy reasons
+        context.register(
+            "how_often_dealer",
+            "number of the times as node was active as a dealer",
+            how_often_dealer.clone(),
+        );
+        // no prefix for for legacy reasons
+        context.register(
+            "how_often_player",
+            "number of the times as node was active as a player",
+            how_often_player.clone(),
+        );
 
         context.register(
             "ceremony_shares_distributed",
@@ -126,7 +181,30 @@ impl Metrics {
             dealings_read,
             dealings_empty,
             dealings_failed,
+            dealers,
+            players,
+            how_often_dealer,
+            how_often_player,
+            failures,
+            successes,
         }
+    }
+
+    fn reset_per_ceremony_metrics(&self) {
+        self.shares_distributed.set(0);
+        self.acks_received.set(0);
+        self.acks_sent.set(0);
+        self.dealings_read.set(0);
+        self.dealings_empty.set(0);
+        self.dealings_failed.set(0);
+    }
+
+    pub(super) fn one_more_failure(&self) {
+        self.failures.inc();
+    }
+
+    pub(super) fn one_more_success(&self) {
+        self.successes.inc();
     }
 }
 
@@ -180,9 +258,15 @@ where
         mux: &mut MuxHandle<TSender, TReceiver>,
         ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, State>>>,
         config: Config,
+        metrics: Metrics,
     ) -> eyre::Result<Self> {
-        // Create fresh metrics for this ceremony
-        let metrics = Metrics::new(context);
+        // Reset the cumulants for the current ceremony back to zero instead
+        // of creating fresh metrics: registering new metrics would just push
+        // more and more into the prometheus registry without ever pruning.
+        metrics.reset_per_ceremony_metrics();
+
+        metrics.dealers.set(config.dealers.len() as i64);
+        metrics.players.set(config.players.len() as i64);
 
         let (sender, receiver) = mux
             .register(config.epoch)
@@ -327,6 +411,9 @@ where
                 .await
                 .expect("must always be able to initialize the ceremony state to disk");
         };
+
+        metrics.how_often_player.inc_by(player_me.is_some() as u64);
+        metrics.how_often_dealer.inc_by(dealer_me.is_some() as u64);
 
         let previous = config.share.clone().map_or_else(
             || Role::Verifier {

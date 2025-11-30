@@ -129,16 +129,7 @@ where
         .await
         .expect("must be able to initialize metadata on disk to function");
 
-        let ceremony_failures = Counter::default();
-        let ceremony_successes = Counter::default();
-
-        let ceremony_dealers = Gauge::default();
-        let ceremony_players = Gauge::default();
-
         let syncing_players = Gauge::default();
-
-        let how_often_dealer = Counter::default();
-        let how_often_player = Counter::default();
 
         let peers = Gauge::default();
 
@@ -147,41 +138,9 @@ where
         let failed_allegretto_transitions = Counter::default();
 
         context.register(
-            "ceremony_failures",
-            "the number of failed ceremonies a node participated in",
-            ceremony_failures.clone(),
-        );
-        context.register(
-            "ceremony_successes",
-            "the number of successful ceremonies a node participated in",
-            ceremony_successes.clone(),
-        );
-        context.register(
-            "ceremony_dealers",
-            "the number of dealers in the currently running ceremony",
-            ceremony_dealers.clone(),
-        );
-        context.register(
-            "ceremony_players",
-            "the number of players in the currently running ceremony",
-            ceremony_players.clone(),
-        );
-
-        context.register(
             "syncing_players",
             "how many syncing players were registered; these will become players in the next ceremony",
             syncing_players.clone(),
-        );
-
-        context.register(
-            "how_often_dealer",
-            "number of the times as node was active as a dealer",
-            how_often_dealer.clone(),
-        );
-        context.register(
-            "how_often_player",
-            "number of the times as node was active as a player",
-            how_often_player.clone(),
         );
 
         context.register(
@@ -207,18 +166,15 @@ where
             failed_allegretto_transitions.clone(),
         );
 
+        let ceremony = ceremony::Metrics::register(&context);
+
         let metrics = Metrics {
-            how_often_dealer,
-            how_often_player,
-            ceremony_failures,
-            ceremony_successes,
-            ceremony_dealers,
-            ceremony_players,
             peers,
             syncing_players,
             pre_allegretto_ceremonies,
             post_allegretto_ceremonies,
             failed_allegretto_transitions,
+            ceremony,
         };
 
         Ok(Self {
@@ -657,17 +613,12 @@ impl EpochState {
 
 #[derive(Clone)]
 struct Metrics {
-    how_often_dealer: Counter,
-    how_often_player: Counter,
-    ceremony_failures: Counter,
-    ceremony_successes: Counter,
-    ceremony_dealers: Gauge,
-    ceremony_players: Gauge,
     peers: Gauge,
     pre_allegretto_ceremonies: Counter,
     post_allegretto_ceremonies: Counter,
     failed_allegretto_transitions: Counter,
     syncing_players: Gauge,
+    ceremony: ceremony::Metrics,
 }
 
 /// Attempts to read the validator config from the smart contract until it becomes available.
