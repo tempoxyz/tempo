@@ -5,10 +5,7 @@ use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 use std::rc::Rc;
 use tempo_precompiles_macros;
 
-use crate::{
-    error::Result,
-    storage::{StorageOps, types::*},
-};
+use crate::storage::types::*;
 
 // rust integers: (u)int8, (u)int16, (u)int32, (u)int64, (u)int128
 tempo_precompiles_macros::storable_rust_ints!();
@@ -74,66 +71,6 @@ impl StorageKey for Address {
     fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
         self.as_slice()
     }
-}
-
-// -- STORABLE OPS IMPLEMENTATIONS FOR PRIMITIVES --------------------------------
-
-impl Storable for bool {
-    #[inline]
-    fn load<S: StorageOps>(storage: &S, base_slot: U256, ctx: LayoutCtx) -> Result<Self> {
-        match ctx.packed_offset() {
-            None => storage.sload(base_slot).map(|val| !val.is_zero()),
-            Some(offset) => {
-                let slot = storage.sload(base_slot)?;
-                crate::storage::packing::extract_packed_value(slot, offset, 1)
-            }
-        }
-    }
-
-    #[inline]
-    fn store<S: StorageOps>(&self, storage: &mut S, base_slot: U256, ctx: LayoutCtx) -> Result<()> {
-        let value = if *self { U256::ONE } else { U256::ZERO };
-        match ctx.packed_offset() {
-            None => storage.sstore(base_slot, value),
-            Some(offset) => {
-                let current = storage.sload(base_slot)?;
-                let updated =
-                    crate::storage::packing::insert_packed_value(current, &value, offset, 1)?;
-                storage.sstore(base_slot, updated)
-            }
-        }
-    }
-
-    // delete uses default implementation from trait
-}
-
-impl Storable for Address {
-    #[inline]
-    fn load<S: StorageOps>(storage: &S, base_slot: U256, ctx: LayoutCtx) -> Result<Self> {
-        match ctx.packed_offset() {
-            None => storage.sload(base_slot).map(|val| val.into_address()),
-            Some(offset) => {
-                let slot = storage.sload(base_slot)?;
-                crate::storage::packing::extract_packed_value(slot, offset, 20)
-            }
-        }
-    }
-
-    #[inline]
-    fn store<S: StorageOps>(&self, storage: &mut S, base_slot: U256, ctx: LayoutCtx) -> Result<()> {
-        match ctx.packed_offset() {
-            None => storage.sstore(base_slot, self.into_u256()),
-            Some(offset) => {
-                let current = storage.sload(base_slot)?;
-                let value = self.into_u256();
-                let updated =
-                    crate::storage::packing::insert_packed_value(current, &value, offset, 20)?;
-                storage.sstore(base_slot, updated)
-            }
-        }
-    }
-
-    // delete uses default implementation from trait
 }
 
 #[cfg(test)]

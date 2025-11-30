@@ -10,7 +10,10 @@ pub mod vec;
 mod bytes_like;
 mod primitives;
 
-use crate::{error::Result, storage::StorageOps};
+use crate::{
+    error::Result,
+    storage::{StorageOps, packing},
+};
 use alloy::primitives::{Address, U256, keccak256};
 use std::rc::Rc;
 
@@ -219,6 +222,35 @@ pub trait Packable: Sized + StorableType {
 
     /// Decode this type from a single U256 word.
     fn from_word(word: U256) -> Self;
+}
+
+/// Blanket implementation of `Storable` for all `Packable` types.
+///
+/// This provides a unified load/store implementation for all primitive types,
+/// handling both full-slot and packed contexts automatically.
+impl<T: Packable> Storable for T {
+    #[inline]
+    fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self> {
+        match ctx.packed_offset() {
+            None => storage.sload(slot).map(Self::from_word),
+            Some(offset) => {
+                let slot_value = storage.sload(slot)?;
+                packing::extract_packed_value(slot_value, offset, Self::BYTES)
+            }
+        }
+    }
+
+    #[inline]
+    fn store<S: StorageOps>(&self, storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
+        match ctx.packed_offset() {
+            None => storage.sstore(slot, self.to_word()),
+            Some(offset) => {
+                let current = storage.sload(slot)?;
+                let updated = packing::insert_packed_value(current, self, offset, Self::BYTES)?;
+                storage.sstore(slot, updated)
+            }
+        }
+    }
 }
 
 /// Trait for types that can be used as storage mapping keys.
