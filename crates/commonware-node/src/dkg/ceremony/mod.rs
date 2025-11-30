@@ -68,146 +68,6 @@ pub(super) struct Config {
     /// The players in the round.
     pub(super) players: Ordered<PublicKey>,
 }
-
-#[derive(Clone)]
-pub(super) struct Metrics {
-    shares_distributed: Gauge,
-    acks_received: Gauge,
-    acks_sent: Gauge,
-    dealings_read: Gauge,
-    dealings_empty: Gauge,
-    dealings_failed: Gauge,
-
-    failures: Counter,
-    successes: Counter,
-    dealers: Gauge,
-    players: Gauge,
-
-    how_often_dealer: Counter,
-    how_often_player: Counter,
-}
-
-impl Metrics {
-    /// Construct and register the ceremony-related metrics on `context`.
-    ///
-    /// Note: because there exists no long-lived ceremony specific context,
-    /// most of the metrics defined here carry a manual `ceremony` prefix.
-    pub(super) fn register<C: commonware_runtime::Metrics>(context: &C) -> Self {
-        let failures = Counter::default();
-        let successes = Counter::default();
-
-        let dealers = Gauge::default();
-        let players = Gauge::default();
-
-        let how_often_dealer = Counter::default();
-        let how_often_player = Counter::default();
-
-        let shares_distributed = Gauge::default();
-        let acks_received = Gauge::default();
-        let acks_sent = Gauge::default();
-        let dealings_read = Gauge::default();
-        let dealings_empty = Gauge::default();
-        let dealings_failed = Gauge::default();
-
-        context.register(
-            "ceremony_failures",
-            "the number of failed ceremonies a node participated in",
-            failures.clone(),
-        );
-        context.register(
-            "ceremony_successes",
-            "the number of successful ceremonies a node participated in",
-            successes.clone(),
-        );
-        context.register(
-            "ceremony_dealers",
-            "the number of dealers in the currently running ceremony",
-            dealers.clone(),
-        );
-        context.register(
-            "ceremony_players",
-            "the number of players in the currently running ceremony",
-            players.clone(),
-        );
-
-        // no prefix for legacy reasons
-        context.register(
-            "how_often_dealer",
-            "number of the times as node was active as a dealer",
-            how_often_dealer.clone(),
-        );
-        // no prefix for for legacy reasons
-        context.register(
-            "how_often_player",
-            "number of the times as node was active as a player",
-            how_often_player.clone(),
-        );
-
-        context.register(
-            "ceremony_shares_distributed",
-            "the number of shares distributed by this node as a dealer in the current ceremony",
-            shares_distributed.clone(),
-        );
-        context.register(
-            "ceremony_acks_received",
-            "the number of acknowledgments received by this node as a dealer in the current ceremony",
-            acks_received.clone(),
-        );
-        context.register(
-            "ceremony_acks_sent",
-            "the number of acknowledgments sent by this node as a player in the current ceremony",
-            acks_sent.clone(),
-        );
-        context.register(
-            "ceremony_dealings_read",
-            "the number of dealings read from the blockchain in the current ceremony",
-            dealings_read.clone(),
-        );
-        context.register(
-            "ceremony_dealings_empty",
-            "the number of blocks with empty extra_data (no dealing) in the current ceremony",
-            dealings_empty.clone(),
-        );
-        context.register(
-            "ceremony_dealings_failed",
-            "the number of blocks where dealing decode failed in the current ceremony",
-            dealings_failed.clone(),
-        );
-
-        Self {
-            shares_distributed,
-            acks_received,
-            acks_sent,
-            dealings_read,
-            dealings_empty,
-            dealings_failed,
-            dealers,
-            players,
-            how_often_dealer,
-            how_often_player,
-            failures,
-            successes,
-        }
-    }
-
-    fn reset_per_ceremony_metrics(&self) {
-        self.shares_distributed.set(0);
-        self.acks_received.set(0);
-        self.acks_sent.set(0);
-        self.dealings_read.set(0);
-        self.dealings_empty.set(0);
-        self.dealings_failed.set(0);
-    }
-
-    pub(super) fn one_more_failure(&self) {
-        self.failures.inc();
-    }
-
-    pub(super) fn one_more_success(&self) {
-        self.successes.inc();
-    }
-}
-
 pub(super) struct Ceremony<TContext, TReceiver, TSender>
 where
     TContext: Clock + commonware_runtime::Metrics + Storage,
@@ -1082,5 +942,149 @@ impl Role {
             } => (polynomial, Some(share)),
             Self::Verifier { public: polynomial } => (polynomial, None),
         }
+    }
+}
+
+/// Ceremony specific metrics.
+#[derive(Clone)]
+pub(super) struct Metrics {
+    shares_distributed: Gauge,
+    acks_received: Gauge,
+    acks_sent: Gauge,
+    dealings_read: Gauge,
+    dealings_empty: Gauge,
+    dealings_failed: Gauge,
+
+    failures: Counter,
+    successes: Counter,
+    dealers: Gauge,
+    players: Gauge,
+
+    how_often_dealer: Counter,
+    how_often_player: Counter,
+}
+
+impl Metrics {
+    /// Construct and register the ceremony-related metrics on `context`.
+    ///
+    /// Note: because there exists no long-lived ceremony specific context,
+    /// most of the metrics defined here carry a manual `ceremony` prefix.
+    pub(super) fn register<C: commonware_runtime::Metrics>(context: &C) -> Self {
+        let failures = Counter::default();
+        let successes = Counter::default();
+
+        let dealers = Gauge::default();
+        let players = Gauge::default();
+
+        let how_often_dealer = Counter::default();
+        let how_often_player = Counter::default();
+
+        let shares_distributed = Gauge::default();
+        let acks_received = Gauge::default();
+        let acks_sent = Gauge::default();
+        let dealings_read = Gauge::default();
+        let dealings_empty = Gauge::default();
+        let dealings_failed = Gauge::default();
+
+        context.register(
+            "ceremony_failures",
+            "the number of failed ceremonies a node participated in",
+            failures.clone(),
+        );
+        context.register(
+            "ceremony_successes",
+            "the number of successful ceremonies a node participated in",
+            successes.clone(),
+        );
+        context.register(
+            "ceremony_dealers",
+            "the number of dealers in the currently running ceremony",
+            dealers.clone(),
+        );
+        context.register(
+            "ceremony_players",
+            "the number of players in the currently running ceremony",
+            players.clone(),
+        );
+
+        // no prefix for legacy reasons
+        context.register(
+            "how_often_dealer",
+            "number of the times as node was active as a dealer",
+            how_often_dealer.clone(),
+        );
+        // no prefix for for legacy reasons
+        context.register(
+            "how_often_player",
+            "number of the times as node was active as a player",
+            how_often_player.clone(),
+        );
+
+        context.register(
+            "ceremony_shares_distributed",
+            "the number of shares distributed by this node as a dealer in the current ceremony",
+            shares_distributed.clone(),
+        );
+        context.register(
+            "ceremony_acks_received",
+            "the number of acknowledgments received by this node as a dealer in the current ceremony",
+            acks_received.clone(),
+        );
+        context.register(
+            "ceremony_acks_sent",
+            "the number of acknowledgments sent by this node as a player in the current ceremony",
+            acks_sent.clone(),
+        );
+        context.register(
+            "ceremony_dealings_read",
+            "the number of dealings read from the blockchain in the current ceremony",
+            dealings_read.clone(),
+        );
+        context.register(
+            "ceremony_dealings_empty",
+            "the number of blocks with empty extra_data (no dealing) in the current ceremony",
+            dealings_empty.clone(),
+        );
+        context.register(
+            "ceremony_dealings_failed",
+            "the number of blocks where dealing decode failed in the current ceremony",
+            dealings_failed.clone(),
+        );
+
+        Self {
+            shares_distributed,
+            acks_received,
+            acks_sent,
+            dealings_read,
+            dealings_empty,
+            dealings_failed,
+            dealers,
+            players,
+            how_often_dealer,
+            how_often_player,
+            failures,
+            successes,
+        }
+    }
+
+    /// Resets per-ceremony gauges to zero. Called when a new ceremony is
+    /// initialized.
+    fn reset_per_ceremony_metrics(&self) {
+        self.shares_distributed.set(0);
+        self.acks_received.set(0);
+        self.acks_sent.set(0);
+        self.dealings_read.set(0);
+        self.dealings_empty.set(0);
+        self.dealings_failed.set(0);
+    }
+
+    /// Increments the failed ceremonies counter.
+    pub(super) fn one_more_failure(&self) {
+        self.failures.inc();
+    }
+
+    /// Increments the successful ceremonies counter.
+    pub(super) fn one_more_success(&self) {
+        self.successes.inc();
     }
 }
