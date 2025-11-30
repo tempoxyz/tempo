@@ -11,7 +11,7 @@ use crate::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
-    storage::PrecompileStorageProvider,
+    storage::{Mapping, PrecompileStorageProvider},
     tip20::{
         rewards::{RewardStream, UserRewardInfo},
         roles::DEFAULT_ADMIN_ROLE,
