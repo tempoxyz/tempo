@@ -140,7 +140,7 @@ pub enum TempoPoolTransactionError {
         fee_token: Address,
         fee_payer: Address,
     },
-  
+
     /// Thrown when we couldn't find a recently used validator token that has enough liquidity
     /// in fee AMM pair with the user token this transaction will pay fees in.
     #[error(

@@ -213,7 +213,7 @@ pub trait TempoStateAccess<T> {
         }
 
         // Ensure the fee payer is not blacklisted
-        let Ok(transfer_policy_id) = storage::packing::extract_packed_value::<u64>(
+        let Ok(transfer_policy_id) = storage::packing::extract_packed_value::<1, u64>(
             self.sload(fee_token, tip20::slots::TRANSFER_POLICY_ID)?,
             tip20::slots::TRANSFER_POLICY_ID_OFFSET,
             tip20::slots::TRANSFER_POLICY_ID_BYTES,

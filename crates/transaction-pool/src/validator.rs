@@ -521,7 +521,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_consensus::Transaction;
+    use alloy_consensus::{Block, Transaction};
     use alloy_eips::Decodable2718;
     use alloy_primitives::{B256, U256, hex};
     use reth_primitives_traits::SignedTransaction;
@@ -817,6 +817,7 @@ mod tests {
         // Setup provider with storage
         let provider =
             MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(ANDANTINO.clone()));
+        provider.add_block(B256::random(), Block::default());
 
         // Add sender account
         provider.add_account(
@@ -860,10 +861,15 @@ mod tests {
         );
 
         // Create validator and validate
-        let inner = EthTransactionValidatorBuilder::new(provider)
+        let inner = EthTransactionValidatorBuilder::new(provider.clone())
             .disable_balance_check()
             .build(InMemoryBlobStore::default());
-        let validator = TempoTransactionValidator::new(inner, Default::default(), 3600);
+        let validator = TempoTransactionValidator::new(
+            inner,
+            Default::default(),
+            3600,
+            AmmLiquidityCache::new(provider).unwrap(),
+        );
 
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, transaction)
