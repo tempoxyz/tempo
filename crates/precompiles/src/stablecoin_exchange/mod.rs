@@ -130,6 +130,19 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
     }
 
+    /// Validates that a trading pair exists or creates the pair if
+    /// the chain height is post allegretto hardfork
+    fn validate_or_create_pair(&mut self, book: &Orderbook, token: Address) -> Result<()> {
+        if book.base.is_zero() {
+            if self.storage.spec().is_allegretto() {
+                self.create_pair(token)?;
+            } else {
+                return Err(StablecoinExchangeError::pair_does_not_exist().into());
+            }
+        }
+        Ok(())
+    }
+
     /// Fetch order from storage. If the order is currently pending or filled, this function returns
     /// `StablecoinExchangeError::OrderDoesNotExist`
     pub fn get_order(&mut self, order_id: u128) -> Result<Order> {
@@ -490,14 +503,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let book_key = compute_book_key(token, quote_token);
 
         let book = self.sload_books(book_key)?;
-        if book.base.is_zero() {
-            //  Post Allegretto hardfork, create the book if it does not already exist
-            if self.storage.spec().is_allegretto() {
-                self.create_pair(token)?;
-            } else {
-                return Err(StablecoinExchangeError::pair_does_not_exist().into());
-            }
-        }
+        self.validate_or_create_pair(&book, token)?;
 
         // Validate tick is within bounds
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
@@ -584,15 +590,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         // Check book existence (only after Moderato hardfork)
         if self.storage.spec().is_moderato() {
             let book = self.sload_books(book_key)?;
-
-            if book.base.is_zero() {
-                //  Post Allegretto hardfork, create the book if it does not already exist
-                if self.storage.spec().is_allegretto() {
-                    self.create_pair(token)?;
-                } else {
-                    return Err(StablecoinExchangeError::pair_does_not_exist().into());
-                }
-            }
+            self.validate_or_create_pair(&book, token)?;
         }
 
         // Validate tick and flip_tick are within bounds
