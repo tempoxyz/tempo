@@ -1,6 +1,6 @@
 mod dex;
 
-use alloy_consensus::{SignableTransaction, Transaction};
+use alloy_consensus::Transaction;
 use itertools::Itertools;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use reth_tracing::{
@@ -8,9 +8,7 @@ use reth_tracing::{
     tracing::{debug, error, info},
 };
 use tempo_alloy::{
-    TempoNetwork, dyn_signable_from_typed,
-    primitives::{TempoTxEnvelope, transaction::TempoTypedTransaction},
-    typed_into_signed,
+    TempoNetwork, dyn_signable_from_typed, primitives::TempoTxEnvelope, typed_into_signed,
 };
 
 use alloy::{
