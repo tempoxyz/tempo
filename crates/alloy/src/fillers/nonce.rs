@@ -32,8 +32,9 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for R
     }
 
     fn fill_sync(&self, tx: &mut SendableTx<N>) {
-        if let Some(builder) = tx.as_mut_builder()
-            && !Self::is_filled(builder)
+        if let Some(builder) = tx
+            .as_mut_builder()
+            .filter(|builder| Self::is_filled(builder))
         {
             let nonce_key = loop {
                 let key = U256::random();
