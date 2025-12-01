@@ -15,7 +15,10 @@ where
     TContext: Clock + Metrics + Storage,
 {
     /// Get the current epoch state for the given hardfork regime.
-    fn get_epoch<S>(&mut self, regime: HardforkRegime) -> impl Future<Output = Result<Option<S>>> + Send
+    fn get_epoch<S>(
+        &mut self,
+        regime: HardforkRegime,
+    ) -> impl Future<Output = Result<Option<S>>> + Send
     where
         S: Read<Cfg = ()>;
 
