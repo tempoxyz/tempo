@@ -19,7 +19,7 @@ use tempo_primitives::{
 
 /// Set of recommended fillers.
 ///
-/// `N` is the nonce filler.
+/// `N` is a nonce filler.
 pub(crate) type TempoFillers<N> = JoinFill<GasFiller, JoinFill<N, ChainIdFiller>>;
 
 /// The Tempo specific configuration of [`Network`] schema and consensus primitives.

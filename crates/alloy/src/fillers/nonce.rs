@@ -15,7 +15,7 @@ use tempo_primitives::subblock::has_sub_block_nonce_key_prefix;
 pub struct Random2DNonceFiller;
 
 impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for Random2DNonceFiller {
-    type Fillable = u64;
+    type Fillable = ();
 
     fn status(&self, tx: &N::TransactionRequest) -> FillerControlFlow {
         if tx.nonce().is_some() || tx.nonce_key.is_some() {
@@ -46,7 +46,7 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for R
     where
         P: alloy_provider::Provider<N>,
     {
-        Ok(0)
+        Ok(())
     }
 
     async fn fill(
