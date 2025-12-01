@@ -163,11 +163,11 @@ contract FeeManager is IFeeManager, FeeAMM {
         // Note: We execute swaps per pool, not per validator, since pools are shared
         for (uint256 i = 0; i < poolsWithFees.length; i++) {
             TokenPair memory pair = poolsWithFees[i];
-            
+
             // Check if pool exists and has pending swaps
             FeeAMM.Pool memory pool = this.getPool(pair.userToken, pair.validatorToken);
             bytes32 poolId = getPoolId(pair.userToken, pair.validatorToken);
-            
+
             // Execute swap if there are pending swaps (updates reserves)
             // Note: We don't use the return value since we've already computed expectedOut
             if (pendingFeeSwapIn[poolId] > 0) {
@@ -183,14 +183,14 @@ contract FeeManager is IFeeManager, FeeAMM {
         for (uint256 i = 0; i < validatorsWithFees.length; i++) {
             address validator = validatorsWithFees[i];
             uint256 amount = collectedFeesByValidator[validator];
-            
+
             if (amount > 0) {
                 address validatorToken = validatorTokens[validator];
                 // Fallback to linkingUSD if validator hasn't set one
                 if (validatorToken == address(0)) {
                     validatorToken = LINKING_USD;
                 }
-                
+
                 IERC20(validatorToken).transfer(validator, amount);
                 collectedFeesByValidator[validator] = 0;
             }

@@ -639,7 +639,7 @@ contract StablecoinExchange is IStablecoinExchange {
                 uint128 baseNeeded = (remainingOut * PRICE_SCALE) / price;
                 uint128 fillAmount;
 
-                // Calculate how much quote to recieve for fillAmount of base
+                // Calculate how much quote to receive for fillAmount of base
                 if (baseNeeded > currentOrder.remaining) {
                     fillAmount = currentOrder.remaining;
                     remainingOut -= (fillAmount * price) / PRICE_SCALE;
@@ -921,11 +921,12 @@ contract StablecoinExchange is IStablecoinExchange {
     /// @param baseForQuote True if spending base for quote, false if spending quote for base
     /// @param amountIn Exact amount of input tokens to spend
     /// @return amountOut Amount of output tokens received
-    function _quoteExactIn(bytes32 key, Orderbook storage book, bool baseForQuote, uint128 amountIn)
-        internal
-        view
-        returns (uint128 amountOut)
-    {
+    function _quoteExactIn(
+        bytes32 key,
+        Orderbook storage book,
+        bool baseForQuote,
+        uint128 amountIn
+    ) internal view returns (uint128 amountOut) {
         uint128 remainingIn = amountIn;
 
         if (baseForQuote) {

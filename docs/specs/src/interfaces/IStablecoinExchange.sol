@@ -2,6 +2,7 @@
 pragma solidity ^0.8.13;
 
 interface IStablecoinExchange {
+
     // Structs for return types
 
     /// @notice Represents a price level in the orderbook with a doubly-linked list of orders
