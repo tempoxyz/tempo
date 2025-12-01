@@ -1,9 +1,6 @@
 use std::fmt::Debug;
 
-use crate::{
-    fillers::TempoNonceFiller,
-    rpc::{TempoHeaderResponse, TempoTransactionReceipt, TempoTransactionRequest},
-};
+use crate::rpc::{TempoHeaderResponse, TempoTransactionReceipt, TempoTransactionRequest};
 use alloy_consensus::{SignableTransaction, TxType, error::UnsupportedTransactionType};
 
 use alloy_network::{
@@ -11,12 +8,16 @@ use alloy_network::{
     TransactionBuilderError, UnbuiltTransactionError,
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
-use alloy_provider::fillers::{ChainIdFiller, GasFiller, JoinFill, RecommendedFillers};
+use alloy_provider::fillers::{
+    ChainIdFiller, GasFiller, JoinFill, NonceFiller, RecommendedFillers,
+};
 use alloy_rpc_types_eth::AccessList;
 use alloy_signer_local::PrivateKeySigner;
 use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
 };
+
+pub type TempoFillers<N> = JoinFill<GasFiller, JoinFill<N, ChainIdFiller>>;
 
 /// The Tempo specific configuration of [`Network`] schema and consensus primitives.
 #[derive(Default, Debug, Clone, Copy)]
@@ -332,7 +333,7 @@ impl TempoTransactionRequest {
 }
 
 impl RecommendedFillers for TempoNetwork {
-    type RecommendedFillers = JoinFill<GasFiller, JoinFill<TempoNonceFiller, ChainIdFiller>>;
+    type RecommendedFillers = TempoFillers<NonceFiller>;
 
     fn recommended_fillers() -> Self::RecommendedFillers {
         Default::default()
