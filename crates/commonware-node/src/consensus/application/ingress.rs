@@ -32,7 +32,7 @@ pub(super) enum Message {
     Finalized(Box<Finalized>),
     Genesis(Genesis),
     Propose(Propose),
-    Verify(Verify),
+    Verify(Box<Verify>),
 }
 
 pub(super) struct Genesis {
@@ -71,13 +71,14 @@ impl From<Broadcast> for Message {
 pub(super) struct Verify {
     pub(super) parent: (View, Digest),
     pub(super) payload: Digest,
+    pub(super) proposer: PublicKey,
     pub(super) response: oneshot::Sender<bool>,
     pub(super) round: Round,
 }
 
 impl From<Verify> for Message {
     fn from(value: Verify) -> Self {
-        Self::Verify(value)
+        Self::Verify(Box::new(value))
     }
 }
 
@@ -164,6 +165,7 @@ impl Automaton for Mailbox {
                 Verify {
                     parent: context.parent,
                     payload,
+                    proposer: context.leader,
                     round: context.round,
                     response: tx,
                 }
