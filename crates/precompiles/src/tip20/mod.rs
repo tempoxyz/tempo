@@ -413,6 +413,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
+        // Check if the `to` address is authorized to receive tokens
+        let transfer_policy_id = self.transfer_policy_id()?;
+        let mut registry = TIP403Registry::new(self.storage);
+        if !registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+            policyId: transfer_policy_id,
+            user: to,
+        })? {
+            return Err(TIP20Error::policy_forbids().into());
+        }
+
         let timestamp = self.storage.timestamp();
         self.accrue(timestamp)?;
 
