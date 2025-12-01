@@ -26,6 +26,7 @@ impl StorableType for bool {
     }
 }
 
+impl super::sealed::OnlyPrimitives for bool {}
 impl Packable for bool {
     #[inline]
     fn to_word(&self) -> U256 {
@@ -54,6 +55,7 @@ impl StorableType for Address {
     }
 }
 
+impl super::sealed::OnlyPrimitives for Address {}
 impl Packable for Address {
     #[inline]
     fn to_word(&self) -> U256 {

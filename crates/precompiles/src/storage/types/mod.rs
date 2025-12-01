@@ -202,10 +202,16 @@ pub trait Storable: StorableType + Sized {
     }
 }
 
+/// Private module to seal the `Packable` trait.
+pub(in crate::storage::types) mod sealed {
+    /// Marker trait to prevent external implementations of `Packable`.
+    pub trait OnlyPrimitives {}
+}
+
 /// Trait for types that can be packed into EVM storage slots.
 ///
-/// This trait is for primitive types that can be encoded to/from a single U256 word.
-/// Only types with `BYTES <= 32` should implement this trait.
+/// This trait is **sealed** - it can only be implemented within this crate
+/// for primitive types that fit in a single U256 word.
 ///
 /// # Usage
 ///
@@ -214,9 +220,10 @@ pub trait Storable: StorableType + Sized {
 ///
 /// # Safety
 ///
-/// Implementations must ensure round-trip conversions preserve data:
-/// `from_word(to_word(x)) == x`
-pub trait Packable: Sized + StorableType {
+/// Implementations must ensure:
+/// - `IS_PACKABLE` is true for the implementing type (enforced at compile time)
+/// - Round-trip conversions preserve data: `from_word(to_word(x)) == x`
+pub trait Packable: sealed::OnlyPrimitives + StorableType {
     /// Encode this type to a single U256 word.
     fn to_word(&self) -> U256;
 
@@ -231,6 +238,8 @@ pub trait Packable: Sized + StorableType {
 impl<T: Packable> Storable for T {
     #[inline]
     fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self> {
+        const { assert!(T::IS_PACKABLE, "Packable requires IS_PACKABLE to be true") };
+
         match ctx.packed_offset() {
             None => storage.sload(slot).map(Self::from_word),
             Some(offset) => {
@@ -242,6 +251,8 @@ impl<T: Packable> Storable for T {
 
     #[inline]
     fn store<S: StorageOps>(&self, storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
+        const { assert!(T::IS_PACKABLE, "Packable requires IS_PACKABLE to be true") };
+
         match ctx.packed_offset() {
             None => storage.sstore(slot, self.to_word()),
             Some(offset) => {

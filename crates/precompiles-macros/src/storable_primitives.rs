@@ -71,8 +71,8 @@ fn gen_storage_key_impl(type_path: &TokenStream, strategy: &StorageKeyStrategy) 
     }
 }
 
-/// Generate a `Packable` implementation based on the conversion strategy.
-/// This only generates `to_word` and `from_word` - storage I/O is in `Storable`.
+/// Generate `OnlyPrimitives` and `Packable` implementations based on the conversion strategy.
+/// This generates `to_word` and `from_word` - storage I/O is in `Storable` (blanket impl).
 fn gen_packable_impl(
     type_path: &TokenStream,
     strategy: &StorableConversionStrategy,
@@ -80,6 +80,7 @@ fn gen_packable_impl(
     match strategy {
         StorableConversionStrategy::Unsigned | StorableConversionStrategy::U256 => {
             quote! {
+                impl crate::storage::types::sealed::OnlyPrimitives for #type_path {}
                 impl Packable for #type_path {
                     #[inline]
                     fn to_word(&self) -> U256 {
@@ -95,6 +96,7 @@ fn gen_packable_impl(
         }
         StorableConversionStrategy::SignedRust(unsigned_type) => {
             quote! {
+                impl crate::storage::types::sealed::OnlyPrimitives for #type_path {}
                 impl Packable for #type_path {
                     #[inline]
                     fn to_word(&self) -> U256 {
@@ -110,6 +112,7 @@ fn gen_packable_impl(
         }
         StorableConversionStrategy::SignedAlloy(unsigned_type) => {
             quote! {
+                impl crate::storage::types::sealed::OnlyPrimitives for #type_path {}
                 impl Packable for #type_path {
                     #[inline]
                     fn to_word(&self) -> ::alloy::primitives::U256 {
@@ -127,6 +130,7 @@ fn gen_packable_impl(
         }
         StorableConversionStrategy::FixedBytes(size) => {
             quote! {
+                impl crate::storage::types::sealed::OnlyPrimitives for #type_path {}
                 impl Packable for #type_path {
                     #[inline]
                     fn to_word(&self) -> ::alloy::primitives::U256 {
