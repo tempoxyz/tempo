@@ -219,6 +219,7 @@ pub trait TempoStateAccess<T> {
             <u64 as StorableType>::BYTES,
         ) else {
             // Should be infallible, but if unable to extract packed value, assume blacklisted.
+            tracing::warn!(%fee_token, "failed to extract transfer_policy_id from packed value");
             return Ok(false);
         };
 
@@ -239,9 +240,14 @@ pub trait TempoStateAccess<T> {
                 ),
             )?;
             let Ok(data) = tip403_registry::PolicyData::from_evm_words([policy_data_word]) else {
+                tracing::warn!(
+                    transfer_policy_id,
+                    "failed to parse PolicyData from storage"
+                );
                 return Ok(false);
             };
             let Ok(policy_type) = data.policy_type.try_into() else {
+                tracing::warn!(transfer_policy_id, policy_type = ?data.policy_type, "invalid policy type");
                 return Ok(false);
             };
 
