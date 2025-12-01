@@ -13,7 +13,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
-    storage::{self, Storable, double_mapping_slot, slots::mapping_slot},
+    storage::{self, Storable, StorableType, double_mapping_slot, slots::mapping_slot},
     tip_fee_manager,
     tip20::{self, is_tip20},
     tip403_registry,
@@ -216,7 +216,7 @@ pub trait TempoStateAccess<T> {
         let Ok(transfer_policy_id) = storage::packing::extract_packed_value::<1, u64>(
             self.sload(fee_token, tip20::slots::TRANSFER_POLICY_ID)?,
             tip20::slots::TRANSFER_POLICY_ID_OFFSET,
-            tip20::slots::TRANSFER_POLICY_ID_BYTES,
+            <u64 as StorableType>::BYTES,
         ) else {
             // Should be infallible, but if unable to extract packed value, assume blacklisted.
             return Ok(false);
