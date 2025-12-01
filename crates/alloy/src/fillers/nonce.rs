@@ -60,13 +60,10 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for R
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        TempoFillers, TempoNetwork, fillers::Random2DNonceFiller,
-        provider::ext::TempoProviderBuilderExt, rpc::TempoTransactionRequest,
-    };
+    use crate::{TempoNetwork, fillers::Random2DNonceFiller, rpc::TempoTransactionRequest};
     use alloy_network::TransactionBuilder;
     use alloy_primitives::ruint::aliases::U256;
-    use alloy_provider::{Identity, ProviderBuilder, fillers::JoinFill, mock::Asserter};
+    use alloy_provider::{ProviderBuilder, mock::Asserter};
     use eyre;
 
     #[tokio::test]
@@ -100,11 +97,5 @@ mod tests {
         assert!(filled_request.nonce().is_none());
 
         Ok(())
-    }
-
-    #[test]
-    fn test_with_random_nonces() {
-        let _: ProviderBuilder<_, JoinFill<Identity, TempoFillers<Random2DNonceFiller>>, _> =
-            ProviderBuilder::new_with_network::<TempoNetwork>().with_random_2d_nonces();
     }
 }

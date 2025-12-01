@@ -36,3 +36,19 @@ impl TempoProviderBuilderExt
         ProviderBuilder::default().filler(TempoFillers::default())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloy_provider::{Identity, ProviderBuilder, fillers::JoinFill};
+
+    use crate::{
+        TempoFillers, TempoNetwork, fillers::Random2DNonceFiller,
+        provider::ext::TempoProviderBuilderExt,
+    };
+
+    #[test]
+    fn test_with_random_nonces() {
+        let _: ProviderBuilder<_, JoinFill<Identity, TempoFillers<Random2DNonceFiller>>, _> =
+            ProviderBuilder::new_with_network::<TempoNetwork>().with_random_2d_nonces();
+    }
+}
