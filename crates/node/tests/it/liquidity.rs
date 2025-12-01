@@ -155,43 +155,31 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     println!("Sending {num_payment_txs} payment transactions that require fee swaps...");
 
     let mut transactions_included = 0;
-    let mut transactions_timed_out = 0;
+    let mut transactions_rejected = 0;
+
+    let mut nonce = provider.get_transaction_count(sender_address).await?;
 
     for i in 0..num_payment_txs {
         let transfer = payment_token.transfer(sender_address, U256::from((i + 1) as u64));
-        match transfer.send().await {
+        match transfer.nonce(nonce).send().await {
             Ok(pending_tx) => {
                 let tx_num = i + 1;
                 println!("Transaction {tx_num} sent, waiting for receipt...");
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
-                    pending_tx.get_receipt(),
-                )
-                .await
-                {
-                    Ok(Ok(receipt)) => {
-                        let status = receipt.status();
-                        println!("Transaction {tx_num} included with status: {status:?}");
-                        transactions_included += 1;
-                    }
-                    Ok(Err(e)) => {
-                        println!("Transaction {tx_num} receipt error: {e}");
-                    }
-                    Err(_) => {
-                        println!("Transaction {tx_num} timed out waiting for receipt");
-                        transactions_timed_out += 1;
-                        break; // Stop trying if we timeout
-                    }
-                }
+                pending_tx.get_receipt().await.unwrap();
+                transactions_included += 1;
+                nonce += 1;
             }
-            Err(e) => {
-                let tx_num = i + 1;
-                println!("Transaction {tx_num} failed to send: {e}");
+            Err(err) => {
+                if err.to_string().contains("Insufficient liquidity") {
+                    transactions_rejected += 1;
+                } else {
+                    panic!("Transaction {i} rejected with unexpected error: {err}");
+                }
             }
         }
     }
 
-    println!("Transactions included: {transactions_included}, timed out: {transactions_timed_out}");
+    println!("Transactions included: {transactions_included}, rejected: {transactions_rejected}");
 
     // Verify that transactions requiring unavailable liquidity were NOT included
     assert_eq!(
@@ -199,8 +187,8 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         "Transactions requiring unavailable liquidity should be excluded from blocks"
     );
     assert!(
-        transactions_timed_out > 0,
-        "At least one transaction should have timed out (indicating it was excluded)"
+        transactions_rejected > 0,
+        "At least one transaction should have benn rejected due to insufficient liquidity"
     );
 
     println!("Test completed: block building continued without stalling");

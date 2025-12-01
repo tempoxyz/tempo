@@ -51,6 +51,11 @@ impl TempoTransactionRequest {
         self
     }
 
+    /// Set the 2D nonce key for the [`TxAA`] transaction.
+    pub fn set_nonce_key(&mut self, nonce_key: U256) {
+        self.nonce_key = Some(nonce_key);
+    }
+
     /// Builder-pattern method for setting a 2D nonce key for a [`TxAA`].
     pub fn with_nonce_key(mut self, nonce_key: U256) -> Self {
         self.nonce_key = Some(nonce_key);

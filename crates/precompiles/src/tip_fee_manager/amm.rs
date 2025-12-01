@@ -1,6 +1,6 @@
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::PrecompileStorageProvider,
+    storage::{PrecompileStorageProvider, Storable},
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
@@ -31,6 +31,12 @@ pub fn compute_amount_out(amount_in: U256) -> Result<U256> {
 pub struct Pool {
     pub reserve_user_token: u128,
     pub reserve_validator_token: u128,
+}
+
+impl Pool {
+    pub fn from_slot(slot: U256) -> Self {
+        Self::from_evm_words([slot]).unwrap()
+    }
 }
 
 impl From<Pool> for ITIPFeeAMM::Pool {

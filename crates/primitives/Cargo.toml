@@ -48,6 +48,7 @@ proptest-arbitrary-interop.workspace = true
 alloy-consensus = { workspace = true, features = ["arbitrary"] }
 rand = "0.9"
 serde_json.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 default = ["serde", "reth-codec", "serde-bincode-compat", "rpc"]
@@ -62,6 +63,7 @@ serde = [
 	"reth-codecs?/serde",
 	"rand/serde",
 	"p256/serde",
+	"tracing-subscriber/serde"
 ]
 reth-codec = [
 	"serde",

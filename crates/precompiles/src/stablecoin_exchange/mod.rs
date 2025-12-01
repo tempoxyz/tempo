@@ -19,7 +19,7 @@ use crate::{
         MAX_PRICE_POST_MODERATO, MAX_PRICE_PRE_MODERATO, MIN_PRICE_POST_MODERATO,
         MIN_PRICE_PRE_MODERATO, compute_book_key,
     },
-    storage::{PrecompileStorageProvider, Slot, Storable, VecSlotExt},
+    storage::{Mapping, PrecompileStorageProvider, Slot, VecSlotExt},
     tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
@@ -53,11 +53,11 @@ pub struct StablecoinExchange {
     balances: Mapping<Address, Mapping<Address, u128>>,
     active_order_id: u128,
     pending_order_id: u128,
-    book_keys: Vec<B256>, // TODO(rusowsky): make sure this is in the correct slot
+    book_keys: Vec<B256>,
 }
 
 /// Helper type to easily interact with the `stream_ending_at` array
-type BookKeys = Slot<Vec<B256>, BookKeysSlot>;
+type BookKeys = Slot<Vec<B256>>;
 
 impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
@@ -128,6 +128,19 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         } else {
             MAX_PRICE_PRE_MODERATO
         }
+    }
+
+    /// Validates that a trading pair exists or creates the pair if
+    /// the chain height is post allegretto hardfork
+    fn validate_or_create_pair(&mut self, book: &Orderbook, token: Address) -> Result<()> {
+        if book.base.is_zero() {
+            if self.storage.spec().is_allegretto() {
+                self.create_pair(token)?;
+            } else {
+                return Err(StablecoinExchangeError::pair_does_not_exist().into());
+            }
+        }
+        Ok(())
     }
 
     /// Fetch order from storage. If the order is currently pending or filled, this function returns
@@ -447,7 +460,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         let book = Orderbook::new(base, quote);
         self.sstore_books(book_key, book)?;
-        BookKeys::push(self, book_key)?;
+        BookKeys::new(slots::BOOK_KEYS).push(self, book_key)?;
 
         // Emit PairCreated event
         self.storage.emit_event(
@@ -462,8 +475,6 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
         Ok(book_key)
     }
-
-    // TODO(rusowsky): continue implementing below
 
     /// Place a limit order on the orderbook
     ///
@@ -492,9 +503,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let book_key = compute_book_key(token, quote_token);
 
         let book = self.sload_books(book_key)?;
-        if book.base.is_zero() {
-            return Err(StablecoinExchangeError::pair_does_not_exist().into());
-        }
+        self.validate_or_create_pair(&book, token)?;
 
         // Validate tick is within bounds
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
@@ -581,9 +590,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         // Check book existence (only after Moderato hardfork)
         if self.storage.spec().is_moderato() {
             let book = self.sload_books(book_key)?;
-            if book.base.is_zero() {
-                return Err(StablecoinExchangeError::pair_does_not_exist().into());
-            }
+            self.validate_or_create_pair(&book, token)?;
         }
 
         // Validate tick and flip_tick are within bounds
@@ -4778,6 +4785,106 @@ mod tests {
         assert_eq!(
             quoted_out_ask, expected_base_out,
             "quote_exact_in with is_bid=false should return base amount"
+        );
+      
+        Ok(())
+    }
+  
+    fn test_place_auto_creates_pair_post_allegretto() -> Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+        let admin = Address::random();
+        let user = Address::random();
+
+        // Setup tokens
+        let (base_token, quote_token) =
+            setup_test_tokens(exchange.storage, admin, user, exchange.address, 100_000_000);
+
+        // Before placing order, verify pair doesn't exist
+        let book_key = compute_book_key(base_token, quote_token);
+        let book_before = exchange.sload_books(book_key)?;
+        assert!(book_before.base.is_zero(),);
+
+        // Transfer tokens to exchange first
+        let mut base = TIP20Token::new(1, exchange.storage);
+        base.transfer(
+            user,
+            ITIP20::transferCall {
+                to: exchange.address,
+                amount: U256::from(MIN_ORDER_AMOUNT),
+            },
+        )
+        .expect("Base token transfer failed");
+
+        // Place an order which should also create the pair
+        exchange.place(user, base_token, MIN_ORDER_AMOUNT, true, 0)?;
+
+        let book_after = exchange.sload_books(book_key)?;
+        assert_eq!(book_after.base, base_token);
+
+        // Verify PairCreated event was emitted (along with OrderPlaced)
+        let events = &exchange.storage.events[&exchange.address];
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0],
+            StablecoinExchangeEvents::PairCreated(IStablecoinExchange::PairCreated {
+                key: book_key,
+                base: base_token,
+                quote: quote_token,
+            })
+            .into_log_data()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_place_flip_auto_creates_pair_post_allegretto() -> Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let admin = Address::random();
+        let user = Address::random();
+
+        // Setup tokens
+        let (base_token, quote_token) =
+            setup_test_tokens(exchange.storage, admin, user, exchange.address, 100_000_000);
+
+        // Before placing flip order, verify pair doesn't exist
+        let book_key = compute_book_key(base_token, quote_token);
+        let book_before = exchange.sload_books(book_key)?;
+        assert!(book_before.base.is_zero(),);
+
+        // Transfer tokens to exchange first
+        let mut base = TIP20Token::new(1, exchange.storage);
+        base.transfer(
+            user,
+            ITIP20::transferCall {
+                to: exchange.address,
+                amount: U256::from(MIN_ORDER_AMOUNT),
+            },
+        )
+        .expect("Base token transfer failed");
+
+        // Place a flip order which should also create the pair
+        exchange.place_flip(user, base_token, MIN_ORDER_AMOUNT, true, 0, 10)?;
+
+        let book_after = exchange.sload_books(book_key)?;
+        assert_eq!(book_after.base, base_token);
+
+        // Verify PairCreated event was emitted (along with FlipOrderPlaced)
+        let events = &exchange.storage.events[&exchange.address];
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0],
+            StablecoinExchangeEvents::PairCreated(IStablecoinExchange::PairCreated {
+                key: book_key,
+                base: base_token,
+                quote: quote_token,
+            })
+            .into_log_data()
         );
 
         Ok(())

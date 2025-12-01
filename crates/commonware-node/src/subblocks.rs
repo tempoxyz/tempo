@@ -493,6 +493,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
                 .await;
         } else {
             let subblock = built.subblock.clone();
+            built.stop_broadcasting();
             self.on_validated_subblock(subblock);
         }
     }
