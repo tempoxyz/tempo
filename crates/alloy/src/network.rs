@@ -11,13 +11,16 @@ use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
 use alloy_provider::fillers::{
     ChainIdFiller, GasFiller, JoinFill, NonceFiller, RecommendedFillers,
 };
-use alloy_rpc_types_eth::AccessList;
+use alloy_rpc_types_eth::{AccessList, Block, Transaction};
 use alloy_signer_local::PrivateKeySigner;
 use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
 };
 
-pub type TempoFillers<N> = JoinFill<GasFiller, JoinFill<N, ChainIdFiller>>;
+/// Set of recommended fillers.
+///
+/// `N` is the nonce filler.
+pub(crate) type TempoFillers<N> = JoinFill<GasFiller, JoinFill<N, ChainIdFiller>>;
 
 /// The Tempo specific configuration of [`Network`] schema and consensus primitives.
 #[derive(Default, Debug, Clone, Copy)]
@@ -31,13 +34,10 @@ impl Network for TempoNetwork {
     type ReceiptEnvelope = TempoReceipt;
     type Header = TempoHeader;
     type TransactionRequest = TempoTransactionRequest;
-    type TransactionResponse = alloy_rpc_types_eth::Transaction<TempoTxEnvelope>;
+    type TransactionResponse = Transaction<TempoTxEnvelope>;
     type ReceiptResponse = TempoTransactionReceipt;
     type HeaderResponse = TempoHeaderResponse;
-    type BlockResponse = alloy_rpc_types_eth::Block<
-        alloy_rpc_types_eth::Transaction<TempoTxEnvelope>,
-        Self::HeaderResponse,
-    >;
+    type BlockResponse = Block<Transaction<TempoTxEnvelope>, Self::HeaderResponse>;
 }
 
 impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
