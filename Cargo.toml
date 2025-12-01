@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.6.1"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
@@ -189,6 +189,7 @@ alloy-serde = "1.1.2"
 alloy-signer = "1.1.2"
 alloy-signer-local = "1.1.2"
 alloy-sol-types = "1.4.1"
+alloy-transport = "1.1.2"
 
 commonware-broadcast = "0.0.63"
 commonware-codec = "0.0.63"

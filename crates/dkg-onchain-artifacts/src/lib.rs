@@ -326,6 +326,10 @@ impl IntermediateOutcome {
         &self.dealer
     }
 
+    pub fn signature(&self) -> &Signature {
+        &self.dealer_signature
+    }
+
     pub fn epoch(&self) -> Epoch {
         self.epoch
     }
