@@ -6,7 +6,7 @@ pub mod envelope;
 pub mod fee_token;
 pub mod key_authorization;
 
-pub use aa_authorization::{AASignedAuthorization, MAGIC};
+pub use aa_authorization::{AASignedAuthorization, MAGIC, RecoveredAAAuthorization};
 // Re-export Authorization from alloy for convenience
 pub use aa_signature::{AASignature, KeychainSignature, PrimitiveSignature, derive_p256_address};
 
