@@ -381,12 +381,12 @@ impl IntoWallet<TempoNetwork> for PrivateKeySigner {
 /// Converts a [`TempoTypedTransaction`] into a [`TempoTxEnvelope`] with the given signature.
 pub fn typed_into_signed(tx: TempoTypedTransaction, sig: Signature) -> TempoTxEnvelope {
     match tx {
-        TempoTypedTransaction::Legacy(inner) => inner.into_signed(sig).into(),
-        TempoTypedTransaction::Eip2930(inner) => inner.into_signed(sig).into(),
-        TempoTypedTransaction::Eip1559(inner) => inner.into_signed(sig).into(),
-        TempoTypedTransaction::Eip7702(inner) => inner.into_signed(sig).into(),
-        TempoTypedTransaction::AA(inner) => inner.into_signed(sig.into()).into(),
-        TempoTypedTransaction::FeeToken(inner) => inner.into_signed(sig).into(),
+        TempoTypedTransaction::Legacy(tx) => tx.into_signed(sig).into(),
+        TempoTypedTransaction::Eip2930(tx) => tx.into_signed(sig).into(),
+        TempoTypedTransaction::Eip1559(tx) => tx.into_signed(sig).into(),
+        TempoTypedTransaction::Eip7702(tx) => tx.into_signed(sig).into(),
+        TempoTypedTransaction::AA(tx) => tx.into_signed(sig.into()).into(),
+        TempoTypedTransaction::FeeToken(tx) => tx.into_signed(sig).into(),
     }
 }
 
@@ -395,12 +395,12 @@ pub fn dyn_signable_from_typed(
     tx: &mut TempoTypedTransaction,
 ) -> &mut dyn SignableTransaction<Signature> {
     match tx {
-        TempoTypedTransaction::Legacy(inner) => inner,
-        TempoTypedTransaction::Eip2930(inner) => inner,
-        TempoTypedTransaction::Eip1559(inner) => inner,
-        TempoTypedTransaction::Eip7702(inner) => inner,
-        TempoTypedTransaction::AA(inner) => inner,
-        TempoTypedTransaction::FeeToken(inner) => inner,
+        TempoTypedTransaction::Legacy(tx) => tx,
+        TempoTypedTransaction::Eip2930(tx) => tx,
+        TempoTypedTransaction::Eip1559(tx) => tx,
+        TempoTypedTransaction::Eip7702(tx) => tx,
+        TempoTypedTransaction::AA(tx) => tx,
+        TempoTypedTransaction::FeeToken(tx) => tx,
     }
 }
 

@@ -243,18 +243,6 @@ impl TempoTxEnvelope {
             Either::Right(core::iter::once((self.kind(), self.input())))
         }
     }
-
-    /// Get `gas_limit`.
-    pub fn gas_limit(&self) -> u64 {
-        match self {
-            Self::Legacy(signed) => signed.gas_limit(),
-            Self::Eip2930(signed) => signed.gas_limit(),
-            Self::Eip1559(signed) => signed.gas_limit(),
-            Self::Eip7702(signed) => signed.gas_limit(),
-            Self::AA(signed) => signed.gas_limit(),
-            Self::FeeToken(signed) => signed.gas_limit(),
-        }
-    }
 }
 
 impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
