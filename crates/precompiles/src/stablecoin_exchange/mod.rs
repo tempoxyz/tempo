@@ -4706,7 +4706,7 @@ mod tests {
         )
         .expect("Base token transfer failed");
 
-        // Place a order which should also create the pair
+        // Place an order which should also create the pair
         exchange.place(user, base_token, MIN_ORDER_AMOUNT, true, 0)?;
 
         let book_after = exchange.sload_books(book_key)?;
