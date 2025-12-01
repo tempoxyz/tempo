@@ -182,14 +182,14 @@ where
 
         let (ceremony_outcome, dkg_successful) = match ceremony.finalize() {
             Ok(outcome) => {
-                self.metrics.ceremony_successes.inc();
+                self.metrics.ceremony.one_more_success();
                 info!(
                     "ceremony was successful; using the new participants, polynomial and secret key"
                 );
                 (outcome, true)
             }
             Err(outcome) => {
-                self.metrics.ceremony_failures.inc();
+                self.metrics.ceremony.one_more_failure();
                 warn!(
                     "ceremony was a failure; using the old participants, polynomial and secret key"
                 );
@@ -326,6 +326,7 @@ where
             mux,
             self.ceremony_metadata.clone(),
             config,
+            self.metrics.ceremony.clone(),
         )
         .await
         .expect("must always be able to initialize ceremony");
@@ -344,20 +345,8 @@ where
         );
 
         self.metrics
-            .ceremony_dealers
-            .set(ceremony.dealers().len() as i64);
-        self.metrics
-            .ceremony_players
-            .set(ceremony.players().len() as i64);
-        self.metrics
             .syncing_players
             .set(epoch_state.validator_state.syncing_players().len() as i64);
-        self.metrics
-            .how_often_dealer
-            .inc_by(ceremony.is_dealer() as u64);
-        self.metrics
-            .how_often_player
-            .inc_by(ceremony.is_player() as u64);
 
         self.metrics.post_allegretto_ceremonies.inc();
 
