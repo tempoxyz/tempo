@@ -1,7 +1,6 @@
 use super::*;
 use alloy::providers::DynProvider;
 use indicatif::ProgressIterator;
-use tempo_alloy::rpc::TempoCallBuilderExt;
 use tempo_contracts::precompiles::{IStablecoinExchange, PATH_USD_ADDRESS};
 use tempo_precompiles::tip20::U128_MAX;
 
@@ -58,11 +57,7 @@ pub(super) async fn setup(
             .map(|token| {
                 let exchange = exchange.clone();
                 Box::pin(async move {
-                    let tx = exchange
-                        .createPair(token)
-                        .nonce_key(U256::random())
-                        .nonce(0)
-                        .gas(500_000);
+                    let tx = exchange.createPair(token);
 
                     tx.send().await
                 }) as BoxFuture<'static, _>
@@ -85,11 +80,7 @@ pub(super) async fn setup(
                 all_tokens.iter().map(move |token| {
                     let token = token.clone();
                     Box::pin(async move {
-                        let tx = token
-                            .mint(signer, mint_amount)
-                            .nonce_key(U256::random())
-                            .nonce(0)
-                            .gas(500_000);
+                        let tx = token.mint(signer, mint_amount);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 })
@@ -110,11 +101,7 @@ pub(super) async fn setup(
                 all_token_addresses.iter().copied().map(move |token| {
                     let token = ITIP20Instance::new(token, provider.clone());
                     Box::pin(async move {
-                        let tx = token
-                            .approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX)
-                            .nonce_key(U256::random())
-                            .nonce(0)
-                            .gas(500_000);
+                        let tx = token.approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 })
@@ -141,11 +128,8 @@ pub(super) async fn setup(
                         provider.clone(),
                     );
                     Box::pin(async move {
-                        let tx = exchange
-                            .placeFlip(token, order_amount, true, tick_under, tick_over)
-                            .nonce_key(U256::random())
-                            .nonce(0)
-                            .gas(500_000);
+                        let tx =
+                            exchange.placeFlip(token, order_amount, true, tick_under, tick_over);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 })
@@ -177,8 +161,6 @@ where
             quote_token,
             admin,
         )
-        .nonce_key(U256::random())
-        .nonce(0)
         .send()
         .await?
         .get_receipt()
@@ -195,8 +177,6 @@ where
     let roles = IRolesAuth::new(*token.address(), provider);
     let grant_role_receipt = roles
         .grantRole(*ISSUER_ROLE, admin)
-        .nonce_key(U256::random())
-        .nonce(0)
         .send()
         .await?
         .get_receipt()

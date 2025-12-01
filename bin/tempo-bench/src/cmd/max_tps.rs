@@ -5,15 +5,15 @@ use reth_tracing::{
     RethTracer, Tracer,
     tracing::{debug, error, info},
 };
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderBuilderExt};
 
 use alloy::{
     consensus::BlockHeader,
-    network::{ReceiptResponse, TransactionBuilder},
+    network::ReceiptResponse,
     primitives::{Address, B256, BlockNumber, U256},
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
-        WatchTxError, fillers::NonceFiller,
+        WatchTxError,
     },
     rpc::client::NoParams,
     signers::local::{
@@ -169,10 +169,10 @@ impl MaxTpsArgs {
             self.from_mnemonic_index,
             accounts,
             self.target_urls.clone(),
-            Box::new(|signer, target_url, cached_nonce_manager| {
+            Box::new(|signer, target_url, _cached_nonce_manager| {
                 ProviderBuilder::new_with_network::<TempoNetwork>()
+                    .with_random_2d_nonces()
                     .wallet(signer)
-                    .filler(NonceFiller::new(cached_nonce_manager))
                     .connect_http(target_url)
                     .erased()
             }),
@@ -216,6 +216,7 @@ impl MaxTpsArgs {
                 .map(async |(_, provider)| {
                     IFeeManagerInstance::new(TIP_FEE_MANAGER_ADDRESS, provider.clone())
                         .setUserToken(self.fee_token)
+                        // Force a normal non-AA transaction to set the fee token
                         .nonce(0)
                         .send()
                         .await
@@ -469,7 +470,7 @@ async fn generate_transactions(
                 .choose_weighted(&mut rand::rng(), |(_, weight)| *weight)?
                 .0;
 
-            let mut request = match tx_index {
+            let request = match tx_index {
                 0 => {
                     transfers.fetch_add(1, Ordering::Relaxed);
                     let token = ITIP20Instance::new(token, provider.clone());
@@ -507,11 +508,7 @@ async fn generate_transactions(
                         .into_transaction_request()
                 }
                 _ => unreachable!("Only {TX_TYPES} transaction types are supported"),
-            }
-            // Random nonce key to avoid nonce gaps in case some transactions do not land
-            .with_nonce_key(U256::random());
-
-            request.inner.set_nonce(0);
+            };
 
             Ok(Box::pin(
                 async move { provider.send_transaction(request).await },
