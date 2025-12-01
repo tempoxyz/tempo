@@ -502,8 +502,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
             let mut tx = match tx_index {
                 0 => {
                     transfers.fetch_add(1, Ordering::Relaxed);
-                    let provider = provider.clone();
-                    let token = ITIP20Instance::new(token, provider);
+                    let token = ITIP20Instance::new(token, provider.clone());
 
                     // Transfer minimum possible amount
                     token
@@ -512,9 +511,10 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                 }
                 1 => {
                     swaps.fetch_add(1, Ordering::Relaxed);
-                    let provider = provider.clone();
-                    let exchange =
-                        IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider);
+                    let exchange = IStablecoinExchangeInstance::new(
+                        STABLECOIN_EXCHANGE_ADDRESS,
+                        provider.clone(),
+                    );
 
                     // Swap minimum possible amount
                     exchange
@@ -523,9 +523,10 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                 }
                 2 => {
                     orders.fetch_add(1, Ordering::Relaxed);
-                    let provider = provider.clone();
-                    let exchange =
-                        IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider);
+                    let exchange = IStablecoinExchangeInstance::new(
+                        STABLECOIN_EXCHANGE_ADDRESS,
+                        provider.clone(),
+                    );
 
                     // Place an order at a random tick that's a multiple of `TICK_SPACING`
                     let tick =
