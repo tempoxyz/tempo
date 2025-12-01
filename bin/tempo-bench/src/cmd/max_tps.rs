@@ -185,7 +185,7 @@ impl MaxTpsArgs {
                     .raw_request("admin_clearTxpool".into(), NoParams::default())
                     .await
                     .context(
-                        "Failed to clear transaction pool for {target_url}. Is `admin_clearTxpool` RPC method available?",
+                        format!("Failed to clear transaction pool for {}. Is `admin_clearTxpool` RPC method available?", target_url),
                     )?;
                 info!(%target_url, transactions, "Cleared transaction pool");
             }

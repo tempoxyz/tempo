@@ -186,7 +186,6 @@ where
     let event = receipt
         .decoded_log::<ITIP20Factory::TokenCreated>()
         .ok_or_eyre("Token creation event not found")?;
-
     assert_receipt(receipt)
         .await
         .context("Failed to create token")?;
