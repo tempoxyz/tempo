@@ -2,6 +2,7 @@ use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorizat
 use alloy_primitives::{Address, B256, keccak256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Header, Result as RlpResult, length_of_length};
 use core::ops::Deref;
+use std::sync::OnceLock;
 
 use crate::AASignature;
 
@@ -177,6 +178,118 @@ impl reth_codecs::Compact for AASignedAuthorization {
         let mut buf_slice = &buf[..len];
         let auth = Self::decode(&mut buf_slice).expect("valid RLP encoding");
         (auth, &buf[len..])
+    }
+}
+
+/// A recovered EIP-7702 authorization with AA signature support.
+///
+/// This wraps an `AASignedAuthorization` with lazy authority recovery.
+/// The signature is preserved for gas calculation, and the authority
+/// is recovered on first access and cached.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RecoveredAAAuthorization {
+    /// Signed authorization (contains inner auth and signature)
+    signed: AASignedAuthorization,
+    /// Lazily recovered authority (cached after first access)
+    #[cfg_attr(feature = "serde", serde(skip))]
+    authority: OnceLock<RecoveredAuthority>,
+}
+
+impl RecoveredAAAuthorization {
+    /// Creates a new authorization from a signed authorization.
+    ///
+    /// Authority recovery is deferred until first access.
+    pub const fn new(signed: AASignedAuthorization) -> Self {
+        Self {
+            signed,
+            authority: OnceLock::new(),
+        }
+    }
+
+    /// Creates a new authorization with a pre-recovered authority.
+    ///
+    /// This is useful when you've already recovered the authority and want
+    /// to avoid re-recovery.
+    pub fn new_unchecked(signed: AASignedAuthorization, authority: RecoveredAuthority) -> Self {
+        Self {
+            signed,
+            authority: authority.into(),
+        }
+    }
+
+    /// Creates a new authorization and immediately recovers the authority.
+    ///
+    /// Unlike `new()`, this eagerly recovers the authority upfront and caches it.
+    pub fn recover(signed: AASignedAuthorization) -> Self {
+        let authority = signed
+            .recover_authority()
+            .map_or(RecoveredAuthority::Invalid, RecoveredAuthority::Valid);
+        Self::new_unchecked(signed, authority)
+    }
+
+    /// Returns a reference to the signed authorization.
+    pub const fn signed(&self) -> &AASignedAuthorization {
+        &self.signed
+    }
+
+    /// Returns a reference to the inner [`Authorization`].
+    pub const fn inner(&self) -> &Authorization {
+        self.signed.inner()
+    }
+
+    /// Gets the `signature` for the authorization.
+    pub const fn signature(&self) -> &AASignature {
+        self.signed.signature()
+    }
+
+    /// Returns the recovered authority, if valid.
+    ///
+    /// Recovers the authority on first access and caches the result.
+    pub fn authority(&self) -> Option<Address> {
+        match self.authority_status() {
+            RecoveredAuthority::Valid(addr) => Some(*addr),
+            RecoveredAuthority::Invalid => None,
+        }
+    }
+
+    /// Returns the recovered authority status.
+    ///
+    /// Recovers the authority on first access and caches the result.
+    pub fn authority_status(&self) -> &RecoveredAuthority {
+        self.authority.get_or_init(|| {
+            self.signed
+                .recover_authority()
+                .map_or(RecoveredAuthority::Invalid, RecoveredAuthority::Valid)
+        })
+    }
+
+    /// Converts into a standard `RecoveredAuthorization`, dropping the signature.
+    pub fn into_recovered_authorization(self) -> RecoveredAuthorization {
+        let authority = self.authority_status().clone();
+        RecoveredAuthorization::new_unchecked(self.signed.strip_signature(), authority)
+    }
+}
+
+impl PartialEq for RecoveredAAAuthorization {
+    fn eq(&self, other: &Self) -> bool {
+        self.signed == other.signed
+    }
+}
+
+impl Eq for RecoveredAAAuthorization {}
+
+impl core::hash::Hash for RecoveredAAAuthorization {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.signed.hash(state);
+    }
+}
+
+impl Deref for RecoveredAAAuthorization {
+    type Target = Authorization;
+
+    fn deref(&self) -> &Self::Target {
+        self.signed.inner()
     }
 }
 

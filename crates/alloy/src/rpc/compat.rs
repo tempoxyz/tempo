@@ -10,7 +10,10 @@ use reth_rpc_convert::{
 };
 use reth_rpc_eth_types::EthApiError;
 use tempo_evm::TempoBlockEnv;
-use tempo_primitives::{AASignature, SignatureType, TempoHeader, TempoTxEnvelope, TempoTxType};
+use tempo_primitives::{
+    AASignature, SignatureType, TempoHeader, TempoTxEnvelope, TempoTxType,
+    transaction::RecoveredAAAuthorization,
+};
 use tempo_revm::{AATxEnv, TempoTxEnv};
 
 impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
@@ -116,7 +119,10 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                 Some(Box::new(AATxEnv {
                     aa_calls: calls,
                     signature: mock_signature,
-                    aa_authorization_list,
+                    aa_authorization_list: aa_authorization_list
+                        .into_iter()
+                        .map(RecoveredAAAuthorization::new)
+                        .collect(),
                     ..Default::default()
                 }))
             } else {
