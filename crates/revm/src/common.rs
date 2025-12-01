@@ -9,13 +9,14 @@ use revm::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, IFeeManager,
-    IStablecoinExchange, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
+    IStablecoinExchange, ITIP403Registry, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
 };
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
-    storage::slots::mapping_slot,
+    TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    storage::{self, Storable, StorableType, double_mapping_slot, slots::mapping_slot},
     tip_fee_manager,
     tip20::{self, is_tip20},
+    tip403_registry,
 };
 use tempo_primitives::TempoTxEnvelope;
 
@@ -198,6 +199,77 @@ pub trait TempoStateAccess<T> {
         // load fee token account to ensure that we can load storage for it.
         self.basic(fee_token)?;
         Ok(self.sload(fee_token, tip20::slots::CURRENCY)? == USD_CURRENCY_SLOT_VALUE)
+    }
+
+    /// Checks if the fee payer can transfer a given token (is not blacklisted).
+    fn can_fee_payer_transfer(
+        &mut self,
+        fee_token: Address,
+        fee_payer: Address,
+    ) -> Result<bool, Self::Error> {
+        // Ensure it's a TIP20
+        if !is_tip20(fee_token) {
+            return Ok(false);
+        }
+
+        // Ensure the fee payer is not blacklisted
+        let Ok(transfer_policy_id) = storage::packing::extract_packed_value::<1, u64>(
+            self.sload(fee_token, tip20::slots::TRANSFER_POLICY_ID)?,
+            tip20::slots::TRANSFER_POLICY_ID_OFFSET,
+            <u64 as StorableType>::BYTES,
+        ) else {
+            // Should be infallible, but if unable to extract packed value, assume blacklisted.
+            tracing::warn!(%fee_token, "failed to extract transfer_policy_id from packed value");
+            return Ok(false);
+        };
+
+        // NOTE: must be synced with `fn is_authorized_internal` @crates/precompiles/src/tip403_registry/mod.rs
+        let auth = {
+            // Special case for always-allow and always-reject policies
+            if transfer_policy_id < 2 {
+                // policyId == 0 is the "always-reject" policy
+                // policyId == 1 is the "always-allow" policy
+                return Ok(transfer_policy_id == 1);
+            }
+
+            let policy_data_word = self.sload(
+                TIP403_REGISTRY_ADDRESS,
+                mapping_slot(
+                    transfer_policy_id.to_be_bytes(),
+                    tip403_registry::slots::POLICY_DATA,
+                ),
+            )?;
+            let Ok(data) = tip403_registry::PolicyData::from_evm_words([policy_data_word]) else {
+                tracing::warn!(
+                    transfer_policy_id,
+                    "failed to parse PolicyData from storage"
+                );
+                return Ok(false);
+            };
+            let Ok(policy_type) = data.policy_type.try_into() else {
+                tracing::warn!(transfer_policy_id, policy_type = ?data.policy_type, "invalid policy type");
+                return Ok(false);
+            };
+
+            let is_in_set = self
+                .sload(
+                    TIP403_REGISTRY_ADDRESS,
+                    double_mapping_slot(
+                        transfer_policy_id.to_be_bytes(),
+                        fee_payer,
+                        tip403_registry::slots::POLICY_SET,
+                    ),
+                )?
+                .to::<bool>();
+
+            match policy_type {
+                ITIP403Registry::PolicyType::WHITELIST => is_in_set,
+                ITIP403Registry::PolicyType::BLACKLIST => !is_in_set,
+                ITIP403Registry::PolicyType::__Invalid => false,
+            }
+        };
+
+        Ok(auth)
     }
 
     /// Returns the balance of the given token for the given account.
