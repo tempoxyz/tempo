@@ -6,6 +6,7 @@ use alloy_provider::{
     fillers::{FillerControlFlow, TxFiller},
 };
 use alloy_transport::TransportResult;
+use tempo_primitives::subblock::has_sub_block_nonce_key_prefix;
 
 /// A [`TxFiller`] that populates the [`TxAA`](`tempo_primitives::TxAA`) transaction with a random `nonce_key`, and `nonce` set to `0`.
 ///
@@ -25,7 +26,14 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for R
 
     fn fill_sync(&self, tx: &mut SendableTx<N>) {
         if let Some(builder) = tx.as_mut_builder() {
-            builder.set_nonce_key(U256::random());
+            let nonce_key = loop {
+                let key = U256::random();
+                // We need to ensure that it doesn't use the subblock nonce key prefix
+                if !has_sub_block_nonce_key_prefix(&key) {
+                    break key;
+                }
+            };
+            builder.set_nonce_key(nonce_key);
             builder.set_nonce(0);
         }
     }
