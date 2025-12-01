@@ -9,11 +9,12 @@ use tempo_alloy::TempoNetwork;
 
 use alloy::{
     consensus::BlockHeader,
+    eips::Encodable2718,
     network::ReceiptResponse,
-    primitives::{Address, B256, BlockNumber, Bytes, U256},
+    primitives::{Address, B256, BlockNumber, U256},
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
-        WatchTxError, fillers::NonceFiller,
+        WatchTxError,
     },
     rpc::client::NoParams,
     signers::local::{
@@ -169,11 +170,12 @@ impl MaxTpsArgs {
             accounts,
             self.target_urls.clone(),
             Box::new(|signer, target_url, cached_nonce_manager| {
-                ProviderBuilder::new_with_network::<TempoNetwork>()
+                ProviderBuilder::default()
+                    .fetch_chain_id()
+                    .with_gas_estimation()
+                    .with_nonce_management(cached_nonce_manager)
                     .wallet(signer)
-                    .filler(NonceFiller::new(cached_nonce_manager))
                     .connect_http(target_url)
-                    .erased()
             }),
         ));
         let signer_providers = signer_provider_manager.signer_providers();
@@ -351,7 +353,7 @@ impl MnemonicArg {
 
 /// Awaits pending transactions with up to `tps` per second and `max_concurrent_requests` simultaneous in-flight requests. Stops when `deadline` future resolves.
 async fn send_transactions(
-    transactions: Vec<Bytes>,
+    transactions: Vec<Vec<u8>>,
     signer_provider_manager: Arc<SignerProviderManager>,
     max_concurrent_requests: usize,
     tps: u64,
@@ -424,7 +426,7 @@ async fn send_transactions(
     transactions
 }
 
-async fn generate_transactions(input: GenerateTransactionsInput) -> eyre::Result<Vec<Bytes>> {
+async fn generate_transactions(input: GenerateTransactionsInput) -> eyre::Result<Vec<Vec<u8>>> {
     let GenerateTransactionsInput {
         total_txs,
         accounts,
@@ -510,7 +512,14 @@ async fn generate_transactions(input: GenerateTransactionsInput) -> eyre::Result
                 _ => unreachable!("Only {TX_TYPES} transaction types are supported"),
             };
 
-            eyre::Ok(provider.sign_transaction(tx).await?)
+            eyre::Ok(
+                provider
+                    .fill(tx)
+                    .await?
+                    .as_envelope()
+                    .ok_or_eyre("expected TxEnvelope after filling with a wallet")?
+                    .encoded_2718(),
+            )
         })
         .try_collect::<Vec<_>>()
         .await?;
