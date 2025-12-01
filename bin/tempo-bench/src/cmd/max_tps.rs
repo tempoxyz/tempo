@@ -36,7 +36,7 @@ use futures::{
     stream::{self},
 };
 use governor::{Quota, RateLimiter, state::StreamRateLimitExt};
-use indicatif::{ProgressBar, ProgressIterator};
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator};
 use rand::{random_range, seq::IndexedRandom};
 use rlimit::Resource;
 use serde::Serialize;
@@ -484,8 +484,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
     let swaps = Arc::new(AtomicUsize::new(0));
     let orders = Arc::new(AtomicUsize::new(0));
 
-    let progress = ProgressBar::new(total_txs);
-    let builders = progress
+    let builders = ProgressBar::new(total_txs)
         .wrap_stream(stream::iter(
             std::iter::repeat_with(|| signer_provider_manager.random_unsigned_provider())
                 .take(total_txs as usize),
@@ -590,9 +589,11 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         .try_collect::<Vec<_>>()
         .await?;
 
+    info!(transactions = builders.len(), "Signing transactions");
     // Sign transactions in parallel using signers directly, so it doesn't require async
     let transactions = builders
         .into_par_iter()
+        .progress()
         .map(|(tx, signer)| -> eyre::Result<TempoTxEnvelope> {
             match tx.build_unsigned()? {
                 TempoTypedTransaction::Legacy(mut inner) => {
