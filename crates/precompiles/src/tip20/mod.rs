@@ -404,15 +404,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
         let total_supply = self.total_supply()?;
 
-        let new_supply = total_supply
-            .checked_add(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-
-        let supply_cap = self.supply_cap()?;
-        if new_supply > supply_cap {
-            return Err(TIP20Error::supply_cap_exceeded().into());
-        }
-
         // Check if the `to` address is authorized to receive tokens
         let transfer_policy_id = self.transfer_policy_id()?;
         let mut registry = TIP403Registry::new(self.storage);
@@ -421,6 +412,15 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             user: to,
         })? {
             return Err(TIP20Error::policy_forbids().into());
+        }
+
+        let new_supply = total_supply
+            .checked_add(amount)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+
+        let supply_cap = self.supply_cap()?;
+        if new_supply > supply_cap {
+            return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
         let timestamp = self.storage.timestamp();
