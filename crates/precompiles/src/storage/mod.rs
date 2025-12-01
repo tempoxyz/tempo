@@ -2,7 +2,7 @@
 pub mod hashmap;
 
 pub mod thread_local;
-pub use thread_local::StorageAccessor;
+pub use thread_local::StorageContext;
 
 mod types;
 pub use types::*;
@@ -24,10 +24,10 @@ use crate::error::Result;
 /// - `EvmPrecompileStorageProvider` - Production EVM storage
 /// - `HashMapStorageProvider` - Test storage
 ///
-/// # Sync with `[StorageAccessor]`
+/// # Sync with `[StorageContext]`
 ///
-/// `StorageAccessor` mirrors these methods with split mutability for read (staticcall) vs write (call).
-/// When adding new methods here, remember to add corresponding methods to `StorageAccessor`.
+/// `StorageContext` mirrors these methods with split mutability for read (staticcall) vs write (call).
+/// When adding new methods here, remember to add corresponding methods to `StorageContext`.
 pub trait PrecompileStorageProvider {
     /// Returns the chain ID.
     fn chain_id(&self) -> u64;
@@ -107,5 +107,5 @@ pub trait ContractStorage {
     fn address(&self) -> Address;
 
     /// Contract storage accessor.
-    fn storage(&mut self) -> &mut StorageAccessor;
+    fn storage(&mut self) -> &mut StorageContext;
 }

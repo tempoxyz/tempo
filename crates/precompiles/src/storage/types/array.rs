@@ -189,7 +189,7 @@ where
 mod tests {
     use super::*;
     use crate::storage::{
-        Layout, LayoutCtx, PrecompileStorageContext, PrecompileStorageProvider,
+        Layout, LayoutCtx, PrecompileStorageProvider, StorageContext,
         hashmap::HashMapStorageProvider,
     };
     use proptest::prelude::*;
@@ -221,15 +221,15 @@ mod tests {
         assert_eq!(<[u8; 32] as StorableType>::LAYOUT, Layout::Slots(1));
 
         // Store and load
-        let guard = storage.enter().unwrap();
-        let mut slot = <[u8; 32]>::handle(base_slot, LayoutCtx::FULL, address);
-        slot.write(data).unwrap();
-        let loaded = slot.read().unwrap();
-        assert_eq!(loaded, data, "[u8; 32] roundtrip failed");
+        StorageContext::enter(&mut storage, || {
+            let mut slot = <[u8; 32]>::handle(base_slot, LayoutCtx::FULL, address);
+            slot.write(data).unwrap();
+            let loaded = slot.read().unwrap();
+            assert_eq!(loaded, data, "[u8; 32] roundtrip failed");
 
-        // Verify delete
-        slot.delete().unwrap();
-        std::mem::drop(guard);
+            // Verify delete
+            slot.delete().unwrap();
+        });
         let slot_value = storage.sload(address, base_slot).unwrap();
         assert_eq!(slot_value, U256::ZERO, "Slot not cleared after delete");
     }
@@ -246,23 +246,24 @@ mod tests {
         assert_eq!(<[u64; 5] as StorableType>::LAYOUT, Layout::Slots(2));
 
         // Store and load
-        let guard = storage.enter().unwrap();
-        let mut slot = <[u64; 5]>::handle(base_slot, LayoutCtx::FULL, address);
-        slot.write(data).unwrap();
-        let loaded = slot.read().unwrap();
-        assert_eq!(loaded, data, "[u64; 5] roundtrip failed");
+        StorageContext::enter(&mut storage, || {
+            let mut slot = <[u64; 5]>::handle(base_slot, LayoutCtx::FULL, address);
+            slot.write(data).unwrap();
+            let loaded = slot.read().unwrap();
+            assert_eq!(loaded, data, "[u64; 5] roundtrip failed");
+        });
 
         // Verify both slots are used
-        std::mem::drop(guard);
         let slot0 = storage.sload(address, base_slot).unwrap();
         let slot1 = storage.sload(address, base_slot + U256::ONE).unwrap();
         assert_ne!(slot0, U256::ZERO, "Slot 0 should be non-zero");
         assert_ne!(slot1, U256::ZERO, "Slot 1 should be non-zero");
 
         // Verify delete clears both slots
-        let guard = storage.enter().unwrap();
-        slot.delete().unwrap();
-        std::mem::drop(guard);
+        StorageContext::enter(&mut storage, || {
+            let mut slot = <[u64; 5]>::handle(base_slot, LayoutCtx::FULL, address);
+            slot.delete().unwrap();
+        });
         let slot0_after = storage.sload(address, base_slot).unwrap();
         let slot1_after = storage.sload(address, base_slot + U256::ONE).unwrap();
         assert_eq!(slot0_after, U256::ZERO, "Slot 0 not cleared");
@@ -281,11 +282,12 @@ mod tests {
         assert_eq!(<[u16; 16] as StorableType>::LAYOUT, Layout::Slots(1));
 
         // Store and load
-        let _guard = storage.enter().unwrap();
-        let mut slot = <[u16; 16]>::handle(base_slot, LayoutCtx::FULL, address);
-        slot.write(data).unwrap();
-        let loaded = slot.read().unwrap();
-        assert_eq!(loaded, data, "[u16; 16] roundtrip failed");
+        StorageContext::enter(&mut storage, || {
+            let mut slot = <[u16; 16]>::handle(base_slot, LayoutCtx::FULL, address);
+            slot.write(data).unwrap();
+            let loaded = slot.read().unwrap();
+            assert_eq!(loaded, data, "[u16; 16] roundtrip failed");
+        });
     }
 
     #[test]
@@ -300,14 +302,14 @@ mod tests {
         assert_eq!(<[U256; 3] as StorableType>::LAYOUT, Layout::Slots(3));
 
         // Store and load
-        let guard = storage.enter().unwrap();
-        let mut slot = <[U256; 3]>::handle(base_slot, LayoutCtx::FULL, address);
-        slot.write(data).unwrap();
-        let loaded = slot.read().unwrap();
-        assert_eq!(loaded, data, "[U256; 3] roundtrip failed");
+        StorageContext::enter(&mut storage, || {
+            let mut slot = <[U256; 3]>::handle(base_slot, LayoutCtx::FULL, address);
+            slot.write(data).unwrap();
+            let loaded = slot.read().unwrap();
+            assert_eq!(loaded, data, "[U256; 3] roundtrip failed");
+        });
 
         // Verify each element is in its own slot
-        std::mem::drop(guard);
         for (i, expected_value) in data.iter().enumerate() {
             let slot_value = storage.sload(address, base_slot + U256::from(i)).unwrap();
             assert_eq!(slot_value, *expected_value, "Slot {i} mismatch");
@@ -330,11 +332,12 @@ mod tests {
         assert_eq!(<[Address; 3] as StorableType>::LAYOUT, Layout::Slots(3));
 
         // Store and load
-        let _guard = storage.enter().unwrap();
-        let mut slot = <[Address; 3]>::handle(base_slot, LayoutCtx::FULL, address);
-        slot.write(data).unwrap();
-        let loaded = slot.read().unwrap();
-        assert_eq!(loaded, data, "[Address; 3] roundtrip failed");
+        StorageContext::enter(&mut storage, || {
+            let mut slot = <[Address; 3]>::handle(base_slot, LayoutCtx::FULL, address);
+            slot.write(data).unwrap();
+            let loaded = slot.read().unwrap();
+            assert_eq!(loaded, data, "[Address; 3] roundtrip failed");
+        });
     }
 
     #[test]
@@ -349,11 +352,12 @@ mod tests {
         assert_eq!(<[u8; 1] as StorableType>::LAYOUT, Layout::Slots(1));
 
         // Store and load
-        let _guard = storage.enter().unwrap();
-        let mut slot = <[u8; 1]>::handle(base_slot, LayoutCtx::FULL, address);
-        slot.write(data).unwrap();
-        let loaded = slot.read().unwrap();
-        assert_eq!(loaded, data, "[u8; 1] roundtrip failed");
+        StorageContext::enter(&mut storage, || {
+            let mut slot = <[u8; 1]>::handle(base_slot, LayoutCtx::FULL, address);
+            slot.write(data).unwrap();
+            let loaded = slot.read().unwrap();
+            assert_eq!(loaded, data, "[u8; 1] roundtrip failed");
+        });
     }
 
     #[test]
@@ -379,15 +383,15 @@ mod tests {
         assert_eq!(<[[u8; 4]; 8] as StorableType>::LAYOUT, Layout::Slots(8));
 
         // Store and load
-        let guard = storage.enter().unwrap();
-        let mut slot = <[[u8; 4]; 8]>::handle(base_slot, LayoutCtx::FULL, address);
-        slot.write(data).unwrap();
-        let loaded = slot.read().unwrap();
-        assert_eq!(loaded, data, "[[u8; 4]; 8] roundtrip failed");
+        StorageContext::enter(&mut storage, || {
+            let mut slot = <[[u8; 4]; 8]>::handle(base_slot, LayoutCtx::FULL, address);
+            slot.write(data).unwrap();
+            let loaded = slot.read().unwrap();
+            assert_eq!(loaded, data, "[[u8; 4]; 8] roundtrip failed");
 
-        // Verify delete clears all 8 slots
-        slot.delete().unwrap();
-        std::mem::drop(guard);
+            // Verify delete clears all 8 slots
+            slot.delete().unwrap();
+        });
         for i in 0..8 {
             let slot_value = storage.sload(address, base_slot + U256::from(i)).unwrap();
             assert_eq!(slot_value, U256::ZERO, "Slot {i} not cleared after delete");
@@ -418,15 +422,15 @@ mod tests {
         assert_eq!(<[[u16; 2]; 8] as StorableType>::LAYOUT, Layout::Slots(8));
 
         // Store and load
-        let guard = storage.enter().unwrap();
-        let mut slot = <[[u16; 2]; 8]>::handle(base_slot, LayoutCtx::FULL, address);
-        slot.write(data).unwrap();
-        let loaded = slot.read().unwrap();
-        assert_eq!(loaded, data, "[[u16; 2]; 8] roundtrip failed");
+        StorageContext::enter(&mut storage, || {
+            let mut slot = <[[u16; 2]; 8]>::handle(base_slot, LayoutCtx::FULL, address);
+            slot.write(data).unwrap();
+            let loaded = slot.read().unwrap();
+            assert_eq!(loaded, data, "[[u16; 2]; 8] roundtrip failed");
 
-        // Verify delete clears all 8 slots
-        slot.delete().unwrap();
-        std::mem::drop(guard);
+            // Verify delete clears all 8 slots
+            slot.delete().unwrap();
+        });
         for i in 0..8 {
             let slot_value = storage.sload(address, base_slot + U256::from(i)).unwrap();
             assert_eq!(slot_value, U256::ZERO, "Slot {i} not cleared after delete");
@@ -444,15 +448,16 @@ mod tests {
             let (mut storage, address) = setup_storage();
 
             // Store and load
-            let guard = storage.enter().unwrap();
-            let mut slot = <[u8; 32]>::handle(base_slot, LayoutCtx::FULL, address);
-            slot.write(data).unwrap();
-            let loaded = slot.read().unwrap();
-            prop_assert_eq!(&loaded, &data, "[u8; 32] roundtrip failed");
+            StorageContext::enter(&mut storage, || {
+                let mut slot = <[u8; 32]>::handle(base_slot, LayoutCtx::FULL, address);
+                slot.write(data).unwrap();
+                let loaded = slot.read().unwrap();
+                prop_assert_eq!(&loaded, &data, "[u8; 32] roundtrip failed");
 
-            // Delete
-            slot.delete().unwrap();
-            std::mem::drop(guard);
+                // Delete
+                slot.delete().unwrap();
+                Ok(())
+            })?;
             let slot_value = storage.sload(address, base_slot).unwrap();
             prop_assert_eq!(slot_value, U256::ZERO, "Slot not cleared after delete");
         }
@@ -465,11 +470,13 @@ mod tests {
             let (mut storage, address) = setup_storage();
 
             // Store and load
-            let _guard = storage.enter().unwrap();
-            let mut slot = <[u16; 16]>::handle(base_slot, LayoutCtx::FULL, address);
-            slot.write(data).unwrap();
-            let loaded = slot.read().unwrap();
-            prop_assert_eq!(&loaded, &data, "[u16; 16] roundtrip failed");
+            StorageContext::enter(&mut storage, || {
+                let mut slot = <[u16; 16]>::handle(base_slot, LayoutCtx::FULL, address);
+                slot.write(data).unwrap();
+                let loaded = slot.read().unwrap();
+                prop_assert_eq!(&loaded, &data, "[u16; 16] roundtrip failed");
+                Ok(())
+            })?;
         }
 
         #[test]
@@ -480,23 +487,26 @@ mod tests {
             let (mut storage, address) = setup_storage();
 
             // Store and load
-            let guard = storage.enter().unwrap();
-            let mut slot = <[U256; 5]>::handle(base_slot, LayoutCtx::FULL, address);
-            slot.write(data).unwrap();
-            let loaded = slot.read().unwrap();
-            prop_assert_eq!(&loaded, &data, "[U256; 5] roundtrip failed");
+            StorageContext::enter(&mut storage, || {
+                let mut slot = <[U256; 5]>::handle(base_slot, LayoutCtx::FULL, address);
+                slot.write(data).unwrap();
+                let loaded = slot.read().unwrap();
+                prop_assert_eq!(&loaded, &data, "[U256; 5] roundtrip failed");
+                Ok(())
+            })?;
 
             // Verify each element is in its own slot
-            std::mem::drop(guard);
             for (i, expected_value) in data.iter().enumerate() {
                 let slot_value = storage.sload(address, base_slot + U256::from(i)).unwrap();
                 prop_assert_eq!(slot_value, *expected_value, "Slot {} mismatch", i);
             }
 
             // Delete
-            let guard = storage.enter().unwrap();
-            slot.delete().unwrap();
-            std::mem::drop(guard);
+            StorageContext::enter(&mut storage, || {
+                let mut slot = <[U256; 5]>::handle(base_slot, LayoutCtx::FULL, address);
+                slot.delete().unwrap();
+                Ok::<(), proptest::test_runner::TestCaseError>(())
+            })?;
             for i in 0..5 {
                 let slot_value = storage.sload(address, base_slot + U256::from(i)).unwrap();
                 prop_assert_eq!(slot_value, U256::ZERO, "Slot {} not cleared", i);

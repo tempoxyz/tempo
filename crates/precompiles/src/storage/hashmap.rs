@@ -152,4 +152,3 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.spec = spec;
     }
 }
-

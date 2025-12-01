@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use crate::{
     error::Result,
     storage::{
-        FieldLocation, Handler, LayoutCtx, Storable, StorableType, StorageAccessor, StorageOps,
+        FieldLocation, Handler, LayoutCtx, Storable, StorableType, StorageContext, StorageOps,
     },
 };
 
@@ -180,12 +180,12 @@ impl<T: Storable> Handler<T> for Slot<T> {
 
 impl<T> StorageOps for Slot<T> {
     fn sload(&self, slot: U256) -> Result<U256> {
-        let storage = StorageAccessor;
+        let storage = StorageContext;
         storage.sload(self.address, slot)
     }
 
     fn sstore(&mut self, slot: U256, value: U256) -> Result<()> {
-        let mut storage = StorageAccessor;
+        let mut storage = StorageContext;
         storage.sstore(self.address, slot, value)
     }
 }
@@ -194,8 +194,7 @@ impl<T> StorageOps for Slot<T> {
 mod tests {
     use super::*;
     use crate::storage::{
-        Handler, PrecompileStorageContext, PrecompileStorageProvider, StorageKey,
-        hashmap::HashMapStorageProvider,
+        Handler, PrecompileStorageProvider, StorageKey, hashmap::HashMapStorageProvider,
     };
     use alloy::primitives::{Address, B256};
     use proptest::prelude::*;
@@ -226,97 +225,98 @@ mod tests {
     #[test]
     fn test_slot_number_extraction() {
         let (mut storage, address) = setup_storage();
-        let _guard = storage.enter().unwrap();
-
-        let slot_0 = Slot::<U256>::new(U256::ZERO, address.clone());
-        let slot_1 = Slot::<Address>::new(U256::ONE, address.clone());
-        let slot_max = Slot::<bool>::new(U256::MAX, address);
-        assert_eq!(slot_0.slot(), U256::ZERO);
-        assert_eq!(slot_1.slot(), U256::ONE);
-        assert_eq!(slot_max.slot(), U256::MAX);
+        StorageContext::enter(&mut storage, || {
+            let slot_0 = Slot::<U256>::new(U256::ZERO, address.clone());
+            let slot_1 = Slot::<Address>::new(U256::ONE, address.clone());
+            let slot_max = Slot::<bool>::new(U256::MAX, address);
+            assert_eq!(slot_0.slot(), U256::ZERO);
+            assert_eq!(slot_1.slot(), U256::ONE);
+            assert_eq!(slot_max.slot(), U256::MAX);
+        });
     }
 
     #[test]
     fn test_slot_edge_case_zero() {
         let (mut storage, address) = setup_storage();
-        let _guard = storage.enter().unwrap();
+        StorageContext::enter(&mut storage, || {
+            // Explicit test for U256::ZERO slot
+            let mut slot = Slot::<U256>::new(U256::ZERO, address);
+            assert_eq!(slot.slot(), U256::ZERO);
 
-        // Explicit test for U256::ZERO slot
-        let mut slot = Slot::<U256>::new(U256::ZERO, address);
-        assert_eq!(slot.slot(), U256::ZERO);
-
-        let value = U256::random();
-        slot.write(value).unwrap();
-        let loaded = slot.read().unwrap();
-        assert_eq!(loaded, value);
+            let value = U256::random();
+            slot.write(value).unwrap();
+            let loaded = slot.read().unwrap();
+            assert_eq!(loaded, value);
+        });
     }
 
     #[test]
     fn test_slot_edge_case_max() {
         let (mut storage, address) = setup_storage();
-        let _guard = storage.enter().unwrap();
+        StorageContext::enter(&mut storage, || {
+            // Explicit test for U256::MAX slot
+            let mut slot = Slot::<U256>::new(U256::MAX, address);
+            assert_eq!(slot.slot(), U256::MAX);
 
-        // Explicit test for U256::MAX slot
-        let mut slot = Slot::<U256>::new(U256::MAX, address);
-        assert_eq!(slot.slot(), U256::MAX);
-
-        let value = U256::random();
-        slot.write(value).unwrap();
-        let loaded = slot.read().unwrap();
-        assert_eq!(loaded, value);
+            let value = U256::random();
+            slot.write(value).unwrap();
+            let loaded = slot.read().unwrap();
+            assert_eq!(loaded, value);
+        });
     }
 
     #[test]
     fn test_slot_read_write_u256() {
         let (mut storage, address) = setup_storage();
-        let guard = storage.enter().unwrap();
-
-        let mut slot = Slot::<U256>::new(U256::random(), address.clone());
+        let slot_num = U256::random();
         let test_value = U256::random();
 
-        // Write using new API
-        slot.write(test_value).unwrap();
+        StorageContext::enter(&mut storage, || {
+            let mut slot = Slot::<U256>::new(slot_num, address.clone());
 
-        // Read using new API
-        let loaded = slot.read().unwrap();
-        assert_eq!(loaded, test_value);
+            // Write using new API
+            slot.write(test_value).unwrap();
+
+            // Read using new API
+            let loaded = slot.read().unwrap();
+            assert_eq!(loaded, test_value);
+        });
 
         // Verify it actually wrote to slot
-        std::mem::drop(guard);
-        let raw = storage.sload(address, slot.slot());
+        let raw = storage.sload(address, slot_num);
         assert_eq!(raw, Ok(test_value));
     }
 
     #[test]
     fn test_slot_read_write_address() {
         let (mut storage, address) = setup_storage();
-        let _guard = storage.enter().unwrap();
+        StorageContext::enter(&mut storage, || {
+            let test_addr = Address::random();
+            let mut slot = Slot::<Address>::new(U256::random(), address);
 
-        let test_addr = Address::random();
-        let mut slot = Slot::<Address>::new(U256::random(), address);
+            // Write
+            slot.write(test_addr).unwrap();
 
-        // Write
-        slot.write(test_addr).unwrap();
-
-        // Read
-        let loaded = slot.read().unwrap();
-        assert_eq!(loaded, test_addr);
+            // Read
+            let loaded = slot.read().unwrap();
+            assert_eq!(loaded, test_addr);
+        });
     }
 
     #[test]
     fn test_slot_read_write_bool() {
         let (mut storage, address) = setup_storage();
-        let _guard = storage.enter().unwrap();
+        StorageContext::enter(&mut storage, || {
+            let mut slot = Slot::<bool>::new(U256::random(), address);
 
-        let mut slot = Slot::<bool>::new(U256::random(), address);
+            // Write true
+            slot.write(true).unwrap();
+            assert!(slot.read().unwrap());
 
-        // Write true
-        slot.write(true).unwrap();
-        assert!(slot.read().unwrap());
-
-        // Write false
-        slot.write(false).unwrap();
-        assert!(!slot.read().unwrap());
+            // Write false
+            slot.write(false).unwrap();
+            assert!(!slot.read().unwrap());
+        });
     }
 
     // #[test]
@@ -336,29 +336,29 @@ mod tests {
     #[test]
     fn test_slot_default_value_is_zero() {
         let (mut storage, address) = setup_storage();
-        let _guard = storage.enter().unwrap();
+        StorageContext::enter(&mut storage, || {
+            let slot = Slot::<U256>::new(U256::random(), address);
 
-        let slot = Slot::<U256>::new(U256::random(), address);
-
-        // Reading uninitialized storage should return zero
-        let value = slot.read().unwrap();
-        assert_eq!(value, U256::ZERO);
+            // Reading uninitialized storage should return zero
+            let value = slot.read().unwrap();
+            assert_eq!(value, U256::ZERO);
+        });
     }
 
     #[test]
     fn test_slot_overwrite() {
         let (mut storage, address) = setup_storage();
-        let _guard = storage.enter().unwrap();
+        StorageContext::enter(&mut storage, || {
+            let mut slot = Slot::<u64>::new(U256::random(), address);
 
-        let mut slot = Slot::<u64>::new(U256::random(), address);
+            // Write initial value
+            slot.write(100).unwrap();
+            assert_eq!(slot.read(), Ok(100));
 
-        // Write initial value
-        slot.write(100).unwrap();
-        assert_eq!(slot.read(), Ok(100));
-
-        // Overwrite with new value
-        slot.write(200).unwrap();
-        assert_eq!(slot.read(), Ok(200));
+            // Overwrite with new value
+            slot.write(200).unwrap();
+            assert_eq!(slot.read(), Ok(200));
+        });
     }
 
     proptest! {
@@ -367,8 +367,7 @@ mod tests {
         #[test]
         fn proptest_slot_read_write_u256(slot in arb_u256(),value in arb_u256()) {
             let (mut storage, address) = setup_storage();
-        let _guard = storage.enter().unwrap();
-
+            StorageContext::enter(&mut storage, || -> std::result::Result<(), TestCaseError> {
                 let mut slot = Slot::<U256>::new(slot, address);
 
                 // Write and read back
@@ -380,26 +379,28 @@ mod tests {
                 slot.delete().unwrap();
                 let after_delete = slot.read().unwrap();
                 prop_assert_eq!(after_delete, U256::ZERO, "not zero after delete");
+                Ok(())
+            })?;
         }
 
         #[test]
         fn proptest_slot_read_write_address(slot in arb_u256(),addr_value in arb_address()) {
             let (mut storage, address) = setup_storage();
-        let _guard = storage.enter().unwrap();
-
+            StorageContext::enter(&mut storage, || -> std::result::Result<(), TestCaseError> {
                 let mut slot = Slot::<Address>::new(slot, address);
 
                 // Write and read back
                 slot.write(addr_value).unwrap();
                 let loaded = slot.read().unwrap();
                 prop_assert_eq!(loaded, addr_value, "address roundtrip failed");
+                Ok(())
+            })?;
         }
 
         #[test]
         fn proptest_slot_isolation(slot1 in arb_u256(), slot2 in arb_u256(), value1 in arb_u256(), value2 in arb_u256()) {
             let (mut storage, address) = setup_storage();
-        let _guard = storage.enter().unwrap();
-
+            StorageContext::enter(&mut storage, || -> std::result::Result<(), TestCaseError> {
                 let mut slot1 = Slot::<U256>::new(slot1, address.clone());
                 let mut slot2 = Slot::<U256>::new(slot2, address);
 
@@ -420,6 +421,8 @@ mod tests {
 
                 prop_assert_eq!(after_delete1, U256::ZERO, "slot 1 not deleted");
                 prop_assert_eq!(after_delete2, value2, "slot 2 affected by slot 1 delete");
+                Ok(())
+            })?;
         }
     }
 
@@ -428,28 +431,28 @@ mod tests {
     #[test]
     fn test_slot_at_offset() {
         let (mut storage, address) = setup_storage();
-        let _guard = storage.enter().unwrap();
+        StorageContext::enter(&mut storage, || {
+            let pair_key = B256::random();
+            let orderbook_base_slot = pair_key.mapping_slot(U256::ZERO);
 
-        let pair_key = B256::random();
-        let orderbook_base_slot = pair_key.mapping_slot(U256::ZERO);
+            let base_address = Address::random();
 
-        let base_address = Address::random();
+            // Write to orderbook.base using runtime offset
+            let mut slot = Slot::<Address>::new_at_offset(orderbook_base_slot, 0, address);
+            slot.write(base_address).unwrap();
 
-        // Write to orderbook.base using runtime offset
-        let mut slot = Slot::<Address>::new_at_offset(orderbook_base_slot, 0, address);
-        slot.write(base_address).unwrap();
+            // Read back
+            let read_address = slot.read().unwrap();
 
-        // Read back
-        let read_address = slot.read().unwrap();
+            assert_eq!(read_address, base_address);
 
-        assert_eq!(read_address, base_address);
+            // Delete
+            slot.delete().unwrap();
 
-        // Delete
-        slot.delete().unwrap();
+            let deleted = slot.read().unwrap();
 
-        let deleted = slot.read().unwrap();
-
-        assert_eq!(deleted, Address::ZERO);
+            assert_eq!(deleted, Address::ZERO);
+        });
     }
 
     // #[test]
@@ -474,39 +477,39 @@ mod tests {
     #[test]
     fn test_multiple_primitive_fields() {
         let (mut storage, address) = setup_storage();
-        let _guard = storage.enter().unwrap();
+        StorageContext::enter(&mut storage, || {
+            let key = B256::random();
+            let base = key.mapping_slot(U256::ZERO);
 
-        let key = B256::random();
-        let base = key.mapping_slot(U256::ZERO);
+            // Simulate different primitive fields at different offsets
+            let field_0 = Address::random();
+            let field_1: u64 = 12345;
+            let field_2 = U256::random();
 
-        // Simulate different primitive fields at different offsets
-        let field_0 = Address::random();
-        let field_1: u64 = 12345;
-        let field_2 = U256::random();
+            Slot::<Address>::new_at_offset(base, 0, address.clone())
+                .write(field_0)
+                .unwrap();
+            Slot::<u64>::new_at_offset(base, 1, address.clone())
+                .write(field_1)
+                .unwrap();
+            Slot::<U256>::new_at_offset(base, 2, address.clone())
+                .write(field_2)
+                .unwrap();
 
-        Slot::<Address>::new_at_offset(base, 0, address.clone())
-            .write(field_0)
-            .unwrap();
-        Slot::<u64>::new_at_offset(base, 1, address.clone())
-            .write(field_1)
-            .unwrap();
-        Slot::<U256>::new_at_offset(base, 2, address.clone())
-            .write(field_2)
-            .unwrap();
+            // Verify independence
+            let read_0 = Slot::<Address>::new_at_offset(base, 0, address.clone())
+                .read()
+                .unwrap();
+            let read_1 = Slot::<u64>::new_at_offset(base, 1, address.clone())
+                .read()
+                .unwrap();
+            let read_2 = Slot::<U256>::new_at_offset(base, 2, address)
+                .read()
+                .unwrap();
 
-        // Verify independence
-        let read_0 = Slot::<Address>::new_at_offset(base, 0, address.clone())
-            .read()
-            .unwrap();
-        let read_1 = Slot::<u64>::new_at_offset(base, 1, address.clone())
-            .read()
-            .unwrap();
-        let read_2 = Slot::<U256>::new_at_offset(base, 2, address)
-            .read()
-            .unwrap();
-
-        assert_eq!(read_0, field_0);
-        assert_eq!(read_1, field_1);
-        assert_eq!(read_2, field_2);
+            assert_eq!(read_0, field_0);
+            assert_eq!(read_1, field_1);
+            assert_eq!(read_2, field_2);
+        });
     }
 }

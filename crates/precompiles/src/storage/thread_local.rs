@@ -11,16 +11,12 @@ use crate::{
 
 scoped_thread_local!(static STORAGE: Cell<*mut dyn PrecompileStorageProvider>);
 
-/// Reborrows a raw pointer as a mutable reference.
-///
-/// # Safety
-/// Caller must ensure:
-/// - `ptr` points to valid, initialized memory
-/// - No other references (mutable or shared) exist to the pointee
-/// - The returned reference does not outlive the pointee
+/// Converts a raw pointer to a mutable reference.
 #[inline]
-unsafe fn reborrow_mut<'a>(ptr: *mut dyn PrecompileStorageProvider) -> &'a mut dyn PrecompileStorageProvider {
-    // SAFETY: Caller guarantees ptr is valid and not aliased.
+unsafe fn ptr_as_mut<'a>(
+    ptr: *mut dyn PrecompileStorageProvider,
+) -> &'a mut dyn PrecompileStorageProvider {
+    // SAFETY: Caller guarantees ptr is valid and exclusively accessible.
     unsafe { &mut *ptr }
 }
 
@@ -29,7 +25,7 @@ unsafe fn reborrow_mut<'a>(ptr: *mut dyn PrecompileStorageProvider) -> &'a mut d
 /// # Important
 ///
 /// Since it provides access to the current thread-local storage context, it MUST be used within
-/// a `StorageAccessor::enter` closure.
+/// a `StorageContext::enter` closure.
 ///
 /// # Sync with `PrecompileStorageProvider`
 ///
@@ -37,9 +33,9 @@ unsafe fn reborrow_mut<'a>(ptr: *mut dyn PrecompileStorageProvider) -> &'a mut d
 /// - Read operations (staticcall) take `&self`
 /// - Write operations take `&mut self`
 #[derive(Debug, Default, Clone, Copy)]
-pub struct StorageAccessor;
+pub struct StorageContext;
 
-impl StorageAccessor {
+impl StorageContext {
     /// Enter storage context. All storage operations must happen within the closure.
     ///
     /// # IMPORTANT
@@ -53,9 +49,7 @@ impl StorageAccessor {
         S: PrecompileStorageProvider,
     {
         let ptr: *mut dyn PrecompileStorageProvider = storage;
-        // SAFETY: scoped_tls ensures ptr only accessible within closure scope.
-        // The closure cannot return references to the storage, and the storage
-        // outlives the closure execution.
+        // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
         let ptr_static: *mut (dyn PrecompileStorageProvider + 'static) =
             unsafe { std::mem::transmute(ptr) };
         let cell = Cell::new(ptr_static);
@@ -69,13 +63,12 @@ impl StorageAccessor {
     {
         if !STORAGE.is_set() {
             return Err(TempoPrecompileError::Fatal(
-                "No storage context. 'StorageAccessor::enter' must be called first".to_string(),
+                "No storage context. 'StorageContext::enter' must be called first".to_string(),
             ));
         }
         STORAGE.with(|cell| {
-            // SAFETY: Single-threaded access, scoped_tls prevents aliasing,
-            // returned reference doesn't escape closure.
-            f(unsafe { reborrow_mut(cell.get()) })
+            // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
+            f(unsafe { ptr_as_mut(cell.get()) })
         })
     }
 
@@ -102,12 +95,12 @@ impl StorageAccessor {
 
     pub fn get_account_info(&self, address: Address) -> Result<&'_ AccountInfo> {
         // SAFETY: The returned reference is valid for the duration of the
-        // `StorageAccessor::enter` closure. Since `StorageAccessor` can only be used
+        // `StorageContext::enter` closure. Since `StorageContext` can only be used
         // while inside enter(), the reference remains valid.
         Self::with_storage(|s| {
             let info = s.get_account_info(address)?;
-            // Extend the lifetime to match &'_ self
-            // This is safe because the underlying storage outlives the accessor
+            // SAFETY: Extend the lifetime to match `&'_ self`.
+            // Underlying storage data outlives the accessor.
             let info: &'_ AccountInfo = unsafe { &*(info as *const AccountInfo) };
             Ok(info)
         })
@@ -150,7 +143,7 @@ impl StorageAccessor {
     #[cfg(any(test, feature = "test-utils"))]
     pub fn get_events(&self, address: Address) -> &Vec<LogData> {
         // SAFETY: The returned reference is valid for the duration of the
-        // `StorageAccessor::enter` closure. Since `StorageAccessor` can only be used
+        // `StorageContext::enter` closure. Since `StorageContext` can only be used
         // while inside enter(), the reference remains valid.
         Self::with_storage(|s| {
             let events = s.get_events(address);

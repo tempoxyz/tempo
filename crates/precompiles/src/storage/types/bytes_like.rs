@@ -244,7 +244,7 @@ fn encode_long_string_length(byte_length: usize) -> U256 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{Handler, PrecompileStorageContext, hashmap::HashMapStorageProvider};
+    use crate::storage::{Handler, StorageContext, hashmap::HashMapStorageProvider};
     use proptest::prelude::*;
 
     fn setup_storage() -> (HashMapStorageProvider, Address) {
@@ -460,138 +460,150 @@ mod tests {
         #[test]
         fn test_short_strings(s in arb_short_string(), base_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
-            let _guard = storage.enter().unwrap();
+            StorageContext::enter(&mut storage, || {
+                let mut slot = Slot::<String>::new(base_slot, address);
 
-            let mut slot = Slot::<String>::new(base_slot, address);
+                // Verify store → load roundtrip
+                slot.write(s.clone()).unwrap();
+                let loaded = slot.read().unwrap();
+                prop_assert_eq!(&s, &loaded, "Short string roundtrip failed");
 
-            // Verify store → load roundtrip
-            slot.write(s.clone()).unwrap();
-            let loaded = slot.read().unwrap();
-            prop_assert_eq!(&s, &loaded, "Short string roundtrip failed");
+                // Verify delete works
+                slot.delete().unwrap();
+                let after_delete = slot.read().unwrap();
+                prop_assert_eq!(after_delete, String::new(), "Short string not empty after delete");
 
-            // Verify delete works
-            slot.delete().unwrap();
-            let after_delete = slot.read().unwrap();
-            prop_assert_eq!(after_delete, String::new(), "Short string not empty after delete");
+                Ok(())
+            }).unwrap();
         }
 
         #[test]
         #[allow(clippy::redundant_clone)]
         fn test_32byte_strings(s in arb_32byte_string(), base_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
-            let _guard = storage.enter().unwrap();
+            StorageContext::enter(&mut storage, || {
+                // Verify 32-byte boundary string is stored correctly
+                prop_assert_eq!(s.len(), 32, "Generated string should be exactly 32 bytes");
 
-            // Verify 32-byte boundary string is stored correctly
-            prop_assert_eq!(s.len(), 32, "Generated string should be exactly 32 bytes");
+                let mut slot = Slot::<String>::new(base_slot, address);
 
-            let mut slot = Slot::<String>::new(base_slot, address);
+                // Verify store → load roundtrip
+                slot.write(s.clone()).unwrap();
+                let loaded = slot.read().unwrap();
+                prop_assert_eq!(s.clone(), loaded, "32-byte string roundtrip failed");
 
-            // Verify store → load roundtrip
-            slot.write(s.clone()).unwrap();
-            let loaded = slot.read().unwrap();
-            prop_assert_eq!(s.clone(), loaded, "32-byte string roundtrip failed");
+                // Verify delete works
+                slot.delete().unwrap();
+                let after_delete = slot.read().unwrap();
+                prop_assert_eq!(after_delete, String::new(), "32-byte string not empty after delete");
 
-            // Verify delete works
-            slot.delete().unwrap();
-            let after_delete = slot.read().unwrap();
-            prop_assert_eq!(after_delete, String::new(), "32-byte string not empty after delete");
+                Ok(())
+            }).unwrap();
         }
 
         #[test]
         fn test_long_strings(s in arb_long_string(), base_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
-            let _guard = storage.enter().unwrap();
+            StorageContext::enter(&mut storage, || {
+                let mut slot = Slot::<String>::new(base_slot, address.clone());
 
-            let mut slot = Slot::<String>::new(base_slot, address.clone());
+                // Verify store → load roundtrip
+                slot.write(s.clone()).unwrap();
+                let loaded = slot.read().unwrap();
+                prop_assert_eq!(&s, &loaded, "Long string roundtrip failed for length: {}", s.len());
 
-            // Verify store → load roundtrip
-            slot.write(s.clone()).unwrap();
-            let loaded = slot.read().unwrap();
-            prop_assert_eq!(&s, &loaded, "Long string roundtrip failed for length: {}", s.len());
+                // Calculate how many data slots were used
+                let chunks = calc_chunks(s.len());
 
-            // Calculate how many data slots were used
-            let chunks = calc_chunks(s.len());
+                // Verify delete works (clears both main slot and keccak256-addressed data)
+                slot.delete().unwrap();
+                let after_delete = slot.read().unwrap();
+                prop_assert_eq!(after_delete, String::new(), "Long string not empty after delete");
 
-            // Verify delete works (clears both main slot and keccak256-addressed data)
-            slot.delete().unwrap();
-            let after_delete = slot.read().unwrap();
-            prop_assert_eq!(after_delete, String::new(), "Long string not empty after delete");
+                // Verify all keccak256-addressed data slots are actually zero
+                let data_slot_start = calc_data_slot(base_slot);
+                for i in 0..chunks {
+                    let slot = Slot::<U256>::new_at_offset(data_slot_start, i, address.clone());
+                    let value = slot.read().unwrap();
+                    prop_assert_eq!(value, U256::ZERO, "Data slot not cleared after delete");
+                }
 
-            // Verify all keccak256-addressed data slots are actually zero
-            let data_slot_start = calc_data_slot(base_slot);
-            for i in 0..chunks {
-                let slot = Slot::<U256>::new_at_offset(data_slot_start, i, address.clone());
-                let value = slot.read().unwrap();
-                prop_assert_eq!(value, U256::ZERO, "Data slot not cleared after delete");
-            }
+                Ok(())
+            }).unwrap();
         }
 
         #[test]
         fn test_short_bytes(b in arb_short_bytes(), base_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
-            let _guard = storage.enter().unwrap();
+            StorageContext::enter(&mut storage, || {
+                let mut slot = Slot::<Bytes>::new(base_slot, address);
 
-            let mut slot = Slot::<Bytes>::new(base_slot, address);
+                // Verify store → load roundtrip
+                slot.write(b.clone()).unwrap();
+                let loaded = slot.read().unwrap();
+                prop_assert_eq!(&b, &loaded, "Short bytes roundtrip failed for length: {}", b.len());
 
-            // Verify store → load roundtrip
-            slot.write(b.clone()).unwrap();
-            let loaded = slot.read().unwrap();
-            prop_assert_eq!(&b, &loaded, "Short bytes roundtrip failed for length: {}", b.len());
+                // Verify delete works
+                slot.delete().unwrap();
+                let after_delete = slot.read().unwrap();
+                prop_assert_eq!(after_delete, Bytes::new(), "Short bytes not empty after delete");
 
-            // Verify delete works
-            slot.delete().unwrap();
-            let after_delete = slot.read().unwrap();
-            prop_assert_eq!(after_delete, Bytes::new(), "Short bytes not empty after delete");
+                Ok(())
+            }).unwrap();
         }
 
         #[test]
         fn test_32byte_bytes(b in arb_32byte_bytes(), base_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
-            let _guard = storage.enter().unwrap();
+            StorageContext::enter(&mut storage, || {
+                // Verify 32-byte boundary bytes is stored correctly
+                prop_assert_eq!(b.len(), 32, "Generated bytes should be exactly 32 bytes");
 
-            // Verify 32-byte boundary bytes is stored correctly
-            prop_assert_eq!(b.len(), 32, "Generated bytes should be exactly 32 bytes");
+                let mut slot = Slot::<Bytes>::new(base_slot, address);
 
-            let mut slot = Slot::<Bytes>::new(base_slot, address);
+                // Verify store → load roundtrip
+                slot.write(b.clone()).unwrap();
+                let loaded = slot.read().unwrap();
+                prop_assert_eq!(&b, &loaded, "32-byte bytes roundtrip failed");
 
-            // Verify store → load roundtrip
-            slot.write(b.clone()).unwrap();
-            let loaded = slot.read().unwrap();
-            prop_assert_eq!(&b, &loaded, "32-byte bytes roundtrip failed");
+                // Verify delete works
+                slot.delete().unwrap();
+                let after_delete = slot.read().unwrap();
+                prop_assert_eq!(after_delete, Bytes::new(), "32-byte bytes not empty after delete");
 
-            // Verify delete works
-            slot.delete().unwrap();
-            let after_delete = slot.read().unwrap();
-            prop_assert_eq!(after_delete, Bytes::new(), "32-byte bytes not empty after delete");
+                Ok(())
+            }).unwrap();
         }
 
         #[test]
         fn test_long_bytes(b in arb_long_bytes(), base_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
-            let _guard = storage.enter().unwrap();
+            StorageContext::enter(&mut storage, || {
+                let mut slot = Slot::<Bytes>::new(base_slot, address.clone());
 
-            let mut slot = Slot::<Bytes>::new(base_slot, address.clone());
+                // Verify store → load roundtrip
+                slot.write(b.clone()).unwrap();
+                let loaded = slot.read().unwrap();
+                prop_assert_eq!(&b, &loaded, "Long bytes roundtrip failed for length: {}", b.len());
 
-            // Verify store → load roundtrip
-            slot.write(b.clone()).unwrap();
-            let loaded = slot.read().unwrap();
-            prop_assert_eq!(&b, &loaded, "Long bytes roundtrip failed for length: {}", b.len());
+                // Calculate how many data slots were used
+                let chunks = calc_chunks(b.len());
 
-            // Calculate how many data slots were used
-            let chunks = calc_chunks(b.len());
+                // Verify delete works (clears both main slot and keccak256-addressed data)
+                slot.delete().unwrap();
+                let after_delete = slot.read().unwrap();
+                prop_assert_eq!(after_delete, Bytes::new(), "Long bytes not empty after delete");
 
-            // Verify delete works (clears both main slot and keccak256-addressed data)
-            slot.delete().unwrap();
-            let after_delete = slot.read().unwrap();
-            prop_assert_eq!(after_delete, Bytes::new(), "Long bytes not empty after delete");
+                // Verify all keccak256-addressed data slots are actually zero
+                let data_slot_start = calc_data_slot(base_slot);
+                for i in 0..chunks {
+                    let slot = Slot::<U256>::new_at_offset(data_slot_start, i, address.clone());
+                    let value = slot.read().unwrap();
+                    prop_assert_eq!(value, U256::ZERO, "Data slot not cleared after delete");
+                }
 
-            // Verify all keccak256-addressed data slots are actually zero
-            let data_slot_start = calc_data_slot(base_slot);
-            for i in 0..chunks {
-                let slot = Slot::<U256>::new_at_offset(data_slot_start, i, address.clone());
-                let value = slot.read().unwrap();
-                prop_assert_eq!(value, U256::ZERO, "Data slot not cleared after delete");
-            }
+                Ok(())
+            }).unwrap();
         }
     }
 }

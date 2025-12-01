@@ -225,7 +225,7 @@ pub fn gen_word_from(values: &[&str]) -> U256 {
 mod tests {
     use super::*;
     use crate::storage::{
-        Handler, StorageAccessor,
+        Handler, StorageContext,
         hashmap::HashMapStorageProvider,
         types::{LayoutCtx, Slot},
     };
@@ -775,7 +775,7 @@ mod tests {
     #[test]
     fn test_packed_at_multiple_types() -> Result<()> {
         let (mut storage, address) = setup_storage();
-        StorageAccessor::enter(&mut storage, || {
+        StorageContext::enter(&mut storage, || {
             let struct_base = U256::from(0x2000);
 
             // Pack multiple types in same slot: bool(1) + u64(8) + u128(16)
@@ -811,7 +811,7 @@ mod tests {
     #[test]
     fn test_packed_at_different_slots() -> Result<()> {
         let (mut storage, address) = setup_storage();
-        StorageAccessor::enter(&mut storage, || {
+        StorageContext::enter(&mut storage, || {
             let struct_base = U256::from(0x4000);
 
             // Field in slot 0 (bool is 1 byte, packable)

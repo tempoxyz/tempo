@@ -114,7 +114,7 @@ pub(crate) fn gen_struct(
         #vis struct #name {
             #(#handler_fields,)*
             address: ::alloy::primitives::Address,
-            storage: crate::storage::StorageAccessor,
+            storage: crate::storage::StorageContext,
         }
     }
 }
@@ -143,7 +143,7 @@ pub(crate) fn gen_constructor(
                 Self {
                     #(#field_inits,)*
                     address,
-                    storage: crate::storage::StorageAccessor::default(),
+                    storage: crate::storage::StorageContext::default(),
                 }
             }
 
@@ -178,7 +178,7 @@ pub(crate) fn gen_contract_storage_impl(name: &Ident) -> proc_macro2::TokenStrea
             }
 
             #[inline(always)]
-            fn storage(&mut self) -> &mut crate::storage::StorageAccessor {
+            fn storage(&mut self) -> &mut crate::storage::StorageContext {
                 &mut self.storage
             }
         }
