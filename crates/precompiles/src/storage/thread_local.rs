@@ -70,7 +70,9 @@ impl StorageContext {
         }
         STORAGE.with(|cell| {
             // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
-            f(unsafe { ptr_as_mut(*cell.borrow_mut()) })
+            // Holding the guard prevents re-entrant borrows.
+            let guard = cell.borrow_mut();
+            f(unsafe { ptr_as_mut(*guard) })
         })
     }
 
@@ -189,5 +191,26 @@ impl StorageContext {
             Ok(())
         })
         .unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::hashmap::HashMapStorageProvider;
+
+    #[test]
+    #[should_panic(expected = "already borrowed")]
+    fn test_reentrant_with_storage_panics() {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageContext::enter(&mut storage, || {
+            // first borrow
+            StorageContext::with_storage(|_| {
+                // re-entrant call should panic
+                StorageContext::with_storage(|_| Ok(())).unwrap();
+                Ok(())
+            })
+            .unwrap();
+        });
     }
 }
