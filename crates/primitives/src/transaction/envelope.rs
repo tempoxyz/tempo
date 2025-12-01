@@ -1,6 +1,5 @@
-use crate::subblock::PartialValidatorKey;
-
 use super::{aa_signed::AASigned, fee_token::TxFeeToken};
+use crate::{TxAA, subblock::PartialValidatorKey};
 use alloy_consensus::{
     EthereumTxEnvelope, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
     TypedTransaction,
@@ -37,6 +36,7 @@ pub const TEMPO_SYSTEM_TX_SENDER: Address = Address::ZERO;
     serde_cfg(feature = "serde")
 )]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
+#[expect(clippy::large_enum_variant)]
 pub enum TempoTxEnvelope {
     /// Legacy transaction (type 0x00)
     #[envelope(ty = 0)]
@@ -55,7 +55,7 @@ pub enum TempoTxEnvelope {
     Eip7702(Signed<TxEip7702>),
 
     /// Account Abstraction transaction (type 0x76)
-    #[envelope(ty = 0x76)]
+    #[envelope(ty = 0x76, typed = TxAA)]
     AA(AASigned),
 
     /// Tempo fee token transaction (type 0x77)
@@ -225,6 +225,11 @@ impl TempoTxEnvelope {
         }
     }
 
+    /// Returns the nonce key of this transaction if it's an [`AASigned`] transaction.
+    pub fn nonce_key(&self) -> Option<U256> {
+        self.as_aa().map(|tx| tx.tx().nonce_key)
+    }
+
     /// Returns true if this is an AA transaction
     pub fn is_aa(&self) -> bool {
         matches!(self, Self::AA(_))
@@ -354,9 +359,39 @@ impl<Eip4844> TryFrom<EthereumTxEnvelope<Eip4844>> for TempoTxEnvelope {
     }
 }
 
+impl From<Signed<TxLegacy>> for TempoTxEnvelope {
+    fn from(value: Signed<TxLegacy>) -> Self {
+        Self::Legacy(value)
+    }
+}
+
+impl From<Signed<TxEip2930>> for TempoTxEnvelope {
+    fn from(value: Signed<TxEip2930>) -> Self {
+        Self::Eip2930(value)
+    }
+}
+
+impl From<Signed<TxEip1559>> for TempoTxEnvelope {
+    fn from(value: Signed<TxEip1559>) -> Self {
+        Self::Eip1559(value)
+    }
+}
+
+impl From<Signed<TxEip7702>> for TempoTxEnvelope {
+    fn from(value: Signed<TxEip7702>) -> Self {
+        Self::Eip7702(value)
+    }
+}
+
 impl From<Signed<TxFeeToken>> for TempoTxEnvelope {
     fn from(value: Signed<TxFeeToken>) -> Self {
         Self::FeeToken(value)
+    }
+}
+
+impl From<AASigned> for TempoTxEnvelope {
+    fn from(value: AASigned) -> Self {
+        Self::AA(value)
     }
 }
 
@@ -384,20 +419,20 @@ impl From<TempoTxEnvelope> for TempoTypedTransaction {
             TempoTxEnvelope::Eip1559(tx) => Self::Eip1559(tx.into_parts().0),
             TempoTxEnvelope::Eip7702(tx) => Self::Eip7702(tx.into_parts().0),
             TempoTxEnvelope::FeeToken(tx) => Self::FeeToken(tx.into_parts().0),
-            TempoTxEnvelope::AA(tx) => Self::AA(tx), // AA keeps the signed wrapper due to macro generation
+            TempoTxEnvelope::AA(tx) => Self::AA(tx.into_parts().0),
         }
-    }
-}
-
-impl From<AASigned> for TempoTxEnvelope {
-    fn from(value: AASigned) -> Self {
-        Self::AA(value)
     }
 }
 
 impl From<TxFeeToken> for TempoTypedTransaction {
     fn from(value: TxFeeToken) -> Self {
         Self::FeeToken(value)
+    }
+}
+
+impl From<TxAA> for TempoTypedTransaction {
+    fn from(value: TxAA) -> Self {
+        Self::AA(value)
     }
 }
 

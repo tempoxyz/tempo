@@ -5,6 +5,7 @@
 pub mod error;
 pub use error::Result;
 use tempo_chainspec::hardfork::TempoHardfork;
+pub mod account_keychain;
 pub mod nonce;
 pub mod path_usd;
 pub mod stablecoin_exchange;
@@ -21,10 +22,11 @@ pub mod validator_config;
 pub mod test_util;
 
 use crate::{
+    account_keychain::AccountKeychain,
     nonce::NonceManager,
     path_usd::PathUSD,
     stablecoin_exchange::StablecoinExchange,
-    storage::evm::EvmPrecompileStorageProvider,
+    storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
     tip_account_registrar::TipAccountRegistrar,
     tip_fee_manager::TipFeeManager,
     tip20::{TIP20Token, address_to_token_id_unchecked, is_tip20},
@@ -49,10 +51,14 @@ use revm::{
 };
 
 pub use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
-    TIP_ACCOUNT_REGISTRAR, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    TIP20_REWARDS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO,
+    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP_ACCOUNT_REGISTRAR,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
+    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
 };
+
+// Re-export storage layout helpers for read-only contexts (e.g., pool validation)
+pub use account_keychain::{AuthorizedKey, compute_keys_slot};
 
 /// Input per word cost. It covers abi decoding and cloning of input into call data.
 ///
@@ -95,6 +101,9 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(NoncePrecompile::create(chain_id, spec))
         } else if *address == VALIDATOR_CONFIG_ADDRESS {
             Some(ValidatorConfigPrecompile::create(chain_id, spec))
+        } else if *address == ACCOUNT_KEYCHAIN_ADDRESS && spec.is_allegretto() {
+            // AccountKeychain is only available after Allegretto hardfork
+            Some(AccountKeychainPrecompile::create(chain_id, spec))
         } else {
             None
         }
@@ -203,6 +212,15 @@ impl NoncePrecompile {
     }
 }
 
+pub struct AccountKeychainPrecompile;
+impl AccountKeychainPrecompile {
+    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
+        tempo_precompile!("AccountKeychain", |input| AccountKeychain::new(
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec)
+        ))
+    }
+}
+
 pub struct PathUSDPrecompile;
 impl PathUSDPrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
@@ -257,6 +275,20 @@ fn mutate_void<T: SolCall>(
         return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };
     f(sender, call).into_precompile_result(0, |()| Bytes::new())
+}
+
+#[inline]
+fn fill_precompile_output(
+    mut output: PrecompileOutput,
+    storage: &mut impl PrecompileStorageProvider,
+) -> PrecompileOutput {
+    output.gas_used = storage.gas_used();
+
+    // add refund only if it is not reverted
+    if !output.reverted && storage.spec().is_allegretto() {
+        output.gas_refunded = storage.gas_refunded();
+    }
+    output
 }
 
 /// Helper function to return an unknown function selector error

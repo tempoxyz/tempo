@@ -11,8 +11,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-alloy-primitives = { workspace = true, features = ["serde"] }
-camino = { workspace = true, features = ["serde1"] }
 commonware-codec.workspace = true
 commonware-cryptography.workspace = true
 commonware-utils.workspace = true
@@ -20,5 +18,7 @@ const-hex = { workspace = true, features = ["serde"] }
 indexmap = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
-toml.workspace = true
-humantime-serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+rand.workspace = true

@@ -9,6 +9,7 @@ use reth_provider::{BlockReaderIdExt, StateProviderFactory};
 use reth_rpc_eth_api::{RpcNodeCore, helpers::SpawnBlocking};
 use reth_rpc_eth_types::{EthApiError, error::FromEthApiError};
 use tempo_alloy::rpc::pagination::PaginationParams;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
     stablecoin_exchange::{
@@ -503,8 +504,13 @@ impl<'a, 'b> BookIterator<'a, 'b> {
     /// Get the next initialized tick after the given tick
     /// Returns None if there are no more ticks
     pub fn get_next_tick(&mut self, tick: i16) -> Option<i16> {
-        let (next_tick, more_ticks) =
-            PrecompileOrderbook::next_initialized_tick(self, self.book_key, self.bids, tick);
+        let (next_tick, more_ticks) = PrecompileOrderbook::next_initialized_tick(
+            self,
+            self.book_key,
+            self.bids,
+            tick,
+            TempoHardfork::default(),
+        );
 
         if more_ticks { Some(next_tick) } else { None }
     }

@@ -1,5 +1,6 @@
 use crate::{
     TempoBlockEnv, TempoInvalidTransaction, TempoTxEnv,
+    error::TempoHaltReason,
     evm::{TempoContext, TempoEvm},
     handler::TempoEvmHandler,
 };
@@ -7,10 +8,7 @@ use alloy_evm::Database;
 use reth_evm::TransactionEnv;
 use revm::{
     DatabaseCommit, ExecuteCommitEvm, ExecuteEvm,
-    context::{
-        ContextSetters, TxEnv,
-        result::{ExecResultAndState, HaltReason},
-    },
+    context::{ContextSetters, TxEnv, result::ExecResultAndState},
     context_interface::{
         ContextTr, JournalTr,
         result::{EVMError, ExecutionResult},
@@ -29,7 +27,7 @@ where
     type Block = TempoBlockEnv;
     type State = EvmState;
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
-    type ExecutionResult = ExecutionResult<HaltReason>;
+    type ExecutionResult = ExecutionResult<TempoHaltReason>;
 
     fn set_block(&mut self, block: Self::Block) {
         self.inner.ctx.set_block(block);

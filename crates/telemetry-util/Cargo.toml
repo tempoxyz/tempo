@@ -9,5 +9,5 @@ publish.workspace = true
 
 [dependencies]
 eyre.workspace = true
-jiff = { version = "0.2.15", default-features = false }
+jiff.workspace = true
 tracing.workspace = true

@@ -1,5 +1,5 @@
 use crate::{
-    Precompile, input_cost, metadata, mutate, mutate_void,
+    Precompile, fill_precompile_output, input_cost, metadata, mutate, mutate_void,
     path_usd::PathUSD,
     storage::{ContractStorage, PrecompileStorageProvider},
     tip20::{IRolesAuth, ITIP20},
@@ -218,10 +218,7 @@ impl<S: PrecompileStorageProvider> Precompile for PathUSD<'_, S> {
             _ => Err(PrecompileError::Other("Unknown selector".into())),
         };
 
-        result.map(|mut res| {
-            res.gas_used = self.token.storage().gas_used();
-            res
-        })
+        result.map(|res| fill_precompile_output(res, self.token.storage()))
     }
 }
 

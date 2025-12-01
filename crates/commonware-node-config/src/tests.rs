@@ -1,40 +1,119 @@
-// TODO: desired tests
-// round trips for all custom serde impls
-//
-// Possibly also snapshot tests
+use std::net::SocketAddr;
 
-#[test]
-fn example_input_is_parsed() {
-    const INPUT: &str = r#"
-signer = "0x81d35644dd13b5d712215023ab16615d9f8852c5a2fdfbd72dee06f538894b58"
-share = "0x002ca4985d4850d2836b02a9597170ae3e122d4f858a11ed6d6447d1ca3ec3380d"
-polynomial = "0x85a21686d219ba66f65165c17cb9b8f02a827b473b54f734e8f00d5705b7ceb12537de49c1c06fdad1df74cbfb7cd7d104eb6ab9330edf7854b2180ff1594034115fa80dbc865aca54f8813f41ef0e34518f972adad793e9d9302114f941db0183a5ec4224f3df5471a3927e2d8968e2a7948322f204b228a131c5931df4eb5e903d1a1e4cf31f2fbda357191e33b0810a0e97b748b7ab8142fdb946c457b1b3d29b60469c488306381285e794a377e9d3cf049eb850507a04f8775b2dcb0788"
-listen_addr = "0.0.0.0:8000"
-metrics_port = 8001
-storage_directory = "/Users/janis/dev/tempo/tempo-commonware/test_deployment/945fadcd1ea3bac97c86c2acbc539fce43219552d24aaa3188c3afc1df4d50a7/storage"
-worker_threads = 3
-message_backlog = 16384
-mailbox_size = 16384
-deque_size = 10
-fee_recipient = "0x0000000000000000000000000000000000000000"
-epoch_length = 1000
+use commonware_cryptography::{
+    PrivateKeyExt as _, Signer as _, bls12381::primitives::variant::MinSig, ed25519::PrivateKey,
+};
+use commonware_utils::set::OrderedAssociated;
+use rand::SeedableRng as _;
 
-[p2p]
-max_message_size_bytes = 1_048_576
+use crate::{Peers, PublicPolynomial, SigningKey, SigningShare};
 
-[timeouts]
-time_for_peer_response = "2s"
-time_to_collect_notarizations = "2s"
-time_to_propose = "2s"
-time_to_retry_nullify_broadcast = "10s"
-views_to_track = 256
-views_until_leader_skip = 32
-new_payload_wait_time = "500ms"
-    
-[peers]
-0x945fadcd1ea3bac97c86c2acbc539fce43219552d24aaa3188c3afc1df4d50a7 = "127.0.0.1:8000"
-0xbaad106129bc215c1cca3760644914ed37ea91f1f1319999ce91ef2eaf51c827 = "127.0.0.1:8002"
+const PEERS: &str = r#"{
+"0x945fadcd1ea3bac97c86c2acbc539fce43219552d24aaa3188c3afc1df4d50a7": "127.0.0.1:8000",
+"0xbaad106129bc215c1cca3760644914ed37ea91f1f1319999ce91ef2eaf51c827": "192.168.0.1:9000"
+}
 "#;
 
-    toml::from_str::<crate::Config>(INPUT).expect("the example config should be parse-able");
+const SIGNING_KEY: &str = "0x7848b5d711bc9883996317a3f9c90269d56771005d540a19184939c9e8d0db2a";
+const SIGNING_SHARE: &str = "0x00594108e8326f1a4f1dcfd0a473141bb95c54c9a591983922158f1f082c671e31";
+
+#[test]
+fn peers_snapshot() {
+    serde_json::from_str::<Peers>(PEERS).expect("the example config should be parse-able");
+}
+
+#[test]
+fn peers_roundtrip() {
+    let peers: Peers = OrderedAssociated::from_iter([
+        (
+            PrivateKey::from_seed(0).public_key(),
+            "127.0.0.1:8000".parse::<SocketAddr>().unwrap(),
+        ),
+        (
+            PrivateKey::from_seed(1).public_key(),
+            "192.168.0.1:9000".parse::<SocketAddr>().unwrap(),
+        ),
+        (
+            PrivateKey::from_seed(2).public_key(),
+            "1.1.1.1:58".parse::<SocketAddr>().unwrap(),
+        ),
+        (
+            PrivateKey::from_seed(3).public_key(),
+            "172.3.2.4:42".parse::<SocketAddr>().unwrap(),
+        ),
+    ])
+    .into();
+    assert_eq!(
+        peers,
+        serde_json::from_str(&serde_json::to_string(&peers).unwrap()).unwrap(),
+    );
+}
+
+#[should_panic(expected = "duplicate key")]
+#[test]
+fn duplicate_peers_are_rejected() {
+    const DUPLICATE_PEERS: &str = r#"
+{
+"0x945fadcd1ea3bac97c86c2acbc539fce43219552d24aaa3188c3afc1df4d50a7": "127.0.0.1:8000",
+"0xbaad106129bc215c1cca3760644914ed37ea91f1f1319999ce91ef2eaf51c827": "192.168.0.1:9000",
+"0x945fadcd1ea3bac97c86c2acbc539fce43219552d24aaa3188c3afc1df4d50a7": "127.0.0.1:8000",
+}
+"#;
+    serde_json::from_str::<Peers>(DUPLICATE_PEERS).unwrap();
+}
+
+#[test]
+fn signing_key_snapshot() {
+    SigningKey::try_from_hex(SIGNING_KEY).unwrap();
+}
+
+#[test]
+fn signing_key_roundtrip() {
+    let signing_key: SigningKey = PrivateKey::from_seed(42).into();
+    assert_eq!(
+        signing_key,
+        SigningKey::try_from_hex(&signing_key.to_string()).unwrap(),
+    );
+}
+
+#[test]
+fn signing_share_snapshot() {
+    SigningShare::try_from_hex(SIGNING_SHARE).unwrap();
+}
+
+#[test]
+fn signing_share_roundtrip() {
+    let quorum = commonware_utils::quorum(1_u32);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+    let (_, mut shares) = commonware_cryptography::bls12381::dkg::ops::generate_shares::<_, MinSig>(
+        &mut rng, None, 1, quorum,
+    );
+    let signing_share: SigningShare = shares.remove(0).into();
+    assert_eq!(
+        signing_share,
+        SigningShare::try_from_hex(&signing_share.to_string()).unwrap(),
+    );
+}
+
+#[track_caller]
+fn assert_public_polynomial_roundtrip(nodes: u32) {
+    let quorum = commonware_utils::quorum(nodes);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+    let (polynomial, _) = commonware_cryptography::bls12381::dkg::ops::generate_shares::<_, MinSig>(
+        &mut rng, None, nodes, quorum,
+    );
+    let public_polynomial = PublicPolynomial::from(polynomial);
+    assert_eq!(
+        public_polynomial,
+        serde_json::from_str(&serde_json::to_string(&public_polynomial).unwrap()).unwrap()
+    );
+}
+
+#[test]
+fn public_polynomial_roundtrips() {
+    assert_public_polynomial_roundtrip(1);
+    assert_public_polynomial_roundtrip(2);
+    assert_public_polynomial_roundtrip(10);
+    assert_public_polynomial_roundtrip(100);
+    assert_public_polynomial_roundtrip(150);
 }

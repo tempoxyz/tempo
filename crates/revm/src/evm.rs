@@ -1,6 +1,6 @@
 use crate::{TempoBlockEnv, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
-use alloy_primitives::{Address, Log};
+use alloy_primitives::Log;
 use revm::{
     Context, Inspector,
     context::{CfgEnv, ContextError, Evm, FrameStack},
@@ -33,8 +33,6 @@ pub struct TempoEvm<DB: Database, I> {
     >,
     /// Preserved logs from the last transaction
     pub logs: Vec<Log>,
-    /// Subblock fee recipient, if executing a subblock transaction.
-    pub subblock_fee_recipient: Option<Address>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -67,7 +65,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         Self {
             inner,
             logs: Vec::new(),
-            subblock_fee_recipient: None,
         }
     }
 }
@@ -214,10 +211,24 @@ mod tests {
             &ctx.cfg,
         );
         TIP20Token::new(0, &mut storage)
-            .initialize("USD", "USD", "USD", Address::ZERO, Address::ZERO)
+            .initialize(
+                "USD",
+                "USD",
+                "USD",
+                Address::ZERO,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
         TIP20Token::new(1, &mut storage)
-            .initialize("USD", "USD", "USD", PATH_USD_ADDRESS, Address::ZERO)
+            .initialize(
+                "USD",
+                "USD",
+                "USD",
+                PATH_USD_ADDRESS,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
         drop(storage);
 
@@ -251,10 +262,24 @@ mod tests {
             &ctx.cfg,
         );
         TIP20Token::new(0, &mut storage)
-            .initialize("USD", "USD", "USD", Address::ZERO, Address::ZERO)
+            .initialize(
+                "USD",
+                "USD",
+                "USD",
+                Address::ZERO,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
         TIP20Token::new(1, &mut storage)
-            .initialize("USD", "USD", "USD", PATH_USD_ADDRESS, Address::ZERO)
+            .initialize(
+                "USD",
+                "USD",
+                "USD",
+                PATH_USD_ADDRESS,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
         drop(storage);
 

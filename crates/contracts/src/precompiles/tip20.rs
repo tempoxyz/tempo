@@ -57,10 +57,13 @@ sol! {
         function paused() external view returns (bool);
         function transferPolicyId() external view returns (uint64);
         function burnBlocked(address from, uint256 amount) external;
+        function burnFrom(address from, uint256 amount) external;
         function mintWithMemo(address to, uint256 amount, bytes32 memo) external;
         function burnWithMemo(uint256 amount, bytes32 memo) external;
         function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
         function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external returns (bool);
+        function feeRecipient() external view returns (address);
+        function setFeeRecipient(address newRecipient) external view returns (address);
 
         // Admin Functions
         function changeTransferPolicyId(uint64 newPolicyId) external;
@@ -85,6 +88,10 @@ sol! {
         /// @notice Returns the role identifier for burning tokens from blocked accounts
         /// @return The burn blocked role identifier
         function BURN_BLOCKED_ROLE() external view returns (bytes32);
+
+        /// @notice Returns the role identifier for burning tokens from any account
+        /// @return The burn from role identifier
+        function BURN_FROM_ROLE() external view returns (bytes32);
 
         struct RewardStream {
             address funder;
@@ -118,6 +125,7 @@ sol! {
         event Mint(address indexed to, uint256 amount);
         event Burn(address indexed from, uint256 amount);
         event BurnBlocked(address indexed from, uint256 amount);
+        event BurnFrom(address indexed from, uint256 amount);
         event TransferWithMemo(address indexed from, address indexed to, uint256 amount, bytes32 indexed memo);
         event TransferPolicyUpdate(address indexed updater, uint64 indexed newPolicyId);
         event SupplyCapUpdate(address indexed updater, uint256 indexed newSupplyCap);
@@ -127,6 +135,7 @@ sol! {
         event RewardScheduled(address indexed funder, uint64 indexed id, uint256 amount, uint32 durationSeconds);
         event RewardCanceled(address indexed funder, uint64 indexed id, uint256 refund);
         event RewardRecipientSet(address indexed holder, address indexed recipient);
+        event FeeRecipientUpdated(address indexed updater, address indexed newRecipient);
 
         // Errors
         error InsufficientBalance(uint256 available, uint256 required, address token);
@@ -148,6 +157,7 @@ sol! {
         error Unauthorized();
         error RewardsDisabled();
         error ScheduledRewardsDisabled();
+        error ProtectedAddress();
     }
 }
 
@@ -256,5 +266,10 @@ impl TIP20Error {
     /// Error for when scheduled rewards are disabled post-moderato
     pub const fn scheduled_rewards_disabled() -> Self {
         Self::ScheduledRewardsDisabled(ITIP20::ScheduledRewardsDisabled {})
+    }
+
+    /// Error for operations on protected addresses (like burning `FeeManager` tokens)
+    pub const fn protected_address() -> Self {
+        Self::ProtectedAddress(ITIP20::ProtectedAddress {})
     }
 }

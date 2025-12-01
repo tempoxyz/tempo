@@ -20,17 +20,22 @@ use commonware_cryptography::{
     ed25519::{PublicKey, Signature},
 };
 use reth_revm::{Inspector, State, context::result::ResultAndState};
+use revm::{
+    DatabaseCommit,
+    context::ContextTr,
+    state::{Account, Bytecode},
+};
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_precompiles::{
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
-    stablecoin_exchange::IStablecoinExchange, tip_fee_manager::IFeeManager,
-    tip20_rewards_registry::ITIP20RewardsRegistry,
+    ACCOUNT_KEYCHAIN_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_REWARDS_REGISTRY_ADDRESS, stablecoin_exchange::IStablecoinExchange,
+    tip_fee_manager::IFeeManager, tip20_rewards_registry::ITIP20RewardsRegistry,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, subblock::PartialValidatorKey,
 };
-use tempo_revm::evm::TempoContext;
+use tempo_revm::{TempoHaltReason, evm::TempoContext};
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -285,7 +290,7 @@ where
         };
         let gas_per_subblock = self.shared_gas_limit / validator_set.len() as u64;
 
-        let mut incentive_gas = gas_per_subblock;
+        let mut incentive_gas = 0;
         let mut seen = HashSet::new();
         let mut next_non_empty = 0;
         for metadata in metadata {
@@ -449,32 +454,72 @@ where
     type Evm = TempoEvm<&'a mut State<DB>, I>;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
-        self.inner.apply_pre_execution_changes()
+        self.inner.apply_pre_execution_changes()?;
+
+        // Initialize keychain precompile if allegretto is active
+        let block_timestamp = self.evm().block().timestamp.to::<u64>();
+        if self
+            .inner
+            .spec
+            .is_allegretto_active_at_timestamp(block_timestamp)
+        {
+            let evm = self.evm_mut();
+            let db = evm.ctx_mut().db_mut();
+
+            // Load the keychain account from the cache
+            let acc = db
+                .load_cache_account(ACCOUNT_KEYCHAIN_ADDRESS)
+                .map_err(BlockExecutionError::other)?;
+
+            // Get existing account info or create default
+            let mut acc_info = acc.account_info().unwrap_or_default();
+
+            // Only initialize if the account has no code
+            if acc_info.is_empty_code_hash() {
+                // Set the keychain code
+                let code = Bytecode::new_legacy(Bytes::from_static(&[0xef]));
+                acc_info.code_hash = code.hash_slow();
+                acc_info.code = Some(code);
+
+                // Convert to revm account and mark as touched
+                let mut revm_acc: Account = acc_info.into();
+                revm_acc.mark_touch();
+
+                // Commit the account to the database to ensure it persists
+                // even if no transactions are executed in this block
+                db.commit(HashMap::from_iter([(ACCOUNT_KEYCHAIN_ADDRESS, revm_acc)]));
+            }
+        }
+
+        Ok(())
     }
 
     fn execute_transaction_without_commit(
         &mut self,
         tx: impl ExecutableTx<Self>,
-    ) -> Result<ResultAndState, BlockExecutionError> {
+    ) -> Result<ResultAndState<TempoHaltReason>, BlockExecutionError> {
+        let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
         // If we are dealing with a subblock transaction, configure the fee recipient context.
-        if let Some(validator) = tx.tx().subblock_proposer() {
+        if self.evm().ctx().cfg.spec.is_allegretto()
+            && let Some(validator) = tx.tx().subblock_proposer()
+        {
             let fee_recipient = *self
                 .subblock_fee_recipients
                 .get(&validator)
                 .ok_or(BlockExecutionError::msg("invalid subblock transaction"))?;
 
-            self.evm_mut().set_subblock_fee_recipient(fee_recipient);
+            self.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
         }
         let result = self.inner.execute_transaction_without_commit(tx);
 
-        self.evm_mut().unset_subblock_fee_recipient();
+        self.evm_mut().ctx_mut().block.beneficiary = beneficiary;
 
         result
     }
 
     fn commit_transaction(
         &mut self,
-        output: ResultAndState,
+        output: ResultAndState<TempoHaltReason>,
         tx: impl ExecutableTx<Self>,
     ) -> Result<u64, BlockExecutionError> {
         let next_section = self.validate_tx(tx.tx(), output.result.gas_used())?;

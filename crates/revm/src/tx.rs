@@ -13,7 +13,9 @@ use revm::context::{
 };
 use tempo_primitives::{
     AASignature, AASigned, TempoTxEnvelope, TxAA, TxFeeToken,
-    transaction::{AASignedAuthorization, Call, calc_gas_balance_spending},
+    transaction::{
+        Call, RecoveredAAAuthorization, SignedKeyAuthorization, calc_gas_balance_spending,
+    },
 };
 
 /// Account Abstraction transaction environment.
@@ -32,13 +34,22 @@ pub struct AATxEnv {
     pub aa_calls: Vec<Call>,
 
     /// Authorization list (EIP-7702 with AA signatures)
-    pub aa_authorization_list: Vec<AASignedAuthorization>,
+    ///
+    /// Each authorization lazily recovers the authority on first access and caches the result.
+    /// The signature is preserved for gas calculation.
+    pub aa_authorization_list: Vec<RecoveredAAAuthorization>,
 
     /// Nonce key for 2D nonce system
     pub nonce_key: U256,
 
     /// Whether the transaction is a subblock transaction.
     pub subblock_transaction: bool,
+
+    /// Optional key authorization for provisioning access keys
+    pub key_authorization: Option<SignedKeyAuthorization>,
+
+    /// Transaction signature hash (for signature verification)
+    pub signature_hash: B256,
 }
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
@@ -297,6 +308,12 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
         let tx = aa_signed.tx();
         let signature = aa_signed.signature();
 
+        // Populate the key_id cache for Keychain signatures before cloning
+        // This parallelizes recovery during Tx->TxEnv conversion, and the cache is preserved when cloned
+        if let Some(keychain_sig) = signature.as_keychain() {
+            let _ = keychain_sig.key_id(&aa_signed.signature_hash());
+        }
+
         let TxAA {
             chain_id,
             fee_token,
@@ -310,6 +327,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             fee_payer_signature,
             valid_before,
             valid_after,
+            key_authorization,
             aa_authorization_list,
         } = tx;
 
@@ -337,7 +355,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 chain_id: Some(*chain_id),
                 gas_priority_fee: Some(*max_priority_fee_per_gas),
                 access_list: access_list.clone(),
-                // Convert AA authorization list to RecoveredAuthorization
+                // Convert AA authorization list to RecoveredAuthorization upfront
                 authorization_list: aa_authorization_list
                     .iter()
                     .map(|aa_auth| {
@@ -364,9 +382,15 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 valid_before: *valid_before,
                 valid_after: *valid_after,
                 aa_calls: calls.clone(),
-                aa_authorization_list: aa_authorization_list.clone(),
+                // Recover authorizations upfront to avoid recovery during execution
+                aa_authorization_list: aa_authorization_list
+                    .iter()
+                    .map(|aa_auth| RecoveredAAAuthorization::recover(aa_auth.clone()))
+                    .collect(),
                 nonce_key: *nonce_key,
                 subblock_transaction: aa_signed.tx().subblock_proposer().is_some(),
+                key_authorization: key_authorization.clone(),
+                signature_hash: aa_signed.signature_hash(),
             })),
         }
     }

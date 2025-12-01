@@ -1,6 +1,6 @@
 use super::ITIP20;
 use crate::{
-    Precompile, input_cost, metadata, mutate, mutate_void,
+    Precompile, fill_precompile_output, input_cost, metadata, mutate, mutate_void,
     storage::PrecompileStorageProvider,
     tip20::{IRolesAuth, TIP20Token},
     unknown_selector, view,
@@ -64,6 +64,17 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::BURN_BLOCKED_ROLECall::SELECTOR => {
                 view::<ITIP20::BURN_BLOCKED_ROLECall>(calldata, |_| Ok(Self::burn_blocked_role()))
             }
+            ITIP20::BURN_FROM_ROLECall::SELECTOR => {
+                if !self.storage.spec().is_allegretto() {
+                    return unknown_selector(
+                        selector,
+                        self.storage.gas_used(),
+                        self.storage.spec(),
+                    );
+                }
+
+                view::<ITIP20::BURN_FROM_ROLECall>(calldata, |_| Ok(Self::burn_from_role()))
+            }
 
             // State changing functions
             ITIP20::transferFromCall::SELECTOR => {
@@ -113,6 +124,30 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
                     |s, call| self.complete_quote_token_update(s, call),
                 )
             }
+
+            ITIP20::feeRecipientCall::SELECTOR => {
+                if !self.storage.spec().is_allegretto() {
+                    return unknown_selector(
+                        selector,
+                        self.storage.gas_used(),
+                        self.storage.spec(),
+                    );
+                }
+                view::<ITIP20::feeRecipientCall>(calldata, |_call| self.sload_fee_recipient())
+            }
+            ITIP20::setFeeRecipientCall::SELECTOR => {
+                if !self.storage.spec().is_allegretto() {
+                    return unknown_selector(
+                        selector,
+                        self.storage.gas_used(),
+                        self.storage.spec(),
+                    );
+                }
+                mutate_void::<ITIP20::setFeeRecipientCall>(calldata, msg_sender, |s, call| {
+                    self.set_fee_recipient(s, call.newRecipient)
+                })
+            }
+
             ITIP20::mintCall::SELECTOR => {
                 mutate_void::<ITIP20::mintCall>(calldata, msg_sender, |s, call| self.mint(s, call))
             }
@@ -132,6 +167,19 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::burnBlockedCall::SELECTOR => {
                 mutate_void::<ITIP20::burnBlockedCall>(calldata, msg_sender, |s, call| {
                     self.burn_blocked(s, call)
+                })
+            }
+            ITIP20::burnFromCall::SELECTOR => {
+                if !self.storage.spec().is_allegretto() {
+                    return unknown_selector(
+                        selector,
+                        self.storage.gas_used(),
+                        self.storage.spec(),
+                    );
+                }
+
+                mutate_void::<ITIP20::burnFromCall>(calldata, msg_sender, |s, call| {
+                    self.burn_from(s, call)
                 })
             }
             ITIP20::transferWithMemoCall::SELECTOR => {
@@ -227,10 +275,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
-        result.map(|mut res| {
-            res.gas_used = self.storage.gas_used();
-            res
-        })
+        result.map(|res| fill_precompile_output(res, self.storage))
     }
 }
 
@@ -277,7 +322,7 @@ mod tests {
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         // Grant ISSUER_ROLE to admin
@@ -330,7 +375,7 @@ mod tests {
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         // Grant ISSUER_ROLE to sender
@@ -382,7 +427,7 @@ mod tests {
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         // Grant ISSUER_ROLE to admin
@@ -464,7 +509,7 @@ mod tests {
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         // Grant ISSUER_ROLE to admin
@@ -547,7 +592,7 @@ mod tests {
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         // Grant PAUSE_ROLE to pauser and UNPAUSE_ROLE to unpauser
@@ -613,7 +658,7 @@ mod tests {
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         // Grant ISSUER_ROLE to admin and burner
@@ -687,7 +732,14 @@ mod tests {
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token
         token
-            .initialize("Test Token", "TEST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize(
+                "Test Token",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         // Test name()
@@ -748,7 +800,7 @@ mod tests {
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         // Grant ISSUER_ROLE to admin
@@ -801,7 +853,7 @@ mod tests {
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         // Grant a role to user1
@@ -871,7 +923,7 @@ mod tests {
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize and setup
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         use alloy::primitives::keccak256;
@@ -933,7 +985,7 @@ mod tests {
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
             .unwrap();
 
         // Admin can change transfer policy ID
@@ -962,14 +1014,23 @@ mod tests {
     #[test]
     fn tip20_test_selector_coverage() {
         use crate::test_util::{assert_full_coverage, check_selector_coverage};
+        use tempo_chainspec::hardfork::TempoHardfork;
         use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
 
-        let mut storage = HashMapStorageProvider::new(1);
+        // Use allegretto to cover hardfork-gated selectors (feeRecipient, setFeeRecipient)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
 
         initialize_path_usd(&mut storage, Address::ZERO).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, Address::ZERO)
+            .initialize(
+                "Test",
+                "TST",
+                "USD",
+                PATH_USD_ADDRESS,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
 
         let itip20_unsupported =

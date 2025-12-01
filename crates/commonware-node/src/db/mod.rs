@@ -1,7 +1,11 @@
 mod ceremony;
 pub use ceremony::CeremonyStore;
+mod dkg_outcome;
+pub use dkg_outcome::DkgOutcomeStore;
 mod epoch;
 pub use epoch::DkgEpochStore;
+mod validators;
+pub use validators::ValidatorsStore;
 
 use std::{
     collections::HashMap,
