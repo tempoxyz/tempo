@@ -1,0 +1,90 @@
+# `amm.watchMint`
+
+Watches for liquidity mint events on the Fee AMM.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { client } from './viem.config'
+
+const unwatch = client.amm.watchMint({
+  onMint: (args, log) => {
+    console.log('Liquidity minted:', args.liquidity)
+    console.log('Sender:', args.sender)
+    console.log('User token amount:', args.userToken.amount)
+    console.log('Validator token amount:', args.validatorToken.amount)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [viem.config.ts] filename="viem.config.ts"
+// [!include ~/snippets/viem.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onMint
+
+- **Type:**
+
+```ts
+declare function onMint(args: Args, log: Log): void
+
+type Args = {
+  /** Amount of LP tokens minted */
+  liquidity: bigint
+  /** Address that added liquidity */
+  sender: Address
+  /** User token details */
+  userToken: {
+    /** Address of the user token */
+    address: Address
+    /** Amount of user token added */
+    amount: bigint
+  }
+  /** Validator token details */
+  validatorToken: {
+    /** Address of the validator token */
+    address: Address
+    /** Amount of validator token added */
+    amount: bigint
+  }
+}
+```
+
+Callback to invoke when liquidity is added.
+
+### sender (optional)
+
+- **Type:** `Address | undefined`
+
+Filter events by sender address.
+
+### userToken (optional)
+
+- **Type:** `Address | undefined`
+
+Filter events by user token address.
+
+### validatorToken (optional)
+
+- **Type:** `Address | undefined`
+
+Filter events by validator token address.
+
+

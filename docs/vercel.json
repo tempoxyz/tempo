@@ -1,0 +1,40 @@
+{
+  "cleanUrls": true,
+  "redirects": [
+    {
+      "source": "/guide/sdks/typescript/api",
+      "destination": "/guide/sdks/typescript/viem",
+      "permanent": true
+    },
+    {
+      "source": "/guide/sdks/typescript/api/:path*",
+      "destination": "/guide/sdks/typescript/viem/:path*",
+      "permanent": true
+    },
+    {
+      "source": "/errors/tx/MissingFeeToken",
+      "destination": "/guide/payments/pay-fees-in-any-stablecoin#add-pay-with-fee-token-logic",
+      "permanent": false
+    },
+    {
+      "source": "/errors/tx/InvalidFeeToken",
+      "destination": "/guide/payments/pay-fees-in-any-stablecoin#add-pay-with-fee-token-logic",
+      "permanent": false
+    },
+    {
+      "source": "/errors/tx/ExceedsNonPaymentLimit",
+      "destination": "/documentation/protocol/blockspace/payment-lane-specification",
+      "permanent": false
+    },
+    {
+      "source": "/errors/tx/Keychain",
+      "destination": "/documentation/protocol/transactions/spec-default-aa",
+      "permanent": false
+    },
+    {
+      "source": "/errors/tx/SubblockNonceKey",
+      "destination": "/documentation/protocol/blockspace/sub-block-specification#4-block-validity-rules",
+      "permanent": false
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+# Stablecoin Neutrality
+
+Tempo's architecture is designed to be stablecoin-neutral, meaning the network supports all stablecoins equally without favoring any particular issuer or token. More concretely, we achieve this in two key ways. Firstly, we allow users to pay fees in any stablecoin they hold, with an enshrined [Fee AMM](/documentation/protocol/fees) (Automated Market Maker) handling the conversion between the stablecoin the user wants to use and the stablecoin the validator prefers to be paid in. Secondly, our enshrined [stablecoin exchange's](/documentation/protocol/exchange) unique design allows for efficient trading between any two stablecoins, enabling efficient cross-stablecoin payments without the need for additional infrastructure or integration.
+
+
+This approach ensures that users and developers have the freedom to choose the stablecoins that best fit their needs (regulatory regime, reward sharing, etc.), but still be able interact with the broader ecosystem, including applications/ use-cases that default to other stables.

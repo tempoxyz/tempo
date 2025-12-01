@@ -1,0 +1,66 @@
+# `dex.watchOrderPlaced`
+
+Watches for order placed events on the Stablecoin Exchange.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { client } from './viem.config'
+
+const unwatch = client.dex.watchOrderPlaced({
+  onOrderPlaced: (args, log) => {
+    console.log('Order placed:', args.orderId)
+    console.log('Maker:', args.maker)
+    console.log('Token:', args.token)
+    console.log('Amount:', args.amount)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [viem.config.ts] filename="viem.config.ts"
+// [!include ~/snippets/viem.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onOrderPlaced
+
+- **Type:** `(args: OrderPlacedArgs, log: Log) => void`
+
+Callback to invoke when an order is placed.
+
+The `args` object contains:
+- `orderId: bigint` - ID of the placed order
+- `maker: Address` - Address that placed the order
+- `token: Address` - Address of the base token
+- `amount: bigint` - Amount of tokens in the order
+- `isBid: boolean` - Whether this is a buy order
+- `tick: number` - Price tick for the order
+
+### maker (optional)
+
+- **Type:** `Address | undefined`
+
+Filter events by maker address.
+
+### token (optional)
+
+- **Type:** `Address | undefined`
+
+Filter events by base token address.
+
