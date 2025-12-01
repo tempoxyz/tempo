@@ -153,13 +153,13 @@ fn gen_rust_unsigned_tests() -> TokenStream {
                     let mut contract = setup_test_contract();
 
                     // Storage roundtrip
-                    value.store(&mut contract, slot)?;
-                    let loaded = #type_name::load(&mut contract, slot)?;
+                    value.store(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
+                    let loaded = #type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
                     assert_eq!(value, loaded, concat!(#label, " storage roundtrip failed"));
 
                     // Delete
-                    #type_name::delete(&mut contract, slot)?;
-                    let after_delete = #type_name::load(&mut contract, slot)?;
+                    #type_name::delete(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
+                    let after_delete = #type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
                     assert_eq!(after_delete, 0, concat!(#label, " not zero after delete"));
 
                     // EVM words roundtrip
@@ -198,13 +198,13 @@ fn gen_rust_signed_tests() -> TokenStream {
                         let mut contract = setup_test_contract();
 
                         // Storage roundtrip
-                        value.store(&mut contract, slot)?;
-                        let loaded = #type_name::load(&mut contract, slot)?;
+                        value.store(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
+                        let loaded = #type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
                         assert_eq!(value, loaded, concat!(#label, " positive storage roundtrip failed"));
 
                         // Delete
-                        #type_name::delete(&mut contract, slot)?;
-                        let after_delete = #type_name::load(&mut contract, slot)?;
+                        #type_name::delete(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
+                        let after_delete = #type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
                         assert_eq!(after_delete, 0, concat!(#label, " not zero after delete"));
 
                         // EVM words roundtrip
@@ -220,13 +220,13 @@ fn gen_rust_signed_tests() -> TokenStream {
                         let mut contract = setup_test_contract();
 
                         // Storage roundtrip
-                        value.store(&mut contract, slot)?;
-                        let loaded = #type_name::load(&mut contract, slot)?;
+                        value.store(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
+                        let loaded = #type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
                         assert_eq!(value, loaded, concat!(#label, " negative storage roundtrip failed"));
 
                         // Delete
-                        #type_name::delete(&mut contract, slot)?;
-                        let after_delete = #type_name::load(&mut contract, slot)?;
+                        #type_name::delete(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
+                        let after_delete = #type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
                         assert_eq!(after_delete, 0, concat!(#label, " not zero after delete"));
 
                         // EVM words roundtrip
@@ -264,13 +264,13 @@ fn gen_alloy_unsigned_tests() -> TokenStream {
                     let mut contract = setup_test_contract();
 
                     // Storage roundtrip
-                    value.store(&mut contract, slot)?;
-                    let loaded = ::alloy::primitives::#type_name::load(&mut contract, slot)?;
+                    value.store(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
+                    let loaded = ::alloy::primitives::#type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
                     assert_eq!(value, loaded, concat!(#label, " storage roundtrip failed"));
 
                     // Delete
-                    ::alloy::primitives::#type_name::delete(&mut contract, slot)?;
-                    let after_delete = ::alloy::primitives::#type_name::load(&mut contract, slot)?;
+                    ::alloy::primitives::#type_name::delete(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
+                    let after_delete = ::alloy::primitives::#type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
                     assert_eq!(
                         after_delete,
                         ::alloy::primitives::#type_name::ZERO,
@@ -315,13 +315,13 @@ fn gen_alloy_signed_tests() -> TokenStream {
                         let mut contract = setup_test_contract();
 
                         // Storage roundtrip
-                        value.store(&mut contract, slot)?;
-                        let loaded = ::alloy::primitives::#type_name::load(&mut contract, slot)?;
+                        value.store(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
+                        let loaded = ::alloy::primitives::#type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
                         assert_eq!(value, loaded, concat!(#label, " positive storage roundtrip failed"));
 
                         // Delete
-                        ::alloy::primitives::#type_name::delete(&mut contract, slot)?;
-                        let after_delete = ::alloy::primitives::#type_name::load(&mut contract, slot)?;
+                        ::alloy::primitives::#type_name::delete(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
+                        let after_delete = ::alloy::primitives::#type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
                         assert_eq!(
                             after_delete,
                             ::alloy::primitives::#type_name::ZERO,
@@ -341,13 +341,13 @@ fn gen_alloy_signed_tests() -> TokenStream {
                         let mut contract = setup_test_contract();
 
                         // Storage roundtrip
-                        value.store(&mut contract, slot)?;
-                        let loaded = ::alloy::primitives::#type_name::load(&mut contract, slot)?;
+                        value.store(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
+                        let loaded = ::alloy::primitives::#type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
                         assert_eq!(value, loaded, concat!(#label, " negative storage roundtrip failed"));
 
                         // Delete
-                        ::alloy::primitives::#type_name::delete(&mut contract, slot)?;
-                        let after_delete = ::alloy::primitives::#type_name::load(&mut contract, slot)?;
+                        ::alloy::primitives::#type_name::delete(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
+                        let after_delete = ::alloy::primitives::#type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
                         assert_eq!(
                             after_delete,
                             ::alloy::primitives::#type_name::ZERO,
@@ -387,16 +387,16 @@ fn gen_fixed_bytes_tests() -> TokenStream {
                     let mut contract = setup_test_contract();
 
                     // Storage roundtrip
-                    value.store(&mut contract, slot)?;
-                    let loaded = ::alloy::primitives::FixedBytes::<#size>::load(&mut contract, slot)?;
+                    value.store(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
+                    let loaded = ::alloy::primitives::FixedBytes::<#size>::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
                     assert_eq!(
                         value, loaded,
                         concat!("FixedBytes<", stringify!(#size), "> storage roundtrip failed")
                     );
 
                     // Delete
-                    ::alloy::primitives::FixedBytes::<#size>::delete(&mut contract, slot)?;
-                    let after_delete = ::alloy::primitives::FixedBytes::<#size>::load(&mut contract, slot)?;
+                    ::alloy::primitives::FixedBytes::<#size>::delete(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
+                    let after_delete = ::alloy::primitives::FixedBytes::<#size>::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
                     assert_eq!(
                         after_delete,
                         ::alloy::primitives::FixedBytes::<#size>::ZERO,

@@ -16,6 +16,9 @@ pub const SIGNATURE_TYPE_P256: u8 = 0x01;
 pub const SIGNATURE_TYPE_WEBAUTHN: u8 = 0x02;
 pub const SIGNATURE_TYPE_KEYCHAIN: u8 = 0x03;
 
+// Minimum authenticatorData is 37 bytes (32 rpIdHash + 1 flags + 4 signCount)
+const MIN_AUTH_DATA_LEN: usize = 37;
+
 /// P256 signature with pre-hash flag
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -674,6 +677,7 @@ fn verify_p256_signature_internal(
 }
 
 /// Parses and validates WebAuthn data, returning the message hash for P256 verification
+/// ref: <https://www.w3.org/TR/webauthn-2/#sctn-authenticator-data>
 ///
 /// According to the spec, this:
 /// 1. Parses authenticatorData and clientDataJSON
@@ -684,70 +688,46 @@ fn verify_webauthn_data_internal(
     webauthn_data: &[u8],
     tx_hash: &B256,
 ) -> Result<B256, &'static str> {
-    // Minimum authenticatorData is 37 bytes (32 rpIdHash + 1 flags + 4 signCount)
-    if webauthn_data.len() < 37 {
+    // Ensure that we have clientDataJSON after authenticatorData
+    if webauthn_data.len() < MIN_AUTH_DATA_LEN + 32 {
         return Err("WebAuthn data too short");
     }
 
-    // Find the split between authenticatorData and clientDataJSON
-    // Strategy: Try to parse as JSON from different split points
-    // authenticatorData is minimum 37 bytes, so start searching from there
-    let mut auth_data_len = 37;
-    let mut client_data_json = None;
-
-    // Check if AT flag (bit 6) is set in flags byte (byte 32)
+    // Check flags (byte 32): UP (bit 0), AT (bit 6), ED (bit 7)
     let flags = webauthn_data[32];
-    let at_flag_set = (flags & 0x40) != 0;
+    let (up_flag, at_flag, ed_flag) = (flags & 0x01, flags & 0x40, flags & 0x80);
 
-    if !at_flag_set {
-        // Simple case: authenticatorData is exactly 37 bytes
-        if webauthn_data.len() > 37 {
-            let potential_json = &webauthn_data[37..];
-            if let Ok(json_str) = core::str::from_utf8(potential_json)
-                && json_str.starts_with('{')
-                && json_str.ends_with('}')
-            {
-                client_data_json = Some(potential_json);
-                auth_data_len = 37;
-            }
-        }
-    } else {
-        // AT flag is set, need to parse CBOR data (complex)
-        // For now, try multiple split points and validate JSON
-        for split_point in 37..webauthn_data.len().saturating_sub(20) {
-            let potential_json = &webauthn_data[split_point..];
-            if let Ok(json_str) = core::str::from_utf8(potential_json)
-                && json_str.starts_with('{')
-                && json_str.ends_with('}')
-            {
-                // Basic JSON validation - check for required fields
-                if json_str.contains("\"type\"") && json_str.contains("\"challenge\"") {
-                    client_data_json = Some(potential_json);
-                    auth_data_len = split_point;
-                    break;
-                }
-            }
-        }
-    }
-
-    let client_data_json =
-        client_data_json.ok_or("Failed to parse clientDataJSON from WebAuthn data")?;
-    let authenticator_data = &webauthn_data[..auth_data_len];
-
-    // Validate authenticatorData
-    if authenticator_data.len() < 37 {
-        return Err("AuthenticatorData too short");
-    }
-
-    // Check UP flag (bit 0) is set
-    let flags = authenticator_data[32];
-    if (flags & 0x01) == 0 {
+    // UP flag MUST be set
+    if up_flag == 0 {
         return Err("User Presence (UP) flag not set in authenticatorData");
     }
+
+    // AT flag must NOT be set for assertion signatures (`webauthn.get`)
+    if at_flag != 0 {
+        return Err("AT flag must not be set for assertion signatures");
+    }
+
+    // Determine authenticatorData length
+    let auth_data_len = if ed_flag == 0 {
+        // If ED flag is not set, exactly 37 bytes (no extensions)
+        MIN_AUTH_DATA_LEN
+    } else {
+        // ED flag must NOT be set, as Tempo AA doesn't support extensions
+        // NOTE: If we ever want to support extensions, we will have to parse CBOR data
+        return Err("ED flag must not be set, as Tempo doesn't support extensions");
+    };
+
+    let authenticator_data = &webauthn_data[..auth_data_len];
+    let client_data_json = &webauthn_data[auth_data_len..];
 
     // Validate clientDataJSON
     let json_str =
         core::str::from_utf8(client_data_json).map_err(|_| "clientDataJSON is not valid UTF-8")?;
+
+    // Basic JSON structure validation
+    if !json_str.starts_with('{') || !json_str.ends_with('}') {
+        return Err("clientDataJSON is not valid JSON");
+    }
 
     // Check for required type field
     if !json_str.contains("\"type\":\"webauthn.get\"") {
@@ -1190,6 +1170,45 @@ mod tests {
         assert!(
             json.contains("\"webauthnData\""),
             "Should use camelCase for webauthnData"
+        );
+    }
+
+    #[test]
+    fn test_webauthn_flag_validation() {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+
+        // Helper to build webauthn data with given flags and optional extension bytes
+        fn build_webauthn_data(flags: u8, extension: Option<&[u8]>, tx_hash: &B256) -> Vec<u8> {
+            let mut data = vec![0u8; 32]; // rpIdHash
+            data.push(flags);
+            data.extend_from_slice(&[0u8; 4]); // signCount
+            if let Some(ext) = extension {
+                data.extend_from_slice(ext);
+            }
+            let challenge = URL_SAFE_NO_PAD.encode(tx_hash.as_slice());
+            data.extend_from_slice(
+                format!("{{\"type\":\"webauthn.get\",\"challenge\":\"{challenge}\"}}").as_bytes(),
+            );
+            data
+        }
+
+        let tx_hash = B256::ZERO;
+
+        // AT flag must be rejected for assertion signatures
+        let data = build_webauthn_data(0x41, None, &tx_hash); // UP + AT
+        let err = verify_webauthn_data_internal(&data, &tx_hash).unwrap_err();
+        assert!(err.contains("AT flag"), "Should reject AT flag");
+
+        // ED flag must be rejected, as extensions are not supported
+        let data = build_webauthn_data(0x81, Some(&[0xa0]), &tx_hash); // UP + ED, empty map
+        let err = verify_webauthn_data_internal(&data, &tx_hash).unwrap_err();
+        assert!(err.contains("ED flag"), "Should reject ED flag");
+
+        // Valid with only UP flag set
+        let data = build_webauthn_data(0x01, None, &tx_hash); // UP only
+        assert!(
+            verify_webauthn_data_internal(&data, &tx_hash).is_ok(),
+            "Should accept valid webauthn data with only UP flag"
         );
     }
 }

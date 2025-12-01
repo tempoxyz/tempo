@@ -76,6 +76,7 @@ sol! {
         // Constants (exposed as view functions)
         function MIN_TICK() external pure returns (int16);
         function MAX_TICK() external pure returns (int16);
+        function TICK_SPACING() external pure returns (int16);
         function PRICE_SCALE() external pure returns (uint32);
         function MIN_PRICE() external pure returns (uint32);
         function MAX_PRICE() external pure returns (uint32);

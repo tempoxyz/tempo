@@ -3,8 +3,8 @@
 //! This module provides helper functions for bit-level manipulation of storage slots,
 //! enabling efficient packing of multiple small values into single 32-byte slots.
 //!
-//! Packing only applies to primitive types where `BYTE_COUNT < 32`. Non-primitives
-//! (structs, fixed-size arrays, dynamic types) have `BYTE_COUNT = SLOT_COUNT * 32`.
+//! Packing only applies to primitive types where `LAYOUT::Bytes(count) && count < 32`.
+//! Non-primitives (structs, fixed-size arrays, dynamic types) have `LAYOUT = Layout::Slot`.
 //!
 //! ## Solidity Compatibility
 //!
@@ -14,7 +14,33 @@
 
 use alloy::primitives::U256;
 
-use crate::{error::Result, storage::Storable};
+use crate::{
+    error::Result,
+    storage::{Layout, Storable},
+};
+
+/// Location information for a packed field within a storage slot.
+#[derive(Debug, Clone, Copy)]
+pub struct FieldLocation {
+    /// Offset in slots from the base slot
+    pub offset_slots: usize,
+    /// Offset in bytes within the target slot
+    pub offset_bytes: usize,
+    /// Size of the field in bytes
+    pub size: usize,
+}
+
+impl FieldLocation {
+    /// Create a new field location
+    #[inline]
+    pub const fn new(offset_slots: usize, offset_bytes: usize, size: usize) -> Self {
+        Self {
+            offset_slots,
+            offset_bytes,
+            size,
+        }
+    }
+}
 
 /// Whether a given amount of bytes should be packed, or not.
 #[inline]
@@ -37,11 +63,16 @@ pub fn create_element_mask(byte_count: usize) -> U256 {
 
 /// Extract a packed value from a storage slot at a given byte offset.
 #[inline]
-pub fn extract_packed_value<T: Storable<1>>(
+pub fn extract_packed_value<const SLOTS: usize, T: Storable<SLOTS>>(
     slot_value: U256,
     offset: usize,
     bytes: usize,
 ) -> Result<T> {
+    debug_assert!(
+        matches!(T::LAYOUT, Layout::Bytes(..)),
+        "Packing is only supported by primitive types"
+    );
+
     // Validate that the value doesn't span slot boundaries
     if offset + bytes > 32 {
         return Err(crate::error::TempoPrecompileError::Fatal(format!(
@@ -63,19 +94,22 @@ pub fn extract_packed_value<T: Storable<1>>(
     };
 
     // Extract and right-align the value
-    T::from_evm_words([(slot_value >> shift_bits) & mask])
+    T::from_evm_words(std::array::from_fn(|_| (slot_value >> shift_bits) & mask))
 }
 
 /// Insert a packed value into a storage slot at a given byte offset.
-///
-/// Offset follows Solidity's convention: offset 0 = rightmost byte (least significant).
 #[inline]
-pub fn insert_packed_value<T: Storable<1>>(
+pub fn insert_packed_value<const SLOTS: usize, T: Storable<SLOTS>>(
     current: U256,
     value: &T,
     offset: usize,
     bytes: usize,
 ) -> Result<U256> {
+    debug_assert!(
+        matches!(T::LAYOUT, Layout::Bytes(..)),
+        "Packing is only supported by primitive types"
+    );
+
     // Validate that the value doesn't span slot boundaries
     if offset + bytes > 32 {
         return Err(crate::error::TempoPrecompileError::Fatal(format!(
@@ -143,59 +177,6 @@ pub const fn calc_element_offset(idx: usize, elem_bytes: usize) -> usize {
 #[inline]
 pub const fn calc_packed_slot_count(n: usize, elem_bytes: usize) -> usize {
     (n * elem_bytes).div_ceil(32)
-}
-
-/// Read a packed field from a struct at a given base slot.
-pub fn read_packed_at<T, S>(
-    storage: &mut S,
-    struct_base_slot: U256,
-    field_offset_slots: usize,
-    field_offset_bytes: usize,
-    field_size_bytes: usize,
-) -> Result<T>
-where
-    S: crate::storage::StorageOps,
-    T: Storable<1>,
-{
-    let slot = struct_base_slot + U256::from(field_offset_slots);
-    let slot_value = storage.sload(slot)?;
-    extract_packed_value::<T>(slot_value, field_offset_bytes, field_size_bytes)
-}
-
-/// Write a packed field to a struct at a given base slot.
-pub fn write_packed_at<T, S>(
-    storage: &mut S,
-    struct_base_slot: U256,
-    field_offset_slots: usize,
-    field_offset_bytes: usize,
-    field_size_bytes: usize,
-    value: &T,
-) -> Result<()>
-where
-    S: crate::storage::StorageOps,
-    T: Storable<1>,
-{
-    let slot = struct_base_slot + U256::from(field_offset_slots);
-    let current = storage.sload(slot)?;
-    let new_value = insert_packed_value(current, value, field_offset_bytes, field_size_bytes)?;
-    storage.sstore(slot, new_value)
-}
-
-/// Clear a packed field in a struct at a given base slot (set to zero).
-pub fn clear_packed_at<S>(
-    storage: &mut S,
-    struct_base_slot: U256,
-    field_offset_slots: usize,
-    field_offset_bytes: usize,
-    field_size_bytes: usize,
-) -> Result<()>
-where
-    S: crate::storage::StorageOps,
-{
-    let slot = struct_base_slot + U256::from(field_offset_slots);
-    let current = storage.sload(slot)?;
-    let cleared = zero_packed_value(current, field_offset_bytes, field_size_bytes)?;
-    storage.sstore(slot, cleared)
 }
 
 /// Extract a field value from a storage slot for testing purposes.
@@ -415,7 +396,7 @@ mod tests {
         );
 
         // Test extract as well
-        let result = extract_packed_value::<Address>(U256::ZERO, 13, 20);
+        let result = extract_packed_value::<1, Address>(U256::ZERO, 13, 20);
         assert!(
             result.is_err(),
             "Should reject extracting address from offset 13"
@@ -459,7 +440,7 @@ mod tests {
             slot, expected,
             "Single bool [true] should match Solidity layout"
         );
-        assert!(extract_packed_value::<bool>(slot, 0, 1).unwrap());
+        assert!(extract_packed_value::<1, bool>(slot, 0, 1).unwrap());
 
         // two bools
         let expected = gen_slot_from(&[
@@ -471,8 +452,8 @@ mod tests {
         slot = insert_packed_value(slot, &true, 0, 1).unwrap();
         slot = insert_packed_value(slot, &true, 1, 1).unwrap();
         assert_eq!(slot, expected, "[true, true] should match Solidity layout");
-        assert!(extract_packed_value::<bool>(slot, 0, 1).unwrap());
-        assert!(extract_packed_value::<bool>(slot, 1, 1).unwrap());
+        assert!(extract_packed_value::<1, bool>(slot, 0, 1).unwrap());
+        assert!(extract_packed_value::<1, bool>(slot, 1, 1).unwrap());
     }
 
     #[test]
@@ -497,10 +478,10 @@ mod tests {
         slot = insert_packed_value(slot, &v4, 3, 1).unwrap();
 
         assert_eq!(slot, expected, "u8 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<u8>(slot, 0, 1).unwrap(), v1);
-        assert_eq!(extract_packed_value::<u8>(slot, 1, 1).unwrap(), v2);
-        assert_eq!(extract_packed_value::<u8>(slot, 2, 1).unwrap(), v3);
-        assert_eq!(extract_packed_value::<u8>(slot, 3, 1).unwrap(), v4);
+        assert_eq!(extract_packed_value::<1, u8>(slot, 0, 1).unwrap(), v1);
+        assert_eq!(extract_packed_value::<1, u8>(slot, 1, 1).unwrap(), v2);
+        assert_eq!(extract_packed_value::<1, u8>(slot, 2, 1).unwrap(), v3);
+        assert_eq!(extract_packed_value::<1, u8>(slot, 3, 1).unwrap(), v4);
     }
 
     #[test]
@@ -522,9 +503,9 @@ mod tests {
         slot = insert_packed_value(slot, &v3, 4, 2).unwrap();
 
         assert_eq!(slot, expected, "u16 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<u16>(slot, 0, 2).unwrap(), v1);
-        assert_eq!(extract_packed_value::<u16>(slot, 2, 2).unwrap(), v2);
-        assert_eq!(extract_packed_value::<u16>(slot, 4, 2).unwrap(), v3);
+        assert_eq!(extract_packed_value::<1, u16>(slot, 0, 2).unwrap(), v1);
+        assert_eq!(extract_packed_value::<1, u16>(slot, 2, 2).unwrap(), v2);
+        assert_eq!(extract_packed_value::<1, u16>(slot, 4, 2).unwrap(), v3);
     }
 
     #[test]
@@ -543,8 +524,8 @@ mod tests {
         slot = insert_packed_value(slot, &v2, 4, 4).unwrap();
 
         assert_eq!(slot, expected, "u32 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<u32>(slot, 0, 4).unwrap(), v1);
-        assert_eq!(extract_packed_value::<u32>(slot, 4, 4).unwrap(), v2);
+        assert_eq!(extract_packed_value::<1, u32>(slot, 0, 4).unwrap(), v1);
+        assert_eq!(extract_packed_value::<1, u32>(slot, 4, 4).unwrap(), v2);
     }
 
     #[test]
@@ -563,8 +544,8 @@ mod tests {
         slot = insert_packed_value(slot, &v2, 8, 8).unwrap();
 
         assert_eq!(slot, expected, "u64 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<u64>(slot, 0, 8).unwrap(), v1);
-        assert_eq!(extract_packed_value::<u64>(slot, 8, 8).unwrap(), v2);
+        assert_eq!(extract_packed_value::<1, u64>(slot, 0, 8).unwrap(), v1);
+        assert_eq!(extract_packed_value::<1, u64>(slot, 8, 8).unwrap(), v2);
     }
 
     #[test]
@@ -583,8 +564,8 @@ mod tests {
         slot = insert_packed_value(slot, &v2, 16, 16).unwrap();
 
         assert_eq!(slot, expected, "u128 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<u128>(slot, 0, 16).unwrap(), v1);
-        assert_eq!(extract_packed_value::<u128>(slot, 16, 16).unwrap(), v2);
+        assert_eq!(extract_packed_value::<1, u128>(slot, 0, 16).unwrap(), v1);
+        assert_eq!(extract_packed_value::<1, u128>(slot, 16, 16).unwrap(), v2);
     }
 
     #[test]
@@ -601,12 +582,12 @@ mod tests {
 
         let slot = insert_packed_value(U256::ZERO, &value, 0, 32).unwrap();
         assert_eq!(slot, expected, "u256 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<U256>(slot, 0, 32).unwrap(), value);
+        assert_eq!(extract_packed_value::<1, U256>(slot, 0, 32).unwrap(), value);
 
         // Test U256::MAX
         let slot = insert_packed_value(U256::ZERO, &U256::MAX, 0, 32).unwrap();
         assert_eq!(
-            extract_packed_value::<U256>(slot, 0, 32).unwrap(),
+            extract_packed_value::<1, U256>(slot, 0, 32).unwrap(),
             U256::MAX
         );
     }
@@ -633,10 +614,10 @@ mod tests {
         slot = insert_packed_value(slot, &v4, 3, 1).unwrap();
 
         assert_eq!(slot, expected, "i8 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<i8>(slot, 0, 1).unwrap(), v1);
-        assert_eq!(extract_packed_value::<i8>(slot, 1, 1).unwrap(), v2);
-        assert_eq!(extract_packed_value::<i8>(slot, 2, 1).unwrap(), v3);
-        assert_eq!(extract_packed_value::<i8>(slot, 3, 1).unwrap(), v4);
+        assert_eq!(extract_packed_value::<1, i8>(slot, 0, 1).unwrap(), v1);
+        assert_eq!(extract_packed_value::<1, i8>(slot, 1, 1).unwrap(), v2);
+        assert_eq!(extract_packed_value::<1, i8>(slot, 2, 1).unwrap(), v3);
+        assert_eq!(extract_packed_value::<1, i8>(slot, 3, 1).unwrap(), v4);
     }
 
     #[test]
@@ -658,9 +639,9 @@ mod tests {
         slot = insert_packed_value(slot, &v3, 4, 2).unwrap();
 
         assert_eq!(slot, expected, "i16 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<i16>(slot, 0, 2).unwrap(), v1);
-        assert_eq!(extract_packed_value::<i16>(slot, 2, 2).unwrap(), v2);
-        assert_eq!(extract_packed_value::<i16>(slot, 4, 2).unwrap(), v3);
+        assert_eq!(extract_packed_value::<1, i16>(slot, 0, 2).unwrap(), v1);
+        assert_eq!(extract_packed_value::<1, i16>(slot, 2, 2).unwrap(), v2);
+        assert_eq!(extract_packed_value::<1, i16>(slot, 4, 2).unwrap(), v3);
     }
 
     #[test]
@@ -679,8 +660,8 @@ mod tests {
         slot = insert_packed_value(slot, &v2, 4, 4).unwrap();
 
         assert_eq!(slot, expected, "i32 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<i32>(slot, 0, 4).unwrap(), v1);
-        assert_eq!(extract_packed_value::<i32>(slot, 4, 4).unwrap(), v2);
+        assert_eq!(extract_packed_value::<1, i32>(slot, 0, 4).unwrap(), v1);
+        assert_eq!(extract_packed_value::<1, i32>(slot, 4, 4).unwrap(), v2);
     }
 
     #[test]
@@ -699,8 +680,8 @@ mod tests {
         slot = insert_packed_value(slot, &v2, 8, 8).unwrap();
 
         assert_eq!(slot, expected, "i64 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<i64>(slot, 0, 8).unwrap(), v1);
-        assert_eq!(extract_packed_value::<i64>(slot, 8, 8).unwrap(), v2);
+        assert_eq!(extract_packed_value::<1, i64>(slot, 0, 8).unwrap(), v1);
+        assert_eq!(extract_packed_value::<1, i64>(slot, 8, 8).unwrap(), v2);
     }
 
     #[test]
@@ -719,8 +700,8 @@ mod tests {
         slot = insert_packed_value(slot, &v2, 16, 16).unwrap();
 
         assert_eq!(slot, expected, "i128 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<i128>(slot, 0, 16).unwrap(), v1);
-        assert_eq!(extract_packed_value::<i128>(slot, 16, 16).unwrap(), v2);
+        assert_eq!(extract_packed_value::<1, i128>(slot, 0, 16).unwrap(), v1);
+        assert_eq!(extract_packed_value::<1, i128>(slot, 16, 16).unwrap(), v2);
     }
 
     #[test]
@@ -748,10 +729,10 @@ mod tests {
             slot, expected,
             "Mixed types packing should match Solidity layout"
         );
-        assert_eq!(extract_packed_value::<u8>(slot, 0, 1).unwrap(), v1);
-        assert_eq!(extract_packed_value::<u16>(slot, 1, 2).unwrap(), v2);
-        assert_eq!(extract_packed_value::<u32>(slot, 3, 4).unwrap(), v3);
-        assert_eq!(extract_packed_value::<u64>(slot, 7, 8).unwrap(), v4);
+        assert_eq!(extract_packed_value::<1, u8>(slot, 0, 1).unwrap(), v1);
+        assert_eq!(extract_packed_value::<1, u16>(slot, 1, 2).unwrap(), v2);
+        assert_eq!(extract_packed_value::<1, u32>(slot, 3, 4).unwrap(), v3);
+        assert_eq!(extract_packed_value::<1, u64>(slot, 7, 8).unwrap(), v4);
     }
 
     #[test]
@@ -773,9 +754,12 @@ mod tests {
             slot, expected,
             "[bool, address, u8] should match Solidity layout"
         );
-        assert!(extract_packed_value::<bool>(slot, 0, 1).unwrap());
-        assert_eq!(extract_packed_value::<Address>(slot, 1, 20).unwrap(), addr);
-        assert_eq!(extract_packed_value::<u8>(slot, 21, 1).unwrap(), number);
+        assert!(extract_packed_value::<1, bool>(slot, 0, 1).unwrap());
+        assert_eq!(
+            extract_packed_value::<1, Address>(slot, 1, 20).unwrap(),
+            addr
+        );
+        assert_eq!(extract_packed_value::<1, u8>(slot, 21, 1).unwrap(), number);
     }
 
     #[test]
@@ -793,41 +777,40 @@ mod tests {
         slot = insert_packed_value(slot, &v3, 3, 4).unwrap();
 
         assert_eq!(slot, expected, "Zero values should produce zero slot");
-        assert_eq!(extract_packed_value::<u8>(slot, 0, 1).unwrap(), 0);
-        assert_eq!(extract_packed_value::<u16>(slot, 1, 2).unwrap(), 0);
-        assert_eq!(extract_packed_value::<u32>(slot, 3, 4).unwrap(), 0);
+        assert_eq!(extract_packed_value::<1, u8>(slot, 0, 1).unwrap(), 0);
+        assert_eq!(extract_packed_value::<1, u16>(slot, 1, 2).unwrap(), 0);
+        assert_eq!(extract_packed_value::<1, u32>(slot, 3, 4).unwrap(), 0);
 
         // Test that zeros don't interfere with non-zero values
         let v4: u8 = 0xff;
         slot = insert_packed_value(slot, &v4, 10, 1).unwrap();
-        assert_eq!(extract_packed_value::<u8>(slot, 0, 1).unwrap(), 0);
-        assert_eq!(extract_packed_value::<u8>(slot, 10, 1).unwrap(), 0xff);
+        assert_eq!(extract_packed_value::<1, u8>(slot, 0, 1).unwrap(), 0);
+        assert_eq!(extract_packed_value::<1, u8>(slot, 10, 1).unwrap(), 0xff);
     }
 
     // -- SLOT PACKED FIELD TESTS ------------------------------------------
-    use crate::storage::hashmap::HashMapStorageProvider;
 
-    /// Test contract struct for packed field tests
+    use crate::storage::{
+        PrecompileStorageProvider, StorageOps, hashmap::HashMapStorageProvider, types::Slot,
+    };
+
+    /// Test helper that implements StorageOps for integration tests
     struct TestContract<'a, S> {
         address: Address,
         storage: &'a mut S,
     }
 
-    impl<'a, S: crate::storage::PrecompileStorageProvider> crate::storage::ContractStorage
-        for TestContract<'a, S>
-    {
-        type Storage = S;
-
-        fn address(&self) -> Address {
-            self.address
+    impl<'a, S: PrecompileStorageProvider> StorageOps for TestContract<'a, S> {
+        fn sstore(&mut self, slot: U256, value: U256) -> Result<()> {
+            self.storage.sstore(self.address, slot, value)
         }
 
-        fn storage(&mut self) -> &mut S {
-            self.storage
+        fn sload(&mut self, slot: U256) -> Result<U256> {
+            self.storage.sload(self.address, slot)
         }
     }
 
-    /// Helper to create a test contract with fresh storage.
+    /// Helper to create a test contract with fresh storage
     fn setup_test_contract<'a>(
         storage: &'a mut HashMapStorageProvider,
     ) -> TestContract<'a, HashMapStorageProvider> {
@@ -838,7 +821,7 @@ mod tests {
     }
 
     #[test]
-    fn test_packed_at_multiple_types() -> eyre::Result<()> {
+    fn test_packed_at_multiple_types() -> Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut contract = setup_test_contract(&mut storage);
         let struct_base = U256::from(0x2000);
@@ -848,26 +831,35 @@ mod tests {
         let timestamp: u64 = 1234567890;
         let amount: u128 = 999888777666;
 
-        write_packed_at(&mut contract, struct_base, 0, 0, 1, &flag)?;
-        write_packed_at(&mut contract, struct_base, 0, 1, 8, &timestamp)?;
-        write_packed_at(&mut contract, struct_base, 0, 9, 16, &amount)?;
+        Slot::<bool>::new_at_loc(struct_base, FieldLocation::new(0, 0, 1))
+            .write(&mut contract, flag)?;
+        Slot::<u64>::new_at_loc(struct_base, FieldLocation::new(0, 1, 8))
+            .write(&mut contract, timestamp)?;
+        Slot::<u128>::new_at_loc(struct_base, FieldLocation::new(0, 9, 16))
+            .write(&mut contract, amount)?;
 
         // Verify all packed correctly
-        let read_flag = read_packed_at::<bool, _>(&mut contract, struct_base, 0, 0, 1)?;
-        let read_time = read_packed_at::<u64, _>(&mut contract, struct_base, 0, 1, 8)?;
-        let read_amount = read_packed_at::<u128, _>(&mut contract, struct_base, 0, 9, 16)?;
+        let read_flag = Slot::<bool>::new_at_loc(struct_base, FieldLocation::new(0, 0, 1))
+            .read(&mut contract)?;
+        let read_time = Slot::<u64>::new_at_loc(struct_base, FieldLocation::new(0, 1, 8))
+            .read(&mut contract)?;
+        let read_amount = Slot::<u128>::new_at_loc(struct_base, FieldLocation::new(0, 9, 16))
+            .read(&mut contract)?;
 
         assert_eq!(read_flag, flag);
         assert_eq!(read_time, timestamp);
         assert_eq!(read_amount, amount);
 
         // Clear the middle one
-        clear_packed_at(&mut contract, struct_base, 0, 1, 8)?;
+        Slot::<u64>::new_at_loc(struct_base, FieldLocation::new(0, 1, 8)).delete(&mut contract)?;
 
         // Verify
-        let read_flag = read_packed_at::<bool, _>(&mut contract, struct_base, 0, 0, 1)?;
-        let read_time = read_packed_at::<u64, _>(&mut contract, struct_base, 0, 1, 8)?;
-        let read_amount = read_packed_at::<u128, _>(&mut contract, struct_base, 0, 9, 16)?;
+        let read_flag = Slot::<bool>::new_at_loc(struct_base, FieldLocation::new(0, 0, 1))
+            .read(&mut contract)?;
+        let read_time = Slot::<u64>::new_at_loc(struct_base, FieldLocation::new(0, 1, 8))
+            .read(&mut contract)?;
+        let read_amount = Slot::<u128>::new_at_loc(struct_base, FieldLocation::new(0, 9, 16))
+            .read(&mut contract)?;
 
         assert_eq!(read_flag, flag);
         assert_eq!(read_time, 0);
@@ -877,35 +869,40 @@ mod tests {
     }
 
     #[test]
-    fn test_packed_at_different_slots() -> eyre::Result<()> {
+    fn test_packed_at_different_slots() -> Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let mut contract = setup_test_contract(&mut storage);
         let struct_base = U256::from(0x4000);
 
-        // Field in slot 0
-        let addr = Address::random();
-        write_packed_at(&mut contract, struct_base, 0, 0, 20, &addr)?;
-
-        // Field in slot 1
-        let value = U256::from(0xdeadbeefu32);
-        write_packed_at(&mut contract, struct_base, 1, 0, 32, &value)?;
-
-        // Field in slot 2
+        // Field in slot 0 (bool is 1 byte, packable)
         let flag = false;
-        write_packed_at(&mut contract, struct_base, 2, 0, 1, &flag)?;
+        Slot::<bool>::new_at_loc(struct_base, FieldLocation::new(0, 0, 1))
+            .write(&mut contract, flag)?;
+
+        // Field in slot 1 (u128 is 16 bytes, packable)
+        let amount: u128 = 0xdeadbeef;
+        Slot::<u128>::new_at_loc(struct_base, FieldLocation::new(1, 0, 16))
+            .write(&mut contract, amount)?;
+
+        // Field in slot 2 (u64 is 8 bytes, packable)
+        let value: u64 = 123456789;
+        Slot::<u64>::new_at_loc(struct_base, FieldLocation::new(2, 0, 8))
+            .write(&mut contract, value)?;
 
         // Verify all independent
-        let read_addr = read_packed_at::<Address, _>(&mut contract, struct_base, 0, 0, 20)?;
-        let read_val = read_packed_at::<U256, _>(&mut contract, struct_base, 1, 0, 32)?;
-        let read_flag = read_packed_at::<bool, _>(&mut contract, struct_base, 2, 0, 1)?;
+        let read_flag = Slot::<bool>::new_at_loc(struct_base, FieldLocation::new(0, 0, 1))
+            .read(&mut contract)?;
+        let read_amount = Slot::<u128>::new_at_loc(struct_base, FieldLocation::new(1, 0, 16))
+            .read(&mut contract)?;
+        let read_val = Slot::<u64>::new_at_loc(struct_base, FieldLocation::new(2, 0, 8))
+            .read(&mut contract)?;
 
-        assert_eq!(read_addr, addr);
-        assert_eq!(read_val, value);
         assert_eq!(read_flag, flag);
+        assert_eq!(read_amount, amount);
+        assert_eq!(read_val, value);
 
         Ok(())
     }
-
     // -- PROPERTY TESTS -----------------------------------------------------------
 
     use proptest::prelude::*;
@@ -1113,10 +1110,6 @@ mod tests {
                 prop_assert_eq!(extracted, expected_flag, "Flag at offset {} mismatch", i);
             }
         }
-    }
-
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(500))]
 
         #[test]
         fn proptest_element_slot_offset_consistency_u8(

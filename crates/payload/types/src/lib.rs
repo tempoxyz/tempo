@@ -64,11 +64,11 @@ impl ExecutionPayload for TempoExecutionData {
 }
 
 impl PayloadTypes for TempoPayloadTypes {
+    type ExecutionData = TempoExecutionData;
+    type BuiltPayload = EthBuiltPayload<TempoPrimitives>;
     type PayloadAttributes =
         <Self::PayloadBuilderAttributes as PayloadBuilderAttributes>::RpcPayloadAttributes;
     type PayloadBuilderAttributes = TempoPayloadBuilderAttributes;
-    type ExecutionData = TempoExecutionData;
-    type BuiltPayload = EthBuiltPayload<TempoPrimitives>;
 
     fn block_to_payload(block: SealedBlock<Block>) -> Self::ExecutionData {
         TempoExecutionData {

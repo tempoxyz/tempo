@@ -871,7 +871,9 @@ async fn verify_header_extra_data(
                 match so that the end-of-block is valid",
             ));
         }
-    } else if let Some(dealing) = block.try_read_ceremony_deal_outcome() {
+    } else if !block.header().extra_data().is_empty()
+        && let Ok(dealing) = block.try_read_ceremony_deal_outcome()
+    {
         info!("block header extra_data header contained intermediate DKG dealing; verifying it");
         ensure!(
             dealing.dealer() == proposer,

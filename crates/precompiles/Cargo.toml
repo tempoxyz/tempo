@@ -34,6 +34,7 @@ proptest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempo-evm.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [[bench]]
 name = "tempo_precompiles"
