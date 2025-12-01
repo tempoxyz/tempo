@@ -474,15 +474,15 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
     info!(transactions = total_txs, "Generating transactions");
 
     const TX_TYPES: usize = 3;
+    // Weights for random sampling for each transaction type
     let tx_weights: [u64; TX_TYPES] = [tip20_weight, swap_weight, place_order_weight];
+    // Cached gas estimates for each transaction type
+    let gas_estimates: [Arc<OnceLock<(u128, u128, u64)>>; TX_TYPES] = Default::default();
 
+    // Counters for number of transactions of each type
     let transfers = Arc::new(AtomicUsize::new(0));
     let swaps = Arc::new(AtomicUsize::new(0));
     let orders = Arc::new(AtomicUsize::new(0));
-
-    let transfer_gas = Arc::new(OnceLock::new());
-    let swap_gas = Arc::new(OnceLock::new());
-    let order_gas = Arc::new(OnceLock::new());
 
     let progress = ProgressBar::new(total_txs);
     let builders = progress
@@ -501,17 +501,16 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                 .choose_weighted(&mut rand::rng(), |(_, weight)| *weight)?
                 .0;
 
-            let (mut tx, gas) = match tx_index {
+            let mut tx = match tx_index {
                 0 => {
                     transfers.fetch_add(1, Ordering::Relaxed);
                     let provider = provider.clone();
                     let token = ITIP20Instance::new(token, provider);
 
                     // Transfer minimum possible amount
-                    let tx = token
+                    token
                         .transfer(Address::random(), U256::ONE)
-                        .into_transaction_request();
-                    (tx, &transfer_gas)
+                        .into_transaction_request()
                 }
                 1 => {
                     swaps.fetch_add(1, Ordering::Relaxed);
@@ -520,10 +519,9 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                         IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider);
 
                     // Swap minimum possible amount
-                    let tx = exchange
+                    exchange
                         .quoteSwapExactAmountIn(token, quote, 1)
-                        .into_transaction_request();
-                    (tx, &swap_gas)
+                        .into_transaction_request()
                 }
                 2 => {
                     orders.fetch_add(1, Ordering::Relaxed);
@@ -535,10 +533,9 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                     let tick =
                         rand::random_range(MIN_TICK / TICK_SPACING..=MAX_TICK / TICK_SPACING)
                             * TICK_SPACING;
-                    let tx = exchange
+                    exchange
                         .place(token, MIN_ORDER_AMOUNT, true, tick)
-                        .into_transaction_request();
-                    (tx, &order_gas)
+                        .into_transaction_request()
                 }
                 _ => unreachable!("Only {TX_TYPES} transaction types are supported"),
             };
@@ -547,6 +544,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
             let signer = signer_provider_manager.random_signer();
             tx.inner.set_from(signer.address());
 
+            let gas = &gas_estimates[tx_index];
             // If we already filled the gas fields once for that transaction type, use it.
             // This will skip the gas filler.
             if let Some((max_fee_per_gas, max_priority_fee_per_gas, gas_limit)) = gas.get() {
