@@ -19,7 +19,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
 };
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_BASE_FEE};
 use tempo_commonware_node_config::{Peers, PublicPolynomial, SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, DEFAULT_7702_DELEGATE_ADDRESS,
@@ -30,7 +30,6 @@ use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
     nonce::NonceManager,
-    path_usd::PathUSD,
     stablecoin_exchange::StablecoinExchange,
     storage::{ContractStorage, evm::EvmPrecompileStorageProvider},
     tip_fee_manager::{IFeeManager, TipFeeManager},
@@ -154,8 +153,13 @@ impl GenesisArgs {
         println!("Initializing registry");
         initialize_registry(&mut evm)?;
 
-        println!("Initializing PathUSD");
-        initialize_path_usd(admin, &addresses, &mut evm)?;
+        // Initialize TIP20Factory once before creating any tokens
+        println!("Initializing TIP20Factory");
+        initialize_tip20_factory(&mut evm)?;
+
+        // Post-Allegretto: PathUSD is created through the factory as token_id=0 with address(0) as quote token
+        println!("Creating PathUSD through factory");
+        create_path_usd_token(admin, &addresses, &mut evm)?;
 
         println!("Initializing TIP20 tokens");
         let (_, alpha_token_address) = create_and_mint_token(
@@ -377,18 +381,96 @@ impl GenesisArgs {
 
 fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>> {
     let db = CacheDB::default();
-    let env = EvmEnv::default();
+    let mut env = EvmEnv::default();
+    // Configure EVM for Allegretto hardfork so factory uses correct token_id counter (starts at 0)
+    // and accepts address(0) as quote token for the first token
+    env.cfg_env = env.cfg_env.with_spec(TempoHardfork::Allegretto);
     let factory = TempoEvmFactory::default();
     factory.create_evm(db, env)
 }
 
-/// Initializes the TIP20 factory contract and creates a token
+/// Initializes the TIP20Factory contract (should be called once before creating any tokens)
+fn initialize_tip20_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+
+    let mut factory = TIP20Factory::new(&mut provider);
+    factory
+        .initialize()
+        .expect("Could not initialize tip20 factory");
+    Ok(())
+}
+
+/// Creates PathUSD as the first TIP20 token (token_id=0) through the factory.
+/// Post-Allegretto, the first token must have address(0) as quote token.
+fn create_path_usd_token(
+    admin: Address,
+    recipients: &[Address],
+    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+
+    // Create PathUSD through factory with address(0) as quote token (required for first token post-Allegretto)
+    let token_address = {
+        let mut factory = TIP20Factory::new(&mut provider);
+        factory
+            .create_token(
+                admin,
+                ITIP20Factory::createTokenCall {
+                    name: "pathUSD".into(),
+                    symbol: "pathUSD".into(),
+                    currency: "USD".into(),
+                    quoteToken: Address::ZERO, // First token must use address(0) as quote token
+                    admin,
+                },
+            )
+            .expect("Could not create PathUSD token")
+    };
+
+    // Verify it was created at the expected address (token_id=0)
+    assert_eq!(
+        token_address, PATH_USD_ADDRESS,
+        "PathUSD should be created at token_id=0 address"
+    );
+
+    let mut token = TIP20Token::new(0, &mut provider);
+    token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+    token
+        .set_supply_cap(
+            admin,
+            ITIP20::setSupplyCapCall {
+                newSupplyCap: U256::from(u128::MAX),
+            },
+        )
+        .expect("Could not set PathUSD supply cap");
+
+    // Mint to all recipients
+    for recipient in recipients.iter().progress() {
+        token
+            .mint(
+                admin,
+                ITIP20::mintCall {
+                    to: *recipient,
+                    amount: U256::from(u64::MAX),
+                },
+            )
+            .expect("Could not mint pathUSD");
+    }
+
+    Ok(())
+}
+
+/// Creates a TIP20 token through the factory (factory must already be initialized)
 #[expect(clippy::too_many_arguments)]
 fn create_and_mint_token(
     symbol: &str,
     name: &str,
     currency: &str,
-    _quote_token: Address,
+    quote_token: Address,
     admin: Address,
     recipients: &[Address],
     mint_amount: U256,
@@ -400,9 +482,6 @@ fn create_and_mint_token(
 
     let token_id = {
         let mut factory = TIP20Factory::new(&mut provider);
-        factory
-            .initialize()
-            .expect("Could not initialize tip20 factory");
         let token_address = factory
             .create_token(
                 admin,
@@ -410,7 +489,7 @@ fn create_and_mint_token(
                     name: name.into(),
                     symbol: symbol.into(),
                     currency: currency.into(),
-                    quoteToken: PATH_USD_ADDRESS,
+                    quoteToken: quote_token,
                     admin,
                 },
             )
@@ -453,37 +532,6 @@ fn create_and_mint_token(
     }
 
     Ok((token_id, token.address()))
-}
-
-fn initialize_path_usd(
-    admin: Address,
-    recipients: &[Address],
-    evm: &mut TempoEvm<CacheDB<EmptyDB>>,
-) -> eyre::Result<()> {
-    let ctx = evm.ctx_mut();
-    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-
-    let mut path_usd = PathUSD::new(&mut provider);
-    path_usd
-        .initialize(admin)
-        .expect("PathUSD initialization should succeed");
-
-    path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-
-    for recipient in recipients.iter().progress() {
-        path_usd
-            .mint(
-                admin,
-                ITIP20::mintCall {
-                    to: *recipient,
-                    amount: U256::from(u64::MAX),
-                },
-            )
-            .expect("Could not mint pathUSD");
-    }
-
-    Ok(())
 }
 
 fn initialize_tip20_rewards_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
