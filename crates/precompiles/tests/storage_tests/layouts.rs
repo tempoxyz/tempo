@@ -4,6 +4,7 @@
 //! including auto-assignment, explicit slots, base_slot, and string literal slots.
 
 use super::*;
+use tempo_precompiles::storage::Mapping;
 
 #[test]
 fn test_mixed_slot_allocation() {
@@ -243,14 +244,13 @@ fn test_slot_id_naming_matches_actual_slots() {
     assert_eq!(slots::FIELD_E, U256::from(201));
     assert_eq!(slots::FIELD_F, U256::from(16));
 
-    // Verify the SlotId types exist and have correct SLOT values
-    use tempo_precompiles::storage::SlotId;
-    assert_eq!(<FieldASlot as SlotId>::SLOT, U256::from(0)); // field_a (auto)
-    assert_eq!(<FieldBSlot as SlotId>::SLOT, U256::from(100)); // field_b (manual)
-    assert_eq!(<FieldCSlot as SlotId>::SLOT, U256::ONE); // field_c (auto)
-    assert_eq!(<FieldDSlot as SlotId>::SLOT, U256::from(200)); // field_d (manual)
-    assert_eq!(<FieldESlot as SlotId>::SLOT, U256::from(201)); // field_e (auto)
-    assert_eq!(<FieldFSlot as SlotId>::SLOT, U256::from(16)); // field_f (manual)
+    // Verify the slot constants have correct values
+    assert_eq!(slots::FIELD_A, U256::from(0)); // field_a (auto)
+    assert_eq!(slots::FIELD_B, U256::from(100)); // field_b (manual)
+    assert_eq!(slots::FIELD_C, U256::ONE); // field_c (auto)
+    assert_eq!(slots::FIELD_D, U256::from(200)); // field_d (manual)
+    assert_eq!(slots::FIELD_E, U256::from(201)); // field_e (auto)
+    assert_eq!(slots::FIELD_F, U256::from(16)); // field_f (manual)
 }
 
 proptest! {
@@ -346,4 +346,51 @@ proptest! {
         prop_assert_eq!(s.storage.sload(s.address, U256::from(200))?, val_d); // field_d
         prop_assert_eq!(s.storage.sload(s.address, U256::from(201))?, val_e); // field_e
     }
+}
+
+#[test]
+#[should_panic(expected = "Storage slot collision")]
+fn test_collision_same_slot() {
+    // Two fields with identical slot assignments should panic in debug builds
+    #[contract]
+    pub struct Layout {
+        #[slot(5)]
+        pub field_a: U256,
+        #[slot(5)]
+        pub field_b: U256,
+    }
+
+    let mut s = setup_storage();
+    let _layout = Layout::_new(s.address, s.storage());
+}
+
+#[test]
+#[should_panic(expected = "Storage slot collision")]
+fn test_collision_overlapping_slots_manual() {
+    // A multi-slot field overlapping with another field should panic in debug builds
+    #[contract]
+    pub struct Layout {
+        #[slot(5)]
+        pub large_field: [U256; 3], // occupies slots 5,6,7
+        #[slot(6)]
+        pub colliding_field: U256, // overlaps with large_field
+    }
+
+    let mut s = setup_storage();
+    let _layout = Layout::_new(s.address, s.storage());
+}
+
+#[test]
+#[should_panic(expected = "Storage slot collision")]
+fn test_collision_overlapping_slots_auto() {
+    // A multi-slot field overlapping with another field should panic in debug builds
+    #[contract]
+    pub struct Layout {
+        pub large_field: [U256; 3], // occupies slots 0,1,2
+        #[slot(2)]
+        pub colliding_field: U256, // overlaps with large_field
+    }
+
+    let mut s = setup_storage();
+    let _layout = Layout::_new(s.address, s.storage());
 }
