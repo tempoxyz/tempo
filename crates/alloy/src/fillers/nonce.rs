@@ -1,9 +1,9 @@
-use crate::{TempoFillers, TempoNetwork, rpc::TempoTransactionRequest};
+use crate::rpc::TempoTransactionRequest;
 use alloy_network::{Network, TransactionBuilder};
 use alloy_primitives::U256;
 use alloy_provider::{
-    Identity, ProviderBuilder, SendableTx,
-    fillers::{FillerControlFlow, JoinFill, RecommendedFillers, TxFiller},
+    SendableTx,
+    fillers::{FillerControlFlow, TxFiller},
 };
 use alloy_transport::TransportResult;
 use tempo_primitives::subblock::has_sub_block_nonce_key_prefix;
@@ -58,43 +58,11 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for R
     }
 }
 
-pub trait Random2DNoncesProviderExt {
-    /// Returns a provider builder with the recommended Tempo fillers and the random 2D nonce filler.
-    ///
-    /// See [`Random2DNonceFiller`] for more information on random 2D nonces.
-    fn with_random_2d_nonces(
-        self,
-    ) -> ProviderBuilder<
-        Identity,
-        JoinFill<Identity, TempoFillers<Random2DNonceFiller>>,
-        TempoNetwork,
-    >;
-}
-
-impl Random2DNoncesProviderExt
-    for ProviderBuilder<
-        Identity,
-        JoinFill<Identity, <TempoNetwork as RecommendedFillers>::RecommendedFillers>,
-        TempoNetwork,
-    >
-{
-    fn with_random_2d_nonces(
-        self,
-    ) -> ProviderBuilder<
-        Identity,
-        JoinFill<Identity, TempoFillers<Random2DNonceFiller>>,
-        TempoNetwork,
-    > {
-        ProviderBuilder::default().filler(TempoFillers::default())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::{
-        TempoFillers, TempoNetwork,
-        fillers::{Random2DNonceFiller, Random2DNoncesProviderExt},
-        rpc::TempoTransactionRequest,
+        TempoFillers, TempoNetwork, fillers::Random2DNonceFiller,
+        provider::ext::TempoProviderBuilderExt, rpc::TempoTransactionRequest,
     };
     use alloy_network::TransactionBuilder;
     use alloy_primitives::ruint::aliases::U256;

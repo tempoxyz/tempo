@@ -1,4 +1,4 @@
 //! Transaction fillers for Tempo network.
 
 mod nonce;
-pub use nonce::{Random2DNonceFiller, Random2DNoncesProviderExt};
+pub use nonce::{Random2DNonceFiller};
