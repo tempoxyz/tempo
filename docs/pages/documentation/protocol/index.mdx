@@ -1,0 +1,72 @@
+import LucideCoins from '~icons/lucide/coins'
+import LucideGift from '~icons/lucide/gift'
+import LucideShield from '~icons/lucide/shield'
+import LucideWallet from '~icons/lucide/wallet'
+import LucideLayers from '~icons/lucide/layers'
+import LucideLayout from '~icons/lucide/layout'
+import LucideArrowLeftRight from '~icons/lucide/arrow-left-right'
+import * as Card from "../../../components/Card.tsx"
+
+# Protocol Specification Overview
+
+## Introduction
+
+Tempo is a blockchain protocol purpose-built for global payments. Rather than being a general-purpose platform, Tempo makes deliberate technical choices optimized for payments at scale.
+
+These specifications provide the technical reference for protocol implementers, auditors, and core contributors building on Tempo. Each specification follows a structured format with an Abstract summarizing the component's purpose, Motivation explaining design goals, detailed Specification of behavior, Rationale for key decisions, and examples or test vectors. Specifications link to corresponding reference implementations in Solidity, providing both the normative behavior definition and canonical code.
+
+## Protocol Components
+
+<Card.Container>
+  <Card.Link
+    description="Core token standard with native stablecoin features and policy registry integration"
+    href="/documentation/protocol/tip20/overview"
+    icon={LucideCoins}
+    title="TIP-20 Tokens"
+  />
+  <Card.Link
+    description="Reward distribution system for token holders with automated yield mechanisms"
+    href="/documentation/protocol/tip20-rewards/overview"
+    icon={LucideGift}
+    title="TIP-20 Rewards"
+  />
+  <Card.Link
+    description="Policy registry system for compliance, access control, and token governance"
+    href="/documentation/protocol/tip403/overview"
+    icon={LucideShield}
+    title="TIP-403 Policies"
+  />
+  <Card.Link
+    description="Multi-token fee payment system with AMM for stablecoin conversion"
+    href="/documentation/protocol/fees"
+    icon={LucideWallet}
+    title="Fees"
+  />
+  <Card.Link
+    description="AATransaction (0x76) and deprecated FeeTokenTransaction (0x77) transaction types"
+    href="/documentation/protocol/transactions"
+    icon={LucideLayers}
+    title="Tempo Transactions"
+  />
+  <Card.Link
+    description="Block format, payment lanes, and sub-blocks for optimized throughput"
+    href="/documentation/protocol/blockspace/overview"
+    icon={LucideLayout}
+    title="Blockspace"
+  />
+  <Card.Link
+    description="Enshrined stablecoin exchange with linkingUSD mechanisms"
+    href="/documentation/protocol/exchange"
+    icon={LucideArrowLeftRight}
+    title="Stablecoin Exchange"
+  />
+</Card.Container>
+
+## Audience
+
+These specifications are intended for:
+- Protocol developers and auditors
+- Core contributors implementing protocol features
+- Security researchers analyzing the protocol
+
+For application developers and node operators, see the [Documentation](/documentation) section.

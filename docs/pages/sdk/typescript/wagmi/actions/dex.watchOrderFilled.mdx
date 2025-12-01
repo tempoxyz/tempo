@@ -1,0 +1,81 @@
+# `dex.watchOrderFilled`
+
+Watches for order filled events on the Stablecoin Exchange.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { Actions } from 'tempo.ts/wagmi'
+import { config } from './wagmi.config'
+
+const unwatch = Actions.dex.watchOrderFilled(config, {
+  onOrderFilled: (args, log) => {
+    console.log('Order filled:', args.orderId)
+    console.log('Maker:', args.maker)
+    console.log('Taker:', args.taker)
+    console.log('Amount:', args.amount)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onOrderFilled
+
+- **Type:**
+
+```ts
+declare function onOrderFilled(args: Args, log: Log): void
+
+type Args = {
+  /** ID of the filled order */
+  orderId: bigint
+  /** Address that placed the order */
+  maker: Address
+  /** Address that filled the order */
+  taker: Address
+  /** Amount of tokens filled */
+  amount: bigint
+}
+```
+
+Callback to invoke when an order is filled.
+
+### maker (optional)
+
+- **Type:** `Address | undefined`
+
+Filter events by maker address.
+
+### orderId (optional)
+
+- **Type:** `bigint | undefined`
+
+Filter events by order ID.
+
+### taker (optional)
+
+- **Type:** `Address | undefined`
+
+Filter events by taker address.
+

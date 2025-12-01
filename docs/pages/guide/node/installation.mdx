@@ -1,0 +1,41 @@
+# Installation
+
+We provide three different installation paths - installing a pre-built binary, building from source or using our provided Docker image.
+
+## Pre-built Binary
+
+```bash /dev/null/download.sh#L1-4
+# Download latest version
+# e.g.
+# curl -L https://testnet-assets.tempoxyz.dev/binaries/v<version>/tempo-v<version>-<arch>-<platform>.tar.gz -o tempo.tar.gz
+curl -L https://testnet-assets.tempoxyz.dev/binaries/v0.5.0/tempo-v0.5.0-x86_64-unknown-linux-gnu.tar.gz -o tempo.tar.gz
+tar -xzvf tempo.tar.gz
+chmod +x tempo
+sudo mv tempo /usr/local/bin/tempo
+tempo --version
+```
+
+## Build from Source
+
+```bash /dev/null/build.sh#L1-10
+# Install Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+
+# Build and install from source using cargo
+cargo install --git https://github.com/tempoxyz/tempo.git tempo --root /usr/local/bin
+tempo --version
+```
+
+## Docker
+
+You can find the latest tagged version of Tempo at [the Tempo GHCR package](https://github.com/tempoxyz/tempo/pkgs/container/tempo).
+
+```bash /dev/null/docker.sh#L1-4
+# Pull the latest Docker image
+docker pull ghcr.io/tempoxyz/tempo:0.5.0
+
+# Run the Docker container
+docker run -d --name tempo ghcr.io/tempoxyz/tempo:0.5.0 --version
+docker logs tempo
+```

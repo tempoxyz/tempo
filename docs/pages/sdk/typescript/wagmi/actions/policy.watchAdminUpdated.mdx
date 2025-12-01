@@ -1,0 +1,61 @@
+# `policy.watchAdminUpdated`
+
+Watches for policy admin update events on the TIP403 Registry.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { Actions } from 'tempo.ts/wagmi'
+import { config } from './wagmi.config'
+
+const unwatch = Actions.policy.watchAdminUpdated(config, {
+  onAdminUpdated: (args, log) => {
+    console.log('New admin:', args.newAdmin)
+    console.log('Policy ID:', args.policyId)
+    console.log('Updater:', args.updater)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onAdminUpdated
+
+- **Type:**
+
+```ts
+declare function onAdminUpdated(args: Args, log: Log): void
+
+type Args = {
+  /** Address of the new admin */
+  newAdmin: Address
+  /** ID of the policy */
+  policyId: bigint
+  /** Address that updated the admin */
+  updater: Address
+}
+```
+
+Callback to invoke when a policy admin is updated.
+
+
