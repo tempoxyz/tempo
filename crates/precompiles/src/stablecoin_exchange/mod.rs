@@ -4786,10 +4786,10 @@ mod tests {
             quoted_out_ask, expected_base_out,
             "quote_exact_in with is_bid=false should return base amount"
         );
-      
+
         Ok(())
     }
-  
+
     fn test_place_auto_creates_pair_post_allegretto() -> Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
         let mut exchange = StablecoinExchange::new(&mut storage);
