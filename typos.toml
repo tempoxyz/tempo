@@ -17,3 +17,5 @@ extend-exclude = [
 ba = "ba"
 DAA = "DAA"
 multline = "multline"
+froms = "froms"
+Nam = "Nam"

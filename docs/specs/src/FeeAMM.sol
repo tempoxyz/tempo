@@ -54,23 +54,19 @@ contract FeeAMM is IFeeAMM {
         pendingFeeSwapIn[poolId] += uint128(maxAmount);
     }
 
-    function releaseLiquidityPostTx(
-        address userToken,
-        address validatorToken,
-        uint256 refundAmount
-    ) internal {
+    function releaseLiquidityPostTx(address userToken, address validatorToken, uint256 refundAmount)
+        internal
+    {
         bytes32 poolId = getPoolId(userToken, validatorToken);
 
         // Track pending swap input
         pendingFeeSwapIn[poolId] -= uint128(refundAmount);
     }
 
-    function rebalanceSwap(
-        address userToken,
-        address validatorToken,
-        uint256 amountOut,
-        address to
-    ) external returns (uint256 amountIn) {
+    function rebalanceSwap(address userToken, address validatorToken, uint256 amountOut, address to)
+        external
+        returns (uint256 amountIn)
+    {
         bytes32 poolId = getPoolId(userToken, validatorToken);
 
         // Rebalancing swaps are always from validatorToken to userToken
