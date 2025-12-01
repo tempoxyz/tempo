@@ -12,6 +12,7 @@ use alloy_provider::fillers::{
     ChainIdFiller, GasFiller, JoinFill, NonceFiller, RecommendedFillers,
 };
 use alloy_rpc_types_eth::{AccessList, Block, Transaction};
+use alloy_signer::Signature;
 use alloy_signer_local::PrivateKeySigner;
 use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
@@ -357,37 +358,15 @@ impl NetworkWallet<TempoNetwork> for EthereumWallet {
     async fn sign_transaction_from(
         &self,
         sender: Address,
-        tx: TempoTypedTransaction,
+        mut tx: TempoTypedTransaction,
     ) -> alloy_signer::Result<TempoTxEnvelope> {
         let signer = self.signer_by_address(sender).ok_or_else(|| {
             alloy_signer::Error::other(format!("Missing signing credential for {sender}"))
         })?;
-        match tx {
-            TempoTypedTransaction::Legacy(mut t) => {
-                let sig = signer.sign_transaction(&mut t).await?;
-                Ok(t.into_signed(sig).into())
-            }
-            TempoTypedTransaction::Eip2930(mut t) => {
-                let sig = signer.sign_transaction(&mut t).await?;
-                Ok(t.into_signed(sig).into())
-            }
-            TempoTypedTransaction::Eip1559(mut t) => {
-                let sig = signer.sign_transaction(&mut t).await?;
-                Ok(t.into_signed(sig).into())
-            }
-            TempoTypedTransaction::Eip7702(mut t) => {
-                let sig = signer.sign_transaction(&mut t).await?;
-                Ok(t.into_signed(sig).into())
-            }
-            TempoTypedTransaction::FeeToken(mut t) => {
-                let sig = signer.sign_transaction(&mut t).await?;
-                Ok(t.into_signed(sig).into())
-            }
-            TempoTypedTransaction::AA(mut t) => {
-                let sig = signer.sign_transaction(&mut t).await?;
-                Ok(t.into_signed(sig.into()).into())
-            }
-        }
+        let sig = signer
+            .sign_transaction(dyn_signable_from_typed(&mut tx))
+            .await?;
+        Ok(typed_into_signed(tx, sig))
     }
 }
 
@@ -396,6 +375,32 @@ impl IntoWallet<TempoNetwork> for PrivateKeySigner {
 
     fn into_wallet(self) -> Self::NetworkWallet {
         self.into()
+    }
+}
+
+/// Converts a [`TempoTypedTransaction`] into a [`TempoTxEnvelope`] with the given signature.
+pub fn typed_into_signed(tx: TempoTypedTransaction, sig: Signature) -> TempoTxEnvelope {
+    match tx {
+        TempoTypedTransaction::Legacy(inner) => inner.into_signed(sig).into(),
+        TempoTypedTransaction::Eip2930(inner) => inner.into_signed(sig).into(),
+        TempoTypedTransaction::Eip1559(inner) => inner.into_signed(sig).into(),
+        TempoTypedTransaction::Eip7702(inner) => inner.into_signed(sig).into(),
+        TempoTypedTransaction::AA(inner) => inner.into_signed(sig.into()).into(),
+        TempoTypedTransaction::FeeToken(inner) => inner.into_signed(sig).into(),
+    }
+}
+
+/// Get inner typed transaction as a mutable reference to [`SignableTransaction<Signature>`].
+pub fn dyn_signable_from_typed(
+    tx: &mut TempoTypedTransaction,
+) -> &mut dyn SignableTransaction<Signature> {
+    match tx {
+        TempoTypedTransaction::Legacy(inner) => inner,
+        TempoTypedTransaction::Eip2930(inner) => inner,
+        TempoTypedTransaction::Eip1559(inner) => inner,
+        TempoTypedTransaction::Eip7702(inner) => inner,
+        TempoTypedTransaction::AA(inner) => inner,
+        TempoTypedTransaction::FeeToken(inner) => inner,
     }
 }
 

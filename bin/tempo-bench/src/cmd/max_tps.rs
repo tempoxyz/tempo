@@ -8,8 +8,9 @@ use reth_tracing::{
     tracing::{debug, error, info},
 };
 use tempo_alloy::{
-    TempoNetwork,
+    TempoNetwork, dyn_signable_from_typed,
     primitives::{TempoTxEnvelope, transaction::TempoTypedTransaction},
+    typed_into_signed,
 };
 
 use alloy::{
@@ -588,6 +589,13 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         .buffer_unordered(max_concurrent_requests)
         .try_collect::<Vec<_>>()
         .await?;
+    info!(
+        transactions = builders.len(),
+        transfers = transfers.load(Ordering::Relaxed),
+        swaps = swaps.load(Ordering::Relaxed),
+        orders = orders.load(Ordering::Relaxed),
+        "Generated transactions",
+    );
 
     info!(transactions = builders.len(), "Signing transactions");
     // Sign transactions in parallel using signers directly, so it doesn't require async
@@ -595,43 +603,12 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         .into_par_iter()
         .progress()
         .map(|(tx, signer)| -> eyre::Result<TempoTxEnvelope> {
-            match tx.build_unsigned()? {
-                TempoTypedTransaction::Legacy(mut inner) => {
-                    let sig = signer.sign_transaction_sync(&mut inner)?;
-                    Ok(inner.into_signed(sig).into())
-                }
-                TempoTypedTransaction::Eip2930(mut inner) => {
-                    let sig = signer.sign_transaction_sync(&mut inner)?;
-                    Ok(inner.into_signed(sig).into())
-                }
-                TempoTypedTransaction::Eip1559(mut inner) => {
-                    let sig = signer.sign_transaction_sync(&mut inner)?;
-                    Ok(inner.into_signed(sig).into())
-                }
-                TempoTypedTransaction::Eip7702(mut inner) => {
-                    let sig = signer.sign_transaction_sync(&mut inner)?;
-                    Ok(inner.into_signed(sig).into())
-                }
-                TempoTypedTransaction::AA(mut inner) => {
-                    let sig = signer.sign_transaction_sync(&mut inner)?;
-                    Ok(inner.into_signed(sig.into()).into())
-                }
-                TempoTypedTransaction::FeeToken(mut inner) => {
-                    let sig = signer.sign_transaction_sync(&mut inner)?;
-                    Ok(inner.into_signed(sig).into())
-                }
-            }
+            let mut tx = tx.build_unsigned()?;
+            let sig = signer.sign_transaction_sync(dyn_signable_from_typed(&mut tx))?;
+            Ok(typed_into_signed(tx, sig))
         })
         .map(|result| result.map(|tx| tx.encoded_2718()))
         .collect::<eyre::Result<Vec<_>>>()?;
-
-    info!(
-        transactions = transactions.len(),
-        transfers = transfers.load(Ordering::Relaxed),
-        swaps = swaps.load(Ordering::Relaxed),
-        orders = orders.load(Ordering::Relaxed),
-        "Generated transactions",
-    );
 
     Ok(transactions)
 }
