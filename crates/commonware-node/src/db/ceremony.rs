@@ -31,7 +31,7 @@ where
     /// This reads the current state (or creates a default if none exists),
     fn update_ceremony<F>(&mut self, epoch: u64, f: F) -> impl Future<Output = Result<()>> + Send
     where
-        F: FnOnce(&mut CeremonyState) + Send;
+        F: FnOnce(&mut ceremony::State) + Send;
 }
 
 impl<TContext> CeremonyStore<TContext> for Tx<TContext>
@@ -52,7 +52,7 @@ where
 
     async fn update_ceremony<F>(&mut self, epoch: u64, f: F) -> Result<()>
     where
-        F: FnOnce(&mut CeremonyState) + Send,
+        F: FnOnce(&mut ceremony::State) + Send,
     {
         let mut state = self.get_ceremony(epoch).await?.unwrap_or_default();
         f(&mut state);

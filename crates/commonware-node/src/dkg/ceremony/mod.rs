@@ -16,7 +16,8 @@ use commonware_p2p::{
     Receiver, Recipients, Sender,
     utils::mux::{MuxHandle, SubReceiver, SubSender},
 };
-use commonware_runtime::{Clock, Metrics, Storage};
+use commonware_runtime::{Clock, Metrics as RuntimeMetrics, Storage};
+use prometheus_client::metrics::counter::Counter;
 use commonware_utils::{max_faults, set::Ordered, union};
 use eyre::{WrapErr as _, bail, ensure};
 use futures::FutureExt as _;
@@ -24,19 +25,19 @@ use indexmap::IndexSet;
 use rand_core::CryptoRngCore;
 use tracing::{Level, debug, error, info, instrument, warn};
 
+use tempo_dkg_onchain_artifacts::{Ack, IntermediateOutcome};
+
 use crate::{
     consensus::block::Block,
     db::{CeremonyStore, Tx},
 };
 
-mod on_chain;
 mod payload;
 mod persisted;
 
-pub use on_chain::{IntermediateOutcome, PublicOutcome};
 pub use persisted::State;
 
-use payload::{Ack, Message, Payload, Share};
+use payload::{Message, Payload, Share};
 use persisted::Dealing;
 
 const ACK_NAMESPACE: &[u8] = b"_DKG_ACK";
@@ -116,7 +117,7 @@ where
         config: Config,
     ) -> eyre::Result<Self>
     where
-        TContext: Clock + CryptoRngCore + Metrics + Storage,
+        TContext: Clock + CryptoRngCore + RuntimeMetrics + Storage,
     {
         let (sender, receiver) = mux
             .register(config.epoch)
@@ -150,13 +151,13 @@ where
             info!("found a previous ceremony state written to disk; recovering it");
             for outcome in &recovered.outcomes {
                 let ack_indices = outcome
-                    .acks
+                    .acks()
                     .iter()
                     .filter_map(|ack| {
-                        let idx = players_indexed.get_index_of(&ack.player);
+                        let idx = players_indexed.get_index_of(ack.player());
                         if idx.is_none() {
                             warn!(
-                                player = %ack.player,
+                                player = %ack.player(),
                                 "ack for player recovered from disk not among players of this ceremony",
                             );
                         }
@@ -166,10 +167,10 @@ where
 
                 if let Err(error) = arbiter
                     .commitment(
-                        outcome.dealer.clone(),
-                        outcome.commitment.clone(),
+                        outcome.dealer().clone(),
+                        outcome.commitment().clone(),
                         ack_indices,
-                        outcome.reveals.clone(),
+                        outcome.reveals().to_vec(),
                     )
                     .wrap_err("failed to verify and track commitment")
                 {
@@ -194,11 +195,11 @@ where
                     config.players.clone(),
                 );
                 for ack in dealing.acks.values() {
-                    dkg_dealer.ack(ack.player.clone()).wrap_err_with(|| {
+                    dkg_dealer.ack(ack.player().clone()).wrap_err_with(|| {
                         format!(
                             "failed updating dealer information with ack for \
                              player `{player}` recovered from disk",
-                            player = ack.player,
+                            player = ack.player(),
                         )
                     })?;
                 }
@@ -217,7 +218,11 @@ where
             tx.set_ceremony(
                 config.epoch,
                 State {
-                    num_players: config.players.len() as u64,
+                    num_players: config
+                        .players
+                        .len()
+                        .try_into()
+                        .expect("number of players exceeds u16::MAX"),
                     ..State::default()
                 },
             )?;
@@ -271,7 +276,7 @@ where
         tx: &mut Tx<TContext>,
     ) -> eyre::Result<()>
     where
-        TContext: Clock + Metrics + Storage,
+        TContext: Clock + RuntimeMetrics + Storage,
     {
         let Some(dealer_me) = &mut self.dealer_me else {
             debug!("not a dealer, not requesting acks");
@@ -384,7 +389,7 @@ where
         tx: &mut Tx<TContext>,
     ) -> eyre::Result<()>
     where
-        TContext: Clock + Metrics + Storage,
+        TContext: Clock + RuntimeMetrics + Storage,
     {
         while let Some(msg) = self.receiver.recv().now_or_never() {
             let (peer, mut msg) = msg.wrap_err("receiver p2p channel was closed")?;
@@ -418,7 +423,7 @@ where
         fields(
             epoch = %self.epoch(),
             %peer,
-            player = %ack.player,
+            player = %ack.player(),
         ),
         err(level = Level::WARN),
         ret,
@@ -430,14 +435,14 @@ where
         ack: Ack,
     ) -> eyre::Result<&'static str>
     where
-        TContext: Clock + Metrics + Storage,
+        TContext: Clock + RuntimeMetrics + Storage,
     {
         let Some(dealer_me) = &mut self.dealer_me else {
             return Ok("not a dealer, dropping ack");
         };
 
         ensure!(
-            ack.player == peer,
+            ack.player() == &peer,
             "player recorded in ack does not match peer that sent it; dropping ack",
         );
 
@@ -497,7 +502,7 @@ where
         Share { commitment, share }: Share,
     ) -> eyre::Result<&'static str>
     where
-        TContext: Clock + Metrics + Storage,
+        TContext: Clock + RuntimeMetrics + Storage,
     {
         let Some(player_me) = &mut self.player_me else {
             return Ok("not a player, dropping share");
@@ -551,18 +556,21 @@ where
         block: &Block,
     ) -> eyre::Result<()>
     where
-        TContext: Clock + Metrics + Storage,
+        TContext: Clock + RuntimeMetrics + Storage,
     {
-        let Some(block_outcome) = block.try_read_ceremony_deal_outcome() else {
-            info!("block contained no usable intermediate deal outcome");
-            return Ok(());
+        let block_outcome = match block.try_read_ceremony_deal_outcome() {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                info!(%e, "block contained no usable intermediate deal outcome");
+                return Ok(());
+            }
         };
 
         // Ensure the outcome is for the current round.
         ensure!(
-            block_outcome.epoch == self.epoch(),
+            block_outcome.epoch() == self.epoch(),
             "deal outcome in block was for epoch `{}`, but current dkg ceremony is for epoch `{}`",
-            block_outcome.epoch,
+            block_outcome.epoch(),
             self.epoch(),
         );
 
@@ -573,29 +581,29 @@ where
         );
 
         // Verify all ack signatures
-        if !block_outcome.acks.iter().all(|ack| {
-            self.players_indexed.contains(&ack.player)
+        if !block_outcome.acks().iter().all(|ack| {
+            self.players_indexed.contains(ack.player())
                 && ack.verify(
                     &union(&self.config.namespace, ACK_NAMESPACE),
-                    &ack.player,
+                    ack.player(),
                     self.epoch(),
-                    &block_outcome.dealer,
-                    &block_outcome.commitment,
+                    block_outcome.dealer(),
+                    block_outcome.commitment(),
                 )
         }) {
-            self.arbiter.disqualify(block_outcome.dealer);
+            self.arbiter.disqualify(block_outcome.dealer().clone());
             bail!("invalid ack signatures; disqualifying dealer");
         }
 
         // Check dealer commitment
         let ack_indices = block_outcome
-            .acks
+            .acks()
             .iter()
             .filter_map(|ack| {
-                let idx = self.players_indexed.get_index_of(&ack.player);
+                let idx = self.players_indexed.get_index_of(ack.player());
                 if idx.is_none() {
                     warn!(
-                        player = %ack.player,
+                        player = %ack.player(),
                         "ack for player stored on disk not among players of this ceremony",
                     );
                 }
@@ -605,19 +613,19 @@ where
 
         self.arbiter
             .commitment(
-                block_outcome.dealer.clone(),
-                block_outcome.commitment.clone(),
+                block_outcome.dealer().clone(),
+                block_outcome.commitment().clone(),
                 ack_indices,
-                block_outcome.reveals.clone(),
+                block_outcome.reveals().to_vec(),
             )
             .wrap_err("failed to track dealer outcome in arbiter")?;
 
-        let block_dealer = block_outcome.dealer.clone();
+        let block_dealer = block_outcome.dealer().clone();
         tx.update_ceremony(self.epoch(), |info| {
             if let Some(pos) = info
                 .outcomes
                 .iter()
-                .position(|outcome| outcome.dealer == block_outcome.dealer)
+                .position(|outcome| outcome.dealer() == block_outcome.dealer())
             {
                 info.outcomes[pos] = block_outcome.clone();
             } else {
@@ -654,7 +662,7 @@ where
         tx: &mut Tx<TContext>,
     ) -> eyre::Result<()>
     where
-        TContext: Clock + Metrics + Storage,
+        TContext: Clock + RuntimeMetrics + Storage,
     {
         let Some(dealer_me) = &mut self.dealer_me else {
             debug!("not a dealer; skipping construction of deal outcome");
@@ -677,7 +685,11 @@ where
         );
 
         let dealing_outcome = Some(IntermediateOutcome::new(
-            self.config.players.len() as u64,
+            self.config
+                .players
+                .len()
+                .try_into()
+                .expect("number of players exceeds u16::MAX"),
             &self.config.me,
             &union(&self.config.namespace, OUTCOME_NAMESPACE),
             self.config.epoch,
@@ -786,10 +798,6 @@ where
         })
     }
 
-    pub(super) fn config(&self) -> &Config {
-        &self.config
-    }
-
     pub(super) fn epoch(&self) -> Epoch {
         self.config.epoch
     }
@@ -797,6 +805,22 @@ where
     pub(super) fn deal_outcome(&self) -> Option<&IntermediateOutcome> {
         let dealer_me = self.dealer_me.as_ref()?;
         dealer_me.outcome.as_ref()
+    }
+
+    pub(super) fn dealers(&self) -> &Ordered<PublicKey> {
+        &self.config.dealers
+    }
+
+    pub(super) fn players(&self) -> &Ordered<PublicKey> {
+        &self.config.players
+    }
+
+    pub(super) fn is_dealer(&self) -> bool {
+        self.dealer_me.is_some()
+    }
+
+    pub(super) fn is_player(&self) -> bool {
+        self.player_me.is_some()
     }
 }
 
@@ -850,5 +874,42 @@ impl Role {
             } => (polynomial, Some(share)),
             Self::Verifier { public: polynomial } => (polynomial, None),
         }
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct Metrics {
+    failures: Counter,
+    successes: Counter,
+}
+
+impl Metrics {
+    /// Construct and register the ceremony-related metrics on `context`.
+    pub(super) fn register<C: RuntimeMetrics>(context: &C) -> Self {
+        let failures = Counter::default();
+        let successes = Counter::default();
+
+        context.register(
+            "ceremony_failures",
+            "the number of failed ceremonies a node participated in",
+            failures.clone(),
+        );
+        context.register(
+            "ceremony_successes",
+            "the number of successful ceremonies a node participated in",
+            successes.clone(),
+        );
+
+        Self { failures, successes }
+    }
+
+    /// Increments the failed ceremonies counter.
+    pub(super) fn one_more_failure(&self) {
+        self.failures.inc();
+    }
+
+    /// Increments the successful ceremonies counter.
+    pub(super) fn one_more_success(&self) {
+        self.successes.inc();
     }
 }

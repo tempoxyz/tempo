@@ -53,6 +53,9 @@ where
 
     /// Remove the previous epoch state for the given hardfork regime.
     fn remove_previous_epoch(&mut self, regime: HardforkRegime);
+
+    /// Remove the current epoch state for the given hardfork regime.
+    fn remove_epoch(&mut self, regime: HardforkRegime);
 }
 
 impl<TContext> DkgEpochStore<TContext> for Tx<TContext>
@@ -89,5 +92,9 @@ where
 
     fn remove_previous_epoch(&mut self, regime: HardforkRegime) {
         self.remove(previous_epoch_key(regime))
+    }
+
+    fn remove_epoch(&mut self, regime: HardforkRegime) {
+        self.remove(current_epoch_key(regime))
     }
 }
