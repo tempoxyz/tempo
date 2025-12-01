@@ -1,5 +1,6 @@
 use crate::{
     aa_2d_pool::AA2dNonceKeys,
+    amm::AmmLiquidityCache,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use alloy_consensus::Transaction;
@@ -37,6 +38,8 @@ pub struct TempoTransactionValidator<Client> {
     pub(crate) aa_nonce_keys: AA2dNonceKeys,
     /// Maximum allowed `valid_after` offset for AA txs.
     pub(crate) aa_valid_after_max_secs: u64,
+    /// Cache of AMM liquidity for validator tokens.
+    pub(crate) amm_liquidity_cache: AmmLiquidityCache,
 }
 
 impl<Client> TempoTransactionValidator<Client>
@@ -47,12 +50,24 @@ where
         inner: EthTransactionValidator<Client, TempoPooledTransaction>,
         aa_nonce_keys: AA2dNonceKeys,
         aa_valid_after_max_secs: u64,
+        amm_liquidity_cache: AmmLiquidityCache,
     ) -> Self {
         Self {
             inner,
             aa_nonce_keys,
             aa_valid_after_max_secs,
+            amm_liquidity_cache,
         }
+    }
+
+    /// Obtains a clone of the shared [`AmmLiquidityCache`].
+    pub fn amm_liquidity_cache(&self) -> AmmLiquidityCache {
+        self.amm_liquidity_cache.clone()
+    }
+
+    /// Returns the configured client
+    pub fn client(&self) -> &Client {
+        self.inner.client()
     }
 
     /// Get the 2D nonce from state for (address, nonce_key) and the slot
@@ -318,6 +333,24 @@ where
             );
         }
 
+        match self
+            .amm_liquidity_cache
+            .has_enough_liquidity(fee_token, cost, &state_provider)
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(
+                        TempoPoolTransactionError::InsufficientLiquidity(fee_token),
+                    ),
+                );
+            }
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        }
+
         match self.inner.validate_one(origin, transaction) {
             TransactionValidationOutcome::Valid {
                 balance,
@@ -470,7 +503,7 @@ mod tests {
     use super::*;
     use alloy_consensus::Transaction;
     use alloy_eips::Decodable2718;
-    use alloy_primitives::{U256, hex};
+    use alloy_primitives::{B256, U256, hex};
     use reth_primitives_traits::SignedTransaction;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_transaction_pool::{
@@ -576,11 +609,14 @@ mod tests {
             transaction.sender(),
             ExtendedAccount::new(transaction.nonce(), alloy_primitives::U256::ZERO),
         );
+        provider.add_block(B256::random(), Default::default());
 
-        let inner = EthTransactionValidatorBuilder::new(provider)
+        let inner = EthTransactionValidatorBuilder::new(provider.clone())
             .disable_balance_check()
             .build(InMemoryBlobStore::default());
-        let validator = TempoTransactionValidator::new(inner, Default::default(), 3600);
+        let amm_cache =
+            AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
+        let validator = TempoTransactionValidator::new(inner, Default::default(), 3600, amm_cache);
 
         // Set the tip timestamp by simulating a new head block
         let mock_block = create_mock_block(tip_timestamp);

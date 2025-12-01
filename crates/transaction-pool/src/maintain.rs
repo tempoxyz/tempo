@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 use tempo_primitives::{AASigned, TempoPrimitives};
-use tracing::debug;
+use tracing::{debug, error};
 
 /// Spawns a background task that evicts expired AA transactions.
 ///
@@ -132,5 +132,29 @@ where
         trace!(target: "txpool::2d",  ?updates, "update tracked 2d nonce changes");
 
         pool.on_aa_2d_nonce_changes(updates);
+    }
+}
+
+/// An endless future that updates the [`crate::amm::AmmLiquidityCache`] based
+/// on the storage changes of the `FeeManager` precompile.
+pub async fn maintain_amm_cache<Client>(pool: TempoTransactionPool<Client>)
+where
+    Client: StateProviderFactory
+        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + CanonStateSubscriptions<Primitives = TempoPrimitives>
+        + 'static,
+{
+    let amm_cache = pool.amm_liquidity_cache();
+    let mut events = pool.client().canonical_state_stream();
+
+    while let Some(notification) = events.next().await {
+        let tip = notification.committed();
+
+        amm_cache.on_new_state(tip.execution_outcome());
+        for block in tip.blocks_iter() {
+            if let Err(err) = amm_cache.on_new_block(block.sealed_header(), pool.client()) {
+                error!(target: "txpool", ?err, "AMM liquidity cache update failed");
+            }
+        }
     }
 }
