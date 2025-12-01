@@ -1,7 +1,11 @@
 mod ceremony;
 pub use ceremony::CeremonyStore;
+mod dkg_outcome;
+pub use dkg_outcome::DkgOutcomeStore;
 mod epoch;
 pub use epoch::DkgEpochStore;
+mod validators;
+pub use validators::ValidatorsStore;
 
 use std::{
     collections::HashMap,
@@ -20,6 +24,9 @@ use commonware_storage::metadata::Metadata;
 use commonware_utils::sequence::FixedBytes;
 
 type B256 = FixedBytes<32>;
+
+/// Key used to store the node version that last wrote to the database.
+const NODE_VERSION_KEY: &str = "_node_version";
 
 /// A database wrapper around `Metadata<B256, Bytes>` that provides transactional operations.
 ///
@@ -122,6 +129,22 @@ where
         }
     }
 
+    /// Get raw bytes from the store without deserialization.
+    async fn get_raw<K>(&mut self, key: K) -> Result<Option<Bytes>, eyre::Error>
+    where
+        K: AsRef<[u8]>,
+    {
+        let key_hash = key_to_b256(key.as_ref());
+
+        // Check pending writes first
+        if let Some(value_bytes_opt) = self.writes.get(&key_hash) {
+            return Ok(value_bytes_opt.clone());
+        }
+
+        let store = self.store.read().await;
+        Ok(store.get(&key_hash).cloned())
+    }
+
     /// Get a value from the store, deserializing it.
     ///
     /// This checks pending writes first, then falls back to the store.
@@ -130,23 +153,11 @@ where
         K: AsRef<[u8]>,
         V: Read<Cfg = ()>,
     {
-        let key_hash = key_to_b256(key.as_ref());
-
-        // Check pending writes first
-        let Some(value_bytes_opt) = self.writes.get(&key_hash) else {
-            let store = self.store.read().await;
-            let Some(value_bytes) = store.get(&key_hash) else {
-                return Ok(None);
-            };
-            return Ok(Some(deserialize_from_bytes::<V>(value_bytes)?));
-        };
-
-        // If it's Some, deserialize the value; if None, this key was deleted
-        let Some(value_bytes) = value_bytes_opt else {
+        let Some(value_bytes) = self.get_raw(key).await? else {
             return Ok(None);
         };
 
-        Ok(Some(deserialize_from_bytes::<V>(value_bytes)?))
+        Ok(Some(deserialize_from_bytes::<V>(&value_bytes)?))
     }
 
     /// Insert a key-value pair into the transaction's write buffer.
@@ -175,7 +186,25 @@ where
         self.writes.insert(key_hash, None);
     }
 
-    /// Commit all buffered writes to the store and disk.
+    /// Get the node version that last wrote to this database.
+    ///
+    /// Returns None if no version has been written yet (new database).
+    pub async fn get_node_version(&mut self) -> Result<Option<String>, eyre::Error> {
+        Ok(self
+            .get_raw(NODE_VERSION_KEY)
+            .await?
+            .and_then(|bytes| String::from_utf8(bytes.to_vec()).ok()))
+    }
+
+    /// Set the current node version in the database.
+    ///
+    /// This should be called when the database schema is initialized or migrated
+    /// to track which node version last modified the database.
+    pub fn set_node_version(&mut self, version: String) -> Result<(), eyre::Error> {
+        self.insert(NODE_VERSION_KEY, version.into_bytes())
+    }
+
+    /// Commit all buffered writes to the store and sync.
     pub async fn commit(mut self) -> Result<(), eyre::Error> {
         let mut store = self.store.write().await;
 

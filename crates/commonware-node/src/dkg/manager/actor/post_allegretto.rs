@@ -536,33 +536,33 @@ where
 ///   the participants in the DKG outcome), the players of the next ceremony,
 ///   and the syncing players, who will be players in the ceremony thereafter.
 #[derive(Clone, Debug)]
-pub(super) struct EpochState {
-    pub(super) dkg_outcome: DkgOutcome,
-    pub(super) validator_state: ValidatorState,
+pub struct EpochState {
+    pub dkg_outcome: DkgOutcome,
+    pub validator_state: ValidatorState,
 }
 
 impl EpochState {
-    pub(super) fn epoch(&self) -> Epoch {
+    pub fn epoch(&self) -> Epoch {
         self.dkg_outcome.epoch
     }
 
-    pub(super) fn participants(&self) -> &Ordered<PublicKey> {
+    pub fn participants(&self) -> &Ordered<PublicKey> {
         &self.dkg_outcome.participants
     }
 
-    pub(super) fn public_polynomial(&self) -> &Public<MinSig> {
+    pub fn public_polynomial(&self) -> &Public<MinSig> {
         &self.dkg_outcome.public
     }
 
-    pub(super) fn private_share(&self) -> &Option<Share> {
+    pub fn private_share(&self) -> &Option<Share> {
         &self.dkg_outcome.share
     }
 
-    pub(super) fn dealer_pubkeys(&self) -> Ordered<PublicKey> {
+    pub fn dealer_pubkeys(&self) -> Ordered<PublicKey> {
         self.validator_state.dealer_pubkeys()
     }
 
-    pub(super) fn player_pubkeys(&self) -> Ordered<PublicKey> {
+    pub fn player_pubkeys(&self) -> Ordered<PublicKey> {
         self.validator_state.player_pubkeys()
     }
 }

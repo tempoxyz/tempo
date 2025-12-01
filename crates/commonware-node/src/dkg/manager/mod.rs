@@ -11,14 +11,14 @@ use futures::channel::mpsc;
 use rand_core::CryptoRngCore;
 use tempo_node::TempoFullNode;
 
-mod actor;
+pub mod actor;
 mod ingress;
-mod validators;
+pub mod validators;
 
 pub(crate) use actor::Actor;
+pub use actor::DkgOutcome;
 pub(crate) use ingress::Mailbox;
-
-use validators::DecodedValidator;
+pub use validators::{DecodedValidator, ValidatorState};
 
 use ingress::{Command, Message};
 

@@ -6,8 +6,19 @@ use commonware_codec::{EncodeSize, Read, Write};
 use commonware_runtime::{Clock, Metrics, Storage};
 use eyre::Result;
 
-const PRE_ALLEGRETTO_EPOCH_KEY: &str = "pre_allegretto_epoch";
-const POST_ALLEGRETTO_EPOCH_KEY: &str = "post_allegretto_epoch";
+fn current_epoch_key(regime: HardforkRegime) -> &'static str {
+    match regime {
+        HardforkRegime::PreAllegretto => "pre_allegretto_epoch_current",
+        HardforkRegime::PostAllegretto => "post_allegretto_epoch_current",
+    }
+}
+
+fn previous_epoch_key(regime: HardforkRegime) -> &'static str {
+    match regime {
+        HardforkRegime::PreAllegretto => "pre_allegretto_epoch_previous",
+        HardforkRegime::PostAllegretto => "post_allegretto_epoch_previous",
+    }
+}
 
 /// Trait for epoch-related database operations.
 pub trait DkgEpochStore<TContext>
@@ -26,6 +37,22 @@ where
     fn set_epoch<S>(&mut self, regime: HardforkRegime, state: S) -> Result<()>
     where
         S: Write + EncodeSize;
+
+    /// Get the previous epoch state for the given hardfork regime.
+    fn get_previous_epoch<S>(
+        &mut self,
+        regime: HardforkRegime,
+    ) -> impl Future<Output = Result<Option<S>>> + Send
+    where
+        S: Read<Cfg = ()>;
+
+    /// Set the previous epoch state for the given hardfork regime.
+    fn set_previous_epoch<S>(&mut self, regime: HardforkRegime, state: S) -> Result<()>
+    where
+        S: Write + EncodeSize;
+
+    /// Remove the previous epoch state for the given hardfork regime.
+    fn remove_previous_epoch(&mut self, regime: HardforkRegime);
 }
 
 impl<TContext> DkgEpochStore<TContext> for Tx<TContext>
@@ -36,21 +63,31 @@ where
     where
         S: Read<Cfg = ()>,
     {
-        let key = match regime {
-            HardforkRegime::PreAllegretto => PRE_ALLEGRETTO_EPOCH_KEY,
-            HardforkRegime::PostAllegretto => POST_ALLEGRETTO_EPOCH_KEY,
-        };
-        self.get(key).await
+        self.get(current_epoch_key(regime)).await
     }
 
     fn set_epoch<S>(&mut self, regime: HardforkRegime, state: S) -> Result<()>
     where
         S: Write + EncodeSize,
     {
-        let key = match regime {
-            HardforkRegime::PreAllegretto => PRE_ALLEGRETTO_EPOCH_KEY,
-            HardforkRegime::PostAllegretto => POST_ALLEGRETTO_EPOCH_KEY,
-        };
-        self.insert(key, state)
+        self.insert(current_epoch_key(regime), state)
+    }
+
+    async fn get_previous_epoch<S>(&mut self, regime: HardforkRegime) -> Result<Option<S>>
+    where
+        S: Read<Cfg = ()>,
+    {
+        self.get(previous_epoch_key(regime)).await
+    }
+
+    fn set_previous_epoch<S>(&mut self, regime: HardforkRegime, state: S) -> Result<()>
+    where
+        S: Write + EncodeSize,
+    {
+        self.insert(previous_epoch_key(regime), state)
+    }
+
+    fn remove_previous_epoch(&mut self, regime: HardforkRegime) {
+        self.remove(previous_epoch_key(regime))
     }
 }

@@ -481,11 +481,11 @@ where
 
 /// The state with all participants, public and private key share for an epoch.
 #[derive(Clone)]
-pub(super) struct EpochState {
-    epoch: Epoch,
-    participants: Ordered<PublicKey>,
-    public: Public<MinSig>,
-    share: Option<Share>,
+pub struct EpochState {
+    pub epoch: Epoch,
+    pub participants: Ordered<PublicKey>,
+    pub public: Public<MinSig>,
+    pub share: Option<Share>,
 }
 
 impl std::fmt::Debug for EpochState {
@@ -500,19 +500,19 @@ impl std::fmt::Debug for EpochState {
 }
 
 impl EpochState {
-    pub(super) fn epoch(&self) -> Epoch {
+    pub fn epoch(&self) -> Epoch {
         self.epoch
     }
 
-    pub(super) fn participants(&self) -> &Ordered<PublicKey> {
+    pub fn participants(&self) -> &Ordered<PublicKey> {
         &self.participants
     }
 
-    pub(super) fn public_polynomial(&self) -> &Public<MinSig> {
+    pub fn public_polynomial(&self) -> &Public<MinSig> {
         &self.public
     }
 
-    pub(super) fn private_share(&self) -> &Option<Share> {
+    pub fn private_share(&self) -> &Option<Share> {
         &self.share
     }
 }

@@ -1,5 +1,5 @@
 pub mod ceremony;
-pub(crate) mod manager;
+pub mod manager;
 
 #[derive(Debug, Clone, Copy)]
 pub enum HardforkRegime {
