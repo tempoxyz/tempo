@@ -459,10 +459,9 @@ where
             let mut refunded_accounts = 0;
 
             for authorization in &aa_tx_env.aa_authorization_list {
-                // Lazily recover authority (cached after first access)
-                let authority = match authorization.authority() {
-                    Some(addr) => addr,
-                    None => continue,
+                let Some(authority) = authorization.authority() else {
+                    // invalid signature, we need to skip
+                    continue;
                 };
 
                 // 1. Verify the chain id is either 0 or the chain's current ID.
