@@ -1,12 +1,78 @@
-use crate::rpc::TempoTransactionRequest;
+use crate::{TempoNetwork, rpc::TempoTransactionRequest};
 use alloy_network::{Network, TransactionBuilder};
 use alloy_primitives::U256;
 use alloy_provider::{
-    SendableTx,
-    fillers::{FillerControlFlow, TxFiller},
+    Identity, ProviderBuilder, SendableTx,
+    fillers::{FillerControlFlow, NonceFiller, RecommendedFillers, TxFiller},
 };
 use alloy_transport::TransportResult;
 use tempo_primitives::subblock::has_sub_block_nonce_key_prefix;
+
+#[derive(Clone, Debug, Default)]
+pub struct TempoNonceFiller {
+    inner: TempoNonceFillerVariant,
+}
+
+impl TempoNonceFiller {
+    fn enable_random_2d_nonce(&mut self) {
+        self.inner = TempoNonceFillerVariant::Random2D(Random2DNonceFiller::default());
+    }
+}
+
+impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for TempoNonceFiller {
+    type Fillable = u64;
+
+    fn status(&self, tx: &N::TransactionRequest) -> FillerControlFlow {
+        match &self.inner {
+            TempoNonceFillerVariant::Default(inner) => TxFiller::<N>::status(inner, tx),
+            TempoNonceFillerVariant::Random2D(inner) => TxFiller::<N>::status(inner, tx),
+        }
+    }
+
+    fn fill_sync(&self, tx: &mut SendableTx<N>) {
+        match &self.inner {
+            TempoNonceFillerVariant::Default(inner) => inner.fill_sync(tx),
+            TempoNonceFillerVariant::Random2D(inner) => inner.fill_sync(tx),
+        }
+    }
+
+    async fn prepare<P>(
+        &self,
+        provider: &P,
+        tx: &N::TransactionRequest,
+    ) -> TransportResult<Self::Fillable>
+    where
+        P: alloy_provider::Provider<N>,
+    {
+        match &self.inner {
+            TempoNonceFillerVariant::Default(inner) => inner.prepare(provider, tx).await,
+            TempoNonceFillerVariant::Random2D(inner) => inner.prepare(provider, tx).await,
+        }
+    }
+
+    async fn fill(
+        &self,
+        fillable: Self::Fillable,
+        tx: SendableTx<N>,
+    ) -> TransportResult<SendableTx<N>> {
+        match &self.inner {
+            TempoNonceFillerVariant::Default(inner) => inner.fill(fillable, tx).await,
+            TempoNonceFillerVariant::Random2D(inner) => inner.fill(fillable, tx).await,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum TempoNonceFillerVariant {
+    Default(NonceFiller),
+    Random2D(Random2DNonceFiller),
+}
+
+impl Default for TempoNonceFillerVariant {
+    fn default() -> Self {
+        Self::Default(NonceFiller::default())
+    }
+}
 
 /// A [`TxFiller`] that populates the [`TxAA`](`tempo_primitives::TxAA`) transaction with a random `nonce_key`, and `nonce` set to `0`.
 ///
@@ -15,7 +81,7 @@ use tempo_primitives::subblock::has_sub_block_nonce_key_prefix;
 pub struct Random2DNonceFiller;
 
 impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for Random2DNonceFiller {
-    type Fillable = ();
+    type Fillable = u64;
 
     fn status(&self, tx: &N::TransactionRequest) -> FillerControlFlow {
         if tx.nonce().is_some() || tx.nonce_key.is_some() {
@@ -46,7 +112,7 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for R
     where
         P: alloy_provider::Provider<N>,
     {
-        Ok(())
+        Ok(0)
     }
 
     async fn fill(
@@ -55,6 +121,23 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for R
         tx: SendableTx<N>,
     ) -> TransportResult<SendableTx<N>> {
         Ok(tx)
+    }
+}
+
+pub trait Random2DNoncesProviderExt {
+    fn with_random_nonces(self) -> Self;
+}
+
+impl Random2DNoncesProviderExt
+    for ProviderBuilder<
+        Identity,
+        <TempoNetwork as RecommendedFillers>::RecommendedFillers,
+        TempoNetwork,
+    >
+{
+    fn with_random_nonces(self) -> Self {
+        self.filler_mut().right().left().enable_random_2d_nonce();
+        self
     }
 }
 
