@@ -172,7 +172,7 @@ impl MaxTpsArgs {
         }
 
         info!(accounts = self.accounts, "Creating signers");
-        let signer_provider_manager = Arc::new(SignerProviderManager::new(
+        let signer_provider_manager = SignerProviderManager::new(
             self.mnemonic.resolve(),
             self.from_mnemonic_index,
             accounts,
@@ -193,7 +193,7 @@ impl MaxTpsArgs {
                     .connect_http(target_url)
                     .erased()
             }),
-        ));
+        );
         let signer_providers = signer_provider_manager.signer_providers();
 
         if self.clear_txpool {
@@ -251,7 +251,7 @@ impl MaxTpsArgs {
         let transactions = generate_transactions(GenerateTransactionsInput {
             total_txs,
             accounts,
-            signer_provider_manager: Arc::clone(&signer_provider_manager),
+            signer_provider_manager: signer_provider_manager.clone(),
             max_concurrent_requests: self.max_concurrent_requests,
             max_concurrent_transactions: self.max_concurrent_transactions,
             tip20_weight,
@@ -264,7 +264,7 @@ impl MaxTpsArgs {
         // Send transactions
         let mut pending_txs = send_transactions(
             transactions,
-            signer_provider_manager,
+            signer_provider_manager.clone(),
             self.max_concurrent_requests,
             self.tps,
             sleep(Duration::from_secs(self.duration)),
@@ -370,7 +370,7 @@ impl MnemonicArg {
 /// Awaits pending transactions with up to `tps` per second and `max_concurrent_requests` simultaneous in-flight requests. Stops when `deadline` future resolves.
 async fn send_transactions<F: TxFiller<TempoNetwork> + 'static>(
     transactions: Vec<Vec<u8>>,
-    signer_provider_manager: Arc<SignerProviderManager<F>>,
+    signer_provider_manager: SignerProviderManager<F>,
     max_concurrent_requests: usize,
     tps: u64,
     deadline: Sleep,
@@ -861,7 +861,7 @@ async fn assert_receipts<R: ReceiptResponse, F: Future<Output = eyre::Result<R>>
 struct GenerateTransactionsInput<F: TxFiller<TempoNetwork>> {
     total_txs: u64,
     accounts: u64,
-    signer_provider_manager: Arc<SignerProviderManager<F>>,
+    signer_provider_manager: SignerProviderManager<F>,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
     tip20_weight: u64,

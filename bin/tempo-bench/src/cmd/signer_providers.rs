@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use alloy::{
     providers::{
         DynProvider, Provider, ProviderBuilder, RootProvider,
@@ -18,7 +20,13 @@ type SignedProviderFactory = Box<
 >;
 
 /// Manages signers and target URLs for creating providers.
-pub(crate) struct SignerProviderManager<F: TxFiller<TempoNetwork>> {
+#[derive(Debug, Clone)]
+pub(crate) struct SignerProviderManager<F: TxFiller<TempoNetwork>>(
+    Arc<SignerProviderManagerInner<F>>,
+);
+
+#[derive(Debug)]
+struct SignerProviderManagerInner<F: TxFiller<TempoNetwork>> {
     /// List of private key signers.
     signers: Vec<PrivateKeySigner>,
     /// List of target URLs.
@@ -69,17 +77,18 @@ impl<F: TxFiller<TempoNetwork> + 'static> SignerProviderManager<F> {
                 (signer, provider)
             })
             .collect();
-        Self {
+        Self(Arc::new(SignerProviderManagerInner {
             signers,
             target_urls,
             unsigned_providers,
             signer_providers,
-        }
+        }))
     }
 
     /// Returns a list of providers (one per target URL) with no signers and fillers set.
     pub fn target_url_providers(&self) -> Vec<(&Url, DynProvider<TempoNetwork>)> {
-        self.target_urls
+        self.0
+            .target_urls
             .iter()
             .map(|target_url| {
                 let provider = ProviderBuilder::default()
@@ -92,12 +101,13 @@ impl<F: TxFiller<TempoNetwork> + 'static> SignerProviderManager<F> {
 
     /// Returns a list of providers (one per signer) with random target URLs.
     pub fn signer_providers(&self) -> &[(PrivateKeySigner, DynProvider<TempoNetwork>)] {
-        &self.signer_providers
+        &self.0.signer_providers
     }
 
     /// Returns a random signer without signing capabilities.
     pub fn random_unsigned_provider(&self) -> BenchProvider<F> {
-        self.unsigned_providers
+        self.0
+            .unsigned_providers
             .choose(&mut rand::rng())
             .unwrap()
             .clone()
@@ -105,6 +115,6 @@ impl<F: TxFiller<TempoNetwork> + 'static> SignerProviderManager<F> {
 
     /// Returns a random signer.
     pub fn random_signer(&self) -> &PrivateKeySigner {
-        self.signers.choose(&mut rand::rng()).unwrap()
+        self.0.signers.choose(&mut rand::rng()).unwrap()
     }
 }
