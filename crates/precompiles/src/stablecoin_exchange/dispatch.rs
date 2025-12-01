@@ -5,9 +5,7 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::{
-    Precompile,
-    error::TempoPrecompileError,
-    fill_precompile_output, input_cost, mutate, mutate_void,
+    Precompile, fill_precompile_output, input_cost, mutate, mutate_void,
     stablecoin_exchange::{IStablecoinExchange, StablecoinExchange},
     storage::PrecompileStorageProvider,
     unknown_selector, view,
@@ -90,13 +88,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
 
             IStablecoinExchange::createPairCall::SELECTOR => {
                 mutate::<IStablecoinExchange::createPairCall>(calldata, msg_sender, |_s, call| {
-                    if self.storage.spec().is_allegretto() {
-                        Err(TempoPrecompileError::UnknownFunctionSelector(
-                            IStablecoinExchange::createPairCall::SELECTOR,
-                        ))
-                    } else {
-                        self.create_pair(call.base)
-                    }
+                    self.create_pair(call.base)
                 })
             }
             IStablecoinExchange::withdrawCall::SELECTOR => {
@@ -498,25 +490,6 @@ mod tests {
         let result = exchange.call(&Bytes::from(calldata), sender);
         // Ok indicates successful dispatch (either success or TempoPrecompileError)
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_create_pair_call_disabled_post_allegretto() {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize().unwrap();
-
-        let sender = Address::from([1u8; 20]);
-        let base = Address::from([2u8; 20]);
-
-        let call = IStablecoinExchange::createPairCall { base };
-        let calldata = call.abi_encode();
-
-        // Should dispatch and return UnknownFunctionSelector error post-Allegretto
-        let result = exchange.call(&Bytes::from(calldata), sender);
-        assert!(result.is_ok());
-        let precompile_result = result.unwrap();
-        assert!(precompile_result.reverted);
     }
 
     #[test]
