@@ -64,17 +64,6 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::BURN_BLOCKED_ROLECall::SELECTOR => {
                 view::<ITIP20::BURN_BLOCKED_ROLECall>(calldata, |_| Ok(Self::burn_blocked_role()))
             }
-            ITIP20::BURN_FROM_ROLECall::SELECTOR => {
-                if !self.storage.spec().is_allegretto() {
-                    return unknown_selector(
-                        selector,
-                        self.storage.gas_used(),
-                        self.storage.spec(),
-                    );
-                }
-
-                view::<ITIP20::BURN_FROM_ROLECall>(calldata, |_| Ok(Self::burn_from_role()))
-            }
 
             // State changing functions
             ITIP20::transferFromCall::SELECTOR => {
@@ -167,19 +156,6 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
             ITIP20::burnBlockedCall::SELECTOR => {
                 mutate_void::<ITIP20::burnBlockedCall>(calldata, msg_sender, |s, call| {
                     self.burn_blocked(s, call)
-                })
-            }
-            ITIP20::burnFromCall::SELECTOR => {
-                if !self.storage.spec().is_allegretto() {
-                    return unknown_selector(
-                        selector,
-                        self.storage.gas_used(),
-                        self.storage.spec(),
-                    );
-                }
-
-                mutate_void::<ITIP20::burnFromCall>(calldata, msg_sender, |s, call| {
-                    self.burn_from(s, call)
                 })
             }
             ITIP20::transferWithMemoCall::SELECTOR => {
