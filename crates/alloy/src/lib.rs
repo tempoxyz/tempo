@@ -42,6 +42,9 @@ pub mod provider;
 
 pub mod rpc;
 
+/// Transaction fillers.
+pub mod fillers;
+
 #[doc(inline)]
 pub use tempo_primitives as primitives;
 

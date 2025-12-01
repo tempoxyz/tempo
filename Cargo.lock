@@ -11240,7 +11240,9 @@ dependencies = [
  "alloy-serde",
  "alloy-signer",
  "alloy-signer-local",
+ "alloy-transport",
  "derive_more",
+ "eyre",
  "reth-evm",
  "reth-primitives-traits",
  "reth-rpc-convert",
@@ -11251,6 +11253,7 @@ dependencies = [
  "tempo-primitives",
  "tempo-revm",
  "test-case",
+ "tokio",
 ]
 
 [[package]]
