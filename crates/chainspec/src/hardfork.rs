@@ -28,7 +28,7 @@ hardfork!(
         /// Placeholder representing the baseline (pre-hardfork) state.
         #[default]
         Adagio,
-        /// Testnet hardfork for Andantino. To be removed before mainnet launch.
+        /// Testnet hardforks for Andantino. To be removed before mainnet launch.
         Moderato,
         /// Allegretto hardfork.
         Allegretto,
@@ -146,6 +146,7 @@ mod tests {
     fn test_is_moderato() {
         assert!(!TempoHardfork::Adagio.is_moderato());
         assert!(TempoHardfork::Moderato.is_moderato());
+        assert!(TempoHardfork::Allegretto.is_moderato());
     }
 
     #[test]
