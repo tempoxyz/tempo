@@ -405,13 +405,15 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let total_supply = self.total_supply()?;
 
         // Check if the `to` address is authorized to receive tokens
-        let transfer_policy_id = self.transfer_policy_id()?;
-        let mut registry = TIP403Registry::new(self.storage);
-        if !registry.is_authorized(ITIP403Registry::isAuthorizedCall {
-            policyId: transfer_policy_id,
-            user: to,
-        })? {
-            return Err(TIP20Error::policy_forbids().into());
+        if self.storage.spec().is_allegretto() {
+            let transfer_policy_id = self.transfer_policy_id()?;
+            let mut registry = TIP403Registry::new(self.storage);
+            if !registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+                policyId: transfer_policy_id,
+                user: to,
+            })? {
+                return Err(TIP20Error::policy_forbids().into());
+            }
         }
 
         let new_supply = total_supply
