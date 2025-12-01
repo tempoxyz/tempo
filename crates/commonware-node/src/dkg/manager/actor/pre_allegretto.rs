@@ -281,14 +281,14 @@ where
 
         let ceremony_outcome = match ceremony.finalize() {
             Ok(outcome) => {
-                self.metrics.ceremony_successes.inc();
+                self.metrics.ceremony.one_more_success();
                 info!(
                     "ceremony was successful; using the new participants, polynomial and secret key"
                 );
                 outcome
             }
             Err(outcome) => {
-                self.metrics.ceremony_failures.inc();
+                self.metrics.ceremony.one_more_failure();
                 warn!(
                     "ceremony was a failure; using the old participants, polynomial and secret key"
                 );
@@ -354,18 +354,13 @@ where
             dealers: epoch_state.participants.clone(),
             players: epoch_state.participants.clone(),
         };
-        self.metrics
-            .ceremony_dealers
-            .set(epoch_state.participants.len() as i64);
-        self.metrics
-            .ceremony_players
-            .set(epoch_state.participants.len() as i64);
 
         let ceremony = ceremony::Ceremony::init(
             &mut self.context,
             mux,
             self.ceremony_metadata.clone(),
             config,
+            self.metrics.ceremony.clone(),
         )
         .await
         .expect("must always be able to initialize ceremony");
@@ -381,18 +376,6 @@ where
             "started a ceremony",
         );
 
-        self.metrics
-            .ceremony_dealers
-            .set(ceremony.dealers().len() as i64);
-        self.metrics
-            .ceremony_players
-            .set(ceremony.players().len() as i64);
-        self.metrics
-            .how_often_dealer
-            .inc_by(ceremony.is_dealer() as u64);
-        self.metrics
-            .how_often_player
-            .inc_by(ceremony.is_player() as u64);
         self.metrics.pre_allegretto_ceremonies.inc();
         ceremony
     }
