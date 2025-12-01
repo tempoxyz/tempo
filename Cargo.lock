@@ -11632,6 +11632,7 @@ dependencies = [
  "proptest",
  "rand 0.8.5",
  "revm",
+ "scoped-tls",
  "serde",
  "serde_json",
  "tempo-chainspec",

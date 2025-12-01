@@ -3,10 +3,7 @@ use revm::state::{AccountInfo, Bytecode};
 use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
 
-use crate::{
-    error::TempoPrecompileError,
-    storage::{PrecompileStorageContext, PrecompileStorageProvider, StorageGuard},
-};
+use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
 pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
@@ -156,8 +153,3 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     }
 }
 
-impl PrecompileStorageContext for HashMapStorageProvider {
-    fn enter(&mut self) -> Result<StorageGuard<'_>, TempoPrecompileError> {
-        StorageGuard::new(self)
-    }
-}

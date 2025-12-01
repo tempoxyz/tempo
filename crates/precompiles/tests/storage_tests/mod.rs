@@ -1,7 +1,7 @@
 //! Shared test utilities for storage testing.
 
 use crate::storage::{
-    Handler, LayoutCtx, PrecompileStorageContext, Slot, Storable, hashmap::HashMapStorageProvider,
+    Handler, LayoutCtx, Slot, Storable, hashmap::HashMapStorageProvider,
     packing::extract_packed_value,
 };
 use alloy::primitives::{Address, U256, keccak256};

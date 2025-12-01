@@ -225,7 +225,7 @@ pub fn gen_word_from(values: &[&str]) -> U256 {
 mod tests {
     use super::*;
     use crate::storage::{
-        Handler, PrecompileStorageContext,
+        Handler, StorageAccessor,
         hashmap::HashMapStorageProvider,
         types::{LayoutCtx, Slot},
     };
@@ -775,70 +775,76 @@ mod tests {
     #[test]
     fn test_packed_at_multiple_types() -> Result<()> {
         let (mut storage, address) = setup_storage();
-        let _guard = storage.enter()?;
-        let struct_base = U256::from(0x2000);
+        StorageAccessor::enter(&mut storage, || {
+            let struct_base = U256::from(0x2000);
 
-        // Pack multiple types in same slot: bool(1) + u64(8) + u128(16)
-        let flag = true;
-        let timestamp: u64 = 1234567890;
-        let amount: u128 = 999888777666;
+            // Pack multiple types in same slot: bool(1) + u64(8) + u128(16)
+            let flag = true;
+            let timestamp: u64 = 1234567890;
+            let amount: u128 = 999888777666;
 
-        let mut flag_slot =
-            Slot::<bool>::new_with_ctx(struct_base, LayoutCtx::packed(0), address.clone());
-        flag_slot.write(flag)?;
-        assert_eq!(flag_slot.read()?, flag);
+            let mut flag_slot =
+                Slot::<bool>::new_with_ctx(struct_base, LayoutCtx::packed(0), address.clone());
+            flag_slot.write(flag)?;
+            assert_eq!(flag_slot.read()?, flag);
 
-        let mut ts_slot =
-            Slot::<u64>::new_with_ctx(struct_base, LayoutCtx::packed(1), address.clone());
-        ts_slot.write(timestamp)?;
-        assert_eq!(ts_slot.read()?, timestamp);
+            let mut ts_slot =
+                Slot::<u64>::new_with_ctx(struct_base, LayoutCtx::packed(1), address.clone());
+            ts_slot.write(timestamp)?;
+            assert_eq!(ts_slot.read()?, timestamp);
 
-        let mut amount_slot =
-            Slot::<u128>::new_with_ctx(struct_base, LayoutCtx::packed(9), address);
-        amount_slot.write(amount)?;
-        assert_eq!(amount_slot.read()?, amount);
+            let mut amount_slot =
+                Slot::<u128>::new_with_ctx(struct_base, LayoutCtx::packed(9), address);
+            amount_slot.write(amount)?;
+            assert_eq!(amount_slot.read()?, amount);
 
-        // Clear the middle one
-        amount_slot.delete()?;
-        assert_eq!(flag_slot.read()?, flag);
-        assert_eq!(amount_slot.read()?, 0);
-        assert_eq!(ts_slot.read()?, timestamp);
+            // Clear the middle one
+            amount_slot.delete()?;
+            assert_eq!(flag_slot.read()?, flag);
+            assert_eq!(amount_slot.read()?, 0);
+            assert_eq!(ts_slot.read()?, timestamp);
 
-        Ok(())
+            Ok(())
+        })
     }
 
     #[test]
     fn test_packed_at_different_slots() -> Result<()> {
         let (mut storage, address) = setup_storage();
-        let _guard = storage.enter()?;
-        let struct_base = U256::from(0x4000);
+        StorageAccessor::enter(&mut storage, || {
+            let struct_base = U256::from(0x4000);
 
-        // Field in slot 0 (bool is 1 byte, packable)
-        let flag = false;
-        let mut flag_slot =
-            Slot::<bool>::new_with_ctx(struct_base, LayoutCtx::packed(0), address.clone());
-        flag_slot.write(flag)?;
-        assert_eq!(flag_slot.read()?, flag);
+            // Field in slot 0 (bool is 1 byte, packable)
+            let flag = false;
+            let mut flag_slot =
+                Slot::<bool>::new_with_ctx(struct_base, LayoutCtx::packed(0), address.clone());
+            flag_slot.write(flag)?;
+            assert_eq!(flag_slot.read()?, flag);
 
-        // Field in slot 1 (u128 is 16 bytes, packable)
-        let amount: u128 = 0xdeadbeef;
-        let mut amount_slot = Slot::<u128>::new_with_ctx(
-            struct_base + U256::from(1),
-            LayoutCtx::packed(0),
-            address.clone(),
-        );
-        amount_slot.write(amount)?;
-        assert_eq!(amount_slot.read()?, amount);
+            // Field in slot 1 (u128 is 16 bytes, packable)
+            let amount: u128 = 0xdeadbeef;
+            let mut amount_slot = Slot::<u128>::new_with_ctx(
+                struct_base + U256::from(1),
+                LayoutCtx::packed(0),
+                address.clone(),
+            );
+            amount_slot.write(amount)?;
+            assert_eq!(amount_slot.read()?, amount);
 
-        // Field in slot 2 (u64 is 8 bytes, packable)
-        let value: u64 = 123456789;
-        let mut value_slot =
-            Slot::<u64>::new_with_ctx(struct_base + U256::from(2), LayoutCtx::packed(0), address);
-        value_slot.write(value)?;
-        assert_eq!(value_slot.read()?, value);
+            // Field in slot 2 (u64 is 8 bytes, packable)
+            let value: u64 = 123456789;
+            let mut value_slot = Slot::<u64>::new_with_ctx(
+                struct_base + U256::from(2),
+                LayoutCtx::packed(0),
+                address,
+            );
+            value_slot.write(value)?;
+            assert_eq!(value_slot.read()?, value);
 
-        Ok(())
+            Ok(())
+        })
     }
+
     // -- PROPERTY TESTS -----------------------------------------------------------
 
     use proptest::prelude::*;

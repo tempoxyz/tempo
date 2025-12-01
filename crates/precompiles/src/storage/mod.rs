@@ -2,7 +2,7 @@
 pub mod hashmap;
 
 pub mod thread_local;
-pub use thread_local::{StorageAccessor, StorageGuard};
+pub use thread_local::StorageAccessor;
 
 mod types;
 pub use types::*;
@@ -16,15 +16,6 @@ use revm::state::{AccountInfo, Bytecode};
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::error::Result;
-
-/// Trait for types that can enter a thread-local storage context.
-///
-/// Only one `StorageGuard` can exist at a time, in the same thread.
-/// If multiple providers are instantiated in parallel threads, they CANNOT point to the same storage addresses.
-pub trait PrecompileStorageContext: PrecompileStorageProvider {
-    /// Enters this storage provider's context, enabling thread-local access.
-    fn enter(&mut self) -> Result<StorageGuard<'_>>;
-}
 
 /// Low-level storage provider for interacting with the EVM.
 ///

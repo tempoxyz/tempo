@@ -7,10 +7,7 @@ use revm::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
-use crate::{
-    error::TempoPrecompileError,
-    storage::{PrecompileStorageContext, PrecompileStorageProvider, StorageGuard},
-};
+use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
 pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
@@ -176,12 +173,6 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn spec(&self) -> TempoHardfork {
         self.spec
-    }
-}
-
-impl<'a> PrecompileStorageContext for EvmPrecompileStorageProvider<'a> {
-    fn enter(&mut self) -> Result<StorageGuard<'_>, TempoPrecompileError> {
-        StorageGuard::new(self)
     }
 }
 

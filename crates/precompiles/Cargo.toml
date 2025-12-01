@@ -26,6 +26,7 @@ revm.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 derive_more.workspace = true
+scoped-tls = "1.0"
 fqdn = { version = "0.4.6", features = [
   "domain-label-length-limited-to-63",
   "domain-name-length-limited-to-255",
