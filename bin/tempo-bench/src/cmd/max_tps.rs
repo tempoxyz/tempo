@@ -1,20 +1,25 @@
 mod dex;
 
+use alloy_consensus::{SignableTransaction, Transaction};
 use itertools::Itertools;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use reth_tracing::{
     RethTracer, Tracer,
     tracing::{debug, error, info},
 };
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{
+    TempoNetwork,
+    primitives::{TempoTxEnvelope, transaction::TempoTypedTransaction},
+};
 
 use alloy::{
     consensus::BlockHeader,
     eips::Encodable2718,
-    network::ReceiptResponse,
+    network::{ReceiptResponse, TransactionBuilder, TxSignerSync},
     primitives::{Address, B256, BlockNumber, U256},
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
-        WatchTxError, fillers::TxFiller,
+        SendableTx, WatchTxError, fillers::TxFiller,
     },
     rpc::client::NoParams,
     signers::local::{
@@ -25,7 +30,11 @@ use alloy::{
 };
 use clap::Parser;
 use eyre::{Context, OptionExt, ensure};
-use futures::{FutureExt, StreamExt, TryStreamExt, future::BoxFuture, stream};
+use futures::{
+    FutureExt, StreamExt, TryStreamExt,
+    future::BoxFuture,
+    stream::{self},
+};
 use governor::{Quota, RateLimiter, state::StreamRateLimitExt};
 use indicatif::{ProgressBar, ProgressIterator};
 use rand::{random_range, seq::IndexedRandom};
@@ -38,7 +47,7 @@ use std::{
     num::{NonZeroU32, NonZeroU64},
     str::FromStr,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
     thread,
@@ -169,6 +178,13 @@ impl MaxTpsArgs {
             self.from_mnemonic_index,
             accounts,
             self.target_urls.clone(),
+            Box::new(|target_url, cached_nonce_manager| {
+                ProviderBuilder::default()
+                    .fetch_chain_id()
+                    .with_gas_estimation()
+                    .with_nonce_management(cached_nonce_manager)
+                    .connect_http(target_url)
+            }),
             Box::new(|signer, target_url, cached_nonce_manager| {
                 ProviderBuilder::default()
                     .fetch_chain_id()
@@ -176,6 +192,7 @@ impl MaxTpsArgs {
                     .with_nonce_management(cached_nonce_manager)
                     .wallet(signer)
                     .connect_http(target_url)
+                    .erased()
             }),
         ));
         let signer_providers = signer_provider_manager.signer_providers();
@@ -384,7 +401,7 @@ async fn send_transactions<F: TxFiller<TempoNetwork> + 'static>(
     let transactions = stream::iter(transactions)
         .ratelimit_stream(&rate_limiter)
         .zip(stream::repeat_with(|| {
-            signer_provider_manager.random_provider()
+            signer_provider_manager.random_unsigned_provider()
         }))
         .map(|(bytes, provider)| async move {
             tokio::time::timeout(
@@ -462,9 +479,18 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
     let transfers = Arc::new(AtomicUsize::new(0));
     let swaps = Arc::new(AtomicUsize::new(0));
     let orders = Arc::new(AtomicUsize::new(0));
-    let transactions = stream::iter(std::iter::repeat_n((), total_txs as usize).progress())
-        .then(async |_| {
-            let provider = signer_provider_manager.random_provider();
+
+    let transfer_gas = Arc::new(OnceLock::new());
+    let swap_gas = Arc::new(OnceLock::new());
+    let order_gas = Arc::new(OnceLock::new());
+
+    let progress = ProgressBar::new(total_txs);
+    let builders = progress
+        .wrap_stream(stream::iter(
+            std::iter::repeat_with(|| signer_provider_manager.random_unsigned_provider())
+                .take(total_txs as usize),
+        ))
+        .map(async |provider| {
             let token = user_tokens.choose(&mut rand::rng()).copied().unwrap();
 
             // TODO: can be improved with an enum per transaction type
@@ -475,16 +501,17 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                 .choose_weighted(&mut rand::rng(), |(_, weight)| *weight)?
                 .0;
 
-            let tx = match tx_index {
+            let (mut tx, gas) = match tx_index {
                 0 => {
                     transfers.fetch_add(1, Ordering::Relaxed);
                     let provider = provider.clone();
                     let token = ITIP20Instance::new(token, provider);
 
                     // Transfer minimum possible amount
-                    token
+                    let tx = token
                         .transfer(Address::random(), U256::ONE)
-                        .into_transaction_request()
+                        .into_transaction_request();
+                    (tx, &transfer_gas)
                 }
                 1 => {
                     swaps.fetch_add(1, Ordering::Relaxed);
@@ -493,9 +520,10 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                         IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider);
 
                     // Swap minimum possible amount
-                    exchange
+                    let tx = exchange
                         .quoteSwapExactAmountIn(token, quote, 1)
-                        .into_transaction_request()
+                        .into_transaction_request();
+                    (tx, &swap_gas)
                 }
                 2 => {
                     orders.fetch_add(1, Ordering::Relaxed);
@@ -507,24 +535,96 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                     let tick =
                         rand::random_range(MIN_TICK / TICK_SPACING..=MAX_TICK / TICK_SPACING)
                             * TICK_SPACING;
-                    exchange
+                    let tx = exchange
                         .place(token, MIN_ORDER_AMOUNT, true, tick)
-                        .into_transaction_request()
+                        .into_transaction_request();
+                    (tx, &order_gas)
                 }
                 _ => unreachable!("Only {TX_TYPES} transaction types are supported"),
             };
 
-            eyre::Ok(
-                provider
-                    .fill(tx)
-                    .await?
-                    .as_envelope()
-                    .ok_or_eyre("expected TxEnvelope after filling with a wallet")?
-                    .encoded_2718(),
-            )
+            // Get a random signer and set it as the sender of the transaction.
+            let signer = signer_provider_manager.random_signer();
+            tx.inner.set_from(signer.address());
+
+            // If we already filled the gas fields once for that transaction type, use it.
+            // This will skip the gas filler.
+            if let Some((max_fee_per_gas, max_priority_fee_per_gas, gas_limit)) = gas.get() {
+                tx.inner.set_max_fee_per_gas(*max_fee_per_gas);
+                tx.inner
+                    .set_max_priority_fee_per_gas(*max_priority_fee_per_gas);
+                tx.inner.set_gas_limit(*gas_limit);
+            }
+
+            // Fill the rest of transaction. In case we already filled the gas fields,
+            // it will only fill the chain ID and nonce that are efficiently cached inside
+            // the fillers.
+            let tx = provider.fill(tx).await?;
+
+            // If we never filled the gas fields for that transaction type, cache the estimated
+            // gas.
+            if gas.get().is_none() {
+                let _ = gas.set(match &tx {
+                    SendableTx::Builder(builder) => (
+                        builder
+                            .max_fee_per_gas()
+                            .ok_or_eyre("max fee per gas should be filled")?,
+                        builder
+                            .max_priority_fee_per_gas()
+                            .ok_or_eyre("max priority fee per gas should be filled")?,
+                        builder
+                            .gas_limit()
+                            .ok_or_eyre("gas limit should be filled")?,
+                    ),
+                    SendableTx::Envelope(envelope) => (
+                        envelope.max_fee_per_gas(),
+                        envelope
+                            .max_priority_fee_per_gas()
+                            .ok_or_eyre("max priority fee per gas should be filled")?,
+                        envelope.gas_limit(),
+                    ),
+                });
+            }
+
+            eyre::Ok((tx.try_into_request()?, signer))
         })
+        .buffer_unordered(max_concurrent_requests)
         .try_collect::<Vec<_>>()
         .await?;
+
+    // Sign transactions in parallel using signers directly, so it doesn't require async
+    let transactions = builders
+        .into_par_iter()
+        .map(|(tx, signer)| -> eyre::Result<TempoTxEnvelope> {
+            match tx.build_unsigned()? {
+                TempoTypedTransaction::Legacy(mut inner) => {
+                    let sig = signer.sign_transaction_sync(&mut inner)?;
+                    Ok(inner.into_signed(sig).into())
+                }
+                TempoTypedTransaction::Eip2930(mut inner) => {
+                    let sig = signer.sign_transaction_sync(&mut inner)?;
+                    Ok(inner.into_signed(sig).into())
+                }
+                TempoTypedTransaction::Eip1559(mut inner) => {
+                    let sig = signer.sign_transaction_sync(&mut inner)?;
+                    Ok(inner.into_signed(sig).into())
+                }
+                TempoTypedTransaction::Eip7702(mut inner) => {
+                    let sig = signer.sign_transaction_sync(&mut inner)?;
+                    Ok(inner.into_signed(sig).into())
+                }
+                TempoTypedTransaction::AA(mut inner) => {
+                    let sig = signer.sign_transaction_sync(&mut inner)?;
+                    Ok(inner.into_signed(sig.into()).into())
+                }
+                TempoTypedTransaction::FeeToken(mut inner) => {
+                    let sig = signer.sign_transaction_sync(&mut inner)?;
+                    Ok(inner.into_signed(sig).into())
+                }
+            }
+        })
+        .map(|result| result.map(|tx| tx.encoded_2718()))
+        .collect::<eyre::Result<Vec<_>>>()?;
 
     info!(
         transactions = transactions.len(),

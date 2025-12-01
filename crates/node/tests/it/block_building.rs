@@ -1,5 +1,5 @@
 use alloy::{
-    consensus::{SignableTransaction, Transaction, TxEip1559, TxEnvelope},
+    consensus::{SignableTransaction, TxEip1559, TxEnvelope},
     network::{EthereumWallet, TransactionBuilder},
     primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
