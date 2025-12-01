@@ -21,6 +21,8 @@ fn init_download_urls() {
 fn init_payload_builder_defaults() {
     DefaultPayloadBuilderValues::default()
         .with_interval(Duration::from_millis(100))
+        .with_max_payload_tasks(16)
+        .with_deadline(4)
         .try_init()
         .expect("failed to initialize payload builder defaults");
 }

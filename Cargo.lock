@@ -11240,7 +11240,9 @@ dependencies = [
  "alloy-serde",
  "alloy-signer",
  "alloy-signer-local",
+ "alloy-transport",
  "derive_more",
+ "eyre",
  "reth-evm",
  "reth-primitives-traits",
  "reth-rpc-convert",
@@ -11251,6 +11253,7 @@ dependencies = [
  "tempo-primitives",
  "tempo-revm",
  "test-case",
+ "tokio",
 ]
 
 [[package]]
@@ -11633,6 +11636,7 @@ dependencies = [
  "tempo-precompiles-macros",
  "thiserror 2.0.17",
  "tracing",
+ "tracing-subscriber 0.3.21",
 ]
 
 [[package]]
@@ -11678,6 +11682,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "test-fuzz",
+ "tracing-subscriber 0.3.21",
 ]
 
 [[package]]

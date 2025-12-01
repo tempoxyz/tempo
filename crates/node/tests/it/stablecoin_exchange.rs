@@ -60,10 +60,8 @@ async fn test_bids() -> eyre::Result<()> {
     }
     await_receipts(&mut pending).await?;
 
-    // Create pair
+    // Post-Allegretto: pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
-    let tx = exchange.createPair(*base.address()).send().await?;
-    tx.get_receipt().await?;
 
     let order_amount = 1000000000;
 
@@ -211,10 +209,8 @@ async fn test_asks() -> eyre::Result<()> {
     }
     await_receipts(&mut pending).await?;
 
-    // Create pair
+    // Post-Allegretto: pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
-    let tx = exchange.createPair(*base.address()).send().await?;
-    tx.get_receipt().await?;
 
     let order_amount = 1000000000;
 
@@ -375,10 +371,8 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     }
     await_receipts(&mut pending).await?;
 
-    // Create pair
+    // Post-Allegretto: pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
-    let tx = exchange.createPair(*base.address()).send().await?;
-    tx.get_receipt().await?;
 
     let order_amount = 1000000000;
 
@@ -489,13 +483,6 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
     pending.push(usdc.mint(bob, mint_amount).send().await?);
 
     await_receipts(&mut pending).await?;
-
-    // Create pairs on the exchange
-    let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
-    let tx = exchange.createPair(*usdc.address()).send().await?;
-    tx.get_receipt().await?;
-    let tx = exchange.createPair(*eurc.address()).send().await?;
-    tx.get_receipt().await?;
 
     // Alice approves exchange to spend her tokens
     let alice_provider = ProviderBuilder::new()
@@ -647,10 +634,8 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
     let base = setup_test_token(provider.clone(), caller).await?;
     let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
 
-    // Create pair
+    // Post-Allegretto: pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
-    let tx = exchange.createPair(*base.address()).send().await?;
-    tx.get_receipt().await?;
 
     // Mint and approve tokens
     let mint_amount = U256::from(1000000000u128);
@@ -744,10 +729,8 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
     let base = setup_test_token(provider.clone(), caller).await?;
     let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
 
-    // Create pair
+    // Post-Allegretto: pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
-    let tx = exchange.createPair(*base.address()).send().await?;
-    tx.get_receipt().await?;
 
     // Mint and approve tokens
     let mint_amount = U256::from(1000000000u128);

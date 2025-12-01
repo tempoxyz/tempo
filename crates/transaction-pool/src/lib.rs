@@ -13,6 +13,7 @@ pub mod tempo_pool;
 pub use tempo_pool::TempoTransactionPool;
 
 pub mod aa_2d_pool;
+pub mod amm;
 pub mod best;
 pub mod maintain;
 pub mod metrics;

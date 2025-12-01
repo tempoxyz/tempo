@@ -6,7 +6,7 @@ use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
     error::TempoPrecompileError,
-    storage::{PrecompileStorageProvider, Slot, Storable, VecSlotExt},
+    storage::{Mapping, PrecompileStorageProvider, Slot, VecSlotExt},
 };
 use alloy::primitives::{Address, B256, Bytes};
 use revm::state::Bytecode;
@@ -28,7 +28,7 @@ struct Validator {
 }
 
 /// Helper type to easily interact with the `validators_array`
-type ValidatorsArray = Slot<Vec<Address>, ValidatorsArraySlot>;
+type ValidatorsArray = Slot<Vec<Address>>;
 
 /// Validator Config precompile for managing consensus validators
 #[contract]
@@ -102,9 +102,10 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         let count = self.validator_count()?;
         let mut validators = Vec::new();
 
+        let validators_array = ValidatorsArray::new(slots::VALIDATORS_ARRAY);
         for i in 0..count {
             // Read validator address from the array at index i
-            let validator_address = ValidatorsArray::read_at(self, i as usize)?;
+            let validator_address = validators_array.read_at(self, i as usize)?;
 
             let Validator {
                 public_key,
@@ -172,7 +173,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         self.sstore_validators(call.newValidatorAddress, validator)?;
 
         // Add the validator public key to the validators array
-        ValidatorsArray::push(self, call.newValidatorAddress)?;
+        ValidatorsArray::new(slots::VALIDATORS_ARRAY).push(self, call.newValidatorAddress)?;
 
         // Increment the validator count
         self.sstore_validator_count(
@@ -205,7 +206,7 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
             }
 
             // Update the validators array to point at the new validator address
-            ValidatorsArray::write_at(
+            ValidatorsArray::new(slots::VALIDATORS_ARRAY).write_at(
                 self,
                 old_validator.index as usize,
                 call.newValidatorAddress,

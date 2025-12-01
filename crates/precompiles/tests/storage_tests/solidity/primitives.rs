@@ -4,6 +4,8 @@
 //! storage patterns like primitive types, arrays, mappings, structs, and enums.
 
 use super::*;
+use alloy_primitives::{Address, FixedBytes};
+use tempo_precompiles::storage::Mapping;
 use tempo_precompiles_macros::{
     gen_test_fields_layout as layout_fields, gen_test_fields_struct as struct_fields,
 };
@@ -56,9 +58,17 @@ fn test_arrays_layout() {
         field_a: U256,
         large_array: [U256; 5],
         field_b: U256,
+        nested_array: [[u8; 4]; 8],
+        another_nested_array: [[u16; 2]; 6],
     }
 
-    let rust_layout = layout_fields!(field_a, large_array, field_b);
+    let rust_layout = layout_fields!(
+        field_a,
+        large_array,
+        field_b,
+        nested_array,
+        another_nested_array
+    );
 
     // Compare against expected layout from Solidity
     let sol_path = testdata("arrays.sol");
@@ -123,8 +133,6 @@ fn test_structs_layout() {
 // Test enum storage layout with packing
 #[test]
 fn test_enums_layout() {
-    use alloy::primitives::Address;
-
     #[contract]
     struct Enums {
         field_a: u16,     // 2 bytes - slot 0, offset 0
@@ -145,8 +153,6 @@ fn test_enums_layout() {
 
 #[test]
 fn test_double_mappings_layout() {
-    use alloy::primitives::FixedBytes;
-
     #[contract]
     struct DoubleMappings {
         field_a: U256,
