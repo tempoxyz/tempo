@@ -1,7 +1,7 @@
 use alloy::primitives::{Address, LogData, U256};
 use revm::state::{AccountInfo, Bytecode};
 use scoped_tls::scoped_thread_local;
-use std::cell::Cell;
+use std::cell::RefCell;
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{
@@ -9,7 +9,7 @@ use crate::{
     storage::PrecompileStorageProvider,
 };
 
-scoped_thread_local!(static STORAGE: Cell<*mut dyn PrecompileStorageProvider>);
+scoped_thread_local!(static STORAGE: RefCell<*mut dyn PrecompileStorageProvider>);
 
 /// Converts a raw pointer to a mutable reference.
 #[inline]
@@ -21,6 +21,8 @@ unsafe fn ptr_as_mut<'a>(
 }
 
 /// Thread-local storage accessor that implements `PrecompileStorageProvider` without the trait bound.
+///
+/// This is the only type that exposes access to the thread-local `STORAGE` static.
 ///
 /// # Important
 ///
@@ -52,7 +54,7 @@ impl StorageContext {
         // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
         let ptr_static: *mut (dyn PrecompileStorageProvider + 'static) =
             unsafe { std::mem::transmute(ptr) };
-        let cell = Cell::new(ptr_static);
+        let cell = RefCell::new(ptr_static);
         STORAGE.set(&cell, f)
     }
 
@@ -68,7 +70,7 @@ impl StorageContext {
         }
         STORAGE.with(|cell| {
             // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
-            f(unsafe { ptr_as_mut(cell.get()) })
+            f(unsafe { ptr_as_mut(*cell.borrow_mut()) })
         })
     }
 
