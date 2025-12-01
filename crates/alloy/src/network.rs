@@ -20,7 +20,7 @@ use tempo_primitives::{
 /// Set of recommended fillers.
 ///
 /// `N` is a nonce filler.
-pub type TempoFillers<N = NonceFiller> = JoinFill<GasFiller, JoinFill<N, ChainIdFiller>>;
+pub(crate) type TempoFillers<N> = JoinFill<GasFiller, JoinFill<N, ChainIdFiller>>;
 
 /// The Tempo specific configuration of [`Network`] schema and consensus primitives.
 #[derive(Default, Debug, Clone, Copy)]
@@ -333,7 +333,7 @@ impl TempoTransactionRequest {
 }
 
 impl RecommendedFillers for TempoNetwork {
-    type RecommendedFillers = TempoFillers;
+    type RecommendedFillers = TempoFillers<NonceFiller>;
 
     fn recommended_fillers() -> Self::RecommendedFillers {
         Default::default()
