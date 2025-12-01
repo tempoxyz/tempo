@@ -111,7 +111,7 @@ fn assert_static_transitions(how_many: u32, epoch_length: u64, transitions: u64)
     let _first = run(setup, move |metric, value| {
         if metric.ends_with("_dkg_manager_ceremony_failures_total") {
             let value = value.parse::<u64>().unwrap();
-            assert!(value < 1);
+            assert_eq!(0, value);
         }
 
         if metric.ends_with("_epoch_manager_latest_epoch") {
@@ -122,6 +122,7 @@ fn assert_static_transitions(how_many: u32, epoch_length: u64, transitions: u64)
             let value = value.parse::<u64>().unwrap();
             dkg_successful |= value >= transitions;
         }
+
         epoch_reached && dkg_successful
     });
 }

@@ -1,6 +1,6 @@
 use crate::rpc::{TempoHeaderResponse, TempoTransactionRequest};
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError};
-use alloy_network::TxSigner;
+use alloy_network::{TransactionBuilder, TxSigner};
 use alloy_primitives::{Bytes, Signature};
 use reth_evm::EvmEnv;
 use reth_primitives_traits::SealedHeader;
@@ -10,42 +10,53 @@ use reth_rpc_convert::{
 };
 use reth_rpc_eth_types::EthApiError;
 use tempo_evm::TempoBlockEnv;
-use tempo_primitives::{AASignature, SignatureType, TempoHeader, TempoTxEnvelope};
+use tempo_primitives::{
+    AASignature, SignatureType, TempoHeader, TempoTxEnvelope, TempoTxType,
+    transaction::RecoveredAAAuthorization,
+};
 use tempo_revm::{AATxEnv, TempoTxEnv};
 
 impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
-        if !self.calls.is_empty() {
-            let tx = self.build_aa()?;
+        match self.output_tx_type() {
+            TempoTxType::AA => {
+                let tx = self.build_aa()?;
 
-            // Create an empty signature for the transaction.
-            let signature = AASignature::default();
+                // Create an empty signature for the transaction.
+                let signature = AASignature::default();
 
-            Ok(tx.into_signed(signature).into())
-        } else if self.fee_token.is_some() {
-            let tx = self.build_fee_token()?;
+                Ok(tx.into_signed(signature).into())
+            }
+            TempoTxType::FeeToken => {
+                let tx = self.build_fee_token()?;
 
-            // Create an empty signature for the transaction.
-            let signature = Signature::new(Default::default(), Default::default(), false);
+                // Create an empty signature for the transaction.
+                let signature = Signature::new(Default::default(), Default::default(), false);
 
-            Ok(tx.into_signed(signature).into())
-        } else {
-            let Self {
-                inner,
-                fee_token,
-                calls,
-                key_type,
-                key_data,
-                aa_authorization_list,
-            } = self;
-            let envelope =
-                match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(inner.clone())
-                {
+                Ok(tx.into_signed(signature).into())
+            }
+            TempoTxType::Legacy
+            | TempoTxType::Eip2930
+            | TempoTxType::Eip1559
+            | TempoTxType::Eip7702 => {
+                let Self {
+                    inner,
+                    fee_token,
+                    nonce_key,
+                    calls,
+                    key_type,
+                    key_data,
+                    aa_authorization_list,
+                } = self;
+                let envelope = match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(
+                    inner.clone(),
+                ) {
                     Ok(inner) => inner,
                     Err(e) => {
                         return Err(e.map(|inner| Self {
                             inner,
                             fee_token,
+                            nonce_key,
                             calls,
                             key_type,
                             key_data,
@@ -54,18 +65,20 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     }
                 };
 
-            Ok(envelope
-                .try_into()
-                .map_err(|e: ValueError<EthereumTxEnvelope<TxEip4844>>| {
-                    e.map(|_inner| Self {
-                        inner,
-                        fee_token,
-                        calls,
-                        key_type,
-                        key_data,
-                        aa_authorization_list,
-                    })
-                })?)
+                Ok(envelope.try_into().map_err(
+                    |e: ValueError<EthereumTxEnvelope<TxEip4844>>| {
+                        e.map(|_inner| Self {
+                            inner,
+                            fee_token,
+                            nonce_key,
+                            calls,
+                            key_type,
+                            key_data,
+                            aa_authorization_list,
+                        })
+                    },
+                )?)
+            }
         }
     }
 }
@@ -84,6 +97,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             key_type,
             key_data,
             aa_authorization_list,
+            ..
         } = self;
         Ok(TempoTxEnv {
             inner: inner.try_into_tx_env(evm_env)?,
@@ -105,7 +119,10 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                 Some(Box::new(AATxEnv {
                     aa_calls: calls,
                     signature: mock_signature,
-                    aa_authorization_list,
+                    aa_authorization_list: aa_authorization_list
+                        .into_iter()
+                        .map(RecoveredAAAuthorization::new)
+                        .collect(),
                     ..Default::default()
                 }))
             } else {

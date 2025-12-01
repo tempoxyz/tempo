@@ -3,8 +3,6 @@
 //! This module tests that the `contract` macro-generated storage layouts match their
 //! Solidity counterparts by comparing against the expected solc-generated outputs.
 
-// TODO(rusowsky): add tests against the actual pre-compiles solidity-equivalent contracts
-
 mod precompiles;
 mod primitives;
 mod utils;

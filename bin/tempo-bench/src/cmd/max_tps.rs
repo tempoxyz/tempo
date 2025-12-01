@@ -3,7 +3,7 @@ mod dex;
 use itertools::Itertools;
 use reth_tracing::{
     RethTracer, Tracer,
-    tracing::{error, info, warn},
+    tracing::{debug, error, info},
 };
 use tempo_alloy::TempoNetwork;
 
@@ -13,31 +13,29 @@ use alloy::{
     primitives::{Address, B256, BlockNumber, U256},
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
-        WatchTxError,
+        WatchTxError, fillers::NonceFiller,
     },
     rpc::client::NoParams,
+    signers::local::{
+        PrivateKeySigner,
+        coins_bip39::{English, Mnemonic, MnemonicError},
+    },
     transports::http::reqwest::Url,
-};
-use alloy_signer_local::{
-    MnemonicBuilder, PrivateKeySigner,
-    coins_bip39::{English, Mnemonic, MnemonicError},
 };
 use clap::Parser;
 use eyre::{Context, OptionExt, ensure};
 use futures::{FutureExt, StreamExt, TryStreamExt, future::BoxFuture, stream};
 use governor::{Quota, RateLimiter, state::StreamRateLimitExt};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator};
-use rand::{
-    random, random_range,
-    seq::{IndexedRandom, SliceRandom},
-};
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rand::{random_range, seq::IndexedRandom};
+use rayon::iter::ParallelIterator;
 use rlimit::Resource;
 use serde::Serialize;
 use std::{
+    collections::VecDeque,
     fs::File,
     io::BufWriter,
-    num::NonZeroU32,
+    num::{NonZeroU32, NonZeroU64},
     str::FromStr,
     sync::{
         Arc,
@@ -55,7 +53,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS,
-    stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK},
+    stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, TICK_SPACING},
     tip20::{ISSUER_ROLE, token_id_to_address},
 };
 use tokio::{
@@ -63,6 +61,8 @@ use tokio::{
     time::{Sleep, interval, sleep},
 };
 use tokio_util::sync::CancellationToken;
+
+use crate::cmd::signer_providers::SignerProviderManager;
 
 /// Run maximum TPS throughput benchmarking
 #[derive(Parser, Debug)]
@@ -76,8 +76,8 @@ pub struct MaxTpsArgs {
     duration: u64,
 
     /// Number of accounts for pre-generation
-    #[arg(short, long, default_value_t = 100)]
-    accounts: u64,
+    #[arg(short, long, default_value_t = NonZeroU64::new(100).unwrap())]
+    accounts: NonZeroU64,
 
     /// Mnemonic for generating accounts
     #[arg(short, long, default_value = "random")]
@@ -156,49 +156,43 @@ impl MaxTpsArgs {
     pub async fn run(self) -> eyre::Result<()> {
         RethTracer::new().init()?;
 
+        let accounts = self.accounts.get();
+
         // Set file descriptor limit if provided
         if let Some(fd_limit) = self.fd_limit {
             increase_nofile_limit(fd_limit).context("Failed to increase nofile limit")?;
         }
 
-        let target_url = self.target_urls[0].clone();
-        if self.target_urls.len() > 1 {
-            warn!("Multiple target URLs provided, but only the first one will be used")
-        }
-        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-            .connect_http(target_url.clone())
-            .erased();
-
-        let tip20_weight = (self.tip20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
-        let place_order_weight = (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64;
-        let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
-
-        info!(accounts = self.accounts, "Creating signers and providers");
-        let mnemonic = self.mnemonic.resolve();
-        let signer_providers = (self.from_mnemonic_index
-            ..(self.from_mnemonic_index + self.accounts as u32))
-            .into_par_iter()
-            .progress()
-            .map(|i| {
-                let signer = MnemonicBuilder::<English>::from_phrase_nth(&mnemonic, i);
-                let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-                    .wallet(signer.clone())
-                    .with_cached_nonce_management()
-                    .connect_http(target_url.clone())
-                    .erased();
-                Ok((signer, provider))
-            })
-            .collect::<eyre::Result<Vec<_>>>()?;
+        info!(accounts = self.accounts, "Creating signers");
+        let signer_provider_manager = SignerProviderManager::new(
+            self.mnemonic.resolve(),
+            self.from_mnemonic_index,
+            accounts,
+            self.target_urls.clone(),
+            Box::new(|signer, target_url, cached_nonce_manager| {
+                ProviderBuilder::new_with_network::<TempoNetwork>()
+                    .wallet(signer)
+                    .filler(NonceFiller::new(cached_nonce_manager))
+                    .connect_http(target_url)
+                    .erased()
+            }),
+        );
+        let signer_providers = signer_provider_manager.signer_providers();
 
         if self.clear_txpool {
-            let transactions: u64 = provider
-                .raw_request("admin_clearTxpool".into(), NoParams::default())
-                .await
-                .context(
-                    "Failed to clear transaction pool. Is `admin_clearTxpool` RPC method available?",
-                )?;
-            info!(transactions, "Cleared transaction pool");
+            for (target_url, provider) in signer_provider_manager.target_url_providers() {
+                let transactions: u64 = provider
+                    .raw_request("admin_clearTxpool".into(), NoParams::default())
+                    .await
+                    .context(
+                        "Failed to clear transaction pool for {target_url}. Is `admin_clearTxpool` RPC method available?",
+                    )?;
+                info!(%target_url, transactions, "Cleared transaction pool");
+            }
         }
+
+        // Grab first provider to call some RPC methods
+        let provider = signer_providers[0].1.clone();
 
         // Fund accounts from faucet if requested
         if self.faucet {
@@ -234,10 +228,13 @@ impl MaxTpsArgs {
 
         // Generate all transactions
         let total_txs = self.tps * self.duration;
+        let tip20_weight = (self.tip20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
+        let place_order_weight = (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64;
+        let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let transactions = generate_transactions(GenerateTransactionsInput {
             total_txs,
-            num_accounts: self.accounts,
-            signer_providers,
+            accounts,
+            signer_provider_manager,
             max_concurrent_requests: self.max_concurrent_requests,
             max_concurrent_transactions: self.max_concurrent_transactions,
             tip20_weight,
@@ -248,7 +245,6 @@ impl MaxTpsArgs {
         .context("Failed to generate transactions")?;
 
         // Send transactions
-        let start_block_number = provider.get_block_number().await?;
         let mut pending_txs = send_transactions(
             transactions,
             self.max_concurrent_requests,
@@ -257,6 +253,25 @@ impl MaxTpsArgs {
         )
         .await;
         let end_block_number = provider.get_block_number().await?;
+
+        info!("Retrieving first block number from sent transactions");
+        let start_block_number = loop {
+            if let Some(first_tx) = pending_txs.pop_front() {
+                debug!(hash = %first_tx.tx_hash(), "Retrieving transaction receipt for first block number");
+                if let Ok(first_tx_receipt) = first_tx
+                    .with_timeout(Some(Duration::from_secs(5)))
+                    .get_receipt()
+                    .await
+                {
+                    break first_tx_receipt.block_number;
+                }
+            } else {
+                break None;
+            }
+        };
+        let Some(start_block_number) = start_block_number else {
+            eyre::bail!("Failed to retrieve start block number")
+        };
 
         // Collect a sample of receipts and print the stats
         let sample_size = pending_txs.len().min(self.sample_size);
@@ -267,7 +282,7 @@ impl MaxTpsArgs {
         stream::iter(0..sample_size)
             .map(|_| {
                 let idx = random_range(0..pending_txs.len());
-                pending_txs.remove(idx)
+                pending_txs.remove(idx).expect("index is in range")
             })
             .map(|pending_tx| {
                 let hash = *pending_tx.tx_hash();
@@ -342,7 +357,7 @@ async fn send_transactions(
     max_concurrent_requests: usize,
     tps: u64,
     deadline: Sleep,
-) -> Vec<PendingTransactionBuilder<TempoNetwork>> {
+) -> VecDeque<PendingTransactionBuilder<TempoNetwork>> {
     info!(
         transactions = transactions.len(),
         max_concurrent_requests, tps, "Sending transactions"
@@ -377,12 +392,12 @@ async fn send_transactions(
                 }
                 Ok(Err(err)) => {
                     failed.fetch_add(1, Ordering::Relaxed);
-                    error!(?err, "Failed to send transaction");
+                    debug!(?err, "Failed to send transaction");
                     None
                 }
                 Err(_) => {
                     timeout.fetch_add(1, Ordering::Relaxed);
-                    error!("Transaction sending timed out");
+                    debug!("Transaction sending timed out");
                     None
                 }
             }
@@ -408,8 +423,8 @@ async fn generate_transactions(
 > {
     let GenerateTransactionsInput {
         total_txs,
-        num_accounts,
-        signer_providers,
+        accounts,
+        signer_provider_manager,
         max_concurrent_requests,
         max_concurrent_transactions,
         tip20_weight,
@@ -417,14 +432,14 @@ async fn generate_transactions(
         swap_weight,
     } = input;
 
-    let txs_per_sender = total_txs / num_accounts;
+    let txs_per_sender = total_txs / accounts;
     ensure!(
         txs_per_sender > 0,
         "txs per sender is 0, increase tps or decrease senders"
     );
 
     let (quote, user_tokens) = dex::setup(
-        &signer_providers,
+        signer_provider_manager.signer_providers(),
         2,
         max_concurrent_requests,
         max_concurrent_transactions,
@@ -433,22 +448,18 @@ async fn generate_transactions(
 
     info!(transactions = total_txs, "Generating transactions");
 
-    let mut params = signer_providers
-        .into_iter()
-        .flat_map(|(_, provider)| std::iter::repeat_n(provider, txs_per_sender as usize))
-        .zip(std::iter::repeat_with(|| user_tokens.choose(&mut rand::rng()).copied()).flatten())
-        .collect::<Vec<_>>();
-    params.shuffle(&mut rand::rng());
-
     const TX_TYPES: usize = 3;
     let tx_weights: [u64; TX_TYPES] = [tip20_weight, swap_weight, place_order_weight];
 
     let transfers = Arc::new(AtomicUsize::new(0));
     let swaps = Arc::new(AtomicUsize::new(0));
     let orders = Arc::new(AtomicUsize::new(0));
-    let transactions: Vec<_> = params
-        .into_par_iter()
-        .map(|(provider, token)| -> eyre::Result<BoxFuture<'static, _>> {
+    let transactions = rayon::iter::repeat_n((), total_txs as usize)
+        .progress()
+        .map(|_| -> eyre::Result<BoxFuture<'static, _>> {
+            let provider = signer_provider_manager.random_provider();
+            let token = user_tokens.choose(&mut rand::rng()).copied().unwrap();
+
             // TODO: can be improved with an enum per transaction type
             let tx_index = tx_weights
                 .iter()
@@ -489,9 +500,10 @@ async fn generate_transactions(
                         let exchange =
                             IStablecoinExchangeInstance::new(STABLECOIN_EXCHANGE_ADDRESS, provider);
 
-                        // Place an order at exactly the dust limit
+                        // Place an order at a random tick that's a multiple of `TICK_SPACING`
                         let tick =
-                            (random::<u16>() % (MAX_TICK - MIN_TICK) as u16) as i16 + MIN_TICK;
+                            rand::random_range(MIN_TICK / TICK_SPACING..=MAX_TICK / TICK_SPACING)
+                                * TICK_SPACING;
                         let tx = exchange.place(token, MIN_ORDER_AMOUNT, true, tick);
 
                         tx.send().await
@@ -502,7 +514,6 @@ async fn generate_transactions(
 
             Ok(tx)
         })
-        .progress_count(total_txs)
         .collect::<eyre::Result<Vec<_>>>()?;
 
     info!(
@@ -590,9 +601,9 @@ struct BenchmarkedBlock {
 struct BenchmarkMetadata {
     target_tps: u64,
     run_duration_secs: u64,
-    num_accounts: u64,
+    accounts: u64,
     chain_id: u64,
-    max_concurrent_requests: usize,
+    total_connections: usize,
     start_block: BlockNumber,
     end_block: BlockNumber,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -663,9 +674,9 @@ pub async fn generate_report(
     let metadata = BenchmarkMetadata {
         target_tps: args.tps,
         run_duration_secs: args.duration,
-        num_accounts: args.accounts,
+        accounts: args.accounts.get(),
         chain_id: provider.get_chain_id().await?,
-        max_concurrent_requests: args.max_concurrent_requests,
+        total_connections: args.max_concurrent_requests,
         start_block,
         end_block,
         node_commit_sha: args.node_commit_sha.clone(),
@@ -764,8 +775,8 @@ async fn assert_receipts<R: ReceiptResponse, F: Future<Output = eyre::Result<R>>
 
 struct GenerateTransactionsInput {
     total_txs: u64,
-    num_accounts: u64,
-    signer_providers: Vec<(PrivateKeySigner, DynProvider<TempoNetwork>)>,
+    accounts: u64,
+    signer_provider_manager: SignerProviderManager,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
     tip20_weight: u64,

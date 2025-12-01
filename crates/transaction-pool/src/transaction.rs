@@ -140,6 +140,13 @@ pub enum TempoPoolTransactionError {
         fee_token: Address,
         fee_payer: Address,
     },
+  
+    /// Thrown when we couldn't find a recently used validator token that has enough liquidity
+    /// in fee AMM pair with the user token this transaction will pay fees in.
+    #[error(
+        "Insufficient liquidity for fee token: {0}, please see https://docs.tempo.xyz/documentation/protocol/fees for more"
+    )]
+    InsufficientLiquidity(Address),
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -150,8 +157,10 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::MissingFeeToken
             | Self::BlackListedFeePayer { .. }
             | Self::InvalidValidBefore { .. }
-            | Self::InvalidValidAfter { .. } => false,
-            Self::NonZeroValue | Self::Keychain(_) | Self::SubblockNonceKey => true,
+            | Self::InvalidValidAfter { .. }
+            | Self::Keychain(_)
+            | Self::InsufficientLiquidity(_) => false,
+            Self::NonZeroValue | Self::SubblockNonceKey => true,
         }
     }
 

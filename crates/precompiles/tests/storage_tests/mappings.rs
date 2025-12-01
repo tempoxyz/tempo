@@ -1,6 +1,7 @@
 //! Mapping storage tests.
 
 use super::*;
+use tempo_precompiles::storage::Mapping;
 
 #[test]
 fn test_mapping() {

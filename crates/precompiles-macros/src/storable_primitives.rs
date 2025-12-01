@@ -42,7 +42,7 @@ struct TypeConfig {
 fn gen_storable_type_impl(type_path: &TokenStream, byte_count: usize) -> TokenStream {
     quote! {
         impl StorableType for #type_path {
-            const BYTE_COUNT: usize = #byte_count;
+            const LAYOUT: Layout = Layout::Bytes(#byte_count);
         }
     }
 }
@@ -69,23 +69,42 @@ fn gen_storage_key_impl(type_path: &TokenStream, strategy: &StorageKeyStrategy) 
 /// Generate a `Storable<1>` implementation based on the conversion strategy
 fn gen_storable_impl(
     type_path: &TokenStream,
+    byte_count: usize,
     strategy: &StorableConversionStrategy,
 ) -> TokenStream {
     match strategy {
-        StorableConversionStrategy::Unsigned => {
+        StorableConversionStrategy::Unsigned | StorableConversionStrategy::U256 => {
             quote! {
                 impl Storable<1> for #type_path {
-                    const SLOT_COUNT: usize = 1;
-
                     #[inline]
-                    fn load<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<Self> {
-                        let value = storage.sload(base_slot)?;
-                        Ok(value.to::<Self>())
+                    fn load<S: StorageOps>(storage: &mut S, base_slot: U256, ctx: LayoutCtx) -> Result<Self> {
+                        match ctx.packed_offset() {
+                            None => {
+                                let value = storage.sload(base_slot)?;
+                                Ok(value.to::<Self>())
+                            }
+                            Some(offset) => {
+                                let slot = storage.sload(base_slot)?;
+                                crate::storage::packing::extract_packed_value(slot, offset, #byte_count)
+                            }
+                        }
                     }
 
                     #[inline]
-                    fn store<S: StorageOps>(&self, storage: &mut S, base_slot: U256) -> Result<()> {
-                        storage.sstore(base_slot, U256::from(*self))
+                    fn store<S: StorageOps>(&self, storage: &mut S, base_slot: U256, ctx: LayoutCtx) -> Result<()> {
+                        match ctx.packed_offset() {
+                            None => {
+                                storage.sstore(base_slot, U256::from(*self))?;
+                                Ok(())
+                            }
+                            Some(offset) => {
+                                let current = storage.sload(base_slot)?;
+                                let value = U256::from(*self);
+                                let updated = crate::storage::packing::insert_packed_value(current, &value, offset, #byte_count)?;
+                                storage.sstore(base_slot, updated)?;
+                                Ok(())
+                            }
+                        }
                     }
 
                     #[inline]
@@ -100,49 +119,68 @@ fn gen_storable_impl(
                 }
             }
         }
-        StorableConversionStrategy::U256 => {
-            quote! {
-                impl Storable<1> for #type_path {
-                    const SLOT_COUNT: usize = 1;
+        // TODO(rusowsky): enable once `Layout.is_packable()` returns `false` for `U256`
+        // StorableConversionStrategy::U256 => {
+        //     quote! {
+        //         impl Storable<1> for #type_path {
+        //             #[inline]
+        //             fn load<S: StorageOps>(storage: &mut S, base_slot: #type_path, ctx: LayoutCtx) -> Result<Self> {
+        //                 debug_assert_eq!(ctx, LayoutCtx::FULL, "U256 takes a full slot and cannot be packed");
+        //                 storage.sload(base_slot)
+        //             }
 
-                    #[inline]
-                    fn load<S: StorageOps>(storage: &mut S, base_slot: #type_path) -> Result<Self> {
-                        storage.sload(base_slot)
-                    }
+        //             #[inline]
+        //             fn store<S: StorageOps>(&self, storage: &mut S, base_slot: #type_path, ctx: LayoutCtx) -> Result<()> {
+        //                 debug_assert_eq!(ctx, LayoutCtx::FULL, "U256 takes a full slot and cannot be packed");
+        //                 storage.sstore(base_slot, *self)
+        //             }
 
-                    #[inline]
-                    fn store<S: StorageOps>(&self, storage: &mut S, base_slot: #type_path) -> Result<()> {
-                        storage.sstore(base_slot, *self)
-                    }
+        //             #[inline]
+        //             fn to_evm_words(&self) -> Result<[#type_path; 1]> {
+        //                 Ok([*self])
+        //             }
 
-                    #[inline]
-                    fn to_evm_words(&self) -> Result<[#type_path; 1]> {
-                        Ok([*self])
-                    }
-
-                    #[inline]
-                    fn from_evm_words(words: [#type_path; 1]) -> Result<Self> {
-                        Ok(words[0])
-                    }
-                }
-            }
-        }
+        //             #[inline]
+        //             fn from_evm_words(words: [#type_path; 1]) -> Result<Self> {
+        //                 Ok(words[0])
+        //             }
+        //         }
+        //     }
+        // }
         StorableConversionStrategy::SignedRust(unsigned_type) => {
             quote! {
                 impl Storable<1> for #type_path {
-                    const SLOT_COUNT: usize = 1;
-
                     #[inline]
-                    fn load<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<Self> {
-                        let value = storage.sload(base_slot)?;
-                        // Read as unsigned then cast to signed (preserves bit pattern)
-                        Ok(value.to::<#unsigned_type>() as Self)
+                    fn load<S: StorageOps>(storage: &mut S, base_slot: U256, ctx: LayoutCtx) -> Result<Self> {
+                        match ctx.packed_offset() {
+                            None => {
+                                let value = storage.sload(base_slot)?;
+                                // Read as unsigned then cast to signed (preserves bit pattern)
+                                Ok(value.to::<#unsigned_type>() as Self)
+                            }
+                            Some(offset) => {
+                                let slot = storage.sload(base_slot)?;
+                                crate::storage::packing::extract_packed_value(slot, offset, #byte_count)
+                            }
+                        }
                     }
 
                     #[inline]
-                    fn store<S: StorageOps>(&self, storage: &mut S, base_slot: U256) -> Result<()> {
-                        // Cast to unsigned to preserve bit pattern, then extend to U256
-                        storage.sstore(base_slot, U256::from(*self as #unsigned_type))
+                    fn store<S: StorageOps>(&self, storage: &mut S, base_slot: U256, ctx: LayoutCtx) -> Result<()> {
+                        match ctx.packed_offset() {
+                            None => {
+                                // Cast to unsigned to preserve bit pattern, then extend to U256
+                                storage.sstore(base_slot, U256::from(*self as #unsigned_type))?;
+                                Ok(())
+                            }
+                            Some(offset) => {
+                                let current = storage.sload(base_slot)?;
+                                let value = U256::from(*self as #unsigned_type);
+                                let updated = crate::storage::packing::insert_packed_value(current, &value, offset, #byte_count)?;
+                                storage.sstore(base_slot, updated)?;
+                                Ok(())
+                            }
+                        }
                     }
 
                     #[inline]
@@ -160,21 +198,41 @@ fn gen_storable_impl(
         StorableConversionStrategy::SignedAlloy(unsigned_type) => {
             quote! {
                 impl Storable<1> for #type_path {
-                    const SLOT_COUNT: usize = 1;
-
                     #[inline]
-                    fn load<S: StorageOps>(storage: &mut S, base_slot: ::alloy::primitives::U256) -> Result<Self> {
-                        let value = storage.sload(base_slot)?;
-                        // Convert U256 to unsigned type, then reinterpret as signed
-                        let unsigned_val = value.to::<::alloy::primitives::#unsigned_type>();
-                        Ok(Self::from_raw(unsigned_val))
+                    fn load<S: StorageOps>(storage: &mut S, base_slot: ::alloy::primitives::U256, ctx: LayoutCtx) -> Result<Self> {
+                        match ctx.packed_offset() {
+                            None => {
+                                let value = storage.sload(base_slot)?;
+                                // Convert U256 to unsigned type, then reinterpret as signed
+                                let unsigned_val = value.to::<::alloy::primitives::#unsigned_type>();
+                                Ok(Self::from_raw(unsigned_val))
+                            }
+                            Some(offset) => {
+                                let slot = storage.sload(base_slot)?;
+                                let unsigned_val: ::alloy::primitives::#unsigned_type = crate::storage::packing::extract_packed_value(slot, offset, #byte_count)?;
+                                Ok(Self::from_raw(unsigned_val))
+                            }
+                        }
                     }
 
                     #[inline]
-                    fn store<S: StorageOps>(&self, storage: &mut S, base_slot: ::alloy::primitives::U256) -> Result<()> {
-                        // Get unsigned bit pattern and store it
-                        let unsigned_val = self.into_raw();
-                        storage.sstore(base_slot, ::alloy::primitives::U256::from(unsigned_val))
+                    fn store<S: StorageOps>(&self, storage: &mut S, base_slot: ::alloy::primitives::U256, ctx: LayoutCtx) -> Result<()> {
+                        match ctx.packed_offset() {
+                            None => {
+                                // Get unsigned bit pattern and store it
+                                let unsigned_val = self.into_raw();
+                                storage.sstore(base_slot, ::alloy::primitives::U256::from(unsigned_val))?;
+                                Ok(())
+                            }
+                            Some(offset) => {
+                                let current = storage.sload(base_slot)?;
+                                let unsigned_val = self.into_raw();
+                                let value = ::alloy::primitives::U256::from(unsigned_val);
+                                let updated = crate::storage::packing::insert_packed_value(current, &value, offset, #byte_count)?;
+                                storage.sstore(base_slot, updated)?;
+                                Ok(())
+                            }
+                        }
                     }
 
                     #[inline]
@@ -194,25 +252,48 @@ fn gen_storable_impl(
         StorableConversionStrategy::FixedBytes(size) => {
             quote! {
                 impl Storable<1> for #type_path {
-                    const SLOT_COUNT: usize = 1;
-
                     #[inline]
-                    fn load<S: StorageOps>(storage: &mut S, base_slot: ::alloy::primitives::U256) -> Result<Self> {
-                        let value = storage.sload(base_slot)?;
-                        // `FixedBytes` are stored left-aligned in the slot. Extract the first N bytes from the U256
-                        let bytes = value.to_be_bytes::<32>();
-                        let mut fixed_bytes = [0u8; #size];
-                        fixed_bytes.copy_from_slice(&bytes[..#size]);
-                        Ok(Self::from(fixed_bytes))
+                    fn load<S: StorageOps>(storage: &mut S, base_slot: ::alloy::primitives::U256, ctx: LayoutCtx) -> Result<Self> {
+                        match ctx.packed_offset() {
+                            None => {
+                                let value = storage.sload(base_slot)?;
+                                // `FixedBytes` are stored left-aligned in the slot. Extract the first N bytes from the U256
+                                let bytes = value.to_be_bytes::<32>();
+                                let mut fixed_bytes = [0u8; #size];
+                                fixed_bytes.copy_from_slice(&bytes[..#size]);
+                                Ok(Self::from(fixed_bytes))
+                            }
+                            Some(offset) => {
+                                let slot = storage.sload(base_slot)?;
+                                let bytes: ::alloy::primitives::B256 = crate::storage::packing::extract_packed_value(slot, offset, #size)?;
+                                let mut fixed_bytes = [0u8; #size];
+                                fixed_bytes.copy_from_slice(&bytes[..#size]);
+                                Ok(Self::from(fixed_bytes))
+                            }
+                        }
                     }
 
                     #[inline]
-                    fn store<S: StorageOps>(&self, storage: &mut S, base_slot: ::alloy::primitives::U256) -> Result<()> {
-                        // Pad `FixedBytes` to 32 bytes (left-aligned).
-                        let mut bytes = [0u8; 32];
-                        bytes[..#size].copy_from_slice(&self[..]);
-                        let value = ::alloy::primitives::U256::from_be_bytes(bytes);
-                        storage.sstore(base_slot, value)
+                    fn store<S: StorageOps>(&self, storage: &mut S, base_slot: ::alloy::primitives::U256, ctx: LayoutCtx) -> Result<()> {
+                        match ctx.packed_offset() {
+                            None => {
+                                // Pad `FixedBytes` to 32 bytes (left-aligned).
+                                let mut bytes = [0u8; 32];
+                                bytes[..#size].copy_from_slice(&self[..]);
+                                let value = ::alloy::primitives::U256::from_be_bytes(bytes);
+                                storage.sstore(base_slot, value)?;
+                                Ok(())
+                            }
+                            Some(offset) => {
+                                let current = storage.sload(base_slot)?;
+                                let mut bytes = [0u8; 32];
+                                bytes[..#size].copy_from_slice(&self[..]);
+                                let value = ::alloy::primitives::U256::from_be_bytes(bytes);
+                                let updated = crate::storage::packing::insert_packed_value(current, &value, offset, #size)?;
+                                storage.sstore(base_slot, updated)?;
+                                Ok(())
+                            }
+                        }
                     }
 
                     #[inline]
@@ -238,7 +319,11 @@ fn gen_storable_impl(
 /// Generate all storage-related impls for a type
 fn gen_complete_impl_set(config: &TypeConfig) -> TokenStream {
     let storable_type_impl = gen_storable_type_impl(&config.type_path, config.byte_count);
-    let storable_impl = gen_storable_impl(&config.type_path, &config.storable_strategy);
+    let storable_impl = gen_storable_impl(
+        &config.type_path,
+        config.byte_count,
+        &config.storable_strategy,
+    );
     let storage_key_impl = gen_storage_key_impl(&config.type_path, &config.storage_key_strategy);
 
     quote! {
@@ -406,12 +491,6 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
         gen_unpacked_array_store()
     };
 
-    let delete_impl = if *elem_is_packable {
-        gen_packed_array_delete(array_size, elem_byte_count)
-    } else {
-        gen_unpacked_array_delete(array_size)
-    };
-
     let to_evm_words_impl = if *elem_is_packable {
         gen_packed_array_to_evm_words(array_size, elem_byte_count)
     } else {
@@ -428,7 +507,7 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
         // Helper module with compile-time constants
         mod #mod_ident {
             use super::*;
-            pub const ELEM_BYTES: usize = <#elem_type as StorableType>::BYTE_COUNT;
+            pub const ELEM_BYTES: usize = <#elem_type as StorableType>::BYTES;
             pub const ELEM_SLOTS: usize = 1; // For single-slot primitives
             pub const ARRAY_LEN: usize = #array_size;
             pub const SLOT_COUNT: usize = #slot_count;
@@ -436,25 +515,30 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
 
         // Implement StorableType
         impl StorableType for [#elem_type; #array_size] {
-            const BYTE_COUNT: usize = #mod_ident::SLOT_COUNT * 32;
+            // Arrays cannot be packed, so they must take full slots
+            const LAYOUT: Layout = Layout::Slots(#mod_ident::SLOT_COUNT);
         }
 
         // Implement Storable
         impl Storable<{ #mod_ident::SLOT_COUNT }> for [#elem_type; #array_size] {
-            const SLOT_COUNT: usize = #mod_ident::SLOT_COUNT;
+            fn load<S: StorageOps>(storage: &mut S, base_slot: U256, ctx: LayoutCtx) -> Result<Self> {
+                debug_assert_eq!(
+                    ctx, crate::storage::LayoutCtx::FULL,
+                    "Arrays can only be loaded with LayoutCtx::FULL"
+                );
 
-            fn load<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<Self> {
                 use crate::storage::packing::{calc_element_slot, calc_element_offset, extract_packed_value};
                 #load_impl
             }
 
-            fn store<S: StorageOps>(&self, storage: &mut S, base_slot: U256) -> Result<()> {
+            fn store<S: StorageOps>(&self, storage: &mut S, base_slot: U256, ctx: LayoutCtx) -> Result<()> {
+                debug_assert_eq!(
+                    ctx, crate::storage::LayoutCtx::FULL,
+                    "Arrays can only be stored with LayoutCtx::FULL"
+                );
+
                 use crate::storage::packing::{calc_element_slot, calc_element_offset, insert_packed_value};
                 #store_impl
-            }
-
-            fn delete<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<()> {
-                #delete_impl
             }
 
             fn to_evm_words(&self) -> Result<[U256; { #mod_ident::SLOT_COUNT }]> {
@@ -525,24 +609,13 @@ fn gen_packed_array_store(array_size: &usize, elem_byte_count: &usize) -> TokenS
     }
 }
 
-/// Generate delete implementation for packed arrays
-fn gen_packed_array_delete(array_size: &usize, elem_byte_count: &usize) -> TokenStream {
-    quote! {
-        let slot_count = (#array_size * #elem_byte_count).div_ceil(32);
-        for slot_idx in 0..slot_count {
-            storage.sstore(base_slot + U256::from(slot_idx), U256::ZERO)?;
-        }
-        Ok(())
-    }
-}
-
 /// Generate load implementation for unpacked arrays
 fn gen_unpacked_array_load(array_size: &usize) -> TokenStream {
     quote! {
         let mut result = [Default::default(); #array_size];
         for i in 0..#array_size {
             let elem_slot = base_slot + U256::from(i);
-            result[i] = Storable::<1>::load(storage, elem_slot)?;
+            result[i] = Storable::<1>::load(storage, elem_slot, LayoutCtx::FULL)?;
         }
         Ok(result)
     }
@@ -553,18 +626,7 @@ fn gen_unpacked_array_store() -> TokenStream {
     quote! {
         for (i, elem) in self.iter().enumerate() {
             let elem_slot = base_slot + U256::from(i);
-            elem.store(storage, elem_slot)?;
-        }
-        Ok(())
-    }
-}
-
-/// Generate delete implementation for unpacked arrays
-fn gen_unpacked_array_delete(array_size: &usize) -> TokenStream {
-    quote! {
-        // For unpacked single-slot elements, just zero out each slot
-        for i in 0..#array_size {
-            storage.sstore(base_slot + U256::from(i), U256::ZERO)?;
+            elem.store(storage, elem_slot, LayoutCtx::FULL)?;
         }
         Ok(())
     }
@@ -756,8 +818,8 @@ pub(crate) fn gen_nested_arrays() -> TokenStream {
 ///
 /// Unlike primitive arrays, struct arrays:
 /// - Always use unpacked layout (structs span multiple slots)
-/// - Each element occupies `<T>::SLOT_COUNT` consecutive slots
-/// - Slot addressing uses multiplication: `base_slot + (i * <T>::SLOT_COUNT)`
+/// - Each element occupies `<T>::SLOTS` consecutive slots
+/// - Slot addressing uses multiplication: `base_slot + (i * <T>::SLOTS)`
 ///
 /// # Parameters
 ///
@@ -790,7 +852,6 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
     // Generate implementation methods
     let load_impl = gen_struct_array_load(struct_type, array_size);
     let store_impl = gen_struct_array_store(struct_type);
-    let delete_impl = gen_struct_array_delete(struct_type, array_size);
     let to_evm_words_impl = gen_struct_array_to_evm_words(struct_type, array_size);
     let from_evm_words_impl = gen_struct_array_from_evm_words(struct_type, array_size);
 
@@ -798,20 +859,18 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
         // Helper module with compile-time constants
         mod #mod_ident {
             use super::*;
-            pub const ELEM_SLOTS: usize = <#struct_type>::SLOT_COUNT;
+            pub const ELEM_SLOTS: usize = <#struct_type as crate::storage::StorableType>::SLOTS;
             pub const ARRAY_LEN: usize = #array_size;
             pub const SLOT_COUNT: usize = ARRAY_LEN * ELEM_SLOTS;
         }
 
         // Implement StorableType
         impl crate::storage::StorableType for [#struct_type; #array_size] {
-            const BYTE_COUNT: usize = #mod_ident::SLOT_COUNT * 32;
+            const LAYOUT: crate::storage::Layout = crate::storage::Layout::Slots(#mod_ident::SLOT_COUNT);
         }
 
         // Implement Storable
         impl crate::storage::Storable<{ #mod_ident::SLOT_COUNT }> for [#struct_type; #array_size] {
-            const SLOT_COUNT: usize = #mod_ident::SLOT_COUNT;
-
             fn load<S: crate::storage::StorageOps>(
                 storage: &mut S,
                 base_slot: ::alloy::primitives::U256
@@ -825,13 +884,6 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
                 base_slot: ::alloy::primitives::U256
             ) -> crate::error::Result<()> {
                 #store_impl
-            }
-
-            fn delete<S: crate::storage::StorageOps>(
-                storage: &mut S,
-                base_slot: ::alloy::primitives::U256
-            ) -> crate::error::Result<()> {
-                #delete_impl
             }
 
             fn to_evm_words(&self) -> crate::error::Result<[::alloy::primitives::U256; { #mod_ident::SLOT_COUNT }]> {
@@ -863,7 +915,7 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
 
 /// Generate load implementation for struct arrays.
 ///
-/// Each element occupies `<T>::SLOT_COUNT` consecutive slots.
+/// Each element occupies `<T>::SLOTS` consecutive slots.
 fn gen_struct_array_load(struct_type: &TokenStream, array_size: usize) -> TokenStream {
     quote! {
         let mut result = [Default::default(); #array_size];
@@ -871,11 +923,11 @@ fn gen_struct_array_load(struct_type: &TokenStream, array_size: usize) -> TokenS
             // Calculate slot for this element: base_slot + (i * element_slot_count)
             let elem_slot = base_slot.checked_add(
                 ::alloy::primitives::U256::from(i).checked_mul(
-                    ::alloy::primitives::U256::from(<#struct_type>::SLOT_COUNT)
+                    ::alloy::primitives::U256::from(<#struct_type as crate::storage::StorableType>::SLOTS)
                 ).ok_or(crate::error::TempoError::SlotOverflow)?
             ).ok_or(crate::error::TempoError::SlotOverflow)?;
 
-            result[i] = <#struct_type as crate::storage::Storable<{<#struct_type>::SLOT_COUNT}>>::load(storage, elem_slot)?;
+            result[i] = <#struct_type as crate::storage::Storable<{<#struct_type as crate::storage::StorableType>::SLOTS}>>::load(storage, elem_slot)?;
         }
         Ok(result)
     }
@@ -888,30 +940,11 @@ fn gen_struct_array_store(struct_type: &TokenStream) -> TokenStream {
             // Calculate slot for this element: base_slot + (i * element_slot_count)
             let elem_slot = base_slot.checked_add(
                 ::alloy::primitives::U256::from(i).checked_mul(
-                    ::alloy::primitives::U256::from(<#struct_type>::SLOT_COUNT)
+                    ::alloy::primitives::U256::from(<#struct_type as crate::storage::StorableType>::SLOTS)
                 ).ok_or(crate::error::TempoError::SlotOverflow)?
             ).ok_or(crate::error::TempoError::SlotOverflow)?;
 
-            <#struct_type as crate::storage::Storable<{<#struct_type>::SLOT_COUNT}>>::store(elem, storage, elem_slot)?;
-        }
-        Ok(())
-    }
-}
-
-/// Generate delete implementation for struct arrays.
-///
-/// Calls `delete()` on each element to ensure proper cleanup of nested structures.
-fn gen_struct_array_delete(struct_type: &TokenStream, array_size: usize) -> TokenStream {
-    quote! {
-        for i in 0..#array_size {
-            // Calculate slot for this element: base_slot + (i * element_slot_count)
-            let elem_slot = base_slot.checked_add(
-                ::alloy::primitives::U256::from(i).checked_mul(
-                    ::alloy::primitives::U256::from(<#struct_type>::SLOT_COUNT)
-                ).ok_or(crate::error::TempoError::SlotOverflow)?
-            ).ok_or(crate::error::TempoError::SlotOverflow)?;
-
-            <#struct_type as crate::storage::Storable<{<#struct_type>::SLOT_COUNT}>>::delete(storage, elem_slot)?;
+            <#struct_type as crate::storage::Storable<{<#struct_type as crate::storage::StorableType>::SLOTS}>>::store(elem, storage, elem_slot)?;
         }
         Ok(())
     }
@@ -922,11 +955,11 @@ fn gen_struct_array_delete(struct_type: &TokenStream, array_size: usize) -> Toke
 /// Copies N-word chunks from each element into the result array.
 fn gen_struct_array_to_evm_words(struct_type: &TokenStream, array_size: usize) -> TokenStream {
     quote! {
-        let mut result = [::alloy::primitives::U256::ZERO; #array_size * <#struct_type>::SLOT_COUNT];
+        let mut result = [::alloy::primitives::U256::ZERO; #array_size * <#struct_type as crate::storage::StorableType>::SLOTS];
 
         for (i, elem) in self.iter().enumerate() {
-            let elem_words = <#struct_type as crate::storage::Storable<{<#struct_type>::SLOT_COUNT}>>::to_evm_words(elem)?;
-            let start_idx = i * <#struct_type>::SLOT_COUNT;
+            let elem_words = <#struct_type as crate::storage::Storable<{<#struct_type as crate::storage::StorableType>::SLOTS}>>::to_evm_words(elem)?;
+            let start_idx = i * <#struct_type as crate::storage::StorableType>::SLOTS;
 
             // Copy all words from this element
             for (j, word) in elem_words.iter().enumerate() {
@@ -946,14 +979,14 @@ fn gen_struct_array_from_evm_words(struct_type: &TokenStream, array_size: usize)
         let mut result = [Default::default(); #array_size];
 
         for i in 0..#array_size {
-            let start_idx = i * <#struct_type>::SLOT_COUNT;
+            let start_idx = i * <#struct_type as crate::storage::StorableType>::SLOTS;
 
             // Extract words for this element using std::array::from_fn
-            let elem_words = ::std::array::from_fn::<_, {<#struct_type>::SLOT_COUNT}, _>(|j| {
+            let elem_words = ::std::array::from_fn::<_, {<#struct_type as crate::storage::StorableType>::SLOTS}, _>(|j| {
                 words[start_idx + j]
             });
 
-            result[i] = <#struct_type as crate::storage::Storable<{<#struct_type>::SLOT_COUNT}>>::from_evm_words(elem_words)?;
+            result[i] = <#struct_type as crate::storage::Storable<{<#struct_type as crate::storage::StorableType>::SLOTS}>>::from_evm_words(elem_words)?;
         }
 
         Ok(result)

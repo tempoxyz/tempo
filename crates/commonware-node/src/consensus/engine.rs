@@ -85,6 +85,7 @@ pub struct Builder<TBlocker, TContext, TPeerManager> {
     pub views_until_leader_skip: u64,
     pub new_payload_wait_time: Duration,
     pub time_to_build_subblock: Duration,
+    pub subblock_broadcast_interval: Duration,
 }
 
 impl<TBlocker, TContext, TPeerManager> Builder<TBlocker, TContext, TPeerManager>
@@ -212,6 +213,7 @@ where
             node: self.execution_node.clone(),
             fee_recipient: self.fee_recipient,
             time_to_build_subblock: self.time_to_build_subblock,
+            subblock_broadcast_interval: self.subblock_broadcast_interval,
             epoch_length,
         });
 
