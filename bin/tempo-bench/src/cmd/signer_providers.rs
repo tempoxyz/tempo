@@ -1,13 +1,9 @@
 use std::sync::Arc;
 
 use alloy::{
-    network::EthereumWallet,
     providers::{
-        DynProvider, Identity, Provider, ProviderBuilder, RootProvider,
-        fillers::{
-            CachedNonceManager, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
-            WalletFiller,
-        },
+        DynProvider, Provider, ProviderBuilder, RootProvider,
+        fillers::{CachedNonceManager, FillProvider, TxFiller},
     },
     signers::local::{MnemonicBuilder, PrivateKeySigner},
     transports::http::reqwest::Url,
@@ -17,20 +13,13 @@ use indicatif::ProgressIterator;
 use rand::seq::IndexedRandom;
 use tempo_alloy::TempoNetwork;
 
-type BenchProvider = FillProvider<
-    JoinFill<
-        JoinFill<JoinFill<JoinFill<Identity, ChainIdFiller>, GasFiller>, NonceFiller>,
-        WalletFiller<EthereumWallet>,
-    >,
-    RootProvider<TempoNetwork>,
-    TempoNetwork,
->;
+type BenchProvider<F> = FillProvider<F, RootProvider<TempoNetwork>, TempoNetwork>;
 
-type SignerProviderFactory =
-    Box<dyn Fn(PrivateKeySigner, Url, CachedNonceManager) -> BenchProvider + Send + Sync>;
+type SignerProviderFactory<F> =
+    Box<dyn Fn(PrivateKeySigner, Url, CachedNonceManager) -> BenchProvider<F> + Send + Sync>;
 
 /// Manages signers and target URLs for creating providers.
-pub(crate) struct SignerProviderManager {
+pub(crate) struct SignerProviderManager<F: TxFiller<TempoNetwork>> {
     /// List of private key signers.
     signers: Vec<PrivateKeySigner>,
     /// List of target URLs.
@@ -38,16 +27,16 @@ pub(crate) struct SignerProviderManager {
     /// Cached nonce manager shared among all providers.
     cached_nonce_manager: CachedNonceManager,
     /// Factory function for creating providers.
-    provider_factory: SignerProviderFactory,
+    provider_factory: SignerProviderFactory<F>,
     /// List of providers (one per signer) with random target URLs.
     signer_providers: Vec<(PrivateKeySigner, DynProvider<TempoNetwork>)>,
     /// Cache of previously created signer providers.
     ///
     /// The mapping is `(signer_idx, target_url_idx) => provider`
-    cached_signer_providers: Arc<DashMap<(usize, usize), BenchProvider>>,
+    cached_signer_providers: Arc<DashMap<(usize, usize), BenchProvider<F>>>,
 }
 
-impl SignerProviderManager {
+impl<F: TxFiller<TempoNetwork> + 'static> SignerProviderManager<F> {
     /// Create a new instance of [`SignerProviderManager`].
     ///
     /// 1. Creates `accounts` signers from the `mnemonic` starting with `from_mnemonic_index` inde.
@@ -57,7 +46,7 @@ impl SignerProviderManager {
         from_mnemonic_index: u32,
         accounts: u64,
         target_urls: Vec<Url>,
-        provider_factory: SignerProviderFactory,
+        provider_factory: SignerProviderFactory<F>,
     ) -> Self {
         let cached_nonce_manager = CachedNonceManager::default();
         let signers = (from_mnemonic_index..)
@@ -110,7 +99,7 @@ impl SignerProviderManager {
     /// Generates a single provider with random signer and random target URL.
     ///
     /// This method caches the generated provider to avoid redundant creation.
-    pub fn random_provider(&self) -> BenchProvider {
+    pub fn random_provider(&self) -> BenchProvider<F> {
         let signer_idx = rand::random_range(0..self.signers.len());
         let target_url_idx = rand::random_range(0..self.target_urls.len());
         self.cached_signer_providers

@@ -14,7 +14,7 @@ use alloy::{
     primitives::{Address, B256, BlockNumber, U256},
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
-        WatchTxError,
+        WatchTxError, fillers::TxFiller,
     },
     rpc::client::NoParams,
     signers::local::{
@@ -352,9 +352,9 @@ impl MnemonicArg {
 }
 
 /// Awaits pending transactions with up to `tps` per second and `max_concurrent_requests` simultaneous in-flight requests. Stops when `deadline` future resolves.
-async fn send_transactions(
+async fn send_transactions<F: TxFiller<TempoNetwork> + 'static>(
     transactions: Vec<Vec<u8>>,
-    signer_provider_manager: Arc<SignerProviderManager>,
+    signer_provider_manager: Arc<SignerProviderManager<F>>,
     max_concurrent_requests: usize,
     tps: u64,
     deadline: Sleep,
@@ -426,7 +426,9 @@ async fn send_transactions(
     transactions
 }
 
-async fn generate_transactions(input: GenerateTransactionsInput) -> eyre::Result<Vec<Vec<u8>>> {
+async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
+    input: GenerateTransactionsInput<F>,
+) -> eyre::Result<Vec<Vec<u8>>> {
     let GenerateTransactionsInput {
         total_txs,
         accounts,
@@ -781,10 +783,10 @@ async fn assert_receipts<R: ReceiptResponse, F: Future<Output = eyre::Result<R>>
         .await
 }
 
-struct GenerateTransactionsInput {
+struct GenerateTransactionsInput<F: TxFiller<TempoNetwork>> {
     total_txs: u64,
     accounts: u64,
-    signer_provider_manager: Arc<SignerProviderManager>,
+    signer_provider_manager: Arc<SignerProviderManager<F>>,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
     tip20_weight: u64,
