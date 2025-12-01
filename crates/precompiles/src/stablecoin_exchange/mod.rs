@@ -4679,7 +4679,7 @@ mod tests {
     }
 
     #[test]
-    fn test_place_post_allegretto() -> Result<()> {
+    fn test_place_auto_creates_pair_post_allegretto() -> Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
@@ -4729,7 +4729,7 @@ mod tests {
     }
 
     #[test]
-    fn test_place_flip_post_allegretto() -> Result<()> {
+    fn test_place_flip_auto_creates_pair_post_allegretto() -> Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
