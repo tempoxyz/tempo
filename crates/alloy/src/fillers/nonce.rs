@@ -85,20 +85,20 @@ impl Random2DNoncesProviderExt
         JoinFill<Identity, TempoFillers<Random2DNonceFiller>>,
         TempoNetwork,
     > {
-        ProviderBuilder::default().filler(TempoFillers::<Random2DNonceFiller>::default())
+        ProviderBuilder::default().filler(TempoFillers::default())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{
-        TempoNetwork,
+        TempoFillers, TempoNetwork,
         fillers::{Random2DNonceFiller, Random2DNoncesProviderExt},
         rpc::TempoTransactionRequest,
     };
     use alloy_network::TransactionBuilder;
     use alloy_primitives::ruint::aliases::U256;
-    use alloy_provider::{ProviderBuilder, mock::Asserter};
+    use alloy_provider::{Identity, ProviderBuilder, fillers::JoinFill, mock::Asserter};
     use eyre;
 
     #[tokio::test]
@@ -135,7 +135,8 @@ mod tests {
     }
 
     #[test]
-    fn test_tempo_filler() {
-        ProviderBuilder::new_with_network::<TempoNetwork>().with_random_nonces();
+    fn test_with_random_nonces() {
+        let _: ProviderBuilder<_, JoinFill<Identity, TempoFillers<Random2DNonceFiller>>, _> =
+            ProviderBuilder::new_with_network::<TempoNetwork>().with_random_nonces();
     }
 }
