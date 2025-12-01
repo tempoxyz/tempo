@@ -42,7 +42,8 @@ use tempo_precompiles::{
     tip20::{self, ITIP20::InsufficientBalance, TIP20Error},
 };
 use tempo_primitives::transaction::{
-    AASignature, PrimitiveSignature, SignatureType, calc_gas_balance_spending,
+    AASignature, PrimitiveSignature, RecoveredAAAuthorization, SignatureType,
+    calc_gas_balance_spending,
 };
 
 use crate::{
@@ -458,6 +459,12 @@ where
             let mut refunded_accounts = 0;
 
             for authorization in &aa_tx_env.aa_authorization_list {
+                // Lazily recover authority (cached after first access)
+                let authority = match authorization.authority() {
+                    Some(addr) => addr,
+                    None => continue,
+                };
+
                 // 1. Verify the chain id is either 0 or the chain's current ID.
                 let auth_chain_id = authorization.chain_id;
                 if !auth_chain_id.is_zero() && auth_chain_id != U256::from(chain_id) {
@@ -469,16 +476,10 @@ where
                     continue;
                 }
 
-                // 3. Recover authority from AA signature
-                let authority = match authorization.recover_authority() {
-                    Ok(addr) => addr,
-                    Err(_) => continue,
-                };
-
-                // 4. Add `authority` to `accessed_addresses` (warm the account)
+                // 3. Add `authority` to `accessed_addresses` (warm the account)
                 let mut authority_acc = journal.load_account_with_code_mut(authority)?;
 
-                // 5. Verify the code of `authority` is either empty or already delegated.
+                // 4. Verify the code of `authority` is either empty or already delegated.
                 if let Some(bytecode) = &authority_acc.info.code {
                     // if it is not empty and it is not eip7702
                     if !bytecode.is_empty() && !bytecode.is_eip7702() {
@@ -486,22 +487,22 @@ where
                     }
                 }
 
-                // 6. Verify the nonce of `authority` is equal to `nonce`.
+                // 5. Verify the nonce of `authority` is equal to `nonce`.
                 if authorization.nonce != authority_acc.info.nonce {
                     continue;
                 }
 
-                // 7. Add gas refund if authority already exists
+                // 6. Add gas refund if authority already exists
                 if !(authority_acc.is_empty()
                     && authority_acc.is_loaded_as_not_existing_not_touched())
                 {
                     refunded_accounts += 1;
                 }
 
-                // 8. Set the code of `authority` to be `0xef0100 || address`. This is a delegation designation.
+                // 7. Set the code of `authority` to be `0xef0100 || address`. This is a delegation designation.
                 //  * As a special case, if `address` is `0x0000000000000000000000000000000000000000` do not write the designation.
                 //    Clear the accounts code and reset the account's code hash to the empty hash `0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470`.
-                // 9. Increase the nonce of `authority` by one.
+                // 8. Increase the nonce of `authority` by one.
                 authority_acc.delegate(*authorization.address());
             }
 
@@ -1074,7 +1075,7 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     calls: &[tempo_primitives::transaction::Call],
     signature: &AASignature,
     access_list: Option<impl Iterator<Item = &'a AccessListItem>>,
-    aa_authorization_list: &[tempo_primitives::transaction::AASignedAuthorization],
+    aa_authorization_list: &[RecoveredAAAuthorization],
 ) -> Result<InitialAndFloorGas, TempoInvalidTransaction> {
     let mut gas = InitialAndFloorGas::default();
 
