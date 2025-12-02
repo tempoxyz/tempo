@@ -24,7 +24,6 @@ use futures::{FutureExt as _, future::FusedFuture as _};
 use reth_ethereum::{
     chainspec::EthChainSpec as _,
     cli::{Cli, Commands},
-    evm::revm::primitives::B256,
 };
 use reth_ethereum_cli as _;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
@@ -176,24 +175,14 @@ fn main() -> eyre::Result<()> {
     });
 
     let components = |spec: Arc<TempoChainSpec>| {
-        (
-            TempoEvmConfig::new(spec.clone(), TempoEvmFactory::default()),
-            TempoConsensus::new(spec),
-        )
+        (TempoEvmConfig::new(spec.clone(), TempoEvmFactory::default()), TempoConsensus::new(spec))
     };
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
         let faucet_args = args.faucet_args.clone();
-        let validator_key = args
-            .consensus
-            .public_key()?
-            .map(|key| B256::from_slice(key.as_ref()));
 
-        let NodeHandle {
-            node,
-            node_exit_future,
-        } = builder
-            .node(TempoNode::new(&args.node_args, validator_key))
+        let NodeHandle { node, node_exit_future } = builder
+            .node(TempoNode::new(&args.node_args))
             .apply(|mut builder: WithLaunchContext<_>| {
                 if let Some(follow_url) = &args.follow {
                     builder.config_mut().debug.rpc_consensus_url = Some(follow_url.clone());

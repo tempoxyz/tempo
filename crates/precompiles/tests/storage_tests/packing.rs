@@ -3,7 +3,7 @@
 //! This module tests the Storable derive macro's implementation of storage packing,
 //! verifying that fields are correctly packed into slots according to Solidity's rules.
 
-use tempo_precompiles::storage::{Layout, packing::gen_slot_from};
+use tempo_precompiles::storage::packing::gen_slot_from;
 
 use super::*;
 
@@ -105,14 +105,8 @@ struct PartiallyPacked {
 }
 
 fn arb_partially_packed() -> impl Strategy<Value = PartiallyPacked> {
-    (arb_address(), any::<bool>(), arb_u256(), arb_address()).prop_map(
-        |(addr1, flag, value, addr2)| PartiallyPacked {
-            addr1,
-            flag,
-            value,
-            addr2,
-        },
-    )
+    (arb_address(), any::<bool>(), arb_u256(), arb_address())
+        .prop_map(|(addr1, flag, value, addr2)| PartiallyPacked { addr1, flag, value, addr2 })
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Storable)]
@@ -124,14 +118,8 @@ struct WithNestedStruct {
 }
 
 fn arb_with_nested_struct() -> impl Strategy<Value = WithNestedStruct> {
-    (any::<i16>(), arb_packed_two(), any::<bool>(), arb_u256()).prop_map(
-        |(id, nested, active, value)| WithNestedStruct {
-            id,
-            nested,
-            active,
-            value,
-        },
-    )
+    (any::<i16>(), arb_packed_two(), any::<bool>(), arb_u256())
+        .prop_map(|(id, nested, active, value)| WithNestedStruct { id, nested, active, value })
 }
 
 // Multi-level nesting
@@ -143,13 +131,8 @@ struct DeepNested {
 }
 
 fn arb_deep_nested() -> impl Strategy<Value = DeepNested> {
-    (any::<bool>(), arb_with_nested_struct(), any::<u64>()).prop_map(|(flag, nested, counter)| {
-        DeepNested {
-            flag,
-            nested,
-            counter,
-        }
-    })
+    (any::<bool>(), arb_with_nested_struct(), any::<u64>())
+        .prop_map(|(flag, nested, counter)| DeepNested { flag, nested, counter })
 }
 
 // Struct to test slot boundary at exactly 32 bytes
@@ -162,36 +145,38 @@ struct ExactFit {
 #[test]
 fn test_slot_and_byte_counts() {
     // Rule verification
-    Rule1Test::validate_layout();
-    assert_eq!(Rule1Test::LAYOUT, Layout::Slots(2));
+    assert_eq!(Rule1Test::SLOT_COUNT, 2);
+    assert_eq!(Rule1Test::BYTE_COUNT, 64);
 
-    Rule2Test::validate_layout();
-    assert_eq!(Rule2Test::LAYOUT, Layout::Slots(1));
+    assert_eq!(Rule2Test::SLOT_COUNT, 1);
+    assert_eq!(Rule2Test::BYTE_COUNT, 32);
 
-    Rule3TestFull::validate_layout();
-    assert_eq!(Rule3TestFull::LAYOUT, Layout::Slots(2));
+    assert_eq!(Rule3TestFull::SLOT_COUNT, 2);
+    assert_eq!(Rule3TestFull::BYTE_COUNT, 64);
 
-    Rule3TestPartial::validate_layout();
-    assert_eq!(Rule3TestPartial::LAYOUT, Layout::Slots(2));
+    assert_eq!(Rule3TestPartial::SLOT_COUNT, 2);
+    assert_eq!(Rule3TestPartial::BYTE_COUNT, 64);
 
-    Rule4Test::validate_layout();
-    assert_eq!(Rule4Test::LAYOUT, Layout::Slots(3));
+    assert_eq!(Rule4Test::SLOT_COUNT, 3);
+    assert_eq!(Rule4Test::BYTE_COUNT, 96);
 
     // Basic packed types
-    PackedTwo::validate_layout();
-    assert_eq!(PackedTwo::LAYOUT, Layout::Slots(1));
+    assert_eq!(PackedTwo::SLOT_COUNT, 1);
+    assert_eq!(PackedTwo::BYTE_COUNT, 32);
+    assert_eq!(PackedThree::SLOT_COUNT, 1);
+    assert_eq!(PackedThree::BYTE_COUNT, 32);
 
     // Partially packed types
-    PartiallyPacked::validate_layout();
-    assert_eq!(PartiallyPacked::LAYOUT, Layout::Slots(3));
+    assert_eq!(PartiallyPacked::SLOT_COUNT, 3);
+    assert_eq!(PartiallyPacked::BYTE_COUNT, 96);
 
     // Nested structs
-    WithNestedStruct::validate_layout();
-    assert_eq!(WithNestedStruct::LAYOUT, Layout::Slots(4));
+    assert_eq!(WithNestedStruct::SLOT_COUNT, 4);
+    assert_eq!(WithNestedStruct::BYTE_COUNT, 128);
 
     // Multi-level nesting
-    DeepNested::validate_layout();
-    assert_eq!(DeepNested::LAYOUT, Layout::Slots(6));
+    assert_eq!(DeepNested::SLOT_COUNT, 6);
+    assert_eq!(DeepNested::BYTE_COUNT, 192);
 }
 
 proptest! {
@@ -371,14 +356,9 @@ fn test_packed_two_slot_contents() {
     let mut storage = setup_storage();
     let base_slot = U256::from(100);
 
-    let value = PackedTwo {
-        addr: Address::from([0x12; 20]),
-        count: 0x1234567890ABCDEF,
-    };
+    let value = PackedTwo { addr: Address::from([0x12; 20]), count: 0x1234567890ABCDEF };
 
-    value
-        .store(&mut storage, base_slot, LayoutCtx::FULL)
-        .unwrap();
+    value.store(&mut storage, base_slot).unwrap();
 
     // PackedTwo should occupy 1 slot with addr (20 bytes) + count (8 bytes)
     let addr = storage.address();
@@ -397,15 +377,9 @@ fn test_packed_three_slot_contents() {
     let mut storage = setup_storage();
     let base_slot = U256::from(200);
 
-    let value = PackedThree {
-        a: 0x1111111111111111,
-        b: 0x2222222222222222,
-        c: 0x3333333333333333,
-    };
+    let value = PackedThree { a: 0x1111111111111111, b: 0x2222222222222222, c: 0x3333333333333333 };
 
-    value
-        .store(&mut storage, base_slot, LayoutCtx::FULL)
-        .unwrap();
+    value.store(&mut storage, base_slot).unwrap();
 
     // PackedThree should occupy exactly 1 slot with three u64s (24 bytes total)
     let addr = storage.address();
@@ -435,9 +409,7 @@ fn test_rule2_slot_contents() {
         d: 0x123456789ABCDEF0, // 8 bytes
     };
 
-    value
-        .store(&mut storage, base_slot, LayoutCtx::FULL)
-        .unwrap();
+    value.store(&mut storage, base_slot).unwrap();
 
     // Rule2Test packs all fields into slot 0 (15 bytes total)
     let addr = storage.address();
@@ -469,9 +441,7 @@ fn test_partially_packed_slot_contents() {
         addr2: Address::from([0xBB; 20]),
     };
 
-    value
-        .store(&mut storage, base_slot, LayoutCtx::FULL)
-        .unwrap();
+    value.store(&mut storage, base_slot).unwrap();
 
     // PartiallyPacked layout:
     // Slot 0: addr1 (20 bytes) + flag (1 byte) = 21 bytes (packed)
@@ -480,14 +450,8 @@ fn test_partially_packed_slot_contents() {
 
     let addr = storage.address();
     let slot0 = storage.storage().sload(addr, base_slot).unwrap();
-    let slot1 = storage
-        .storage()
-        .sload(addr, base_slot + U256::ONE)
-        .unwrap();
-    let slot2 = storage
-        .storage()
-        .sload(addr, base_slot + U256::from(2))
-        .unwrap();
+    let slot1 = storage.storage().sload(addr, base_slot + U256::ONE).unwrap();
+    let slot2 = storage.storage().sload(addr, base_slot + U256::from(2)).unwrap();
 
     // Verify slot 0 fields
     let expected = gen_slot_from(&[
@@ -500,11 +464,7 @@ fn test_partially_packed_slot_contents() {
     assert_eq!(slot1, value.value, "value field mismatch in slot 1");
 
     // Verify slot 2: addr2 is alone in its slot, so it's stored right-aligned (natural storage)
-    assert_eq!(
-        Address::from_word(slot2.into()),
-        value.addr2,
-        "addr2 field mismatch in slot 2"
-    );
+    assert_eq!(Address::from_word(slot2.into()), value.addr2, "addr2 field mismatch in slot 2");
 }
 
 #[test]
@@ -513,14 +473,9 @@ fn test_partial_update_preserves_adjacent_fields() {
     let base_slot = U256::from(500);
 
     // Store initial value with all fields set
-    let initial = PackedThree {
-        a: 0x1111111111111111,
-        b: 0x2222222222222222,
-        c: 0x3333333333333333,
-    };
-    initial
-        .store(&mut storage, base_slot, LayoutCtx::FULL)
-        .unwrap();
+    let initial =
+        PackedThree { a: 0x1111111111111111, b: 0x2222222222222222, c: 0x3333333333333333 };
+    initial.store(&mut storage, base_slot).unwrap();
 
     // Update only field b
     let updated = PackedThree {
@@ -528,9 +483,7 @@ fn test_partial_update_preserves_adjacent_fields() {
         b: 0x9999999999999999, // changed
         c: 0x3333333333333333,
     };
-    updated
-        .store(&mut storage, base_slot, LayoutCtx::FULL)
-        .unwrap();
+    updated.store(&mut storage, base_slot).unwrap();
 
     // Verify that fields a and c are unchanged
     let addr = storage.address();
@@ -558,51 +511,25 @@ fn test_delete_zeros_all_slots() {
     };
 
     // Store the value (uses 3 slots)
-    value
-        .store(&mut storage, base_slot, LayoutCtx::FULL)
-        .unwrap();
+    value.store(&mut storage, base_slot).unwrap();
 
     // Verify slots are non-zero
     let addr = storage.address();
     let slot0_before = storage.storage().sload(addr, base_slot).unwrap();
-    let slot1_before = storage
-        .storage()
-        .sload(addr, base_slot + U256::ONE)
-        .unwrap();
-    let slot2_before = storage
-        .storage()
-        .sload(addr, base_slot + U256::from(2))
-        .unwrap();
+    let slot1_before = storage.storage().sload(addr, base_slot + U256::ONE).unwrap();
+    let slot2_before = storage.storage().sload(addr, base_slot + U256::from(2)).unwrap();
 
-    assert_ne!(
-        slot0_before,
-        U256::ZERO,
-        "slot 0 should be non-zero before delete"
-    );
-    assert_ne!(
-        slot1_before,
-        U256::ZERO,
-        "slot 1 should be non-zero before delete"
-    );
-    assert_ne!(
-        slot2_before,
-        U256::ZERO,
-        "slot 2 should be non-zero before delete"
-    );
+    assert_ne!(slot0_before, U256::ZERO, "slot 0 should be non-zero before delete");
+    assert_ne!(slot1_before, U256::ZERO, "slot 1 should be non-zero before delete");
+    assert_ne!(slot2_before, U256::ZERO, "slot 2 should be non-zero before delete");
 
     // Delete the value
-    PartiallyPacked::delete(&mut storage, base_slot, LayoutCtx::FULL).unwrap();
+    PartiallyPacked::delete(&mut storage, base_slot).unwrap();
 
     // Verify all slots are now zero
     let slot0_after = storage.storage().sload(addr, base_slot).unwrap();
-    let slot1_after = storage
-        .storage()
-        .sload(addr, base_slot + U256::ONE)
-        .unwrap();
-    let slot2_after = storage
-        .storage()
-        .sload(addr, base_slot + U256::from(2))
-        .unwrap();
+    let slot1_after = storage.storage().sload(addr, base_slot + U256::ONE).unwrap();
+    let slot2_after = storage.storage().sload(addr, base_slot + U256::from(2)).unwrap();
 
     assert_eq!(slot0_after, U256::ZERO, "slot 0 not zeroed after delete");
     assert_eq!(slot1_after, U256::ZERO, "slot 1 not zeroed after delete");
@@ -614,23 +541,15 @@ fn test_slot_boundary_at_32_bytes() {
     let mut storage = setup_storage();
     let base_slot = U256::from(800);
 
-    let value = ExactFit {
-        data: U256::from(0x123456789ABCDEFu64),
-        flag: true,
-    };
+    let value = ExactFit { data: U256::from(0x123456789ABCDEFu64), flag: true };
 
-    value
-        .store(&mut storage, base_slot, LayoutCtx::FULL)
-        .unwrap();
+    value.store(&mut storage, base_slot).unwrap();
 
     // Slot 0: data (32 bytes) - fills entire slot
     // Slot 1: flag (1 byte)
     let addr = storage.address();
     let slot0 = storage.storage().sload(addr, base_slot).unwrap();
-    let slot1 = storage
-        .storage()
-        .sload(addr, base_slot + U256::ONE)
-        .unwrap();
+    let slot1 = storage.storage().sload(addr, base_slot + U256::ONE).unwrap();
 
     assert_eq!(slot0, value.data, "data field mismatch in slot 0");
     assert_eq!(slot1, U256::from(value.flag), "flag");

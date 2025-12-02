@@ -41,21 +41,13 @@ impl AASigned {
         let value = OnceLock::new();
         #[allow(clippy::useless_conversion)]
         value.get_or_init(|| hash.into());
-        Self {
-            tx,
-            signature,
-            hash: value,
-        }
+        Self { tx, signature, hash: value }
     }
 
     /// Instantiate from a transaction and signature without computing the hash.
     /// Does not verify the signature.
     pub const fn new_unhashed(tx: TxAA, signature: AASignature) -> Self {
-        Self {
-            tx,
-            signature,
-            hash: OnceLock::new(),
-        }
+        Self { tx, signature, hash: OnceLock::new() }
     }
 
     /// Returns a reference to the transaction.
@@ -102,10 +94,7 @@ impl AASigned {
     #[inline]
     fn rlp_header(&self) -> alloy_rlp::Header {
         let payload_length = self.tx.rlp_encoded_fields_length_default() + self.signature.length();
-        alloy_rlp::Header {
-            list: true,
-            payload_length,
-        }
+        alloy_rlp::Header { list: true, payload_length }
     }
 
     /// Encode the transaction fields and signature as RLP list (without type byte)
@@ -240,11 +229,7 @@ impl Transaction for AASigned {
     #[inline]
     fn kind(&self) -> TxKind {
         // Return first call's `to` or Create if empty
-        self.tx
-            .calls
-            .first()
-            .map(|c| c.to)
-            .unwrap_or(TxKind::Create)
+        self.tx.calls.first().map(|c| c.to).unwrap_or(TxKind::Create)
     }
 
     #[inline]
@@ -255,21 +240,14 @@ impl Transaction for AASigned {
     #[inline]
     fn value(&self) -> U256 {
         // Return sum of all call values
-        self.tx
-            .calls
-            .iter()
-            .fold(U256::ZERO, |acc, call| acc + call.value)
+        self.tx.calls.iter().fold(U256::ZERO, |acc, call| acc + call.value)
     }
 
     #[inline]
     fn input(&self) -> &Bytes {
         // Return first call's input or empty
         static EMPTY_BYTES: Bytes = Bytes::new();
-        self.tx
-            .calls
-            .first()
-            .map(|c| &c.input)
-            .unwrap_or(&EMPTY_BYTES)
+        self.tx.calls.first().map(|c| &c.input).unwrap_or(&EMPTY_BYTES)
     }
 
     #[inline]
@@ -306,10 +284,10 @@ impl Eq for AASigned {}
 
 impl InMemorySize for AASigned {
     fn size(&self) -> usize {
-        mem::size_of::<Self>()
-            + self.tx.size()
-            + self.signature.encoded_length()
-            + mem::size_of::<B256>()
+        mem::size_of::<Self>() +
+            self.tx.size() +
+            self.signature.encoded_length() +
+            mem::size_of::<B256>()
     }
 }
 

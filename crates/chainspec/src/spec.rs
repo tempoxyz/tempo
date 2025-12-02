@@ -35,10 +35,6 @@ pub struct TempoGenesisInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     allegretto_time: Option<u64>,
 
-    /// Timestamp of Allegro-Moderato hardfork activation
-    #[serde(skip_serializing_if = "Option::is_none")]
-    allegro_moderato_time: Option<u64>,
-
     /// The epoch length used by consensus.
     #[serde(skip_serializing_if = "Option::is_none")]
     epoch_length: Option<u64>,
@@ -55,11 +51,7 @@ pub struct TempoGenesisInfo {
 impl TempoGenesisInfo {
     /// Extract Tempo genesis info from genesis extra_fields
     fn extract_from(genesis: &Genesis) -> Self {
-        genesis
-            .config
-            .extra_fields
-            .deserialize_as::<Self>()
-            .unwrap_or_default()
+        genesis.config.extra_fields.deserialize_as::<Self>().unwrap_or_default()
     }
 
     pub fn epoch_length(&self) -> Option<u64> {
@@ -110,13 +102,15 @@ pub static ANDANTINO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     TempoChainSpec::from_genesis(genesis).into()
 });
 
-/// Development chainspec with funded dev accounts and activated tempo hardforks
-///
-/// `cargo x generate-genesis -o dev.json --accounts 10`
+/// Development chainspec that extends [`ANDANTINO`] testnet with dev accounts from the vanilla
 pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
-    let genesis: Genesis = serde_json::from_str(include_str!("./genesis/dev.json"))
-        .expect("`./genesis/dev.json` must be present and deserializable");
-    TempoChainSpec::from_genesis(genesis).into()
+    let mut genesis = ANDANTINO.genesis().clone();
+    genesis.alloc.extend(reth_chainspec::DEV.genesis().alloc.clone());
+
+    let mut spec = TempoChainSpec::from_genesis(genesis);
+    // update chainid to dev
+    spec.inner.chain = Chain::dev();
+    spec.into()
 });
 
 /// Tempo chain spec type.
@@ -131,13 +125,8 @@ impl TempoChainSpec {
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
         // Extract Tempo genesis info from extra_fields
-        let info @ TempoGenesisInfo {
-            adagio_time,
-            moderato_time,
-            allegretto_time,
-            allegro_moderato_time,
-            ..
-        } = TempoGenesisInfo::extract_from(&genesis);
+        let info @ TempoGenesisInfo { adagio_time, moderato_time, allegretto_time, .. } =
+            TempoGenesisInfo::extract_from(&genesis);
 
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
@@ -146,7 +135,6 @@ impl TempoChainSpec {
             (TempoHardfork::Adagio, adagio_time),
             (TempoHardfork::Moderato, moderato_time),
             (TempoHardfork::Allegretto, allegretto_time),
-            (TempoHardfork::AllegroModerato, allegro_moderato_time),
         ]
         .into_iter()
         .filter_map(|(fork, time)| time.map(|time| (fork, ForkCondition::Timestamp(time))));
@@ -233,9 +221,7 @@ impl EthChainSpec for TempoChainSpec {
     fn display_hardforks(&self) -> Box<dyn std::fmt::Display> {
         // filter only tempo hardforks
         let tempo_forks = self.inner.hardforks.forks_iter().filter(|(fork, _)| {
-            !EthereumHardfork::VARIANTS
-                .iter()
-                .any(|h| h.name() == (*fork).name())
+            !EthereumHardfork::VARIANTS.iter().any(|h| h.name() == (*fork).name())
         });
 
         Box::new(DisplayHardforks::new(tempo_forks))
@@ -335,9 +321,7 @@ mod tests {
         assert_eq!(activation, ForkCondition::Timestamp(0));
 
         // Verify Adagio appears in forks iterator
-        let has_adagio = chainspec
-            .forks_iter()
-            .any(|(fork, _)| fork.name() == "Adagio");
+        let has_adagio = chainspec.forks_iter().any(|(fork, _)| fork.name() == "Adagio");
         assert!(has_adagio, "Adagio hardfork should be in inner.hardforks");
     }
 
@@ -366,7 +350,6 @@ mod tests {
                 "adagioTime": 1000,
                 "moderatoTime": 2000,
                 "allegrettoTime": 3000,
-                "allegroModeratoTime": 4000,
             },
             "alloc": {}
         });
@@ -450,44 +433,12 @@ mod tests {
             chainspec.is_allegretto_active_at_timestamp(4000),
             "Allegretto should be active after its activation timestamp"
         );
-
-        // Test AllegroModerato activation
-        let activation = chainspec.fork(TempoHardfork::AllegroModerato);
-        assert_eq!(
-            activation,
-            ForkCondition::Timestamp(4000),
-            "AllegroModerato should be activated at the parsed timestamp from extra_fields"
-        );
-
-        assert!(
-            !chainspec.is_allegro_moderato_active_at_timestamp(0),
-            "AllegroModerato should not be active before its activation timestamp"
-        );
-        assert!(
-            !chainspec.is_allegro_moderato_active_at_timestamp(1000),
-            "AllegroModerato should not be active at Adagio's activation timestamp"
-        );
-        assert!(
-            !chainspec.is_allegro_moderato_active_at_timestamp(2000),
-            "AllegroModerato should not be active at Moderato's activation timestamp"
-        );
-        assert!(
-            !chainspec.is_allegro_moderato_active_at_timestamp(3000),
-            "AllegroModerato should not be active at Allegretto's activation timestamp"
-        );
-        assert!(
-            chainspec.is_allegro_moderato_active_at_timestamp(4000),
-            "AllegroModerato should be active at its activation timestamp"
-        );
-        assert!(
-            chainspec.is_allegro_moderato_active_at_timestamp(5000),
-            "AllegroModerato should be active after its activation timestamp"
-        );
     }
 
     #[test]
     fn test_tempo_hardforks_are_ordered_correctly() {
-        // Create a genesis where Adagio should appear between Shanghai (time 0) and Cancun (time 2000)
+        // Create a genesis where Adagio should appear between Shanghai (time 0) and Cancun (time
+        // 2000)
         let genesis_json = json!({
             "config": {
                 "chainId": 1337,
@@ -520,15 +471,11 @@ mod tests {
         let forks: Vec<_> = chainspec.inner.hardforks.forks_iter().collect();
 
         // Find positions of Shanghai, Adagio, and Cancun
-        let shanghai_pos = forks
-            .iter()
-            .position(|(f, _)| f.name() == EthereumHardfork::Shanghai.name());
-        let adagio_pos = forks
-            .iter()
-            .position(|(f, _)| f.name() == TempoHardfork::Adagio.name());
-        let cancun_pos = forks
-            .iter()
-            .position(|(f, _)| f.name() == EthereumHardfork::Cancun.name());
+        let shanghai_pos =
+            forks.iter().position(|(f, _)| f.name() == EthereumHardfork::Shanghai.name());
+        let adagio_pos = forks.iter().position(|(f, _)| f.name() == TempoHardfork::Adagio.name());
+        let cancun_pos =
+            forks.iter().position(|(f, _)| f.name() == EthereumHardfork::Cancun.name());
 
         assert!(shanghai_pos.is_some(), "Shanghai should be present");
         assert!(adagio_pos.is_some(), "Adagio should be present");
@@ -572,8 +519,7 @@ mod tests {
                 "cancunTime": 0,
                 "adagioTime": 1000,
                 "moderatoTime": 2000,
-                "allegrettoTime": 3000,
-                "allegroModeratoTime": 4000
+                "allegrettoTime": 3000
             },
             "alloc": {}
         });
@@ -625,25 +571,11 @@ mod tests {
             "Should return Allegretto at its activation time"
         );
 
-        // Between Allegretto and AllegroModerato
-        assert_eq!(
-            chainspec.tempo_hardfork_at(3500),
-            TempoHardfork::Allegretto,
-            "Should return Allegretto between Allegretto and AllegroModerato activation"
-        );
-
-        // At AllegroModerato time
+        // After Allegretto
         assert_eq!(
             chainspec.tempo_hardfork_at(4000),
-            TempoHardfork::AllegroModerato,
-            "Should return AllegroModerato at its activation time"
-        );
-
-        // After AllegroModerato
-        assert_eq!(
-            chainspec.tempo_hardfork_at(5000),
-            TempoHardfork::AllegroModerato,
-            "Should return AllegroModerato after its activation time"
+            TempoHardfork::Allegretto,
+            "Should return Allegretto after its activation time"
         );
     }
 }

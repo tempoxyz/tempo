@@ -23,13 +23,9 @@ impl Mailbox {
     ) -> eyre::Result<Option<IntermediateOutcome>> {
         let (response, rx) = oneshot::channel();
         self.inner
-            .unbounded_send(Message::in_current_span(GetIntermediateDealing {
-                epoch,
-                response,
-            }))
+            .unbounded_send(Message::in_current_span(GetIntermediateDealing { epoch, response }))
             .wrap_err("failed sending message to actor")?;
-        rx.await
-            .wrap_err("actor dropped channel before responding with ceremony deal outcome")
+        rx.await.wrap_err("actor dropped channel before responding with ceremony deal outcome")
     }
 
     pub(crate) async fn get_public_ceremony_outcome(&self) -> eyre::Result<PublicOutcome> {
@@ -37,8 +33,7 @@ impl Mailbox {
         self.inner
             .unbounded_send(Message::in_current_span(GetOutcome { response }))
             .wrap_err("failed sending message to actor")?;
-        rx.await
-            .wrap_err("actor dropped channel before responding with ceremony deal outcome")
+        rx.await.wrap_err("actor dropped channel before responding with ceremony deal outcome")
     }
 
     /// Verifies the `dealing` based on the current status of the DKG actor.
@@ -48,10 +43,10 @@ impl Mailbox {
     /// dealings require different verification, this verification relies on two
     /// assumptions:
     ///
-    /// 1. only propoosals from the currently running and latest epoch will have
-    ///    to be verified except for the last height.
-    /// 2. DKG dealings are only written into a block up to and excluding the
-    ///    last height of an epoch.
+    /// 1. only propoosals from the currently running and latest epoch will have to be verified
+    ///    except for the last height.
+    /// 2. DKG dealings are only written into a block up to and excluding the last height of an
+    ///    epoch.
     pub(crate) async fn verify_intermediate_dealings(
         &self,
         dealing: IntermediateOutcome,
@@ -63,8 +58,7 @@ impl Mailbox {
                 response,
             }))
             .wrap_err("failed sending message to actor")?;
-        rx.await
-            .wrap_err("actor dropped channel before responding with ceremony info")
+        rx.await.wrap_err("actor dropped channel before responding with ceremony info")
     }
 }
 
@@ -75,10 +69,7 @@ pub(super) struct Message {
 
 impl Message {
     fn in_current_span(cmd: impl Into<Command>) -> Self {
-        Self {
-            cause: Span::current(),
-            command: cmd.into(),
-        }
+        Self { cause: Span::current(), command: cmd.into() }
     }
 }
 

@@ -15,7 +15,6 @@ use tempo_dkg_onchain_artifacts::IntermediateOutcome;
 use crate::consensus::Digest;
 
 /// A Tempo block.
-///
 // XXX: This is a refinement type around a reth [`SealedBlock`]
 // to hold the trait implementations required by commonwarexyz. Uses
 // Sealed because of the frequent accesses to the hash.
@@ -87,8 +86,8 @@ impl Read for Block {
         })?;
 
         if header.length_with_payload() > buf.remaining() {
-            // TODO: it would be nice to report more information here, but commonware_codex::Error does not
-            // have the fidelity for it (outside abusing Error::Wrapped).
+            // TODO: it would be nice to report more information here, but commonware_codex::Error
+            // does not have the fidelity for it (outside abusing Error::Wrapped).
             return Err(commonware_codec::Error::EndOfBuffer);
         }
         let bytes = buf.copy_to_bytes(header.length_with_payload());
@@ -203,13 +202,13 @@ impl commonware_consensus::Block for Block {
 //     type Cfg = ();
 
 //     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
-//         // FIXME: wrapping this to give it some context on what exactly failed, but it doesn't feel great.
-//         // Problem is the catch-all `commonware_codex:Error`.
+//         // FIXME: wrapping this to give it some context on what exactly failed, but it doesn't
+// feel great.         // Problem is the catch-all `commonware_codex:Error`.
 //         let proof = Notarization::read(buf)
-//             .map_err(|err| commonware_codec::Error::Wrapped("failed to read proof", err.into()))?;
-//         let block = Block::read(buf)
-//             .map_err(|err| commonware_codec::Error::Wrapped("failed to read block", err.into()))?;
-//         Self::try_new(proof, block).map_err(|err| {
+//             .map_err(|err| commonware_codec::Error::Wrapped("failed to read proof",
+// err.into()))?;         let block = Block::read(buf)
+//             .map_err(|err| commonware_codec::Error::Wrapped("failed to read block",
+// err.into()))?;         Self::try_new(proof, block).map_err(|err| {
 //             commonware_codec::Error::Wrapped("failed constructing notarized block", err.into())
 //         })
 //     }
@@ -283,13 +282,13 @@ impl commonware_consensus::Block for Block {
 //     type Cfg = ();
 
 //     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
-//         // FIXME: wrapping this to give it some context on what exactly failed, but it doesn't feel great.
-//         // Problem is the catch-all `commonware_codex:Error`.
+//         // FIXME: wrapping this to give it some context on what exactly failed, but it doesn't
+// feel great.         // Problem is the catch-all `commonware_codex:Error`.
 //         let proof = Finalization::read(buf)
-//             .map_err(|err| commonware_codec::Error::Wrapped("failed to read proof", err.into()))?;
-//         let block = Block::read(buf)
-//             .map_err(|err| commonware_codec::Error::Wrapped("failed to read block", err.into()))?;
-//         Self::try_new(proof, block).map_err(|err| {
+//             .map_err(|err| commonware_codec::Error::Wrapped("failed to read proof",
+// err.into()))?;         let block = Block::read(buf)
+//             .map_err(|err| commonware_codec::Error::Wrapped("failed to read block",
+// err.into()))?;         Self::try_new(proof, block).map_err(|err| {
 //             commonware_codec::Error::Wrapped("failed constructing finalized block", err.into())
 //         })
 //     }

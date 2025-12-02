@@ -8,7 +8,6 @@
 //! - `storable_rust_ints!` macro for generating standard Rust integer storage implementations
 
 mod layout;
-mod packing;
 mod storable;
 mod storable_primitives;
 mod storable_tests;
@@ -30,7 +29,8 @@ const RESERVED: &[&str] = &["address", "storage", "msg_sender"];
 
 /// Transforms a struct that represents a storage layout into a contract with helper methods to
 /// easily interact with the EVM storage.
-/// Its packing and encoding schemes aim to be an exact representation of the storage model used by Solidity.
+/// Its packing and encoding schemes aim to be an exact representation of the storage model used by
+/// Solidity.
 ///
 /// # Input: Storage Layout
 ///
@@ -88,18 +88,25 @@ struct FieldInfo {
 }
 
 /// Classification of a field based on its type
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 enum FieldKind<'a> {
-    /// Fields with a direct slot allocation, either single or multi (`Slot<V>`).
-    Slot(&'a Type),
-    /// Single-level mapping (`Mapping<K, V>`)
+    /// Direct value field (single-slot type).
+    Direct,
+    /// Single-level mapping (Mapping<K, V>)
     Mapping { key: &'a Type, value: &'a Type },
-    /// Nested mapping (`Mapping<K1, Mapping<K2, V>>`)
-    NestedMapping {
-        key1: &'a Type,
-        key2: &'a Type,
-        value: &'a Type,
-    },
+    /// Nested mapping (Mapping<K1, Mapping<K2, V>>)
+    NestedMapping { key1: &'a Type, key2: &'a Type, value: &'a Type },
+    /// Multi-slot storage block (custom struct implementing `trait Storable`)
+    StorageBlock(&'a Type),
+}
+
+impl FieldKind<'_> {
+    pub(crate) fn is_mapping(&self) -> bool {
+        matches!(self, FieldKind::Mapping { .. } | FieldKind::NestedMapping { .. })
+    }
+    pub(crate) fn is_direct(&self) -> bool {
+        matches!(self, FieldKind::Direct)
+    }
 }
 
 fn parse_fields(input: DeriveInput) -> syn::Result<Vec<FieldInfo>> {
@@ -112,8 +119,8 @@ fn parse_fields(input: DeriveInput) -> syn::Result<Vec<FieldInfo>> {
     }
 
     // Ensure struct with named fields
-    let named_fields = if let Data::Struct(data) = input.data
-        && let Fields::Named(fields) = data.fields
+    let named_fields = if let Data::Struct(data) = input.data &&
+        let Fields::Named(fields) = data.fields
     {
         fields.named
     } else {
@@ -140,12 +147,7 @@ fn parse_fields(input: DeriveInput) -> syn::Result<Vec<FieldInfo>> {
             }
 
             let (slot, base_slot) = extract_attributes(&field.attrs)?;
-            Ok(FieldInfo {
-                name: name.to_owned(),
-                ty: field.ty,
-                slot,
-                base_slot,
-            })
+            Ok(FieldInfo { name: name.to_owned(), ty: field.ty, slot, base_slot })
         })
         .collect()
 }
@@ -157,32 +159,21 @@ fn gen_contract_storage(
     fields: &[FieldInfo],
 ) -> syn::Result<proc_macro2::TokenStream> {
     // Generate the complete output
-    let allocated_fields = packing::allocate_slots(fields)?;
+    let allocated_fields = layout::allocate_slots(fields)?;
     let transformed_struct = layout::gen_struct(ident, vis);
     let storage_trait = layout::gen_contract_storage_impl(ident);
     let constructor = layout::gen_constructor(ident);
     let methods: Vec<_> = allocated_fields
         .iter()
-        .enumerate()
-        .map(|(idx, allocated)| {
-            let prev_field = if idx > 0 {
-                Some(&allocated_fields[idx - 1])
-            } else {
-                None
-            };
-            let next_field = if idx + 1 < allocated_fields.len() {
-                Some(&allocated_fields[idx + 1])
-            } else {
-                None
-            };
-            layout::gen_getters_and_setters(ident, allocated, prev_field, next_field)
-        })
+        .map(|allocated| layout::gen_getters_and_setters(ident, allocated))
         .collect();
 
-    let slots_module = layout::gen_slots_module(&allocated_fields);
+    let (slot_types_for_reexport, slots_module_with_types) =
+        layout::gen_slots_module_with_types(&allocated_fields);
 
     let output = quote! {
-        #slots_module
+        #slots_module_with_types
+        #slot_types_for_reexport
         #transformed_struct
         #constructor
         #storage_trait
@@ -309,8 +300,8 @@ pub fn gen_storable_tests(_input: TokenStream) -> TokenStream {
 /// - FixedBytes<20>, FixedBytes<32>
 ///
 /// Each array gets:
-/// - `StorableType` impl with `LAYOUT = Layout::Slot`
-/// - `Storable<SLOTS>` impl where `SLOTS` is computed from element packing
+/// - `StorableType` impl with `BYTE_COUNT = SLOT_COUNT * 32`
+/// - `Storable<N>` impl where N is computed from element packing
 #[proc_macro]
 pub fn storable_arrays(_input: TokenStream) -> TokenStream {
     storable_primitives::gen_storable_arrays().into()
@@ -345,11 +336,11 @@ pub fn gen_test_fields_layout(input: TokenStream) -> TokenStream {
         .into_iter()
         .map(|ident| {
             let field_name = ident.to_string();
-            let const_name = field_name.to_uppercase();
+            let uppercase_name = field_name.to_uppercase();
             let field_name = utils::to_camel_case(&field_name);
-            let slot_ident = Ident::new(&const_name, ident.span());
-            let offset_ident = Ident::new(&format!("{const_name}_OFFSET"), ident.span());
-            let bytes_ident = Ident::new(&format!("{const_name}_BYTES"), ident.span());
+            let slot_ident = Ident::new(&uppercase_name, ident.span());
+            let offset_ident = Ident::new(&format!("{uppercase_name}_OFFSET"), ident.span());
+            let bytes_ident = Ident::new(&format!("{uppercase_name}_BYTES"), ident.span());
 
             quote! {
                 RustStorageField::new(#field_name, slots::#slot_ident, slots::#offset_ident, slots::#bytes_ident)
@@ -390,13 +381,12 @@ pub fn gen_test_fields_struct(input: TokenStream) -> TokenStream {
             let field_name = ident.to_string();
             let const_name = field_name.to_uppercase();
             let field_name = utils::to_camel_case(&field_name);
-            let slot_ident = Ident::new(&const_name, ident.span());
+            let slot_ident = Ident::new(&format!("{const_name}_SLOT",), ident.span());
             let offset_ident = Ident::new(&format!("{const_name}_OFFSET"), ident.span());
-            let loc_ident = Ident::new(&format!("{const_name}_LOC"), ident.span());
-            let bytes_ident = quote! {#loc_ident.size};
+            let bytes_ident = Ident::new(&format!("{const_name}_BYTES"), ident.span());
 
             quote! {
-                RustStorageField::new(#field_name, #base_slot + #slot_ident, #offset_ident, #bytes_ident)
+                RustStorageField::new(#field_name, #base_slot + alloy_primitives::U256::from(#slot_ident), #offset_ident, #bytes_ident)
             }
         })
         .collect();

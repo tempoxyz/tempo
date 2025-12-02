@@ -15,10 +15,10 @@ pub(super) async fn setup(
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
 ) -> eyre::Result<(Address, Vec<Address>)> {
+    info!(signers = signer_providers.len(), user_tokens, "Setting up DEX");
+
     // Grab first signer provider
-    let (signer, provider) = signer_providers
-        .first()
-        .ok_or_eyre("No signer providers found")?;
+    let (signer, provider) = signer_providers.first().unwrap();
     let caller = signer.address();
 
     info!("Creating tokens");
@@ -33,19 +33,10 @@ pub(super) async fn setup(
         .try_collect::<Vec<_>>()
         .await?;
 
-    let user_token_addresses = user_tokens
-        .iter()
-        .map(|token| *token.address())
-        .collect::<Vec<_>>();
-    let all_tokens = user_tokens
-        .iter()
-        .cloned()
-        .chain(std::iter::once(quote_token.clone()))
-        .collect::<Vec<_>>();
-    let all_token_addresses = all_tokens
-        .iter()
-        .map(|token| *token.address())
-        .collect::<Vec<_>>();
+    let user_token_addresses = user_tokens.iter().map(|token| *token.address()).collect::<Vec<_>>();
+    let all_tokens =
+        user_tokens.iter().cloned().chain(std::iter::once(quote_token.clone())).collect::<Vec<_>>();
+    let all_token_addresses = all_tokens.iter().map(|token| *token.address()).collect::<Vec<_>>();
 
     // Create exchange pairs for each user token
     info!("Creating exchange pairs");
@@ -76,8 +67,8 @@ pub(super) async fn setup(
             .iter()
             .map(|(signer, _)| signer.address())
             .flat_map(|signer| {
-                all_tokens.iter().map(move |token| {
-                    let token = token.clone();
+                #[expect(clippy::redundant_iter_cloned)] // False positive
+                all_tokens.iter().cloned().map(move |token| {
                     Box::pin(async move {
                         let tx = token.mint(signer, mint_amount);
                         tx.send().await
@@ -112,7 +103,8 @@ pub(super) async fn setup(
     .await
     .context("Failed to approve tokens")?;
 
-    // Place flip orders of `order_amount` with tick `tick_over` and flip tick `tick_under` for each signer and each token
+    // Place flip orders of `order_amount` with tick `tick_over` and flip tick `tick_under` for each
+    // signer and each token
     let order_amount = 1000000000000u128;
     let tick_over = exchange.priceToTick(100010).call().await?;
     let tick_under = exchange.priceToTick(99990).call().await?;
@@ -153,36 +145,18 @@ where
 {
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
     let receipt = factory
-        .createToken(
-            "Test".to_owned(),
-            "TEST".to_owned(),
-            "USD".to_owned(),
-            quote_token,
-            admin,
-        )
+        .createToken("Test".to_owned(), "TEST".to_owned(), "USD".to_owned(), quote_token, admin)
         .send()
         .await?
         .get_receipt()
         .await?;
-    let event = receipt
-        .decoded_log::<ITIP20Factory::TokenCreated>()
-        .ok_or_eyre("Token creation event not found")?;
-    assert_receipt(receipt)
-        .await
-        .context("Failed to create token")?;
+    let event = receipt.logs()[0].log_decode::<ITIP20Factory::TokenCreated>()?;
 
-    let token_addr = token_id_to_address(event.tokenId.to());
+    let token_addr = token_id_to_address(event.data().tokenId.to());
     let token = ITIP20::new(token_addr, provider.clone());
     let roles = IRolesAuth::new(*token.address(), provider);
-    let grant_role_receipt = roles
-        .grantRole(*ISSUER_ROLE, admin)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    assert_receipt(grant_role_receipt)
-        .await
-        .context("Failed to grant issuer role")?;
+
+    roles.grantRole(*ISSUER_ROLE, admin).send().await?.get_receipt().await?;
 
     Ok(token)
 }

@@ -31,19 +31,13 @@ pub(crate) struct GenerateLocalnet {
 
 impl GenerateLocalnet {
     pub(crate) async fn run(self) -> eyre::Result<()> {
-        let Self {
-            output,
-            force,
-            genesis_args,
-        } = self;
+        let Self { output, force, genesis_args } = self;
 
         // Copy the seed here before genesis_args are consumed.
         let seed = genesis_args.seed;
 
-        let (genesis, consensus_config) = genesis_args
-            .generate_genesis()
-            .await
-            .wrap_err("failed to generate genesis")?;
+        let (genesis, consensus_config) =
+            genesis_args.generate_genesis().await.wrap_err("failed to generate genesis")?;
 
         let consensus_config = consensus_config
             .ok_or_eyre("no consensus config generated; did you provide --validators?")?;
@@ -130,27 +124,16 @@ impl GenerateLocalnet {
 
             let signing_key_dst = validator.dst_signing_key(&output);
             std::fs::write(&signing_key_dst, config.consensus_on_disk_signing_key).wrap_err_with(
-                || {
-                    format!(
-                        "failed writing signing key to `{}`",
-                        signing_key_dst.display()
-                    )
-                },
+                || format!("failed writing signing key to `{}`", signing_key_dst.display()),
             )?;
             let signing_share_dst = validator.dst_signing_share(&output);
             std::fs::write(&signing_share_dst, config.consensus_on_disk_signing_share)
                 .wrap_err_with(|| {
-                    format!(
-                        "failed writing signing share to `{}`",
-                        signing_share_dst.display()
-                    )
+                    format!("failed writing signing share to `{}`", signing_share_dst.display())
                 })?;
             let enode_key_dst = validator.dst_dir(&output).join("enode.key");
             std::fs::write(&enode_key_dst, config.execution_p2p_disc_key).wrap_err_with(|| {
-                format!(
-                    "failed writing signing share to `{}`",
-                    enode_key_dst.display()
-                )
+                format!("failed writing signing share to `{}`", enode_key_dst.display())
             })?;
 
             println!("run the node with the following command:\n");

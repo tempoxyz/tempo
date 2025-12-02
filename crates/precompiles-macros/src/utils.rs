@@ -45,8 +45,8 @@ pub(crate) fn to_snake_case(s: &str) -> String {
 
     while let Some(c) = chars.next() {
         if c.is_uppercase() {
-            if !result.is_empty()
-                && (!prev_upper || chars.peek().is_some_and(|&next| next.is_lowercase()))
+            if !result.is_empty() &&
+                (!prev_upper || chars.peek().is_some_and(|&next| next.is_lowercase()))
             {
                 result.push('_');
             }
@@ -85,6 +85,16 @@ pub(crate) fn to_camel_case(s: &str) -> String {
     result
 }
 
+/// Converts a string from snake_case to PascalCase.
+pub(crate) fn to_pascal_case(s: &str) -> String {
+    let camel = to_camel_case(s);
+    let mut chars = camel.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+    }
+}
+
 /// Extracts `#[slot(N)]`, `#[base_slot(N)]` attributes from a field's attributes.
 ///
 /// This function iterates through the attributes a single time to find all
@@ -120,10 +130,7 @@ pub(crate) fn extract_attributes(attrs: &[Attribute]) -> syn::Result<ExtractedAt
         // Extract `#[base_slot(N)]` attribute
         else if attr.path().is_ident("base_slot") {
             if base_slot_attr.is_some() {
-                return Err(syn::Error::new_spanned(
-                    attr,
-                    "duplicate `base_slot` attribute",
-                ));
+                return Err(syn::Error::new_spanned(attr, "duplicate `base_slot` attribute"));
             }
             if slot_attr.is_some() {
                 return Err(syn::Error::new_spanned(
@@ -184,10 +191,7 @@ pub(crate) fn extract_storable_array_sizes(attrs: &[Attribute]) -> syn::Result<O
                     }
 
                     if size > 256 {
-                        return Err(syn::Error::new_spanned(
-                            &int,
-                            "Array size must not exceed 256",
-                        ));
+                        return Err(syn::Error::new_spanned(&int, "Array size must not exceed 256"));
                     }
 
                     if sizes.contains(&size) {
@@ -256,6 +260,79 @@ pub(crate) fn extract_mapping_types(ty: &Type) -> Option<(&Type, &Type)> {
     None
 }
 
+/// Guesses if a type is a custom struct by checking known storage types.
+///
+/// # Supported Types
+///
+/// - Rust: `bool`, `u<N>`, `i<N>`, String
+/// - Alloy: Address, `B<N>`, `U<N>`, `I<N>`, `Bytes`
+pub(crate) fn is_custom_struct(ty: &Type) -> bool {
+    let Type::Path(type_path) = ty else {
+        return false;
+    };
+
+    let Some(segment) = type_path.path.segments.last() else {
+        return false;
+    };
+
+    !matches!(
+        segment.ident.to_string().as_str(),
+        // Rust
+        "bool" | "String" |
+        "u8" | "u16" | "u32" | "u64" | "u128" |
+        "i8" | "i16" | "i32" | "i64" | "i128" |
+        // Alloy
+        "U8" | "U16" | "U32" | "U64" | "U128" | "U160" | "U256" |
+        "I8" | "I16" | "I32" | "I64" | "I128" | "I160" | "I256" |
+        "B8" | "B16" | "B32" | "B64" | "B128" | "B160" | "B256" |
+        "Address" | "Bytes"
+    )
+}
+
+/// Checks if a type is a dynamic type that forces slot boundaries.
+///
+/// Dynamic types (like `String`, `Bytes`, and `Vec`) always:
+/// - Start at offset 0 of a new slot
+/// - Force the next field to start at a new slot
+/// - Cannot be packed with other fields
+///
+/// This matches Solidity's storage layout rules for dynamic types.
+pub(crate) fn is_dynamic_type(ty: &Type) -> bool {
+    let Type::Path(type_path) = ty else {
+        return false;
+    };
+
+    let Some(segment) = type_path.path.segments.last() else {
+        return false;
+    };
+
+    matches!(segment.ident.to_string().as_str(), "String" | "Bytes" | "Vec")
+}
+
+/// Checks if a type is a fixed-size array type `[T; N]`.
+///
+/// Arrays, like structs and dynamic types, force slot boundaries:
+/// - Start at offset 0 of a new slot
+/// - Force the next field to start at a new slot
+/// - Cannot be packed with other fields
+///
+/// This ensures arrays maintain contiguous storage layout.
+pub(crate) fn is_array_type(ty: &Type) -> bool {
+    matches!(ty, Type::Array(_))
+}
+
+/// Checks if a type is a `Mapping` type.
+///
+/// Mappings, like structs and dynamic types, force slot boundaries:
+/// - Start at offset 0 of a new slot
+/// - Force the next field to start at a new slot
+/// - Cannot be packed with other fields
+///
+/// Unlike custom structs, mappings do NOT have a SLOT_COUNT constant.
+pub(crate) fn is_mapping_type(ty: &Type) -> bool {
+    extract_mapping_types(ty).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,5 +381,44 @@ mod tests {
         let ty: Type = parse_quote!(Vec<u8>);
         let result = extract_mapping_types(&ty);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_is_custom_struct() {
+        // Rust primitives
+        assert!(!is_custom_struct(&parse_quote!(bool)));
+        assert!(!is_custom_struct(&parse_quote!(u8)));
+        assert!(!is_custom_struct(&parse_quote!(u64)));
+        assert!(!is_custom_struct(&parse_quote!(u128)));
+        assert!(!is_custom_struct(&parse_quote!(i32)));
+        assert!(!is_custom_struct(&parse_quote!(String)));
+
+        // Alloy types
+        assert!(!is_custom_struct(&parse_quote!(U256)));
+        assert!(!is_custom_struct(&parse_quote!(B256)));
+        assert!(!is_custom_struct(&parse_quote!(Address)));
+        assert!(!is_custom_struct(&parse_quote!(Bytes)));
+        assert!(!is_custom_struct(&parse_quote!(I256)));
+
+        // Custom types should return false
+        assert!(is_custom_struct(&parse_quote!(RewardStream)));
+        assert!(is_custom_struct(&parse_quote!(MyCustomStruct)));
+    }
+
+    #[test]
+    fn test_is_dynamic_type() {
+        // Dynamic types
+        assert!(is_dynamic_type(&parse_quote!(String)));
+        assert!(is_dynamic_type(&parse_quote!(Bytes)));
+        assert!(is_dynamic_type(&parse_quote!(Vec<u8>)));
+        assert!(is_dynamic_type(&parse_quote!(Vec<U256>)));
+
+        // Non-dynamic types
+        assert!(!is_dynamic_type(&parse_quote!(bool)));
+        assert!(!is_dynamic_type(&parse_quote!(u8)));
+        assert!(!is_dynamic_type(&parse_quote!(u64)));
+        assert!(!is_dynamic_type(&parse_quote!(U256)));
+        assert!(!is_dynamic_type(&parse_quote!(Address)));
+        assert!(!is_dynamic_type(&parse_quote!(MyCustomStruct)));
     }
 }

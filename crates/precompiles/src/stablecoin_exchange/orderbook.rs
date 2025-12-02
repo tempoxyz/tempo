@@ -3,10 +3,9 @@
 use crate::{
     error::TempoPrecompileError,
     stablecoin_exchange::IStablecoinExchange,
-    storage::{Mapping, Slot, StorageOps, slots::mapping_slot},
+    storage::{DummySlot, Mapping, Slot, SlotId, StorageOps, slots::mapping_slot},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::StablecoinExchangeError;
 use tempo_precompiles_macros::Storable;
 
@@ -44,20 +43,12 @@ pub struct TickLevel {
 impl TickLevel {
     /// Creates a new empty tick level
     pub fn new() -> Self {
-        Self {
-            head: 0,
-            tail: 0,
-            total_liquidity: 0,
-        }
+        Self { head: 0, tail: 0, total_liquidity: 0 }
     }
 
     /// Creates a tick level with specific values
     pub fn with_values(head: u128, tail: u128, total_liquidity: u128) -> Self {
-        Self {
-            head,
-            tail,
-            total_liquidity,
-        }
+        Self { head, tail, total_liquidity }
     }
 
     /// Returns true if this tick level has no orders
@@ -73,11 +64,7 @@ impl TickLevel {
 
 impl From<TickLevel> for IStablecoinExchange::PriceLevel {
     fn from(value: TickLevel) -> Self {
-        Self {
-            head: value.head,
-            tail: value.tail,
-            totalLiquidity: value.total_liquidity,
-        }
+        Self { head: value.head, tail: value.tail, totalLiquidity: value.total_liquidity }
     }
 }
 
@@ -91,41 +78,35 @@ pub struct Orderbook {
     pub quote: Address,
     /// Bid orders by tick
     #[allow(dead_code)]
-    bids: Mapping<i16, TickLevel>,
+    bids: Mapping<i16, TickLevel, DummySlot>,
     /// Ask orders by tick
     #[allow(dead_code)]
-    asks: Mapping<i16, TickLevel>,
+    asks: Mapping<i16, TickLevel, DummySlot>,
     /// Best bid tick for highest bid price
     pub best_bid_tick: i16,
     /// Best ask tick for lowest ask price
     pub best_ask_tick: i16,
     #[allow(dead_code)]
     /// Mapping of tick index to bid bitmap for price discovery
-    bid_bitmap: Mapping<i16, U256>,
+    bid_bitmap: Mapping<i16, U256, DummySlot>,
     /// Mapping of tick index to ask bitmap for price discovery
     #[allow(dead_code)]
-    ask_bitmap: Mapping<i16, U256>,
+    ask_bitmap: Mapping<i16, U256, DummySlot>,
 }
 
 // Helper type to easily access storage for orderbook tokens (base, quote)
-type Tokens = Slot<Address>;
+type Tokens = Slot<Address, DummySlot>;
 // Helper type to easily access storage for best orderbook orders (best_bid, best_ask)
-type BestOrders = Slot<i16>;
+type BestOrders = Slot<i16, DummySlot>;
 // Helper type to easile access storage for orders (bids, asks)
-type Orders = Mapping<i16, TickLevel>;
+type Orders = Mapping<i16, TickLevel, DummySlot>;
 // Helper type to easily access storage for bitmaps (bid_bitmap, ask_bitmap)
-type BitMaps = Mapping<i16, U256>;
+type BitMaps = Mapping<i16, U256, DummySlot>;
 
 impl Orderbook {
     /// Creates a new orderbook for a token pair
     pub fn new(base: Address, quote: Address) -> Self {
-        Self {
-            base,
-            quote,
-            best_bid_tick: i16::MIN,
-            best_ask_tick: i16::MAX,
-            ..Default::default()
-        }
+        Self { base, quote, best_bid_tick: i16::MIN, best_ask_tick: i16::MAX, ..Default::default() }
     }
 
     /// Returns true if this orderbook is initialized
@@ -140,15 +121,15 @@ impl Orderbook {
         quote_token: Option<Address>,
     ) -> bool {
         // Check base token filter
-        if let Some(base) = base_token
-            && base != self.base
+        if let Some(base) = base_token &&
+            base != self.base
         {
             return false;
         }
 
         // Check quote token filter
-        if let Some(quote) = quote_token
-            && quote != self.quote
+        if let Some(quote) = quote_token &&
+            quote != self.quote
         {
             return false;
         }
@@ -162,9 +143,15 @@ impl Orderbook {
         book_key: B256,
         new_best_bid: i16,
     ) -> Result<(), TempoPrecompileError> {
-        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BOOKS);
-        BestOrders::new_at_loc(orderbook_base_slot, __packing_orderbook::BEST_BID_TICK_LOC)
-            .write(contract, new_best_bid)?;
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
+        BestOrders::write_at_offset_packed(
+            contract,
+            orderbook_base_slot,
+            __packing_orderbook::BEST_BID_TICK_SLOT,
+            __packing_orderbook::BEST_BID_TICK_OFFSET,
+            __packing_orderbook::BEST_BID_TICK_BYTES,
+            new_best_bid,
+        )?;
         Ok(())
     }
 
@@ -174,9 +161,15 @@ impl Orderbook {
         book_key: B256,
         new_best_ask: i16,
     ) -> Result<(), TempoPrecompileError> {
-        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BOOKS);
-        BestOrders::new_at_loc(orderbook_base_slot, __packing_orderbook::BEST_ASK_TICK_LOC)
-            .write(contract, new_best_ask)?;
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
+        BestOrders::write_at_offset_packed(
+            contract,
+            orderbook_base_slot,
+            __packing_orderbook::BEST_ASK_TICK_SLOT,
+            __packing_orderbook::BEST_ASK_TICK_OFFSET,
+            __packing_orderbook::BEST_ASK_TICK_BYTES,
+            new_best_ask,
+        )?;
         Ok(())
     }
 
@@ -185,12 +178,9 @@ impl Orderbook {
         book_key: B256,
         contract: &mut S,
     ) -> Result<bool, TempoPrecompileError> {
-        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BOOKS);
-        let base = Tokens::new_at_offset(
-            orderbook_base_slot,
-            __packing_orderbook::BASE_LOC.offset_slots,
-        )
-        .read(contract)?;
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
+        let base =
+            Tokens::read_at_offset(contract, orderbook_base_slot, __packing_orderbook::BASE_SLOT)?;
 
         Ok(base != Address::ZERO)
     }
@@ -202,21 +192,21 @@ impl Orderbook {
         is_bid: bool,
         tick: i16,
     ) -> Result<TickLevel, TempoPrecompileError> {
-        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BOOKS);
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
         if is_bid {
-            Orders::at_offset(
+            Orders::read_at_offset(
+                storage,
                 orderbook_base_slot,
-                __packing_orderbook::BIDS_LOC.offset_slots,
+                __packing_orderbook::BIDS_SLOT,
                 tick,
             )
-            .read(storage)
         } else {
-            Orders::at_offset(
+            Orders::read_at_offset(
+                storage,
                 orderbook_base_slot,
-                __packing_orderbook::ASKS_LOC.offset_slots,
+                __packing_orderbook::ASKS_SLOT,
                 tick,
             )
-            .read(storage)
         }
     }
 
@@ -228,21 +218,23 @@ impl Orderbook {
         tick: i16,
         tick_level: TickLevel,
     ) -> Result<(), TempoPrecompileError> {
-        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BOOKS);
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
         if is_bid {
-            Orders::at_offset(
+            Orders::write_at_offset(
+                storage,
                 orderbook_base_slot,
-                __packing_orderbook::BIDS_LOC.offset_slots,
+                __packing_orderbook::BIDS_SLOT,
                 tick,
+                tick_level,
             )
-            .write(storage, tick_level)
         } else {
-            Orders::at_offset(
+            Orders::write_at_offset(
+                storage,
                 orderbook_base_slot,
-                __packing_orderbook::ASKS_LOC.offset_slots,
+                __packing_orderbook::ASKS_SLOT,
                 tick,
+                tick_level,
             )
-            .write(storage, tick_level)
         }
     }
 
@@ -253,21 +245,21 @@ impl Orderbook {
         is_bid: bool,
         tick: i16,
     ) -> Result<(), TempoPrecompileError> {
-        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BOOKS);
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
         if is_bid {
-            Orders::at_offset(
+            Orders::delete_at_offset(
+                storage,
                 orderbook_base_slot,
-                __packing_orderbook::BIDS_LOC.offset_slots,
+                __packing_orderbook::BIDS_SLOT,
                 tick,
             )
-            .delete(storage)
         } else {
-            Orders::at_offset(
+            Orders::delete_at_offset(
+                storage,
                 orderbook_base_slot,
-                __packing_orderbook::ASKS_LOC.offset_slots,
+                __packing_orderbook::ASKS_SLOT,
                 tick,
             )
-            .delete(storage)
         }
     }
 
@@ -288,19 +280,18 @@ impl Orderbook {
         let mask = U256::from(1u8) << bit_index;
 
         // Read current bitmap word
-        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BOOKS);
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
         let bitmap_slot = if is_bid {
-            __packing_orderbook::BID_BITMAP_LOC.offset_slots
+            __packing_orderbook::BID_BITMAP_SLOT
         } else {
-            __packing_orderbook::ASK_BITMAP_LOC.offset_slots
+            __packing_orderbook::ASK_BITMAP_SLOT
         };
         let current_word =
-            BitMaps::at_offset(orderbook_base_slot, bitmap_slot, word_index).read(storage)?;
+            BitMaps::read_at_offset(storage, orderbook_base_slot, bitmap_slot, word_index)?;
 
         // Set the bit
         let new_word = current_word | mask;
-        BitMaps::at_offset(orderbook_base_slot, bitmap_slot, word_index)
-            .write(storage, new_word)?;
+        BitMaps::write_at_offset(storage, orderbook_base_slot, bitmap_slot, word_index, new_word)?;
 
         Ok(())
     }
@@ -322,19 +313,18 @@ impl Orderbook {
         let mask = !(U256::from(1u8) << bit_index);
 
         // Read current bitmap word
-        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BOOKS);
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
         let bitmap_slot = if is_bid {
-            __packing_orderbook::BID_BITMAP_LOC.offset_slots
+            __packing_orderbook::BID_BITMAP_SLOT
         } else {
-            __packing_orderbook::ASK_BITMAP_LOC.offset_slots
+            __packing_orderbook::ASK_BITMAP_SLOT
         };
         let current_word =
-            BitMaps::at_offset(orderbook_base_slot, bitmap_slot, word_index).read(storage)?;
+            BitMaps::read_at_offset(storage, orderbook_base_slot, bitmap_slot, word_index)?;
 
         // Clear the bit
         let new_word = current_word & mask;
-        BitMaps::at_offset(orderbook_base_slot, bitmap_slot, word_index)
-            .write(storage, new_word)?;
+        BitMaps::write_at_offset(storage, orderbook_base_slot, bitmap_slot, word_index, new_word)?;
 
         Ok(())
     }
@@ -355,14 +345,13 @@ impl Orderbook {
         let bit_index = (tick & 0xFF) as usize;
         let mask = U256::from(1u8) << bit_index;
 
-        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BOOKS);
+        let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BooksSlot::SLOT);
         let bitmap_slot = if is_bid {
-            __packing_orderbook::BID_BITMAP_LOC.offset_slots
+            __packing_orderbook::BID_BITMAP_SLOT
         } else {
-            __packing_orderbook::ASK_BITMAP_LOC.offset_slots
+            __packing_orderbook::ASK_BITMAP_SLOT
         };
-        let word =
-            BitMaps::at_offset(orderbook_base_slot, bitmap_slot, word_index).read(storage)?;
+        let word = BitMaps::read_at_offset(storage, orderbook_base_slot, bitmap_slot, word_index)?;
 
         Ok((word & mask) != U256::ZERO)
     }
@@ -373,12 +362,11 @@ impl Orderbook {
         book_key: B256,
         is_bid: bool,
         tick: i16,
-        spec: TempoHardfork,
     ) -> (i16, bool) {
         if is_bid {
-            Self::next_initialized_bid_tick(storage, book_key, tick, spec)
+            Self::next_initialized_bid_tick(storage, book_key, tick)
         } else {
-            Self::next_initialized_ask_tick(storage, book_key, tick, spec)
+            Self::next_initialized_ask_tick(storage, book_key, tick)
         }
     }
 
@@ -387,12 +375,7 @@ impl Orderbook {
         storage: &mut S,
         book_key: B256,
         tick: i16,
-        spec: TempoHardfork,
     ) -> (i16, bool) {
-        // Guard against overflow when tick is at or above MAX_TICK
-        if spec.is_allegretto() && tick >= MAX_TICK {
-            return (MAX_TICK, false);
-        }
         let mut next_tick = tick + 1;
         while next_tick <= MAX_TICK {
             if Self::is_tick_initialized(storage, book_key, next_tick, false).unwrap_or(false) {
@@ -408,12 +391,7 @@ impl Orderbook {
         storage: &mut S,
         book_key: B256,
         tick: i16,
-        spec: TempoHardfork,
     ) -> (i16, bool) {
-        // Guard against underflow when tick is at or below MIN_TICK
-        if spec.is_allegretto() && tick <= MIN_TICK {
-            return (MIN_TICK, false);
-        }
         let mut next_tick = tick - 1;
         while next_tick >= MIN_TICK {
             if Self::is_tick_initialized(storage, book_key, next_tick, true).unwrap_or(false) {
@@ -439,11 +417,8 @@ impl From<Orderbook> for IStablecoinExchange::Orderbook {
 /// Compute deterministic book key from base, quote token pair
 pub fn compute_book_key(token_a: Address, token_b: Address) -> B256 {
     // Sort tokens to ensure deterministic key
-    let (token_a, token_b) = if token_a < token_b {
-        (token_a, token_b)
-    } else {
-        (token_b, token_a)
-    };
+    let (token_a, token_b) =
+        if token_a < token_b { (token_a, token_b) } else { (token_b, token_a) };
 
     // Compute keccak256(abi.encodePacked(tokenA, tokenB))
     let mut buf = [0u8; 40];
@@ -512,10 +487,7 @@ mod tests {
 
         // Test below peg
         assert_eq!(tick_to_price(-100), PRICE_SCALE - 100);
-        assert_eq!(
-            price_to_tick_post_moderato(PRICE_SCALE - 100).unwrap(),
-            -100
-        );
+        assert_eq!(price_to_tick_post_moderato(PRICE_SCALE - 100).unwrap(), -100);
     }
 
     #[test]
@@ -547,10 +519,7 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), i16::MIN);
         // Verify MIN_PRICE = PRICE_SCALE + i16::MIN
-        assert_eq!(
-            MIN_PRICE_PRE_MODERATO,
-            (PRICE_SCALE as i32 + i16::MIN as i32) as u32
-        );
+        assert_eq!(MIN_PRICE_PRE_MODERATO, (PRICE_SCALE as i32 + i16::MIN as i32) as u32);
     }
 
     #[test]
@@ -560,10 +529,7 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), i16::MAX);
         // Verify MAX_PRICE = PRICE_SCALE + i16::MAX
-        assert_eq!(
-            MAX_PRICE_PRE_MODERATO,
-            (PRICE_SCALE as i32 + i16::MAX as i32) as u32
-        );
+        assert_eq!(MAX_PRICE_PRE_MODERATO, (PRICE_SCALE as i32 + i16::MAX as i32) as u32);
     }
 
     #[test]
@@ -571,10 +537,7 @@ mod tests {
         let result = price_to_tick_post_moderato(MIN_PRICE_POST_MODERATO);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), MIN_TICK);
-        assert_eq!(
-            MIN_PRICE_POST_MODERATO,
-            (PRICE_SCALE as i32 + MIN_TICK as i32) as u32
-        );
+        assert_eq!(MIN_PRICE_POST_MODERATO, (PRICE_SCALE as i32 + MIN_TICK as i32) as u32);
     }
 
     #[test]
@@ -582,10 +545,7 @@ mod tests {
         let result = price_to_tick_post_moderato(MAX_PRICE_POST_MODERATO);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), MAX_TICK);
-        assert_eq!(
-            MAX_PRICE_POST_MODERATO,
-            (PRICE_SCALE as i32 + MAX_TICK as i32) as u32
-        );
+        assert_eq!(MAX_PRICE_POST_MODERATO, (PRICE_SCALE as i32 + MAX_TICK as i32) as u32);
     }
 
     #[test]
@@ -607,20 +567,14 @@ mod tests {
         let key_ba = compute_book_key(token_b, token_a);
         assert_eq!(key_ab, key_ba);
 
-        assert_eq!(
-            key_ab, key_ba,
-            "Book key should be the same regardless of address order"
-        );
+        assert_eq!(key_ab, key_ba, "Book key should be the same regardless of address order");
 
         let mut buf = [0u8; 40];
         buf[..20].copy_from_slice(token_a.as_slice());
         buf[20..].copy_from_slice(token_b.as_slice());
         let expected_hash = keccak256(buf);
 
-        assert_eq!(
-            key_ab, expected_hash,
-            "Book key should match manual keccak256 computation"
-        );
+        assert_eq!(key_ab, expected_hash, "Book key should match manual keccak256 computation");
     }
 
     mod bitmap_tests {

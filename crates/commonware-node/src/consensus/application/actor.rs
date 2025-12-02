@@ -22,7 +22,6 @@ use commonware_consensus::{
     types::{Epoch, Round, View},
     utils,
 };
-use commonware_cryptography::ed25519::PublicKey;
 use commonware_macros::select;
 use commonware_runtime::{
     ContextCell, FutureExt as _, Handle, Metrics, Pacer, Spawner, Storage, spawn_cell,
@@ -33,7 +32,7 @@ use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{
     StreamExt as _, TryFutureExt as _,
     channel::{mpsc, oneshot},
-    future::{Either, always_ready, ready, try_join},
+    future::{Either, always_ready, try_join},
 };
 use rand::{CryptoRng, Rng};
 use reth_node_builder::ConsensusEngineHandle;
@@ -113,11 +112,7 @@ where
 
     /// Runs the actor until it is externally stopped.
     async fn run_until_stopped(self, dkg_manager: crate::dkg::manager::Mailbox) {
-        let Self {
-            context,
-            mailbox,
-            inner,
-        } = self;
+        let Self { context, mailbox, inner } = self;
         // TODO(janis): should be placed under a shutdown signal so we don't
         // just stall on startup.
         let Ok(initialized) = inner.into_initialized(context.clone(), dkg_manager).await else {
@@ -125,13 +120,7 @@ where
             return;
         };
 
-        Actor {
-            context,
-            mailbox,
-            inner: initialized,
-        }
-        .run_until_stopped()
-        .await
+        Actor { context, mailbox, inner: initialized }.run_until_stopped().await
     }
 
     pub(in crate::consensus) fn start(
@@ -171,9 +160,7 @@ where
             Message::Finalized(finalized) => {
                 // XXX: being able to finalize is the only stop condition.
                 // There is no point continuing if this doesn't work.
-                self.inner
-                    .handle_finalized(*finalized)
-                    .wrap_err("failed finalizing block")?;
+                self.inner.handle_finalized(*finalized).wrap_err("failed finalizing block")?;
             }
             Message::Genesis(genesis) => {
                 self.context.with_label("genesis").spawn({
@@ -190,7 +177,7 @@ where
             Message::Verify(verify) => {
                 self.context.with_label("verify").spawn({
                     let inner = self.inner.clone();
-                    move |context| inner.handle_verify(*verify, context)
+                    move |context| inner.handle_verify(verify, context)
                 });
             }
         }
@@ -300,11 +287,7 @@ impl Inner<Init> {
         request: Propose,
         context: TContext,
     ) -> eyre::Result<()> {
-        let Propose {
-            parent: (parent_view, parent_digest),
-            mut response,
-            round,
-        } = request;
+        let Propose { parent: (parent_view, parent_digest), mut response, round } = request;
 
         let proposal = select!(
             () = response.cancellation() => {
@@ -345,15 +328,13 @@ impl Inner<Init> {
             *lock = Some(proposal.clone());
         }
 
-        // Make sure reth sees the new payload so that in the next round we can verify blocks on top of it.
+        // Make sure reth sees the new payload so that in the next round we can verify blocks on top
+        // of it.
         let is_good = verify_block(
             context,
             round.epoch(),
             self.epoch_length,
-            self.execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
+            self.execution_node.add_ons_handle.beacon_engine_handle.clone(),
             &proposal,
             parent_digest,
             &self.scheme_provider,
@@ -365,10 +346,8 @@ impl Inner<Init> {
             eyre::bail!("validation reported that that just-proposed block is invalid");
         }
 
-        if let Err(error) = self
-            .state
-            .executor_mailbox
-            .canonicalize_head(proposal_height, proposal_digest)
+        if let Err(error) =
+            self.state.executor_mailbox.canonicalize_head(proposal_height, proposal_digest)
         {
             warn!(
                 %error,
@@ -397,17 +376,10 @@ impl Inner<Init> {
             digest = %verify.payload,
             parent.view = verify.parent.0,
             parent.digest = %verify.parent.1,
-            proposer = %verify.proposer,
         ),
     )]
     async fn handle_verify<TContext: Pacer>(mut self, verify: Verify, context: TContext) {
-        let Verify {
-            parent,
-            payload,
-            proposer,
-            mut response,
-            round,
-        } = verify;
+        let Verify { parent, payload, mut response, round } = verify;
         let result = select!(
             () = response.cancellation() => {
                 Err(eyre!(
@@ -416,7 +388,7 @@ impl Inner<Init> {
                 ))
             },
 
-            res = self.clone().verify(context, parent, payload, proposer, round) => {
+            res = self.clone().verify(context, parent, payload, round) => {
                 res.wrap_err("block verification failed")
             }
         );
@@ -429,11 +401,9 @@ impl Inner<Init> {
         if let Ok((block, true)) = result {
             // Only make the verified block canonical when not doing a
             // re-propose at the end of an epoch.
-            if parent.1 != payload
-                && let Err(error) = self
-                    .state
-                    .executor_mailbox
-                    .canonicalize_head(block.height(), block.digest())
+            if parent.1 != payload &&
+                let Err(error) =
+                    self.state.executor_mailbox.canonicalize_head(block.height(), block.digest())
             {
                 tracing::warn!(
                     %error,
@@ -479,14 +449,16 @@ impl Inner<Init> {
             return Ok(parent);
         }
 
-        ready(
-            self.state
-                .executor_mailbox
-                .canonicalize_head(parent.height(), parent.digest()),
-        )
-        .and_then(|ack| ack.map_err(eyre::Report::new))
-        .await
-        .wrap_err("failed updating canonical head to parent")?;
+        if let Err(error) =
+            self.state.executor_mailbox.canonicalize_head(parent.height(), parent.digest())
+        {
+            tracing::warn!(
+                %error,
+                parent.height = parent.height(),
+                parent.digest = %parent.digest(),
+                "failed updating canonical head to parent",
+            );
+        }
 
         // Query DKG manager for ceremony data before building payload
         // This data will be passed to the payload builder via attributes
@@ -514,12 +486,7 @@ impl Inner<Init> {
             outcome.encode().freeze().into()
         } else {
             // Regular block: try to include intermediate dealing
-            match self
-                .state
-                .dkg_manager
-                .get_intermediate_dealing(round.epoch())
-                .await
-            {
+            match self.state.dkg_manager.get_intermediate_dealing(round.epoch()).await {
                 Err(error) => {
                     warn!(
                         %error,
@@ -550,11 +517,7 @@ impl Inner<Init> {
             self.fee_recipient,
             context.current().epoch_millis(),
             extra_data,
-            move || {
-                self.subblocks
-                    .get_subblocks(parent.block_hash())
-                    .unwrap_or_default()
-            },
+            move || self.subblocks.get_subblocks(parent.block_hash()).unwrap_or_default(),
         );
 
         let interrupt_handle = attrs.interrupt_handle().clone();
@@ -598,7 +561,6 @@ impl Inner<Init> {
         context: TContext,
         (parent_view, parent_digest): (View, Digest),
         payload: Digest,
-        proposer: PublicKey,
         round: Round,
     ) -> eyre::Result<(Block, bool)> {
         let genesis_block = self.genesis_block.clone();
@@ -638,25 +600,38 @@ impl Inner<Init> {
             }
         }
 
-        if let Err(reason) = verify_header_extra_data(
-            &block,
-            &self.state.dkg_manager,
-            self.epoch_length,
-            &proposer,
-        )
-        .await
+        if utils::is_last_block_in_epoch(self.epoch_length, block.height())
+            .is_some_and(|e| e == round.epoch())
         {
-            warn!(
-                %reason,
-                "header extra data could not be verified; failing block",
-            );
-            return Ok((block, false));
-        }
+            let our_outcome = self.state.dkg_manager.get_public_ceremony_outcome().await.wrap_err(
+                "failed getting public dkg ceremony outcome; cannot verify end of epoch block",
+            )?;
+            let block_outcome = match PublicOutcome::decode(block.header().extra_data().as_ref()) {
+                Err(error) => {
+                    warn!(
+                        error = %eyre::Report::new(error),
+                        "cannot decode extra data header field of boundary block as public ceremony outcome; failing block",
+                    );
+                    return Ok((block, false));
+                }
+                Ok(block_outcome) => block_outcome,
+            };
+            if our_outcome != block_outcome {
+                warn!(
+                    our.epoch = our_outcome.epoch,
+                    our.participants = ?our_outcome.participants,
+                    our.public = ?our_outcome.public,
+                    block.epoch = block_outcome.epoch,
+                    block.participants = ?block_outcome.participants,
+                    block.public = ?block_outcome.public,
+                    "our public dkg ceremony outcome does not match what's stored in the block; failing block",
+                );
+                return Ok((block, false));
+            }
+        };
 
-        if let Err(error) = self
-            .state
-            .executor_mailbox
-            .canonicalize_head(parent.height(), parent.digest())
+        if let Err(error) =
+            self.state.executor_mailbox.canonicalize_head(parent.height(), parent.digest())
         {
             tracing::warn!(
                 %error,
@@ -670,10 +645,7 @@ impl Inner<Init> {
             context,
             round.epoch(),
             self.epoch_length,
-            self.execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .clone(),
+            self.execution_node.add_ons_handle.beacon_engine_handle.clone(),
             &block,
             parent_digest,
             &self.scheme_provider,
@@ -797,11 +769,7 @@ async fn verify_block<TContext: Pacer>(
     let execution_data = TempoExecutionData {
         block,
         validator_set: Some(
-            scheme
-                .participants()
-                .into_iter()
-                .map(|p| B256::from_slice(p))
-                .collect(),
+            scheme.participants().into_iter().map(|p| B256::from_slice(p)).collect(),
         ),
     };
     let payload_status = engine
@@ -812,10 +780,7 @@ async fn verify_block<TContext: Pacer>(
     match payload_status.status {
         PayloadStatusEnum::Valid | PayloadStatusEnum::Accepted => Ok(true),
         PayloadStatusEnum::Invalid { validation_error } => {
-            info!(
-                validation_error,
-                "execution layer returned that the block was invalid"
-            );
+            info!(validation_error, "execution layer returned that the block was invalid");
             Ok(false)
         }
         PayloadStatusEnum::Syncing => {
@@ -828,68 +793,6 @@ async fn verify_block<TContext: Pacer>(
         }
     }
 }
-
-#[instrument(skip_all, err(Display))]
-async fn verify_header_extra_data(
-    block: &Block,
-    dkg_manager: &crate::dkg::manager::Mailbox,
-    epoch_length: u64,
-    proposer: &PublicKey,
-) -> eyre::Result<()> {
-    if utils::is_last_block_in_epoch(epoch_length, block.height()).is_some() {
-        info!(
-            "on last block of epoch; verifying that the boundary block \
-            contains the correct DKG outcome",
-        );
-        let our_outcome = dkg_manager.get_public_ceremony_outcome().await.wrap_err(
-            "failed getting public dkg ceremony outcome; cannot verify end \
-                of epoch block",
-        )?;
-        let block_outcome = PublicOutcome::decode(block.header().extra_data().as_ref()).wrap_err(
-            "failed decoding extra data header as DKG ceremony \
-                outcome; cannot verify end of epoch block",
-        )?;
-        if our_outcome != block_outcome {
-            // Emit the log here so that it's structured. The error would be annoying to read.
-            warn!(
-                our.epoch = our_outcome.epoch,
-                our.participants = ?our_outcome.participants,
-                our.public = ?our_outcome.public,
-                block.epoch = block_outcome.epoch,
-                block.participants = ?block_outcome.participants,
-                block.public = ?block_outcome.public,
-                "our public dkg ceremony outcome does not match what's stored \
-                in the block",
-            );
-            return Err(eyre!(
-                "our public dkg ceremony outcome does not match what's \
-                stored in the block header extra_data field; they must \
-                match so that the end-of-block is valid",
-            ));
-        }
-    } else if !block.header().extra_data().is_empty()
-        && let Ok(dealing) = block.try_read_ceremony_deal_outcome()
-    {
-        info!("block header extra_data header contained intermediate DKG dealing; verifying it");
-        ensure!(
-            dealing.dealer() == proposer,
-            "proposer `{proposer}` is not the dealer `{}` recorded in the \
-            intermediate DKG dealing",
-            dealing.dealer(),
-        );
-
-        ensure!(
-            dkg_manager
-                .verify_intermediate_dealings(dealing)
-                .await
-                .wrap_err("failed request to verify DKG dealing")?,
-            "signature of intermediate DKG outcome could not be verified",
-        );
-    }
-
-    Ok(())
-}
-
 /// Constructs a [`PayloadId`] from the first 8 bytes of `block_hash`.
 fn payload_id_from_block_hash(block_hash: &B256) -> PayloadId {
     PayloadId::new(
@@ -909,10 +812,7 @@ fn report_verification_result(
 ) -> eyre::Result<()> {
     match &verification_result {
         Ok((_, is_good)) => {
-            info!(
-                proposal_valid = is_good,
-                "returning proposal verification result to consensus",
-            );
+            info!(proposal_valid = is_good, "returning proposal verification result to consensus",);
             response.send(*is_good).map_err(|_| {
                 eyre!(
                     "attempted to send return verification result, but \
@@ -930,7 +830,8 @@ fn report_verification_result(
     Ok(())
 }
 
-/// Ensures the task associated with the [`Handle`] is aborted [`Handle::abort`] when this instance is dropped.
+/// Ensures the task associated with the [`Handle`] is aborted [`Handle::abort`] when this instance
+/// is dropped.
 struct AbortOnDrop(Handle<()>);
 
 impl Drop for AbortOnDrop {

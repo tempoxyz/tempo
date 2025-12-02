@@ -41,9 +41,7 @@ fn subblocks_are_included() {
     Runner::from(deterministic::Config::default().with_seed(0)).start(|context| async move {
         let how_many_signers = 5;
 
-        let setup = Setup::new()
-            .how_many_signers(how_many_signers)
-            .epoch_length(10);
+        let setup = Setup::new().how_many_signers(how_many_signers).epoch_length(10);
 
         // Setup and start all nodes.
         let (nodes, _execution_runtime) = setup_validators(context.clone(), setup.clone()).await;
@@ -52,8 +50,9 @@ fn subblocks_are_included() {
             nodes
                 .into_iter()
                 .map(|mut node| {
-                    // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
-                    // to ensure that payload builder has enough time to accumulate subblocks.
+                    // Due to how Commonware deterministic runtime behaves in CI, we need to bump
+                    // this timeout to ensure that payload builder has enough
+                    // time to accumulate subblocks.
                     node.consensus_config.new_payload_wait_time = Duration::from_millis(500);
                     node.start()
                 })
@@ -61,11 +60,7 @@ fn subblocks_are_included() {
         )
         .await;
 
-        let mut stream = running[0]
-            .execution_node
-            .node
-            .provider
-            .canonical_state_stream();
+        let mut stream = running[0].execution_node.node.provider.canonical_state_stream();
 
         let mut expected_transactions: Vec<TxHash> = Vec::new();
         while let Some(update) = stream.next().await {
@@ -76,12 +71,7 @@ fn subblocks_are_included() {
             // Assert that all expected transactions are included in the block.
             for tx in expected_transactions.drain(..) {
                 if !new.blocks().iter().any(|(_, block)| {
-                    block
-                        .sealed_block()
-                        .body()
-                        .transactions
-                        .iter()
-                        .any(|t| *t.tx_hash() == *tx)
+                    block.sealed_block().body().transactions.iter().any(|t| *t.tx_hash() == *tx)
                 }) {
                     panic!("transaction {tx} was not included");
                 }
@@ -121,8 +111,9 @@ fn subblocks_are_included_post_allegretto() {
         let mut fee_recipients = Vec::new();
 
         for node in &mut nodes {
-            // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
-            // to ensure that payload builder has enough time to accumulate subblocks.
+            // Due to how Commonware deterministic runtime behaves in CI, we need to bump this
+            // timeout to ensure that payload builder has enough time to accumulate
+            // subblocks.
             node.consensus_config.new_payload_wait_time = Duration::from_millis(500);
 
             let fee_recipient = Address::random();
@@ -130,19 +121,10 @@ fn subblocks_are_included_post_allegretto() {
             fee_recipients.push(fee_recipient);
         }
 
-        let running = join_all(
-            nodes
-                .into_iter()
-                .map(|node| node.start())
-                .collect::<Vec<_>>(),
-        )
-        .await;
+        let running =
+            join_all(nodes.into_iter().map(|node| node.start()).collect::<Vec<_>>()).await;
 
-        let mut stream = running[0]
-            .execution_node
-            .node
-            .provider
-            .canonical_state_stream();
+        let mut stream = running[0].execution_node.node.provider.canonical_state_stream();
 
         let mut expected_transactions: Vec<TxHash> = Vec::new();
         while let Some(update) = stream.next().await {
@@ -161,13 +143,7 @@ fn subblocks_are_included_post_allegretto() {
 
             // Assert that all expected transactions are included in the block.
             for tx in expected_transactions.drain(..) {
-                if !block
-                    .sealed_block()
-                    .body()
-                    .transactions
-                    .iter()
-                    .any(|t| t.tx_hash() == *tx)
-                {
+                if !block.sealed_block().body().transactions.iter().any(|t| t.tx_hash() == *tx) {
                     panic!("transaction {tx} was not included");
                 }
             }
@@ -392,12 +368,7 @@ async fn submit_subblock_tx_from(node: &RunningNode, wallet: &PrivateKeySigner) 
     nonce_bytes[0] = TEMPO_SUBBLOCK_NONCE_KEY_PREFIX;
     nonce_bytes[1..16].copy_from_slice(&node.public_key.as_ref()[..15]);
 
-    let gas_price = if node
-        .execution_node
-        .node
-        .chain_spec()
-        .is_allegretto_active_at_timestamp(0)
-    {
+    let gas_price = if node.execution_node.node.chain_spec().is_allegretto_active_at_timestamp(0) {
         TEMPO_BASE_FEE as u128
     } else {
         0

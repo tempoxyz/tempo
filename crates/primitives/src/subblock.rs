@@ -100,17 +100,14 @@ impl SubBlock {
     }
 
     fn rlp_encoded_fields_length(&self) -> usize {
-        self.version.length()
-            + self.parent_hash.length()
-            + self.fee_recipient.length()
-            + self.transactions.length()
+        self.version.length() +
+            self.parent_hash.length() +
+            self.fee_recipient.length() +
+            self.transactions.length()
     }
 
     fn rlp_header(&self) -> alloy_rlp::Header {
-        alloy_rlp::Header {
-            list: true,
-            payload_length: self.rlp_encoded_fields_length(),
-        }
+        alloy_rlp::Header { list: true, payload_length: self.rlp_encoded_fields_length() }
     }
 
     fn rlp_decode_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
@@ -156,11 +153,7 @@ impl SignedSubBlock {
         let senders =
             reth_primitives_traits::transaction::recover::recover_signers(&self.transactions)?;
 
-        Ok(RecoveredSubBlock {
-            inner: self,
-            senders,
-            validator,
-        })
+        Ok(RecoveredSubBlock { inner: self, senders, validator })
     }
 
     fn rlp_encode_fields(&self, out: &mut dyn BufMut) {
@@ -173,17 +166,11 @@ impl SignedSubBlock {
     }
 
     fn rlp_header(&self) -> alloy_rlp::Header {
-        alloy_rlp::Header {
-            list: true,
-            payload_length: self.rlp_encoded_fields_length(),
-        }
+        alloy_rlp::Header { list: true, payload_length: self.rlp_encoded_fields_length() }
     }
 
     fn rlp_decode_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        Ok(Self {
-            inner: SubBlock::rlp_decode_fields(buf)?,
-            signature: Decodable::decode(buf)?,
-        })
+        Ok(Self { inner: SubBlock::rlp_decode_fields(buf)?, signature: Decodable::decode(buf)? })
     }
 }
 
@@ -235,11 +222,7 @@ pub struct RecoveredSubBlock {
 impl RecoveredSubBlock {
     /// Creates a new [`RecoveredSubBlock`] without validating the signatures.
     pub fn new_unchecked(inner: SignedSubBlock, senders: Vec<Address>, validator: B256) -> Self {
-        Self {
-            inner,
-            senders,
-            validator,
-        }
+        Self { inner, senders, validator }
     }
 
     /// Returns an iterator over `Recovered<&Transaction>`

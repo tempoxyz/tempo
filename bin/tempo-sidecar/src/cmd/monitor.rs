@@ -31,16 +31,11 @@ impl MonitorArgs {
             .init();
 
         let builder = PrometheusBuilder::new().add_global_label("chain_id", self.chain_id.clone());
-        let metrics_handle = builder
-            .install_recorder()
-            .context("failed to install recorder")?;
+        let metrics_handle = builder.install_recorder().context("failed to install recorder")?;
 
         let mut monitor = Monitor::new(self.rpc_url, self.poll_interval);
 
-        describe_gauge!(
-            "tempo_fee_amm_user_reserves",
-            "User token reserves in the FeeAMM pool"
-        );
+        describe_gauge!("tempo_fee_amm_user_reserves", "User token reserves in the FeeAMM pool");
         describe_gauge!(
             "tempo_fee_amm_validator_reserves",
             "Validator token reserves in the FeeAMM pool"
@@ -51,10 +46,7 @@ impl MonitorArgs {
             "Number of errors encountered while fetching FeeAMM data"
         );
 
-        let app = Route::new().at(
-            "/metrics",
-            get(prometheus_metrics).data(metrics_handle.clone()),
-        );
+        let app = Route::new().at("/metrics", get(prometheus_metrics).data(metrics_handle.clone()));
 
         let addr = format!("0.0.0.0:{}", self.port);
 

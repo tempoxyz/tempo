@@ -89,10 +89,7 @@ pub struct Args {
     /// The number of views (voting rounds) a validator is allowed to be
     /// inactive until it is immediately skipped should leader selection pick it
     /// as a proposer. Also called a skip timeout.
-    #[arg(
-        long = "consensus.inactive-views-until-leader-skip",
-        default_value_t = 32
-    )]
+    #[arg(long = "consensus.inactive-views-until-leader-skip", default_value_t = 32)]
     pub inactive_views_until_leader_skip: u64,
 
     /// The amount of time this node will use to construct a block as a proposal.
@@ -113,10 +110,7 @@ pub struct Args {
     /// Connections are still authenticated via public key cryptography, but
     /// anyone can attempt handshakes, increasing exposure to DoS attacks.
     /// Only enable in trusted network environments.
-    #[arg(
-        long = "consensus.allow-unregistered-handshakes",
-        default_value_t = false
-    )]
+    #[arg(long = "consensus.allow-unregistered-handshakes", default_value_t = false)]
     pub allow_unregistered_handshakes: bool,
 
     /// The interval at which to broadcast subblocks to the next proposer.
@@ -159,8 +153,6 @@ impl Args {
 
     /// Returns the public key derived from the configured signing key, if any.
     pub fn public_key(&self) -> eyre::Result<Option<PublicKey>> {
-        Ok(self
-            .signing_key()?
-            .map(|signing_key| signing_key.public_key()))
+        Ok(self.signing_key()?.map(|signing_key| signing_key.public_key()))
     }
 }

@@ -7,7 +7,8 @@ use crate::{TempoFillers, TempoNetwork, fillers::Random2DNonceFiller};
 
 /// Extension trait for [`ProviderBuilder`] with Tempo-specific functionality.
 pub trait TempoProviderBuilderExt {
-    /// Returns a provider builder with the recommended Tempo fillers and the random 2D nonce filler.
+    /// Returns a provider builder with the recommended Tempo fillers and the random 2D nonce
+    /// filler.
     ///
     /// See [`Random2DNonceFiller`] for more information on random 2D nonces.
     fn with_random_2d_nonces(

@@ -63,12 +63,7 @@ where
     let token = ITIP20::new(token_addr, provider.clone());
     let roles = IRolesAuth::new(*token.address(), provider);
 
-    roles
-        .grantRole(*ISSUER_ROLE, caller)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    roles.grantRole(*ISSUER_ROLE, caller).send().await?.get_receipt().await?;
 
     Ok(token)
 }
@@ -110,16 +105,10 @@ pub(crate) async fn setup_test_node(
 ) -> eyre::Result<(Url, Option<LocalTestNode>)> {
     let setup = match source {
         NodeSource::ExternalRpc(url) => {
-            TestNodeBuilder::new()
-                .with_external_rpc(url)
-                .build_http_only()
-                .await?
+            TestNodeBuilder::new().with_external_rpc(url).build_http_only().await?
         }
         NodeSource::LocalNode(genesis_content) => {
-            TestNodeBuilder::new()
-                .with_genesis(genesis_content)
-                .build_http_only()
-                .await?
+            TestNodeBuilder::new().with_genesis(genesis_content).build_http_only().await?
         }
     };
 
@@ -241,27 +230,18 @@ impl TestNodeBuilder {
         }
 
         if self.external_rpc.is_some() {
-            return Err(eyre::eyre!(
-                "build_with_node_access cannot be used with external RPC"
-            ));
+            return Err(eyre::eyre!("build_with_node_access cannot be used with external RPC"));
         }
 
         let chain_spec = self.build_chain_spec()?;
 
-        let (mut nodes, tasks, _wallet) = setup::<TempoNode>(
-            1,
-            Arc::new(chain_spec),
-            self.is_dev,
-            default_attributes_generator,
-        )
-        .await?;
+        let (mut nodes, tasks, _wallet) =
+            setup::<TempoNode>(1, Arc::new(chain_spec), self.is_dev, default_attributes_generator)
+                .await?;
 
         let node = nodes.remove(0);
 
-        Ok(SingleNodeSetup {
-            node,
-            _tasks: tasks,
-        })
+        Ok(SingleNodeSetup { node, _tasks: tasks })
     }
 
     /// Build multiple nodes with direct access
@@ -273,9 +253,7 @@ impl TestNodeBuilder {
         }
 
         if self.external_rpc.is_some() {
-            return Err(eyre::eyre!(
-                "build_multi_node cannot be used with external RPC"
-            ));
+            return Err(eyre::eyre!("build_multi_node cannot be used with external RPC"));
         }
 
         let chain_spec = self.build_chain_spec()?;
@@ -288,29 +266,21 @@ impl TestNodeBuilder {
         )
         .await?;
 
-        Ok(MultiNodeSetup {
-            nodes,
-            _tasks: tasks,
-        })
+        Ok(MultiNodeSetup { nodes, _tasks: tasks })
     }
 
     /// Build HTTP-only setup
     pub(crate) async fn build_http_only(self) -> eyre::Result<HttpOnlySetup> {
         if let Some(url) = self.external_rpc {
-            return Ok(HttpOnlySetup {
-                http_url: url,
-                local_node: None,
-            });
+            return Ok(HttpOnlySetup { http_url: url, local_node: None });
         }
 
         let tasks = TaskManager::current();
         let chain_spec = self.build_chain_spec()?;
         let validator = chain_spec.inner.genesis.coinbase;
 
-        let mut node_config = NodeConfig::new(Arc::new(chain_spec))
-            .with_unused_ports()
-            .dev()
-            .with_rpc(
+        let mut node_config =
+            NodeConfig::new(Arc::new(chain_spec)).with_unused_ports().dev().with_rpc(
                 RpcServerArgs::default()
                     .with_unused_ports()
                     .with_http()
@@ -328,18 +298,9 @@ impl TestNodeBuilder {
             })
             .await?;
 
-        let http_url = node_handle
-            .node
-            .rpc_server_handle()
-            .http_url()
-            .unwrap()
-            .parse()
-            .unwrap();
+        let http_url = node_handle.node.rpc_server_handle().http_url().unwrap().parse().unwrap();
 
-        Ok(HttpOnlySetup {
-            http_url,
-            local_node: Some((Box::new(node_handle), tasks)),
-        })
+        Ok(HttpOnlySetup { http_url, local_node: Some((Box::new(node_handle), tasks)) })
     }
 
     /// Helper to build chain spec from genesis
@@ -354,9 +315,7 @@ impl TestNodeBuilder {
         if let Some(allegretto_time) = &self.allegretto_time {
             genesis["config"]["allegrettoTime"] = serde_json::json!(allegretto_time);
         }
-        Ok(TempoChainSpec::from_genesis(serde_json::from_value(
-            genesis,
-        )?))
+        Ok(TempoChainSpec::from_genesis(serde_json::from_value(genesis)?))
     }
 }
 

@@ -6,7 +6,8 @@ use reth_transaction_pool::{
     error::InvalidPoolTransactionError,
 };
 
-/// An extension trait for [`BestTransactions`] that in addition to the transaction also yields the priority value.
+/// An extension trait for [`BestTransactions`] that in addition to the transaction also yields the
+/// priority value.
 pub trait BestPriorityTransactions<T: TransactionOrdering>: BestTransactions {
     /// Returns the next best transaction and its priority value.
     fn next_tx_and_priority(&mut self) -> Option<(Self::Item, Priority<T::PriorityValue>)>;
@@ -27,7 +28,8 @@ impl BestPriorityTransactions<CoinbaseTipOrdering<TempoPooledTransaction>>
     }
 }
 
-/// A [`BestTransactions`] iterator that merges two individual implementations and always yields the next best item from either of the iterators.
+/// A [`BestTransactions`] iterator that merges two individual implementations and always yields the
+/// next best item from either of the iterators.
 pub struct MergeBestTransactions<L, R, T>
 where
     L: BestPriorityTransactions<T>,
@@ -48,12 +50,7 @@ where
 {
     /// Creates a new iterator over the given iterators.
     pub fn new(left: L, right: R) -> Self {
-        Self {
-            left,
-            right,
-            next_left: None,
-            next_right: None,
-        }
+        Self { left, right, next_left: None, next_right: None }
     }
 }
 
@@ -63,7 +60,8 @@ where
     R: BestPriorityTransactions<T, Item = L::Item>,
     T: TransactionOrdering,
 {
-    /// Returns the next transaction from either the left or the right iterator with the higher priority.
+    /// Returns the next transaction from either the left or the right iterator with the higher
+    /// priority.
     fn next_best(&mut self) -> Option<(L::Item, Priority<T::PriorityValue>)> {
         if self.next_left.is_none() {
             self.next_left = self.left.next_tx_and_priority();

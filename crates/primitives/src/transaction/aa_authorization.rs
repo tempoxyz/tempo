@@ -100,10 +100,10 @@ impl AASignedAuthorization {
 
     /// Outputs the length of the authorization's fields, without a RLP header.
     fn fields_len(&self) -> usize {
-        self.inner.chain_id.length()
-            + self.inner.address.length()
-            + self.inner.nonce.length()
-            + self.signature.length()
+        self.inner.chain_id.length() +
+            self.inner.address.length() +
+            self.inner.nonce.length() +
+            self.signature.length()
     }
 
     /// Calculates a heuristic for the in-memory size of this authorization
@@ -136,11 +136,7 @@ impl Decodable for AASignedAuthorization {
 
 impl Encodable for AASignedAuthorization {
     fn encode(&self, buf: &mut dyn BufMut) {
-        Header {
-            list: true,
-            payload_length: self.fields_len(),
-        }
-        .encode(buf);
+        Header { list: true, payload_length: self.fields_len() }.encode(buf);
         self.inner.chain_id.encode(buf);
         self.inner.address.encode(buf);
         self.inner.nonce.encode(buf);
@@ -201,10 +197,7 @@ impl RecoveredAAAuthorization {
     ///
     /// Authority recovery is deferred until first access.
     pub const fn new(signed: AASignedAuthorization) -> Self {
-        Self {
-            signed,
-            authority: OnceLock::new(),
-        }
+        Self { signed, authority: OnceLock::new() }
     }
 
     /// Creates a new authorization with a pre-recovered authority.
@@ -212,10 +205,7 @@ impl RecoveredAAAuthorization {
     /// This is useful when you've already recovered the authority and want
     /// to avoid re-recovery.
     pub fn new_unchecked(signed: AASignedAuthorization, authority: RecoveredAuthority) -> Self {
-        Self {
-            signed,
-            authority: authority.into(),
-        }
+        Self { signed, authority: authority.into() }
     }
 
     /// Creates a new authorization and immediately recovers the authority.

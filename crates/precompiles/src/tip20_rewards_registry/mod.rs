@@ -4,7 +4,7 @@ pub mod dispatch;
 use crate::{
     TIP20_REWARDS_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::{Mapping, PrecompileStorageProvider, VecSlotExt},
+    storage::{Mapping, PrecompileStorageProvider, VecMappingExt},
     tip20::{TIP20Token, address_to_token_id_unchecked},
 };
 use alloy::{
@@ -26,7 +26,7 @@ pub struct TIP20RewardsRegistry {
 }
 
 /// Helper type to easily interact with the `stream_ending_at` array
-type StreamEndingAt = Mapping<u128, Vec<Address>>;
+type StreamEndingAt = Mapping<u128, Vec<Address>, StreamsEndingAtSlot>;
 
 impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     /// Creates an instance of the precompile.
@@ -49,11 +49,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     /// Add a token to the registry for a given stream end time
     pub fn add_stream(&mut self, token: Address, end_time: u128) -> Result<()> {
         let stream_key = keccak256((token, end_time).abi_encode());
-        let stream_ending_at = StreamEndingAt::new(slots::STREAMS_ENDING_AT).at(end_time);
-        let length = stream_ending_at.len(self)?;
+        let length = StreamEndingAt::len(self, end_time)?;
 
         self.sstore_stream_index(stream_key, U256::from(length))?;
-        stream_ending_at.push(self, token)
+        StreamEndingAt::push(self, end_time, token)
     }
 
     /// Remove stream before it is finalized
@@ -61,16 +60,13 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         let stream_key = keccak256((token, end_time).abi_encode());
         let index = self.sload_stream_index(stream_key)?.to::<usize>();
 
-        let stream_ending_at = StreamEndingAt::new(slots::STREAMS_ENDING_AT).at(end_time);
-        let length = stream_ending_at.len(self)?;
-        let last_index = length
-            .checked_sub(1)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let length = StreamEndingAt::len(self, end_time)?;
+        let last_index = length.checked_sub(1).ok_or(TempoPrecompileError::under_overflow())?;
 
         // If removing element that's not the last, swap with last element
         if index != last_index {
-            let last_token = stream_ending_at.read_at(self, last_index)?;
-            stream_ending_at.write_at(self, index, last_token)?;
+            let last_token = StreamEndingAt::read_at(self, end_time, last_index)?;
+            StreamEndingAt::write_at(self, end_time, index, last_token)?;
 
             // Update stream_index for the moved element
             let last_stream_key = keccak256((last_token, end_time).abi_encode());
@@ -78,7 +74,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         }
 
         // Remove last element and clear its index
-        stream_ending_at.pop(self)?;
+        StreamEndingAt::pop(self, end_time)?;
         self.clear_stream_index(stream_key)?;
 
         Ok(())
@@ -101,9 +97,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
             return Ok(());
         }
 
-        let mut next_timestamp = last_updated
-            .checked_add(1)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let mut next_timestamp =
+            last_updated.checked_add(1).ok_or(TempoPrecompileError::under_overflow())?;
 
         while current_timestamp >= next_timestamp {
             let tokens = self.sload_streams_ending_at(next_timestamp)?;
@@ -120,9 +115,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
             // Clear all elements from the vec
             self.clear_streams_ending_at(next_timestamp)?;
 
-            next_timestamp = next_timestamp
-                .checked_add(1)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            next_timestamp =
+                next_timestamp.checked_add(1).ok_or(TempoPrecompileError::under_overflow())?;
         }
 
         self.sstore_last_updated_timestamp(current_timestamp)?;
@@ -133,9 +127,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     /// Helper method to get the count of streams at a given end time (for testing)
     #[cfg(test)]
     pub(crate) fn get_stream_count_at(&mut self, end_time: u128) -> Result<usize> {
-        StreamEndingAt::new(slots::STREAMS_ENDING_AT)
-            .at(end_time)
-            .len(self)
+        StreamEndingAt::len(self, end_time)
     }
 }
 
@@ -307,23 +299,12 @@ mod tests {
 
         // Mint tokens for the reward
         let reward_amount = U256::from(100e18);
-        token.mint(
-            admin,
-            ITIP20::mintCall {
-                to: admin,
-                amount: reward_amount,
-            },
-        )?;
+        token.mint(admin, ITIP20::mintCall { to: admin, amount: reward_amount })?;
 
         // Start a reward stream that lasts 5 seconds from current time (1500)
         let current_time = token.storage().timestamp().to::<u128>();
-        let stream_id = token.start_reward(
-            admin,
-            ITIP20::startRewardCall {
-                amount: reward_amount,
-                secs: 5,
-            },
-        )?;
+        let stream_id = token
+            .start_reward(admin, ITIP20::startRewardCall { amount: reward_amount, secs: 5 })?;
         assert_eq!(stream_id, 1);
 
         let end_time = current_time + 5;

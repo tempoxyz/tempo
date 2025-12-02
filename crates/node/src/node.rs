@@ -2,13 +2,11 @@ use crate::{
     TempoPayloadTypes,
     engine::TempoEngineValidator,
     rpc::{
-        TempoAdminApi, TempoAdminApiServer, TempoAmm, TempoAmmApiServer, TempoDex,
-        TempoDexApiServer, TempoEthApiBuilder, TempoEthExt, TempoEthExtApiServer, TempoPolicy,
-        TempoPolicyApiServer, TempoToken, TempoTokenApiServer,
+        TempoAmm, TempoAmmApiServer, TempoDex, TempoDexApiServer, TempoEthApiBuilder, TempoEthExt,
+        TempoEthExtApiServer, TempoPolicy, TempoPolicyApiServer, TempoToken, TempoTokenApiServer,
     },
 };
 use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
-use alloy_primitives::B256;
 use reth_chainspec::EthChainSpec;
 use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_ethereum::provider::CanonStateSubscriptions;
@@ -21,7 +19,7 @@ use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter,
     components::{
         BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
-        PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder, spawn_maintenance_tasks,
+        PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder,
     },
     rpc::{
         BasicEngineValidatorBuilder, EngineValidatorAddOn, EngineValidatorBuilder, EthApiBuilder,
@@ -31,7 +29,7 @@ use reth_node_builder::{
 use reth_node_ethereum::EthereumNetworkBuilder;
 use reth_primitives_traits::SealedHeader;
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
-use reth_rpc_builder::{Identity, RethRpcModule};
+use reth_rpc_builder::Identity;
 use reth_rpc_eth_api::RpcNodeCore;
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::TransactionValidationTaskExecutor;
@@ -43,7 +41,7 @@ use tempo_payload_builder::TempoPayloadBuilder;
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
-    AA2dNonceKeys, AA2dPool, AA2dPoolConfig, TempoTransactionPool, amm::AmmLiquidityCache,
+    AA2dNonceKeys, AA2dPool, AA2dPoolConfig, TempoTransactionPool,
     validator::TempoTransactionValidator,
 };
 
@@ -62,9 +60,7 @@ pub struct TempoNodeArgs {
 impl TempoNodeArgs {
     /// Returns a [`TempoPoolBuilder`] configured from these args.
     pub fn pool_builder(&self) -> TempoPoolBuilder {
-        TempoPoolBuilder {
-            aa_valid_after_max_secs: self.aa_valid_after_max_secs,
-        }
+        TempoPoolBuilder { aa_valid_after_max_secs: self.aa_valid_after_max_secs }
     }
 }
 
@@ -74,17 +70,12 @@ impl TempoNodeArgs {
 pub struct TempoNode {
     /// Transaction pool builder.
     pool_builder: TempoPoolBuilder,
-    /// Validator public key for `admin_validatorKey` RPC method.
-    validator_key: Option<B256>,
 }
 
 impl TempoNode {
     /// Create new instance of a Tempo node
-    pub fn new(args: &TempoNodeArgs, validator_key: Option<B256>) -> Self {
-        Self {
-            pool_builder: args.pool_builder(),
-            validator_key,
-        }
+    pub fn new(args: &TempoNodeArgs) -> Self {
+        Self { pool_builder: args.pool_builder() }
     }
 
     /// Returns a [`ComponentsBuilder`] configured for a regular Tempo node.
@@ -131,20 +122,33 @@ pub struct TempoAddOns<
     RpcMiddleware = Identity,
 > {
     inner: RpcAddOns<N, EthB, PVB, NoopEngineApiBuilder, EVB, RpcMiddleware>,
-    validator_key: Option<B256>,
 }
 
-impl<N, EthB> TempoAddOns<N, EthB>
+impl<N, EthB, PVB, EVB, RpcMiddleware> TempoAddOns<N, EthB, PVB, EVB, RpcMiddleware>
 where
     N: FullNodeComponents,
     EthB: EthApiBuilder<N>,
 {
     /// Creates a new instance from the inner `RpcAddOns`.
-    pub fn new(validator_key: Option<B256>) -> Self {
-        Self {
-            inner: Default::default(),
-            validator_key,
-        }
+    pub const fn new(
+        inner: RpcAddOns<N, EthB, PVB, NoopEngineApiBuilder, EVB, RpcMiddleware>,
+    ) -> Self {
+        Self { inner }
+    }
+}
+
+impl<N> Default for TempoAddOns<NodeAdapter<N>, TempoEthApiBuilder, TempoEngineValidatorBuilder>
+where
+    N: FullNodeTypes<Types = TempoNode>,
+{
+    fn default() -> Self {
+        Self::new(RpcAddOns::new(
+            TempoEthApiBuilder::default(),
+            TempoEngineValidatorBuilder::default(),
+            NoopEngineApiBuilder::default(),
+            BasicEngineValidatorBuilder::default(),
+            Default::default(),
+        ))
     }
 }
 
@@ -162,9 +166,8 @@ where
     async fn launch_add_ons(self, ctx: AddOnsContext<'_, N>) -> eyre::Result<Self::Handle> {
         self.inner
             .launch_add_ons_with(ctx, move |container| {
-                let reth_node_builder::rpc::RpcModuleContainer {
-                    modules, registry, ..
-                } = container;
+                let reth_node_builder::rpc::RpcModuleContainer { modules, registry, .. } =
+                    container;
 
                 let eth_api = registry.eth_api().clone();
                 let dex = TempoDex::new(eth_api.clone());
@@ -172,14 +175,12 @@ where
                 let token = TempoToken::new(eth_api.clone());
                 let policy = TempoPolicy::new(eth_api.clone());
                 let eth_ext = TempoEthExt::new(eth_api);
-                let admin = TempoAdminApi::new(self.validator_key);
 
                 modules.merge_configured(dex.into_rpc())?;
                 modules.merge_configured(amm.into_rpc())?;
                 modules.merge_configured(token.into_rpc())?;
                 modules.merge_configured(policy.into_rpc())?;
                 modules.merge_configured(eth_ext.into_rpc())?;
-                modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
 
                 Ok(())
             })
@@ -237,7 +238,7 @@ where
     }
 
     fn add_ons(&self) -> Self::AddOns {
-        TempoAddOns::new(self.validator_key)
+        TempoAddOns::default()
     }
 }
 
@@ -246,9 +247,7 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TempoNode {
         alloy_rpc_types_eth::Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeader>;
 
     fn rpc_to_primitive_block(rpc_block: Self::RpcBlock) -> tempo_primitives::Block {
-        rpc_block
-            .into_consensus_block()
-            .map_transactions(|tx| tx.into_inner())
+        rpc_block.into_consensus_block().map_transactions(|tx| tx.into_inner())
     }
 
     fn local_payload_attributes_builder(
@@ -283,16 +282,12 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
         let mut inner = self.inner.build(parent);
         inner.suggested_fee_recipient = Address::ZERO;
 
-        let timestamp_millis_part = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-            % 1000;
+        let timestamp_millis_part =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
+                as u64 %
+                1000;
 
-        TempoPayloadAttributes {
-            inner,
-            timestamp_millis_part,
-        }
+        TempoPayloadAttributes { inner, timestamp_millis_part }
     }
 }
 
@@ -366,9 +361,7 @@ impl TempoPoolBuilder {
 
 impl Default for TempoPoolBuilder {
     fn default() -> Self {
-        Self {
-            aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
-        }
+        Self { aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS }
     }
 }
 
@@ -388,9 +381,8 @@ where
         } else {
             // get the current blob params for the current timestamp, fallback to default Cancun
             // params
-            let current_timestamp = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)?
-                .as_secs();
+            let current_timestamp =
+                SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_secs();
             let blob_params = ctx
                 .chain_spec()
                 .blob_params_at_timestamp(current_timestamp)
@@ -436,32 +428,24 @@ where
         };
         let nonce_keys = AA2dNonceKeys::default();
         let aa_2d_pool = AA2dPool::new(aa_2d_config, nonce_keys.clone());
-        let amm_liquidity_cache = AmmLiquidityCache::new(ctx.provider())?;
 
         let validator = validator.map(|v| {
-            TempoTransactionValidator::new(
-                v,
-                nonce_keys.clone(),
-                self.aa_valid_after_max_secs,
-                amm_liquidity_cache.clone(),
-            )
+            TempoTransactionValidator::new(v, nonce_keys.clone(), self.aa_valid_after_max_secs)
         });
         let protocol_pool = TxPoolBuilder::new(ctx)
             .with_validator(validator)
-            .build(blob_store, pool_config.clone());
-
-        // Wrap the protocol pool in our hybrid TempoTransactionPool
-        let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);
-
-        spawn_maintenance_tasks(ctx, transaction_pool.clone(), &pool_config)?;
+            .build_and_spawn_maintenance_task(blob_store, pool_config)?;
 
         // Spawn (protocol) mempool maintenance tasks
-        let task_pool = transaction_pool.clone();
+        let task_pool = protocol_pool.clone();
         let task_provider = ctx.provider().clone();
         ctx.task_executor().spawn_critical(
             "txpool maintenance (protocol) - evict expired AA txs",
             tempo_transaction_pool::maintain::evict_expired_aa_txs(task_pool, task_provider),
         );
+
+        // Wrap the protocol pool in our hybrid TempoTransactionPool
+        let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);
 
         // Spawn (AA 2d nonce) mempool maintenance tasks
         ctx.task_executor().spawn_critical(
@@ -470,12 +454,6 @@ where
                 transaction_pool.clone(),
                 ctx.provider().canonical_state_stream(),
             ),
-        );
-
-        // Spawn AMM liquidity cache maintenance task
-        ctx.task_executor().spawn_critical(
-            "txpool maintenance - amm liquidity cache",
-            tempo_transaction_pool::maintain::maintain_amm_cache(transaction_pool.clone()),
         );
 
         info!(target: "reth::cli", "Transaction pool initialized");
@@ -502,10 +480,6 @@ where
         pool: TempoTransactionPool<Node::Provider>,
         evm_config: TempoEvmConfig,
     ) -> eyre::Result<Self::PayloadBuilder> {
-        Ok(TempoPayloadBuilder::new(
-            pool,
-            ctx.provider().clone(),
-            evm_config,
-        ))
+        Ok(TempoPayloadBuilder::new(pool, ctx.provider().clone(), evm_config))
     }
 }

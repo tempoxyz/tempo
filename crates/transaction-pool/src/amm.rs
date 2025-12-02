@@ -38,9 +38,7 @@ impl AmmLiquidityCache {
     where
         Client: StateProviderFactory + BlockReader + ChainSpecProvider<ChainSpec = TempoChainSpec>,
     {
-        let this = Self {
-            inner: Default::default(),
-        };
+        let this = Self { inner: Default::default() };
         let tip = client.best_block_number()?;
 
         for header in client
@@ -65,7 +63,8 @@ impl AmmLiquidityCache {
 
         let mut missing_in_cache = Vec::new();
 
-        // search through latest observed validator tokens and find any cached pools that have enough liquidity
+        // search through latest observed validator tokens and find any cached pools that have
+        // enough liquidity
         {
             let inner = self.inner.read();
             for token in &inner.unique_tokens {
@@ -99,9 +98,8 @@ impl AmmLiquidityCache {
             let pool_key =
                 PoolKey::new(token_id_to_address(user_id), token_id_to_address(token)).get_id();
             let slot = mapping_slot(pool_key, slots::POOLS);
-            let pool = state_provider
-                .storage(TIP_FEE_MANAGER_ADDRESS, slot.into())?
-                .unwrap_or_default();
+            let pool =
+                state_provider.storage(TIP_FEE_MANAGER_ADDRESS, slot.into())?.unwrap_or_default();
             let reserve = U256::from(Pool::from_slot(pool).reserve_validator_token);
 
             let mut inner = self.inner.write();
@@ -120,9 +118,8 @@ impl AmmLiquidityCache {
     /// Processes a new [`ExecutionOutcome`] and caches new validator
     /// fee token preferences and AMM pool liquidity changes.
     pub fn on_new_state(&self, execution_outcome: &ExecutionOutcome<TempoReceipt>) {
-        let Some(storage) = execution_outcome
-            .account_state(&TIP_FEE_MANAGER_ADDRESS)
-            .map(|acc| &acc.storage)
+        let Some(storage) =
+            execution_outcome.account_state(&TIP_FEE_MANAGER_ADDRESS).map(|acc| &acc.storage)
         else {
             return;
         };
@@ -138,9 +135,7 @@ impl AmmLiquidityCache {
                 inner.cache.insert(pool, validator_reserve);
             } else if let Some(validator) = inner.slot_to_validator.get(slot).copied() {
                 // Update validator fee token preferences
-                inner
-                    .validator_preferences
-                    .insert(validator, value.present_value().into_address());
+                inner.validator_preferences.insert(validator, value.present_value().into_address());
             }
         }
     }
@@ -156,12 +151,7 @@ impl AmmLiquidityCache {
     {
         let beneficiary = header.beneficiary();
 
-        let cached_preference = self
-            .inner
-            .read()
-            .validator_preferences
-            .get(&beneficiary)
-            .copied();
+        let cached_preference = self.inner.read().validator_preferences.get(&beneficiary).copied();
 
         let preference = if let Some(cached) = cached_preference {
             cached
@@ -194,10 +184,9 @@ impl AmmLiquidityCache {
         // Track the new fee token preference, if any
         if cached_preference.is_none() {
             inner.validator_preferences.insert(beneficiary, preference);
-            inner.slot_to_validator.insert(
-                mapping_slot(beneficiary, slots::VALIDATOR_TOKENS),
-                beneficiary,
-            );
+            inner
+                .slot_to_validator
+                .insert(mapping_slot(beneficiary, slots::VALIDATOR_TOKENS), beneficiary);
         }
 
         // Track the new observed fee token

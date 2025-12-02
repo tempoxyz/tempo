@@ -34,9 +34,7 @@ pub struct Peers {
 
 impl Peers {
     pub fn empty() -> Self {
-        Self {
-            inner: OrderedAssociated::from(vec![]),
-        }
+        Self { inner: OrderedAssociated::from(vec![]) }
     }
 
     pub fn into_inner(self) -> OrderedAssociated<PublicKey, SocketAddr> {
@@ -125,9 +123,7 @@ impl<'de> Deserialize<'de> for Peers {
         }
 
         let peers = deserializer.deserialize_map(PeersVisitor)?;
-        Ok(Self {
-            inner: peers.into_iter().collect(),
-        })
+        Ok(Self { inner: peers.into_iter().collect() })
     }
 }
 

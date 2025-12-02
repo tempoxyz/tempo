@@ -50,12 +50,8 @@ where
     /// If neither pre- nor post-allegretto artifacts are found, this method
     /// assumes that the node is starting from genesis.
     pub(super) async fn pre_allegretto_init(&mut self) {
-        if !self.post_allegretto_metadatas.exists()
-            && self
-                .pre_allegretto_metadatas
-                .epoch_metadata
-                .get(&CURRENT_EPOCH_KEY)
-                .is_none()
+        if !self.post_allegretto_metadatas.exists() &&
+            self.pre_allegretto_metadatas.epoch_metadata.get(&CURRENT_EPOCH_KEY).is_none()
         {
             self.pre_allegretto_metadatas
                 .epoch_metadata
@@ -140,10 +136,7 @@ where
                         to transition to dynamic validator sets by reading validators \
                         from smart contract",
                     );
-                    match self
-                        .transition_to_dynamic_validator_sets(ceremony_mux)
-                        .await
-                    {
+                    match self.transition_to_dynamic_validator_sets(ceremony_mux).await {
                         Ok(ceremony) => {
                             maybe_ceremony.replace(ceremony);
                             info!(
@@ -151,9 +144,7 @@ where
                                 deleting current pre-allegretto epoch state and leaving \
                                 DKG logic to the post-hardfork routines",
                             );
-                            self.pre_allegretto_metadatas
-                                .delete_current_epoch_state()
-                                .await;
+                            self.pre_allegretto_metadatas.delete_current_epoch_state().await;
                             return;
                         }
                         Err(error) => {
@@ -187,8 +178,8 @@ where
                 //
                 // This attempt to create a ceremony with the same mux subchannel
                 // and fail.
-                if maybe_ceremony.is_none()
-                    || maybe_ceremony
+                if maybe_ceremony.is_none() ||
+                    maybe_ceremony
                         .as_ref()
                         .is_some_and(|ceremony| ceremony.epoch() != epoch_state.epoch())
                 {
@@ -217,20 +208,13 @@ where
         // was entered and the previous epoch can be exited.
         //
         // Recall, for an epoch length E the first heights are 0E, 1E, 2E, ...
-        if block.height().is_multiple_of(self.config.epoch_length)
-            && let Some(old_epoch_state) = self
-                .pre_allegretto_metadatas
-                .epoch_metadata
-                .remove(&PREVIOUS_EPOCH_KEY)
+        if block.height().is_multiple_of(self.config.epoch_length) &&
+            let Some(old_epoch_state) =
+                self.pre_allegretto_metadatas.epoch_metadata.remove(&PREVIOUS_EPOCH_KEY)
         {
             self.config
                 .epoch_manager
-                .report(
-                    epoch::Exit {
-                        epoch: old_epoch_state.epoch,
-                    }
-                    .into(),
-                )
+                .report(epoch::Exit { epoch: old_epoch_state.epoch }.into())
                 .await;
             self.pre_allegretto_metadatas
                 .epoch_metadata
@@ -239,9 +223,8 @@ where
                 .expect("must always be able to persist state");
         }
 
-        let mut ceremony = maybe_ceremony
-            .take()
-            .expect("a ceremony must always exist except for the last block");
+        let mut ceremony =
+            maybe_ceremony.take().expect("a ceremony must always exist except for the last block");
 
         match epoch::relative_position(block.height(), self.config.epoch_length) {
             epoch::RelativePosition::FirstHalf => {
@@ -250,14 +233,12 @@ where
             }
             epoch::RelativePosition::Middle => {
                 let _ = ceremony.process_messages().await;
-                let _ = ceremony
-                    .construct_intermediate_outcome(HardforkRegime::PreAllegretto)
-                    .await;
+                let _ =
+                    ceremony.construct_intermediate_outcome(HardforkRegime::PreAllegretto).await;
             }
             epoch::RelativePosition::SecondHalf => {
-                let _ = ceremony
-                    .process_dealings_in_block(&block, HardforkRegime::PreAllegretto)
-                    .await;
+                let _ =
+                    ceremony.process_dealings_in_block(&block, HardforkRegime::PreAllegretto).await;
             }
         }
 
@@ -281,14 +262,14 @@ where
 
         let ceremony_outcome = match ceremony.finalize() {
             Ok(outcome) => {
-                self.metrics.ceremony.one_more_success();
+                self.metrics.ceremony_successes.inc();
                 info!(
                     "ceremony was successful; using the new participants, polynomial and secret key"
                 );
                 outcome
             }
             Err(outcome) => {
-                self.metrics.ceremony.one_more_failure();
+                self.metrics.ceremony_failures.inc();
                 warn!(
                     "ceremony was a failure; using the old participants, polynomial and secret key"
                 );
@@ -303,9 +284,7 @@ where
             .remove(&CURRENT_EPOCH_KEY)
             .expect("there must always be a current epoch state");
 
-        self.pre_allegretto_metadatas
-            .epoch_metadata
-            .put(PREVIOUS_EPOCH_KEY, old_epoch_state);
+        self.pre_allegretto_metadatas.epoch_metadata.put(PREVIOUS_EPOCH_KEY, old_epoch_state);
 
         let new_epoch_state = EpochState {
             epoch: next_epoch,
@@ -354,13 +333,14 @@ where
             dealers: epoch_state.participants.clone(),
             players: epoch_state.participants.clone(),
         };
+        self.metrics.ceremony_dealers.set(epoch_state.participants.len() as i64);
+        self.metrics.ceremony_players.set(epoch_state.participants.len() as i64);
 
         let ceremony = ceremony::Ceremony::init(
             &mut self.context,
             mux,
             self.ceremony_metadata.clone(),
             config,
-            self.metrics.ceremony.clone(),
         )
         .await
         .expect("must always be able to initialize ceremony");
@@ -376,6 +356,10 @@ where
             "started a ceremony",
         );
 
+        self.metrics.ceremony_dealers.set(ceremony.dealers().len() as i64);
+        self.metrics.ceremony_players.set(ceremony.players().len() as i64);
+        self.metrics.how_often_dealer.inc_by(ceremony.is_dealer() as u64);
+        self.metrics.how_often_player.inc_by(ceremony.is_player() as u64);
         self.metrics.pre_allegretto_ceremonies.inc();
         ceremony
     }
@@ -388,12 +372,8 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let epoch_state = self
-            .pre_allegretto_metadatas
-            .epoch_metadata
-            .get(&CURRENT_EPOCH_KEY)
-            .cloned()
-            .expect(
+        let epoch_state =
+            self.pre_allegretto_metadatas.epoch_metadata.get(&CURRENT_EPOCH_KEY).cloned().expect(
                 "when transitioning from pre-allegretto static validator sets to \
                 post-allegretto dynamic validator sets the pre-allegretto epoch \
                 state must exist",
@@ -462,19 +442,13 @@ where
     /// the previous epoch state on the right.
     async fn delete_current_epoch_state(&mut self) -> Option<EpochState> {
         let current_state = self.epoch_metadata.remove(&CURRENT_EPOCH_KEY);
-        self.epoch_metadata
-            .sync()
-            .await
-            .expect("must always be able to sync state to disk");
+        self.epoch_metadata.sync().await.expect("must always be able to sync state to disk");
         current_state
     }
 
     pub(super) async fn delete_previous_epoch_state(&mut self) -> Option<EpochState> {
         let previous_state = self.epoch_metadata.remove(&PREVIOUS_EPOCH_KEY);
-        self.epoch_metadata
-            .sync()
-            .await
-            .expect("must always be able to sync state to disk");
+        self.epoch_metadata.sync().await.expect("must always be able to sync state to disk");
         previous_state
     }
 }
@@ -528,10 +502,10 @@ impl Write for EpochState {
 
 impl EncodeSize for EpochState {
     fn encode_size(&self) -> usize {
-        UInt(self.epoch).encode_size()
-            + self.participants.encode_size()
-            + self.public.encode_size()
-            + self.share.encode_size()
+        UInt(self.epoch).encode_size() +
+            self.participants.encode_size() +
+            self.public.encode_size() +
+            self.share.encode_size()
     }
 }
 
@@ -547,11 +521,6 @@ impl Read for EpochState {
         let public =
             Public::<MinSig>::read_cfg(buf, &(quorum(participants.len() as u32) as usize))?;
         let share = Option::<Share>::read_cfg(buf, &())?;
-        Ok(Self {
-            epoch,
-            participants,
-            public,
-            share,
-        })
+        Ok(Self { epoch, participants, public, share })
     }
 }

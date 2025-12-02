@@ -45,9 +45,7 @@ async fn fetch_all_pairs<P: Provider>(provider: P) -> eyre::Result<HashSet<(Addr
     let tip20_factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider);
     let last_token_id = tip20_factory.tokenIdCounter().call().await?.to::<u64>();
 
-    let tokens = (0..last_token_id)
-        .map(token_id_to_address)
-        .collect::<Vec<_>>();
+    let tokens = (0..last_token_id).map(token_id_to_address).collect::<Vec<_>>();
 
     let mut pairs = HashSet::new();
     for pair in tokens.iter().permutations(2) {
@@ -55,11 +53,7 @@ async fn fetch_all_pairs<P: Provider>(provider: P) -> eyre::Result<HashSet<(Addr
         pairs.insert((token_a, token_b));
     }
 
-    info!(
-        token_count = tokens.len(),
-        pair_count = pairs.len(),
-        "Fetched token pairs"
-    );
+    info!(token_count = tokens.len(), pair_count = pairs.len(), "Fetched token pairs");
 
     Ok(pairs)
 }
@@ -71,9 +65,7 @@ impl SimpleArbArgs {
             .init();
 
         let builder = PrometheusBuilder::new();
-        let metrics_handle = builder
-            .install_recorder()
-            .context("failed to install recorder")?;
+        let metrics_handle = builder.install_recorder().context("failed to install recorder")?;
 
         describe_counter!(
             "tempo_arb_bot_successful_transactions",
@@ -84,18 +76,13 @@ impl SimpleArbArgs {
             "Number of failed transactions executed by the arb bot"
         );
 
-        let app = Route::new().at(
-            "/metrics",
-            get(monitor::prometheus_metrics).data(metrics_handle.clone()),
-        );
+        let app = Route::new()
+            .at("/metrics", get(monitor::prometheus_metrics).data(metrics_handle.clone()));
 
         let addr = format!("0.0.0.0:{}", self.metrics_port);
 
         tokio::spawn(async move {
-            Server::new(TcpListener::bind(addr))
-                .run(app)
-                .await
-                .context("failed to run poem server")
+            Server::new(TcpListener::bind(addr)).run(app).await.context("failed to run poem server")
         });
 
         let signer = PrivateKeySigner::from_slice(
@@ -117,16 +104,12 @@ impl SimpleArbArgs {
         info!("Rebalancing initial pools...");
         for pair in pairs.iter() {
             // Get current pool state
-            let pool = fee_amm
-                .getPool(pair.0, pair.1)
-                .call()
-                .await
-                .wrap_err_with(|| {
-                    format!("failed to fetch pool for tokens {}, {}", pair.0, pair.1)
-                })?;
+            let pool = fee_amm.getPool(pair.0, pair.1).call().await.wrap_err_with(|| {
+                format!("failed to fetch pool for tokens {}, {}", pair.0, pair.1)
+            })?;
 
-            if pool.reserveUserToken > 0
-                && let Err(e) = fee_amm
+            if pool.reserveUserToken > 0 &&
+                let Err(e) = fee_amm
                     .rebalanceSwap(
                         pair.0,
                         pair.1,
@@ -152,13 +135,9 @@ impl SimpleArbArgs {
         loop {
             for pair in pairs.iter() {
                 // Get current pool state
-                let pool = fee_amm
-                    .getPool(pair.0, pair.1)
-                    .call()
-                    .await
-                    .wrap_err_with(|| {
-                        format!("failed to fetch pool for tokens {:?}, {:?}", pair.0, pair.1)
-                    })?;
+                let pool = fee_amm.getPool(pair.0, pair.1).call().await.wrap_err_with(|| {
+                    format!("failed to fetch pool for tokens {:?}, {:?}", pair.0, pair.1)
+                })?;
 
                 if pool.reserveUserToken > 0 {
                     let mut pending_txs = vec![];

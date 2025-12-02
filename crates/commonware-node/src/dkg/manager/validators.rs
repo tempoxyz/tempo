@@ -47,11 +47,9 @@ pub(super) async fn read_from_contract(
 
     let db = State::builder()
         .with_database(StateProviderDatabase::new(
-            node.provider
-                .state_by_block_id(last_height.into())
-                .wrap_err_with(|| {
-                    format!("failed to get state from node provider for height `{last_height}`")
-                })?,
+            node.provider.state_by_block_id(last_height.into()).wrap_err_with(|| {
+                format!("failed to get state from node provider for height `{last_height}`")
+            })?,
         ))
         .build();
 
@@ -86,8 +84,8 @@ async fn decode_from_contract(
     for val in contract_vals.into_iter().filter(|val| val.active) {
         // NOTE: not reporting errors because `decode_from_contract` emits
         // events on success and error
-        if let Ok(val) = DecodedValidator::decode_from_contract(val)
-            && let Some(old) = decoded.insert(val.public_key.clone(), val)
+        if let Ok(val) = DecodedValidator::decode_from_contract(val) &&
+            let Some(old) = decoded.insert(val.public_key.clone(), val)
         {
             warn!(
                 %old,
@@ -232,9 +230,9 @@ impl Write for ValidatorState {
 
 impl EncodeSize for ValidatorState {
     fn encode_size(&self) -> usize {
-        self.dealers().encode_size()
-            + self.players().encode_size()
-            + self.syncing_players().encode_size()
+        self.dealers().encode_size() +
+            self.players().encode_size() +
+            self.syncing_players().encode_size()
     }
 }
 
@@ -251,11 +249,7 @@ impl Read for ValidatorState {
         let players = OrderedAssociated::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), (), ()))?;
         let syncing_players =
             OrderedAssociated::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), (), ()))?;
-        Ok(Self {
-            dealers,
-            players,
-            syncing_players,
-        })
+        Ok(Self { dealers, players, syncing_players })
     }
 }
 
@@ -309,19 +303,9 @@ impl DecodedValidator {
     ) -> eyre::Result<Self> {
         let public_key = PublicKey::decode(publicKey.as_ref())
             .wrap_err("failed decoding publicKey field as ed25519 public key")?;
-        let inbound = inboundAddress
-            .parse()
-            .wrap_err("inboundAddress was not valid")?;
-        let outbound = outboundAddress
-            .parse()
-            .wrap_err("outboundAddress was not valid")?;
-        Ok(Self {
-            public_key,
-            inbound,
-            outbound,
-            index,
-            address: validatorAddress,
-        })
+        let inbound = inboundAddress.parse().wrap_err("inboundAddress was not valid")?;
+        let outbound = outboundAddress.parse().wrap_err("outboundAddress was not valid")?;
+        Ok(Self { public_key, inbound, outbound, index, address: validatorAddress })
     }
 
     fn inbound_socket_addr(&self) -> SocketAddr {
@@ -350,11 +334,11 @@ impl Write for DecodedValidator {
 
 impl EncodeSize for DecodedValidator {
     fn encode_size(&self) -> usize {
-        self.public_key.encode_size()
-            + self.inbound.to_string().as_bytes().encode_size()
-            + self.outbound.to_string().as_bytes().encode_size()
-            + UInt(self.index).encode_size()
-            + self.address.0.encode_size()
+        self.public_key.encode_size() +
+            self.inbound.to_string().as_bytes().encode_size() +
+            self.outbound.to_string().as_bytes().encode_size() +
+            UInt(self.index).encode_size() +
+            self.address.0.encode_size()
     }
 }
 
@@ -390,20 +374,12 @@ impl Read for DecodedValidator {
         })?;
         let index = UInt::read_cfg(&mut buf, &())?.into();
         let address = Address::new(<[u8; 20]>::read_cfg(&mut buf, &())?);
-        Ok(Self {
-            public_key,
-            inbound,
-            outbound,
-            index,
-            address,
-        })
+        Ok(Self { public_key, inbound, outbound, index, address })
     }
 }
 
 fn last_height_before_epoch(epoch: Epoch, epoch_length: u64) -> u64 {
-    epoch
-        .checked_sub(1)
-        .map_or(0, |epoch| utils::last_block_in_epoch(epoch_length, epoch))
+    epoch.checked_sub(1).map_or(0, |epoch| utils::last_block_in_epoch(epoch_length, epoch))
 }
 
 #[cfg(test)]

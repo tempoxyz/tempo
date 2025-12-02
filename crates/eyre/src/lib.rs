@@ -17,9 +17,7 @@
 //! # use eyre::{eyre, WrapErr as _};
 //! tempo_eyre::install();
 //!
-//! let err = eyre!("bottom error")
-//!     .wrap_err("middle error")
-//!     .wrap_err("top error");
+//! let err = eyre!("bottom error").wrap_err("middle error").wrap_err("top error");
 //! println!("full source chain: {err}");
 //! ```
 //! This would print:

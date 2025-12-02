@@ -62,7 +62,8 @@ pub enum TempoInvalidTransaction {
 
     /// WebAuthn signature verification failed.
     ///
-    /// The WebAuthn signature validation failed (could be authenticatorData, clientDataJSON, or P256 verification).
+    /// The WebAuthn signature validation failed (could be authenticatorData, clientDataJSON, or
+    /// P256 verification).
     #[error("WebAuthn signature verification failed: {reason}")]
     InvalidWebAuthnSignature {
         /// Specific reason for failure.
@@ -195,7 +196,8 @@ impl<DBError> From<FeePaymentError> for EVMError<DBError, TempoInvalidTransactio
 
 /// Tempo-specific halt reason.
 ///
-/// Used to extend basic [`HaltReason`] with an edge case of a subblock transaction fee payment error.
+/// Used to extend basic [`HaltReason`] with an edge case of a subblock transaction fee payment
+/// error.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::From)]
 pub enum TempoHaltReason {
     /// Basic Ethereum halt reason.
@@ -225,18 +227,10 @@ mod tests {
     #[test]
     fn test_error_display() {
         let err = TempoInvalidTransaction::SystemTransactionMustBeCall;
-        assert_eq!(
-            err.to_string(),
-            "system transaction must be a call, not a create"
-        );
+        assert_eq!(err.to_string(), "system transaction must be a call, not a create");
 
-        let err = FeePaymentError::InsufficientAmmLiquidity {
-            fee: U256::from(1000),
-        };
-        assert!(
-            err.to_string()
-                .contains("insufficient liquidity in FeeAMM pool")
-        );
+        let err = FeePaymentError::InsufficientAmmLiquidity { fee: U256::from(1000) };
+        assert!(err.to_string().contains("insufficient liquidity in FeeAMM pool"));
 
         let err = FeePaymentError::InsufficientFeeTokenBalance {
             fee: U256::from(1000),
@@ -249,9 +243,6 @@ mod tests {
     fn test_from_invalid_transaction() {
         let eth_err = InvalidTransaction::PriorityFeeGreaterThanMaxFee;
         let tempo_err: TempoInvalidTransaction = eth_err.into();
-        assert!(matches!(
-            tempo_err,
-            TempoInvalidTransaction::EthInvalidTransaction(_)
-        ));
+        assert!(matches!(tempo_err, TempoInvalidTransaction::EthInvalidTransaction(_)));
     }
 }

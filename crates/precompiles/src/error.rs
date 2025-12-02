@@ -98,12 +98,10 @@ pub fn add_errors_to_registry<T: SolInterface>(
         registry.insert(
             selector.into(),
             Box::new(move |data: &[u8]| {
-                T::abi_decode(data)
-                    .ok()
-                    .map(|error| DecodedTempoPrecompileError {
-                        error: converter(error),
-                        revert_bytes: data,
-                    })
+                T::abi_decode(data).ok().map(|error| DecodedTempoPrecompileError {
+                    error: converter(error),
+                    revert_bytes: data,
+                })
             }),
         );
     }
@@ -131,10 +129,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP403RegistryError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::FeeManagerError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIPFeeAMMError);
-    add_errors_to_registry(
-        &mut registry,
-        TempoPrecompileError::TIPAccountRegistrarError,
-    );
+    add_errors_to_registry(&mut registry, TempoPrecompileError::TIPAccountRegistrarError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::NonceError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::AccountKeychainError);
@@ -152,9 +147,7 @@ pub fn decode_error<'a>(data: &'a [u8]) -> Option<DecodedTempoPrecompileError<'a
     }
 
     let selector: [u8; 4] = data[0..4].try_into().ok()?;
-    ERROR_REGISTRY
-        .get(&selector)
-        .and_then(|decoder| decoder(data))
+    ERROR_REGISTRY.get(&selector).and_then(|decoder| decoder(data))
 }
 
 /// Extension trait to convert `Result<T, TempoPrecompileError` into `PrecompileResult`
@@ -188,9 +181,7 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
                     TPErr::TIPFeeAMMError(e) => e.abi_encode().into(),
                     TPErr::NonceError(e) => e.abi_encode().into(),
                     TPErr::Panic(kind) => {
-                        let panic = Panic {
-                            code: U256::from(kind as u32),
-                        };
+                        let panic = Panic { code: U256::from(kind as u32) };
 
                         panic.abi_encode().into()
                     }
@@ -199,11 +190,9 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
                     TPErr::OutOfGas => {
                         return Err(PrecompileError::OutOfGas);
                     }
-                    TPErr::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
-                        selector: selector.into(),
+                    TPErr::UnknownFunctionSelector(selector) => {
+                        UnknownFunctionSelector { selector: selector.into() }.abi_encode().into()
                     }
-                    .abi_encode()
-                    .into(),
                     TPErr::Fatal(msg) => {
                         return Err(PrecompileError::Fatal(msg));
                     }
@@ -232,9 +221,7 @@ impl<T> IntoPrecompileResult<T> for TempoPrecompileError {
             Self::NonceError(e) => e.abi_encode().into(),
             Self::AccountKeychainError(e) => e.abi_encode().into(),
             Self::Panic(kind) => {
-                let panic = Panic {
-                    code: U256::from(kind as u32),
-                };
+                let panic = Panic { code: U256::from(kind as u32) };
 
                 panic.abi_encode().into()
             }
@@ -242,11 +229,9 @@ impl<T> IntoPrecompileResult<T> for TempoPrecompileError {
             Self::OutOfGas => {
                 return Err(PrecompileError::OutOfGas);
             }
-            Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
-                selector: selector.into(),
+            Self::UnknownFunctionSelector(selector) => {
+                UnknownFunctionSelector { selector: selector.into() }.abi_encode().into()
             }
-            .abi_encode()
-            .into(),
             Self::Fatal(msg) => {
                 return Err(PrecompileError::Fatal(msg));
             }
