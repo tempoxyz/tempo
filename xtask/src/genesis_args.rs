@@ -473,6 +473,12 @@ fn create_and_mint_token(
 
     let token_id = {
         let mut factory = TIP20Factory::new(&mut provider);
+        assert!(
+            factory
+                .is_initialized()
+                .expect("Could not check factory initialization"),
+            "TIP20Factory must be initialized before creating tokens"
+        );
         let token_address = factory
             .create_token(
                 admin,
