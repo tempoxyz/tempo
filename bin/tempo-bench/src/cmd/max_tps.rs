@@ -71,7 +71,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::cmd::signer_providers::{BenchProvider, SignerProviderManager};
+use crate::cmd::signer_providers::{BenchProvider, FillProviderExt, SignerProviderManager};
 
 /// Run maximum TPS throughput benchmarking
 #[derive(Parser, Debug)]

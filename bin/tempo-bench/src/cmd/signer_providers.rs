@@ -118,6 +118,7 @@ impl SignerProviderManager {
     }
 }
 
+/// A trait that exposes [`FillProvider::fill`] method.
 #[async_trait::async_trait]
 pub trait FillProviderExt: Provider<TempoNetwork> {
     async fn fill(&self, tx: TempoTransactionRequest) -> TransportResult<SendableTx<TempoNetwork>>;
@@ -134,6 +135,7 @@ where
     }
 }
 
+/// [`Provider`] that can also fill transactions with [`FillProviderExt::fill`].
 #[derive(Clone, derive_more::Deref)]
 pub(crate) struct BenchProvider(Arc<dyn FillProviderExt>);
 
