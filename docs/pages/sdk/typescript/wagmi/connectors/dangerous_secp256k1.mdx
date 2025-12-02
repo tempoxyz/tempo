@@ -1,0 +1,33 @@
+# `dangerous_secp256k1`
+
+Connector for a Secp256k1 EOA.
+ 
+:::warning
+NOT RECOMMENDED FOR PRODUCTION USAGE. This connector stores private keys in clear text, and are bound to the session length of the storage used. Instead, use this connector for testing workflows, like end-to-end tests.
+:::
+
+## Usage
+
+```ts twoslash [wagmi.config.ts]
+// @noErrors
+import { tempo } from 'tempo.ts/chains'
+import { dangerous_secp256k1 } from 'tempo.ts/wagmi' // [!code focus]
+import { createConfig, http } from 'wagmi'
+
+export const config = createConfig({
+  connectors: [dangerous_secp256k1()], // [!code focus]
+  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  multiInjectedProviderDiscovery: false,
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+## Parameters
+
+### account
+
+- **Type:** `LocalAccount`
+
+Optional account to use with connector. If not provided, one is created internally for you.

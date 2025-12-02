@@ -1,0 +1,84 @@
+# `amm.watchBurn`
+
+Watches for liquidity burn events on the Fee AMM.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { Actions } from 'tempo.ts/wagmi'
+import { config } from './wagmi.config'
+
+const unwatch = Actions.amm.watchBurn(config, {
+  onBurn: (args, log) => {
+    console.log('User token amount:', args.amountUserToken)
+    console.log('Validator token amount:', args.amountValidatorToken)
+    console.log('Liquidity burned:', args.liquidity)
+    console.log('Sender:', args.sender)
+    console.log('Recipient:', args.to)
+    console.log('User token:', args.userToken)
+    console.log('Validator token:', args.validatorToken)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onBurn
+
+- **Type:**
+
+```ts
+declare function onBurn(args: Args, log: Log): void
+
+type Args = {
+  /** Amount of user token received */
+  amountUserToken: bigint
+  /** Amount of validator token received */
+  amountValidatorToken: bigint
+  /** Amount of LP tokens burned */
+  liquidity: bigint
+  /** Address that removed liquidity */
+  sender: Address
+  /** Address that received the tokens */
+  to: Address
+  /** Address of the user token */
+  userToken: Address
+  /** Address of the validator token */
+  validatorToken: Address
+}
+```
+
+Callback to invoke when liquidity is removed.
+
+### userToken (optional)
+
+- **Type:** `Address | undefined`
+
+Filter events by user token address.
+
+### validatorToken (optional)
+
+- **Type:** `Address | undefined`
+
+Filter events by validator token address.
+

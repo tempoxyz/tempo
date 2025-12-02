@@ -1,0 +1,18 @@
+dist
+!.env.example
+.env
+
+.DS_Store
+node_modules
+.vocs-cache/
+
+# Compiler files
+specs/cache/
+specs/out/
+specs/soljson-latest.js
+.vercel
+_
+tmp
+
+# Sonda bundle diagnostic files
+.sonda

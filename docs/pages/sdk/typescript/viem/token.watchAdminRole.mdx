@@ -1,0 +1,65 @@
+# `token.watchAdminRole`
+
+Watches for role admin update events on TIP20 tokens.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { client } from './viem.config'
+
+const unwatch = client.token.watchAdminRole({
+  onRoleAdminUpdated: (args, log) => {
+    console.log('New admin role:', args.newAdminRole)
+    console.log('Previous admin role:', args.previousAdminRole)
+    console.log('Role:', args.role)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [viem.config.ts] filename="viem.config.ts"
+// [!include ~/snippets/viem.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onRoleAdminUpdated
+
+- **Type:**
+
+```ts
+declare function onRoleAdminUpdated(args: Args, log: Log): void
+
+type Args = {
+  /** New admin role */
+  newAdminRole: bigint
+  /** Previous admin role */
+  previousAdminRole: bigint
+  /** Role being updated */
+  role: bigint
+}
+```
+
+Callback to invoke when a role admin is updated.
+
+### token
+
+- **Type:** `Address | bigint`
+
+Address or ID of the TIP20 token to watch.
+
+

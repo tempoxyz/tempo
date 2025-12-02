@@ -1,0 +1,202 @@
+# Fees
+
+## Abstract
+
+This spec lays out how fees work on Tempo, including how fees are calculated, who pays them, and how the default fee token for a transaction is determined.
+
+## Motivation
+
+On Tempo, users can pay gas fees in any [TIP-20](/documentation/protocol/tip20/spec) token whose currency is USD, as long as that stablecoin has sufficient liquidity on the enshrined [fee AMM](/documentation/protocol/fees/spec-fee-amm.mdx) against the token that the current validator wants to receive.
+
+In determining *which* token a user pays fees in, we want to maximize customizability (so that wallets or users can implement more sophisticated UX than is possible at the protocol layer), minimize surprise (particularly surprises in which a user pays fees in a stablecoin they did not expect to), and have sane default behavior so that users can begin using basic functions like payments even using wallets that are not customized for Tempo support.
+
+## Fee units
+
+Fees in the `max_base_fee_per_gas` and `max_fee_per_gas` fields of transactions, as well as in the block's `base_fee_per_gas` field, are specified in units of **USD per 10^18 gas**. Since TIP-20 tokens have 6 decimal places, that means the fee for a transaction can be calculated as `ceil(base_fee * gas_used / 10^12)`.
+
+This unit is chosen to provide sufficient precision for low-fee transactions. Since TIP-20 tokens have only 6 decimal places (as opposed to the 18 decimal places of ETH), expressing fees directly in tokens per gas would not provide enough precision for transactions with very low gas costs. By scaling the fee paid by 10^-12, the protocol ensures that even small fee amounts can be accurately represented and calculated.
+
+## Fee payment
+
+Before the execution of each transaction, the protocol takes the following steps:
+
+* Determine the [`fee_payer`](#fee-payer) of the transaction.
+* Determine the `fee_token` of the transaction, according to the [rules for fee token preferences](#fee-token-preferences). If the fee token cannot be determined, the transaction is invalid.
+* Compute the `max_fee` of the transaction as `gas_limit * gas_price`.
+* Deduct `max_fee` from the `fee_payer`'s balance of `fee_token`. If `fee_payer` does not have sufficient balance in `fee_token`, the transaction is invalid.
+* Reserve `max_fee` of liquidity on the [fee AMM](/documentation/protocol/fees/spec-fee-amm) between the `fee_token` and the validator's preferred fee token. If there is insufficient liquidity, the transaction is invalid.
+
+After the execution of each transaction:
+
+* Compute the `refund_amount` as `(gas_limit - gas_used) * gas_price`.
+* Credit the `fee_payer`'s address with `refund_amount` of `fee_token`.
+* Log a `Transfer` event from the user to the [fee manager contract](/documentation/protocol/fees/spec-fee-amm) for the net amount of the fee payment.
+
+## Fee payer
+
+Tempo supports *sponsored transactions* in which the `fee_payer` is a different address from the `tx.origin` of the transaction. This is supported by Tempo's [new transaction type](/documentation/protocol/transactions/spec-account-abstraction.mdx), which has a `fee_payer_signature` field.
+
+If no `fee_payer_signature` is provided, then the `fee_payer` of the transaction is its sender (`tx.origin`).
+
+If the `fee_payer_signature` field is set, then it is used to derive the `fee_payer` for the transaction, as described in the [transaction spec](/documentation/protocol/transactions/spec-account-abstraction.mdx).
+
+For purposes of [fee token preferences](#fee-token-preferences), the `fee_payer` is the account that chooses the fee token.
+
+## Fee token preferences
+
+The protocol checks for token preferences in four ways, with this order of precedence:
+
+1. Transaction (set by the `fee_token` field of the transaction)
+2. Account (set on the FeeManager contract by the `fee_payer` of the transaction)
+3. TIP-20 contract (if transaction is calling any function on a TIP-20 contract, the transaction uses that token as its fee token)
+4. Validator (if validator sets a fee preference)
+
+The protocol checks preferences at each of these levels, stopping at the first one at which a preference is specified. At that level, the protocol performs the following checks. If any of the checks fail, the transaction is invalid (without looking at any further levels):
+
+* The token must be a TIP-20 token whose currency is USD.
+* The token must not be [linkingUSD](/documentation/protocol/exchange/linkingUSD). (While validators can accept fees in linkingUSD, users cannot pay fees in linkingUSD.)
+* The user must have sufficient balance in that token to pay the `gasLimit` on the transaction at the transaction's `gasPrice`.
+* There must be sufficient liquidity on the [fee AMM](/documentation/protocol/fees/spec-fee-amm.mdx), as discussed in that specification.
+
+If no preference is specified at the transaction, account, or contract level, the transaction is invalid.
+
+### Transaction level
+
+Tempo's [new transaction type](/documentation/protocol/transactions/spec-account-abstraction.mdx), allows transactions to specify a `fee_token` on the transaction. This overrides any preferences set at the account, contract, or validator level.
+
+For [sponsored transactions](#fee-payer), the `tx.origin` address does not sign over the `fee_token` field (allowing the `fee_payer` to choose the fee token).
+
+### Account level
+
+An account can specify a fee token preference for all transactions for which it is the `fee_payer` (including both transactions it sponsors as well as non-sponsored transactions for which it is the `tx.origin`). This overrides any preference set at the contract or validator level.
+
+To set its preference, the account can call the `setUserToken` function on the FeeManager precompile. This call reverts if the user specifies linkingUSD as their fee token.
+
+At this step, the protocol does one more check:
+
+* If the transaction is not a [Tempo transaction](/documentation/protocol/transactions/spec-account-abstraction.mdx) *and* the transaction is a top-level call to the `setUserToken` function on the FeeManager, then the protocol checks the `token` argument to the function:
+  * If that token is a TIP-20 whose currency is USD, that token is used as the fee token (unless the transaction specifies a `fee_token` at the [transaction level](#transaction-level)).
+  * If that token is not a TIP-20 or its currency is not USD, the transaction is invalid.
+
+### TIP-20 contracts
+
+If the top-level call of a transaction is to a TIP-20 contract for which the currency is USD, or _all_ of the top-level calls of a native-AA transaction are to the same TIP-20 contract for which the currency is USD, that token is used as the user's fee token for that transaction (unless there is a preference specified at the [transaction](#transaction-level) or [account](#account-level) level).
+
+### Validator level
+
+If no fee preference is set at the transaction, account, or contract level, the default fee token is the [current validator's preferred fee token](#validator-preferences). If that token is linkingUSD, the transaction is invalid (since linkingUSD cannot be paid by a user).
+
+## Validator preferences
+
+Validators can set a default fee token preference that determines which stablecoin they receive for transaction fees. When users pay in different tokens, the Fee AMM automatically converts to the validator's preferred token.
+
+### Setting validator preference
+
+To set their preference, validators call the `setValidatorToken` function on the FeeManager precompile:
+
+```solidity
+// Set your preferred fee token
+feeManager.setValidatorToken(preferredTokenAddress);
+```
+
+After setting a validator token preference, all fees collected in blocks the validator proposes will be automatically converted to the chosen token (if needed) and transferred to the validator's account.
+
+On the Andantino testnet, validators currently expect alphaUSD (one of the tokens distributed by the faucet) as their fee token.
+
+### Removing validator preference
+
+To remove a validator token preference, set it to the zero address:
+
+```solidity
+// Remove validator token preference
+feeManager.setValidatorToken(address(0));
+```
+
+## Fee lifecycle
+
+This section describes the complete flow of how fees are collected, converted, and distributed from user to validator.
+
+### Fee flow steps
+
+When a user submits a transaction on Tempo, fees are paid in their chosen stablecoin (determined by the [fee token preferences](#fee-token-preferences) hierarchy). If the validator prefers a different stablecoin, the Fee AMM automatically converts the user's payment to the validator's preferred token.
+
+#### 1. User submits transaction
+
+The transaction is submitted with the fee token determined by the preference hierarchy.
+
+#### 2. Pre-transaction collection
+
+Before the transaction executes, the `FeeManager` contract collects the maximum possible fee amount from the user:
+
+- Verifies the user has sufficient balance in their chosen fee token
+- Checks if the Fee AMM has enough liquidity (if conversion is needed)
+- Collects the maximum fee amount based on the transaction's gas limit
+
+If either check fails, the transaction is rejected before execution.
+
+#### 3. Transaction execution
+
+The transaction executes normally. The actual gas consumed may be less than the maximum that was collected.
+
+#### 4. Post-transaction refund
+
+After execution, the `FeeManager`:
+
+- Calculates the actual fee owed based on gas used
+- Refunds any unused tokens to the user
+- Queues the actual fee amount for conversion (if needed)
+
+#### 5. Fee swap queuing
+
+If the user's fee token differs from the validator's preferred token, the fee is added to a pending fee swap queue for that token pair. The swap doesn't execute immediately—it's batched with all other fees collected during the block.
+
+If the user's fee token matches the validator's preference, no conversion is needed and the fee goes directly to the validator.
+
+#### 6. End-of-block settlement
+
+At the end of each block, the protocol:
+
+1. Calls `executePendingFeeSwaps()` on the Fee AMM for each token pair
+2. Executes all pending fee swaps at a fixed rate of **0.9970** (validator receives 0.9970 of their token per 1.0 user token paid)
+3. Updates the AMM pool reserves
+4. Transfers the converted tokens to the validator's account
+
+This batched settlement prevents MEV attacks like sandwiching or backrunning individual fee payments.
+
+### Fee swap mechanics
+
+Fee swaps always execute at a fixed rate of **0.9970**:
+
+```
+validatorTokenOut = userTokenIn × 0.9970
+```
+
+This means:
+- User pays 1.0 USDC for fees
+- Validator receives 0.9970 USDT (if that's their preferred token)
+- The 0.003 (0.3%) difference goes to liquidity providers as a fee
+
+### Example flow
+
+Here's a complete example of the fee lifecycle:
+
+1. **Alice** wants to send a transaction and pays fees in **USDC** (her preferred token)
+2. **Validator** prefers to receive fees in **USDT**
+3. Alice's transaction has a max fee of 1.0 USDC
+4. The FeeManager collects 1.0 USDC from Alice before execution
+5. Transaction executes and uses 0.8 USDC worth of gas
+6. The FeeManager refunds 0.2 USDC to Alice
+7. The remaining 0.8 USDC is queued for conversion
+8. At block end, the Fee AMM swaps 0.8 USDC → 0.7976 USDT (0.8 × 0.9970)
+9. Validator receives 0.7976 USDT
+10. Liquidity providers earn 0.0024 USDT from the 0.3% fee
+
+### Gas costs
+
+The fee conversion process adds minimal overhead to transactions:
+
+- **Pre-transaction**: ~5,000 gas for balance and liquidity checks
+- **Post-transaction**: ~3,000 gas for refund and queue operations
+- **Block settlement**: Amortized across all transactions in the block
+
+For complete technical specifications on the Fee AMM mechanism, see the [Fee AMM Protocol Specification](/documentation/protocol/fees/spec-fee-amm).

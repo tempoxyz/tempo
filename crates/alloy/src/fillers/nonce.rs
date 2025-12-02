@@ -14,11 +14,18 @@ use tempo_primitives::subblock::has_sub_block_nonce_key_prefix;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Random2DNonceFiller;
 
+impl Random2DNonceFiller {
+    /// Returns `true` if either the nonce or nonce key is already filled.
+    fn is_filled(tx: &TempoTransactionRequest) -> bool {
+        tx.nonce().is_some() || tx.nonce_key.is_some()
+    }
+}
+
 impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for Random2DNonceFiller {
     type Fillable = ();
 
     fn status(&self, tx: &N::TransactionRequest) -> FillerControlFlow {
-        if tx.nonce().is_some() || tx.nonce_key.is_some() {
+        if Self::is_filled(tx) {
             return FillerControlFlow::Finished;
         }
         FillerControlFlow::Ready
@@ -26,7 +33,7 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for R
 
     fn fill_sync(&self, tx: &mut SendableTx<N>) {
         if let Some(builder) = tx.as_mut_builder()
-            && <Self as TxFiller<N>>::status(self, builder).is_ready()
+            && !Self::is_filled(builder)
         {
             let nonce_key = loop {
                 let key = U256::random();

@@ -1,0 +1,59 @@
+# `policy.watchCreate`
+
+Watches for policy creation events on the TIP403 Registry.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { client } from './viem.config'
+
+const unwatch = client.policy.watchCreate({
+  onPolicyCreated: (args, log) => {
+    console.log('Policy ID:', args.policyId)
+    console.log('Type:', args.type)
+    console.log('Updater:', args.updater)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [viem.config.ts] filename="viem.config.ts"
+// [!include ~/snippets/viem.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onPolicyCreated
+
+- **Type:**
+
+```ts
+declare function onPolicyCreated(args: Args, log: Log): void
+
+type Args = {
+  /** ID of the created policy */
+  policyId: bigint
+  /** Type of policy */
+  type: 'whitelist' | 'blacklist'
+  /** Address that created the policy */
+  updater: Address
+}
+```
+
+Callback to invoke when a policy is created.
+
+

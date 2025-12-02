@@ -1,0 +1,54 @@
+# `dex.watchOrderCancelled`
+
+Watches for order cancelled events on the Stablecoin Exchange.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { client } from './viem.config'
+
+const unwatch = client.dex.watchOrderCancelled({
+  onOrderCancelled: (args, log) => {
+    console.log('Order cancelled:', args.orderId)
+    console.log('Maker:', args.maker)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [viem.config.ts] filename="viem.config.ts"
+// [!include ~/snippets/viem.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onOrderCancelled
+
+- **Type:** `(args: OrderCancelledArgs, log: Log) => void`
+
+Callback to invoke when an order is cancelled.
+
+The `args` object contains:
+- `orderId: bigint` - ID of the cancelled order
+- `maker: Address` - Address that cancelled the order
+
+### orderId (optional)
+
+- **Type:** `bigint | undefined`
+
+Filter events by order ID.
+
