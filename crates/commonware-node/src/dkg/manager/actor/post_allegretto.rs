@@ -84,7 +84,7 @@ where
 
         // Get current epoch state
         let current_epoch_state: EpochState = match tx
-            .get_epoch::<EpochState>(HardforkRegime::PostAllegretto)
+            .get_epoch::<EpochState>()
             .await
         {
             Ok(Some(state)) => state,
@@ -283,7 +283,7 @@ where
             validator_state: new_validator_state.clone(),
         };
 
-        tx.set_epoch(HardforkRegime::PostAllegretto, new_epoch_state)
+        tx.set_epoch(new_epoch_state)
             .expect("syncing state must always work");
 
         self.register_current_epoch_state(tx).await;
@@ -302,7 +302,7 @@ where
         TSender: Sender<PublicKey = PublicKey>,
     {
         let epoch_state: EpochState = tx
-            .get_epoch(HardforkRegime::PostAllegretto)
+            .get_epoch::<EpochState>()
             .await
             .expect("must be able to read epoch")
             .expect("the post-allegretto epoch state must exist in order to start a ceremony for it");
@@ -350,7 +350,7 @@ where
     #[instrument(skip_all)]
     async fn update_and_register_current_epoch_state(&mut self, tx: &mut Tx<ContextCell<TContext>>) {
         let old_epoch_state: EpochState = tx
-            .get_epoch(HardforkRegime::PostAllegretto)
+            .get_epoch::<EpochState>()
             .await
             .expect("must be able to read epoch")
             .expect("there must always exist an epoch state");
@@ -391,10 +391,10 @@ where
         };
 
         // Move current to previous
-        tx.set_previous_epoch(HardforkRegime::PostAllegretto, old_epoch_state)
+        tx.set_previous_epoch(old_epoch_state)
             .expect("must be able to set previous epoch");
 
-        tx.set_epoch(HardforkRegime::PostAllegretto, new_epoch_state.clone())
+        tx.set_epoch(new_epoch_state.clone())
             .expect("must be able to set epoch");
 
         self.register_current_epoch_state(tx).await;
@@ -404,13 +404,13 @@ where
     async fn enter_current_epoch_and_remove_old_state(&mut self, tx: &mut Tx<ContextCell<TContext>>) {
         // Try to get and remove post-allegretto previous epoch state
         let epoch_to_shutdown = if let Ok(Some(old_epoch_state)) = tx
-            .get_previous_epoch::<EpochState>(HardforkRegime::PostAllegretto)
+            .get_previous_epoch::<EpochState>()
             .await
         {
             tx.remove_previous_epoch(HardforkRegime::PostAllegretto);
             Some(old_epoch_state.epoch())
         } else if let Ok(Some(old_state)) = tx
-            .get_previous_epoch::<pre_allegretto::EpochState>(HardforkRegime::PreAllegretto)
+            .get_previous_epoch::<pre_allegretto::EpochState>()
             .await
         {
             tx.remove_previous_epoch(HardforkRegime::PreAllegretto);

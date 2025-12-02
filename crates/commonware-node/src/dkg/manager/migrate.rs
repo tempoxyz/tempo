@@ -8,7 +8,6 @@ use tracing::info;
 use crate::{
     db::{CeremonyStore, DkgEpochStore, DkgOutcomeStore, Tx, ValidatorsStore},
     dkg::{
-        HardforkRegime,
         ceremony,
         manager::{
             DkgOutcome,
@@ -163,7 +162,7 @@ where
         )
         .await;
 
-    migrate_epoch_states(&epoch_metadata, HardforkRegime::PreAllegretto, tx, |s| s.epoch)?;
+    migrate_epoch_states(&epoch_metadata, tx, |s| s.epoch)?;
 
     Ok(())
 }
@@ -184,9 +183,7 @@ where
         )
         .await;
 
-    migrate_epoch_states(&epoch_metadata, HardforkRegime::PostAllegretto, tx, |s| {
-        s.epoch()
-    })?;
+    migrate_epoch_states(&epoch_metadata, tx, |s| s.epoch())?;
 
     Ok(())
 }
@@ -194,30 +191,29 @@ where
 /// Helper to migrate current and previous epoch states for a given regime.
 fn migrate_epoch_states<TContext, E>(
     epoch_metadata: &Metadata<ContextCell<TContext>, U64, E>,
-    regime: HardforkRegime,
     tx: &mut Tx<ContextCell<TContext>>,
     get_epoch: impl Fn(&E) -> u64,
 ) -> Result<()>
 where
     TContext: Clock + Metrics + Storage,
-    E: Clone + commonware_codec::Read<Cfg = ()> + commonware_codec::Write + EncodeSize,
+    E: Clone + crate::dkg::RegimeEpochState,
 {
     if let Some(current_epoch) = epoch_metadata.get(&CURRENT_EPOCH_KEY) {
         info!(
             epoch = get_epoch(current_epoch),
-            ?regime,
+            regime = ?E::REGIME,
             "migrating current epoch state"
         );
-        tx.set_epoch(regime, current_epoch.clone())?;
+        tx.set_epoch(current_epoch.clone())?;
     }
 
     if let Some(previous_epoch) = epoch_metadata.get(&PREVIOUS_EPOCH_KEY) {
         info!(
             epoch = get_epoch(previous_epoch),
-            ?regime,
+            regime = ?E::REGIME,
             "migrating previous epoch state"
         );
-        tx.set_previous_epoch(regime, previous_epoch.clone())?;
+        tx.set_previous_epoch(previous_epoch.clone())?;
     }
 
     Ok(())

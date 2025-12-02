@@ -46,14 +46,14 @@ where
     /// assumes that the node is starting from genesis.
     pub(super) async fn pre_allegretto_init(&mut self, tx: &mut Tx<ContextCell<TContext>>) {
         let has_post = tx
-            .get_epoch::<super::post_allegretto::EpochState>(HardforkRegime::PostAllegretto)
+            .get_epoch::<super::post_allegretto::EpochState>()
             .await
             .ok()
             .flatten()
             .is_some();
 
         let has_pre = tx
-            .get_epoch::<EpochState>(HardforkRegime::PreAllegretto)
+            .get_epoch::<EpochState>()
             .await
             .ok()
             .flatten()
@@ -61,15 +61,12 @@ where
 
         if !has_post && !has_pre {
             // Genesis initialization
-            tx.set_epoch(
-                HardforkRegime::PreAllegretto,
-                EpochState {
-                    epoch: 0,
-                    participants: self.config.initial_validators.keys().clone(),
-                    public: self.config.initial_public_polynomial.clone(),
-                    share: self.config.initial_share.clone(),
-                },
-            )
+            tx.set_epoch(EpochState {
+                epoch: 0,
+                participants: self.config.initial_validators.keys().clone(),
+                public: self.config.initial_public_polynomial.clone(),
+                share: self.config.initial_share.clone(),
+            })
             .expect("must be able to set epoch");
 
             tx.set_validators(
@@ -128,7 +125,7 @@ where
             utils::is_last_block_in_epoch(self.config.epoch_length, block.height())
         {
             let epoch_state: EpochState = tx
-                .get_epoch(HardforkRegime::PreAllegretto)
+                .get_epoch::<EpochState>()
                 .await
                 .expect("must be able to read epoch")
                 .expect("pre-allegretto epoch state must exist");
@@ -221,7 +218,7 @@ where
         // Recall, for an epoch length E the first heights are 0E, 1E, 2E, ...
         if block.height().is_multiple_of(self.config.epoch_length)
             && let Some(old_epoch_state) = tx
-                .get_previous_epoch::<EpochState>(HardforkRegime::PreAllegretto)
+                .get_previous_epoch::<EpochState>()
                 .await
                 .ok()
                 .flatten()
@@ -293,13 +290,13 @@ where
         let (public, share) = ceremony_outcome.role.into_key_pair();
 
         let old_epoch_state: EpochState = tx
-            .get_epoch(HardforkRegime::PreAllegretto)
+            .get_epoch::<EpochState>()
             .await
             .expect("must be able to read epoch")
             .expect("there must always be a current epoch state");
 
         // Move current to previous
-        tx.set_previous_epoch(HardforkRegime::PreAllegretto, old_epoch_state)
+        tx.set_previous_epoch(old_epoch_state)
             .expect("must be able to set previous epoch");
 
         let new_epoch_state = EpochState {
@@ -308,7 +305,7 @@ where
             public,
             share,
         };
-        tx.set_epoch(HardforkRegime::PreAllegretto, new_epoch_state.clone())
+        tx.set_epoch(new_epoch_state.clone())
             .expect("must be able to set epoch");
 
         // Prune older ceremony.
@@ -328,7 +325,7 @@ where
         TSender: Sender<PublicKey = PublicKey>,
     {
         let epoch_state: EpochState = tx
-            .get_epoch(HardforkRegime::PreAllegretto)
+            .get_epoch::<EpochState>()
             .await
             .expect("must be able to read epoch")
             .expect("the epoch state must always exist during the lifetime of the actor");
@@ -377,7 +374,7 @@ where
         TSender: Sender<PublicKey = PublicKey>,
     {
         let epoch_state: EpochState = tx
-            .get_epoch(HardforkRegime::PreAllegretto)
+            .get_epoch::<EpochState>()
             .await?
             .expect(
                 "when transitioning from pre-allegretto static validator sets to \

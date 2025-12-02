@@ -36,7 +36,6 @@ use crate::{
     consensus::block::Block,
     db::{DkgEpochStore, DkgOutcomeStore, MetadataDatabase, Tx, ValidatorsStore},
     dkg::{
-        HardforkRegime,
         ceremony::{self, Ceremony, OUTCOME_NAMESPACE},
         manager::{
             DecodedValidator,
@@ -238,7 +237,7 @@ where
                             .dealing
                             .verify(&union(&self.config.namespace, OUTCOME_NAMESPACE))
                     } else if tx
-                        .get_epoch::<pre_allegretto::EpochState>(HardforkRegime::PreAllegretto)
+                        .get_epoch::<pre_allegretto::EpochState>()
                         .await
                         .ok()
                         .flatten()
@@ -327,7 +326,7 @@ where
                 public: dkg_outcome.public,
             }
         } else if let Some(epoch_state) = tx
-            .get_epoch::<post_allegretto::EpochState>(HardforkRegime::PostAllegretto)
+            .get_epoch::<post_allegretto::EpochState>()
             .await?
         {
             PublicOutcome {
@@ -336,7 +335,7 @@ where
                 public: epoch_state.dkg_outcome.public,
             }
         } else if let Some(epoch_state) = tx
-            .get_epoch::<pre_allegretto::EpochState>(HardforkRegime::PreAllegretto)
+            .get_epoch::<pre_allegretto::EpochState>()
             .await?
         {
             PublicOutcome {
@@ -583,12 +582,12 @@ where
         tx: &mut Tx<ContextCell<TContext>>,
     ) -> Option<EpochState> {
         if let Ok(Some(epoch_state)) = tx
-            .get_previous_epoch::<post_allegretto::EpochState>(HardforkRegime::PostAllegretto)
+            .get_previous_epoch::<post_allegretto::EpochState>()
             .await
         {
             Some(EpochState::PostModerato(epoch_state))
         } else if let Ok(Some(epoch_state)) = tx
-            .get_previous_epoch::<pre_allegretto::EpochState>(HardforkRegime::PreAllegretto)
+            .get_previous_epoch::<pre_allegretto::EpochState>()
             .await
         {
             Some(EpochState::PreModerato(epoch_state))
@@ -607,12 +606,12 @@ where
     /// regime. There must always be an epoch state.
     async fn current_epoch_state(&self, tx: &mut Tx<ContextCell<TContext>>) -> EpochState {
         if let Ok(Some(epoch_state)) = tx
-            .get_epoch::<post_allegretto::EpochState>(HardforkRegime::PostAllegretto)
+            .get_epoch::<post_allegretto::EpochState>()
             .await
         {
             EpochState::PostModerato(epoch_state)
         } else if let Ok(Some(epoch_state)) = tx
-            .get_epoch::<pre_allegretto::EpochState>(HardforkRegime::PreAllegretto)
+            .get_epoch::<pre_allegretto::EpochState>()
             .await
         {
             EpochState::PreModerato(epoch_state)
