@@ -1,5 +1,6 @@
+use crate::cmd::signer_providers::BenchProvider;
+
 use super::*;
-use alloy::providers::DynProvider;
 use indicatif::ProgressIterator;
 use tempo_contracts::precompiles::{IStablecoinExchange, PATH_USD_ADDRESS};
 use tempo_precompiles::tip20::U128_MAX;
@@ -10,7 +11,7 @@ use tempo_precompiles::tip20::U128_MAX;
 /// * Mints user tokens for all signers and approves unlimited spending for DEX.
 /// * Seeds initial liquidity by placing DEX flip orders.
 pub(super) async fn setup(
-    signer_providers: &[(PrivateKeySigner, DynProvider<TempoNetwork>)],
+    signer_providers: &[(PrivateKeySigner, BenchProvider)],
     user_tokens: usize,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
@@ -145,10 +146,10 @@ pub(super) async fn setup(
 
 /// Creates a test TIP20 token with issuer role granted to the provided address.
 async fn setup_test_token(
-    provider: DynProvider<TempoNetwork>,
+    provider: BenchProvider,
     admin: Address,
     quote_token: Address,
-) -> eyre::Result<ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>>
+) -> eyre::Result<ITIP20Instance<BenchProvider, TempoNetwork>>
 where
 {
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
