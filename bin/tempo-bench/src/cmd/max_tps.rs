@@ -201,7 +201,7 @@ impl MaxTpsArgs {
                     .raw_request("admin_clearTxpool".into(), NoParams::default())
                     .await
                     .context(
-                        format!("Failed to clear transaction pool for {}. Is `admin_clearTxpool` RPC method available?", target_url),
+                        format!("Failed to clear transaction pool for {target_url}. Is `admin_clearTxpool` RPC method available?"),
                     )?;
                 info!(%target_url, transactions, "Cleared transaction pool");
             }
@@ -232,8 +232,6 @@ impl MaxTpsArgs {
                 .map(async |(_, provider)| {
                     IFeeManagerInstance::new(TIP_FEE_MANAGER_ADDRESS, provider.clone())
                         .setUserToken(self.fee_token)
-                        // Force a normal non-AA transaction to set the fee token
-                        .nonce(0)
                         .send()
                         .await
                 })

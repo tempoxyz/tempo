@@ -48,7 +48,7 @@ pub(super) async fn setup(
         .collect::<Vec<_>>();
 
     // Create exchange pairs for each user token
-    // info!("Creating exchange pairs");
+    info!("Creating exchange pairs");
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
     join_all(
         user_token_addresses
