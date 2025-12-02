@@ -184,9 +184,13 @@ where
     async fn handle_message(&mut self, message: Message) {
         let cause = message.cause;
         match message.command {
-            Command::CanonicalizeHead { height, digest, tx } => {
+            Command::CanonicalizeHead {
+                height,
+                digest,
+                ack,
+            } => {
                 let _ = self
-                    .canonicalize(cause, HeadOrFinalized::Head, height, digest, tx)
+                    .canonicalize(cause, HeadOrFinalized::Head, height, digest, ack)
                     .await;
             }
             Command::Finalize(finalized) => {
@@ -469,7 +473,11 @@ impl ExecutorMailbox {
         self.inner
             .unbounded_send(Message {
                 cause: Span::current(),
-                command: Command::CanonicalizeHead { height, digest, tx },
+                command: Command::CanonicalizeHead {
+                    height,
+                    digest,
+                    ack: tx,
+                },
             })
             .wrap_err("failed sending canonicalize request to agent, this means it exited")?;
 
@@ -502,7 +510,7 @@ enum Command {
     CanonicalizeHead {
         height: u64,
         digest: Digest,
-        tx: oneshot::Sender<()>,
+        ack: oneshot::Sender<()>,
     },
     /// Requests the agent to forward a finalization event to the execution layer.
     Finalize(Box<super::ingress::Finalized>),
