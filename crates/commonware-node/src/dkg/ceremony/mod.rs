@@ -894,8 +894,8 @@ where
         &self.config.dealers
     }
 
-    pub(super) fn players(&self) -> &Ordered<PublicKey> {
-        &self.config.players
+    pub(super) fn players(&self) -> &[PublicKey] {
+        self.config.players.as_ref()
     }
 
     pub(super) fn is_dealer(&self) -> bool {

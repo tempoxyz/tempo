@@ -8,6 +8,7 @@ use crate::dkg::manager::{
 use commonware_runtime::{Clock, Metrics, Storage};
 use eyre::Result;
 use tempo_dkg_onchain_artifacts::PublicOutcome;
+use crate::db::epoch::DkgEpochStore;
 
 const DKG_OUTCOME_KEY: &str = "dkg_outcome";
 

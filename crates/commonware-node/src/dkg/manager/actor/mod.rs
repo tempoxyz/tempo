@@ -428,7 +428,6 @@ where
             EpochState::PostModerato(epoch_state) => epoch_state.validator_state.clone(),
         };
 
-        // Save validator state to db
         tx.set_validators(epoch_state.epoch(), new_validator_state.clone())
             .expect("must be able to set validators");
 
@@ -465,9 +464,10 @@ where
     /// # Panics
     ///
     /// Panics if no current epoch state exists on disk.
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(previous_epoch = tracing::field::Empty))]
     async fn register_previous_epoch_state(&mut self, tx: &mut Tx<ContextCell<TContext>>) {
         if let Some(epoch_state) = self.previous_epoch_state(tx).await {
+            Span::current().record("previous_epoch", epoch_state.epoch());
             self.config
                 .epoch_manager
                 .report(
