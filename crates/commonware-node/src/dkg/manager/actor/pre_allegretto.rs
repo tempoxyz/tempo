@@ -34,7 +34,7 @@ where
     TPeerManager: commonware_p2p::Manager<
             PublicKey = PublicKey,
             Peers = OrderedAssociated<PublicKey, SocketAddr>,
-        > + Sync,
+        >,
 {
     /// Runs the pre-allegretto initialization routines.
     ///
