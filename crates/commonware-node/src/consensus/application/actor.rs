@@ -479,18 +479,11 @@ impl Inner<Init> {
             return Ok(parent);
         }
 
-        if let Err(error) = self
-            .state
+        self.state
             .executor_mailbox
-            .canonicalize_head(parent.height(), parent.digest())
-        {
-            tracing::warn!(
-                %error,
-                parent.height = parent.height(),
-                parent.digest = %parent.digest(),
-                "failed updating canonical head to parent",
-            );
-        }
+            .canonicalize_head(parent.height(), parent.digest())?
+            .await
+            .wrap_err("failed updating canonical head to parent")?;
 
         // Query DKG manager for ceremony data before building payload
         // This data will be passed to the payload builder via attributes
