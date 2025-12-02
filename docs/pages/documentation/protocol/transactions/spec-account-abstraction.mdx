@@ -1,8 +1,8 @@
-# Native AA Transaction 
+# Tempo Transaction
 
 ## Abstract
 
-This spec introduces native protocol support for the following account abstraction features, using a new account abstraction tx type - 
+This spec introduces native protocol support for the following account abstraction features, using a new Tempo transaction type -
 
 * WebAuthn/P256 signature validation - enables passkey accounts
 * Parallelizable nonces - allows higher tx throughput for each account
@@ -22,7 +22,7 @@ Users cannot leverage modern authentication methods like passkeys, applications 
 A new EIP-2718 transaction type is introduced with type byte `0x76`:
 
 ```rust
-pub struct TxAA {
+pub struct TempoTransaction {
     // Standard EIP-1559 fields
     chain_id: ChainId,                          // EIP-155 replay protection
     max_priority_fee_per_gas: u128,
@@ -150,13 +150,13 @@ function deriveAddressFromP256(bytes32 pubKeyX, bytes32 pubKeyY) public pure ret
 }
 ```
 
-### AA Authorization List
+### Tempo Authorization List
 
 The `aa_authorization_list` field enables EIP-7702 style delegation with support for all three AA signature types (secp256k1, P256, and WebAuthn), not just secp256k1.
 
 #### Structure
 ```rust
-pub struct AASignedAuthorization {
+pub struct TempoSignedAuthorization {
     inner: Authorization,      // Standard EIP-7702 authorization
     signature: AASignature,    // Can be Secp256k1, P256, or WebAuthn
 }
@@ -284,7 +284,7 @@ We specify the complete gas schedule in more detail in the [gas costs section](#
 
 ### Fee Payer Signature Details
 
-The Native AA Transaction Type (0x76) supports **gas sponsorship** where a third party (fee payer) can pay transaction fees on behalf of the sender. This is achieved through dual signature domains—the sender signs with transaction type byte `0x76`, while the fee payer signs with magic byte `0x78` to ensure domain separation and prevent signature reuse attacks.
+The Tempo Transaction Type (0x76) supports **gas sponsorship** where a third party (fee payer) can pay transaction fees on behalf of the sender. This is achieved through dual signature domains—the sender signs with transaction type byte `0x76`, while the fee payer signs with magic byte `0x78` to ensure domain separation and prevent signature reuse attacks.
 
 #### Signing Domains
 
