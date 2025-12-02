@@ -28,7 +28,6 @@ use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
 use tempo_chainspec::hardfork::TempoHardforks as _;
-use tempo_dkg_onchain_artifacts::PublicOutcome;
 use tempo_node::TempoFullNode;
 use tracing::{Span, error, info, instrument, warn};
 
@@ -314,32 +313,13 @@ where
     ) -> eyre::Result<()> {
         let mut tx = self.db.read_write()?;
 
-        // Try post-allegretto first
-        let outcome = if let Some(dkg_outcome) = tx.get_dkg_outcome().await? {
-            PublicOutcome {
-                epoch: dkg_outcome.epoch,
-                participants: dkg_outcome.participants,
-                public: dkg_outcome.public,
-            }
-        } else if let Some(epoch_state) = tx.get_epoch::<post_allegretto::EpochState>().await? {
-            PublicOutcome {
-                epoch: epoch_state.dkg_outcome.epoch,
-                participants: epoch_state.dkg_outcome.participants,
-                public: epoch_state.dkg_outcome.public,
-            }
-        } else if let Some(epoch_state) = tx.get_epoch::<pre_allegretto::EpochState>().await? {
-            PublicOutcome {
-                epoch: epoch_state.epoch,
-                participants: epoch_state.participants,
-                public: epoch_state.public,
-            }
-        } else {
-            return Err(eyre!(
+        let outcome = tx.get_public_outcome().await?.ok_or_else(|| {
+            eyre!(
                 "no DKG outcome was found in state, even though it must exist \
                 - derived from the epoch state from either the pre- or \
                 post-allegretto logic"
-            ));
-        };
+            )
+        })?;
 
         response
             .send(outcome)
