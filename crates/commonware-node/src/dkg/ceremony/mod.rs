@@ -372,7 +372,8 @@ where
                         share.clone(),
                     ));
                 })
-                .await?;
+                .await
+                .expect("must be able to persists acks");
                 // When self-distributing, we also "receive" the share and "send" an ack to ourselves
                 self.metrics.shares_distributed.inc();
                 self.metrics.acks_received.inc();
@@ -516,7 +517,8 @@ where
                 });
             }
         })
-        .await?;
+        .await
+        .expect("must always be able to persist tracked acks to disk");
 
         Ok("ack recorded")
     }
@@ -553,7 +555,8 @@ where
             info.received_shares
                 .push((peer.clone(), commitment.clone(), share.clone()));
         })
-        .await?;
+        .await
+        .expect("must always be able to persist tracked shares to disk");
 
         let payload = Ack::new(
             &union(&self.config.namespace, ACK_NAMESPACE),
