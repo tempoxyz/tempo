@@ -37,10 +37,7 @@ pub struct TempoHeader {
 impl TempoHeader {
     /// Returns the timestamp in milliseconds.
     pub fn timestamp_millis(&self) -> u64 {
-        self.inner
-            .timestamp()
-            .saturating_mul(1000)
-            .saturating_add(self.timestamp_millis_part)
+        self.inner.timestamp().saturating_mul(1000).saturating_add(self.timestamp_millis_part)
     }
 }
 
@@ -141,16 +138,11 @@ impl BlockHeader for TempoHeader {
 
 impl InMemorySize for TempoHeader {
     fn size(&self) -> usize {
-        let Self {
-            inner,
-            general_gas_limit,
-            timestamp_millis_part,
-            shared_gas_limit,
-        } = self;
-        inner.size()
-            + general_gas_limit.size()
-            + timestamp_millis_part.size()
-            + shared_gas_limit.size()
+        let Self { inner, general_gas_limit, timestamp_millis_part, shared_gas_limit } = self;
+        inner.size() +
+            general_gas_limit.size() +
+            timestamp_millis_part.size() +
+            shared_gas_limit.size()
     }
 }
 

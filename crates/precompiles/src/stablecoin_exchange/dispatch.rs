@@ -221,60 +221,32 @@ mod tests {
         let mut quote = PathUSD::new(exchange.storage);
         quote.initialize(admin).unwrap();
 
-        quote
-            .token
-            .grant_role_internal(admin, *ISSUER_ROLE)
-            .unwrap();
-        quote
-            .token
-            .grant_role_internal(user, *TRANSFER_ROLE)
-            .unwrap();
+        quote.token.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
+        quote.token.grant_role_internal(user, *TRANSFER_ROLE).unwrap();
 
-        quote
-            .mint(
-                admin,
-                ITIP20::mintCall {
-                    to: user,
-                    amount: U256::from(amount),
-                },
-            )
-            .unwrap();
+        quote.mint(admin, ITIP20::mintCall { to: user, amount: U256::from(amount) }).unwrap();
 
         quote
             .approve(
                 user,
-                ITIP20::approveCall {
-                    spender: exchange.address,
-                    amount: U256::from(amount),
-                },
+                ITIP20::approveCall { spender: exchange.address, amount: U256::from(amount) },
             )
             .unwrap();
 
         // Initialize base token
         let quote_address = quote.token.address();
         let mut base = TIP20Token::new(1, quote.token.storage());
-        base.initialize("BASE", "BASE", "USD", quote_address, admin, Address::ZERO)
-            .unwrap();
+        base.initialize("BASE", "BASE", "USD", quote_address, admin, Address::ZERO).unwrap();
 
         base.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
 
         base.approve(
             user,
-            ITIP20::approveCall {
-                spender: exchange.address,
-                amount: U256::from(amount),
-            },
+            ITIP20::approveCall { spender: exchange.address, amount: U256::from(amount) },
         )
         .unwrap();
 
-        base.mint(
-            admin,
-            ITIP20::mintCall {
-                to: user,
-                amount: U256::from(amount),
-            },
-        )
-        .unwrap();
+        base.mint(admin, ITIP20::mintCall { to: user, amount: U256::from(amount) }).unwrap();
 
         let base_token = base.address();
         let quote_token = quote.token.address();
@@ -283,9 +255,7 @@ mod tests {
         exchange.create_pair(base_token).unwrap();
 
         // Place an order to provide liquidity
-        exchange
-            .place(user, base_token, MIN_ORDER_AMOUNT, true, 0)
-            .unwrap();
+        exchange.place(user, base_token, MIN_ORDER_AMOUNT, true, 0).unwrap();
 
         // Execute block to activate orders
         exchange.execute_block(Address::ZERO).unwrap();
@@ -302,12 +272,7 @@ mod tests {
         let sender = Address::from([1u8; 20]);
         let token = Address::from([2u8; 20]);
 
-        let call = IStablecoinExchange::placeCall {
-            token,
-            amount: 100u128,
-            isBid: true,
-            tick: 0,
-        };
+        let call = IStablecoinExchange::placeCall { token, amount: 100u128, isBid: true, tick: 0 };
         let calldata = call.abi_encode();
 
         // Should dispatch to place function (may fail due to business logic, but dispatch works)
@@ -374,10 +339,7 @@ mod tests {
         let output = result.unwrap().bytes;
         let returned_value = u32::abi_decode(&output).unwrap();
 
-        assert_eq!(
-            returned_value, 67_232,
-            "Pre-moderato MIN_PRICE should be 67_232"
-        );
+        assert_eq!(returned_value, 67_232, "Pre-moderato MIN_PRICE should be 67_232");
     }
 
     #[test]
@@ -396,10 +358,7 @@ mod tests {
         let output = result.unwrap().bytes;
         let returned_value = u32::abi_decode(&output).unwrap();
 
-        assert_eq!(
-            returned_value, 98_000,
-            "Post-moderato MIN_PRICE should be 98_000"
-        );
+        assert_eq!(returned_value, 98_000, "Post-moderato MIN_PRICE should be 98_000");
     }
 
     #[test]
@@ -418,10 +377,7 @@ mod tests {
         let output = result.unwrap().bytes;
         let returned_value = u32::abi_decode(&output).unwrap();
 
-        assert_eq!(
-            returned_value, 132_767,
-            "Pre-moderato MAX_PRICE should be 132_767"
-        );
+        assert_eq!(returned_value, 132_767, "Pre-moderato MAX_PRICE should be 132_767");
     }
 
     #[test]
@@ -440,10 +396,7 @@ mod tests {
         let output = result.unwrap().bytes;
         let returned_value = u32::abi_decode(&output).unwrap();
 
-        assert_eq!(
-            returned_value, 102_000,
-            "Post-moderato MAX_PRICE should be 102_000"
-        );
+        assert_eq!(returned_value, 102_000, "Post-moderato MAX_PRICE should be 102_000");
     }
 
     #[test]
@@ -473,10 +426,7 @@ mod tests {
         let sender = Address::from([1u8; 20]);
         let token = Address::from([2u8; 20]);
 
-        let call = IStablecoinExchange::withdrawCall {
-            token,
-            amount: 100u128,
-        };
+        let call = IStablecoinExchange::withdrawCall { token, amount: 100u128 };
         let calldata = call.abi_encode();
 
         // Should dispatch to withdraw function
@@ -509,9 +459,7 @@ mod tests {
             setup_exchange_with_liquidity(&mut storage);
 
         // Set balance for the swapper
-        exchange
-            .set_balance(user, base_token, 1_000_000u128)
-            .unwrap();
+        exchange.set_balance(user, base_token, 1_000_000u128).unwrap();
 
         let call = IStablecoinExchange::swapExactAmountInCall {
             tokenIn: base_token,
@@ -533,15 +481,11 @@ mod tests {
             setup_exchange_with_liquidity(&mut storage);
 
         // Place an ask order to provide liquidity for selling base
-        exchange
-            .place(user, base_token, MIN_ORDER_AMOUNT, false, 0)
-            .unwrap();
+        exchange.place(user, base_token, MIN_ORDER_AMOUNT, false, 0).unwrap();
         exchange.execute_block(Address::ZERO).unwrap();
 
         // Set balance for the swapper
-        exchange
-            .set_balance(user, quote_token, 1_000_000u128)
-            .unwrap();
+        exchange.set_balance(user, quote_token, 1_000_000u128).unwrap();
 
         let call = IStablecoinExchange::swapExactAmountOutCall {
             tokenIn: quote_token,
@@ -583,9 +527,7 @@ mod tests {
             setup_exchange_with_liquidity(&mut storage);
 
         // Place an ask order to provide liquidity for selling base
-        exchange
-            .place(user, base_token, MIN_ORDER_AMOUNT, false, 0)
-            .unwrap();
+        exchange.place(user, base_token, MIN_ORDER_AMOUNT, false, 0).unwrap();
         exchange.execute_block(Address::ZERO).unwrap();
 
         let sender = Address::random();
@@ -649,7 +591,8 @@ mod tests {
 
         let sender = Address::from([1u8; 20]);
 
-        // Use an invalid selector that doesn't match any function - should return Ok with reverted status
+        // Use an invalid selector that doesn't match any function - should return Ok with reverted
+        // status
         let calldata = Bytes::from([0x12, 0x34, 0x56, 0x78]);
 
         let result = exchange.call(&calldata, sender);

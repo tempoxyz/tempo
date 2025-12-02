@@ -45,8 +45,8 @@ pub(crate) fn to_snake_case(s: &str) -> String {
 
     while let Some(c) = chars.next() {
         if c.is_uppercase() {
-            if !result.is_empty()
-                && (!prev_upper || chars.peek().is_some_and(|&next| next.is_lowercase()))
+            if !result.is_empty() &&
+                (!prev_upper || chars.peek().is_some_and(|&next| next.is_lowercase()))
             {
                 result.push('_');
             }
@@ -130,10 +130,7 @@ pub(crate) fn extract_attributes(attrs: &[Attribute]) -> syn::Result<ExtractedAt
         // Extract `#[base_slot(N)]` attribute
         else if attr.path().is_ident("base_slot") {
             if base_slot_attr.is_some() {
-                return Err(syn::Error::new_spanned(
-                    attr,
-                    "duplicate `base_slot` attribute",
-                ));
+                return Err(syn::Error::new_spanned(attr, "duplicate `base_slot` attribute"));
             }
             if slot_attr.is_some() {
                 return Err(syn::Error::new_spanned(
@@ -194,10 +191,7 @@ pub(crate) fn extract_storable_array_sizes(attrs: &[Attribute]) -> syn::Result<O
                     }
 
                     if size > 256 {
-                        return Err(syn::Error::new_spanned(
-                            &int,
-                            "Array size must not exceed 256",
-                        ));
+                        return Err(syn::Error::new_spanned(&int, "Array size must not exceed 256"));
                     }
 
                     if sizes.contains(&size) {
@@ -312,10 +306,7 @@ pub(crate) fn is_dynamic_type(ty: &Type) -> bool {
         return false;
     };
 
-    matches!(
-        segment.ident.to_string().as_str(),
-        "String" | "Bytes" | "Vec"
-    )
+    matches!(segment.ident.to_string().as_str(), "String" | "Bytes" | "Vec")
 }
 
 /// Checks if a type is a fixed-size array type `[T; N]`.

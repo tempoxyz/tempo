@@ -55,10 +55,7 @@ impl TempoEvmConfig {
     /// Create a new [`TempoEvmConfig`] with the given chain spec and EVM factory.
     pub fn new(chain_spec: Arc<TempoChainSpec>, evm_factory: TempoEvmFactory) -> Self {
         let inner = EthEvmConfig::new_with_evm_factory(chain_spec.clone(), evm_factory);
-        Self {
-            inner,
-            block_assembler: TempoBlockAssembler::new(chain_spec),
-        }
+        Self { inner, block_assembler: TempoBlockAssembler::new(chain_spec) }
     }
 
     /// Create a new [`TempoEvmConfig`] with the given chain spec and default EVM factory.
@@ -120,8 +117,7 @@ impl ConfigureEvm for TempoEvmConfig {
             header,
             self.chain_spec(),
             self.chain_spec().chain().id(),
-            self.chain_spec()
-                .blob_params_at_timestamp(header.timestamp()),
+            self.chain_spec().blob_params_at_timestamp(header.timestamp()),
         );
 
         let spec = self.chain_spec().tempo_hardfork_at(header.timestamp());
@@ -148,13 +144,10 @@ impl ConfigureEvm for TempoEvmConfig {
                 prev_randao: attributes.prev_randao,
                 gas_limit: attributes.gas_limit,
             },
-            self.chain_spec()
-                .next_block_base_fee(parent, attributes.timestamp)
-                .unwrap_or_default(),
+            self.chain_spec().next_block_base_fee(parent, attributes.timestamp).unwrap_or_default(),
             self.chain_spec(),
             self.chain_spec().chain().id(),
-            self.chain_spec()
-                .blob_params_at_timestamp(attributes.timestamp),
+            self.chain_spec().blob_params_at_timestamp(attributes.timestamp),
         );
 
         let spec = self.chain_spec().tempo_hardfork_at(attributes.timestamp);
@@ -183,10 +176,7 @@ impl ConfigureEvm for TempoEvmConfig {
             .ok_or(TempoEvmError::NoSubblockMetadataFound)?
             .into_iter()
             .map(|metadata| {
-                (
-                    PartialValidatorKey::from_slice(&metadata.validator[..15]),
-                    metadata.fee_recipient,
-                )
+                (PartialValidatorKey::from_slice(&metadata.validator[..15]), metadata.fee_recipient)
             })
             .collect();
 
@@ -200,8 +190,8 @@ impl ConfigureEvm for TempoEvmConfig {
             },
             general_gas_limit: block.header().general_gas_limit,
             extra_data: block.header().extra_data().clone(),
-            shared_gas_limit: block.header().gas_limit()
-                / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
+            shared_gas_limit: block.header().gas_limit() /
+                tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
             // Not available when we only have a block body.
             validator_set: None,
             subblock_fee_recipients,
@@ -222,8 +212,8 @@ impl ConfigureEvm for TempoEvmConfig {
             },
             general_gas_limit: attributes.general_gas_limit,
             extra_data: attributes.extra_data,
-            shared_gas_limit: attributes.inner.gas_limit
-                / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
+            shared_gas_limit: attributes.inner.gas_limit /
+                tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
             // Fine to not validate during block building.
             validator_set: None,
             subblock_fee_recipients: attributes.subblock_fee_recipients,
@@ -243,10 +233,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         &self,
         payload: &'a TempoExecutionData,
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
-        let TempoExecutionData {
-            block,
-            validator_set,
-        } = payload;
+        let TempoExecutionData { block, validator_set } = payload;
         let mut context = self.context_for_block(block)?;
 
         context.validator_set = validator_set.clone();
@@ -287,9 +274,7 @@ mod tests {
         assert!(evm_config.chain_spec().is_adagio_active_at_timestamp(1000));
 
         // Should be able to query activation condition
-        let activation = evm_config
-            .chain_spec()
-            .tempo_fork_activation(TempoHardfork::Adagio);
+        let activation = evm_config.chain_spec().tempo_fork_activation(TempoHardfork::Adagio);
         assert_eq!(activation, reth_chainspec::ForkCondition::Timestamp(0));
     }
 }

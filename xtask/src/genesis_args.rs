@@ -145,7 +145,9 @@ impl GenesisArgs {
             })
             .collect::<eyre::Result<Vec<Address>>>()?;
 
-        // system contracts/precompiles must be initialized bottom up, if an init function (e.g. mint_pairwise_liquidity) uses another system contract/precompiles internally (tip403 registry), the registry must be initialized first.
+        // system contracts/precompiles must be initialized bottom up, if an init function (e.g.
+        // mint_pairwise_liquidity) uses another system contract/precompiles internally (tip403
+        // registry), the registry must be initialized first.
 
         // Deploy TestUSD fee token
         let admin = addresses[0];
@@ -303,10 +305,7 @@ impl GenesisArgs {
             },
         );
 
-        println!(
-            "generating consensus config for validators: {:?}",
-            self.validators
-        );
+        println!("generating consensus config for validators: {:?}", self.validators);
         let consensus_config = generate_consensus_config(&self.validators, self.seed);
 
         let mut chain_config = ChainConfig {
@@ -333,24 +332,19 @@ impl GenesisArgs {
         };
 
         // Add Tempo hardfork times to extra_fields
-        chain_config.extra_fields.insert(
-            "adagioTime".to_string(),
-            serde_json::json!(self.adagio_time),
-        );
-        chain_config.extra_fields.insert(
-            "moderatoTime".to_string(),
-            serde_json::json!(self.moderato_time),
-        );
-        if let Some(allegretto_time) = self.allegretto_time {
-            chain_config.extra_fields.insert(
-                "allegrettoTime".to_string(),
-                serde_json::json!(allegretto_time),
-            );
-        }
-
         chain_config
             .extra_fields
-            .insert_value("epochLength".to_string(), self.epoch_length)?;
+            .insert("adagioTime".to_string(), serde_json::json!(self.adagio_time));
+        chain_config
+            .extra_fields
+            .insert("moderatoTime".to_string(), serde_json::json!(self.moderato_time));
+        if let Some(allegretto_time) = self.allegretto_time {
+            chain_config
+                .extra_fields
+                .insert("allegrettoTime".to_string(), serde_json::json!(allegretto_time));
+        }
+
+        chain_config.extra_fields.insert_value("epochLength".to_string(), self.epoch_length)?;
         if let Some(consensus_config) = &consensus_config {
             chain_config
                 .extra_fields
@@ -400,9 +394,7 @@ fn create_and_mint_token(
 
     let token_id = {
         let mut factory = TIP20Factory::new(&mut provider);
-        factory
-            .initialize()
-            .expect("Could not initialize tip20 factory");
+        factory.initialize().expect("Could not initialize tip20 factory");
         let token_address = factory
             .create_token(
                 admin,
@@ -422,33 +414,17 @@ fn create_and_mint_token(
     let mut token = TIP20Token::new(token_id, &mut provider);
     token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
-    let result = token.set_supply_cap(
-        admin,
-        ITIP20::setSupplyCapCall {
-            newSupplyCap: U256::from(u128::MAX),
-        },
-    );
+    let result = token
+        .set_supply_cap(admin, ITIP20::setSupplyCapCall { newSupplyCap: U256::from(u128::MAX) });
     assert!(result.is_ok());
 
     token
-        .mint(
-            admin,
-            ITIP20::mintCall {
-                to: admin,
-                amount: mint_amount,
-            },
-        )
+        .mint(admin, ITIP20::mintCall { to: admin, amount: mint_amount })
         .expect("Token minting failed");
 
     for address in recipients.iter().progress() {
         token
-            .mint(
-                admin,
-                ITIP20::mintCall {
-                    to: *address,
-                    amount: U256::from(u64::MAX),
-                },
-            )
+            .mint(admin, ITIP20::mintCall { to: *address, amount: U256::from(u64::MAX) })
             .expect("Could not mint fee token");
     }
 
@@ -465,21 +441,13 @@ fn initialize_path_usd(
     let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
     let mut path_usd = PathUSD::new(&mut provider);
-    path_usd
-        .initialize(admin)
-        .expect("PathUSD initialization should succeed");
+    path_usd.initialize(admin).expect("PathUSD initialization should succeed");
 
     path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
     for recipient in recipients.iter().progress() {
         path_usd
-            .mint(
-                admin,
-                ITIP20::mintCall {
-                    to: *recipient,
-                    amount: U256::from(u64::MAX),
-                },
-            )
+            .mint(admin, ITIP20::mintCall { to: *recipient, amount: U256::from(u64::MAX) })
             .expect("Could not mint pathUSD");
     }
 
@@ -507,17 +475,10 @@ fn initialize_fee_manager(
     let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
     let mut fee_manager = TipFeeManager::new(&mut provider);
-    fee_manager
-        .initialize()
-        .expect("Could not init fee manager");
+    fee_manager.initialize().expect("Could not init fee manager");
     for address in initial_accounts.iter().progress() {
         fee_manager
-            .set_user_token(
-                *address,
-                IFeeManager::setUserTokenCall {
-                    token: default_fee_address,
-                },
-            )
+            .set_user_token(*address, IFeeManager::setUserTokenCall { token: default_fee_address })
             .expect("Could not set fee token");
     }
 
@@ -526,9 +487,7 @@ fn initialize_fee_manager(
         fee_manager
             .set_validator_token(
                 validator,
-                IFeeManager::setValidatorTokenCall {
-                    token: PATH_USD_ADDRESS,
-                },
+                IFeeManager::setValidatorTokenCall { token: PATH_USD_ADDRESS },
                 // use random address to avoid `CannotChangeWithinBlock` error
                 Address::random(),
             )
@@ -598,9 +557,8 @@ fn generate_consensus_config(
     }
 
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
-    let mut signers = (0..addresses.len())
-        .map(|_| PrivateKey::from_rng(&mut rng))
-        .collect::<Vec<_>>();
+    let mut signers =
+        (0..addresses.len()).map(|_| PrivateKey::from_rng(&mut rng)).collect::<Vec<_>>();
 
     // generate consensus key
     let threshold = commonware_utils::quorum(addresses.len() as u32);
@@ -624,11 +582,7 @@ fn generate_consensus_config(
             signing_share: SigningShare::from(share),
         });
     }
-    Some(ConsensusConfig {
-        peers: peers.into(),
-        public_polynomial: polynomial.into(),
-        validators,
-    })
+    Some(ConsensusConfig { peers: peers.into(), public_polynomial: polynomial.into(), validators })
 }
 
 fn mint_pairwise_liquidity(

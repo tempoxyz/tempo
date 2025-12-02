@@ -26,14 +26,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         chain_id: u64,
         spec: TempoHardfork,
     ) -> Self {
-        Self {
-            internals,
-            chain_id,
-            gas_remaining: gas_limit,
-            gas_refunded: 0,
-            gas_limit,
-            spec,
-        }
+        Self { internals, chain_id, gas_remaining: gas_limit, gas_refunded: 0, gas_limit, spec }
     }
 
     /// Create a new storage provider with maximum gas limit.
@@ -106,10 +99,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         ))?;
 
         // refund gas.
-        self.refund_gas(revm::interpreter::gas::sstore_refund(
-            SpecId::AMSTERDAM,
-            &result.data,
-        ));
+        self.refund_gas(revm::interpreter::gas::sstore_refund(SpecId::AMSTERDAM, &result.data));
 
         Ok(())
     }
@@ -135,10 +125,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
                 .unwrap_or(u64::MAX),
         )?;
 
-        self.internals.log(Log {
-            address,
-            data: event,
-        });
+        self.internals.log(Log { address, data: event });
 
         Ok(())
     }
@@ -148,10 +135,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.ensure_loaded_account(address)?;
         let val = self.internals.sload(address, key)?;
 
-        self.deduct_gas(revm::interpreter::gas::sload_cost(
-            SpecId::AMSTERDAM,
-            val.is_cold,
-        ))?;
+        self.deduct_gas(revm::interpreter::gas::sload_cost(SpecId::AMSTERDAM, val.is_cold))?;
 
         Ok(val.data)
     }
@@ -166,10 +150,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
-        self.gas_remaining = self
-            .gas_remaining
-            .checked_sub(gas)
-            .ok_or(TempoPrecompileError::OutOfGas)?;
+        self.gas_remaining =
+            self.gas_remaining.checked_sub(gas).ok_or(TempoPrecompileError::OutOfGas)?;
         Ok(())
     }
 

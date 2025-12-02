@@ -27,8 +27,8 @@ where
 {
     // Helper to track AA transactions with `valid_before` timestamps
     let track_expiry = |map: &mut BTreeMap<u64, Vec<TxHash>>, maybe_aa_tx: Option<&AASigned>| {
-        if let Some(aa_tx) = maybe_aa_tx
-            && let Some(valid_before) = aa_tx.tx().valid_before
+        if let Some(aa_tx) = maybe_aa_tx &&
+            let Some(valid_before) = aa_tx.tx().valid_before
         {
             let hash = *aa_tx.hash();
             map.entry(valid_before).or_default().push(hash);
@@ -46,9 +46,7 @@ where
     let mut chain_events = client.canonical_state_stream();
 
     // Populate expiry map to prevent race condition at start-up
-    pool.all_transactions()
-        .all()
-        .for_each(|tx| track_expiry(&mut expiry_map, tx.inner().as_aa()));
+    pool.all_transactions().all().for_each(|tx| track_expiry(&mut expiry_map, tx.inner().as_aa()));
 
     loop {
         tokio::select! {
@@ -92,7 +90,8 @@ where
     }
 }
 
-/// An endless future that maintains the [`TempoTransactionPool`] 2d nonce pool based on the storage changes of the `NonceManager` precompile.
+/// An endless future that maintains the [`TempoTransactionPool`] 2d nonce pool based on the storage
+/// changes of the `NonceManager` precompile.
 ///
 /// The `NonceManager` contains
 ///
@@ -110,10 +109,8 @@ where
     let nonce_keys = pool.aa_2d_nonce_keys();
     while let Some(notification) = events.next().await {
         let tip = notification.committed();
-        let Some(nonce_manager_changes) = tip
-            .execution_outcome()
-            .bundle
-            .account(&NONCE_PRECOMPILE_ADDRESS)
+        let Some(nonce_manager_changes) =
+            tip.execution_outcome().bundle.account(&NONCE_PRECOMPILE_ADDRESS)
         else {
             continue;
         };

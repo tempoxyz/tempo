@@ -2,10 +2,9 @@
 //!
 //! This actor is responsible for:
 //!
-//! 1. entering and exiting epochs given messages it receives from the DKG
-//!    manager.
-//! 2. catching the node up by listening to votes for unknown epoch and
-//!    requesting finalizations for the currently known boundary height.
+//! 1. entering and exiting epochs given messages it receives from the DKG manager.
+//! 2. catching the node up by listening to votes for unknown epoch and requesting finalizations for
+//!    the currently known boundary height.
 //!
 //! # Entering and exiting epochs
 //!
@@ -154,18 +153,9 @@ where
 
     pub(crate) fn start(
         mut self,
-        pending: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
-        recovered: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
-        resolver: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
+        pending: (impl Sender<PublicKey = PublicKey>, impl Receiver<PublicKey = PublicKey>),
+        recovered: (impl Sender<PublicKey = PublicKey>, impl Receiver<PublicKey = PublicKey>),
+        resolver: (impl Sender<PublicKey = PublicKey>, impl Receiver<PublicKey = PublicKey>),
         boundary_certificates: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
@@ -173,8 +163,7 @@ where
     ) -> Handle<()> {
         spawn_cell!(
             self.context,
-            self.run(pending, recovered, resolver, boundary_certificates)
-                .await
+            self.run(pending, recovered, resolver, boundary_certificates).await
         )
     }
 
@@ -300,12 +289,7 @@ where
     async fn enter(
         &mut self,
         cause: Span,
-        Enter {
-            epoch,
-            public,
-            share,
-            participants,
-        }: Enter,
+        Enter { epoch, public, share, participants }: Enter,
         pending_mux: &mut MuxHandle<
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
@@ -450,21 +434,13 @@ where
 
         let boundary_height = utils::last_block_in_epoch(self.config.epoch_length, our_epoch);
         ensure!(
-            self.config
-                .marshal
-                .get_finalization(boundary_height)
-                .await
-                .is_none(),
+            self.config.marshal.get_finalization(boundary_height).await.is_none(),
             "finalization certificate for epoch `{our_epoch}` at boundary \
             height `{boundary_height}` is already known; no action necessary",
         );
 
         boundary_certificates_sender
-            .send(
-                Recipients::One(from),
-                UInt(our_epoch).encode().freeze(),
-                true,
-            )
+            .send(Recipients::One(from), UInt(our_epoch).encode().freeze(), true)
             .await
             .wrap_err("failed request for finalization certificate of our epoch")?;
 
@@ -489,12 +465,8 @@ where
             .into();
         tracing::Span::current().record("msg.decoded_epoch", requested_epoch);
         let boundary_height = utils::last_block_in_epoch(self.config.epoch_length, requested_epoch);
-        let cert = self
-            .config
-            .marshal
-            .get_finalization(boundary_height)
-            .await
-            .ok_or_else(|| {
+        let cert =
+            self.config.marshal.get_finalization(boundary_height).await.ok_or_else(|| {
                 eyre!(
                     "do not have finalization for requested epoch \
                     `{requested_epoch}`, boundary height `{boundary_height}` \
@@ -503,12 +475,7 @@ where
             })?;
         let message = Voter::<Scheme<PublicKey, MinSig>, Digest>::Finalization(cert);
         recovered_global_sender
-            .send(
-                requested_epoch,
-                Recipients::One(from),
-                message.encode().freeze(),
-                false,
-            )
+            .send(requested_epoch, Recipients::One(from), message.encode().freeze(), false)
             .await
             .wrap_err(
                 "failed forwarding finalization certificate to requester via `recovered` channel",

@@ -116,10 +116,7 @@ mod tests {
 
     /// Helper to create a test contract with fresh storage.
     fn setup_test_contract() -> TestContract {
-        TestContract {
-            address: Address::random(),
-            storage: HashMapStorageProvider::new(1),
-        }
+        TestContract { address: Address::random(), storage: HashMapStorageProvider::new(1) }
     }
 
     // Strategy for generating random U256 slot values that won't overflow
@@ -227,8 +224,10 @@ mod tests {
 
         let loaded_slot = contract.sload(base_slot + U256::from(2)).unwrap();
         let expected = gen_slot_from(&[
-            "0xFF",                                                             // offset 31 (1 byte)
-            "0x00000000000000000000000000000000000000000000000000000000000000", // padding (31 bytes)
+            "0xFF", /* offset 31 (1
+                     * byte) */
+            "0x00000000000000000000000000000000000000000000000000000000000000", /* padding (31
+                                                                                 * bytes) */
         ]);
         assert_eq!(loaded_slot, expected);
     }
@@ -271,7 +270,8 @@ mod tests {
 
         let loaded_slot = contract.sload(base_slot + U256::from(2)).unwrap();
         let expected = gen_slot_from(&[
-            "0xFFEE",                                                         // offset 30 (2 bytes)
+            "0xFFEE",                                                         /* offset 30 (2
+                                                                               * bytes) */
             "0x000000000000000000000000000000000000000000000000000000000000", // padding (30 bytes)
         ]);
         assert_eq!(loaded_slot, expected);
@@ -452,8 +452,10 @@ mod tests {
 
         let loaded_slot = contract.sload(base_slot + U256::ONE).unwrap();
         let expected = gen_slot_from(&[
-            "0x00",                                                             // offset 31 (1 byte)
-            "0x00000000000000000000000000000000000000000000000000000000000000", // padding (31 bytes)
+            "0x00", /* offset 31 (1
+                     * byte) */
+            "0x00000000000000000000000000000000000000000000000000000000000000", /* padding (31
+                                                                                 * bytes) */
         ]);
         assert_eq!(loaded_slot, expected);
     }
@@ -486,11 +488,7 @@ mod tests {
 
         // Verify slot is non-zero
         let slot_before = contract.sload(base_slot).unwrap();
-        assert_ne!(
-            slot_before,
-            U256::ZERO,
-            "Slot should be non-zero before delete"
-        );
+        assert_ne!(slot_before, U256::ZERO, "Slot should be non-zero before delete");
 
         // Delete the value
         u64::delete(&mut contract, base_slot).unwrap();
@@ -614,11 +612,8 @@ mod tests {
         let base_slot = U256::from(400);
 
         // [Address; 3] should use 3 slots (20 bytes doesn't divide 32 evenly)
-        let data: [Address; 3] = [
-            Address::repeat_byte(0x11),
-            Address::repeat_byte(0x22),
-            Address::repeat_byte(0x33),
-        ];
+        let data: [Address; 3] =
+            [Address::repeat_byte(0x11), Address::repeat_byte(0x22), Address::repeat_byte(0x33)];
 
         // Verify slot count
         assert_eq!(<[Address; 3] as Storable<3>>::SLOT_COUNT, 3);

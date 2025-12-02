@@ -26,10 +26,7 @@ use tempo_precompiles::{
 async fn test_eth_call() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -69,10 +66,7 @@ async fn test_eth_call() -> eyre::Result<()> {
 async fn test_eth_trace_call() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -117,9 +111,7 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     assert!(caller_diff.code.is_unchanged());
     assert!(caller_diff.storage.is_empty());
 
-    let token_diff = state_diff
-        .get(token.address())
-        .expect("Could not get token diff");
+    let token_diff = state_diff.get(token.address()).expect("Could not get token diff");
 
     assert!(token_diff.balance.is_unchanged());
     assert!(token_diff.code.is_unchanged());
@@ -128,9 +120,8 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     let token_storage_diff = token_diff.storage.clone();
     // Assert sender token balance has changed
     let slot = mapping_slot(caller, tip20::slots::BALANCES);
-    let sender_balance = token_storage_diff
-        .get(&B256::from(slot))
-        .expect("Could not get recipient balance delta");
+    let sender_balance =
+        token_storage_diff.get(&B256::from(slot)).expect("Could not get recipient balance delta");
 
     assert!(sender_balance.is_changed());
 
@@ -142,9 +133,8 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
 
     // Assert recipient token balance is changed
     let slot = mapping_slot(recipient, tip20::slots::BALANCES);
-    let recipient_balance = token_storage_diff
-        .get(&B256::from(slot))
-        .expect("Could not get recipient balance delta");
+    let recipient_balance =
+        token_storage_diff.get(&B256::from(slot)).expect("Could not get recipient balance delta");
     assert!(recipient_balance.is_changed());
 
     let Delta::Changed(ChangedType { from, to }) = recipient_balance else {
@@ -160,10 +150,7 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
 async fn test_eth_get_logs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -194,9 +181,8 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    let filter = Filter::new()
-        .address(*token.address())
-        .from_block(mint_receipt.block_number.unwrap());
+    let filter =
+        Filter::new().address(*token.address()).from_block(mint_receipt.block_number.unwrap());
     let logs = provider.get_logs(&filter).await?;
     assert_eq!(logs.len(), 3);
 
@@ -223,10 +209,7 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
 async fn test_eth_estimate_gas() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -235,20 +218,14 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
 
     let token = setup_test_token(provider.clone(), caller).await?;
     let calldata = token.mint(caller, U256::from(1000)).calldata().clone();
-    let tx = TransactionRequest::default()
-        .to(*token.address())
-        .input(calldata.into());
+    let tx = TransactionRequest::default().to(*token.address()).input(calldata.into());
 
     let gas = provider.estimate_gas(tx.clone()).await?;
     // gas estimation is calldata dependent, but should be consistent with same calldata
     assert_eq!(gas, 106942);
 
     // ensure we can successfully send the tx with that gas
-    let receipt = provider
-        .send_transaction(tx.gas_limit(gas))
-        .await?
-        .get_receipt()
-        .await?;
+    let receipt = provider.send_transaction(tx.gas_limit(gas)).await?.get_receipt().await?;
     assert!(receipt.gas_used <= gas);
 
     Ok(())
@@ -258,10 +235,7 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
 async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -269,10 +243,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Get beneficiary (validator) from latest block
-    let block = provider
-        .get_block(BlockId::latest())
-        .await?
-        .expect("Could not get latest block");
+    let block = provider.get_block(BlockId::latest()).await?.expect("Could not get latest block");
     let validator_address = block.header.beneficiary;
     assert!(!validator_address.is_zero());
 
@@ -280,12 +251,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     let user_fee_token = setup_test_token(provider.clone(), user_address).await?;
 
     let mint_amount = U256::from(u128::MAX);
-    user_fee_token
-        .mint(user_address, mint_amount)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    user_fee_token.mint(user_address, mint_amount).send().await?.get_receipt().await?;
 
     // Setup fee manager to configure different tokens
     let fee_manager =
@@ -313,19 +279,11 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
 
     // Set different fee tokens for user and validator
     // Note that the validator defaults to the PathUSD
-    fee_manager
-        .setUserToken(*user_fee_token.address())
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    fee_manager.setUserToken(*user_fee_token.address()).send().await?.get_receipt().await?;
 
     // Verify the tokens are set correctly
     let user_token = fee_manager.userTokens(user_address).call().await?;
-    let validator_token = fee_manager
-        .validatorTokens(validator_address)
-        .call()
-        .await?;
+    let validator_token = fee_manager.validatorTokens(validator_address).call().await?;
 
     assert_eq!(user_token, *user_fee_token.address());
     assert_eq!(validator_token, validator_token_address);
@@ -333,10 +291,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
 
     // Create a test transaction to estimate gas for
     let recipient = Address::random();
-    let calldata = user_fee_token
-        .transfer(recipient, U256::ONE)
-        .calldata()
-        .clone();
+    let calldata = user_fee_token.transfer(recipient, U256::ONE).calldata().clone();
     let tx = TransactionRequest::default()
         .from(user_address)
         .to(*user_fee_token.address())
@@ -351,11 +306,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     assert!(gas > 0);
 
     // Verify we can execute the transaction with the estimated gas
-    let receipt = provider
-        .send_transaction(tx.gas_limit(gas))
-        .await?
-        .get_receipt()
-        .await?;
+    let receipt = provider.send_transaction(tx.gas_limit(gas)).await?.get_receipt().await?;
 
     assert!(receipt.status());
     assert!(receipt.gas_used <= gas);
@@ -390,19 +341,13 @@ async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
     // The call should fail with UnknownFunctionSelector error
     let result = provider.call(tx).await;
 
-    assert!(
-        result.is_err(),
-        "Call should have failed with unknown selector"
-    );
+    assert!(result.is_err(), "Call should have failed with unknown selector");
 
     let err = result.unwrap_err();
 
     // Get the error response payload
     let error_payload = err.as_error_resp();
-    assert!(
-        error_payload.is_some(),
-        "Should have error response payload"
-    );
+    assert!(error_payload.is_some(), "Should have error response payload");
 
     let payload = error_payload.unwrap();
     assert!(payload.data.is_some(), "Should have error data");
@@ -413,10 +358,7 @@ async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
 
     // Decode UnknownFunctionSelector from the error data
     let decoded_error = UnknownFunctionSelector::abi_decode(&error_bytes);
-    assert!(
-        decoded_error.is_ok(),
-        "Error should be decodable as UnknownFunctionSelector"
-    );
+    assert!(decoded_error.is_ok(), "Error should be decodable as UnknownFunctionSelector");
 
     // Verify it contains the correct selector
     let error = decoded_error.unwrap();

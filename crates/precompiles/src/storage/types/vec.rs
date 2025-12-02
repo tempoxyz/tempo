@@ -222,28 +222,15 @@ where
     }
 
     fn read_at<S: StorageOps>(storage: &mut S, key: K, index: usize) -> Result<V> {
-        vec_read_at(
-            storage,
-            mapping_slot(key.as_storage_bytes(), Id::SLOT),
-            index,
-        )
+        vec_read_at(storage, mapping_slot(key.as_storage_bytes(), Id::SLOT), index)
     }
 
     fn write_at<S: StorageOps>(storage: &mut S, key: K, index: usize, value: V) -> Result<()> {
-        vec_write_at(
-            storage,
-            mapping_slot(key.as_storage_bytes(), Id::SLOT),
-            index,
-            value,
-        )
+        vec_write_at(storage, mapping_slot(key.as_storage_bytes(), Id::SLOT), index, value)
     }
 
     fn push<S: StorageOps>(storage: &mut S, key: K, value: V) -> Result<()> {
-        vec_push(
-            storage,
-            mapping_slot(key.as_storage_bytes(), Id::SLOT),
-            value,
-        )
+        vec_push(storage, mapping_slot(key.as_storage_bytes(), Id::SLOT), value)
     }
 
     fn pop<S: StorageOps>(storage: &mut S, key: K) -> Result<Option<V>> {
@@ -646,10 +633,7 @@ mod tests {
 
     /// Helper to create a test contract with fresh storage.
     fn setup_test_contract() -> TestContract {
-        TestContract {
-            address: Address::random(),
-            storage: HashMapStorageProvider::new(1),
-        }
+        TestContract { address: Address::random(), storage: HashMapStorageProvider::new(1) }
     }
 
     /// Helper to extract and verify a packed value from a specific slot at a given offset.
@@ -726,20 +710,14 @@ mod tests {
         assert_eq!(length_value, U256::from(32), "Length not stored correctly");
 
         let loaded: Vec<bool> = Storable::load(&mut contract, base_slot).unwrap();
-        assert_eq!(
-            loaded, data_exact,
-            "Vec<bool> with 32 elements failed roundtrip"
-        );
+        assert_eq!(loaded, data_exact, "Vec<bool> with 32 elements failed roundtrip");
 
         // Test 2: 35 bools (requires 2 slots: 32 + 3)
         let data_overflow: Vec<bool> = (0..35).map(|i| i % 3 == 0).collect();
         data_overflow.store(&mut contract, base_slot).unwrap();
 
         let loaded: Vec<bool> = Storable::load(&mut contract, base_slot).unwrap();
-        assert_eq!(
-            loaded, data_overflow,
-            "Vec<bool> with 35 elements failed roundtrip"
-        );
+        assert_eq!(loaded, data_overflow, "Vec<bool> with 35 elements failed roundtrip");
     }
 
     // -- SLOT-LEVEL VALIDATION TESTS ----------------------------------------------
@@ -768,10 +746,7 @@ mod tests {
             "0x14", // elem[1] = 20
             "0x0a", // elem[0] = 10
         ]);
-        assert_eq!(
-            slot_value, expected,
-            "Slot should match Solidity byte layout"
-        );
+        assert_eq!(slot_value, expected, "Slot should match Solidity byte layout");
 
         // Also verify each element can be extracted correctly
         let byte_count = u8::BYTE_COUNT;
@@ -812,10 +787,7 @@ mod tests {
             "0x0064", // elem[1] = 100
             "0x0000", // elem[0] = 0
         ]);
-        assert_eq!(
-            slot0_value, expected_slot0,
-            "Slot 0 should match Solidity byte layout"
-        );
+        assert_eq!(slot0_value, expected_slot0, "Slot 0 should match Solidity byte layout");
 
         // Also verify each element can be extracted
         let byte_count = u16::BYTE_COUNT;
@@ -836,10 +808,7 @@ mod tests {
 
         // Verify slot 0 still matches (first 16 elements)
         let slot0_value = contract.sload(data_start).unwrap();
-        assert_eq!(
-            slot0_value, expected_slot0,
-            "Slot 0 should still match after overflow"
-        );
+        assert_eq!(slot0_value, expected_slot0, "Slot 0 should still match after overflow");
 
         // Verify slot 1 has the 17th element (1600 = 0x0640)
         let slot1_addr = data_start + U256::ONE;
@@ -848,20 +817,10 @@ mod tests {
         let expected_slot1 = gen_slot_from(&[
             "0x0640", // elem[16] = 1600
         ]);
-        assert_eq!(
-            slot1_value, expected_slot1,
-            "Slot 1 should match Solidity byte layout"
-        );
+        assert_eq!(slot1_value, expected_slot1, "Slot 1 should match Solidity byte layout");
 
         // Also verify the 17th element can be extracted
-        verify_packed_element(
-            &mut contract,
-            slot1_addr,
-            1600u16,
-            0,
-            byte_count,
-            "slot1_elem[0]",
-        );
+        verify_packed_element(&mut contract, slot1_addr, 1600u16, 0, byte_count, "slot1_elem[0]");
     }
 
     #[test]
@@ -911,10 +870,7 @@ mod tests {
             "0x02", // elem[1] = 2
             "0x01", // elem[0] = 1
         ]);
-        assert_eq!(
-            slot0_value, expected_slot0,
-            "Slot 0 should match Solidity byte layout"
-        );
+        assert_eq!(slot0_value, expected_slot0, "Slot 0 should match Solidity byte layout");
 
         // Verify slot 1 has exactly 3 elements at rightmost positions
         let slot1_addr = data_start + U256::ONE;
@@ -925,37 +881,13 @@ mod tests {
             "0x22", // elem[1] = 34
             "0x21", // elem[0] = 33
         ]);
-        assert_eq!(
-            slot1_value, expected_slot1,
-            "Slot 1 should match Solidity byte layout"
-        );
+        assert_eq!(slot1_value, expected_slot1, "Slot 1 should match Solidity byte layout");
 
         // Also verify each element in slot 1 can be extracted
         let byte_count = u8::BYTE_COUNT;
-        verify_packed_element(
-            &mut contract,
-            slot1_addr,
-            33u8,
-            0,
-            byte_count,
-            "slot1_elem[0]",
-        );
-        verify_packed_element(
-            &mut contract,
-            slot1_addr,
-            34u8,
-            1,
-            byte_count,
-            "slot1_elem[1]",
-        );
-        verify_packed_element(
-            &mut contract,
-            slot1_addr,
-            35u8,
-            2,
-            byte_count,
-            "slot1_elem[2]",
-        );
+        verify_packed_element(&mut contract, slot1_addr, 33u8, 0, byte_count, "slot1_elem[0]");
+        verify_packed_element(&mut contract, slot1_addr, 34u8, 1, byte_count, "slot1_elem[1]");
+        verify_packed_element(&mut contract, slot1_addr, 35u8, 2, byte_count, "slot1_elem[2]");
     }
 
     #[test]
@@ -977,10 +909,7 @@ mod tests {
         for (i, &expected) in data.iter().enumerate() {
             let slot_addr = data_start + U256::from(i);
             let stored_value = contract.sload(slot_addr).unwrap();
-            assert_eq!(
-                stored_value, expected,
-                "U256 element {i} at slot {slot_addr:?} incorrect"
-            );
+            assert_eq!(stored_value, expected, "U256 element {i} at slot {slot_addr:?} incorrect");
         }
 
         // Verify there's no data in slot 3 (should be empty)
@@ -1007,38 +936,26 @@ mod tests {
         // Verify slot 0: Address(0xAA...) right-aligned with 12-byte padding
         let slot0_value = contract.sload(data_start).unwrap();
         let expected_slot0 = gen_slot_from(&["0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"]);
-        assert_eq!(
-            slot0_value, expected_slot0,
-            "Slot 0 should match Solidity byte layout"
-        );
+        assert_eq!(slot0_value, expected_slot0, "Slot 0 should match Solidity byte layout");
 
         // Verify slot 1: Address(0xBB...) right-aligned with 12-byte padding
         let slot1_addr = data_start + U256::ONE;
         let slot1_value = contract.sload(slot1_addr).unwrap();
         let expected_slot1 = gen_slot_from(&["0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"]);
-        assert_eq!(
-            slot1_value, expected_slot1,
-            "Slot 1 should match Solidity byte layout"
-        );
+        assert_eq!(slot1_value, expected_slot1, "Slot 1 should match Solidity byte layout");
 
         // Verify slot 2: Address(0xCC...) right-aligned with 12-byte padding
         let slot2_addr = data_start + U256::from(2);
         let slot2_value = contract.sload(slot2_addr).unwrap();
         let expected_slot2 = gen_slot_from(&["0xCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"]);
-        assert_eq!(
-            slot2_value, expected_slot2,
-            "Slot 2 should match Solidity byte layout"
-        );
+        assert_eq!(slot2_value, expected_slot2, "Slot 2 should match Solidity byte layout");
 
         // Also verify addresses can be loaded back
         for (i, &expected_addr) in data.iter().enumerate() {
             let slot_addr = data_start + U256::from(i);
             let stored_value = contract.sload(slot_addr).unwrap();
             let expected_u256 = U256::from_be_slice(expected_addr.as_slice());
-            assert_eq!(
-                stored_value, expected_u256,
-                "Address element {i} should match"
-            );
+            assert_eq!(stored_value, expected_u256, "Address element {i} should match");
         }
     }
 
@@ -1060,16 +977,14 @@ mod tests {
 
         // Verify slot 0: TestStruct { a: 100, b: 1 }
         // Note: Solidity packs struct fields right-to-left (declaration order reversed in memory)
-        // So field b (declared second) goes in bytes 0-15, field a (declared first) goes in bytes 16-31
+        // So field b (declared second) goes in bytes 0-15, field a (declared first) goes in bytes
+        // 16-31
         let slot0_value = contract.sload(data_start).unwrap();
         let expected_slot0 = gen_slot_from(&[
             "0x00000000000000000000000000000001", // field b = 1
             "0x00000000000000000000000000000064", // field a = 100
         ]);
-        assert_eq!(
-            slot0_value, expected_slot0,
-            "Slot 0 should match Solidity byte layout"
-        );
+        assert_eq!(slot0_value, expected_slot0, "Slot 0 should match Solidity byte layout");
 
         // Verify slot 1: TestStruct { a: 200, b: 2 }
         let slot1_addr = data_start + U256::ONE;
@@ -1078,10 +993,7 @@ mod tests {
             "0x00000000000000000000000000000002", // field b = 2
             "0x000000000000000000000000000000C8", // field a = 200
         ]);
-        assert_eq!(
-            slot1_value, expected_slot1,
-            "Slot 1 should match Solidity byte layout"
-        );
+        assert_eq!(slot1_value, expected_slot1, "Slot 1 should match Solidity byte layout");
 
         // Verify slot 2: TestStruct { a: 300, b: 3 }
         let slot2_addr = data_start + U256::from(2);
@@ -1090,10 +1002,7 @@ mod tests {
             "0x00000000000000000000000000000003", // field b = 3
             "0x0000000000000000000000000000012C", // field a = 300
         ]);
-        assert_eq!(
-            slot2_value, expected_slot2,
-            "Slot 2 should match Solidity byte layout"
-        );
+        assert_eq!(slot2_value, expected_slot2, "Slot 2 should match Solidity byte layout");
 
         // Verify slot 3 is empty (no 4th element)
         let slot3_addr = data_start + U256::from(3);
@@ -1104,10 +1013,7 @@ mod tests {
         for (i, expected_struct) in data.iter().enumerate() {
             let struct_slot = data_start + U256::from(i);
             let loaded_struct = TestStruct::load(&mut contract, struct_slot).unwrap();
-            assert_eq!(
-                loaded_struct, *expected_struct,
-                "TestStruct at slot {i} should match"
-            );
+            assert_eq!(loaded_struct, *expected_struct, "TestStruct at slot {i} should match");
         }
     }
 
@@ -1129,21 +1035,9 @@ mod tests {
         // Store 3 SmallStruct elements
         // Each struct uses 1 full slot (even though it only occupies 4 bytes)
         let data = vec![
-            SmallStruct {
-                flag1: true,
-                flag2: false,
-                value: 100,
-            },
-            SmallStruct {
-                flag1: false,
-                flag2: true,
-                value: 200,
-            },
-            SmallStruct {
-                flag1: true,
-                flag2: true,
-                value: 300,
-            },
+            SmallStruct { flag1: true, flag2: false, value: 100 },
+            SmallStruct { flag1: false, flag2: true, value: 200 },
+            SmallStruct { flag1: true, flag2: true, value: 300 },
         ];
         data.store(&mut contract, base_slot).unwrap();
 
@@ -1225,10 +1119,7 @@ mod tests {
             "0xc8", // elem[1] = 200
             "0x64", // elem[0] = 100
         ]);
-        assert_eq!(
-            data_slot_value, expected,
-            "Data slot should match Solidity byte layout"
-        );
+        assert_eq!(data_slot_value, expected, "Data slot should match Solidity byte layout");
 
         // Also verify each element can be extracted
         verify_packed_element(&mut contract, data_start, 100u8, 0, 1, "elem[0]");
@@ -1815,10 +1706,7 @@ mod tests {
 
         // Verify all elements
         for i in 0..17 {
-            assert_eq!(
-                VecSlot::read_at(&mut contract, i).unwrap(),
-                (i * 100) as u16
-            );
+            assert_eq!(VecSlot::read_at(&mut contract, i).unwrap(), (i * 100) as u16);
         }
 
         // Update element across slot boundary

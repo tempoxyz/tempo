@@ -85,10 +85,7 @@ pub struct Args {
     /// The number of views (voting rounds) a validator is allowed to be
     /// inactive until it is immediately skipped should leader selection pick it
     /// as a proposer. Also called a skip timeout.
-    #[arg(
-        long = "consensus.inactive-views-until-leader-skip",
-        default_value_t = 32
-    )]
+    #[arg(long = "consensus.inactive-views-until-leader-skip", default_value_t = 32)]
     pub inactive_views_until_leader_skip: u64,
 
     /// The amount of time this node will use to construct a block as a proposal.

@@ -48,10 +48,8 @@ pub(crate) enum SlotAssignment {
 pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<AllocatedField<'_>>> {
     let mut allocated_fields = Vec::new();
     let mut last_auto_slot = U256::ZERO;
-    let classified_fields: Vec<FieldKind<'_>> = fields
-        .iter()
-        .map(classify_field)
-        .collect::<syn::Result<_>>()?;
+    let classified_fields: Vec<FieldKind<'_>> =
+        fields.iter().map(classify_field).collect::<syn::Result<_>>()?;
 
     for (idx, (field, kind)) in fields.iter().zip(classified_fields.into_iter()).enumerate() {
         let assigned_slot = if let Some(explicit) = field.slot {
@@ -78,11 +76,8 @@ pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<AllocatedF
                 let prev: &AllocatedField<'_> = &allocated_fields[idx - 1];
 
                 // If previous was also a primitive, reuse base slot (becomes packing candidate)
-                if let SlotAssignment::Auto {
-                    base_slot,
-                    is_primitive: true,
-                } = &prev.assigned_slot
-                    && prev.kind.is_direct()
+                if let SlotAssignment::Auto { base_slot, is_primitive: true } = &prev.assigned_slot &&
+                    prev.kind.is_direct()
                 {
                     *base_slot
                 }
@@ -94,10 +89,7 @@ pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<AllocatedF
                 }
             };
 
-            SlotAssignment::Auto {
-                base_slot,
-                is_primitive,
-            }
+            SlotAssignment::Auto { base_slot, is_primitive }
         };
 
         allocated_fields.push(AllocatedField {
@@ -118,16 +110,9 @@ fn classify_field(field: &FieldInfo) -> syn::Result<FieldKind<'_>> {
     // Check if it's a mapping
     if let Some((key_ty, value_ty)) = extract_mapping_types(ty) {
         if let Some((key2_ty, value2_ty)) = extract_mapping_types(value_ty) {
-            return Ok(FieldKind::NestedMapping {
-                key1: key_ty,
-                key2: key2_ty,
-                value: value2_ty,
-            });
+            return Ok(FieldKind::NestedMapping { key1: key_ty, key2: key2_ty, value: value2_ty });
         } else {
-            return Ok(FieldKind::Mapping {
-                key: key_ty,
-                value: value_ty,
-            });
+            return Ok(FieldKind::Mapping { key: key_ty, value: value_ty });
         }
     }
 
@@ -201,8 +186,8 @@ pub(crate) fn gen_getters_and_setters(
     match &allocated.kind {
         FieldKind::Direct => {
             // Manual slots and dynamic types are never packed (always at offset 0)
-            if matches!(allocated.assigned_slot, SlotAssignment::Manual(_))
-                || is_dynamic_type(field_ty)
+            if matches!(allocated.assigned_slot, SlotAssignment::Manual(_)) ||
+                is_dynamic_type(field_ty)
             {
                 quote! {
                     impl<'a, S: crate::storage::PrecompileStorageProvider> #struct_name<'a, S> {
@@ -275,10 +260,7 @@ pub(crate) fn gen_getters_and_setters(
                 }
             }
         }
-        FieldKind::Mapping {
-            key: key_ty,
-            value: value_ty,
-        } => {
+        FieldKind::Mapping { key: key_ty, value: value_ty } => {
             quote! {
                 impl<'a, S: crate::storage::PrecompileStorageProvider> #struct_name<'a, S> {
                     #[inline]
@@ -308,11 +290,7 @@ pub(crate) fn gen_getters_and_setters(
                 }
             }
         }
-        FieldKind::NestedMapping {
-            key1: key1_ty,
-            key2: key2_ty,
-            value: value_ty,
-        } => {
+        FieldKind::NestedMapping { key1: key1_ty, key2: key2_ty, value: value_ty } => {
             quote! {
                 impl<'a, S: crate::storage::PrecompileStorageProvider> #struct_name<'a, S> {
                     #[inline]
@@ -416,7 +394,8 @@ pub(crate) fn gen_slots_module_with_types(
         })
         .collect();
 
-    // Generate offset and byte constants for each field (referencing packing constants in same module)
+    // Generate offset and byte constants for each field (referencing packing constants in same
+    // module)
     let offset_and_byte_constants: Vec<_> = allocated_fields
         .iter()
         .map(|allocated| {
@@ -512,10 +491,7 @@ fn gen_packing_constants_for_slots_module(
                 };
                 (slot_expr, quote! { 0 })
             }
-            SlotAssignment::Auto {
-                base_slot,
-                is_primitive: _,
-            } => {
+            SlotAssignment::Auto { base_slot, is_primitive: _ } => {
                 // Auto-assignment with proper slot packing
                 // Generate const expressions that compute slot/offset based on previous fields
                 if idx == 0 {
@@ -561,10 +537,10 @@ fn gen_packing_constants_for_slots_module(
                             (slot_expr, quote! { 0 })
                         } else {
                             // Previous field is a primitive
-                            if allocated.kind.is_mapping()
-                                || is_dynamic_type(&allocated.info.ty)
-                                || is_array_type(&allocated.info.ty)
-                                || is_custom_struct(&allocated.info.ty)
+                            if allocated.kind.is_mapping() ||
+                                is_dynamic_type(&allocated.info.ty) ||
+                                is_array_type(&allocated.info.ty) ||
+                                is_custom_struct(&allocated.info.ty)
                             {
                                 // Current is non-primitive: must start on next slot boundary
                                 let slot_expr = quote! {

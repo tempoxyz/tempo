@@ -12,51 +12,26 @@ fn test_mapping() {
 
     let mut s = setup_storage();
 
-    let block1 = TestBlock {
-        field1: U256::from(111),
-        field2: U256::from(222),
-        field3: 333,
-    };
-    let block2 = TestBlock {
-        field1: U256::from(444),
-        field2: U256::from(555),
-        field3: 666,
-    };
+    let block1 = TestBlock { field1: U256::from(111), field2: U256::from(222), field3: 333 };
+    let block2 = TestBlock { field1: U256::from(444), field2: U256::from(555), field3: 666 };
 
-    let profile1 = UserProfile {
-        owner: test_address(10),
-        active: true,
-        balance: U256::from(1000),
-    };
-    let profile2 = UserProfile {
-        owner: test_address(20),
-        active: false,
-        balance: U256::from(2000),
-    };
+    let profile1 = UserProfile { owner: test_address(10), active: true, balance: U256::from(1000) };
+    let profile2 =
+        UserProfile { owner: test_address(20), active: false, balance: U256::from(2000) };
 
     // Store multiple entries
     {
         let mut layout = Layout::_new(s.address, s.storage());
         layout.sstore_block_mapping(1u64, block1.clone()).unwrap();
         layout.sstore_block_mapping(2u64, block2.clone()).unwrap();
-        layout
-            .sstore_profile_mapping(test_address(10), profile1.clone())
-            .unwrap();
-        layout
-            .sstore_profile_mapping(test_address(20), profile2.clone())
-            .unwrap();
+        layout.sstore_profile_mapping(test_address(10), profile1.clone()).unwrap();
+        layout.sstore_profile_mapping(test_address(20), profile2.clone()).unwrap();
 
         // Verify all entries
         assert_eq!(layout.sload_block_mapping(1u64).unwrap(), block1);
         assert_eq!(layout.sload_block_mapping(2u64).unwrap(), block2);
-        assert_eq!(
-            layout.sload_profile_mapping(test_address(10)).unwrap(),
-            profile1
-        );
-        assert_eq!(
-            layout.sload_profile_mapping(test_address(20)).unwrap(),
-            profile2
-        );
+        assert_eq!(layout.sload_profile_mapping(test_address(10)).unwrap(), profile1);
+        assert_eq!(layout.sload_profile_mapping(test_address(20)).unwrap(), profile2);
     }
 
     // Delete specific entries
@@ -71,27 +46,16 @@ fn test_mapping() {
         let mut layout = Layout::_new(s.address, s.storage());
         assert_eq!(
             layout.sload_block_mapping(1u64).unwrap(),
-            TestBlock {
-                field1: U256::ZERO,
-                field2: U256::ZERO,
-                field3: 0,
-            }
+            TestBlock { field1: U256::ZERO, field2: U256::ZERO, field3: 0 }
         );
         assert_eq!(
             layout.sload_profile_mapping(test_address(10)).unwrap(),
-            UserProfile {
-                owner: Address::ZERO,
-                active: false,
-                balance: U256::ZERO,
-            }
+            UserProfile { owner: Address::ZERO, active: false, balance: U256::ZERO }
         );
 
         // Verify non-deleted entries are intact
         assert_eq!(layout.sload_block_mapping(2u64).unwrap(), block2);
-        assert_eq!(
-            layout.sload_profile_mapping(test_address(20)).unwrap(),
-            profile2
-        );
+        assert_eq!(layout.sload_profile_mapping(test_address(20)).unwrap(), profile2);
     }
 }
 

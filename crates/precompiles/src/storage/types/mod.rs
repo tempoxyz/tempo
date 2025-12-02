@@ -17,7 +17,8 @@ use alloy::primitives::U256;
 /// during layout computation, before the slot count is known.
 ///
 /// Primitives may have `BYTE_COUNT < 32`.
-/// Non-primitives (arrays, Vec, structs) must satisfy `BYTE_COUNT = SLOT_COUNT * 32` as they are not packable.
+/// Non-primitives (arrays, Vec, structs) must satisfy `BYTE_COUNT = SLOT_COUNT * 32` as they are
+/// not packable.
 pub trait StorableType {
     /// Number of bytes that the type occupies (even if partially-empty).
     ///
@@ -34,10 +35,10 @@ pub trait StorableType {
 ///
 /// # Type Parameter
 ///
-/// - `N`: The number of consecutive storage slots this type occupies.
-///   For single-word types (Address, U256, bool), this is `1`.
-///   For fixed-size arrays, this equals the number of elements.
-///   For user-defined structs, this a number between `1` and the number of fields, which depends on slot packing.
+/// - `N`: The number of consecutive storage slots this type occupies. For single-word types
+///   (Address, U256, bool), this is `1`. For fixed-size arrays, this equals the number of elements.
+///   For user-defined structs, this a number between `1` and the number of fields, which depends on
+///   slot packing.
 ///
 /// # Storage Layout
 ///

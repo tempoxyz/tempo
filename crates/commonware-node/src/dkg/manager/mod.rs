@@ -37,9 +37,7 @@ where
 {
     let (tx, rx) = mpsc::unbounded();
 
-    let actor = Actor::new(config, context, rx)
-        .await
-        .wrap_err("failed initializing actor")?;
+    let actor = Actor::new(config, context, rx).await.wrap_err("failed initializing actor")?;
     let mailbox = Mailbox { inner: tx };
     Ok((actor, mailbox))
 }

@@ -51,11 +51,7 @@ pub struct TempoGenesisInfo {
 impl TempoGenesisInfo {
     /// Extract Tempo genesis info from genesis extra_fields
     fn extract_from(genesis: &Genesis) -> Self {
-        genesis
-            .config
-            .extra_fields
-            .deserialize_as::<Self>()
-            .unwrap_or_default()
+        genesis.config.extra_fields.deserialize_as::<Self>().unwrap_or_default()
     }
 
     pub fn epoch_length(&self) -> Option<u64> {
@@ -109,9 +105,7 @@ pub static ANDANTINO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
 /// Development chainspec that extends [`ANDANTINO`] testnet with dev accounts from the vanilla
 pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let mut genesis = ANDANTINO.genesis().clone();
-    genesis
-        .alloc
-        .extend(reth_chainspec::DEV.genesis().alloc.clone());
+    genesis.alloc.extend(reth_chainspec::DEV.genesis().alloc.clone());
 
     let mut spec = TempoChainSpec::from_genesis(genesis);
     // update chainid to dev
@@ -131,12 +125,8 @@ impl TempoChainSpec {
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
         // Extract Tempo genesis info from extra_fields
-        let info @ TempoGenesisInfo {
-            adagio_time,
-            moderato_time,
-            allegretto_time,
-            ..
-        } = TempoGenesisInfo::extract_from(&genesis);
+        let info @ TempoGenesisInfo { adagio_time, moderato_time, allegretto_time, .. } =
+            TempoGenesisInfo::extract_from(&genesis);
 
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
@@ -231,9 +221,7 @@ impl EthChainSpec for TempoChainSpec {
     fn display_hardforks(&self) -> Box<dyn std::fmt::Display> {
         // filter only tempo hardforks
         let tempo_forks = self.inner.hardforks.forks_iter().filter(|(fork, _)| {
-            !EthereumHardfork::VARIANTS
-                .iter()
-                .any(|h| h.name() == (*fork).name())
+            !EthereumHardfork::VARIANTS.iter().any(|h| h.name() == (*fork).name())
         });
 
         Box::new(DisplayHardforks::new(tempo_forks))
@@ -333,9 +321,7 @@ mod tests {
         assert_eq!(activation, ForkCondition::Timestamp(0));
 
         // Verify Adagio appears in forks iterator
-        let has_adagio = chainspec
-            .forks_iter()
-            .any(|(fork, _)| fork.name() == "Adagio");
+        let has_adagio = chainspec.forks_iter().any(|(fork, _)| fork.name() == "Adagio");
         assert!(has_adagio, "Adagio hardfork should be in inner.hardforks");
     }
 
@@ -451,7 +437,8 @@ mod tests {
 
     #[test]
     fn test_tempo_hardforks_are_ordered_correctly() {
-        // Create a genesis where Adagio should appear between Shanghai (time 0) and Cancun (time 2000)
+        // Create a genesis where Adagio should appear between Shanghai (time 0) and Cancun (time
+        // 2000)
         let genesis_json = json!({
             "config": {
                 "chainId": 1337,
@@ -484,15 +471,11 @@ mod tests {
         let forks: Vec<_> = chainspec.inner.hardforks.forks_iter().collect();
 
         // Find positions of Shanghai, Adagio, and Cancun
-        let shanghai_pos = forks
-            .iter()
-            .position(|(f, _)| f.name() == EthereumHardfork::Shanghai.name());
-        let adagio_pos = forks
-            .iter()
-            .position(|(f, _)| f.name() == TempoHardfork::Adagio.name());
-        let cancun_pos = forks
-            .iter()
-            .position(|(f, _)| f.name() == EthereumHardfork::Cancun.name());
+        let shanghai_pos =
+            forks.iter().position(|(f, _)| f.name() == EthereumHardfork::Shanghai.name());
+        let adagio_pos = forks.iter().position(|(f, _)| f.name() == TempoHardfork::Adagio.name());
+        let cancun_pos =
+            forks.iter().position(|(f, _)| f.name() == EthereumHardfork::Cancun.name());
 
         assert!(shanghai_pos.is_some(), "Shanghai should be present");
         assert!(adagio_pos.is_some(), "Adagio should be present");

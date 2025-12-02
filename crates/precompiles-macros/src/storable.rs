@@ -86,15 +86,10 @@ fn derive_struct_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     }
 
     // Extract field names and types
-    let field_infos: Vec<_> = fields
-        .iter()
-        .map(|f| (f.ident.as_ref().unwrap(), &f.ty))
-        .collect();
+    let field_infos: Vec<_> = fields.iter().map(|f| (f.ident.as_ref().unwrap(), &f.ty)).collect();
 
     // Check if any field is a Mapping type
-    let has_mapping_fields = field_infos
-        .iter()
-        .any(|(_, ty)| extract_mapping_types(ty).is_some());
+    let has_mapping_fields = field_infos.iter().any(|(_, ty)| extract_mapping_types(ty).is_some());
 
     // Generate unique module name based on struct name
     let mod_ident = format_ident!("__packing_{}", to_snake_case(&strukt.to_string()));
@@ -110,11 +105,8 @@ fn derive_struct_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         // that loads/stores only scalar fields, skipping mapping fields
 
         // Create indexed field info: (original_index, name, type)
-        let indexed_field_infos: Vec<(usize, &Ident, &Type)> = field_infos
-            .iter()
-            .enumerate()
-            .map(|(idx, (name, ty))| (idx, *name, *ty))
-            .collect();
+        let indexed_field_infos: Vec<(usize, &Ident, &Type)> =
+            field_infos.iter().enumerate().map(|(idx, (name, ty))| (idx, *name, *ty)).collect();
 
         // Filter to only scalar (non-mapping) fields for load/store operations
         let scalar_indexed_fields: Vec<(usize, &Ident, &Type)> = indexed_field_infos
@@ -124,10 +116,8 @@ fn derive_struct_impl(input: DeriveInput) -> syn::Result<TokenStream> {
             .collect();
 
         // Separate field names for struct construction
-        let scalar_field_names: Vec<_> = scalar_indexed_fields
-            .iter()
-            .map(|(_, name, _)| name)
-            .collect();
+        let scalar_field_names: Vec<_> =
+            scalar_indexed_fields.iter().map(|(_, name, _)| name).collect();
 
         let mapping_field_names: Vec<_> = indexed_field_infos
             .iter()
@@ -213,11 +203,8 @@ fn derive_struct_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         }
     } else {
         // Structs without mapping fields: generate full Storable implementation
-        let indexed_fields: Vec<(usize, &Ident, &Type)> = field_infos
-            .iter()
-            .enumerate()
-            .map(|(idx, (name, ty))| (idx, *name, *ty))
-            .collect();
+        let indexed_fields: Vec<(usize, &Ident, &Type)> =
+            field_infos.iter().enumerate().map(|(idx, (name, ty))| (idx, *name, *ty)).collect();
 
         // Generate load and store implementations
         let load_impl = gen_load_impl(&indexed_fields, &mod_ident);
@@ -421,64 +408,56 @@ fn gen_packing_module(fields: &[(&Ident, &Type)], mod_ident: &Ident) -> TokenStr
 /// Generate the `fn load()` implementation with unpacking logic.
 /// Accepts indexed fields where the usize is the original field index in the struct.
 fn gen_load_impl(indexed_fields: &[(usize, &Ident, &Type)], packing: &Ident) -> TokenStream {
-    let load_fields = indexed_fields
-        .iter()
-        .enumerate()
-        .map(|(list_idx, (_orig_idx, name, ty))| {
-            let (slot_const, offset_const, bytes_const) = PackingField::new(name).consts();
+    let load_fields = indexed_fields.iter().enumerate().map(|(list_idx, (_orig_idx, name, ty))| {
+        let (slot_const, offset_const, bytes_const) = PackingField::new(name).consts();
 
-            // Struct, dynamic type, and array fields always use `load()` directly (never packed)
-            if is_array_type(ty) || is_dynamic_type(ty) || is_custom_struct(ty) {
-                return quote! {
-                    let #name = <#ty>::load(
+        // Struct, dynamic type, and array fields always use `load()` directly (never packed)
+        if is_array_type(ty) || is_dynamic_type(ty) || is_custom_struct(ty) {
+            return quote! {
+                let #name = <#ty>::load(
+                    storage,
+                    base_slot + ::alloy::primitives::U256::from(#packing::#slot_const)
+                )?;
+            };
+        }
+
+        // For primitives, check if this field shares the slot with any other field
+        // by checking adjacent fields in the input list
+        let prev_field = if list_idx > 0 { Some(indexed_fields[list_idx - 1].1) } else { None };
+        let next_field = if list_idx + 1 < indexed_fields.len() {
+            Some(indexed_fields[list_idx + 1].1)
+        } else {
+            None
+        };
+
+        let shares_slot_check = gen_shares_slot_check(prev_field, next_field, &slot_const, packing);
+
+        quote! {
+            let #name = {
+                let shares_slot = #shares_slot_check;
+
+                if !shares_slot {
+                    // If the field is alone in its slot, we can use `field.load()` directly
+                    <#ty>::load(
                         storage,
                         base_slot + ::alloy::primitives::U256::from(#packing::#slot_const)
+                    )?
+                }
+                // Otherwise, it is packed with others
+                else {
+                    // Use packing module to extract packed value
+                    let slot_value = storage.sload(
+                        base_slot + ::alloy::primitives::U256::from(#packing::#slot_const)
                     )?;
-                };
-            }
-
-            // For primitives, check if this field shares the slot with any other field
-            // by checking adjacent fields in the input list
-            let prev_field = if list_idx > 0 {
-                Some(indexed_fields[list_idx - 1].1)
-            } else {
-                None
+                    crate::storage::packing::extract_packed_value::<#ty>(
+                        slot_value,
+                        #packing::#offset_const,
+                        #packing::#bytes_const
+                    )?
+                }
             };
-            let next_field = if list_idx + 1 < indexed_fields.len() {
-                Some(indexed_fields[list_idx + 1].1)
-            } else {
-                None
-            };
-
-            let shares_slot_check =
-                gen_shares_slot_check(prev_field, next_field, &slot_const, packing);
-
-            quote! {
-                let #name = {
-                    let shares_slot = #shares_slot_check;
-
-                    if !shares_slot {
-                        // If the field is alone in its slot, we can use `field.load()` directly
-                        <#ty>::load(
-                            storage,
-                            base_slot + ::alloy::primitives::U256::from(#packing::#slot_const)
-                        )?
-                    }
-                    // Otherwise, it is packed with others
-                    else {
-                        // Use packing module to extract packed value
-                        let slot_value = storage.sload(
-                            base_slot + ::alloy::primitives::U256::from(#packing::#slot_const)
-                        )?;
-                        crate::storage::packing::extract_packed_value::<#ty>(
-                            slot_value,
-                            #packing::#offset_const,
-                            #packing::#bytes_const
-                        )?
-                    }
-                };
-            }
-        });
+        }
+    });
 
     quote! {
         #(#load_fields)*

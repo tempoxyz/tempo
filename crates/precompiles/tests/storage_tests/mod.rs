@@ -38,10 +38,7 @@ impl<S: PrecompileStorageProvider> ContractStorage for TestStorage<S> {
 
 /// Helper to create a test storage instance
 pub(crate) fn setup_storage() -> TestStorage<HashMapStorageProvider> {
-    TestStorage {
-        address: Address::ZERO,
-        storage: HashMapStorageProvider::new(1),
-    }
+    TestStorage { address: Address::ZERO, storage: HashMapStorageProvider::new(1) }
 }
 
 /// Test struct with 3 slots: U256, U256, u64

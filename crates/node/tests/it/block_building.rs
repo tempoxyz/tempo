@@ -41,9 +41,8 @@ where
             tx_req.chain_id = Some(chain_id);
             tx_req.gas = tx_req.gas.or(Some(400_000));
             tx_req.max_fee_per_gas = tx_req.max_fee_per_gas.or(Some(TEMPO_BASE_FEE as u128));
-            tx_req.max_priority_fee_per_gas = tx_req
-                .max_priority_fee_per_gas
-                .or(Some(TEMPO_BASE_FEE as u128));
+            tx_req.max_priority_fee_per_gas =
+                tx_req.max_priority_fee_per_gas.or(Some(TEMPO_BASE_FEE as u128));
 
             let signed =
                 <TransactionRequest as TransactionBuilder<Ethereum>>::build(tx_req, &signer_clone)
@@ -66,10 +65,7 @@ where
 
     // Get token address from logs
     let latest_block = provider.get_block_number().await?;
-    let receipts = provider
-        .get_block_receipts(latest_block.into())
-        .await?
-        .unwrap();
+    let receipts = provider.get_block_receipts(latest_block.into()).await?.unwrap();
     let token_create_receipt = receipts
         .iter()
         .find(|r| !r.inner.logs().is_empty())
@@ -97,10 +93,7 @@ where
 
 /// Helper to extract user transactions (non-system transactions)
 fn extract_user_txs(all_transactions: Vec<TempoTxEnvelope>) -> Vec<TempoTxEnvelope> {
-    all_transactions
-        .into_iter()
-        .filter(|tx| tx.gas_limit() > 0)
-        .collect()
+    all_transactions.into_iter().filter(|tx| tx.gas_limit() > 0).collect()
 }
 
 /// Helper to inject non-payment transactions from multiple wallets
@@ -125,11 +118,7 @@ async fn inject_non_payment_txs(
         let signature = wallet_signer.sign_transaction_sync(&mut tx).unwrap();
 
         node.rpc
-            .inject_tx(
-                TxEnvelope::Eip1559(tx.into_signed(signature))
-                    .encoded_2718()
-                    .into(),
-            )
+            .inject_tx(TxEnvelope::Eip1559(tx.into_signed(signature)).encoded_2718().into())
             .await?;
     }
     Ok(())
@@ -185,15 +174,13 @@ async fn test_block_building_few_mixed_txs() -> eyre::Result<()> {
         .build_with_node_access()
         .await?;
 
-    let payment_sender = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let payment_sender =
+        MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).index(0)?.build()?;
     let payment_wallet = EthereumWallet::from(payment_sender.clone());
 
     let http_url = setup.node.rpc_url();
-    let provider = ProviderBuilder::new()
-        .wallet(payment_wallet.clone())
-        .connect_http(http_url.clone());
+    let provider =
+        ProviderBuilder::new().wallet(payment_wallet.clone()).connect_http(http_url.clone());
 
     let chain_id = provider.get_chain_id().await?;
 
@@ -249,14 +236,8 @@ async fn test_block_building_few_mixed_txs() -> eyre::Result<()> {
         "Block contains {payment_count} payment and {non_payment_count} non-payment transactions"
     );
 
-    assert_eq!(
-        payment_count, num_payment_txs,
-        "Should have all payment transactions"
-    );
-    assert_eq!(
-        non_payment_count, num_non_payment_txs,
-        "Should have all non-payment transactions"
-    );
+    assert_eq!(payment_count, num_payment_txs, "Should have all payment transactions");
+    assert_eq!(non_payment_count, num_non_payment_txs, "Should have all non-payment transactions");
 
     Ok(())
 }
@@ -271,15 +252,13 @@ async fn test_block_building_only_payment_txs() -> eyre::Result<()> {
         .build_with_node_access()
         .await?;
 
-    let payment_sender = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let payment_sender =
+        MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).index(0)?.build()?;
     let payment_wallet = EthereumWallet::from(payment_sender.clone());
 
     let http_url = setup.node.rpc_url();
-    let provider = ProviderBuilder::new()
-        .wallet(payment_wallet.clone())
-        .connect_http(http_url.clone());
+    let provider =
+        ProviderBuilder::new().wallet(payment_wallet.clone()).connect_http(http_url.clone());
 
     let chain_id = provider.get_chain_id().await?;
 
@@ -314,17 +293,10 @@ async fn test_block_building_only_payment_txs() -> eyre::Result<()> {
         user_txs.len()
     );
 
-    assert_eq!(
-        user_txs.len(),
-        num_payment_txs,
-        "Block should contain all payment transactions"
-    );
+    assert_eq!(user_txs.len(), num_payment_txs, "Block should contain all payment transactions");
 
     for tx in &user_txs {
-        assert!(
-            tx.is_payment(),
-            "All transactions should be payment transactions"
-        );
+        assert!(tx.is_payment(), "All transactions should be payment transactions");
     }
 
     Ok(())
@@ -351,9 +323,7 @@ async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
 
     // Use reth_e2e_test_utils Wallet for funded accounts
     use reth_e2e_test_utils::wallet::Wallet;
-    let wallets = Wallet::new(num_non_payment_txs)
-        .with_chain_id(chain_id)
-        .wallet_gen();
+    let wallets = Wallet::new(num_non_payment_txs).with_chain_id(chain_id).wallet_gen();
     for wallet_signer in wallets {
         let raw_tx = {
             let mut tx = TxEip1559 {
@@ -365,9 +335,7 @@ async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
                 ..Default::default()
             };
             let signature = wallet_signer.sign_transaction_sync(&mut tx).unwrap();
-            TxEnvelope::Eip1559(tx.into_signed(signature))
-                .encoded_2718()
-                .into()
+            TxEnvelope::Eip1559(tx.into_signed(signature)).encoded_2718().into()
         };
         setup.node.rpc.inject_tx(raw_tx).await?;
     }
@@ -392,10 +360,7 @@ async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
     );
 
     for tx in &user_txs {
-        assert!(
-            !tx.is_payment(),
-            "All transactions should be non-payment transactions"
-        );
+        assert!(!tx.is_payment(), "All transactions should be non-payment transactions");
     }
 
     Ok(())
@@ -529,10 +494,7 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
     );
 
     // Verify we actually had overflow (not all fit in first block)
-    assert!(
-        all_blocks_user_txs.len() > 1,
-        "Should have overflow to multiple blocks"
-    );
+    assert!(all_blocks_user_txs.len() > 1, "Should have overflow to multiple blocks");
 
     // Verify all injected transactions were included
     assert_eq!(

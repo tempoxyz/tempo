@@ -22,9 +22,8 @@ pub fn install(context: Context, listen_addr: SocketAddr) -> Handle<eyre::Result
         // We explicitly avoid using a runtime `Listener` because
         // it will track bandwidth used for metrics and apply a policy
         // for read/write timeouts fit for a p2p network.
-        let listener = TcpListener::bind(listen_addr)
-            .await
-            .wrap_err("failed to bind provided address")?;
+        let listener =
+            TcpListener::bind(listen_addr).await.wrap_err("failed to bind provided address")?;
 
         // Create a router for the metrics server
         let app = Router::new()
@@ -43,9 +42,8 @@ pub fn install(context: Context, listen_addr: SocketAddr) -> Handle<eyre::Result
         // Serve the metrics over HTTP.
         //
         // `serve` will spawn its own tasks using `tokio::spawn` (and there is no way to specify
-        // it to do otherwise). These tasks will not be tracked like metrics spawned using `Spawner`.
-        axum::serve(listener, app.into_make_service())
-            .await
-            .map_err(Into::into)
+        // it to do otherwise). These tasks will not be tracked like metrics spawned using
+        // `Spawner`.
+        axum::serve(listener, app.into_make_service()).await.map_err(Into::into)
     })
 }

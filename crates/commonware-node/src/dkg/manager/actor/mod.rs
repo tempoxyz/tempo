@@ -253,10 +253,8 @@ where
 
         self.register_previous_epoch_state().await;
         self.register_current_epoch_state().await;
-        let mut ceremony = Some(
-            self.start_ceremony_for_current_epoch_state(&mut ceremony_mux)
-                .await,
-        );
+        let mut ceremony =
+            Some(self.start_ceremony_for_current_epoch_state(&mut ceremony_mux).await);
 
         while let Some(message) = self.mailbox.next().await {
             let cause = message.cause;
@@ -275,8 +273,7 @@ where
                         self.handle_get_outcome(cause, get_ceremony_outcome).await;
                 }
                 super::Command::Finalize(finalize) => {
-                    self.handle_finalized(cause, finalize, &mut ceremony, &mut ceremony_mux)
-                        .await;
+                    self.handle_finalized(cause, finalize, &mut ceremony, &mut ceremony_mux).await;
                 }
             }
         }
@@ -284,10 +281,7 @@ where
 
     pub(crate) fn start(
         mut self,
-        dkg_channel: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
+        dkg_channel: (impl Sender<PublicKey = PublicKey>, impl Receiver<PublicKey = PublicKey>),
     ) -> Handle<()> {
         spawn_cell!(self.context, self.run(dkg_channel).await)
     }
@@ -362,27 +356,24 @@ where
     ///
     /// Some block heights are special cased:
     ///
-    /// + first height of an epoch: notify the epoch manager that the previous
-    ///   epoch can be shut down.
-    /// + pre-to-last height of an epoch: finalize the ceremony and generate the
-    ///   the state for the next ceremony.
+    /// + first height of an epoch: notify the epoch manager that the previous epoch can be shut
+    ///   down.
+    /// + pre-to-last height of an epoch: finalize the ceremony and generate the the state for the
+    ///   next ceremony.
     /// + last height of an epoch:
     ///     1. notify the epoch manager that a new epoch can be entered;
-    ///     2. start a new ceremony by reading the validator config smart
-    ///        contract
+    ///     2. start a new ceremony by reading the validator config smart contract
     ///
     /// The processing of all other blocks depends on which part of the epoch
     /// they fall in:
     ///
-    /// + first half: if we are a dealer, distribute the generated DKG shares
-    ///   to the players and collect their acks. If we are a player, receive
-    ///   DKG shares and respond with an ack.
-    /// + exact middle of an epoch: if we are a dealer, generate the dealing
-    ///   (the intermediate outcome) of the ceremony.
-    /// + second half of an epoch: if we are a dealer, send it to the application
-    ///   if a request comes in (the application is supposed to add this to the
-    ///   block it is proposing). Always attempt to read dealings from the blocks
-    ///   and track them (if a dealer or player both).
+    /// + first half: if we are a dealer, distribute the generated DKG shares to the players and
+    ///   collect their acks. If we are a player, receive DKG shares and respond with an ack.
+    /// + exact middle of an epoch: if we are a dealer, generate the dealing (the intermediate
+    ///   outcome) of the ceremony.
+    /// + second half of an epoch: if we are a dealer, send it to the application if a request comes
+    ///   in (the application is supposed to add this to the block it is proposing). Always attempt
+    ///   to read dealings from the blocks and track them (if a dealer or player both).
     #[instrument(
         parent = &cause,
         skip_all,
@@ -395,10 +386,7 @@ where
     async fn handle_finalized<TReceiver, TSender>(
         &mut self,
         cause: Span,
-        Finalize {
-            block,
-            acknowledgment,
-        }: Finalize,
+        Finalize { block, acknowledgment }: Finalize,
         maybe_ceremony: &mut Option<Ceremony<ContextCell<TContext>, TReceiver, TSender>>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
     ) where
@@ -409,8 +397,7 @@ where
             self.handle_finalized_post_allegretto(cause, *block, maybe_ceremony, ceremony_mux)
                 .await;
         } else {
-            self.handle_finalized_pre_allegretto(cause, *block, maybe_ceremony, ceremony_mux)
-                .await;
+            self.handle_finalized_pre_allegretto(cause, *block, maybe_ceremony, ceremony_mux).await;
         }
         acknowledgment.acknowledge();
     }
@@ -444,10 +431,10 @@ where
     async fn register_current_epoch_state(&mut self) {
         let epoch_state = self.current_epoch_state();
 
-        if let Some(previous_epoch) = epoch_state.epoch().checked_sub(1)
-            && let boundary_height =
-                utils::last_block_in_epoch(self.config.epoch_length, previous_epoch)
-            && let None = self.config.marshal.get_info(boundary_height).await
+        if let Some(previous_epoch) = epoch_state.epoch().checked_sub(1) &&
+            let boundary_height =
+                utils::last_block_in_epoch(self.config.epoch_length, previous_epoch) &&
+            let None = self.config.marshal.get_info(boundary_height).await
         {
             info!(
                 boundary_height,
@@ -491,8 +478,7 @@ where
             public = alloy_primitives::hex::encode(epoch_state.public_polynomial().encode()),
             "reported epoch state to epoch manager",
         );
-        self.register_validators(epoch_state.epoch(), new_validator_state)
-            .await;
+        self.register_validators(epoch_state.epoch(), new_validator_state).await;
     }
 
     /// Reports that the previous epoch should be entered.
@@ -531,13 +517,13 @@ where
             );
         }
 
-        if let Some(epoch) = self.current_epoch_state().epoch().checked_sub(2)
-            && let Some(validator_state) = self.validators_metadata.get(&epoch.into()).cloned()
+        if let Some(epoch) = self.current_epoch_state().epoch().checked_sub(2) &&
+            let Some(validator_state) = self.validators_metadata.get(&epoch.into()).cloned()
         {
             self.register_validators(epoch, validator_state).await;
         }
-        if let Some(epoch) = self.current_epoch_state().epoch().checked_sub(1)
-            && let Some(validator_state) = self.validators_metadata.get(&epoch.into()).cloned()
+        if let Some(epoch) = self.current_epoch_state().epoch().checked_sub(1) &&
+            let Some(validator_state) = self.validators_metadata.get(&epoch.into()).cloned()
         {
             self.register_validators(epoch, validator_state).await;
         }
@@ -548,10 +534,7 @@ where
     async fn register_validators(&mut self, epoch: Epoch, validator_state: ValidatorState) {
         let peers_to_register = validator_state.resolve_addresses_and_merge_peers();
         self.metrics.peers.set(peers_to_register.len() as i64);
-        self.config
-            .peer_manager
-            .update(epoch, peers_to_register.clone())
-            .await;
+        self.config.peer_manager.update(epoch, peers_to_register.clone()).await;
 
         info!(
             peers_registered = ?peers_to_register,
@@ -570,22 +553,15 @@ where
     /// its conclusion and then start a new post-allegretto ceremony at the epoch
     /// boundary.
     fn is_running_post_allegretto(&self, block: &Block) -> bool {
-        self.config
-            .execution_node
-            .chain_spec()
-            .is_allegretto_active_at_timestamp(block.timestamp())
-            && self.post_allegretto_metadatas.exists()
+        self.config.execution_node.chain_spec().is_allegretto_active_at_timestamp(block.timestamp()) &&
+            self.post_allegretto_metadatas.exists()
     }
 
     /// Returns the previous epoch state.
     ///
     /// Always prefers the post allegretto state, if it exists.
     fn previous_epoch_state(&self) -> Option<EpochState> {
-        if let Some(epoch_state) = self
-            .post_allegretto_metadatas
-            .previous_epoch_state()
-            .cloned()
-        {
+        if let Some(epoch_state) = self.post_allegretto_metadatas.previous_epoch_state().cloned() {
             Some(EpochState::PostModerato(epoch_state))
         } else {
             self.pre_allegretto_metadatas
@@ -604,11 +580,7 @@ where
     /// Panics if no epoch state exists, neither for the pre- nor post-allegretto
     /// regime. There must always be an epoch state.
     fn current_epoch_state(&self) -> EpochState {
-        if let Some(epoch_state) = self
-            .post_allegretto_metadatas
-            .current_epoch_state()
-            .cloned()
-        {
+        if let Some(epoch_state) = self.post_allegretto_metadatas.current_epoch_state().cloned() {
             EpochState::PostModerato(epoch_state)
         } else if let Some(epoch_state) =
             self.pre_allegretto_metadatas.current_epoch_state().cloned()
@@ -728,11 +700,11 @@ impl Write for DkgOutcome {
 
 impl EncodeSize for DkgOutcome {
     fn encode_size(&self) -> usize {
-        self.dkg_successful.encode_size()
-            + UInt(self.epoch).encode_size()
-            + self.participants.encode_size()
-            + self.public.encode_size()
-            + self.share.encode_size()
+        self.dkg_successful.encode_size() +
+            UInt(self.epoch).encode_size() +
+            self.participants.encode_size() +
+            self.public.encode_size() +
+            self.share.encode_size()
     }
 }
 
@@ -749,12 +721,6 @@ impl Read for DkgOutcome {
         let public =
             Public::<MinSig>::read_cfg(buf, &(quorum(participants.len() as u32) as usize))?;
         let share = Option::<Share>::read_cfg(buf, &())?;
-        Ok(Self {
-            dkg_successful,
-            epoch,
-            participants,
-            public,
-            share,
-        })
+        Ok(Self { dkg_successful, epoch, participants, public, share })
     }
 }

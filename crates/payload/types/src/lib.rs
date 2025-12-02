@@ -43,11 +43,7 @@ impl ExecutionPayload for TempoExecutionData {
     }
 
     fn withdrawals(&self) -> Option<&Vec<Withdrawal>> {
-        self.block
-            .body()
-            .withdrawals
-            .as_ref()
-            .map(|withdrawals| &withdrawals.0)
+        self.block.body().withdrawals.as_ref().map(|withdrawals| &withdrawals.0)
     }
 
     fn parent_beacon_block_root(&self) -> Option<alloy_primitives::B256> {
@@ -71,9 +67,6 @@ impl PayloadTypes for TempoPayloadTypes {
     type BuiltPayload = EthBuiltPayload<TempoPrimitives>;
 
     fn block_to_payload(block: SealedBlock<Block>) -> Self::ExecutionData {
-        TempoExecutionData {
-            block,
-            validator_set: None,
-        }
+        TempoExecutionData { block, validator_set: None }
     }
 }

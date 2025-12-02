@@ -17,7 +17,8 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) total_transaction_execution_duration_seconds: Histogram,
     /// The time it took to execute system transactions in seconds.
     pub(crate) system_transactions_execution_duration_seconds: Histogram,
-    /// The time it took to finalize the payload in seconds. Includes merging transitions and calculating the state root.
+    /// The time it took to finalize the payload in seconds. Includes merging transitions and
+    /// calculating the state root.
     pub(crate) payload_finalization_duration_seconds: Histogram,
     /// Total time it took to build the payload in seconds.
     pub(crate) payload_build_duration_seconds: Histogram,

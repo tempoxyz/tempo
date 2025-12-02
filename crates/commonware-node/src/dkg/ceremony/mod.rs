@@ -145,11 +145,7 @@ where
         debug!("attempting to read ceremony state from disk");
         // TODO(janis): move this "recovery" logic to a function.
         // Clone in order to not hold onto the lock too long.
-        let recovered = ceremony_metadata
-            .lock()
-            .await
-            .get(&config.epoch.into())
-            .cloned();
+        let recovered = ceremony_metadata.lock().await.get(&config.epoch.into()).cloned();
 
         if let Some(recovered) = recovered {
             info!("found a previous ceremony state written to disk; recovering it");
@@ -230,12 +226,8 @@ where
                     .zip(&shares)
                     .map(|(player, share)| (player.clone(), share.clone()))
                     .collect();
-                dealer_me = Some(Dealer {
-                    commitment,
-                    shares,
-                    acks: BTreeMap::new(),
-                    outcome: None,
-                });
+                dealer_me =
+                    Some(Dealer { commitment, shares, acks: BTreeMap::new(), outcome: None });
             }
 
             ceremony_metadata
@@ -262,13 +254,8 @@ where
         };
 
         let previous = config.share.clone().map_or_else(
-            || Role::Verifier {
-                public: config.public.clone(),
-            },
-            |share| Role::Signer {
-                public: config.public.clone(),
-                share,
-            },
+            || Role::Verifier { public: config.public.clone() },
+            |share| Role::Signer { public: config.public.clone(), share },
         );
         Ok(Self {
             config,
@@ -306,15 +293,11 @@ where
                 .cloned()
                 .expect("invariant violated: all players must have an entry in the shares map");
 
-            if let Some(player_me) = &mut self.player_me
-                && player == &self.config.me.public_key()
+            if let Some(player_me) = &mut self.player_me &&
+                player == &self.config.me.public_key()
             {
                 player_me
-                    .share(
-                        self.config.me.public_key(),
-                        dealer_me.commitment.clone(),
-                        share.clone(),
-                    )
+                    .share(self.config.me.public_key(), dealer_me.commitment.clone(), share.clone())
                     .expect(
                         "must work: updating player with own dealer \
                         commitment",
@@ -333,9 +316,7 @@ where
                 );
                 assert_eq!(
                     None,
-                    dealer_me
-                        .acks
-                        .insert(self.config.me.public_key(), ack.clone()),
+                    dealer_me.acks.insert(self.config.me.public_key(), ack.clone()),
                     "must only insert our own ack once",
                 );
 
@@ -363,21 +344,12 @@ where
                 continue;
             }
 
-            let payload = Share {
-                commitment: dealer_me.commitment.clone(),
-                share,
-            }
-            .into();
+            let payload = Share { commitment: dealer_me.commitment.clone(), share }.into();
             let success = self
                 .sender
                 .send(
                     Recipients::One(player.clone()),
-                    Message {
-                        epoch: self.config.epoch,
-                        payload,
-                    }
-                    .encode()
-                    .freeze(),
+                    Message { epoch: self.config.epoch, payload }.encode().freeze(),
                     true,
                 )
                 .await
@@ -519,8 +491,7 @@ where
             .lock()
             .await
             .upsert_sync(self.epoch().into(), |info| {
-                info.received_shares
-                    .push((peer.clone(), commitment.clone(), share));
+                info.received_shares.push((peer.clone(), commitment.clone(), share));
             })
             .await
             .expect("must always be able to persist tracked shares to disk");
@@ -537,12 +508,7 @@ where
         self.sender
             .send(
                 Recipients::One(peer.clone()),
-                Message {
-                    epoch: self.epoch(),
-                    payload,
-                }
-                .encode()
-                .freeze(),
+                Message { epoch: self.epoch(), payload }.encode().freeze(),
                 true,
             )
             .await
@@ -593,8 +559,8 @@ where
 
         // Verify all ack signatures
         if !block_outcome.acks().iter().all(|ack| {
-            self.players_indexed.contains(ack.player())
-                && ack.verify(
+            self.players_indexed.contains(ack.player()) &&
+                ack.verify(
                     &union(&self.config.namespace, ACK_NAMESPACE),
                     ack.player(),
                     self.epoch(),
@@ -649,8 +615,8 @@ where
             .await
             .expect("must persist deal outcome");
 
-        if let Some(dealer_me) = &mut self.dealer_me
-            && block_dealer == self.config.me.public_key()
+        if let Some(dealer_me) = &mut self.dealer_me &&
+            block_dealer == self.config.me.public_key()
         {
             let _ = dealer_me.outcome.take();
 
@@ -757,11 +723,7 @@ where
     pub(super) fn finalize(self) -> Result<PrivateOutcome, PrivateOutcome> {
         let (result, disqualified) = self.arbiter.finalize();
 
-        let arbiter::Output {
-            public,
-            commitments,
-            reveals,
-        } = match result {
+        let arbiter::Output { public, commitments, reveals } = match result {
             Ok(output) => output,
             Err(error) => {
                 error!(
@@ -819,18 +781,12 @@ where
                     players and commitment"
             );
 
-            Role::Signer {
-                public: output.public,
-                share: output.share,
-            }
+            Role::Signer { public: output.public, share: output.share }
         } else {
             Role::Verifier { public }
         };
 
-        Ok(PrivateOutcome {
-            participants: self.config.players,
-            role: new_role,
-        })
+        Ok(PrivateOutcome { participants: self.config.players, role: new_role })
     }
 
     pub(super) fn epoch(&self) -> Epoch {
@@ -889,10 +845,7 @@ pub(super) struct PrivateOutcome {
 /// signer or a verifier in the next epoch.
 pub(super) enum Role {
     /// The new group polynomial and the local share, if the node was a player.
-    Signer {
-        public: Public<MinSig>,
-        share: group::Share,
-    },
+    Signer { public: Public<MinSig>, share: group::Share },
     /// If the node was not a player in the round it will be just a verifier.
     Verifier { public: Public<MinSig> },
 }
@@ -903,10 +856,7 @@ impl Role {
     /// If a signer, the share will not be unset.
     pub(super) fn into_key_pair(self) -> (Public<MinSig>, Option<group::Share>) {
         match self {
-            Self::Signer {
-                public: polynomial,
-                share,
-            } => (polynomial, Some(share)),
+            Self::Signer { public: polynomial, share } => (polynomial, Some(share)),
             Self::Verifier { public: polynomial } => (polynomial, None),
         }
     }

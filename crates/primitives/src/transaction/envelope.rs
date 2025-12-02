@@ -168,46 +168,40 @@ impl TempoTxEnvelope {
         matches!(self, Self::Legacy(tx) if tx.signature() == &TEMPO_SYSTEM_TX_SIGNATURE)
     }
 
-    /// Returns true if this is a valid Tempo system transaction, i.e all gas fields and nonce are zero.
+    /// Returns true if this is a valid Tempo system transaction, i.e all gas fields and nonce are
+    /// zero.
     pub fn is_valid_system_tx(&self, chain_id: u64) -> bool {
-        self.max_fee_per_gas() == 0
-            && self.gas_limit() == 0
-            && self.value().is_zero()
-            && self.chain_id() == Some(chain_id)
-            && self.nonce() == 0
+        self.max_fee_per_gas() == 0 &&
+            self.gas_limit() == 0 &&
+            self.value().is_zero() &&
+            self.chain_id() == Some(chain_id) &&
+            self.nonce() == 0
     }
 
     /// Classify a transaction as payment or non-payment.
     ///
-    /// Currently uses classifier v1: transaction is a payment if the `to` address has the TIP20 prefix.
+    /// Currently uses classifier v1: transaction is a payment if the `to` address has the TIP20
+    /// prefix.
     pub fn is_payment(&self) -> bool {
         match self {
-            Self::Legacy(tx) => tx
-                .tx()
-                .to
-                .to()
-                .is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX)),
-            Self::Eip2930(tx) => tx
-                .tx()
-                .to
-                .to()
-                .is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX)),
-            Self::Eip1559(tx) => tx
-                .tx()
-                .to
-                .to()
-                .is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX)),
+            Self::Legacy(tx) => {
+                tx.tx().to.to().is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX))
+            }
+            Self::Eip2930(tx) => {
+                tx.tx().to.to().is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX))
+            }
+            Self::Eip1559(tx) => {
+                tx.tx().to.to().is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX))
+            }
             Self::Eip7702(tx) => tx.tx().to.starts_with(&TIP20_PAYMENT_PREFIX),
-            Self::FeeToken(tx) => tx
-                .tx()
-                .to
-                .to()
-                .is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX)),
-            Self::AA(tx) => tx.tx().calls.iter().all(|call| {
-                call.to
-                    .to()
-                    .is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX))
-            }),
+            Self::FeeToken(tx) => {
+                tx.tx().to.to().is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX))
+            }
+            Self::AA(tx) => {
+                tx.tx().calls.iter().all(|call| {
+                    call.to.to().is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX))
+                })
+            }
         }
     }
 
@@ -349,10 +343,9 @@ impl<Eip4844> TryFrom<EthereumTxEnvelope<Eip4844>> for TempoTxEnvelope {
         match value {
             EthereumTxEnvelope::Legacy(tx) => Ok(Self::Legacy(tx)),
             EthereumTxEnvelope::Eip2930(tx) => Ok(Self::Eip2930(tx)),
-            tx @ EthereumTxEnvelope::Eip4844(_) => Err(ValueError::new_static(
-                tx,
-                "EIP-4844 transactions are not supported",
-            )),
+            tx @ EthereumTxEnvelope::Eip4844(_) => {
+                Err(ValueError::new_static(tx, "EIP-4844 transactions are not supported"))
+            }
             EthereumTxEnvelope::Eip1559(tx) => Ok(Self::Eip1559(tx)),
             EthereumTxEnvelope::Eip7702(tx) => Ok(Self::Eip7702(tx)),
         }
@@ -453,8 +446,7 @@ impl reth_rpc_convert::SignableTxRequest<TempoTxEnvelope>
 impl reth_rpc_convert::TryIntoSimTx<TempoTxEnvelope> for alloy_rpc_types_eth::TransactionRequest {
     fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
         let tx = self.clone().build_typed_simulate_transaction()?;
-        tx.try_into()
-            .map_err(|_| ValueError::new_static(self, "Invalid transaction request"))
+        tx.try_into().map_err(|_| ValueError::new_static(self, "Invalid transaction request"))
     }
 }
 
@@ -593,9 +585,9 @@ mod codec {
             }
         }
 
-        // For backwards compatibility purposes only 2 bits of the type are encoded in the identifier
-        // parameter. In the case of a [`COMPACT_EXTENDED_IDENTIFIER_FLAG`], the full transaction type
-        // is read from the buffer as a single byte.
+        // For backwards compatibility purposes only 2 bits of the type are encoded in the
+        // identifier parameter. In the case of a [`COMPACT_EXTENDED_IDENTIFIER_FLAG`], the
+        // full transaction type is read from the buffer as a single byte.
         fn from_compact(mut buf: &[u8], identifier: usize) -> (Self, &[u8]) {
             use bytes::Buf;
             (
@@ -655,15 +647,9 @@ mod tests {
 
     #[test]
     fn test_fee_token_access() {
-        let fee_token_tx = TxFeeToken {
-            fee_token: Some(Address::ZERO),
-            ..Default::default()
-        };
-        let signature = Signature::new(
-            alloy_primitives::U256::ZERO,
-            alloy_primitives::U256::ZERO,
-            false,
-        );
+        let fee_token_tx = TxFeeToken { fee_token: Some(Address::ZERO), ..Default::default() };
+        let signature =
+            Signature::new(alloy_primitives::U256::ZERO, alloy_primitives::U256::ZERO, false);
         let signed = Signed::new_unhashed(fee_token_tx, signature);
         let envelope = TempoTxEnvelope::FeeToken(signed);
 
@@ -674,11 +660,8 @@ mod tests {
     #[test]
     fn test_non_fee_token_access() {
         let legacy_tx = TxLegacy::default();
-        let signature = Signature::new(
-            alloy_primitives::U256::ZERO,
-            alloy_primitives::U256::ZERO,
-            false,
-        );
+        let signature =
+            Signature::new(alloy_primitives::U256::ZERO, alloy_primitives::U256::ZERO, false);
         let signed = Signed::new_unhashed(legacy_tx, signature);
         let envelope = TempoTxEnvelope::Legacy(signed);
 
@@ -690,11 +673,8 @@ mod tests {
     fn test_payment_classification_with_tip20_prefix() {
         // Create an address with TIP20 prefix
         let payment_addr = address!("20c0000000000000000000000000000000000001");
-        let tx = TxFeeToken {
-            to: TxKind::Call(payment_addr),
-            gas_limit: 21000,
-            ..Default::default()
-        };
+        let tx =
+            TxFeeToken { to: TxKind::Call(payment_addr), gas_limit: 21000, ..Default::default() };
         let signed = Signed::new_unhashed(tx, Signature::test_signature());
         let envelope = TempoTxEnvelope::FeeToken(signed);
 
@@ -719,11 +699,7 @@ mod tests {
     #[test]
     fn test_payment_classification_no_to_address() {
         // Create a transaction with no `to` address (contract creation)
-        let tx = TxFeeToken {
-            to: TxKind::Create,
-            gas_limit: 21000,
-            ..Default::default()
-        };
+        let tx = TxFeeToken { to: TxKind::Create, gas_limit: 21000, ..Default::default() };
         let signed = Signed::new_unhashed(tx, Signature::test_signature());
         let envelope = TempoTxEnvelope::FeeToken(signed);
 
@@ -765,11 +741,8 @@ mod tests {
     fn test_payment_classification_legacy_tx() {
         // Test with legacy transaction type
         let payment_addr = address!("20c0000000000000000000000000000000000001");
-        let tx = TxLegacy {
-            to: TxKind::Call(payment_addr),
-            gas_limit: 21000,
-            ..Default::default()
-        };
+        let tx =
+            TxLegacy { to: TxKind::Call(payment_addr), gas_limit: 21000, ..Default::default() };
         let signed = Signed::new_unhashed(tx, Signature::test_signature());
         let envelope = TempoTxEnvelope::Legacy(signed);
 

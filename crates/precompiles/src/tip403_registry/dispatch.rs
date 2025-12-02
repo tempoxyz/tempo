@@ -160,19 +160,15 @@ mod tests {
         assert_eq!(policy_id, 2);
 
         // Check that accounts are authorized
-        let is_auth_call = ITIP403Registry::isAuthorizedCall {
-            policyId: policy_id,
-            user: account1,
-        };
+        let is_auth_call =
+            ITIP403Registry::isAuthorizedCall { policyId: policy_id, user: account1 };
         let calldata = is_auth_call.abi_encode();
         let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
         assert!(is_authorized);
 
-        let is_auth_call = ITIP403Registry::isAuthorizedCall {
-            policyId: policy_id,
-            user: account2,
-        };
+        let is_auth_call =
+            ITIP403Registry::isAuthorizedCall { policyId: policy_id, user: account2 };
         let calldata = is_auth_call.abi_encode();
         let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
@@ -180,10 +176,8 @@ mod tests {
 
         // Check that other accounts are not authorized
         let other_account = Address::from([4u8; 20]);
-        let is_auth_call = ITIP403Registry::isAuthorizedCall {
-            policyId: policy_id,
-            user: other_account,
-        };
+        let is_auth_call =
+            ITIP403Registry::isAuthorizedCall { policyId: policy_id, user: other_account };
         let calldata = is_auth_call.abi_encode();
         let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
@@ -209,10 +203,8 @@ mod tests {
             ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
 
         // Initially, all accounts should be authorized (empty blacklist)
-        let is_auth_call = ITIP403Registry::isAuthorizedCall {
-            policyId: policy_id,
-            user: blocked_account,
-        };
+        let is_auth_call =
+            ITIP403Registry::isAuthorizedCall { policyId: policy_id, user: blocked_account };
         let calldata = is_auth_call.abi_encode();
         let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
@@ -228,20 +220,16 @@ mod tests {
         precompile.call(&calldata, admin).unwrap();
 
         // Now blocked account should not be authorized
-        let is_auth_call = ITIP403Registry::isAuthorizedCall {
-            policyId: policy_id,
-            user: blocked_account,
-        };
+        let is_auth_call =
+            ITIP403Registry::isAuthorizedCall { policyId: policy_id, user: blocked_account };
         let calldata = is_auth_call.abi_encode();
         let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
         assert!(!is_authorized);
 
         // Other accounts should still be authorized
-        let is_auth_call = ITIP403Registry::isAuthorizedCall {
-            policyId: policy_id,
-            user: allowed_account,
-        };
+        let is_auth_call =
+            ITIP403Registry::isAuthorizedCall { policyId: policy_id, user: allowed_account };
         let calldata = is_auth_call.abi_encode();
         let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
@@ -257,10 +245,8 @@ mod tests {
         precompile.call(&calldata, admin).unwrap();
 
         // Account should be authorized again
-        let is_auth_call = ITIP403Registry::isAuthorizedCall {
-            policyId: policy_id,
-            user: blocked_account,
-        };
+        let is_auth_call =
+            ITIP403Registry::isAuthorizedCall { policyId: policy_id, user: blocked_account };
         let calldata = is_auth_call.abi_encode();
         let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
@@ -303,19 +289,15 @@ mod tests {
         precompile.call(&calldata, admin).unwrap();
 
         // Both accounts should be authorized
-        let is_auth_call = ITIP403Registry::isAuthorizedCall {
-            policyId: policy_id,
-            user: account1,
-        };
+        let is_auth_call =
+            ITIP403Registry::isAuthorizedCall { policyId: policy_id, user: account1 };
         let calldata = is_auth_call.abi_encode();
         let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
         assert!(is_authorized);
 
-        let is_auth_call = ITIP403Registry::isAuthorizedCall {
-            policyId: policy_id,
-            user: account2,
-        };
+        let is_auth_call =
+            ITIP403Registry::isAuthorizedCall { policyId: policy_id, user: account2 };
         let calldata = is_auth_call.abi_encode();
         let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
@@ -331,19 +313,15 @@ mod tests {
         precompile.call(&calldata, admin).unwrap();
 
         // Account1 should not be authorized, account2 should still be
-        let is_auth_call = ITIP403Registry::isAuthorizedCall {
-            policyId: policy_id,
-            user: account1,
-        };
+        let is_auth_call =
+            ITIP403Registry::isAuthorizedCall { policyId: policy_id, user: account1 };
         let calldata = is_auth_call.abi_encode();
         let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
         assert!(!is_authorized);
 
-        let is_auth_call = ITIP403Registry::isAuthorizedCall {
-            policyId: policy_id,
-            user: account2,
-        };
+        let is_auth_call =
+            ITIP403Registry::isAuthorizedCall { policyId: policy_id, user: account2 };
         let calldata = is_auth_call.abi_encode();
         let result = precompile.call(&calldata, admin).unwrap();
         let is_authorized = bool::abi_decode(&result.bytes).unwrap();
@@ -367,9 +345,7 @@ mod tests {
             ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
 
         // Get initial policy data
-        let policy_data_call = ITIP403Registry::policyDataCall {
-            policyId: policy_id,
-        };
+        let policy_data_call = ITIP403Registry::policyDataCall { policyId: policy_id };
         let calldata = policy_data_call.abi_encode();
         let result = precompile.call(&calldata, admin).unwrap();
         let policy_data =
@@ -378,17 +354,13 @@ mod tests {
 
         // Change policy admin
         let new_admin = Address::from([2u8; 20]);
-        let set_admin_call = ITIP403Registry::setPolicyAdminCall {
-            policyId: policy_id,
-            admin: new_admin,
-        };
+        let set_admin_call =
+            ITIP403Registry::setPolicyAdminCall { policyId: policy_id, admin: new_admin };
         let calldata = set_admin_call.abi_encode();
         precompile.call(&calldata, admin).unwrap();
 
         // Verify policy admin was changed
-        let policy_data_call = ITIP403Registry::policyDataCall {
-            policyId: policy_id,
-        };
+        let policy_data_call = ITIP403Registry::policyDataCall { policyId: policy_id };
         let calldata = policy_data_call.abi_encode();
         let result = precompile.call(&calldata, admin).unwrap();
         let policy_data =

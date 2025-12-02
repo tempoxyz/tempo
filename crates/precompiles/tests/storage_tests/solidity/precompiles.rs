@@ -110,14 +110,8 @@ fn test_stablecoin_exchange_layout() {
     let solc_layout = load_solc_layout(&sol_path);
 
     // Verify top-level fields
-    let rust_layout = layout_fields!(
-        books,
-        orders,
-        balances,
-        active_order_id,
-        pending_order_id,
-        book_keys
-    );
+    let rust_layout =
+        layout_fields!(books, orders, balances, active_order_id, pending_order_id, book_keys);
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
         panic_layout_mismatch("Layout", errors, &sol_path);
     }
@@ -221,12 +215,8 @@ fn test_tip20_layout() {
 
     // Verify `UserRewardInfo` struct members
     let user_info_base_slot = slots::USER_REWARD_INFO;
-    let rust_user_info = struct_fields!(
-        user_info_base_slot,
-        reward_recipient,
-        reward_per_token,
-        reward_balance
-    );
+    let rust_user_info =
+        struct_fields!(user_info_base_slot, reward_recipient, reward_per_token, reward_balance);
     if let Err(errors) = compare_struct_members(&solc_layout, "userRewardInfo", &rust_user_info) {
         panic_layout_mismatch("UserRewardInfo struct member layout", errors, &sol_path);
     }

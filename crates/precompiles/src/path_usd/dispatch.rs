@@ -20,17 +20,16 @@ impl<S: PrecompileStorageProvider> Precompile for PathUSD<'_, S> {
                 .deduct_gas(input_cost(calldata.len()))
                 .map_err(|_| PrecompileError::OutOfGas)?;
 
-            return Err(PrecompileError::Other(
-                "Invalid input: missing function selector".into(),
-            ));
+            return Err(PrecompileError::Other("Invalid input: missing function selector".into()));
         };
 
         // Post allegretto hardfork, treat pathUSD as a default TIP20 without extra permissions
         // For calls to name() or symbol(), since this contract is already deployed pre hardfork,
-        // we override name/symbol to PathUSD rather than treating these calls with default TIP20 logic
-        if self.token.storage().spec().is_allegretto()
-            && selector != ITIP20::nameCall::SELECTOR
-            && selector != ITIP20::symbolCall::SELECTOR
+        // we override name/symbol to PathUSD rather than treating these calls with default TIP20
+        // logic
+        if self.token.storage().spec().is_allegretto() &&
+            selector != ITIP20::nameCall::SELECTOR &&
+            selector != ITIP20::symbolCall::SELECTOR
         {
             return self.token.call(calldata, msg_sender);
         }
@@ -265,15 +264,9 @@ mod tests {
         let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
-        token
-            .initialize(sender)
-            .expect("Failed to initialize token");
+        token.initialize(sender).expect("Failed to initialize token");
 
-        let calldata = ITIP20::startRewardCall {
-            amount: U256::from(1000),
-            secs: 100,
-        }
-        .abi_encode();
+        let calldata = ITIP20::startRewardCall { amount: U256::from(1000), secs: 100 }.abi_encode();
 
         let output = token.call(&Bytes::from(calldata), sender)?;
         assert!(output.reverted);
@@ -290,9 +283,7 @@ mod tests {
         let sender = Address::from([1u8; 20]);
         let recipient = Address::from([2u8; 20]);
 
-        token
-            .initialize(sender)
-            .expect("Failed to initialize token");
+        token.initialize(sender).expect("Failed to initialize token");
 
         let calldata = ITIP20::setRewardRecipientCall { recipient }.abi_encode();
 
@@ -310,9 +301,7 @@ mod tests {
         let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
-        token
-            .initialize(sender)
-            .expect("Failed to initialize token");
+        token.initialize(sender).expect("Failed to initialize token");
 
         let calldata = ITIP20::cancelRewardCall { id: 1 }.abi_encode();
 
@@ -330,9 +319,7 @@ mod tests {
         let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
-        token
-            .initialize(sender)
-            .expect("Failed to initialize token");
+        token.initialize(sender).expect("Failed to initialize token");
 
         let calldata = ITIP20::claimRewardsCall {}.abi_encode();
 

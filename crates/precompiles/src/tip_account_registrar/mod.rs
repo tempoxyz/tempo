@@ -29,10 +29,8 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
     ///
     /// Ensures the [`TipAccountRegistrar`] account isn't empty and prevents state clear.
     pub fn initialize(&mut self) -> Result<()> {
-        self.storage.set_code(
-            TIP_ACCOUNT_REGISTRAR,
-            Bytecode::new_legacy(Bytes::from_static(&[0xef])),
-        )
+        self.storage
+            .set_code(TIP_ACCOUNT_REGISTRAR, Bytecode::new_legacy(Bytes::from_static(&[0xef])))
     }
 
     /// Pre-Moderato: Validates an ECDSA signature against a provided hash.
@@ -67,7 +65,8 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
         }
 
         // EIP-7702 gas cost
-        // can be discussed to lower this down as this cost i think encompasses the bytes of authorization in EIP-7702 tx.
+        // can be discussed to lower this down as this cost i think encompasses the bytes of
+        // authorization in EIP-7702 tx.
         let cost = if account_info.is_empty() {
             revm::primitives::eip7702::PER_EMPTY_ACCOUNT_COST
         } else {
@@ -76,8 +75,7 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
         self.storage.deduct_gas(cost)?;
 
         // Delegate the account to the default 7702 implementation
-        self.storage
-            .set_code(signer, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS))?;
+        self.storage.set_code(signer, Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS))?;
 
         Ok(signer)
     }
@@ -85,7 +83,8 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
     /// Post-Moderato: Validates an ECDSA signature and deploys the default 7702 delegate code
     /// to the recovered signer's account. The account must have nonce = 0 and empty code.
     ///
-    /// This version computes the hash internally from arbitrary message bytes to prevent signature forgery.
+    /// This version computes the hash internally from arbitrary message bytes to prevent signature
+    /// forgery.
     pub fn delegate_to_default_v2(
         &mut self,
         call: ITipAccountRegistrar::delegateToDefault_1Call,
@@ -168,9 +167,8 @@ mod tests {
         let recovered_address = result.unwrap();
         assert_eq!(recovered_address, expected_address);
 
-        let account_info_after = storage
-            .get_account_info(expected_address)
-            .expect("Failed to get account info");
+        let account_info_after =
+            storage.get_account_info(expected_address).expect("Failed to get account info");
         assert_eq!(
             account_info_after.code,
             Some(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS)),
@@ -204,10 +202,7 @@ mod tests {
 
         // Verify the error can be decoded as UnknownFunctionSelector
         let decoded_error = UnknownFunctionSelector::abi_decode(&output.bytes);
-        assert!(
-            decoded_error.is_ok(),
-            "Should decode as UnknownFunctionSelector"
-        );
+        assert!(decoded_error.is_ok(), "Should decode as UnknownFunctionSelector");
 
         // Verify it contains the expected selector
         let error = decoded_error.unwrap();
@@ -241,9 +236,8 @@ mod tests {
         let recovered_address = result.unwrap();
         assert_eq!(recovered_address, expected_address);
 
-        let account_info_after = storage
-            .get_account_info(expected_address)
-            .expect("Failed to get account info");
+        let account_info_after =
+            storage.get_account_info(expected_address).expect("Failed to get account info");
         assert_eq!(
             account_info_after.code,
             Some(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS)),
@@ -286,10 +280,8 @@ mod tests {
         let hash = alloy::primitives::keccak256(b"test");
 
         // Signature too short
-        let call = ITipAccountRegistrar::delegateToDefault_0Call {
-            hash,
-            signature: vec![0u8; 64].into(),
-        };
+        let call =
+            ITipAccountRegistrar::delegateToDefault_0Call { hash, signature: vec![0u8; 64].into() };
 
         let result = registrar.delegate_to_default_v1(call);
         assert!(result.is_err());
@@ -301,10 +293,8 @@ mod tests {
         ));
 
         // Signature too long
-        let call = ITipAccountRegistrar::delegateToDefault_0Call {
-            hash,
-            signature: vec![0u8; 66].into(),
-        };
+        let call =
+            ITipAccountRegistrar::delegateToDefault_0Call { hash, signature: vec![0u8; 66].into() };
 
         let result = registrar.delegate_to_default_v1(call);
         assert!(result.is_err());
@@ -366,9 +356,8 @@ mod tests {
             ))
         ));
 
-        let account_info_after = storage
-            .get_account_info(expected_address)
-            .expect("Failed to get account info");
+        let account_info_after =
+            storage.get_account_info(expected_address).expect("Failed to get account info");
         assert!(account_info_after.is_empty_code_hash());
     }
 

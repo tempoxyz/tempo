@@ -23,10 +23,7 @@ use tempo_precompiles::{
 async fn test_mint_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -73,12 +70,7 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
 
     // Mint liquidity (use mintWithValidatorToken as mint is disabled post-Moderato)
     let mint_receipt = fee_amm
-        .mintWithValidatorToken(
-            pool_key.user_token,
-            pool_key.validator_token,
-            amount,
-            caller,
-        )
+        .mintWithValidatorToken(pool_key.user_token, pool_key.validator_token, amount, caller)
         .send()
         .await?
         .get_receipt()
@@ -116,10 +108,7 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     // Validator token transferred to fee manager
     let final_fee_manager_token1_balance =
         token_1.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
-    assert_eq!(
-        final_fee_manager_token1_balance,
-        fee_manager_token1_balance + amount
-    );
+    assert_eq!(final_fee_manager_token1_balance, fee_manager_token1_balance + amount);
 
     Ok(())
 }
@@ -159,13 +148,7 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
 
     // Mint liquidity using balanced `mint` (available pre-Moderato)
     let mint_receipt = fee_amm
-        .mint(
-            pool_key.user_token,
-            pool_key.validator_token,
-            amount,
-            amount,
-            caller,
-        )
+        .mint(pool_key.user_token, pool_key.validator_token, amount, amount, caller)
         .send()
         .await?
         .get_receipt()
@@ -188,12 +171,7 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
 
     // TODO: fix
     let burn_receipt = fee_amm
-        .burn(
-            pool_key.user_token,
-            pool_key.validator_token,
-            burn_amount,
-            caller,
-        )
+        .burn(pool_key.user_token, pool_key.validator_token, burn_amount, caller)
         .send()
         .await?
         .get_receipt()
@@ -203,15 +181,12 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
     // Calculate expected amounts returned
     let expected_amount0 =
         (burn_amount * U256::from(pool_before_burn.reserveUserToken)) / total_supply_before_burn;
-    let expected_amount1 = (burn_amount * U256::from(pool_before_burn.reserveValidatorToken))
-        / total_supply_before_burn;
+    let expected_amount1 = (burn_amount * U256::from(pool_before_burn.reserveValidatorToken)) /
+        total_supply_before_burn;
 
     // Assert state changes
     let total_supply_after_burn = fee_amm.totalSupply(pool_id).call().await?;
-    assert_eq!(
-        total_supply_after_burn,
-        total_supply_before_burn - burn_amount
-    );
+    assert_eq!(total_supply_after_burn, total_supply_before_burn - burn_amount);
 
     let lp_balance_after_burn = fee_amm.liquidityBalances(pool_id, caller).call().await?;
     assert_eq!(lp_balance_after_burn, lp_balance_before_burn - burn_amount);
@@ -227,16 +202,10 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
     );
 
     let user_token0_balance_after_burn = token_0.balanceOf(caller).call().await?;
-    assert_eq!(
-        user_token0_balance_after_burn,
-        user_token0_balance_before_burn + expected_amount0
-    );
+    assert_eq!(user_token0_balance_after_burn, user_token0_balance_before_burn + expected_amount0);
 
     let user_token1_balance_after_burn = token_1.balanceOf(caller).call().await?;
-    assert_eq!(
-        user_token1_balance_after_burn,
-        user_token1_balance_before_burn + expected_amount1
-    );
+    assert_eq!(user_token1_balance_after_burn, user_token1_balance_before_burn + expected_amount1);
 
     let fee_manager_token0_balance_after_burn =
         token_0.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
@@ -267,19 +236,13 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let http_url = setup.http_url;
 
     // Setup user and validator wallets
-    let user_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let user_wallet =
+        MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).index(1)?.build()?;
     let user_address = user_wallet.address();
 
-    let provider = ProviderBuilder::new()
-        .wallet(user_wallet)
-        .connect_http(http_url.clone());
+    let provider = ProviderBuilder::new().wallet(user_wallet).connect_http(http_url.clone());
 
-    let block = provider
-        .get_block(BlockId::latest())
-        .await?
-        .expect("Could not get block");
+    let block = provider.get_block(BlockId::latest()).await?.expect("Could not get block");
     let validator_address = block.header.beneficiary;
     assert!(!validator_address.is_zero());
 
@@ -326,35 +289,22 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let expected_initial_liquidity = liquidity / U256::from(2) - MIN_LIQUIDITY;
     assert_eq!(total_supply, expected_initial_liquidity + MIN_LIQUIDITY);
 
-    let user_lp_balance = fee_amm
-        .liquidityBalances(pool_id, user_address)
-        .call()
-        .await?;
+    let user_lp_balance = fee_amm.liquidityBalances(pool_id, user_address).call().await?;
     assert_eq!(user_lp_balance, expected_initial_liquidity);
 
     // Cache pool balances before setting tokens (to avoid any fee swaps affecting the baseline)
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-    let pool_before = fee_amm
-        .getPool(*user_token.address(), *validator_token.address())
-        .call()
-        .await?;
+    let pool_before =
+        fee_amm.getPool(*user_token.address(), *validator_token.address()).call().await?;
 
     // Set different tokens for user and validator, validator is already set to predeployed fee
     // token
-    pending.push(
-        fee_manager
-            .setUserToken(*user_token.address())
-            .send()
-            .await?,
-    );
+    pending.push(fee_manager.setUserToken(*user_token.address()).send().await?);
     await_receipts(&mut pending).await?;
 
     // Verify tokens are set correctly
     let user_fee_token = fee_manager.userTokens(user_address).call().await?;
-    let val_fee_token = fee_manager
-        .validatorTokens(validator_address)
-        .call()
-        .await?;
+    let val_fee_token = fee_manager.validatorTokens(validator_address).call().await?;
     assert_ne!(user_fee_token, val_fee_token);
 
     // Get initial validator token balance
@@ -383,10 +333,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     // address(0). Due to this, the validator balance does not currently increment in this test
     // assert!(validator_balance > initial_validator_balance);
 
-    let pool_after = fee_amm
-        .getPool(user_fee_token, val_fee_token)
-        .call()
-        .await?;
+    let pool_after = fee_amm.getPool(user_fee_token, val_fee_token).call().await?;
 
     assert!(pool_before.reserveUserToken < pool_after.reserveUserToken);
     assert!(pool_before.reserveValidatorToken > pool_after.reserveValidatorToken);
@@ -437,13 +384,7 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
 
     // Add liquidity which creates the pool using balanced `mint` (available pre-Moderato)
     let mint_receipt = fee_amm
-        .mint(
-            pool_key.user_token,
-            pool_key.validator_token,
-            amount0,
-            amount1,
-            alice,
-        )
+        .mint(pool_key.user_token, pool_key.validator_token, amount0, amount1, alice)
         .send()
         .await?
         .get_receipt()
@@ -471,10 +412,7 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     let fee_manager_balance0 = user_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
     assert_eq!(fee_manager_balance0, amount0);
 
-    let fee_manager_balance1 = validator_token
-        .balanceOf(TIP_FEE_MANAGER_ADDRESS)
-        .call()
-        .await?;
+    let fee_manager_balance1 = validator_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
     assert_eq!(fee_manager_balance1, amount1);
 
     Ok(())
@@ -518,13 +456,7 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
 
     // Add liquidity using balanced `mint` (available pre-Moderato)
     let mint_receipt = fee_amm
-        .mint(
-            pool_key.user_token,
-            pool_key.validator_token,
-            amount0,
-            amount1,
-            alice,
-        )
+        .mint(pool_key.user_token, pool_key.validator_token, amount0, amount1, alice)
         .send()
         .await?
         .get_receipt()
@@ -547,12 +479,7 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
 
     // Burn partial liquidity
     let burn_receipt = fee_amm
-        .burn(
-            pool_key.user_token,
-            pool_key.validator_token,
-            burn_amount,
-            alice,
-        )
+        .burn(pool_key.user_token, pool_key.validator_token, burn_amount, alice)
         .send()
         .await?
         .get_receipt()
@@ -602,10 +529,7 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
 async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -655,12 +579,7 @@ async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
 
     // Burn entire liquidity
     let burn_receipt = fee_amm
-        .burn(
-            pool_key.user_token,
-            pool_key.validator_token,
-            liquidity,
-            alice,
-        )
+        .burn(pool_key.user_token, pool_key.validator_token, liquidity, alice)
         .max_fee_per_gas(TEMPO_BASE_FEE as u128 * 100)
         .gas(1000000)
         .send()

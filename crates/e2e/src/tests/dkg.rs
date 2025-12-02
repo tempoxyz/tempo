@@ -102,9 +102,7 @@ fn validator_is_removed_from_set_of_four() {
 fn assert_static_transitions(how_many: u32, epoch_length: u64, transitions: u64) {
     let _ = tempo_eyre::install();
 
-    let setup = Setup::new()
-        .how_many_signers(how_many)
-        .epoch_length(epoch_length);
+    let setup = Setup::new().how_many_signers(how_many).epoch_length(epoch_length);
 
     let mut epoch_reached = false;
     let mut dkg_successful = false;
@@ -185,10 +183,10 @@ fn assert_allegretto_transition_refused_without_contract_validators(
                 }
             }
 
-            if transition_refused == how_many
-                && epoch_transitioned == how_many
-                && dkg_successful == how_many
-                && at_least_two_post_allegretto_ceremonies_started == how_many
+            if transition_refused == how_many &&
+                epoch_transitioned == how_many &&
+                dkg_successful == how_many &&
+                at_least_two_post_allegretto_ceremonies_started == how_many
             {
                 break;
             }
@@ -283,10 +281,10 @@ fn assert_allegretto_transition_refused_with_wrong_socket_addr(how_many: u32, ep
                 }
             }
 
-            if transition_refused == how_many
-                && epoch_transitioned == how_many
-                && dkg_successful == how_many
-                && at_least_two_post_allegretto_ceremonies_started == how_many
+            if transition_refused == how_many &&
+                epoch_transitioned == how_many &&
+                dkg_successful == how_many &&
+                at_least_two_post_allegretto_ceremonies_started == how_many
             {
                 break;
             }
@@ -387,9 +385,7 @@ fn assert_validator_is_added_post_allegretto(how_many_initial: u32, epoch_length
         };
 
         assert!(
-            validators
-                .iter()
-                .all(|node| node.consensus_config.share.is_some()),
+            validators.iter().all(|node| node.consensus_config.share.is_some()),
             "must have removed the one non-signer node; must be left with only signers",
         );
 
@@ -462,10 +458,7 @@ fn assert_validator_is_added_post_allegretto(how_many_initial: u32, epoch_length
             .await
             .unwrap();
 
-        tracing::debug!(
-            block.number = receipt.block_number,
-            "addValidator call returned receipt"
-        );
+        tracing::debug!(block.number = receipt.block_number, "addValidator call returned receipt");
 
         let _new_validator = new_validator.start().await;
         tracing::info!("new validator was started");
@@ -510,8 +503,8 @@ fn assert_validator_is_added_post_allegretto(how_many_initial: u32, epoch_length
                     players_is_initial_plus_one += (value as u32 == how_many_initial + 1) as u32;
                 }
             }
-            if dealers_is_initial == how_many_initial
-                && players_is_initial_plus_one == how_many_initial
+            if dealers_is_initial == how_many_initial &&
+                players_is_initial_plus_one == how_many_initial
             {
                 break;
             }
@@ -673,8 +666,8 @@ fn assert_validator_is_removed_post_allegretto(how_many_initial: u32, epoch_leng
                     players_is_initial_minus_one += (value as u32 == how_many_initial - 1) as u32;
                 }
             }
-            if dealers_is_initial == how_many_initial
-                && players_is_initial_minus_one == how_many_initial
+            if dealers_is_initial == how_many_initial &&
+                players_is_initial_minus_one == how_many_initial
             {
                 break;
             }
@@ -813,8 +806,8 @@ fn assert_validator_is_removed_post_allegretto(how_many_initial: u32, epoch_leng
 //                     }
 //                 }
 //                 fn had_expected(&self) -> bool {
-//                     self.0.values().any(|participants| participants.dealers == 4 && participants.players == 3)
-//                 }
+//                     self.0.values().any(|participants| participants.dealers == 4 &&
+// participants.players == 3)                 }
 //             }
 
 //             let mut observations = Observations::default();
@@ -845,8 +838,8 @@ fn assert_validator_is_removed_post_allegretto(how_many_initial: u32, epoch_leng
 //                     if value < 4 && observed_4_dealers_3_players {
 //                         success = true
 //                     } else if value < 4 {
-//                         panic!("got less than 4 participants, but never observed a ceremony with 4 dealers and 3 players");
-//                     }
+//                         panic!("got less than 4 participants, but never observed a ceremony with
+// 4 dealers and 3 players");                     }
 //                 }
 //             }
 //             observed_4_dealers_3_players |= observations.had_expected();
@@ -901,14 +894,8 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
         let (mut nodes, _execution_runtime) =
             setup_validators(context.clone(), setup.clone()).await;
         let last_node = {
-            let last_node = nodes
-                .last_mut()
-                .expect("we just asked for a couple of validators");
-            last_node
-                .consensus_config
-                .share
-                .take()
-                .expect("the node must have had a share");
+            let last_node = nodes.last_mut().expect("we just asked for a couple of validators");
+            last_node.consensus_config.share.take().expect("the node must have had a share");
             last_node.uid.clone()
         };
 
@@ -955,8 +942,8 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
                 }
 
                 // Ensures that node has no share.
-                if !node_forgot_share
-                    && metric.ends_with(&format!(
+                if !node_forgot_share &&
+                    metric.ends_with(&format!(
                         "{last_node}_epoch_manager_how_often_verifier_total"
                     ))
                 {
@@ -965,8 +952,8 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
                 }
 
                 // Double check that the node is indeed not a signer.
-                if !node_is_not_signer
-                    && metric
+                if !node_is_not_signer &&
+                    metric
                         .ends_with(&format!("{last_node}_epoch_manager_how_often_signer_total"))
                 {
                     let value = value.parse::<u64>().unwrap();
@@ -974,10 +961,10 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
                 }
 
                 // Ensure that the node gets a share by becoming a signer.
-                if node_forgot_share
-                    && node_is_not_signer
-                    && !node_got_new_share
-                    && metric
+                if node_forgot_share &&
+                    node_is_not_signer &&
+                    !node_got_new_share &&
+                    metric
                         .ends_with(&format!("{last_node}_epoch_manager_how_often_signer_total"))
                 {
                     let value = value.parse::<u64>().unwrap();
@@ -1003,11 +990,11 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
                 }
             }
 
-            success = epoch_reached
-                && height_reached
-                && dkg_successful
-                && node_forgot_share
-                && node_got_new_share;
+            success = epoch_reached &&
+                height_reached &&
+                dkg_successful &&
+                node_forgot_share &&
+                node_got_new_share;
         }
     });
 }
