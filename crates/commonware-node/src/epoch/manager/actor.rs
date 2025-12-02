@@ -288,7 +288,7 @@ where
     }
 
     #[instrument(
-        parent = cause,
+        parent = &cause,
         skip_all,
         fields(
             %epoch,
@@ -398,7 +398,7 @@ where
         Ok(())
     }
 
-    #[instrument(parent = cause, skip_all, fields(epoch))]
+    #[instrument(parent = &cause, skip_all, fields(epoch))]
     fn exit(&mut self, cause: Span, Exit { epoch }: Exit) {
         if let Some(engine) = self.active_epochs.remove(&epoch) {
             engine.abort();

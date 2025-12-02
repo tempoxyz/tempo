@@ -326,7 +326,7 @@ where
     /// Canonicalizes `digest` by sending a forkchoice update to the execution layer.
     #[instrument(
         skip_all,
-        parent = cause,
+        parent = &cause,
         fields(
             head.height = height,
             head.digest = %digest,
