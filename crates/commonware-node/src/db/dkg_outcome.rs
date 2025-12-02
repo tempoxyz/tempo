@@ -1,14 +1,16 @@
 use std::future::Future;
 
 use super::Tx;
-use crate::dkg::manager::{
-    DkgOutcome,
-    actor::{post_allegretto, pre_allegretto},
+use crate::{
+    db::epoch::DkgEpochStore,
+    dkg::manager::{
+        DkgOutcome,
+        actor::{post_allegretto, pre_allegretto},
+    },
 };
 use commonware_runtime::{Clock, Metrics, Storage};
 use eyre::Result;
 use tempo_dkg_onchain_artifacts::PublicOutcome;
-use crate::db::epoch::DkgEpochStore;
 
 const DKG_OUTCOME_KEY: &str = "dkg_outcome";
 

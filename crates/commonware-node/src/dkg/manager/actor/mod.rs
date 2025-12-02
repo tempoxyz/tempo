@@ -195,17 +195,9 @@ where
         while let Some(message) = self.mailbox.next().await {
             let cause = message.cause;
             match message.command {
-                super::Command::Finalize(Finalize {
-                    block,
-                    acknowledgment,
-                }) => {
-                    let mut tx = self.db.read_write().expect("must be able to open tx");
-                    self.handle_finalized(cause, block, &mut ceremony, &mut ceremony_mux, &mut tx)
+                super::Command::Finalize(finalize) => {
+                    self.handle_finalized(cause, finalize, &mut ceremony, &mut ceremony_mux)
                         .await;
-                    tx.commit()
-                        .await
-                        .expect("must be able to commit finalize tx");
-                    acknowledgment.acknowledge();
                 }
                 super::Command::GetIntermediateDealing(get_ceremony_deal) => {
                     let _: Result<_, _> = self
@@ -363,21 +355,42 @@ where
     async fn handle_finalized<TReceiver, TSender>(
         &mut self,
         cause: Span,
-        block: Box<Block>,
+        Finalize {
+            block,
+            acknowledgment,
+        }: Finalize,
         maybe_ceremony: &mut Option<Ceremony<TReceiver, TSender>>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
-        tx: &mut Tx<ContextCell<TContext>>,
     ) where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        if self.is_running_post_allegretto(&block, tx).await {
-            self.handle_finalized_post_allegretto(cause, *block, maybe_ceremony, ceremony_mux, tx)
-                .await;
+        let mut tx = self.db.read_write().expect("must be able to open tx");
+
+        if self.is_running_post_allegretto(&block, &mut tx).await {
+            self.handle_finalized_post_allegretto(
+                cause,
+                *block,
+                maybe_ceremony,
+                ceremony_mux,
+                &mut tx,
+            )
+            .await;
         } else {
-            self.handle_finalized_pre_allegretto(cause, *block, maybe_ceremony, ceremony_mux, tx)
-                .await;
+            self.handle_finalized_pre_allegretto(
+                cause,
+                *block,
+                maybe_ceremony,
+                ceremony_mux,
+                &mut tx,
+            )
+            .await;
         }
+
+        tx.commit()
+            .await
+            .expect("must be able to commit finalize tx");
+        acknowledgment.acknowledge();
     }
 
     /// Starts a new ceremony for the epoch state tracked by the actor.
