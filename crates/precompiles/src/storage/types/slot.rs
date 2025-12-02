@@ -122,6 +122,46 @@ impl<T> Slot<T> {
     }
 }
 
+impl<T> StorageOps for Slot<T> {
+    fn load(&self, slot: U256) -> Result<U256> {
+        let storage = StorageContext;
+        storage.sload(self.address, slot)
+    }
+
+    fn store(&mut self, slot: U256, value: U256) -> Result<()> {
+        let mut storage = StorageContext;
+        storage.sstore(self.address, slot, value)
+    }
+}
+
+/// Wrapper that routes storage operations through transient storage (TLOAD/TSTORE).
+///
+/// Created via `Slot::transient()` and used by `t_read()`, `t_write()`, `t_delete()`.
+struct TransientOps {
+    address: Address,
+}
+
+impl StorageOps for TransientOps {
+    fn load(&self, slot: U256) -> Result<U256> {
+        let storage = StorageContext;
+        storage.tload(self.address, slot)
+    }
+
+    fn store(&mut self, slot: U256, value: U256) -> Result<()> {
+        let mut storage = StorageContext;
+        storage.tstore(self.address, slot, value)
+    }
+}
+
+impl<T: Storable> Slot<T> {
+    /// Returns a transient storage operations wrapper for this slot's address.
+    fn transient(&self) -> TransientOps {
+        TransientOps {
+            address: self.address,
+        }
+    }
+}
+
 impl<T: Storable> Handler<T> for Slot<T> {
     /// Reads a value from storage at this slot.
     ///
@@ -176,17 +216,23 @@ impl<T: Storable> Handler<T> for Slot<T> {
     fn delete(&mut self) -> Result<()> {
         T::delete(self, self.slot, self.ctx)
     }
-}
 
-impl<T> StorageOps for Slot<T> {
-    fn sload(&self, slot: U256) -> Result<U256> {
-        let storage = StorageContext;
-        storage.sload(self.address, slot)
+    /// Reads a value from transient storage at this slot.
+    #[inline]
+    fn t_read(&self) -> Result<T> {
+        T::load(&self.transient(), self.slot, self.ctx)
     }
 
-    fn sstore(&mut self, slot: U256, value: U256) -> Result<()> {
-        let mut storage = StorageContext;
-        storage.sstore(self.address, slot, value)
+    /// Writes a value to transient storage at this slot.
+    #[inline]
+    fn t_write(&mut self, value: T) -> Result<()> {
+        value.store(&mut self.transient(), self.slot, self.ctx)
+    }
+
+    /// Deletes the value at this slot in transient storage (sets to zero).
+    #[inline]
+    fn t_delete(&mut self) -> Result<()> {
+        T::delete(&mut self.transient(), self.slot, self.ctx)
     }
 }
 
@@ -220,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn test_slot_number_extraction() {
+    fn test_slot_number_extraction() -> eyre::Result<()> {
         let (mut storage, address) = setup_storage();
         StorageContext::enter(&mut storage, || {
             let slot_0 = Slot::<U256>::new(U256::ZERO, address.clone());
@@ -229,133 +275,87 @@ mod tests {
             assert_eq!(slot_0.slot(), U256::ZERO);
             assert_eq!(slot_1.slot(), U256::ONE);
             assert_eq!(slot_max.slot(), U256::MAX);
-        });
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_slot_edge_case_zero() {
+    fn test_slot_edge_cases() -> eyre::Result<()> {
         let (mut storage, address) = setup_storage();
         StorageContext::enter(&mut storage, || {
-            // Explicit test for U256::ZERO slot
-            let mut slot = Slot::<U256>::new(U256::ZERO, address);
-            assert_eq!(slot.slot(), U256::ZERO);
+            // U256::ZERO slot
+            let mut slot_zero = Slot::<U256>::new(U256::ZERO, address);
+            assert_eq!(slot_zero.slot(), U256::ZERO);
+            let value_zero = U256::random();
+            slot_zero.write(value_zero)?;
+            assert_eq!(slot_zero.read()?, value_zero);
 
-            let value = U256::random();
-            slot.write(value).unwrap();
-            let loaded = slot.read().unwrap();
-            assert_eq!(loaded, value);
-        });
+            // U256::MAX slot
+            let mut slot_max = Slot::<U256>::new(U256::MAX, address);
+            assert_eq!(slot_max.slot(), U256::MAX);
+            let value_max = U256::random();
+            slot_max.write(value_max)?;
+            assert_eq!(slot_max.read()?, value_max);
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_slot_edge_case_max() {
-        let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
-            // Explicit test for U256::MAX slot
-            let mut slot = Slot::<U256>::new(U256::MAX, address);
-            assert_eq!(slot.slot(), U256::MAX);
-
-            let value = U256::random();
-            slot.write(value).unwrap();
-            let loaded = slot.read().unwrap();
-            assert_eq!(loaded, value);
-        });
-    }
-
-    #[test]
-    fn test_slot_read_write_u256() {
+    fn test_slot_read_write_types() -> eyre::Result<()> {
         let (mut storage, address) = setup_storage();
         let slot_num = U256::random();
         let test_value = U256::random();
 
-        StorageContext::enter(&mut storage, || {
-            let mut slot = Slot::<U256>::new(slot_num, address.clone());
+        StorageContext::enter(&mut storage, || -> eyre::Result<()> {
+            // U256
+            let mut u256_slot = Slot::<U256>::new(slot_num, address);
+            u256_slot.write(test_value)?;
+            assert_eq!(u256_slot.read()?, test_value);
 
-            // Write using new API
-            slot.write(test_value).unwrap();
-
-            // Read using new API
-            let loaded = slot.read().unwrap();
-            assert_eq!(loaded, test_value);
-        });
-
-        // Verify it actually wrote to slot
-        let raw = storage.sload(address, slot_num);
-        assert_eq!(raw, Ok(test_value));
-    }
-
-    #[test]
-    fn test_slot_read_write_address() {
-        let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+            // Address
             let test_addr = Address::random();
-            let mut slot = Slot::<Address>::new(U256::random(), address);
+            let mut addr_slot = Slot::<Address>::new(U256::from(1), address);
+            addr_slot.write(test_addr)?;
+            assert_eq!(addr_slot.read()?, test_addr);
 
-            // Write
-            slot.write(test_addr).unwrap();
+            // bool
+            let mut bool_slot = Slot::<bool>::new(U256::from(2), address);
+            bool_slot.write(true)?;
+            assert!(bool_slot.read()?);
+            bool_slot.write(false)?;
+            assert!(!bool_slot.read()?);
 
-            // Read
-            let loaded = slot.read().unwrap();
-            assert_eq!(loaded, test_addr);
-        });
+            // String
+            let mut str_slot = Slot::<String>::new(U256::from(3), address);
+            str_slot.write("TestToken".to_string())?;
+            assert_eq!(str_slot.read()?, "TestToken");
+
+            Ok(())
+        })?;
+
+        // Verify U256 actually wrote to slot
+        let raw = storage.sload(address, slot_num)?;
+        assert_eq!(raw, test_value);
+        Ok(())
     }
 
     #[test]
-    fn test_slot_read_write_bool() {
+    fn test_slot_default_and_overwrite() -> eyre::Result<()> {
         let (mut storage, address) = setup_storage();
         StorageContext::enter(&mut storage, || {
-            let mut slot = Slot::<bool>::new(U256::random(), address);
-
-            // Write true
-            slot.write(true).unwrap();
-            assert!(slot.read().unwrap());
-
-            // Write false
-            slot.write(false).unwrap();
-            assert!(!slot.read().unwrap());
-        });
-    }
-
-    // #[test]
-    // fn test_slot_read_write_string() {
-    //     let (mut storage, address) = setup_storage();
-    //        let _guard = storage.enter().unwrap();
-
-    //         let mut slot = Slot::<String>::new(U256::random(), address.clone());
-
-    //         let test_name = "TestToken";
-    //         slot.write(test_name.to_string()).unwrap();
-
-    //         let loaded = slot.read().unwrap();
-    //         assert_eq!(loaded, test_name);
-    // }
-
-    #[test]
-    fn test_slot_default_value_is_zero() {
-        let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
-            let slot = Slot::<U256>::new(U256::random(), address);
-
-            // Reading uninitialized storage should return zero
-            let value = slot.read().unwrap();
-            assert_eq!(value, U256::ZERO);
-        });
-    }
-
-    #[test]
-    fn test_slot_overwrite() {
-        let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+            // Default value is zero
             let mut slot = Slot::<u64>::new(U256::random(), address);
+            assert_eq!(slot.read()?, 0);
 
-            // Write initial value
-            slot.write(100).unwrap();
-            assert_eq!(slot.read(), Ok(100));
+            // Write and overwrite
+            slot.write(100)?;
+            assert_eq!(slot.read()?, 100);
+            slot.write(200)?;
+            assert_eq!(slot.read()?, 200);
 
-            // Overwrite with new value
-            slot.write(200).unwrap();
-            assert_eq!(slot.read(), Ok(200));
-        });
+            Ok(())
+        })
     }
 
     proptest! {
@@ -426,87 +426,140 @@ mod tests {
     // -- RUNTIME SLOT OFFSET TESTS --------------------------------------------
 
     #[test]
-    fn test_slot_at_offset() {
+    fn test_slot_at_offset() -> eyre::Result<()> {
         let (mut storage, address) = setup_storage();
         StorageContext::enter(&mut storage, || {
             let pair_key = B256::random();
-            let orderbook_base_slot = pair_key.mapping_slot(U256::ZERO);
+            let base = pair_key.mapping_slot(U256::ZERO);
+            let test_addr = Address::random();
 
-            let base_address = Address::random();
+            // Write, read, delete
+            let mut slot = Slot::<Address>::new_at_offset(base, 0, address);
+            slot.write(test_addr)?;
+            assert_eq!(slot.read()?, test_addr);
+            slot.delete()?;
+            assert_eq!(slot.read()?, Address::ZERO);
 
-            // Write to orderbook.base using runtime offset
-            let mut slot = Slot::<Address>::new_at_offset(orderbook_base_slot, 0, address);
-            slot.write(base_address).unwrap();
-
-            // Read back
-            let read_address = slot.read().unwrap();
-
-            assert_eq!(read_address, base_address);
-
-            // Delete
-            slot.delete().unwrap();
-
-            let deleted = slot.read().unwrap();
-
-            assert_eq!(deleted, Address::ZERO);
-        });
+            Ok(())
+        })
     }
 
-    // #[test]
-    // fn test_slot_at_offset_multi_slot_value() {
-    //     let (mut storage, address) = setup_storage();
-    // let _guard = storage.enter().unwrap();
-
-    //         let struct_key = B256::random();
-    //         let struct_base = mapping_slot(struct_key, U256::ZERO);
-
-    //         // Test writing a multi-slot value like a String at offset 2
-    //         let test_string = "Hello, Orderbook!".to_string();
-
-    //         let mut slot = Slot::<String>::new_at_offset(struct_base, 2, address.clone());
-    //         slot.write(test_string.clone()).unwrap();
-
-    //         let read_string = slot.read().unwrap();
-
-    //         assert_eq!(read_string, test_string);
-    // }
-
     #[test]
-    fn test_multiple_primitive_fields() {
+    fn test_multiple_primitive_fields() -> eyre::Result<()> {
         let (mut storage, address) = setup_storage();
         StorageContext::enter(&mut storage, || {
             let key = B256::random();
             let base = key.mapping_slot(U256::ZERO);
 
-            // Simulate different primitive fields at different offsets
             let field_0 = Address::random();
-            let field_1: u64 = 12345;
+            let field_1: u64 = (U256::random() % U256::from(u64::MAX)).to();
             let field_2 = U256::random();
 
-            Slot::<Address>::new_at_offset(base, 0, address.clone())
-                .write(field_0)
-                .unwrap();
-            Slot::<u64>::new_at_offset(base, 1, address.clone())
-                .write(field_1)
-                .unwrap();
-            Slot::<U256>::new_at_offset(base, 2, address.clone())
-                .write(field_2)
-                .unwrap();
+            Slot::<Address>::new_at_offset(base, 0, address).write(field_0)?;
+            Slot::<u64>::new_at_offset(base, 1, address).write(field_1)?;
+            Slot::<U256>::new_at_offset(base, 2, address).write(field_2)?;
 
-            // Verify independence
-            let read_0 = Slot::<Address>::new_at_offset(base, 0, address.clone())
-                .read()
-                .unwrap();
-            let read_1 = Slot::<u64>::new_at_offset(base, 1, address.clone())
-                .read()
-                .unwrap();
-            let read_2 = Slot::<U256>::new_at_offset(base, 2, address)
-                .read()
-                .unwrap();
+            assert_eq!(
+                Slot::<Address>::new_at_offset(base, 0, address).read()?,
+                field_0
+            );
+            assert_eq!(
+                Slot::<u64>::new_at_offset(base, 1, address).read()?,
+                field_1
+            );
+            assert_eq!(
+                Slot::<U256>::new_at_offset(base, 2, address).read()?,
+                field_2
+            );
 
-            assert_eq!(read_0, field_0);
-            assert_eq!(read_1, field_1);
-            assert_eq!(read_2, field_2);
-        });
+            Ok(())
+        })
+    }
+
+    // -- TRANSIENT STORAGE TESTS ------------------------------------------------
+
+    #[test]
+    fn test_transient_ops() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+        StorageContext::enter(&mut storage, || {
+            // U256: default, roundtrip, overwrite, delete
+            let mut u256_slot = Slot::<U256>::new(U256::from(1), address);
+            assert_eq!(u256_slot.t_read()?, U256::ZERO);
+
+            let num1 = U256::random();
+            let num2 = U256::random();
+            u256_slot.t_write(num1)?;
+            assert_eq!(u256_slot.t_read()?, num1);
+            u256_slot.t_write(num2)?;
+            assert_eq!(u256_slot.t_read()?, num2);
+            u256_slot.t_delete()?;
+            assert_eq!(u256_slot.t_read()?, U256::ZERO);
+
+            // Address: default, roundtrip, overwrite, delete
+            let mut addr_slot = Slot::<Address>::new(U256::from(2), address);
+            assert_eq!(addr_slot.t_read()?, Address::ZERO);
+
+            let addr1 = Address::random();
+            let addr2 = Address::random();
+            addr_slot.t_write(addr1)?;
+            assert_eq!(addr_slot.t_read()?, addr1);
+            addr_slot.t_write(addr2)?;
+            assert_eq!(addr_slot.t_read()?, addr2);
+            addr_slot.t_delete()?;
+            assert_eq!(addr_slot.t_read()?, Address::ZERO);
+
+            // bool: default, roundtrip, overwrite, delete
+            let mut bool_slot = Slot::<bool>::new(U256::from(3), address);
+            assert!(!bool_slot.t_read()?);
+
+            bool_slot.t_write(true)?;
+            assert!(bool_slot.t_read()?);
+            bool_slot.t_write(false)?;
+            assert!(!bool_slot.t_read()?);
+            bool_slot.t_delete()?;
+            assert!(!bool_slot.t_read()?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_transient_persistance_isolation() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+        let slot_num = U256::random();
+        let t_value = U256::random();
+        let s_value = U256::random();
+
+        StorageContext::enter(&mut storage, || -> eyre::Result<()> {
+            let mut slot = Slot::<U256>::new(slot_num, address);
+
+            // Write different values to each storage type
+            slot.write(s_value)?;
+            slot.t_write(t_value)?;
+            assert_eq!(slot.read()?, s_value);
+            assert_eq!(slot.t_read()?, t_value);
+
+            // Delete transient, persistent remains
+            slot.t_delete()?;
+            assert_eq!(slot.read()?, s_value);
+            assert_eq!(slot.t_read()?, U256::ZERO);
+
+            // Restore transient value
+            slot.t_write(t_value)?;
+            assert_eq!(slot.t_read()?, t_value);
+
+            Ok(())
+        })?;
+
+        // Simulate new block
+        storage.clear_transient();
+
+        // Transient cleared, persistent remains
+        StorageContext::enter(&mut storage, || {
+            let slot = Slot::<U256>::new(slot_num, address);
+            assert_eq!(slot.read()?, s_value);
+            assert_eq!(slot.t_read()?, U256::ZERO);
+            Ok(())
+        })
     }
 }
