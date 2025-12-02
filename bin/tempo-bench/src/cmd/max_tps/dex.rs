@@ -1,9 +1,29 @@
-use crate::cmd::signer_providers::BenchProvider;
+use alloy::{
+    primitives::{Address, U256},
+    signers::local::PrivateKeySigner,
+};
+use eyre::{Context, OptionExt};
+use futures::{StreamExt, TryStreamExt, future::BoxFuture, stream};
+use indicatif::{ProgressBar, ProgressIterator};
+use reth_tracing::tracing::info;
+use tempo_alloy::TempoNetwork;
+use tempo_contracts::precompiles::{
+    IStablecoinExchange::{self, IStablecoinExchangeInstance},
+    ITIP20Factory, PATH_USD_ADDRESS,
+};
+use tempo_precompiles::{
+    STABLECOIN_EXCHANGE_ADDRESS, TIP20_FACTORY_ADDRESS,
+    tip20::{
+        IRolesAuth, ISSUER_ROLE,
+        ITIP20::{self, ITIP20Instance},
+        U128_MAX, token_id_to_address,
+    },
+};
 
-use super::*;
-use indicatif::ProgressIterator;
-use tempo_contracts::precompiles::{IStablecoinExchange, PATH_USD_ADDRESS};
-use tempo_precompiles::tip20::U128_MAX;
+use crate::cmd::{
+    max_tps::{assert_receipt, join_all},
+    signer_providers::BenchProvider,
+};
 
 /// This method performs a one-time setup for sending a lot of transactions:
 /// * Deploys the specified number of user tokens.

@@ -22,17 +22,13 @@ use alloy::{
         WatchTxError,
     },
     rpc::client::NoParams,
-    signers::local::{
-        PrivateKeySigner,
-        coins_bip39::{English, Mnemonic, MnemonicError},
-    },
+    signers::local::coins_bip39::{English, Mnemonic, MnemonicError},
     transports::http::reqwest::Url,
 };
 use clap::Parser;
 use eyre::{Context, OptionExt, ensure};
 use futures::{
     FutureExt, StreamExt, TryStreamExt,
-    future::BoxFuture,
     stream::{self},
 };
 use governor::{Quota, RateLimiter, state::StreamRateLimitExt};
@@ -54,16 +50,12 @@ use std::{
     time::Duration,
 };
 use tempo_contracts::precompiles::{
-    IFeeManager::IFeeManagerInstance,
-    IRolesAuth,
-    IStablecoinExchange::IStablecoinExchangeInstance,
-    ITIP20::{self, ITIP20Instance},
-    ITIP20Factory, STABLECOIN_EXCHANGE_ADDRESS, TIP20_FACTORY_ADDRESS,
+    IFeeManager::IFeeManagerInstance, IStablecoinExchange::IStablecoinExchangeInstance,
+    ITIP20::ITIP20Instance, STABLECOIN_EXCHANGE_ADDRESS,
 };
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS,
     stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, TICK_SPACING},
-    tip20::{ISSUER_ROLE, token_id_to_address},
 };
 use tokio::{
     select,
@@ -71,7 +63,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::cmd::signer_providers::{BenchProvider, FillProviderExt, SignerProviderManager};
+use crate::cmd::signer_providers::{BenchProvider, SignerProviderManager};
 
 /// Run maximum TPS throughput benchmarking
 #[derive(Parser, Debug)]
