@@ -274,11 +274,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         if user_balance >= amount {
             self.sub_balance(user, token, amount)
         } else {
-            self.set_balance(user, token, 0)?;
             let remaining = amount
                 .checked_sub(user_balance)
                 .ok_or(TempoPrecompileError::under_overflow())?;
-            self.transfer_from(token, user, remaining)
+            self.transfer_from(token, user, remaining)?;
+            self.set_balance(user, token, 0)?;
+
+            Ok(())
         }
     }
 
