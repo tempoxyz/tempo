@@ -277,10 +277,18 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             let remaining = amount
                 .checked_sub(user_balance)
                 .ok_or(TempoPrecompileError::under_overflow())?;
-            self.transfer_from(token, user, remaining)?;
-            self.set_balance(user, token, 0)?;
 
-            Ok(())
+            // FIXME: Since allegretto is already live, this should be gated behind a subsequent
+            // hardfork.
+            if self.storage.spec().is_allegretto() {
+                self.set_balance(user, token, 0)?;
+                self.transfer_from(token, user, remaining)
+            } else {
+                self.transfer_from(token, user, remaining)?;
+                self.set_balance(user, token, 0)?;
+
+                Ok(())
+            }
         }
     }
 
