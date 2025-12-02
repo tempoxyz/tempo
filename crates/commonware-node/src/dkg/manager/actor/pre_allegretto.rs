@@ -52,12 +52,7 @@ where
             .flatten()
             .is_some();
 
-        let has_pre = tx
-            .get_epoch::<EpochState>()
-            .await
-            .ok()
-            .flatten()
-            .is_some();
+        let has_pre = tx.get_epoch::<EpochState>().await.ok().flatten().is_some();
 
         if !has_post && !has_pre {
             // Genesis initialization
@@ -71,9 +66,7 @@ where
 
             tx.set_validators(
                 0,
-                ValidatorState::with_unknown_contract_state(
-                    self.config.initial_validators.clone(),
-                ),
+                ValidatorState::with_unknown_contract_state(self.config.initial_validators.clone()),
             )
             .expect("must be able to set validators");
         }
@@ -193,7 +186,8 @@ where
                         .as_ref()
                         .is_some_and(|ceremony| ceremony.epoch() != epoch_state.epoch)
                 {
-                    maybe_ceremony.replace(self.start_pre_allegretto_ceremony(tx, ceremony_mux).await);
+                    maybe_ceremony
+                        .replace(self.start_pre_allegretto_ceremony(tx, ceremony_mux).await);
                 }
 
                 tx.set_validators(
@@ -217,11 +211,8 @@ where
         //
         // Recall, for an epoch length E the first heights are 0E, 1E, 2E, ...
         if block.height().is_multiple_of(self.config.epoch_length)
-            && let Some(old_epoch_state) = tx
-                .get_previous_epoch::<EpochState>()
-                .await
-                .ok()
-                .flatten()
+            && let Some(old_epoch_state) =
+                tx.get_previous_epoch::<EpochState>().await.ok().flatten()
         {
             self.config
                 .epoch_manager
@@ -340,14 +331,9 @@ where
             players: epoch_state.participants.clone(),
         };
 
-        let ceremony = ceremony::Ceremony::init(
-            &mut self.context,
-            mux,
-            tx,
-            config,
-        )
-        .await
-        .expect("must always be able to initialize ceremony");
+        let ceremony = ceremony::Ceremony::init(&mut self.context, mux, tx, config)
+            .await
+            .expect("must always be able to initialize ceremony");
 
         info!(
             us = %self.config.me,
@@ -373,14 +359,11 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let epoch_state: EpochState = tx
-            .get_epoch::<EpochState>()
-            .await?
-            .expect(
-                "when transitioning from pre-allegretto static validator sets to \
+        let epoch_state: EpochState = tx.get_epoch::<EpochState>().await?.expect(
+            "when transitioning from pre-allegretto static validator sets to \
                 post-allegretto dynamic validator sets the pre-allegretto epoch \
                 state must exist",
-            );
+        );
         let validator_state =
             ValidatorState::with_unknown_contract_state(self.config.initial_validators.clone());
 

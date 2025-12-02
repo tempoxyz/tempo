@@ -83,10 +83,7 @@ where
         let block_epoch = utils::epoch(self.config.epoch_length, block.height());
 
         // Get current epoch state
-        let current_epoch_state: EpochState = match tx
-            .get_epoch::<EpochState>()
-            .await
-        {
+        let current_epoch_state: EpochState = match tx.get_epoch::<EpochState>().await {
             Ok(Some(state)) => state,
             Ok(None) => {
                 warn!("no post-allegretto epoch state found");
@@ -305,7 +302,9 @@ where
             .get_epoch::<EpochState>()
             .await
             .expect("must be able to read epoch")
-            .expect("the post-allegretto epoch state must exist in order to start a ceremony for it");
+            .expect(
+                "the post-allegretto epoch state must exist in order to start a ceremony for it",
+            );
 
         let config = ceremony::Config {
             namespace: self.config.namespace.clone(),
@@ -316,14 +315,9 @@ where
             dealers: epoch_state.dealer_pubkeys(),
             players: epoch_state.player_pubkeys(),
         };
-        let ceremony = ceremony::Ceremony::init(
-            &mut self.context,
-            mux,
-            tx,
-            config,
-        )
-        .await
-        .expect("must always be able to initialize ceremony");
+        let ceremony = ceremony::Ceremony::init(&mut self.context, mux, tx, config)
+            .await
+            .expect("must always be able to initialize ceremony");
 
         info!(
             us = %self.config.me,
@@ -348,7 +342,10 @@ where
     }
 
     #[instrument(skip_all)]
-    async fn update_and_register_current_epoch_state(&mut self, tx: &mut Tx<ContextCell<TContext>>) {
+    async fn update_and_register_current_epoch_state(
+        &mut self,
+        tx: &mut Tx<ContextCell<TContext>>,
+    ) {
         let old_epoch_state: EpochState = tx
             .get_epoch::<EpochState>()
             .await
@@ -401,23 +398,23 @@ where
     }
 
     /// Reports that a new epoch was fully entered, that the previous epoch can be ended.
-    async fn enter_current_epoch_and_remove_old_state(&mut self, tx: &mut Tx<ContextCell<TContext>>) {
+    async fn enter_current_epoch_and_remove_old_state(
+        &mut self,
+        tx: &mut Tx<ContextCell<TContext>>,
+    ) {
         // Try to get and remove post-allegretto previous epoch state
-        let epoch_to_shutdown = if let Ok(Some(old_epoch_state)) = tx
-            .get_previous_epoch::<EpochState>()
-            .await
-        {
-            tx.remove_previous_epoch(HardforkRegime::PostAllegretto);
-            Some(old_epoch_state.epoch())
-        } else if let Ok(Some(old_state)) = tx
-            .get_previous_epoch::<pre_allegretto::EpochState>()
-            .await
-        {
-            tx.remove_previous_epoch(HardforkRegime::PreAllegretto);
-            Some(old_state.epoch())
-        } else {
-            None
-        };
+        let epoch_to_shutdown =
+            if let Ok(Some(old_epoch_state)) = tx.get_previous_epoch::<EpochState>().await {
+                tx.remove_previous_epoch(HardforkRegime::PostAllegretto);
+                Some(old_epoch_state.epoch())
+            } else if let Ok(Some(old_state)) =
+                tx.get_previous_epoch::<pre_allegretto::EpochState>().await
+            {
+                tx.remove_previous_epoch(HardforkRegime::PreAllegretto);
+                Some(old_state.epoch())
+            } else {
+                None
+            };
 
         if let Some(epoch) = epoch_to_shutdown {
             self.config

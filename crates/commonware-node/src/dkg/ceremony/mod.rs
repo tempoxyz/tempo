@@ -17,11 +17,11 @@ use commonware_p2p::{
     utils::mux::{MuxHandle, SubReceiver, SubSender},
 };
 use commonware_runtime::{Clock, Metrics as RuntimeMetrics, Storage};
-use prometheus_client::metrics::counter::Counter;
 use commonware_utils::{max_faults, set::Ordered, union};
 use eyre::{WrapErr as _, bail, ensure};
 use futures::FutureExt as _;
 use indexmap::IndexSet;
+use prometheus_client::metrics::counter::Counter;
 use rand_core::CryptoRngCore;
 use tracing::{Level, debug, error, info, instrument, warn};
 
@@ -906,7 +906,10 @@ impl Metrics {
             successes.clone(),
         );
 
-        Self { failures, successes }
+        Self {
+            failures,
+            successes,
+        }
     }
 
     /// Increments the failed ceremonies counter.

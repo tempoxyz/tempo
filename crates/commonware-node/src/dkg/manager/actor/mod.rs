@@ -104,7 +104,8 @@ where
         // Run migration from old metadata stores if needed
         {
             let mut tx = db.read_write()?;
-            super::migrate::maybe_migrate_to_db(&context, &config.partition_prefix, &mut tx).await?;
+            super::migrate::maybe_migrate_to_db(&context, &config.partition_prefix, &mut tx)
+                .await?;
             tx.set_node_version(env!("CARGO_PKG_VERSION").to_string())?;
             tx.commit().await?;
         }
@@ -202,9 +203,17 @@ where
                 super::Command::Finalize(finalize) => {
                     // Create transaction for finalize, commit after
                     let mut tx = self.db.read_write().expect("must be able to open tx");
-                    self.handle_finalized(cause, finalize, &mut ceremony, &mut ceremony_mux, &mut tx)
-                        .await;
-                    tx.commit().await.expect("must be able to commit finalize tx");
+                    self.handle_finalized(
+                        cause,
+                        finalize,
+                        &mut ceremony,
+                        &mut ceremony_mux,
+                        &mut tx,
+                    )
+                    .await;
+                    tx.commit()
+                        .await
+                        .expect("must be able to commit finalize tx");
                 }
                 super::Command::GetIntermediateDealing(get_ceremony_deal) => {
                     let _: Result<_, _> = self
@@ -325,19 +334,13 @@ where
                 participants: dkg_outcome.participants,
                 public: dkg_outcome.public,
             }
-        } else if let Some(epoch_state) = tx
-            .get_epoch::<post_allegretto::EpochState>()
-            .await?
-        {
+        } else if let Some(epoch_state) = tx.get_epoch::<post_allegretto::EpochState>().await? {
             PublicOutcome {
                 epoch: epoch_state.dkg_outcome.epoch,
                 participants: epoch_state.dkg_outcome.participants,
                 public: epoch_state.dkg_outcome.public,
             }
-        } else if let Some(epoch_state) = tx
-            .get_epoch::<pre_allegretto::EpochState>()
-            .await?
-        {
+        } else if let Some(epoch_state) = tx.get_epoch::<pre_allegretto::EpochState>().await? {
             PublicOutcome {
                 epoch: epoch_state.epoch,
                 participants: epoch_state.participants,
@@ -577,18 +580,12 @@ where
     /// Returns the previous epoch state.
     ///
     /// Always prefers the post allegretto state, if it exists.
-    async fn previous_epoch_state(
-        &self,
-        tx: &mut Tx<ContextCell<TContext>>,
-    ) -> Option<EpochState> {
-        if let Ok(Some(epoch_state)) = tx
-            .get_previous_epoch::<post_allegretto::EpochState>()
-            .await
+    async fn previous_epoch_state(&self, tx: &mut Tx<ContextCell<TContext>>) -> Option<EpochState> {
+        if let Ok(Some(epoch_state)) = tx.get_previous_epoch::<post_allegretto::EpochState>().await
         {
             Some(EpochState::PostModerato(epoch_state))
-        } else if let Ok(Some(epoch_state)) = tx
-            .get_previous_epoch::<pre_allegretto::EpochState>()
-            .await
+        } else if let Ok(Some(epoch_state)) =
+            tx.get_previous_epoch::<pre_allegretto::EpochState>().await
         {
             Some(EpochState::PreModerato(epoch_state))
         } else {
@@ -605,15 +602,9 @@ where
     /// Panics if no epoch state exists, neither for the pre- nor post-allegretto
     /// regime. There must always be an epoch state.
     async fn current_epoch_state(&self, tx: &mut Tx<ContextCell<TContext>>) -> EpochState {
-        if let Ok(Some(epoch_state)) = tx
-            .get_epoch::<post_allegretto::EpochState>()
-            .await
-        {
+        if let Ok(Some(epoch_state)) = tx.get_epoch::<post_allegretto::EpochState>().await {
             EpochState::PostModerato(epoch_state)
-        } else if let Ok(Some(epoch_state)) = tx
-            .get_epoch::<pre_allegretto::EpochState>()
-            .await
-        {
+        } else if let Ok(Some(epoch_state)) = tx.get_epoch::<pre_allegretto::EpochState>().await {
             EpochState::PreModerato(epoch_state)
         } else {
             panic!("either pre- or post-allegretto current-epoch-state should exist")
