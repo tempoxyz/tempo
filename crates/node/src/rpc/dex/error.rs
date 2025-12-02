@@ -46,9 +46,9 @@ impl DexApiError {
     /// Returns the rpc error for this error
     const fn error_code(&self) -> i32 {
         match self {
-            Self::InvalidOrderbookCursor(_) |
-            Self::InvalidOrderCursor(_) |
-            Self::ParseOrderCursor(_) => jsonrpsee::types::error::INVALID_PARAMS_CODE,
+            Self::InvalidOrderbookCursor(_)
+            | Self::InvalidOrderCursor(_)
+            | Self::ParseOrderCursor(_) => jsonrpsee::types::error::INVALID_PARAMS_CODE,
             _ => jsonrpsee::types::error::INTERNAL_ERROR_CODE,
         }
     }

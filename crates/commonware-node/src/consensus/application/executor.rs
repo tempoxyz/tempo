@@ -48,7 +48,11 @@ impl Builder {
     where
         TContext: Spawner,
     {
-        let Self { execution_node, genesis_block, marshal } = self;
+        let Self {
+            execution_node,
+            genesis_block,
+            marshal,
+        } = self;
 
         let (to_me, from_app) = mpsc::unbounded();
 
@@ -192,8 +196,11 @@ where
 
     #[instrument(skip_all, err)]
     async fn run_pre_event_loop_init(&mut self) -> eyre::Result<()> {
-        let (consensus_height, consensus_digest) =
-            self.marshal.get_info(Identifier::Latest).await.unwrap_or_else(|| {
+        let (consensus_height, consensus_digest) = self
+            .marshal
+            .get_info(Identifier::Latest)
+            .await
+            .unwrap_or_else(|| {
                 info!(
                     "marshal actor returned nothing for the latest block; \
                     cannot distinguish between the actor failing or us still \
@@ -269,10 +276,12 @@ where
         .wrap_err("failed setting initial canonical state; can't go on like this")?;
 
         if do_backfill {
-            self.backfill(execution_height.saturating_add(1), consensus_height).await.wrap_err(
-                "backfilling from consensus layer to execution layer \
+            self.backfill(execution_height.saturating_add(1), consensus_height)
+                .await
+                .wrap_err(
+                    "backfilling from consensus layer to execution layer \
                 failed; cannot recover from that",
-            )?;
+                )?;
         }
 
         Ok(())
@@ -282,7 +291,9 @@ where
         let cause = message.cause;
         match message.command {
             Command::CanonicalizeHead { height, digest } => {
-                let _ = self.canonicalize(cause, HeadOrFinalized::Head, height, digest).await;
+                let _ = self
+                    .canonicalize(cause, HeadOrFinalized::Head, height, digest)
+                    .await;
             }
             Command::Finalize(finalized) => {
                 let _ = self.finalize(cause, *finalized).await;
@@ -365,8 +376,9 @@ where
                     .await;
             }
             Update::Block(block, acknowledgment) => {
-                let _: Result<_, _> =
-                    self.forward_finalized(Span::current(), block, acknowledgment).await;
+                let _: Result<_, _> = self
+                    .forward_finalized(Span::current(), block, acknowledgment)
+                    .await;
             }
         }
     }

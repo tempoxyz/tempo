@@ -8,8 +8,7 @@ use revm::{
 /// Instruction ID for opcode returning milliseconds timestamp.
 const MILLIS_TIMESTAMP: u8 = 0x4F;
 
-/// Gas cost for [`MILLIS_TIMESTAMP`] instruction. Same as other opcodes accessing block
-/// information.
+/// Gas cost for [`MILLIS_TIMESTAMP`] instruction. Same as other opcodes accessing block information.
 const MILLIS_TIMESTAMP_GAS_COST: u64 = 2;
 
 /// Alias for Tempo-specific [`InstructionContext`].

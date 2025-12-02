@@ -88,7 +88,10 @@ impl Read for Ack {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _: &()) -> Result<Self, commonware_codec::Error> {
-        Ok(Self { player: PublicKey::read(buf)?, signature: Signature::read(buf)? })
+        Ok(Self {
+            player: PublicKey::read(buf)?,
+            signature: Signature::read(buf)?,
+        })
     }
 }
 
@@ -119,7 +122,11 @@ impl Read for PublicOutcome {
         let participants = Ordered::read_cfg(buf, &(RangeCfg::from(1..=max_participants), ()))?;
         let public =
             Public::<MinSig>::read_cfg(buf, &(quorum(participants.len() as u32) as usize))?;
-        Ok(Self { epoch, participants, public })
+        Ok(Self {
+            epoch,
+            participants,
+            public,
+        })
     }
 }
 
@@ -242,7 +249,8 @@ impl IntermediateOutcome {
             &self.acks,
             &self.reveals,
         );
-        self.dealer.verify(Some(namespace), &payload, &self.dealer_signature)
+        self.dealer
+            .verify(Some(namespace), &payload, &self.dealer_signature)
     }
 
     /// Verifies the intermediate outcome's signature.
@@ -258,7 +266,8 @@ impl IntermediateOutcome {
             &self.acks,
             &self.reveals,
         );
-        self.dealer.verify(Some(namespace), &payload, &self.dealer_signature)
+        self.dealer
+            .verify(Some(namespace), &payload, &self.dealer_signature)
     }
 
     /// Returns the payload that was signed by the dealer, formed from raw parts.
@@ -270,11 +279,11 @@ impl IntermediateOutcome {
         reveals: &Vec<group::Share>,
     ) -> Vec<u8> {
         let mut buf = Vec::with_capacity(
-            UInt(n_players).encode_size() +
-                UInt(epoch).encode_size() +
-                commitment.encode_size() +
-                acks.encode_size() +
-                reveals.encode_size(),
+            UInt(n_players).encode_size()
+                + UInt(epoch).encode_size()
+                + commitment.encode_size()
+                + acks.encode_size()
+                + reveals.encode_size(),
         );
         UInt(n_players).write(&mut buf);
         UInt(epoch).write(&mut buf);
@@ -297,10 +306,10 @@ impl IntermediateOutcome {
         reveals: &Vec<group::Share>,
     ) -> Vec<u8> {
         let mut buf = Vec::with_capacity(
-            UInt(epoch).encode_size() +
-                commitment.encode_size() +
-                acks.encode_size() +
-                reveals.encode_size(),
+            UInt(epoch).encode_size()
+                + commitment.encode_size()
+                + acks.encode_size()
+                + reveals.encode_size(),
         );
         UInt(epoch).write(&mut buf);
         commitment.write(&mut buf);
@@ -348,13 +357,13 @@ impl Write for IntermediateOutcome {
 
 impl EncodeSize for IntermediateOutcome {
     fn encode_size(&self) -> usize {
-        UInt(self.n_players).encode_size() +
-            self.dealer.encode_size() +
-            self.dealer_signature.encode_size() +
-            UInt(self.epoch).encode_size() +
-            self.commitment.encode_size() +
-            self.acks.encode_size() +
-            self.reveals.encode_size()
+        UInt(self.n_players).encode_size()
+            + self.dealer.encode_size()
+            + self.dealer_signature.encode_size()
+            + UInt(self.epoch).encode_size()
+            + self.commitment.encode_size()
+            + self.acks.encode_size()
+            + self.reveals.encode_size()
     }
 }
 
@@ -369,7 +378,10 @@ impl Read for IntermediateOutcome {
 
         // Ensure is not 0 because otherwise `quorum(0)` would panic.
         if n_players == 0 {
-            return Err(commonware_codec::Error::Invalid("n_players", "cannot be zero"));
+            return Err(commonware_codec::Error::Invalid(
+                "n_players",
+                "cannot be zero",
+            ));
         }
 
         let dealer = PublicKey::read(buf)?;
@@ -381,7 +393,15 @@ impl Read for IntermediateOutcome {
         let reveals =
             Vec::<group::Share>::read_cfg(buf, &(RangeCfg::from(0..=n_players as usize), ()))?;
 
-        Ok(Self { n_players, dealer, dealer_signature, epoch, commitment, acks, reveals })
+        Ok(Self {
+            n_players,
+            dealer,
+            dealer_signature,
+            epoch,
+            commitment,
+            acks,
+            reveals,
+        })
     }
 }
 
@@ -469,7 +489,10 @@ mod tests {
         );
 
         let bytes = dealing_outcome.encode();
-        assert_eq!(IntermediateOutcome::decode(&mut bytes.as_ref()).unwrap(), dealing_outcome,);
+        assert_eq!(
+            IntermediateOutcome::decode(&mut bytes.as_ref()).unwrap(),
+            dealing_outcome,
+        );
     }
 
     #[test]
@@ -526,7 +549,10 @@ mod tests {
         );
 
         let bytes = dealing_outcome.encode();
-        assert_eq!(IntermediateOutcome::decode(&mut bytes.as_ref()).unwrap(), dealing_outcome,);
+        assert_eq!(
+            IntermediateOutcome::decode(&mut bytes.as_ref()).unwrap(),
+            dealing_outcome,
+        );
     }
 
     #[test]
@@ -536,9 +562,15 @@ mod tests {
             None,
             four_public_keys(),
         );
-        let public_outcome =
-            PublicOutcome { epoch: 42, participants: four_public_keys(), public: commitment };
+        let public_outcome = PublicOutcome {
+            epoch: 42,
+            participants: four_public_keys(),
+            public: commitment,
+        };
         let bytes = public_outcome.encode();
-        assert_eq!(PublicOutcome::decode(&mut bytes.as_ref()).unwrap(), public_outcome,);
+        assert_eq!(
+            PublicOutcome::decode(&mut bytes.as_ref()).unwrap(),
+            public_outcome,
+        );
     }
 }

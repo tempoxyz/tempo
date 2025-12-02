@@ -25,8 +25,7 @@ use tempo_precompiles::{
 use tempo_primitives::{subblock::has_sub_block_nonce_key_prefix, transaction::TxAA};
 use tempo_revm::TempoStateAccess;
 
-// Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent
-// block invalidation.
+// Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
 const AA_VALID_BEFORE_MIN_SECS: u64 = 3;
 
 /// Validator for Tempo transactions.
@@ -49,7 +48,11 @@ where
         aa_nonce_keys: AA2dNonceKeys,
         aa_valid_after_max_secs: u64,
     ) -> Self {
-        Self { inner, aa_nonce_keys, aa_valid_after_max_secs }
+        Self {
+            inner,
+            aa_nonce_keys,
+            aa_valid_after_max_secs,
+        }
     }
 
     /// Get the 2D nonce from state for (address, nonce_key) and the slot
@@ -63,8 +66,11 @@ where
     ) -> ProviderResult<(U256, u64)> {
         // Compute storage slot for 2D nonce
         // Based on: mapping(address => mapping(uint256 => uint64)) at slot 0
-        let slot =
-            double_mapping_slot(address.as_slice(), nonce_key.to_be_bytes::<32>(), slots::NONCES);
+        let slot = double_mapping_slot(
+            address.as_slice(),
+            nonce_key.to_be_bytes::<32>(),
+            slots::NONCES,
+        );
         let nonce_value = state_provider.storage(NONCE_PRECOMPILE_ADDRESS, slot.into())?;
 
         Ok((slot, nonce_value.unwrap_or_default().saturating_to()))
@@ -93,20 +99,27 @@ where
         let auth = tx.tx().key_authorization.as_ref();
 
         if (auth.is_some() || tx.signature().is_keychain()) && !is_allegretto {
-            return Ok(Err("keychain operations are only supported after Allegretto"));
+            return Ok(Err(
+                "keychain operations are only supported after Allegretto",
+            ));
         }
 
         // Ensure that key auth is valid if present.
         if let Some(auth) = auth {
             // Validate signature
-            if !auth.recover_signer().is_ok_and(|signer| signer == transaction.sender()) {
+            if !auth
+                .recover_signer()
+                .is_ok_and(|signer| signer == transaction.sender())
+            {
                 return Ok(Err("Invalid KeyAuthorization signature"));
             }
 
             // Validate chain_id (chain_id == 0 is wildcard, works on any chain)
             let chain_id = self.inner.chain_spec().chain_id();
             if auth.chain_id != 0 && auth.chain_id != chain_id {
-                return Ok(Err("KeyAuthorization chain_id does not match current chain"));
+                return Ok(Err(
+                    "KeyAuthorization chain_id does not match current chain",
+                ));
             }
         }
 
@@ -121,17 +134,20 @@ where
 
         // This should fail happen because we validate the signature validity in `recover_signer`.
         let Ok(key_id) = sig.key_id(&tx.signature_hash()) else {
-            return Ok(Err("Failed to recover access key ID from Keychain signature"));
+            return Ok(Err(
+                "Failed to recover access key ID from Keychain signature",
+            ));
         };
 
         // Ensure that if key auth is present, it is for the same key as the keychain signature.
         if let Some(auth) = auth {
             if auth.key_id != key_id {
-                return Ok(Err("KeyAuthorization key_id does not match Keychain signature key_id"));
+                return Ok(Err(
+                    "KeyAuthorization key_id does not match Keychain signature key_id",
+                ));
             }
 
-            // KeyAuthorization is valid - skip keychain storage check (key will be authorized
-            // during execution)
+            // KeyAuthorization is valid - skip keychain storage check (key will be authorized during execution)
             return Ok(Ok(()));
         }
 
@@ -156,8 +172,7 @@ where
             return Ok(Err("access key does not exist"));
         }
 
-        // Expiry checks are skipped here, they are done in the EVM handler where block timestamp is
-        // easily available.
+        // Expiry checks are skipped here, they are done in the EVM handler where block timestamp is easily available.
         Ok(Ok(()))
     }
 
@@ -165,8 +180,7 @@ where
     fn ensure_valid_conditionals(&self, tx: &TxAA) -> Result<(), TempoPoolTransactionError> {
         // Reject AA txs where `valid_before` is too close to current time (or already expired).
         if let Some(valid_before) = tx.valid_before {
-            // Uses tip_timestamp, as if the node is lagging lagging, the maintenance task will
-            // evict expired txs.
+            // Uses tip_timestamp, as if the node is lagging lagging, the maintenance task will evict expired txs.
             let current_time = self.inner.fork_tracker().tip_timestamp();
             let min_allowed = current_time.saturating_add(AA_VALID_BEFORE_MIN_SECS);
             if valid_before <= min_allowed {
@@ -226,8 +240,7 @@ where
 
         // Balance transfer is not allowed as there is no balances in accounts yet.
         // Check added in https://github.com/tempoxyz/tempo/pull/759
-        // AATx will aggregate all call values, so we dont need additional check for AA
-        // transactions.
+        // AATx will aggregate all call values, so we dont need additional check for AA transactions.
         if !transaction.inner().value().is_zero() {
             return TransactionValidationOutcome::Invalid(
                 transaction,
@@ -236,8 +249,8 @@ where
         }
 
         // Validate AA transaction temporal conditionals (`valid_before` and `valid_after`).
-        if let Some(tx) = transaction.inner().as_aa() &&
-            let Err(err) = self.ensure_valid_conditionals(tx.tx())
+        if let Some(tx) = transaction.inner().as_aa()
+            && let Err(err) = self.ensure_valid_conditionals(tx.tx())
         {
             return TransactionValidationOutcome::Invalid(
                 transaction,
@@ -252,8 +265,10 @@ where
             }
         };
 
-        let spec =
-            self.inner.chain_spec().tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
+        let spec = self
+            .inner
+            .chain_spec()
+            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
         let fee_token =
             match state_provider.get_fee_token(transaction.inner(), Address::ZERO, fee_payer, spec)
             {
@@ -293,7 +308,11 @@ where
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidTransactionError::InsufficientFunds(
-                    GotExpected { got: balance, expected: cost }.into(),
+                    GotExpected {
+                        got: balance,
+                        expected: cost,
+                    }
+                    .into(),
                 )
                 .into(),
             );
@@ -310,8 +329,8 @@ where
             } => {
                 // Additional 2D nonce validations
                 // Check for 2D nonce validation (nonce_key > 0)
-                if let Some(nonce_key) = transaction.transaction().nonce_key() &&
-                    !nonce_key.is_zero()
+                if let Some(nonce_key) = transaction.transaction().nonce_key()
+                    && !nonce_key.is_zero()
                 {
                     // ensure the nonce key isn't prefixed with the sub-block prefix
                     if has_sub_block_nonce_key_prefix(&nonce_key) {
@@ -349,8 +368,7 @@ where
                         );
                     }
 
-                    // since we've just fetched the most recent on chain nonce for this valid
-                    // transaction, we can update the tracker.
+                    // since we've just fetched the most recent on chain nonce for this valid transaction, we can update the tracker.
                     self.aa_nonce_keys.insert(
                         transaction.transaction().sender(),
                         nonce_key,
@@ -433,7 +451,10 @@ where
             }
         };
 
-        transactions.into_iter().map(|tx| self.validate_one(origin, tx, &state_provider)).collect()
+        transactions
+            .into_iter()
+            .map(|tx| self.validate_one(origin, tx, &state_provider))
+            .collect()
     }
 
     fn on_new_head_block<B>(&self, new_tip_block: &SealedBlock<B>)
@@ -462,8 +483,14 @@ mod tests {
     /// Helper to create a mock sealed block with the given timestamp.
     fn create_mock_block(timestamp: u64) -> SealedBlock<reth_ethereum_primitives::Block> {
         use alloy_consensus::Header;
-        let header = Header { timestamp, ..Default::default() };
-        let block = reth_ethereum_primitives::Block { header, body: Default::default() };
+        let header = Header {
+            timestamp,
+            ..Default::default()
+        };
+        let block = reth_ethereum_primitives::Block {
+            header,
+            body: Default::default(),
+        };
         SealedBlock::seal_slow(block)
     }
 
@@ -567,11 +594,15 @@ mod tests {
         let transaction = get_transaction(Some(U256::from(1)));
         let validator = setup_validator(&transaction, 0);
 
-        let outcome =
-            validator.validate_transaction(TransactionOrigin::External, transaction.clone()).await;
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction.clone())
+            .await;
 
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
-            assert!(err.to_string().contains("Native transfers are not supported"));
+            assert!(
+                err.to_string()
+                    .contains("Native transfers are not supported")
+            );
         } else {
             panic!("Expected Invalid outcome with InsufficientFunds error");
         }
@@ -580,14 +611,17 @@ mod tests {
     #[tokio::test]
     async fn test_aa_valid_before_check() {
         // NOTE: `setup_validator` will turn `tip_timestamp` into `current_time`
-        let current_time =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
         // Test case 1: No `valid_before`
         let tx_no_valid_before = create_aa_transaction(None, None);
         let validator = setup_validator(&tx_no_valid_before, current_time);
-        let outcome =
-            validator.validate_transaction(TransactionOrigin::External, tx_no_valid_before).await;
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_no_valid_before)
+            .await;
 
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
             let error_msg = format!("{err}");
@@ -598,12 +632,16 @@ mod tests {
         let tx_too_close =
             create_aa_transaction(None, Some(current_time + AA_VALID_BEFORE_MIN_SECS));
         let validator = setup_validator(&tx_too_close, current_time);
-        let outcome =
-            validator.validate_transaction(TransactionOrigin::External, tx_too_close).await;
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_too_close)
+            .await;
 
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
             let error_msg = format!("{err}");
-            assert!(error_msg.contains("valid_before"), "Expected 'valid_before' got: {error_msg}");
+            assert!(
+                error_msg.contains("valid_before"),
+                "Expected 'valid_before' got: {error_msg}"
+            );
         } else {
             panic!("Expected invalid outcome with InvalidValidBefore error");
         }
@@ -612,7 +650,9 @@ mod tests {
         let tx_valid =
             create_aa_transaction(None, Some(current_time + AA_VALID_BEFORE_MIN_SECS + 1));
         let validator = setup_validator(&tx_valid, current_time);
-        let outcome = validator.validate_transaction(TransactionOrigin::External, tx_valid).await;
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_valid)
+            .await;
 
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
             let error_msg = format!("{err}");
@@ -623,14 +663,17 @@ mod tests {
     #[tokio::test]
     async fn test_aa_valid_after_check() {
         // NOTE: `setup_validator` will turn `tip_timestamp` into `current_time`
-        let current_time =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
         // Test case 1: No `valid_after`
         let tx_no_valid_after = create_aa_transaction(None, None);
         let validator = setup_validator(&tx_no_valid_after, current_time);
-        let outcome =
-            validator.validate_transaction(TransactionOrigin::External, tx_no_valid_after).await;
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_no_valid_after)
+            .await;
 
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
             let error_msg = format!("{err}");
@@ -640,8 +683,9 @@ mod tests {
         // Test case 2: `valid_after` within limit (30 minutes)
         let tx_within_limit = create_aa_transaction(Some(current_time + 1800), None);
         let validator = setup_validator(&tx_within_limit, current_time);
-        let outcome =
-            validator.validate_transaction(TransactionOrigin::External, tx_within_limit).await;
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_within_limit)
+            .await;
 
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
             let error_msg = format!("{err}");
@@ -651,7 +695,9 @@ mod tests {
         // Test case 3: `valid_after` beyond limit (2 hours)
         let tx_too_far = create_aa_transaction(Some(current_time + 7200), None);
         let validator = setup_validator(&tx_too_far, current_time);
-        let outcome = validator.validate_transaction(TransactionOrigin::External, tx_too_far).await;
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_too_far)
+            .await;
 
         if let TransactionValidationOutcome::Invalid(_, err) = outcome {
             let error_msg = format!("{err}");

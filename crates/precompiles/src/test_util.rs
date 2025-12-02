@@ -39,8 +39,8 @@ pub fn check_selector_coverage<P: Precompile>(
             false
         };
 
-        if (is_unsupported_old || is_unsupported_new) &&
-            let Some(name) = name_lookup(*selector)
+        if (is_unsupported_old || is_unsupported_new)
+            && let Some(name) = name_lookup(*selector)
         {
             unsupported_selectors.push((*selector, name));
         }
@@ -61,8 +61,11 @@ pub fn check_selector_coverage<P: Precompile>(
 ///
 /// Takes an iterator of unsupported selector results and panics if any are found.
 pub fn assert_full_coverage(results: impl IntoIterator<Item = Vec<([u8; 4], &'static str)>>) {
-    let all_unsupported: Vec<_> =
-        results.into_iter().flat_map(|r| r.into_iter()).map(|(_, name)| name).collect();
+    let all_unsupported: Vec<_> = results
+        .into_iter()
+        .flat_map(|r| r.into_iter())
+        .map(|(_, name)| name)
+        .collect();
 
     assert!(
         all_unsupported.is_empty(),

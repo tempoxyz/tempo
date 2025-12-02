@@ -17,12 +17,17 @@ use crate::utils::{
 async fn test_tip20_transfer() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url.clone());
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
     let token = setup_test_token(provider.clone(), caller).await?;
 
     // Create accounts with random balances
@@ -65,22 +70,27 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
 
     // Attempt to transfer more than the balance
     for (_, wallet, balance) in &account_data {
-        let account_provider =
-            ProviderBuilder::new().wallet(wallet.clone()).connect_http(http_url.clone());
+        let account_provider = ProviderBuilder::new()
+            .wallet(wallet.clone())
+            .connect_http(http_url.clone());
         let account_token = ITIP20::new(*token.address(), account_provider);
 
-        let Err(result) =
-            account_token.transfer(Address::random(), balance + U256::ONE).call().await
+        let Err(result) = account_token
+            .transfer(Address::random(), balance + U256::ONE)
+            .call()
+            .await
         else {
             panic!("expected error");
         };
         assert_eq!(
             result.as_decoded_interface_error::<TIP20Error>(),
-            Some(TIP20Error::InsufficientBalance(ITIP20::InsufficientBalance {
-                available: *balance,
-                required: balance + U256::ONE,
-                token: *token.address()
-            }))
+            Some(TIP20Error::InsufficientBalance(
+                ITIP20::InsufficientBalance {
+                    available: *balance,
+                    required: balance + U256::ONE,
+                    token: *token.address()
+                }
+            ))
         );
     }
 
@@ -88,8 +98,9 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     let mut tx_data = vec![];
     for (account, wallet, _) in account_data.iter() {
         let recipient = Address::random();
-        let account_provider =
-            ProviderBuilder::new().wallet(wallet.clone()).connect_http(http_url.clone());
+        let account_provider = ProviderBuilder::new()
+            .wallet(wallet.clone())
+            .connect_http(http_url.clone());
         let token = ITIP20::new(*token.address(), account_provider);
 
         let sender_balance = token.balanceOf(*account).call().await?;
@@ -117,7 +128,10 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
             .iter()
             .filter_map(|log| ITIP20::Transfer::decode_log(&log.inner).ok())
             .collect();
-        assert!(!transfer_events.is_empty(), "Transfer event should be emitted");
+        assert!(
+            !transfer_events.is_empty(),
+            "Transfer event should be emitted"
+        );
         let transfer_event = &transfer_events[0];
         assert_eq!(transfer_event.from, receipt.from);
         assert_eq!(transfer_event.to, recipient);
@@ -138,7 +152,10 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
 async fn test_tip20_mint() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -191,10 +208,18 @@ async fn test_tip20_mint() -> eyre::Result<()> {
         assert_eq!(balance, *expected_balance);
     }
 
-    token.setSupplyCap(U256::from(u128::MAX)).send().await?.get_receipt().await?;
+    token
+        .setSupplyCap(U256::from(u128::MAX))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
 
     // Try to mint U256::MAX and assert it causes a SupplyCapExceeded error
-    let max_mint_result = token.mint(Address::random(), U256::from(u128::MAX)).call().await;
+    let max_mint_result = token
+        .mint(Address::random(), U256::from(u128::MAX))
+        .call()
+        .await;
     assert!(max_mint_result.is_err(), "Minting U256::MAX should fail");
 
     let err = max_mint_result.unwrap_err();
@@ -210,12 +235,17 @@ async fn test_tip20_mint() -> eyre::Result<()> {
 async fn test_tip20_transfer_from() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let owner = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = owner.address();
-    let provider = ProviderBuilder::new().wallet(owner).connect_http(http_url.clone());
+    let provider = ProviderBuilder::new()
+        .wallet(owner)
+        .connect_http(http_url.clone());
 
     // Deploy and setup token
     let token = setup_test_token(provider.clone(), caller).await?;
@@ -271,16 +301,22 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
     let mut pending_tx_data = vec![];
     for (wallet, allowance) in account_data.iter() {
         let recipient = Address::random();
-        let spender_provider =
-            ProviderBuilder::new().wallet(wallet.clone()).connect_http(http_url.clone());
+        let spender_provider = ProviderBuilder::new()
+            .wallet(wallet.clone())
+            .connect_http(http_url.clone());
         let spender_token = ITIP20::new(*token.address(), spender_provider);
 
         // Expect transferFrom to fail if it exceeds balance
-        let excess_result =
-            spender_token.transferFrom(caller, recipient, *allowance + U256::ONE).call().await;
+        let excess_result = spender_token
+            .transferFrom(caller, recipient, *allowance + U256::ONE)
+            .call()
+            .await;
 
         // TODO: update to expect the exact error once PrecompileError is propagated through revm
-        assert!(excess_result.is_err(), "Transfer should fail when exceeding allowance");
+        assert!(
+            excess_result.is_err(),
+            "Transfer should fail when exceeding allowance"
+        );
 
         let pending_tx = spender_token
             .transferFrom(caller, recipient, *allowance)
@@ -311,7 +347,10 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
 async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -366,12 +405,17 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
 async fn test_tip20_blacklist() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let admin = wallet.address();
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url.clone());
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
 
     let token = setup_test_token(provider.clone(), admin).await?;
     let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, provider.clone());
@@ -444,8 +488,9 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
 
     // Ensure blacklisted accounts can't send tokens
     for account in blacklisted_accounts {
-        let provider =
-            ProviderBuilder::new().wallet(account.clone()).connect_http(http_url.clone());
+        let provider = ProviderBuilder::new()
+            .wallet(account.clone())
+            .connect_http(http_url.clone());
         let token = ITIP20::new(*token.address(), provider);
 
         let transfer_result = token.transfer(Address::random(), U256::ONE).call().await;
@@ -456,12 +501,16 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
     // Ensure non blacklisted accounts can send tokens
     try_join_all(allowed_accounts.iter().zip(blacklisted_accounts).map(
         |(allowed, blacklisted)| async {
-            let provider =
-                ProviderBuilder::new().wallet(allowed.clone()).connect_http(http_url.clone());
+            let provider = ProviderBuilder::new()
+                .wallet(allowed.clone())
+                .connect_http(http_url.clone());
             let token = ITIP20::new(*token.address(), provider);
 
             // Ensure that blacklisted accounts can not receive tokens
-            let transfer_result = token.transfer(blacklisted.address(), U256::ONE).call().await;
+            let transfer_result = token
+                .transfer(blacklisted.address(), U256::ONE)
+                .call()
+                .await;
             // TODO: assert the actual error once PrecompileError is propagated through revm
             assert!(transfer_result.is_err(),);
 
@@ -485,12 +534,17 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
 async fn test_tip20_whitelist() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let admin = wallet.address();
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url.clone());
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
 
     let token = setup_test_token(provider.clone(), admin).await?;
     let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, provider.clone());
@@ -534,8 +588,9 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
         .collect();
 
     let (whitelisted_senders, non_whitelisted_accounts) = accounts.split_at(accounts.len() / 2);
-    let whitelisted_receivers: Vec<Address> =
-        (0..whitelisted_senders.len()).map(|_| Address::random()).collect();
+    let whitelisted_receivers: Vec<Address> = (0..whitelisted_senders.len())
+        .map(|_| Address::random())
+        .collect();
 
     let whitelisted_accounts: Vec<Address> = whitelisted_senders
         .iter()
@@ -576,16 +631,18 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     let whitelisted_senders: Vec<_> = whitelisted_senders
         .iter()
         .map(|account| {
-            let provider =
-                ProviderBuilder::new().wallet(account.clone()).connect_http(http_url.clone());
+            let provider = ProviderBuilder::new()
+                .wallet(account.clone())
+                .connect_http(http_url.clone());
             ITIP20::new(*token.address(), provider)
         })
         .collect();
 
     // Ensure non-whitelisted accounts can't send tokens
     for account in non_whitelisted_accounts {
-        let provider =
-            ProviderBuilder::new().wallet(account.clone()).connect_http(http_url.clone());
+        let provider = ProviderBuilder::new()
+            .wallet(account.clone())
+            .connect_http(http_url.clone());
         let token = ITIP20::new(*token.address(), provider);
 
         let transfer_result = token.transfer(Address::random(), U256::ONE).call().await;
@@ -600,18 +657,21 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     }
 
     // Ensure whitelisted accounts can send tokens to whitelisted recipients
-    try_join_all(whitelisted_senders.iter().zip(whitelisted_receivers.iter()).map(
-        |(token, recipient)| async {
-            token
-                .transfer(*recipient, U256::ONE)
-                .gas_price(TEMPO_BASE_FEE as u128)
-                .send()
-                .await
-                .expect("Could not send tx")
-                .get_receipt()
-                .await
-        },
-    ))
+    try_join_all(
+        whitelisted_senders
+            .iter()
+            .zip(whitelisted_receivers.iter())
+            .map(|(token, recipient)| async {
+                token
+                    .transfer(*recipient, U256::ONE)
+                    .gas_price(TEMPO_BASE_FEE as u128)
+                    .send()
+                    .await
+                    .expect("Could not send tx")
+                    .get_receipt()
+                    .await
+            }),
+    )
     .await?;
 
     Ok(())
@@ -629,7 +689,9 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
 
     let admin_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let admin = admin_wallet.address();
-    let admin_provider = ProviderBuilder::new().wallet(admin_wallet).connect_http(http_url.clone());
+    let admin_provider = ProviderBuilder::new()
+        .wallet(admin_wallet)
+        .connect_http(http_url.clone());
 
     let token = setup_test_token_pre_allegretto(admin_provider.clone(), admin).await?;
 
@@ -639,7 +701,9 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
         .build()
         .unwrap();
     let alice = alice_wallet.address();
-    let alice_provider = ProviderBuilder::new().wallet(alice_wallet).connect_http(http_url.clone());
+    let alice_provider = ProviderBuilder::new()
+        .wallet(alice_wallet)
+        .connect_http(http_url.clone());
     let alice_token = ITIP20::new(*token.address(), alice_provider);
 
     let mut pending = vec![];
@@ -653,7 +717,9 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
         .build()
         .unwrap();
     let bob = bob_wallet.address();
-    let bob_provider = ProviderBuilder::new().wallet(bob_wallet).connect_http(http_url.clone());
+    let bob_provider = ProviderBuilder::new()
+        .wallet(bob_wallet)
+        .connect_http(http_url.clone());
     let bob_token = ITIP20::new(*token.address(), bob_provider);
 
     pending.push(token.mint(alice, mint_amount).send().await?);
@@ -662,7 +728,12 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
     await_receipts(&mut pending).await?;
 
     // Start reward stream
-    let start_receipt = token.startReward(reward_amount, 0).send().await?.get_receipt().await?;
+    let start_receipt = token
+        .startReward(reward_amount, 0)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
 
     let _reward_started_event = start_receipt
         .logs()
@@ -675,7 +746,12 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
     // Transfer some tokens to trigger reward distribution calculations
-    pending.push(alice_token.transfer(Address::random(), U256::from(100e18)).send().await?);
+    pending.push(
+        alice_token
+            .transfer(Address::random(), U256::from(100e18))
+            .send()
+            .await?,
+    );
     await_receipts(&mut pending).await?;
 
     let alice_balance_after = token.balanceOf(alice).call().await?;

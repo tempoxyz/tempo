@@ -224,12 +224,9 @@ impl AccountKeychainPrecompile {
 pub struct PathUSDPrecompile;
 impl PathUSDPrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("PathUSD", |input| PathUSD::new(&mut EvmPrecompileStorageProvider::new(
-            input.internals,
-            input.gas,
-            chain_id,
-            spec
-        ),))
+        tempo_precompile!("PathUSD", |input| PathUSD::new(
+            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec),
+        ))
     }
 }
 

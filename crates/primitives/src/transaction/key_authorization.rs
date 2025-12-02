@@ -31,10 +31,8 @@ pub struct TokenLimit {
 ///
 /// RLP encoding: `[key_type, key_id, expiry?, limits?]`
 /// - Non-optional fields come first, followed by optional (trailing) fields
-/// - `expiry`: `None` (omitted or 0x80) = key never expires, `Some(timestamp)` = expires at
-///   timestamp
-/// - `limits`: `None` (omitted or 0x80) = unlimited spending, `Some([])` = no spending,
-///   `Some([...])` = specific limits
+/// - `expiry`: `None` (omitted or 0x80) = key never expires, `Some(timestamp)` = expires at timestamp
+/// - `limits`: `None` (omitted or 0x80) = unlimited spending, `Some([])` = no spending, `Some([...])` = specific limits
 #[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 #[rlp(trailing)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -82,7 +80,10 @@ impl KeyAuthorization {
 
     /// Convert the key authorization into a [`SignedKeyAuthorization`] with a signature.
     pub fn into_signed(self, signature: PrimitiveSignature) -> SignedKeyAuthorization {
-        SignedKeyAuthorization { authorization: self, signature }
+        SignedKeyAuthorization {
+            authorization: self,
+            signature,
+        }
     }
 }
 
@@ -129,7 +130,8 @@ pub struct SignedKeyAuthorization {
 impl SignedKeyAuthorization {
     /// Recover the signer of the [`KeyAuthorization`].
     pub fn recover_signer(&self) -> Result<Address, RecoveryError> {
-        self.signature.recover_signer(&self.authorization.signature_hash())
+        self.signature
+            .recover_signer(&self.authorization.signature_hash())
     }
 }
 

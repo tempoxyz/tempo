@@ -23,22 +23,34 @@ sol! {
 async fn test_auto_7702_delegation() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let alice = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
-    let provider = ProviderBuilder::new().wallet(alice).connect_http(http_url.clone());
+    let provider = ProviderBuilder::new()
+        .wallet(alice)
+        .connect_http(http_url.clone());
 
     let deployer = provider.default_signer_address();
     let token = setup_test_token(provider.clone(), deployer).await?;
 
     // Init a fresh wallet with nonce 0
-    let bob = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).index(1)?.build()?;
+    let bob = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
     let bob_addr = bob.address();
 
     let transfer_amount = U256::from(1000);
     let mint_amount = transfer_amount * U256::from(3);
-    token.mint(bob_addr, mint_amount).send().await?.get_receipt().await?;
+    token
+        .mint(bob_addr, mint_amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
 
     assert_eq!(provider.get_transaction_count(bob_addr).await?, 0);
     let code_before = provider.get_code_at(bob_addr).await?;
@@ -61,14 +73,35 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
     assert_eq!(recip_2_bal_before, U256::ZERO);
 
     // Create batch transfer calldata
-    let transfer_0_calldata = token.transfer(recipient_0, transfer_amount).calldata().to_owned();
-    let transfer_1_calldata = token.transfer(recipient_1, transfer_amount).calldata().to_owned();
-    let transfer_2_calldata = token.transfer(recipient_2, transfer_amount).calldata().to_owned();
+    let transfer_0_calldata = token
+        .transfer(recipient_0, transfer_amount)
+        .calldata()
+        .to_owned();
+    let transfer_1_calldata = token
+        .transfer(recipient_1, transfer_amount)
+        .calldata()
+        .to_owned();
+    let transfer_2_calldata = token
+        .transfer(recipient_2, transfer_amount)
+        .calldata()
+        .to_owned();
 
     let calls = vec![
-        Call { to: *token.address(), value: U256::from(0), data: transfer_0_calldata },
-        Call { to: *token.address(), value: U256::from(0), data: transfer_1_calldata },
-        Call { to: *token.address(), value: U256::from(0), data: transfer_2_calldata },
+        Call {
+            to: *token.address(),
+            value: U256::from(0),
+            data: transfer_0_calldata,
+        },
+        Call {
+            to: *token.address(),
+            value: U256::from(0),
+            data: transfer_1_calldata,
+        },
+        Call {
+            to: *token.address(),
+            value: U256::from(0),
+            data: transfer_2_calldata,
+        },
     ];
 
     let bob_provider = ProviderBuilder::new().wallet(bob).connect_http(http_url);
@@ -83,7 +116,10 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
     assert!(receipt.status(), "7702 delegate execution tx failed");
     assert_eq!(bob_provider.get_transaction_count(bob_addr).await?, 1);
     let code_after = bob_provider.get_code_at(bob_addr).await?;
-    assert_eq!(code_after, *Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS).bytecode(),);
+    assert_eq!(
+        code_after,
+        *Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS).bytecode(),
+    );
 
     // Assert state changes
     let bob_bal_after = token.balanceOf(bob_addr).call().await?;
@@ -92,7 +128,10 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
     let recip_2_bal_after = token.balanceOf(recipient_2).call().await?;
 
     // Bob should have spent 3 * transfer_amount
-    assert_eq!(bob_bal_after, bob_bal_before - (transfer_amount * U256::from(3)));
+    assert_eq!(
+        bob_bal_after,
+        bob_bal_before - (transfer_amount * U256::from(3))
+    );
     // Each recipient should have received transfer_amount
     assert_eq!(recip_0_bal_after, transfer_amount);
     assert_eq!(recip_1_bal_after, transfer_amount);
@@ -105,14 +144,21 @@ async fn test_auto_7702_delegation() -> eyre::Result<()> {
 async fn test_ensure_7702_delegation_on_revert() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let alice = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
-    let provider = ProviderBuilder::new().wallet(alice).connect_http(http_url.clone());
+    let provider = ProviderBuilder::new()
+        .wallet(alice)
+        .connect_http(http_url.clone());
 
     // Init a new wallet with nonce 0
-    let bob = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).index(1)?.build()?;
+    let bob = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
     let bob_addr = bob.address();
 
     assert_eq!(provider.get_transaction_count(bob_addr).await?, 0);
@@ -134,12 +180,20 @@ async fn test_ensure_7702_delegation_on_revert() -> eyre::Result<()> {
     let execute_call =
         delegate_account.execute(execution_mode, vec![invalid_call].abi_encode().into());
 
-    let receipt = execute_call.gas(1_000_000).send().await?.get_receipt().await?;
+    let receipt = execute_call
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
 
     assert!(!receipt.inner.is_success());
 
     let code_after = bob_provider.get_code_at(bob_addr).await?;
-    assert_eq!(code_after, *Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS).bytecode(),);
+    assert_eq!(
+        code_after,
+        *Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS).bytecode(),
+    );
 
     Ok(())
 }
@@ -148,20 +202,32 @@ async fn test_ensure_7702_delegation_on_revert() -> eyre::Result<()> {
 async fn test_default_account_registrar() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let alice = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
-    let provider = ProviderBuilder::new().wallet(alice).connect_http(http_url.clone());
+    let provider = ProviderBuilder::new()
+        .wallet(alice)
+        .connect_http(http_url.clone());
 
     let deployer = provider.default_signer_address();
     let token = setup_test_token(provider.clone(), deployer).await?;
 
-    let bob = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).index(1)?.build()?;
+    let bob = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
     let bob_addr = bob.address();
 
     let amount = U256::from(1000000);
-    token.mint(bob_addr, amount).send().await?.get_receipt().await?;
+    token
+        .mint(bob_addr, amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
 
     // Assert account has nonce 0 and empty code
     assert_eq!(provider.get_transaction_count(bob_addr).await?, 0);
@@ -185,7 +251,10 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     assert!(receipt.status(), "TipAccountRegistrar call failed");
 
     let code_after = provider.get_code_at(bob_addr).await?;
-    assert_eq!(code_after, *Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS).bytecode(),);
+    assert_eq!(
+        code_after,
+        *Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS).bytecode(),
+    );
 
     // Ensure that the account can execute 7702 txs
     let recipient = Address::random();
@@ -194,9 +263,16 @@ async fn test_default_account_registrar() -> eyre::Result<()> {
     assert_eq!(bob_bal_before, amount);
     assert_eq!(recip_bal_before, U256::ZERO);
 
-    let delegate_calldata = token.transfer(recipient, bob_bal_before).calldata().to_owned();
+    let delegate_calldata = token
+        .transfer(recipient, bob_bal_before)
+        .calldata()
+        .to_owned();
 
-    let calls = vec![Call { to: *token.address(), value: U256::from(0), data: delegate_calldata }];
+    let calls = vec![Call {
+        to: *token.address(),
+        value: U256::from(0),
+        data: delegate_calldata,
+    }];
 
     let bob_provider = ProviderBuilder::new().wallet(bob).connect_http(http_url);
     let delegate_account = IthacaAccount::new(bob_addr, bob_provider.clone());

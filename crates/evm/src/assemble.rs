@@ -17,7 +17,9 @@ pub struct TempoBlockAssembler {
 
 impl TempoBlockAssembler {
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
-        Self { inner: EthBlockAssembler::new(chain_spec) }
+        Self {
+            inner: EthBlockAssembler::new(chain_spec),
+        }
     }
 }
 

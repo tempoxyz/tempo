@@ -68,16 +68,23 @@ pub async fn run_consensus_stack(
     let pending = network.register(PENDING_CHANNEL_IDENT, PENDING_LIMIT, message_backlog);
     let recovered = network.register(RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, message_backlog);
     let resolver = network.register(RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, message_backlog);
-    let broadcaster =
-        network.register(BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, message_backlog);
+    let broadcaster = network.register(
+        BROADCASTER_CHANNEL_IDENT,
+        BROADCASTER_LIMIT,
+        message_backlog,
+    );
     let marshal = network.register(MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, message_backlog);
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT, message_backlog);
-    let boundary_certificates =
-        network.register(BOUNDARY_CERT_CHANNEL_IDENT, BOUNDARY_CERT_LIMIT, message_backlog);
+    let boundary_certificates = network.register(
+        BOUNDARY_CERT_CHANNEL_IDENT,
+        BOUNDARY_CERT_LIMIT,
+        message_backlog,
+    );
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
-    let fee_recipient =
-        config.fee_recipient.ok_or_eyre("required option `consensus.fee-recipient` not set")?;
+    let fee_recipient = config
+        .fee_recipient
+        .ok_or_eyre("required option `consensus.fee-recipient` not set")?;
 
     let consensus_engine = crate::consensus::engine::Builder {
         context: context.with_label("engine"),

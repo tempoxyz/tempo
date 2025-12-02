@@ -29,9 +29,9 @@ impl std::fmt::Display for DisplayDuration {
         };
         static PRINTER: SpanPrinter = SpanPrinter::new().designator(Designator::Short);
         match SignedDuration::try_from(self.0) {
-            Ok(duration) => {
-                PRINTER.print_duration(&duration, StdFmtWrite(f)).map_err(|_| std::fmt::Error)
-            }
+            Ok(duration) => PRINTER
+                .print_duration(&duration, StdFmtWrite(f))
+                .map_err(|_| std::fmt::Error),
             Err(_) => write!(f, "<duration greater than {:#}>", SignedDuration::MAX),
         }
     }
@@ -79,7 +79,9 @@ impl std::fmt::Display for DisplayDuration {
 ///     .wrap_err("failed opening config")
 ///     .wrap_err("failed to start server")
 /// {
-///     tracing::error!(error = error_field(&error),);
+///     tracing::error!(
+///         error = error_field(&error),
+///     );
 /// }
 /// ```
 /// This will print (using the standard `tracing_subscriber::fmt::init()` formatting subscriber):

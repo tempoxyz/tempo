@@ -52,16 +52,16 @@ async fn submit_pending_tx() -> eyre::Result<()> {
         .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
 
-    let NodeHandle { node, node_exit_future: _ } = NodeBuilder::new(node_config.clone())
+    let NodeHandle {
+        node,
+        node_exit_future: _,
+    } = NodeBuilder::new(node_config.clone())
         .testing_node(executor.clone())
         .node(TempoNode::default())
         .launch()
         .await?;
 
-    // <cast mktx 0x20c0000000000000000000000000000000000000 'transfer(address,uint256)'
-    // 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC 100000000 --private-key
-    // 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d --gas-limit 2000000
-    // --gas-price 44000000000000 --priority-gas-price 1 --chain-id 1337 --nonce 0>
+    // <cast mktx 0x20c0000000000000000000000000000000000000 'transfer(address,uint256)' 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC 100000000 --private-key 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d --gas-limit 2000000 --gas-price 44000000000000 --priority-gas-price 1 --chain-id 1337 --nonce 0>
     let raw = hex!(
         "0x02f8b082053980018628048c5ec000831e84809420c000000000000000000000000000000000000080b844a9059cbb0000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc0000000000000000000000000000000000000000000000000000000005f5e100c001a0e7f78bca071cc3f0b41dabdee8b3b97c47ca8bfe3bf86861ba06cd97567d61f6a02ad11d6959be0eba004f1f3336c8b1c90aced228a00cbd5af990b519792e7b87"
     );
@@ -71,7 +71,11 @@ async fn submit_pending_tx() -> eyre::Result<()> {
     let slot = slots::mapping_slot(signer, tip_fee_manager::slots::USER_TOKENS);
     println!("Submitting tx from {signer} with fee manager token slot 0x{slot:x}");
 
-    let res = node.pool.add_consensus_transaction(tx, TransactionOrigin::Local).await.unwrap();
+    let res = node
+        .pool
+        .add_consensus_transaction(tx, TransactionOrigin::Local)
+        .await
+        .unwrap();
     assert!(matches!(res.state, AddedTransactionState::Pending));
     let pooled_tx = node.pool.get_transactions_by_sender(signer);
     assert_eq!(pooled_tx.len(), 1);
@@ -96,7 +100,10 @@ async fn test_insufficient_funds() -> eyre::Result<()> {
         .dev()
         .with_rpc(RpcServerArgs::default().with_unused_ports().with_http());
 
-    let NodeHandle { node, node_exit_future: _ } = NodeBuilder::new(node_config.clone())
+    let NodeHandle {
+        node,
+        node_exit_future: _,
+    } = NodeBuilder::new(node_config.clone())
         .testing_node(executor.clone())
         .node(TempoNode::default())
         .launch()
@@ -135,7 +142,10 @@ async fn test_insufficient_funds() -> eyre::Result<()> {
     };
 
     assert_eq!(err.got, U256::ZERO);
-    assert_eq!(err.expected, calc_gas_balance_spending(tx.gas_limit(), tx.max_fee_per_gas()));
+    assert_eq!(
+        err.expected,
+        calc_gas_balance_spending(tx.gas_limit(), tx.max_fee_per_gas())
+    );
 
     Ok(())
 }
@@ -146,13 +156,16 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node, and signer
-    let mut setup = crate::utils::TestNodeBuilder::new().build_with_node_access().await?;
+    let mut setup = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
+        .await?;
     let signer_wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let signer_addr = signer_wallet.address();
 
     // Cache current timestamp
-    let current_time =
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
+    let current_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
 
     // Create an AA transaction with `valid_before = current_time + 1` second
     let tx_aa = TxAA {
@@ -190,7 +203,11 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
         .await?;
 
     // Verify transaction is in the pool + pending
-    let pooled_txs = setup.node.inner.pool.get_transactions_by_sender(signer_addr);
+    let pooled_txs = setup
+        .node
+        .inner
+        .pool
+        .get_transactions_by_sender(signer_addr);
 
     assert!(matches!(res.state, AddedTransactionState::Pending),);
     assert_eq!(pooled_txs.len(), 1);
@@ -200,14 +217,22 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     // Verify tx is still there before commiting the new block
-    let pooled_txs_before = setup.node.inner.pool.get_transactions_by_sender(signer_addr);
+    let pooled_txs_before = setup
+        .node
+        .inner
+        .pool
+        .get_transactions_by_sender(signer_addr);
     assert_eq!(pooled_txs_before.len(), 1);
 
     setup.node.advance_block().await?;
 
     // Verify tx is evicted
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    let pooled_txs_after = setup.node.inner.pool.get_transactions_by_sender(signer_addr);
+    let pooled_txs_after = setup
+        .node
+        .inner
+        .pool
+        .get_transactions_by_sender(signer_addr);
     assert!(pooled_txs_after.is_empty());
 
     Ok(())

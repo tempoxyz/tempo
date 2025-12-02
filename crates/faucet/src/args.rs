@@ -33,11 +33,19 @@ pub struct FaucetArgs {
     pub enabled: bool,
 
     /// Faucet funding private key
-    #[arg(long = "faucet.private-key", requires = "enabled", required_if_eq("enabled", "true"))]
+    #[arg(
+        long = "faucet.private-key",
+        requires = "enabled",
+        required_if_eq("enabled", "true")
+    )]
     pub private_key: Option<B256>,
 
     /// Amount for each faucet funding transaction
-    #[arg(long = "faucet.amount", requires = "enabled", required_if_eq("enabled", "true"))]
+    #[arg(
+        long = "faucet.amount",
+        requires = "enabled",
+        required_if_eq("enabled", "true")
+    )]
     pub amount: Option<U256>,
 
     /// Target token address for the faucet to be funding with
@@ -67,7 +75,9 @@ impl FaucetArgs {
     }
 
     pub fn addresses(&self) -> Vec<Address> {
-        self.token_addresses.clone().expect("No TIP20 token addresses provided")
+        self.token_addresses
+            .clone()
+            .expect("No TIP20 token addresses provided")
     }
 
     pub fn amount(&self) -> U256 {
@@ -75,8 +85,10 @@ impl FaucetArgs {
     }
 
     pub fn provider(&self) -> HttpWalletFillProvider {
-        ProviderBuilder::new()
-            .wallet(self.wallet())
-            .connect_http(self.node_address.parse().expect("Failed to parse node address"))
+        ProviderBuilder::new().wallet(self.wallet()).connect_http(
+            self.node_address
+                .parse()
+                .expect("Failed to parse node address"),
+        )
     }
 }

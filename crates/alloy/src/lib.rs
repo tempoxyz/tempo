@@ -20,7 +20,7 @@
 //! ```rust
 //! use alloy::{
 //!     providers::{Provider, ProviderBuilder},
-//!     transports::TransportError,
+//!     transports::TransportError
 //! };
 //! use tempo_alloy::TempoNetwork;
 //!

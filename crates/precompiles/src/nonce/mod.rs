@@ -42,8 +42,10 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
     /// Initializes the nonce manager contract.
     pub fn initialize(&mut self) -> Result<()> {
         // must ensure the account is not empty, by setting some code
-        self.storage
-            .set_code(NONCE_PRECOMPILE_ADDRESS, Bytecode::new_legacy(Bytes::from_static(&[0xef])))
+        self.storage.set_code(
+            NONCE_PRECOMPILE_ADDRESS,
+            Bytecode::new_legacy(Bytes::from_static(&[0xef])),
+        )
     }
 
     /// Get the nonce for a specific account and nonce key
@@ -79,7 +81,9 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
             self.increment_active_key_count(account)?;
         }
 
-        let new_nonce = current.checked_add(1).ok_or_else(NonceError::nonce_overflow)?;
+        let new_nonce = current
+            .checked_add(1)
+            .ok_or_else(NonceError::nonce_overflow)?;
 
         self.sstore_nonces(account, nonce_key, new_nonce)?;
 
@@ -102,7 +106,9 @@ impl<'a, S: PrecompileStorageProvider> NonceManager<'a, S> {
     fn increment_active_key_count(&mut self, account: Address) -> Result<()> {
         let current = self.sload_active_key_count(account)?;
 
-        let new_count = current.checked_add(U256::ONE).ok_or_else(NonceError::nonce_overflow)?;
+        let new_count = current
+            .checked_add(U256::ONE)
+            .ok_or_else(NonceError::nonce_overflow)?;
 
         self.sstore_active_key_count(account, new_count)?;
 
@@ -136,8 +142,12 @@ mod tests {
         let mut nonce_mgr = NonceManager::new(&mut storage);
 
         let account = address!("0x1111111111111111111111111111111111111111");
-        let nonce =
-            nonce_mgr.get_nonce(INonce::getNonceCall { account, nonceKey: U256::from(5) }).unwrap();
+        let nonce = nonce_mgr
+            .get_nonce(INonce::getNonceCall {
+                account,
+                nonceKey: U256::from(5),
+            })
+            .unwrap();
 
         assert_eq!(nonce, 0);
     }
@@ -148,7 +158,10 @@ mod tests {
         let mut nonce_mgr = NonceManager::new(&mut storage);
 
         let account = address!("0x1111111111111111111111111111111111111111");
-        let result = nonce_mgr.get_nonce(INonce::getNonceCall { account, nonceKey: U256::ZERO });
+        let result = nonce_mgr.get_nonce(INonce::getNonceCall {
+            account,
+            nonceKey: U256::ZERO,
+        });
 
         assert_eq!(
             result.unwrap_err(),
@@ -223,10 +236,16 @@ mod tests {
         }
 
         let nonce1 = nonce_mgr
-            .get_nonce(INonce::getNonceCall { account: account1, nonceKey: nonce_key })
+            .get_nonce(INonce::getNonceCall {
+                account: account1,
+                nonceKey: nonce_key,
+            })
             .unwrap();
         let nonce2 = nonce_mgr
-            .get_nonce(INonce::getNonceCall { account: account2, nonceKey: nonce_key })
+            .get_nonce(INonce::getNonceCall {
+                account: account2,
+                nonceKey: nonce_key,
+            })
             .unwrap();
 
         assert_eq!(nonce1, 10);
@@ -324,7 +343,10 @@ mod tests {
             nonce_mgr.increment_nonce(account, nonce_key).unwrap();
         }
 
-        let events = storage.events.get(&NONCE_PRECOMPILE_ADDRESS).expect("Could not get events");
+        let events = storage
+            .events
+            .get(&NONCE_PRECOMPILE_ADDRESS)
+            .expect("Could not get events");
         assert_eq!(events.len(), 2,);
 
         let expected_nonce_event = NonceEvent::NonceIncremented(INonce::NonceIncremented {

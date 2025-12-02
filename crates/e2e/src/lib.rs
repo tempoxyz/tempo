@@ -49,8 +49,7 @@ pub const EXECUTION_NODE_PREFIX: &str = "execution";
 pub struct PreparedNode {
     pub uid: String,
 
-    /// Execution-layer node. Spawned in the background but won't progress unless consensus engine
-    /// is started.
+    /// Execution-layer node. Spawned in the background but won't progress unless consensus engine is started.
     pub execution_node: ExecutionNode,
 
     /// Public key of the validator.
@@ -63,17 +62,58 @@ pub struct PreparedNode {
 
 impl PreparedNode {
     pub async fn start(self) -> RunningNode {
-        let Self { uid, execution_node, public_key, consensus_config, oracle } = self;
-        let engine =
-            consensus_config.clone().try_init().await.expect("must be able to start the engine");
-        let pending = oracle.control(public_key.clone()).register(0).await.unwrap();
-        let recovered = oracle.control(public_key.clone()).register(1).await.unwrap();
-        let resolver = oracle.control(public_key.clone()).register(2).await.unwrap();
-        let broadcast = oracle.control(public_key.clone()).register(3).await.unwrap();
-        let marshal = oracle.control(public_key.clone()).register(4).await.unwrap();
-        let dkg = oracle.control(public_key.clone()).register(5).await.unwrap();
-        let boundary_certs = oracle.control(public_key.clone()).register(6).await.unwrap();
-        let subblocks = oracle.control(public_key.clone()).register(7).await.unwrap();
+        let Self {
+            uid,
+            execution_node,
+            public_key,
+            consensus_config,
+            oracle,
+        } = self;
+        let engine = consensus_config
+            .clone()
+            .try_init()
+            .await
+            .expect("must be able to start the engine");
+        let pending = oracle
+            .control(public_key.clone())
+            .register(0)
+            .await
+            .unwrap();
+        let recovered = oracle
+            .control(public_key.clone())
+            .register(1)
+            .await
+            .unwrap();
+        let resolver = oracle
+            .control(public_key.clone())
+            .register(2)
+            .await
+            .unwrap();
+        let broadcast = oracle
+            .control(public_key.clone())
+            .register(3)
+            .await
+            .unwrap();
+        let marshal = oracle
+            .control(public_key.clone())
+            .register(4)
+            .await
+            .unwrap();
+        let dkg = oracle
+            .control(public_key.clone())
+            .register(5)
+            .await
+            .unwrap();
+        let boundary_certs = oracle
+            .control(public_key.clone())
+            .register(6)
+            .await
+            .unwrap();
+        let subblocks = oracle
+            .control(public_key.clone())
+            .register(7)
+            .await
+            .unwrap();
 
         let consensus_handle = engine.start(
             pending,
@@ -88,7 +128,14 @@ impl PreparedNode {
 
         debug!(%uid, "started validator");
 
-        RunningNode { uid, consensus_config, consensus_handle, execution_node, public_key, oracle }
+        RunningNode {
+            uid,
+            consensus_config,
+            consensus_handle,
+            execution_node,
+            public_key,
+            oracle,
+        }
     }
 }
 
@@ -99,8 +146,7 @@ pub struct RunningNode {
     pub consensus_config: consensus::Builder<Control<PublicKey>, Context, SocketManager<PublicKey>>,
     pub consensus_handle: Handle<eyre::Result<()>>,
 
-    /// Execution-layer node. Spawned in the background but won't progress unless consensus engine
-    /// is started.
+    /// Execution-layer node. Spawned in the background but won't progress unless consensus engine is started.
     pub execution_node: ExecutionNode,
 
     /// Public key of the validator.
@@ -111,10 +157,22 @@ pub struct RunningNode {
 
 impl RunningNode {
     pub fn stop(self) -> PreparedNode {
-        let Self { uid, execution_node, public_key, oracle, consensus_config, consensus_handle } =
-            self;
+        let Self {
+            uid,
+            execution_node,
+            public_key,
+            oracle,
+            consensus_config,
+            consensus_handle,
+        } = self;
         consensus_handle.abort();
-        PreparedNode { uid, execution_node, public_key, consensus_config, oracle }
+        PreparedNode {
+            uid,
+            execution_node,
+            public_key,
+            consensus_config,
+            oracle,
+        }
     }
 }
 
@@ -160,11 +218,17 @@ impl Setup {
     }
 
     pub fn how_many_signers(self, how_many_signers: u32) -> Self {
-        Self { how_many_signers, ..self }
+        Self {
+            how_many_signers,
+            ..self
+        }
     }
 
     pub fn how_many_verifiers(self, how_many_verifiers: u32) -> Self {
-        Self { how_many_verifiers, ..self }
+        Self {
+            how_many_verifiers,
+            ..self
+        }
     }
 
     pub fn seed(self, seed: u64) -> Self {
@@ -176,15 +240,24 @@ impl Setup {
     }
 
     pub fn epoch_length(self, epoch_length: u64) -> Self {
-        Self { epoch_length, ..self }
+        Self {
+            epoch_length,
+            ..self
+        }
     }
 
     pub fn connect_execution_layer_nodes(self, connect_execution_layer_nodes: bool) -> Self {
-        Self { connect_execution_layer_nodes, ..self }
+        Self {
+            connect_execution_layer_nodes,
+            ..self
+        }
     }
 
     pub fn allegretto_in_seconds(self, seconds: u64) -> Self {
-        Self { allegretto_in_seconds: Some(seconds), ..self }
+        Self {
+            allegretto_in_seconds: Some(seconds),
+            ..self
+        }
     }
 }
 
@@ -226,7 +299,10 @@ pub async fn setup_validators(
 
     link_validators(
         &mut oracle,
-        &private_keys.iter().map(|key| key.public_key()).collect::<Vec<_>>(),
+        &private_keys
+            .iter()
+            .map(|key| key.public_key())
+            .collect::<Vec<_>>(),
         linkage,
         None,
     )
@@ -244,14 +320,21 @@ pub async fn setup_validators(
         .take(how_many_signers as usize)
         .cloned()
         .enumerate()
-        .map(|(i, signer)| (signer.public_key(), SocketAddr::from(([127, 0, 0, 1], i as u16 + 1))))
+        .map(|(i, signer)| {
+            (
+                signer.public_key(),
+                SocketAddr::from(([127, 0, 0, 1], i as u16 + 1)),
+            )
+        })
         .collect::<Vec<_>>()
         .into();
 
     let mut genesis = crate::execution_runtime::genesis();
     if let Some(allegretto_in_seconds) = allegretto_in_seconds {
-        genesis =
-            insert_allegretto(genesis, context.current().epoch().as_secs() + allegretto_in_seconds);
+        genesis = insert_allegretto(
+            genesis,
+            context.current().epoch().as_secs() + allegretto_in_seconds,
+        );
     }
     genesis = insert_epoch_length(genesis, epoch_length);
     genesis = insert_public_polynomial(genesis, polynomial.into());
@@ -284,7 +367,10 @@ pub async fn setup_validators(
     let mut nodes = vec![];
 
     // First, process the signers
-    for (private_key, share) in private_keys.by_ref().take(how_many_signers as usize).zip_eq(shares)
+    for (private_key, share) in private_keys
+        .by_ref()
+        .take(how_many_signers as usize)
+        .zip_eq(shares)
     {
         let oracle = oracle.clone();
 
@@ -314,7 +400,13 @@ pub async fn setup_validators(
             subblock_broadcast_interval: Duration::from_millis(50),
         };
 
-        nodes.push(PreparedNode { execution_node, public_key, consensus_config, oracle, uid });
+        nodes.push(PreparedNode {
+            execution_node,
+            public_key,
+            consensus_config,
+            oracle,
+            uid,
+        });
     }
 
     // Then, process the verifiers
@@ -347,7 +439,13 @@ pub async fn setup_validators(
             subblock_broadcast_interval: Duration::from_millis(50),
         };
 
-        nodes.push(PreparedNode { execution_node, public_key, consensus_config, oracle, uid });
+        nodes.push(PreparedNode {
+            execution_node,
+            public_key,
+            consensus_config,
+            oracle,
+            uid,
+        });
     }
 
     (nodes, execution_runtime)
@@ -418,8 +516,8 @@ pub async fn link_validators(
             }
 
             // Restrict to certain connections
-            if let Some(f) = restrict_to &&
-                !f(validators.len(), i1, i2)
+            if let Some(f) = restrict_to
+                && !f(validators.len(), i1, i2)
             {
                 continue;
             }
@@ -427,13 +525,11 @@ pub async fn link_validators(
             // Add link
             match oracle.add_link(v1.clone(), v2.clone(), link.clone()).await {
                 Ok(()) => (),
-                // TODO: it should be possible to remove the below if Commonware simulated network
-                // exposes list of registered peers.
+                // TODO: it should be possible to remove the below if Commonware simulated network exposes list of registered peers.
                 //
                 // This is fine because some of the peers might be registered later
                 Err(commonware_p2p::simulated::Error::PeerMissing) => (),
-                // This is fine because we might call this multiple times as peers are joining the
-                // network.
+                // This is fine because we might call this multiple times as peers are joining the network.
                 Err(commonware_p2p::simulated::Error::LinkExists) => (),
                 res @ Err(_) => res.unwrap(),
             }

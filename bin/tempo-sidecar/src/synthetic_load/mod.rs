@@ -35,7 +35,14 @@ impl SyntheticLoadGenerator {
         fee_token_addresses: Vec<Address>,
         seed: Option<u64>,
     ) -> Self {
-        Self { rpc_url, wallet_count, average_tps, fee_token_addresses, mnemonic, seed }
+        Self {
+            rpc_url,
+            wallet_count,
+            average_tps,
+            fee_token_addresses,
+            mnemonic,
+            seed,
+        }
     }
 
     pub async fn worker(&self) -> eyre::Result<()> {
@@ -54,8 +61,9 @@ impl SyntheticLoadGenerator {
             wallet.register_signer(signer);
         }
 
-        let provider =
-            ProviderBuilder::new().wallet(wallet.clone()).connect_http(self.rpc_url.clone());
+        let provider = ProviderBuilder::new()
+            .wallet(wallet.clone())
+            .connect_http(self.rpc_url.clone());
 
         let fee_token_zipf = Zipf::new(self.fee_token_addresses.len() as f64, 1.4)?;
 
@@ -90,7 +98,12 @@ impl SyntheticLoadGenerator {
             );
 
             let token = ITIP20::new(*token, provider.clone());
-            if let Err(e) = token.transfer(*recipient, U256::from(10)).from(*sender).send().await {
+            if let Err(e) = token
+                .transfer(*recipient, U256::from(10))
+                .from(*sender)
+                .send()
+                .await
+            {
                 warn!(
                     %sender,
                     %recipient,
@@ -114,5 +127,7 @@ fn zipf_vec_sample<'a, T>(
     items: &'a [T],
 ) -> eyre::Result<&'a T> {
     let index = zipf.sample(rng) as u32 - 1;
-    items.get(index as usize).ok_or_else(|| eyre::eyre!("zipf out of bounds"))
+    items
+        .get(index as usize)
+        .ok_or_else(|| eyre::eyre!("zipf out of bounds"))
 }

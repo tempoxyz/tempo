@@ -28,16 +28,27 @@ pub struct Monitor {
 
 impl Monitor {
     pub fn new(rpc_url: Url, poll_interval: u64) -> Self {
-        Self { rpc_url, poll_interval, tokens: HashMap::new(), pools: HashMap::new() }
+        Self {
+            rpc_url,
+            poll_interval,
+            tokens: HashMap::new(),
+            pools: HashMap::new(),
+        }
     }
 
     #[instrument(name = "monitor::update_tip20_tokens", skip(self))]
     async fn update_tip20_tokens(&mut self) -> Result<()> {
-        let provider = ProviderBuilder::new().connect(self.rpc_url.as_str()).await?;
+        let provider = ProviderBuilder::new()
+            .connect(self.rpc_url.as_str())
+            .await?;
         let tip20_factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
 
-        let last_token_id =
-            tip20_factory.tokenIdCounter().call().await.map_err(|e| eyre!("{}", e))?.to::<u64>();
+        let last_token_id = tip20_factory
+            .tokenIdCounter()
+            .call()
+            .await
+            .map_err(|e| eyre!("{}", e))?
+            .to::<u64>();
 
         info!(count = last_token_id + 1, "fetching tokens");
 
@@ -51,7 +62,11 @@ impl Monitor {
             let token = ITIP20::new(token_address, provider.clone());
             let decimals = token.decimals().call().await.map_err(|e| {
                 counter!("tempo_fee_amm_errors", "request" => "decimals").increment(1);
-                eyre!("failed to fetch token decimals for {}: {}", token_address, e)
+                eyre!(
+                    "failed to fetch token decimals for {}: {}",
+                    token_address,
+                    e
+                )
             })?;
 
             let name = token.name().call().await.map_err(|e| {
@@ -59,7 +74,8 @@ impl Monitor {
                 eyre!("failed to fetch token name for {}: {}", token_address, e)
             })?;
 
-            self.tokens.insert(token_address, TIP20Token { decimals, name });
+            self.tokens
+                .insert(token_address, TIP20Token { decimals, name });
         }
 
         Ok(())
@@ -67,7 +83,9 @@ impl Monitor {
 
     #[instrument(name = "monitor::update_tip20_pools", skip(self))]
     async fn update_tip20_pools(&mut self) -> Result<()> {
-        let provider = ProviderBuilder::new().connect(self.rpc_url.as_str()).await?;
+        let provider = ProviderBuilder::new()
+            .connect(self.rpc_url.as_str())
+            .await?;
 
         let fee_amm: ITIPFeeAMMInstance<_, _> = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider);
 
@@ -88,7 +106,12 @@ impl Monitor {
 
                     counter!("tempo_fee_amm_errors", "request" => "pool").increment(1);
 
-                    return Err(eyre!("failed to fetch pool {} -> {}: {}", token_a, token_b, e));
+                    return Err(eyre!(
+                        "failed to fetch pool {} -> {}: {}",
+                        token_a,
+                        token_b,
+                        e
+                    ));
                 }
             }
         }
@@ -151,5 +174,7 @@ impl Monitor {
 #[handler]
 pub async fn prometheus_metrics(handle: poem::web::Data<&PrometheusHandle>) -> Response {
     let metrics = handle.render();
-    Response::builder().header("content-type", "text/plain").body(metrics)
+    Response::builder()
+        .header("content-type", "text/plain")
+        .body(metrics)
 }

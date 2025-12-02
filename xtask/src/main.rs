@@ -24,12 +24,14 @@ async fn main() -> eyre::Result<()> {
     let args = Args::parse();
     match args.action {
         Action::GenerateGenesis(args) => args.run().await.wrap_err("failed generating genesis"),
-        Action::GenerateDevnet(args) => {
-            args.run().await.wrap_err("failed to generate devnet configs")
-        }
-        Action::GenerateLocalnet(args) => {
-            args.run().await.wrap_err("failed to generate localnet configs")
-        }
+        Action::GenerateDevnet(args) => args
+            .run()
+            .await
+            .wrap_err("failed to generate devnet configs"),
+        Action::GenerateLocalnet(args) => args
+            .run()
+            .await
+            .wrap_err("failed to generate localnet configs"),
         Action::GenerateAddPeer(cfg) => generate_config_to_add_peer(cfg),
         Action::GenerateSigningKey(args) => args.run(),
     }
@@ -129,7 +131,9 @@ fn generate_config_to_add_peer(
     let public_key = commonware_cryptography::ed25519::PublicKey::decode(&public_key_bytes[..])?;
 
     let admin_key = const_hex::encode(
-        MnemonicBuilder::from_phrase_nth(&mnemonic, admin_index).credential().to_bytes(),
+        MnemonicBuilder::from_phrase_nth(&mnemonic, admin_index)
+            .credential()
+            .to_bytes(),
     );
 
     let validator_address = {

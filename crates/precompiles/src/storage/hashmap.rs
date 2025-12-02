@@ -116,11 +116,19 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     }
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
-        Ok(self.internals.get(&(address, key)).copied().unwrap_or(U256::ZERO))
+        Ok(self
+            .internals
+            .get(&(address, key))
+            .copied()
+            .unwrap_or(U256::ZERO))
     }
 
     fn tload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
-        Ok(self.transient.get(&(address, key)).copied().unwrap_or(U256::ZERO))
+        Ok(self
+            .transient
+            .get(&(address, key))
+            .copied()
+            .unwrap_or(U256::ZERO))
     }
 
     fn deduct_gas(&mut self, _gas: u64) -> Result<(), TempoPrecompileError> {

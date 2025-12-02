@@ -49,7 +49,10 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
         trace!(address=%self.address, %owner, "Initializing validator config precompile");
 
         // must ensure the account is not empty, by setting some code
-        self.storage.set_code(self.address, Bytecode::new_legacy(Bytes::from_static(&[0xef])))?;
+        self.storage.set_code(
+            self.address,
+            Bytecode::new_legacy(Bytes::from_static(&[0xef])),
+        )?;
 
         self.sstore_owner(owner)?;
 
@@ -174,7 +177,9 @@ impl<'a, S: PrecompileStorageProvider> ValidatorConfig<'a, S> {
 
         // Increment the validator count
         self.sstore_validator_count(
-            count.checked_add(1).ok_or(TempoPrecompileError::under_overflow())?,
+            count
+                .checked_add(1)
+                .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
         Ok(())
@@ -294,11 +299,17 @@ mod tests {
 
         // Check that owner is owner1
         let current_owner = validator_config.owner().unwrap();
-        assert_eq!(current_owner, owner1, "Owner should be owner1 after initialization");
+        assert_eq!(
+            current_owner, owner1,
+            "Owner should be owner1 after initialization"
+        );
 
         // Change owner to owner2
         validator_config
-            .change_owner(owner1, IValidatorConfig::changeOwnerCall { newOwner: owner2 })
+            .change_owner(
+                owner1,
+                IValidatorConfig::changeOwnerCall { newOwner: owner2 },
+            )
             .expect("Should change owner");
 
         // Check that owner is now owner2
@@ -344,9 +355,15 @@ mod tests {
         // Owner1 changes validator status - should succeed
         let result = validator_config.change_validator_status(
             owner1,
-            IValidatorConfig::changeValidatorStatusCall { validator: validator1, active: false },
+            IValidatorConfig::changeValidatorStatusCall {
+                validator: validator1,
+                active: false,
+            },
         );
-        assert!(result.is_ok(), "Owner should be able to change validator status");
+        assert!(
+            result.is_ok(),
+            "Owner should be able to change validator status"
+        );
 
         // Verify status was changed
         let validators = validator_config
@@ -366,7 +383,10 @@ mod tests {
                 outboundAddress: "192.168.1.2:9000".to_string(),
             },
         );
-        assert!(result.is_err(), "Non-owner should not be able to add validator");
+        assert!(
+            result.is_err(),
+            "Non-owner should not be able to add validator"
+        );
         assert_eq!(
             result.unwrap_err(),
             ValidatorConfigError::unauthorized().into(),
@@ -376,9 +396,15 @@ mod tests {
         // Owner2 (non-owner) tries to change validator status - should fail
         let result = validator_config.change_validator_status(
             owner2,
-            IValidatorConfig::changeValidatorStatusCall { validator: validator1, active: true },
+            IValidatorConfig::changeValidatorStatusCall {
+                validator: validator1,
+                active: true,
+            },
         );
-        assert!(result.is_err(), "Non-owner should not be able to change validator status");
+        assert!(
+            result.is_err(),
+            "Non-owner should not be able to change validator status"
+        );
         assert_eq!(
             result.unwrap_err(),
             ValidatorConfigError::unauthorized().into(),
@@ -586,7 +612,10 @@ mod tests {
 
         // Verify validator1 - updated from long to short address
         assert_eq!(validators[0].validatorAddress, validator1);
-        assert_eq!(validators[0].publicKey, public_key1_new, "PublicKey should be updated");
+        assert_eq!(
+            validators[0].publicKey, public_key1_new,
+            "PublicKey should be updated"
+        );
         assert_eq!(
             validators[0].inboundAddress, short_inbound1,
             "Address should be updated to short"
@@ -607,13 +636,22 @@ mod tests {
 
         // Verify validator2_new - rotated address, kept IP and publicKey
         assert_eq!(validators[3].validatorAddress, validator2_new);
-        assert_eq!(validators[3].publicKey, public_key2, "PublicKey should be same");
-        assert_eq!(validators[3].inboundAddress, "192.168.1.2:8000", "IP should be same");
+        assert_eq!(
+            validators[3].publicKey, public_key2,
+            "PublicKey should be same"
+        );
+        assert_eq!(
+            validators[3].inboundAddress, "192.168.1.2:8000",
+            "IP should be same"
+        );
         assert!(validators[3].active);
 
         // Verify validator3_new - rotated address with long host, kept publicKey
         assert_eq!(validators[4].validatorAddress, validator3_new);
-        assert_eq!(validators[4].publicKey, public_key3, "PublicKey should be same");
+        assert_eq!(
+            validators[4].publicKey, public_key3,
+            "PublicKey should be same"
+        );
         assert_eq!(
             validators[4].inboundAddress, long_inbound3,
             "Address should be updated to long"
@@ -656,7 +694,10 @@ mod tests {
             },
         );
 
-        assert!(result.is_err(), "Owner should not be able to update validator");
+        assert!(
+            result.is_err(),
+            "Owner should not be able to update validator"
+        );
         assert_eq!(
             result.unwrap_err(),
             ValidatorConfigError::validator_not_found().into(),
@@ -706,11 +747,16 @@ mod tests {
             .expect("Should rotate validator");
 
         // Verify old slots are cleared by checking storage directly
-        let validator =
-            validator_config.sload_validators(validator1).expect("Could not load validator");
+        let validator = validator_config
+            .sload_validators(validator1)
+            .expect("Could not load validator");
 
         // Assert all validator fields are cleared/zeroed
-        assert_eq!(validator.public_key, B256::ZERO, "Old validator public key should be cleared");
+        assert_eq!(
+            validator.public_key,
+            B256::ZERO,
+            "Old validator public key should be cleared"
+        );
         assert_eq!(
             validator.validator_address,
             Address::ZERO,

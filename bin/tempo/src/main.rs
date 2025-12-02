@@ -175,13 +175,19 @@ fn main() -> eyre::Result<()> {
     });
 
     let components = |spec: Arc<TempoChainSpec>| {
-        (TempoEvmConfig::new(spec.clone(), TempoEvmFactory::default()), TempoConsensus::new(spec))
+        (
+            TempoEvmConfig::new(spec.clone(), TempoEvmFactory::default()),
+            TempoConsensus::new(spec),
+        )
     };
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
         let faucet_args = args.faucet_args.clone();
 
-        let NodeHandle { node, node_exit_future } = builder
+        let NodeHandle {
+            node,
+            node_exit_future,
+        } = builder
             .node(TempoNode::new(&args.node_args))
             .apply(|mut builder: WithLaunchContext<_>| {
                 if let Some(follow_url) = &args.follow {

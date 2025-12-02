@@ -35,7 +35,12 @@ struct RestartSetup {
 
 /// Runs a validator restart test with the given configuration
 fn run_restart_test(
-    RestartSetup { node_setup, shutdown_height, restart_height, final_height }: RestartSetup,
+    RestartSetup {
+        node_setup,
+        shutdown_height,
+        restart_height,
+        final_height,
+    }: RestartSetup,
 ) -> String {
     let cfg = deterministic::Config::default().with_seed(node_setup.seed);
     let executor = Runner::from(cfg);
@@ -341,7 +346,9 @@ fn assert_node_recovers_after_finalizing_block_pre_allegretto(
 ) {
     let prefix = format!("{CONSENSUS_NODE_PREFIX}-");
 
-    let setup = Setup::new().how_many_signers(n_validators).epoch_length(epoch_length);
+    let setup = Setup::new()
+        .how_many_signers(n_validators)
+        .epoch_length(epoch_length);
 
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
@@ -381,7 +388,10 @@ fn assert_node_recovers_after_finalizing_block_pre_allegretto(
             "found a node that reached the pre-to-last height; restarting it"
         );
         // Now restart the node for which we found the metric.
-        let idx = running.iter().position(|node| metric.contains(&node.uid)).unwrap();
+        let idx = running
+            .iter()
+            .position(|node| metric.contains(&node.uid))
+            .unwrap();
         let _node = running.remove(idx).stop().start().await;
 
         let mut iteration = 0;
@@ -515,7 +525,10 @@ fn assert_node_recovers_after_finalizing_block_post_allegretto(
             "found a node that reached the pre-to-last height; restarting it"
         );
         // Now restart the node for which we found the metric.
-        let idx = validators.iter().position(|node| metric.contains(&node.uid)).unwrap();
+        let idx = validators
+            .iter()
+            .position(|node| metric.contains(&node.uid))
+            .unwrap();
         let _node = validators.remove(idx).stop().start().await;
 
         let mut iteration = 0;

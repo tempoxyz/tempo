@@ -22,8 +22,13 @@ fn test_array_storage() {
     let mut s = setup_storage();
 
     let small_array = [42u8; 32];
-    let large_array =
-        [U256::from(100), U256::from(200), U256::from(300), U256::from(400), U256::from(500)];
+    let large_array = [
+        U256::from(100),
+        U256::from(200),
+        U256::from(300),
+        U256::from(400),
+        U256::from(500),
+    ];
     let auto_array = [
         address!("0x0000000000000000000000000000000000000011"),
         address!("0x0000000000000000000000000000000000000022"),
@@ -56,23 +61,50 @@ fn test_array_storage() {
 
     // small_array is packed into slot 10
     let expected_small = U256::from_be_bytes(small_array);
-    assert_eq!(s.storage.sload(s.address, U256::from(10)), Ok(expected_small));
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(10)),
+        Ok(expected_small)
+    );
 
     assert_eq!(s.storage.sload(s.address, U256::ONE), Ok(U256::from(2))); // field_b
 
     // large_array occupies slots 20-24
-    assert_eq!(s.storage.sload(s.address, U256::from(20)), Ok(U256::from(100)));
-    assert_eq!(s.storage.sload(s.address, U256::from(21)), Ok(U256::from(200)));
-    assert_eq!(s.storage.sload(s.address, U256::from(22)), Ok(U256::from(300)));
-    assert_eq!(s.storage.sload(s.address, U256::from(23)), Ok(U256::from(400)));
-    assert_eq!(s.storage.sload(s.address, U256::from(24)), Ok(U256::from(500)));
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(20)),
+        Ok(U256::from(100))
+    );
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(21)),
+        Ok(U256::from(200))
+    );
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(22)),
+        Ok(U256::from(300))
+    );
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(23)),
+        Ok(U256::from(400))
+    );
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(24)),
+        Ok(U256::from(500))
+    );
 
     assert_eq!(s.storage.sload(s.address, U256::from(2)), Ok(U256::from(3))); // field_c
 
     // auto_array occupies slots 3-5
-    assert_eq!(s.storage.sload(s.address, U256::from(3)), Ok(U256::from(0x11)));
-    assert_eq!(s.storage.sload(s.address, U256::from(4)), Ok(U256::from(0x22)));
-    assert_eq!(s.storage.sload(s.address, U256::from(5)), Ok(U256::from(0x33)));
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(3)),
+        Ok(U256::from(0x11))
+    );
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(4)),
+        Ok(U256::from(0x22))
+    );
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(5)),
+        Ok(U256::from(0x33))
+    );
 
     assert_eq!(s.storage.sload(s.address, U256::from(6)), Ok(U256::from(4))); // field_d
 
@@ -102,7 +134,10 @@ fn test_array_storage() {
 
     // Verify other fields unchanged
     assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::ONE)); // field_a
-    assert_eq!(s.storage.sload(s.address, U256::from(10)), Ok(expected_small)); // small_array
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(10)),
+        Ok(expected_small)
+    ); // small_array
     assert_eq!(s.storage.sload(s.address, U256::ONE), Ok(U256::from(2))); // field_b
     assert_eq!(s.storage.sload(s.address, U256::from(2)), Ok(U256::from(3))); // field_c
     assert_eq!(s.storage.sload(s.address, U256::from(6)), Ok(U256::from(4))); // field_d

@@ -138,9 +138,10 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     fn complete_type(&self, ty: TempoTxType) -> Result<(), Vec<&'static str>> {
         match ty {
             TempoTxType::FeeToken => self.complete_fee_token(),
-            ty => self
-                .inner
-                .complete_type(ty.try_into().expect("should not be reachable with fee token tx")),
+            ty => self.inner.complete_type(
+                ty.try_into()
+                    .expect("should not be reachable with fee token tx"),
+            ),
         }
     }
 
@@ -168,7 +169,11 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
 
     fn output_tx_type_checked(&self) -> Option<TempoTxType> {
         if self.fee_token.is_some() {
-            return if self.can_build_fee_token() { Some(TempoTxType::FeeToken) } else { None };
+            return if self.can_build_fee_token() {
+                Some(TempoTxType::FeeToken)
+            } else {
+                None
+            };
         }
 
         self.inner.output_tx_type_checked()?.try_into().ok()
@@ -181,7 +186,10 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     fn build_unsigned(self) -> BuildResult<TempoTypedTransaction, TempoNetwork> {
         match self.output_tx_type() {
             TempoTxType::FeeToken => match self.complete_fee_token() {
-                Ok(..) => Ok(self.build_fee_token().expect("checked by above condition").into()),
+                Ok(..) => Ok(self
+                    .build_fee_token()
+                    .expect("checked by above condition")
+                    .into()),
                 Err(missing) => Err(TransactionBuilderError::InvalidTransactionRequest(
                     TempoTxType::FeeToken,
                     missing,
@@ -208,7 +216,10 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
                     });
                 }
 
-                let inner = self.inner.build_typed_tx().expect("checked by missing_keys");
+                let inner = self
+                    .inner
+                    .build_typed_tx()
+                    .expect("checked by missing_keys");
 
                 Ok(inner.try_into().expect("checked by above condition"))
             }
@@ -225,11 +236,16 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
 
 impl TempoTransactionRequest {
     fn can_build_fee_token(&self) -> bool {
-        self.fee_token.is_some() &&
-            self.inner.max_fee_per_gas.is_some() &&
-            self.inner.max_priority_fee_per_gas.is_some() &&
-            (self.inner.authorization_list.as_ref().map(Vec::is_empty).unwrap_or(true) ||
-                matches!(self.inner.to, Some(TxKind::Call(..))))
+        self.fee_token.is_some()
+            && self.inner.max_fee_per_gas.is_some()
+            && self.inner.max_priority_fee_per_gas.is_some()
+            && (self
+                .inner
+                .authorization_list
+                .as_ref()
+                .map(Vec::is_empty)
+                .unwrap_or(true)
+                || matches!(self.inner.to, Some(TxKind::Call(..))))
     }
 
     fn complete_fee_token(&self) -> Result<(), Vec<&'static str>> {
@@ -244,13 +260,22 @@ impl TempoTransactionRequest {
         if self.inner.max_priority_fee_per_gas.is_none() {
             fields.push("max_priority_fee_per_gas");
         }
-        if !self.inner.authorization_list.as_ref().map(Vec::is_empty).unwrap_or(true) &&
-            !matches!(self.inner.to, Some(TxKind::Call(..)))
+        if !self
+            .inner
+            .authorization_list
+            .as_ref()
+            .map(Vec::is_empty)
+            .unwrap_or(true)
+            && !matches!(self.inner.to, Some(TxKind::Call(..)))
         {
             fields.push("to");
         }
 
-        if fields.is_empty() { Ok(()) } else { Err(fields) }
+        if fields.is_empty() {
+            Ok(())
+        } else {
+            Err(fields)
+        }
     }
 }
 
@@ -544,8 +569,9 @@ mod tests {
         request: TempoTransactionRequest,
         expected_transaction: TempoTypedTransaction,
     ) {
-        let actual_transaction =
-            request.build_unsigned().expect("required fields should be filled out");
+        let actual_transaction = request
+            .build_unsigned()
+            .expect("required fields should be filled out");
 
         assert_eq!(actual_transaction, expected_transaction);
     }

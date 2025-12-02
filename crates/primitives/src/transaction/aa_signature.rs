@@ -59,7 +59,10 @@ pub struct WebAuthnSignature {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "camelCase"))]
-#[cfg_attr(all(test, feature = "reth-codec"), reth_codecs::add_arbitrary_tests(compact, rlp))]
+#[cfg_attr(
+    all(test, feature = "reth-codec"),
+    reth_codecs::add_arbitrary_tests(compact, rlp)
+)]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 pub enum PrimitiveSignature {
     /// Standard secp256k1 ECDSA signature (65 bytes: r, s, v)
@@ -237,7 +240,10 @@ impl PrimitiveSignature {
                 .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
 
                 // Derive and return address
-                Ok(derive_p256_address(&p256_sig.pub_key_x, &p256_sig.pub_key_y))
+                Ok(derive_p256_address(
+                    &p256_sig.pub_key_x,
+                    &p256_sig.pub_key_y,
+                ))
             }
             Self::WebAuthn(webauthn_sig) => {
                 // Parse and verify WebAuthn data, compute challenge hash
@@ -256,7 +262,10 @@ impl PrimitiveSignature {
                 .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
 
                 // Derive and return address
-                Ok(derive_p256_address(&webauthn_sig.pub_key_x, &webauthn_sig.pub_key_y))
+                Ok(derive_p256_address(
+                    &webauthn_sig.pub_key_x,
+                    &webauthn_sig.pub_key_y,
+                ))
             }
         }
     }
@@ -313,8 +322,7 @@ impl reth_codecs::Compact for PrimitiveSignature {
 ///
 /// The user_address is the root account this transaction is being executed for.
 /// The inner signature proves an authorized access key signed the transaction.
-/// The handler validates that user_address has authorized the access key in the KeyChain
-/// precompile.
+/// The handler validates that user_address has authorized the access key in the KeyChain precompile.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
@@ -322,8 +330,7 @@ impl reth_codecs::Compact for PrimitiveSignature {
 pub struct KeychainSignature {
     /// Root account address that this transaction is being executed for
     pub user_address: Address,
-    /// The actual signature from the access key (can be Secp256k1, P256, or WebAuthn, but NOT
-    /// another Keychain)
+    /// The actual signature from the access key (can be Secp256k1, P256, or WebAuthn, but NOT another Keychain)
     pub signature: PrimitiveSignature,
     /// Cached access key ID recovered from the inner signature.
     /// This is an implementation detail - use `key_id()` to access.
@@ -336,7 +343,11 @@ pub struct KeychainSignature {
 impl KeychainSignature {
     /// Create a new KeychainSignature
     pub fn new(user_address: Address, signature: PrimitiveSignature) -> Self {
-        Self { user_address, signature, cached_key_id: OnceLock::new() }
+        Self {
+            user_address,
+            signature,
+            cached_key_id: OnceLock::new(),
+        }
     }
 
     /// Get the access key ID for Keychain signatures.
@@ -399,7 +410,14 @@ impl reth_codecs::Compact for KeychainSignature {
         let remaining_len = len - (buf.len() - rest.len());
         let (signature, rest) = PrimitiveSignature::from_compact(rest, remaining_len);
 
-        (Self { user_address, signature, cached_key_id: OnceLock::new() }, rest)
+        (
+            Self {
+                user_address,
+                signature,
+                cached_key_id: OnceLock::new(),
+            },
+            rest,
+        )
     }
 }
 
@@ -447,9 +465,9 @@ impl AASignature {
 
         // Check if this is a Keychain signature (type identifier 0x03)
         // We need to handle this specially before delegating to PrimitiveSignature
-        if data.len() > 1 &&
-            data.len() != SECP256K1_SIGNATURE_LENGTH &&
-            data[0] == SIGNATURE_TYPE_KEYCHAIN
+        if data.len() > 1
+            && data.len() != SECP256K1_SIGNATURE_LENGTH
+            && data[0] == SIGNATURE_TYPE_KEYCHAIN
         {
             let sig_data = &data[1..];
 
@@ -778,7 +796,10 @@ mod tests {
             pub_key_y.as_slice(),
             &message_hash,
         );
-        assert!(result.is_err(), "Invalid signature should fail verification");
+        assert!(
+            result.is_err(),
+            "Invalid signature should fail verification"
+        );
     }
 
     #[test]
@@ -817,7 +838,10 @@ mod tests {
             pub_key_y.as_slice(),
             &message_hash,
         );
-        assert!(result.is_ok(), "Valid P256 signature should verify successfully");
+        assert!(
+            result.is_ok(),
+            "Valid P256 signature should verify successfully"
+        );
     }
 
     #[test]
@@ -846,7 +870,10 @@ mod tests {
         let result = verify_webauthn_data_internal(&webauthn_data, &tx_hash);
 
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "User Presence (UP) flag not set in authenticatorData");
+        assert_eq!(
+            result.unwrap_err(),
+            "User Presence (UP) flag not set in authenticatorData"
+        );
     }
 
     #[test]
@@ -864,7 +891,10 @@ mod tests {
         let result = verify_webauthn_data_internal(&webauthn_data, &tx_hash);
 
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "clientDataJSON missing required type field");
+        assert_eq!(
+            result.unwrap_err(),
+            "clientDataJSON missing required type field"
+        );
     }
 
     #[test]
@@ -883,7 +913,10 @@ mod tests {
         let result = verify_webauthn_data_internal(&webauthn_data, &tx_hash);
 
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "clientDataJSON challenge does not match transaction hash");
+        assert_eq!(
+            result.unwrap_err(),
+            "clientDataJSON challenge does not match transaction hash"
+        );
     }
 
     #[test]
@@ -908,7 +941,10 @@ mod tests {
         webauthn_data.extend_from_slice(client_data.as_bytes());
 
         let result = verify_webauthn_data_internal(&webauthn_data, &tx_hash);
-        assert!(result.is_ok(), "Valid WebAuthn data should verify successfully");
+        assert!(
+            result.is_ok(),
+            "Valid WebAuthn data should verify successfully"
+        );
 
         // Verify the computed message hash is correct
         let message_hash = result.unwrap();
@@ -971,7 +1007,10 @@ mod tests {
         let addr1 = derive_p256_address(&pub_key_x1, &pub_key_y1);
         let addr2 = derive_p256_address(&pub_key_x2, &pub_key_y2);
 
-        assert_ne!(addr1, addr2, "Different keys should produce different addresses");
+        assert_ne!(
+            addr1, addr2,
+            "Different keys should produce different addresses"
+        );
     }
 
     #[test]
@@ -1092,9 +1131,18 @@ mod tests {
         assert_eq!(p256_sig, decoded, "P256 serde roundtrip failed");
 
         // Verify camelCase naming
-        assert!(json.contains("\"pubKeyX\""), "Should use camelCase for pubKeyX");
-        assert!(json.contains("\"pubKeyY\""), "Should use camelCase for pubKeyY");
-        assert!(json.contains("\"preHash\""), "Should use camelCase for preHash");
+        assert!(
+            json.contains("\"pubKeyX\""),
+            "Should use camelCase for pubKeyX"
+        );
+        assert!(
+            json.contains("\"pubKeyY\""),
+            "Should use camelCase for pubKeyY"
+        );
+        assert!(
+            json.contains("\"preHash\""),
+            "Should use camelCase for preHash"
+        );
 
         // Test WebAuthn
         let webauthn_sig =
@@ -1111,9 +1159,18 @@ mod tests {
         assert_eq!(webauthn_sig, decoded, "WebAuthn serde roundtrip failed");
 
         // Verify camelCase naming
-        assert!(json.contains("\"pubKeyX\""), "Should use camelCase for pubKeyX");
-        assert!(json.contains("\"pubKeyY\""), "Should use camelCase for pubKeyY");
-        assert!(json.contains("\"webauthnData\""), "Should use camelCase for webauthnData");
+        assert!(
+            json.contains("\"pubKeyX\""),
+            "Should use camelCase for pubKeyX"
+        );
+        assert!(
+            json.contains("\"pubKeyY\""),
+            "Should use camelCase for pubKeyY"
+        );
+        assert!(
+            json.contains("\"webauthnData\""),
+            "Should use camelCase for webauthnData"
+        );
     }
 
     #[test]

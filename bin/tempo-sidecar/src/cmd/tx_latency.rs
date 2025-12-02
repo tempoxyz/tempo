@@ -47,7 +47,11 @@ struct TransactionLatencyMonitor {
 
 impl TransactionLatencyMonitor {
     fn new(rpc_url: Url, max_pending_age: Duration) -> Self {
-        Self { rpc_url, max_pending_age, pending: HashMap::new() }
+        Self {
+            rpc_url,
+            max_pending_age,
+            pending: HashMap::new(),
+        }
     }
 
     async fn watch_transactions(&mut self) -> Result<()> {
@@ -118,7 +122,8 @@ impl TransactionLatencyMonitor {
         let now = Self::now_millis();
         let max_age_millis = self.max_pending_age.as_millis();
         let before_cleanup = self.pending.len();
-        self.pending.retain(|_, seen_at| now.saturating_sub(*seen_at) <= max_age_millis);
+        self.pending
+            .retain(|_, seen_at| now.saturating_sub(*seen_at) <= max_age_millis);
 
         if self.pending.len() < before_cleanup {
             debug!(
@@ -147,7 +152,9 @@ impl TxLatencyArgs {
             .init();
 
         let builder = PrometheusBuilder::new().add_global_label("chain_id", self.chain_id.clone());
-        let metrics_handle = builder.install_recorder().context("failed to install recorder")?;
+        let metrics_handle = builder
+            .install_recorder()
+            .context("failed to install recorder")?;
 
         describe_histogram!(
             "tempo_tx_landing_latency_seconds",
@@ -158,7 +165,10 @@ impl TxLatencyArgs {
             "Number of observed pending transactions awaiting inclusion"
         );
 
-        let app = Route::new().at("/metrics", get(prometheus_metrics).data(metrics_handle.clone()));
+        let app = Route::new().at(
+            "/metrics",
+            get(prometheus_metrics).data(metrics_handle.clone()),
+        );
 
         let addr = format!("0.0.0.0:{}", self.port);
 

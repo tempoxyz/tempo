@@ -62,7 +62,10 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             EthFrame<EthInterpreter>,
         >,
     ) -> Self {
-        Self { inner, logs: Vec::new() }
+        Self {
+            inner,
+            logs: Vec::new(),
+        }
     }
 }
 
@@ -100,7 +103,12 @@ where
 
     fn all(
         &self,
-    ) -> (&Self::Context, &Self::Instructions, &Self::Precompiles, &FrameStack<Self::Frame>) {
+    ) -> (
+        &Self::Context,
+        &Self::Instructions,
+        &Self::Precompiles,
+        &FrameStack<Self::Frame>,
+    ) {
         self.inner.all()
     }
 
@@ -203,15 +211,33 @@ mod tests {
             &ctx.cfg,
         );
         TIP20Token::new(0, &mut storage)
-            .initialize("USD", "USD", "USD", Address::ZERO, Address::ZERO, Address::ZERO)
+            .initialize(
+                "USD",
+                "USD",
+                "USD",
+                Address::ZERO,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
         TIP20Token::new(1, &mut storage)
-            .initialize("USD", "USD", "USD", PATH_USD_ADDRESS, Address::ZERO, Address::ZERO)
+            .initialize(
+                "USD",
+                "USD",
+                "USD",
+                PATH_USD_ADDRESS,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
         drop(storage);
 
         let caller_0 = Address::random();
-        let tx_env = TxEnv { caller: caller_0, nonce: 0, ..Default::default() };
+        let tx_env = TxEnv {
+            caller: caller_0,
+            nonce: 0,
+            ..Default::default()
+        };
         let mut res = tempo_evm.transact_raw(tx_env.into())?;
         assert!(res.result.is_success());
 
@@ -236,10 +262,24 @@ mod tests {
             &ctx.cfg,
         );
         TIP20Token::new(0, &mut storage)
-            .initialize("USD", "USD", "USD", Address::ZERO, Address::ZERO, Address::ZERO)
+            .initialize(
+                "USD",
+                "USD",
+                "USD",
+                Address::ZERO,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
         TIP20Token::new(1, &mut storage)
-            .initialize("USD", "USD", "USD", PATH_USD_ADDRESS, Address::ZERO, Address::ZERO)
+            .initialize(
+                "USD",
+                "USD",
+                "USD",
+                PATH_USD_ADDRESS,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
         drop(storage);
 
@@ -255,10 +295,16 @@ mod tests {
             },
         );
 
-        let tx_env = TxEnv { kind: contract.into(), ..Default::default() };
+        let tx_env = TxEnv {
+            kind: contract.into(),
+            ..Default::default()
+        };
         let res = tempo_evm.transact_raw(tx_env.into())?;
         assert!(res.result.is_success());
-        assert_eq!(U256::from_be_slice(res.result.output().unwrap()), U256::from(1000100));
+        assert_eq!(
+            U256::from_be_slice(res.result.output().unwrap()),
+            U256::from(1000100)
+        );
 
         Ok(())
     }

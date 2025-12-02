@@ -102,8 +102,8 @@ impl Read for Payload {
 
 impl EncodeSize for Payload {
     fn encode_size(&self) -> usize {
-        u8::SIZE +
-            match self {
+        u8::SIZE
+            + match self {
                 Self::Share(inner) => inner.encode_size(),
                 Self::Ack(inner) => inner.encode_size(),
             }

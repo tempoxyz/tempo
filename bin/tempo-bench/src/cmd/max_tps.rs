@@ -159,8 +159,8 @@ impl MaxTpsArgs {
 
         info!(accounts = self.accounts, "Creating signers and providers");
         let mnemonic = self.mnemonic.resolve();
-        let signer_providers = (self.from_mnemonic_index..
-            (self.from_mnemonic_index + self.accounts as u32))
+        let signer_providers = (self.from_mnemonic_index
+            ..(self.from_mnemonic_index + self.accounts as u32))
             .into_par_iter()
             .progress()
             .map(|i| {
@@ -179,7 +179,10 @@ impl MaxTpsArgs {
             let provider = ProviderBuilder::new().connect_http(target_url.clone());
             fund_accounts(
                 &provider,
-                &signer_providers.iter().map(|(signer, _)| signer.address()).collect::<Vec<_>>(),
+                &signer_providers
+                    .iter()
+                    .map(|(signer, _)| signer.address())
+                    .collect::<Vec<_>>(),
                 self.max_concurrent_requests,
                 self.max_concurrent_transactions,
             )
@@ -221,8 +224,10 @@ impl MaxTpsArgs {
 
         // Get first block height before sending transactions
         let provider = ProviderBuilder::new().connect_http(target_url.clone());
-        let start_block =
-            provider.get_block(Latest.into()).await?.ok_or_eyre("failed to fetch start block")?;
+        let start_block = provider
+            .get_block(Latest.into())
+            .await?
+            .ok_or_eyre("failed to fetch start block")?;
         let start_block_number = start_block.header.number;
 
         // Send transactions
@@ -247,7 +252,12 @@ impl MaxTpsArgs {
                 })
                 .progress(),
         )
-        .map(async |pending_tx| pending_tx.get_receipt().await.map(|receipt| receipt.block_number))
+        .map(async |pending_tx| {
+            pending_tx
+                .get_receipt()
+                .await
+                .map(|receipt| receipt.block_number)
+        })
         .buffered(self.max_concurrent_requests)
         .try_collect::<Vec<_>>()
         .await?
@@ -274,9 +284,9 @@ impl FromStr for MnemonicArg {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "random" => Ok(MnemonicArg::Random),
-            mnemonic => {
-                Ok(MnemonicArg::Mnemonic(Mnemonic::<English>::from_str(mnemonic)?.to_phrase()))
-            }
+            mnemonic => Ok(MnemonicArg::Mnemonic(
+                Mnemonic::<English>::from_str(mnemonic)?.to_phrase(),
+            )),
         }
     }
 }
@@ -290,8 +300,7 @@ impl MnemonicArg {
     }
 }
 
-/// Awaits pending transactions with up to `tps` per second and `max_concurrent_requests`
-/// simultaneous in-flight requests. Stops when `deadline` future resolves.
+/// Awaits pending transactions with up to `tps` per second and `max_concurrent_requests` simultaneous in-flight requests. Stops when `deadline` future resolves.
 async fn send_transactions(
     transactions: Vec<
         BoxFuture<'static, alloy::contract::Result<PendingTransactionBuilder<TempoNetwork>>>,
@@ -300,7 +309,10 @@ async fn send_transactions(
     tps: u64,
     deadline: impl Future<Output = ()>,
 ) -> Vec<PendingTransactionBuilder<TempoNetwork>> {
-    info!(transactions = transactions.len(), max_concurrent_requests, tps, "Sending transactions");
+    info!(
+        transactions = transactions.len(),
+        max_concurrent_requests, tps, "Sending transactions"
+    );
 
     // Create shared transaction counter and monitoring
     let tx_counter = Arc::new(AtomicUsize::new(0));
@@ -353,11 +365,18 @@ async fn generate_transactions(
     } = input;
 
     let txs_per_sender = total_txs / num_accounts;
-    ensure!(txs_per_sender > 0, "txs per sender is 0, increase tps or decrease senders");
+    ensure!(
+        txs_per_sender > 0,
+        "txs per sender is 0, increase tps or decrease senders"
+    );
 
-    let (quote, user_tokens) =
-        dex::setup(&signer_providers, 2, max_concurrent_requests, max_concurrent_transactions)
-            .await?;
+    let (quote, user_tokens) = dex::setup(
+        &signer_providers,
+        2,
+        max_concurrent_requests,
+        max_concurrent_transactions,
+    )
+    .await?;
 
     info!(transactions = total_txs, "Generating transactions");
 
@@ -471,11 +490,15 @@ async fn fund_accounts(
             .inspect(|_| progress.inc(1))
             .flatten()
             .map(async |hash| {
-                Ok(PendingTransactionBuilder::new(provider.root().clone(), hash)
-                    .get_receipt()
-                    .await?)
+                Ok(
+                    PendingTransactionBuilder::new(provider.root().clone(), hash)
+                        .get_receipt()
+                        .await?,
+                )
             });
-        assert_receipts(tx_hashes, max_concurrent_requests).await.expect("Failed to fund accounts");
+        assert_receipts(tx_hashes, max_concurrent_requests)
+            .await
+            .expect("Failed to fund accounts");
     }
     Ok(())
 }
@@ -562,9 +585,15 @@ pub async fn generate_report(
 
         let latency_ms = last_block_timestamp.map(|last| timestamp - last);
         let (ok_count, err_count) =
-            receipts.iter().fold((0, 0), |(successes, failures), receipt| {
-                if receipt.status() { (successes + 1, failures) } else { (successes, failures + 1) }
-            });
+            receipts
+                .iter()
+                .fold((0, 0), |(successes, failures), receipt| {
+                    if receipt.status() {
+                        (successes + 1, failures)
+                    } else {
+                        (successes, failures + 1)
+                    }
+                });
 
         benchmarked_blocks.push(BenchmarkedBlock {
             number,
@@ -595,7 +624,10 @@ pub async fn generate_report(
         swap_weight: args.swap_weight,
     };
 
-    let report = BenchmarkReport { metadata, blocks: benchmarked_blocks };
+    let report = BenchmarkReport {
+        metadata,
+        blocks: benchmarked_blocks,
+    };
 
     let file = File::create("report.json")?;
     let writer = BufWriter::new(file);
@@ -642,7 +674,9 @@ async fn join_all<
 
         // Fetch receipts and assert status
         assert_receipts(
-            pending_txs.into_iter().map(|tx| async move { Ok(tx.get_receipt().await?) }),
+            pending_txs
+                .into_iter()
+                .map(|tx| async move { Ok(tx.get_receipt().await?) }),
             max_concurrent_requests,
         )
         .await?;
@@ -658,7 +692,11 @@ async fn assert_receipts<R: ReceiptResponse, F: Future<Output = eyre::Result<R>>
     stream::iter(receipts.into_iter())
         .buffer_unordered(max_concurrent_requests)
         .try_for_each(async |receipt| {
-            eyre::ensure!(receipt.status(), "Transaction {} failed", receipt.transaction_hash());
+            eyre::ensure!(
+                receipt.status(),
+                "Transaction {} failed",
+                receipt.transaction_hash()
+            );
             Ok(())
         })
         .await

@@ -88,13 +88,17 @@ impl TempoTxEnv {
 
     /// Returns true if the transaction is a subblock transaction.
     pub fn is_subblock_transaction(&self) -> bool {
-        self.aa_tx_env.as_ref().is_some_and(|aa| aa.subblock_transaction)
+        self.aa_tx_env
+            .as_ref()
+            .is_some_and(|aa| aa.subblock_transaction)
     }
 
     /// Returns the first top-level call in the transaction.
     pub fn first_call(&self) -> Option<(&TxKind, &[u8])> {
         if let Some(aa) = self.aa_tx_env.as_ref() {
-            aa.aa_calls.first().map(|call| (&call.to, call.input.as_ref()))
+            aa.aa_calls
+                .first()
+                .map(|call| (&call.to, call.input.as_ref()))
         } else {
             Some((&self.inner.kind, &self.inner.data))
         }
@@ -104,16 +108,26 @@ impl TempoTxEnv {
     /// returns true if all calls returned true.
     pub fn calls(&self) -> impl Iterator<Item = (&TxKind, &[u8])> {
         if let Some(aa) = self.aa_tx_env.as_ref() {
-            Either::Left(aa.aa_calls.iter().map(|call| (&call.to, call.input.as_ref())))
+            Either::Left(
+                aa.aa_calls
+                    .iter()
+                    .map(|call| (&call.to, call.input.as_ref())),
+            )
         } else {
-            Either::Right(core::iter::once((&self.inner.kind, self.inner.input().as_ref())))
+            Either::Right(core::iter::once((
+                &self.inner.kind,
+                self.inner.input().as_ref(),
+            )))
         }
     }
 }
 
 impl From<TxEnv> for TempoTxEnv {
     fn from(inner: TxEnv) -> Self {
-        Self { inner, ..Default::default() }
+        Self {
+            inner,
+            ..Default::default()
+        }
     }
 }
 
@@ -281,7 +295,8 @@ impl FromRecoveredTx<TxFeeToken> for TempoTxEnv {
             fee_token: *fee_token,
             is_system_tx: false,
             fee_payer: fee_payer_signature.map(|sig| {
-                sig.recover_address_from_prehash(&tx.fee_payer_signature_hash(caller)).ok()
+                sig.recover_address_from_prehash(&tx.fee_payer_signature_hash(caller))
+                    .ok()
             }),
             aa_tx_env: None, // Non-AA transaction
         }
@@ -294,8 +309,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
         let signature = aa_signed.signature();
 
         // Populate the key_id cache for Keychain signatures before cloning
-        // This parallelizes recovery during Tx->TxEnv conversion, and the cache is preserved when
-        // cloned
+        // This parallelizes recovery during Tx->TxEnv conversion, and the cache is preserved when cloned
         if let Some(keychain_sig) = signature.as_keychain() {
             let _ = keychain_sig.key_id(&aa_signed.signature_hash());
         }
@@ -359,7 +373,8 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             fee_token: *fee_token,
             is_system_tx: false,
             fee_payer: fee_payer_signature.map(|sig| {
-                sig.recover_address_from_prehash(&tx.fee_payer_signature_hash(caller)).ok()
+                sig.recover_address_from_prehash(&tx.fee_payer_signature_hash(caller))
+                    .ok()
             }),
             // Bundle AA-specific fields into AATxEnv
             aa_tx_env: Some(Box::new(AATxEnv {

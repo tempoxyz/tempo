@@ -83,10 +83,18 @@ impl ValidatorConfigError {
     }
 
     pub fn not_host_port(field: String, input: String, backtrace: String) -> Self {
-        Self::NotHostPort(IValidatorConfig::NotHostPort { field, input, backtrace })
+        Self::NotHostPort(IValidatorConfig::NotHostPort {
+            field,
+            input,
+            backtrace,
+        })
     }
 
     pub fn not_ip_port(field: String, input: String, backtrace: String) -> Self {
-        Self::NotIpPort(IValidatorConfig::NotIpPort { field, input, backtrace })
+        Self::NotIpPort(IValidatorConfig::NotIpPort {
+            field,
+            input,
+            backtrace,
+        })
     }
 }

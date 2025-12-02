@@ -134,7 +134,10 @@ impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
     where
         Self: Sized,
     {
-        let TempoPayloadAttributes { inner, timestamp_millis_part } = rpc_payload_attributes;
+        let TempoPayloadAttributes {
+            inner,
+            timestamp_millis_part,
+        } = rpc_payload_attributes;
         Ok(Self {
             inner: EthPayloadBuilderAttributes::try_new(parent, inner, version)?,
             interrupt: InterruptHandle::default(),
