@@ -46,6 +46,9 @@ where
 
     /// Check if a post-allegretto epoch state exists.
     fn has_post_allegretto_state(&mut self) -> impl Future<Output = bool> + Send;
+
+    /// Check if a pre-allegretto epoch state exists.
+    fn has_pre_allegretto_state(&mut self) -> impl Future<Output = bool> + Send;
 }
 
 impl<TContext> DkgEpochStore<TContext> for Tx<TContext>
@@ -78,6 +81,11 @@ where
 
     async fn has_post_allegretto_state(&mut self) -> bool {
         self.exists(current_epoch_key(HardforkRegime::PostAllegretto))
+            .await
+    }
+
+    async fn has_pre_allegretto_state(&mut self) -> bool {
+        self.exists(current_epoch_key(HardforkRegime::PreAllegretto))
             .await
     }
 }

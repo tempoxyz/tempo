@@ -154,10 +154,14 @@ where
             }
             epoch::RelativePosition::Middle => {
                 let _ = ceremony.process_messages(tx).await;
-                let _ = ceremony.construct_intermediate_outcome(tx).await;
+                let _ = ceremony
+                    .construct_intermediate_outcome(tx, HardforkRegime::PostAllegretto)
+                    .await;
             }
             epoch::RelativePosition::SecondHalf => {
-                let _ = ceremony.process_dealings_in_block(tx, &block).await;
+                let _ = ceremony
+                    .process_dealings_in_block(tx, &block, HardforkRegime::PostAllegretto)
+                    .await;
             }
         }
 
@@ -315,10 +319,15 @@ where
             dealers: epoch_state.dealer_pubkeys(),
             players: epoch_state.player_pubkeys(),
         };
-        let ceremony =
-            ceremony::Ceremony::init(&mut self.context, mux, tx, config, self.metrics.ceremony.clone())
-                .await
-                .expect("must always be able to initialize ceremony");
+        let ceremony = ceremony::Ceremony::init(
+            &mut self.context,
+            mux,
+            tx,
+            config,
+            self.metrics.ceremony.clone(),
+        )
+        .await
+        .expect("must always be able to initialize ceremony");
 
         info!(
             us = %self.config.me,

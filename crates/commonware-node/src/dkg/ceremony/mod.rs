@@ -31,6 +31,7 @@ use tempo_dkg_onchain_artifacts::{Ack, IntermediateOutcome};
 use crate::{
     consensus::block::Block,
     db::{CeremonyStore, Tx},
+    dkg::HardforkRegime,
 };
 
 mod payload;
@@ -156,6 +157,7 @@ where
 
         let mut dealer_me = None;
 
+        debug!("attempting to read ceremony state from disk");
         // TODO(janis): move this "recovery" logic to a function.
         let recovered = tx.get_ceremony(config.epoch).await?;
 
@@ -295,7 +297,7 @@ where
         TContext: Clock + RuntimeMetrics + Storage,
     {
         let Some(dealer_me) = &mut self.dealer_me else {
-            debug!("not a dealer, not requesting acks");
+            debug!("not a dealer, not distributing shares");
             return Ok(());
         };
         for player in &self.config.players {
@@ -415,6 +417,7 @@ where
         while let Some(msg) = self.receiver.recv().now_or_never() {
             let (peer, mut msg) = msg.wrap_err("receiver p2p channel was closed")?;
 
+            debug!(%peer, "received message from");
             let msg = Message::decode_cfg(&mut msg, &(self.config.players.len() as u32))
                 .wrap_err("unable to decode message")?;
             if msg.epoch != self.epoch() {
@@ -578,6 +581,7 @@ where
         &mut self,
         tx: &mut Tx<TContext>,
         block: &Block,
+        hardfork_regime: HardforkRegime,
     ) -> eyre::Result<()>
     where
         TContext: Clock + RuntimeMetrics + Storage,
@@ -588,12 +592,14 @@ where
             return Ok(());
         }
 
-        let block_outcome = match block.try_read_ceremony_deal_outcome() {
+        let block_outcome = match block
+            .try_read_ceremony_deal_outcome()
+            .wrap_err("failed reading intermediate DKG dealings from block")
+        {
             Ok(outcome) => outcome,
-            Err(e) => {
+            Err(error) => {
                 self.metrics.bad_dealings.inc();
-                info!(%e, "block contained no usable intermediate deal outcome");
-                return Ok(());
+                return Err(error);
             }
         };
 
@@ -612,10 +618,17 @@ where
         );
 
         // Verify the dealer's signature before considering processing the outcome.
-        ensure!(
-            block_outcome.verify(&union(&self.config.namespace, OUTCOME_NAMESPACE)),
-            "invalid dealer signature; ignoring deal outcome",
-        );
+        let is_verified = match hardfork_regime {
+            HardforkRegime::PostAllegretto => {
+                block_outcome.verify(&union(&self.config.namespace, OUTCOME_NAMESPACE))
+            }
+            HardforkRegime::PreAllegretto => block_outcome
+                .verify_pre_allegretto(&union(&self.config.namespace, OUTCOME_NAMESPACE)),
+        };
+        if !is_verified {
+            self.metrics.bad_dealings.inc();
+            bail!("intermediate DKG dealing could not be verified");
+        }
 
         // Verify all ack signatures
         if !block_outcome.acks().iter().all(|ack| {
@@ -628,7 +641,6 @@ where
                     block_outcome.commitment(),
                 )
         }) {
-            self.metrics.bad_dealings.inc();
             self.arbiter.disqualify(block_outcome.dealer().clone());
             bail!("invalid ack signatures; disqualifying dealer");
         }
@@ -670,7 +682,8 @@ where
                 info.outcomes.push(block_outcome.clone());
             }
         })
-        .await?;
+        .await
+        .expect("must persist deal outcome");
 
         if let Some(dealer_me) = &mut self.dealer_me
             && block_dealer == self.config.me.public_key()
@@ -680,7 +693,8 @@ where
             tx.update_ceremony(self.epoch(), |info| {
                 let _ = info.dealing_outcome.take();
             })
-            .await?;
+            .await
+            .expect("must persist deal outcome");
 
             info!(
                 "found own dealing in a block; removed it from ceremony to \
@@ -699,6 +713,7 @@ where
     pub(super) async fn construct_intermediate_outcome<TContext>(
         &mut self,
         tx: &mut Tx<TContext>,
+        hardfork_regime: HardforkRegime,
     ) -> eyre::Result<()>
     where
         TContext: Clock + RuntimeMetrics + Storage,
@@ -723,24 +738,40 @@ where
             "too many reveals; skipping deal outcome construction",
         );
 
-        let dealing_outcome = Some(IntermediateOutcome::new(
-            self.config
-                .players
-                .len()
-                .try_into()
-                .expect("number of players exceeds u16::MAX"),
-            &self.config.me,
-            &union(&self.config.namespace, OUTCOME_NAMESPACE),
-            self.config.epoch,
-            dealer_me.commitment.clone(),
-            dealer_me.acks.values().cloned().collect(),
-            reveals,
-        ));
+        let dealing_outcome = match hardfork_regime {
+            HardforkRegime::PostAllegretto => Some(IntermediateOutcome::new(
+                self.config
+                    .players
+                    .len()
+                    .try_into()
+                    .expect("we should never have more than u16::MAX validators/players"),
+                &self.config.me,
+                &union(&self.config.namespace, OUTCOME_NAMESPACE),
+                self.config.epoch,
+                dealer_me.commitment.clone(),
+                dealer_me.acks.values().cloned().collect(),
+                reveals,
+            )),
+            HardforkRegime::PreAllegretto => Some(IntermediateOutcome::new_pre_allegretto(
+                self.config
+                    .players
+                    .len()
+                    .try_into()
+                    .expect("we should never have more than u16::MAX validators/players"),
+                &self.config.me,
+                &union(&self.config.namespace, OUTCOME_NAMESPACE),
+                self.config.epoch,
+                dealer_me.commitment.clone(),
+                dealer_me.acks.values().cloned().collect(),
+                reveals,
+            )),
+        };
 
         tx.update_ceremony(self.config.epoch, |info| {
             info.dealing_outcome = dealing_outcome.clone();
         })
-        .await?;
+        .await
+        .expect("must persist local outcome");
 
         dealer_me.outcome = dealing_outcome;
 
@@ -919,21 +950,21 @@ impl Role {
 /// Ceremony specific metrics.
 #[derive(Clone)]
 pub(super) struct Metrics {
-    pub(super) shares_distributed: Gauge,
-    pub(super) shares_received: Gauge,
-    pub(super) acks_received: Gauge,
-    pub(super) acks_sent: Gauge,
-    pub(super) dealings_read: Gauge,
-    pub(super) dealings_empty: Gauge,
-    pub(super) bad_dealings: Gauge,
+    shares_distributed: Gauge,
+    shares_received: Gauge,
+    acks_received: Gauge,
+    acks_sent: Gauge,
+    dealings_read: Gauge,
+    dealings_empty: Gauge,
+    bad_dealings: Gauge,
 
     failures: Counter,
     successes: Counter,
-    pub(super) dealers: Gauge,
-    pub(super) players: Gauge,
+    dealers: Gauge,
+    players: Gauge,
 
-    pub(super) how_often_dealer: Counter,
-    pub(super) how_often_player: Counter,
+    how_often_dealer: Counter,
+    how_often_player: Counter,
 }
 
 impl Metrics {
@@ -941,7 +972,7 @@ impl Metrics {
     ///
     /// Note: because there exists no long-lived ceremony specific context,
     /// most of the metrics defined here carry a manual `ceremony` prefix.
-    pub(super) fn register<C: RuntimeMetrics>(context: &C) -> Self {
+    pub(super) fn register<C: commonware_runtime::Metrics>(context: &C) -> Self {
         let failures = Counter::default();
         let successes = Counter::default();
 

@@ -45,14 +45,8 @@ where
     /// If neither pre- nor post-allegretto artifacts are found, this method
     /// assumes that the node is starting from genesis.
     pub(super) async fn pre_allegretto_init(&mut self, tx: &mut Tx<ContextCell<TContext>>) {
-        let has_post = tx
-            .get_epoch::<super::post_allegretto::EpochState>()
-            .await
-            .ok()
-            .flatten()
-            .is_some();
-
-        let has_pre = tx.get_epoch::<EpochState>().await.ok().flatten().is_some();
+        let has_post = tx.has_post_allegretto_state().await;
+        let has_pre = tx.has_pre_allegretto_state().await;
 
         if !has_post && !has_pre {
             // Genesis initialization
@@ -237,10 +231,14 @@ where
             }
             epoch::RelativePosition::Middle => {
                 let _ = ceremony.process_messages(tx).await;
-                let _ = ceremony.construct_intermediate_outcome(tx).await;
+                let _ = ceremony
+                    .construct_intermediate_outcome(tx, HardforkRegime::PreAllegretto)
+                    .await;
             }
             epoch::RelativePosition::SecondHalf => {
-                let _ = ceremony.process_dealings_in_block(tx, &block).await;
+                let _ = ceremony
+                    .process_dealings_in_block(tx, &block, HardforkRegime::PreAllegretto)
+                    .await;
             }
         }
 
@@ -331,10 +329,15 @@ where
             players: epoch_state.participants.clone(),
         };
 
-        let ceremony =
-            ceremony::Ceremony::init(&mut self.context, mux, tx, config, self.metrics.ceremony.clone())
-                .await
-                .expect("must always be able to initialize ceremony");
+        let ceremony = ceremony::Ceremony::init(
+            &mut self.context,
+            mux,
+            tx,
+            config,
+            self.metrics.ceremony.clone(),
+        )
+        .await
+        .expect("must always be able to initialize ceremony");
 
         info!(
             us = %self.config.me,

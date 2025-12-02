@@ -84,12 +84,10 @@ where
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<super::ingress::Message>,
     ) -> eyre::Result<Self> {
-        type B256 = FixedBytes<32>;
-
         let context = ContextCell::new(context);
 
         // Initialize the unified metadata database
-        let metadata: Metadata<ContextCell<TContext>, B256, Bytes> = Metadata::init(
+        let metadata: Metadata<ContextCell<TContext>, FixedBytes<32>, Bytes> = Metadata::init(
             context.with_label("dkg_db"),
             MetadataConfig {
                 partition: format!("{}_dkg_db", config.partition_prefix),
@@ -174,7 +172,6 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
-        // Create transaction for initialization
         let mut tx = self.db.read_write().expect("must be able to open tx");
 
         self.pre_allegretto_init(&mut tx).await;
@@ -194,7 +191,6 @@ where
                 .await,
         );
 
-        // Commit initialization transaction before entering main loop
         tx.commit().await.expect("must be able to commit init tx");
 
         while let Some(message) = self.mailbox.next().await {
@@ -204,7 +200,6 @@ where
                     block,
                     acknowledgment,
                 }) => {
-                    // Create transaction for finalize, commit after
                     let mut tx = self.db.read_write().expect("must be able to open tx");
                     self.handle_finalized(cause, block, &mut ceremony, &mut ceremony_mux, &mut tx)
                         .await;
@@ -243,13 +238,7 @@ where
                         verify_dealing
                             .dealing
                             .verify(&union(&self.config.namespace, OUTCOME_NAMESPACE))
-                    } else if tx
-                        .get_epoch::<pre_allegretto::EpochState>()
-                        .await
-                        .ok()
-                        .flatten()
-                        .is_some()
-                    {
+                    } else if tx.has_pre_allegretto_state().await {
                         verify_dealing.dealing.verify_pre_allegretto(&union(
                             &self.config.namespace,
                             OUTCOME_NAMESPACE,
