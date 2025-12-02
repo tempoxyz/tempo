@@ -16,9 +16,9 @@ use commonware_consensus::{Block as _, marshal::Update};
 use commonware_macros::select;
 use commonware_runtime::{ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
-use eyre::{OptionExt as _, Report, WrapErr as _, ensure, eyre};
+use eyre::{Report, WrapErr as _, ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
-use reth_provider::BlockIdReader;
+use reth_provider::BlockNumReader as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tracing::{Level, Span, debug, info, instrument, warn};
 
@@ -328,14 +328,8 @@ where
         if let Ok(execution_height) = self
             .execution_node
             .provider
-            .finalized_block_number()
+            .last_block_number()
             .map_err(Report::new)
-            .and_then(|num| {
-                num.ok_or_eyre(
-                    "execution layer returned an empty finalized block number \
-                (Option = None); are we at genesis?",
-                )
-            })
             .inspect_err(|error| {
                 warn!(
                     %error,
