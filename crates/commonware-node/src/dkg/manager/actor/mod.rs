@@ -200,20 +200,18 @@ where
         while let Some(message) = self.mailbox.next().await {
             let cause = message.cause;
             match message.command {
-                super::Command::Finalize(finalize) => {
+                super::Command::Finalize(Finalize {
+                    block,
+                    acknowledgment,
+                }) => {
                     // Create transaction for finalize, commit after
                     let mut tx = self.db.read_write().expect("must be able to open tx");
-                    self.handle_finalized(
-                        cause,
-                        finalize,
-                        &mut ceremony,
-                        &mut ceremony_mux,
-                        &mut tx,
-                    )
-                    .await;
+                    self.handle_finalized(cause, block, &mut ceremony, &mut ceremony_mux, &mut tx)
+                        .await;
                     tx.commit()
                         .await
                         .expect("must be able to commit finalize tx");
+                    acknowledgment.acknowledge();
                 }
                 super::Command::GetIntermediateDealing(get_ceremony_deal) => {
                     let _: Result<_, _> = self
@@ -396,10 +394,7 @@ where
     async fn handle_finalized<TReceiver, TSender>(
         &mut self,
         cause: Span,
-        Finalize {
-            block,
-            acknowledgment,
-        }: Finalize,
+        block: Box<Block>,
         maybe_ceremony: &mut Option<Ceremony<TReceiver, TSender>>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
         tx: &mut Tx<ContextCell<TContext>>,
@@ -414,7 +409,6 @@ where
             self.handle_finalized_pre_allegretto(cause, *block, maybe_ceremony, ceremony_mux, tx)
                 .await;
         }
-        acknowledgment.acknowledge();
     }
 
     /// Starts a new ceremony for the epoch state tracked by the actor.
