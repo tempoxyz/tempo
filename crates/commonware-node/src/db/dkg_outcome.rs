@@ -29,9 +29,7 @@ where
     ///
     /// For post-allegretto, this checks `dkg_outcome` first, then falls back to
     /// the epoch state. For pre-allegretto, it reads from the epoch state directly.
-    fn get_public_outcome(
-        &mut self,
-    ) -> impl Future<Output = Result<Option<PublicOutcome>>> + Send;
+    fn get_public_outcome(&mut self) -> impl Future<Output = Result<Option<PublicOutcome>>> + Send;
 }
 
 impl<TContext> DkgOutcomeStore<TContext> for Tx<TContext>

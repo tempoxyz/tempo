@@ -224,11 +224,30 @@ where
                     outcome: recovered.dealing_outcome,
                 });
             }
-        } else if let Some(share) = config.share.clone() {
-            // XXX: It is critical to write the initial ceremony state with the
-            // correct number of players to disk. The upsert operations in the
-            // rest of the ceremony write the default value for the number of
-            // players, with is 0.
+        } else {
+            info!("starting a fresh ceremony");
+
+            if let Some(share) = config.share.clone() {
+                info!("we have a share, so we are a dealer in this ceremony");
+                let (_, commitment, shares) = dkg::Dealer::<PublicKey, MinSig>::new(
+                    context,
+                    Some(share),
+                    config.players.clone(),
+                );
+                let shares = config
+                    .players
+                    .iter()
+                    .zip(&shares)
+                    .map(|(player, share)| (player.clone(), share.clone()))
+                    .collect();
+                dealer_me = Some(Dealer {
+                    commitment,
+                    shares,
+                    acks: BTreeMap::new(),
+                    outcome: None,
+                });
+            }
+
             tx.set_ceremony(
                 config.epoch,
                 State {
@@ -236,25 +255,16 @@ where
                         .players
                         .len()
                         .try_into()
-                        .expect("number of players exceeds u16::MAX"),
+                        .expect("there should never be more than u16::MAX players"),
+                    dealing: dealer_me.as_ref().map(|me| Dealing {
+                        commitment: me.commitment.clone(),
+                        shares: me.shares.clone(),
+                        acks: BTreeMap::new(),
+                    }),
                     ..State::default()
                 },
-            )?;
-
-            let (_, commitment, shares) =
-                dkg::Dealer::<PublicKey, MinSig>::new(context, Some(share), config.players.clone());
-            let shares = config
-                .players
-                .iter()
-                .zip(&shares)
-                .map(|(player, share)| (player.clone(), share.clone()))
-                .collect();
-            dealer_me = Some(Dealer {
-                commitment,
-                shares,
-                acks: BTreeMap::new(),
-                outcome: None,
-            });
+            )
+            .expect("must always be able to initialize the ceremony state to disk");
         };
 
         metrics.how_often_player.inc_by(player_me.is_some() as u64);
