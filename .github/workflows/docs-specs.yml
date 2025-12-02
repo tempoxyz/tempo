@@ -1,0 +1,65 @@
+name: Docs Specs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/specs/**'
+      - '.github/workflows/docs-specs.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/specs/**'
+      - '.github/workflows/docs-specs.yml'
+
+env:
+  FOUNDRY_PROFILE: ci
+
+jobs:
+  build:
+    name: Forge Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Show Forge version
+        run: forge --version
+
+      - name: Run Forge build
+        working-directory: docs/specs
+        run: forge build --sizes
+
+  lint:
+    name: Forge Fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Run Forge fmt check
+        working-directory: docs/specs
+        run: forge fmt --check
+
+  test:
+    name: Forge Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Run Forge tests
+        working-directory: docs/specs
+        run: forge test -vvv

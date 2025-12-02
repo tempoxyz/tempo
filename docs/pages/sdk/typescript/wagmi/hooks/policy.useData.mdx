@@ -1,0 +1,51 @@
+# `policy.useData`
+
+Gets the data for a transfer policy, including its type and admin address.
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+// @errors: 2322
+import { config } from './wagmi.config'
+declare module 'wagmi' {
+  interface Register {
+    config: typeof config
+  }
+}
+// ---cut---
+import { Hooks } from 'tempo.ts/wagmi'
+
+const { data: policyData } = Hooks.policy.useData({
+  policyId: 1n,
+})
+
+console.log('Policy admin:', policyData?.admin)
+// @log: Policy admin: 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb
+console.log('Policy type:', policyData?.type)
+// @log: Policy type: whitelist
+```
+
+```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+See [TanStack Query query docs](https://tanstack.com/query/v5/docs/framework/react/reference/useQuery) for more info hook return types.
+
+### data
+
+See [Wagmi Action `policy.getData` Return Type](/sdk/typescript/wagmi/actions/policy.getData#return-type)
+
+## Parameters
+
+See [Wagmi Action `policy.getData` Parameters](/sdk/typescript/wagmi/actions/policy.getData#parameters)
+
+### query
+
+See the [TanStack Query query docs](https://tanstack.com/query/v5/docs/framework/react/reference/useQuery) for more info hook parameters.

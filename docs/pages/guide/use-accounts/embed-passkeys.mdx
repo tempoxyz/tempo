@@ -1,0 +1,315 @@
+import LucideSignature from '~icons/lucide/signature'
+import LucideFile from '~icons/lucide/file'
+import * as Card from "../../../components/Card.tsx"
+import * as Demo from '../../../components/guides/Demo.tsx'
+import { EmbedPasskeys, SignInButtons } from '../../../components/guides/EmbedPasskeys.tsx'
+
+# Embed Passkey Accounts
+
+Create a domain-bound passkey account on Tempo using WebAuthn signatures for secure, passwordless authentication with [Tempo transactions](/documentation/protocol/transactions/spec-account-abstraction).
+
+Passkeys enable users to authenticate with biometrics (fingerprint, Face ID, Touch ID) they already use for other apps. Keys are stored in the device's secure enclave and sync across devices via iCloud Keychain or Google Password Manager.
+
+:::info
+
+**What does "domain-bound" mean?**
+
+WebAuthn credentials are bound to a specific domain (the [Relying Party](https://en.wikipedia.org/wiki/Relying_party)). 
+
+This means that credentials created for one domain (e.g., `example.com`) will only work on that domain (and its subdomains) and cannot be used to authenticate on other domains.
+
+This means your users won't be able to use the same passkey account on other applications. If this is not what you want, head to the [Connect to wallets](/guide/use-accounts/connect-to-wallets)
+guide that walks you through on how to connect your application to a universal wallet like MetaMask.
+
+:::
+
+## Demo
+
+By the end of this guide, you will be able to embed passkey accounts into your application.
+
+<Demo.Container name="Passkey Accounts" footerVariant="source" src="tempoxyz/tempo-ts/tree/main/examples/accounts">
+  <EmbedPasskeys />
+</Demo.Container>
+
+## Steps
+
+::::steps
+
+### Set up Wagmi
+
+Ensure that you have set up your project with Wagmi by following the [guide](/guide/sdks/typescript#wagmi-setup).
+
+### Configure the WebAuthn Connector
+
+Next, we will need to configure the `webAuthn` connector in our Wagmi config.
+
+```tsx twoslash [config.ts]
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempo } from 'tempo.ts/chains'
+import { KeyManager, webAuthn } from 'tempo.ts/wagmi' // [!code ++]
+
+export const config = createConfig({
+  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  connectors: [webAuthn({ // [!code ++]
+    keyManager: KeyManager.localStorage(), // [!code ++]
+  })], // [!code ++]
+  multiInjectedProviderDiscovery: false,
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::warning
+
+The `KeyManager.localStorage()` implementation is not recommended for production use as it stores public keys on the client device, meaning it cannot be re-extracted when the user's storage is cleared or if the user is on another device. 
+
+For production, you should opt for a remote key manager such as [`KeyManager.http`](/sdk/typescript/wagmi/keyManagers/http).
+
+:::
+
+:::tip
+
+This Wagmi configuration sets `multiInjectedProviderDiscovery` to `false` to 
+prevent injected browser wallets from being detected, and to prefer the `webAuthn` connector. 
+If you would like to allow connection to other wallets, set this property to `true`.
+
+:::
+
+
+### Display Sign In Buttons
+
+After that, we will set up "Sign in" and "Sign up" buttons so that the user can create
+or use a passkey with the application.
+
+We will create a new `Example.tsx` component to work in.
+
+:::code-group
+
+<div data-title="Preview">
+  <SignInButtons />
+</div>
+
+<div data-title="">
+  <div />
+</div>
+
+:::
+
+:::code-group
+
+```tsx twoslash [Example.tsx]
+// @noErrors
+import { useConnect, useConnectors } from 'wagmi'
+
+export function Example() {
+  const connect = useConnect()
+  const [connector] = useConnectors()
+
+  return (
+    <div>
+      <button
+        onClick={() =>
+          connect.connect({
+            connector,
+            capabilities: { createAccount: true },
+          })
+        }
+      >
+        Sign up
+      </button>
+
+      <button onClick={() => connect.connect({ connector })}>
+        Sign in
+      </button>
+    </div>
+  )
+}
+
+```
+
+```tsx twoslash [config.ts] filename="config.ts"
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempo } from 'tempo.ts/chains'
+import { KeyManager, webAuthn } from 'tempo.ts/wagmi' // [!code ++]
+
+export const config = createConfig({
+  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  connectors: [webAuthn({ // [!code ++] 
+    keyManager: KeyManager.localStorage(), // [!code ++]
+  })], // [!code ++]
+  multiInjectedProviderDiscovery: false,
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::
+
+### Display Account & Sign Out
+
+After the user has signed in, we can display the account information and a sign out button.
+
+:::code-group
+
+<div data-title="Preview">
+  <EmbedPasskeys />
+</div>
+
+<div data-title="">
+  <div />
+</div>
+
+:::
+
+:::code-group
+
+```tsx twoslash [Example.tsx]
+// @noErrors
+import { useAccount, useConnect, useConnectors, useDisconnect } from 'wagmi'
+
+export function Example() {
+  const account = useAccount() // [!code ++]
+  const connect = useConnect()
+  const [connector] = useConnectors()
+  const disconnect = useDisconnect() // [!code ++]
+
+  if (account.address) // [!code ++]
+    return ( // [!code ++]
+      <div> {/* // [!code ++] */}
+        <div>{account.address.slice(0, 6)}...{account.address.slice(-4)}</div> {/* // [!code ++] */}
+        <button onClick={() => disconnect.disconnect()}>Sign out</button> {/* // [!code ++] */}
+      </div> // [!code ++]
+    ) // [!code ++]
+
+  return (
+    <div>
+      <button
+        onClick={() =>
+          connect.connect({
+            connector,
+            capabilities: { createAccount: true },
+          })
+        }
+      >
+        Sign up
+      </button>
+
+      <button onClick={() => connect.connect({ connector })}>
+        Sign in
+      </button>
+    </div>
+  )
+}
+
+```
+
+```tsx twoslash [config.ts] filename="config.ts"
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempo } from 'tempo.ts/chains'
+import { KeyManager, webAuthn } from 'tempo.ts/wagmi' // [!code ++]
+
+export const config = createConfig({
+  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  connectors: [webAuthn({ // [!code ++]
+    keyManager: KeyManager.localStorage(), // [!code ++]
+  })], // [!code ++]
+  multiInjectedProviderDiscovery: false,
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::
+
+### Next Steps
+
+Now that you have created your first passkey account, you can now:
+- learn the [Best Practices](#best-practices) below
+- follow a guide on how to [make a payment](#TODO), [create a stablecoin](#TODO), and [more](#TODO) with a passkey account.
+
+::::
+
+{/* 
+
+TODO: note on public key retention with credentialId -> pubKey KV service.
+
+## Notes for Production
+
+### Public Key Retention
+
+ */}
+
+## Best Practices
+
+### Loading State
+
+When the user is logging in or signing out, we should show loading state to indicate that the process is happening.
+
+We can use the `isPending` property from the `useConnect` hook to show pending state to the user.
+
+```tsx twoslash [Example.tsx]
+// @noErrors
+import { useAccount, useConnect, useConnectors, useDisconnect } from 'wagmi'
+
+export function Example() {
+  const account = useAccount() 
+  const connect = useConnect()
+  const [connector] = useConnectors()
+  const disconnect = useDisconnect() 
+
+  if (connect.isPending) // [!code ++]
+    return <div>Check prompt...</div> // [!code ++]
+  return (/* ... */)
+}
+```
+
+:::tip
+
+Wagmi exposes [React Query's](https://tanstack.com/query/latest/docs/framework/react/overview) interfaces on all Hooks to extract asynchronous states such as loading (e.g. `isPending`) and error (e.g. `isError`, `error`) states.
+
+:::
+
+### Error Handling
+
+If an error unexpectedly occurs, we should display an error message to the user.
+
+We can use the `error` property from the `useConnect` hook to show error state to the user.
+
+```tsx twoslash [Example.tsx]
+// @noErrors
+import { useAccount, useConnect, useConnectors, useDisconnect } from 'wagmi'
+
+export function Example() {
+  const account = useAccount() 
+  const connect = useConnect()
+  const [connector] = useConnectors()
+  const disconnect = useDisconnect() 
+
+  if (connect.error) // [!code ++]
+    return <div>Error: {connect.error.message}</div> // [!code ++]
+  return (/* ... */)
+}
+```
+
+## Learning Resources
+
+<Card.Container>
+  <Card.Link
+    description="Learn more about the Tempo transaction type that enables passkey signatures"
+    href="/guide/use-accounts/webauthn-p256-signatures"
+    icon={LucideFile}
+    title="Tempo Transaction type"
+  />
+  <Card.Link
+    description="Learn more about how (passkey) signatures are structured in the protocol"
+    href="/guide/use-accounts/webauthn-p256-signatures"
+    icon={LucideSignature}
+    title="Signatures"
+  />
+</Card.Container>

@@ -1,0 +1,200 @@
+import * as Demo from '../../../components/guides/Demo.tsx'
+import * as Step from '../../../components/guides/steps'
+import { betaUsd } from '../../../components/guides/tokens.ts'
+import LucideCoins from '~icons/lucide/coins'
+import * as Card from '../../../components/Card.tsx'
+
+# Pay Fees in Any Stablecoin
+
+Configure users to pay transaction fees in any supported stablecoin. Tempo's flexible fee system allows users to pay fees with the same token they're using, eliminating the need to hold a separate gas token.
+
+## Demo
+
+By the end of this guide you will be able to pay fees in any stablecoin on Tempo.
+
+<Demo.Container name="Pay Fees in Any Stablecoin" footerVariant="source" src="tempoxyz/tempo-ts/tree/main/examples/payments">
+  <Step.Connect stepNumber={1} />
+  <Step.AddFunds stepNumber={2} />
+  <Step.PayWithFeeToken stepNumber={3} feeToken={betaUsd} last />
+</Demo.Container>
+
+## Steps
+
+::::steps
+
+### Set up Wagmi & integrate accounts
+
+Ensure that you have set up your project with Wagmi and integrated accounts by following either of the guides:
+
+- [Embed Passkey accounts](/guide/use-accounts/embed-passkeys)
+- [Connect to wallets](/guide/use-accounts/connect-to-wallets)
+
+### Add testnet funds¹
+
+Before you can pay fees in a token of your choice, you need to fund your account. In this guide you will be sending `AlphaUSD` (`0x20c000…0001`) and paying fees in `BetaUSD` (`0x20c000…0002`).
+
+The built-in Tempo testnet faucet includes `AlphaUSD` and `BetaUSD` when funding.
+
+<Demo.Container name="Add Funds" footerVariant="balances" showBadge={false} tokens={[Demo.alphaUsd, Demo.betaUsd]}>
+  <Step.AddFunds stepNumber={1} last />
+</Demo.Container>
+
+:::code-group
+
+```tsx twoslash [AddFunds.ts]
+// @noErrors
+import { Hooks } from 'tempo.ts/wagmi'
+import { useAccount } from 'wagmi'
+
+function AddFunds() {
+  const { address } = useAccount()
+  const { mutate, isPending } = Hooks.faucet.useFundSync()
+
+  return (
+    <button onClick={() => mutate({ account: address })} disabled={isPending}>
+      Add Funds
+    </button>
+  )
+}
+```
+
+```tsx twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+:::warning
+¹ It is important to note that the `addFunds` Hook only works on testnets as a convenience feature to get
+started quickly. For production, you will need to onramp & fund your account manually.
+:::
+
+### Add pay with fee token logic
+
+Now that you have `AlphaUSD` to send and `BetaUSD` to pay fees with, you can add a form that allows users to select a fee token and send a payment.
+
+After this step, your users can send payments with a specified fee token by clicking the "Send Payment" button!
+
+<Demo.Container name="Pay Fees in Any Stablecoin" footerVariant="source" src="tempoxyz/tempo-ts/tree/main/examples/payments">
+  <Step.AddFunds stepNumber={1} />
+  <Step.PayWithFeeToken stepNumber={2} last />
+</Demo.Container>
+
+:::code-group
+
+```tsx twoslash [PayWithFeeToken.tsx]
+import { Hooks } from 'tempo.ts/wagmi'
+import { parseUnits } from 'viem'
+
+const alphaUsd = '0x20c0000000000000000000000000000000000001'
+const betaUsd = '0x20c0000000000000000000000000000000000002'
+
+// @noErrors
+function PayWithFeeToken() {
+  const sendPayment = Hooks.token.useTransferSync()
+  const metadata = Hooks.token.useGetMetadata({
+    token: alphaUsd,
+  })
+
+  return (
+    <form onSubmit={
+      (event) => {
+        event.preventDefault()
+        const formData = new FormData(event.target as HTMLFormElement)
+
+        const recipient = (formData.get('recipient') ||
+          '0x0000000000000000000000000000000000000000') as `0x${string}`
+        const feeToken = (formData.get('feeToken') ||
+          alphaUsd) as `0x${string}`
+
+        sendPayment.mutate({ // [!code hl]
+          amount: parseUnits('100', metadata.data?.decimals ?? 6), // [!code hl]
+          to: recipient, // [!code hl]
+          token: alphaUsd, // [!code hl]
+          feeToken: feeToken, // [!code hl]
+        }) // [!code hl]
+      }
+    }>
+      <div>
+        <label htmlFor="recipient">Recipient address</label>
+        <input type="text" name="recipient" placeholder="0x..." />
+      </div>
+      <div>
+        <label htmlFor="feeToken">Fee token</label>
+        <select name="feeToken">
+          <option value={alphaUsd}>AlphaUSD</option>
+          <option value={betaUsd}>BetaUSD</option>
+        </select>
+      </div>
+      <button type="submit" disabled={sendPayment.isPending}>
+        Send Payment
+      </button>
+    </form>
+  )
+}
+```
+
+```tsx twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+:::
+
+### Display a receipt
+
+Now that users can send payments with a specified fee token, you can link to the transaction receipt.
+
+:::code-group
+
+```tsx twoslash [PayWithFeeToken.tsx]
+import { Hooks } from 'tempo.ts/wagmi'
+import { parseUnits } from 'viem'
+
+const alphaUsd = '0x20c0000000000000000000000000000000000001'
+const betaUsd = '0x20c0000000000000000000000000000000000002'
+
+// @noErrors
+function PayWithFeeToken() {
+  const sendPayment = Hooks.token.useTransferSync()
+  const metadata = Hooks.token.useGetMetadata({
+    token: alphaUsd,
+  })
+
+  return (
+    <>
+      {/* ... your payment form ... */}
+      {sendPayment.data && ( // [!code ++]
+        <a href={`https://explore.tempo.xyz/tx/${sendPayment.data.receipt.transactionHash}`}> {/* // [!code ++] */}
+          View receipt {/* // [!code ++] */}
+        </a> // [!code ++]
+      )} // [!code ++]
+    </>
+  )
+}
+```
+
+```tsx twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+:::
+
+### Next steps
+
+Now that you have made a payment using a desired fee token, you can:
+- Follow a guide on how to [sponsor user fees](/guide/payments/sponsor-user-fees) to enable gasless transactions
+- Learn more about [transaction fees](/documentation/protocol/fees)
+
+::::
+
+## Learning Resources
+
+<Card.Container>
+  <Card.Link
+    description="Learn more about transaction fees on Tempo"
+    href="/documentation/protocol/fees"
+    icon={LucideCoins}
+    title="Transaction Fees"
+  />
+</Card.Container>

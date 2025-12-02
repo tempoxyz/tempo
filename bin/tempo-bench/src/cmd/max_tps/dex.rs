@@ -1,8 +1,29 @@
-use super::*;
-use alloy::providers::DynProvider;
-use indicatif::ProgressIterator;
-use tempo_contracts::precompiles::{IStablecoinExchange, PATH_USD_ADDRESS};
-use tempo_precompiles::tip20::U128_MAX;
+use alloy::{
+    primitives::{Address, U256},
+    signers::local::PrivateKeySigner,
+};
+use eyre::{Context, OptionExt};
+use futures::{StreamExt, TryStreamExt, future::BoxFuture, stream};
+use indicatif::{ProgressBar, ProgressIterator};
+use reth_tracing::tracing::info;
+use tempo_alloy::TempoNetwork;
+use tempo_contracts::precompiles::{
+    IStablecoinExchange::{self, IStablecoinExchangeInstance},
+    ITIP20Factory, PATH_USD_ADDRESS,
+};
+use tempo_precompiles::{
+    STABLECOIN_EXCHANGE_ADDRESS, TIP20_FACTORY_ADDRESS,
+    tip20::{
+        IRolesAuth, ISSUER_ROLE,
+        ITIP20::{self, ITIP20Instance},
+        U128_MAX, token_id_to_address,
+    },
+};
+
+use crate::cmd::{
+    max_tps::{assert_receipt, join_all},
+    signer_providers::BenchProvider,
+};
 
 /// This method performs a one-time setup for sending a lot of transactions:
 /// * Deploys the specified number of user tokens.
@@ -10,18 +31,15 @@ use tempo_precompiles::tip20::U128_MAX;
 /// * Mints user tokens for all signers and approves unlimited spending for DEX.
 /// * Seeds initial liquidity by placing DEX flip orders.
 pub(super) async fn setup(
-    signer_providers: &[(PrivateKeySigner, DynProvider<TempoNetwork>)],
+    signer_providers: &[(PrivateKeySigner, BenchProvider)],
     user_tokens: usize,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
 ) -> eyre::Result<(Address, Vec<Address>)> {
-    info!(
-        signers = signer_providers.len(),
-        user_tokens, "Setting up DEX"
-    );
-
     // Grab first signer provider
-    let (signer, provider) = signer_providers.first().unwrap();
+    let (signer, provider) = signer_providers
+        .first()
+        .ok_or_eyre("No signer providers found")?;
     let caller = signer.address();
 
     info!("Creating tokens");
@@ -148,10 +166,10 @@ pub(super) async fn setup(
 
 /// Creates a test TIP20 token with issuer role granted to the provided address.
 async fn setup_test_token(
-    provider: DynProvider<TempoNetwork>,
+    provider: BenchProvider,
     admin: Address,
     quote_token: Address,
-) -> eyre::Result<ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>>
+) -> eyre::Result<ITIP20Instance<BenchProvider, TempoNetwork>>
 where
 {
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
@@ -167,18 +185,25 @@ where
         .await?
         .get_receipt()
         .await?;
-    let event = receipt.logs()[0].log_decode::<ITIP20Factory::TokenCreated>()?;
+    let event = receipt
+        .decoded_log::<ITIP20Factory::TokenCreated>()
+        .ok_or_eyre("Token creation event not found")?;
+    assert_receipt(receipt)
+        .await
+        .context("Failed to create token")?;
 
-    let token_addr = token_id_to_address(event.data().tokenId.to());
+    let token_addr = token_id_to_address(event.tokenId.to());
     let token = ITIP20::new(token_addr, provider.clone());
     let roles = IRolesAuth::new(*token.address(), provider);
-
-    roles
+    let grant_role_receipt = roles
         .grantRole(*ISSUER_ROLE, admin)
         .send()
         .await?
         .get_receipt()
         .await?;
+    assert_receipt(grant_role_receipt)
+        .await
+        .context("Failed to grant issuer role")?;
 
     Ok(token)
 }
