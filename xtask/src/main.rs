@@ -63,9 +63,13 @@ enum Action {
 /// Generates an ed25519 signing key pair to be used in consensus.
 #[derive(Debug, clap::Args)]
 struct GenerateSigningKey {
-    #[arg(long, short)]
+    /// Destination of the generated signing key.
+    #[arg(long, short, value_name = "FILE")]
     output: PathBuf,
-    #[arg(long)]
+    /// AVOID IN PRODUCTION.
+    /// Optional seed for the random generator used when generating the key.
+    /// Use this only in environments that require reproducible keys.
+    #[arg(long, value_name = "NUMBER")]
     seed: Option<u64>,
 }
 
