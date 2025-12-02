@@ -58,7 +58,6 @@ pub(super) async fn setup(
                 let exchange = exchange.clone();
                 Box::pin(async move {
                     let tx = exchange.createPair(token);
-
                     tx.send().await
                 }) as BoxFuture<'static, _>
             })
