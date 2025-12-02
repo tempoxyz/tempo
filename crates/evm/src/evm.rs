@@ -68,7 +68,10 @@ impl<DB: Database> TempoEvm<DB> {
             .with_cfg(input.cfg_env)
             .with_tx(Default::default());
 
-        Self { inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}), inspect: false }
+        Self {
+            inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}),
+            inspect: false,
+        }
     }
 }
 
@@ -85,7 +88,10 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Sets the inspector for the EVM.
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
-        TempoEvm { inner: self.inner.with_inspector(inspector), inspect: true }
+        TempoEvm {
+            inner: self.inner.with_inspector(inspector),
+            inspect: true,
+        }
     }
 
     /// Takes the inner EVM's revert logs.
@@ -157,13 +163,20 @@ where
             };
 
             let mut result = if self.inspect {
-                self.inner.inspect_system_call_with_caller(tx.inner.caller, to, tx.inner.data)?
+                self.inner
+                    .inspect_system_call_with_caller(tx.inner.caller, to, tx.inner.data)?
             } else {
-                self.inner.system_call_with_caller(tx.inner.caller, to, tx.inner.data)?
+                self.inner
+                    .system_call_with_caller(tx.inner.caller, to, tx.inner.data)?
             };
 
             // system transactions should not consume any gas
-            let ExecutionResult::Success { gas_used, gas_refunded, .. } = &mut result.result else {
+            let ExecutionResult::Success {
+                gas_used,
+                gas_refunded,
+                ..
+            } = &mut result.result
+            else {
                 return Err(TempoInvalidTransaction::SystemTransactionFailed.into());
             };
 
@@ -188,7 +201,12 @@ where
     }
 
     fn finish(self) -> (Self::DB, EvmEnv<Self::Spec, Self::BlockEnv>) {
-        let Context { block: block_env, cfg: cfg_env, journaled_state, .. } = self.inner.inner.ctx;
+        let Context {
+            block: block_env,
+            cfg: cfg_env,
+            journaled_state,
+            ..
+        } = self.inner.inner.ctx;
 
         (journaled_state.database, EvmEnv { block_env, cfg_env })
     }
@@ -227,7 +245,10 @@ mod tests {
             EmptyDB::default(),
             EvmEnv {
                 block_env: TempoBlockEnv {
-                    inner: BlockEnv { basefee: 1, ..Default::default() },
+                    inner: BlockEnv {
+                        basefee: 1,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
                 ..Default::default()

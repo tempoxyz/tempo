@@ -27,7 +27,9 @@ pub struct PathUSD<'a, S: PrecompileStorageProvider> {
 
 impl<'a, S: PrecompileStorageProvider> PathUSD<'a, S> {
     pub fn new(storage: &'a mut S) -> Self {
-        Self { token: TIP20Token::new(0, storage) }
+        Self {
+            token: TIP20Token::new(0, storage),
+        }
     }
 
     pub fn initialize(&mut self, admin: Address) -> Result<()> {
@@ -37,19 +39,20 @@ impl<'a, S: PrecompileStorageProvider> PathUSD<'a, S> {
             (NAME_PRE_ALLEGRETTO, NAME_PRE_ALLEGRETTO)
         };
 
-        self.token.initialize(name, symbol, CURRENCY, Address::ZERO, admin, Address::ZERO)
+        self.token
+            .initialize(name, symbol, CURRENCY, Address::ZERO, admin, Address::ZERO)
     }
 
     fn is_transfer_authorized(&mut self, sender: Address) -> Result<bool> {
-        let authorized = sender == STABLECOIN_EXCHANGE_ADDRESS ||
-            self.token.has_role_internal(sender, *TRANSFER_ROLE)?;
+        let authorized = sender == STABLECOIN_EXCHANGE_ADDRESS
+            || self.token.has_role_internal(sender, *TRANSFER_ROLE)?;
 
         Ok(authorized)
     }
 
     fn is_transfer_from_authorized(&mut self, sender: Address, from: Address) -> Result<bool> {
-        let authorized = sender == STABLECOIN_EXCHANGE_ADDRESS ||
-            self.token.has_role_internal(from, *TRANSFER_ROLE)?;
+        let authorized = sender == STABLECOIN_EXCHANGE_ADDRESS
+            || self.token.has_role_internal(from, *TRANSFER_ROLE)?;
         Ok(authorized)
     }
 
@@ -58,9 +61,11 @@ impl<'a, S: PrecompileStorageProvider> PathUSD<'a, S> {
         sender: Address,
         recipient: Address,
     ) -> Result<bool> {
-        let authorized = sender == STABLECOIN_EXCHANGE_ADDRESS ||
-            self.token.has_role_internal(sender, *TRANSFER_ROLE)? ||
-            self.token.has_role_internal(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
+        let authorized = sender == STABLECOIN_EXCHANGE_ADDRESS
+            || self.token.has_role_internal(sender, *TRANSFER_ROLE)?
+            || self
+                .token
+                .has_role_internal(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
 
         Ok(authorized)
     }
@@ -71,9 +76,11 @@ impl<'a, S: PrecompileStorageProvider> PathUSD<'a, S> {
         from: Address,
         recipient: Address,
     ) -> Result<bool> {
-        let authorized = sender == STABLECOIN_EXCHANGE_ADDRESS ||
-            self.token.has_role_internal(from, *TRANSFER_ROLE)? ||
-            self.token.has_role_internal(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
+        let authorized = sender == STABLECOIN_EXCHANGE_ADDRESS
+            || self.token.has_role_internal(from, *TRANSFER_ROLE)?
+            || self
+                .token
+                .has_role_internal(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
 
         Ok(authorized)
     }
@@ -101,8 +108,8 @@ impl<'a, S: PrecompileStorageProvider> PathUSD<'a, S> {
             return self.token.transfer_from(msg_sender, call);
         }
 
-        if self.is_transfer_from_authorized(msg_sender, call.from)? ||
-            msg_sender == STABLECOIN_EXCHANGE_ADDRESS
+        if self.is_transfer_from_authorized(msg_sender, call.from)?
+            || msg_sender == STABLECOIN_EXCHANGE_ADDRESS
         {
             self.token.transfer_from(msg_sender, call)
         } else {
@@ -137,8 +144,8 @@ impl<'a, S: PrecompileStorageProvider> PathUSD<'a, S> {
             return self.token.transfer_from_with_memo(msg_sender, call);
         }
 
-        if self.is_transfer_from_with_memo_authorized(msg_sender, call.from, call.to)? ||
-            msg_sender == STABLECOIN_EXCHANGE_ADDRESS
+        if self.is_transfer_from_with_memo_authorized(msg_sender, call.from, call.to)?
+            || msg_sender == STABLECOIN_EXCHANGE_ADDRESS
         {
             self.token.transfer_from_with_memo(msg_sender, call)
         } else {
@@ -275,9 +282,14 @@ mod tests {
         let mut path_usd = PathUSD::new(storage);
         let admin = Address::random();
 
-        path_usd.initialize(admin).expect("Could not initialize linking usd");
+        path_usd
+            .initialize(admin)
+            .expect("Could not initialize linking usd");
 
-        path_usd.token.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
+        path_usd
+            .token
+            .grant_role_internal(admin, *ISSUER_ROLE)
+            .unwrap();
 
         (path_usd, admin)
     }
@@ -311,7 +323,10 @@ mod tests {
 
         let result = path_usd.transfer(
             Address::random(),
-            ITIP20::transferCall { to: Address::random(), amount: U256::random() },
+            ITIP20::transferCall {
+                to: Address::random(),
+                amount: U256::random(),
+            },
         );
 
         assert_eq!(
@@ -387,7 +402,13 @@ mod tests {
 
         let balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
-        path_usd.mint(admin, ITIP20::mintCall { to: recipient, amount })?;
+        path_usd.mint(
+            admin,
+            ITIP20::mintCall {
+                to: recipient,
+                amount,
+            },
+        )?;
 
         let balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
@@ -447,22 +468,33 @@ mod tests {
         path_usd.initialize(admin)?;
         path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
-        path_usd.mint(admin, ITIP20::mintCall { to: STABLECOIN_EXCHANGE_ADDRESS, amount })?;
+        path_usd.mint(
+            admin,
+            ITIP20::mintCall {
+                to: STABLECOIN_EXCHANGE_ADDRESS,
+                amount,
+            },
+        )?;
 
-        let dex_balance_before =
-            path_usd.balance_of(ITIP20::balanceOfCall { account: STABLECOIN_EXCHANGE_ADDRESS })?;
+        let dex_balance_before = path_usd.balance_of(ITIP20::balanceOfCall {
+            account: STABLECOIN_EXCHANGE_ADDRESS,
+        })?;
 
         let recipient_balance_before =
             path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
         let result = path_usd.transfer(
             STABLECOIN_EXCHANGE_ADDRESS,
-            ITIP20::transferCall { to: recipient, amount },
+            ITIP20::transferCall {
+                to: recipient,
+                amount,
+            },
         )?;
         assert!(result);
 
-        let dex_balance_after =
-            path_usd.balance_of(ITIP20::balanceOfCall { account: STABLECOIN_EXCHANGE_ADDRESS })?;
+        let dex_balance_after = path_usd.balance_of(ITIP20::balanceOfCall {
+            account: STABLECOIN_EXCHANGE_ADDRESS,
+        })?;
 
         let recipient_balance_after =
             path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
@@ -486,8 +518,13 @@ mod tests {
 
         path_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
-        path_usd
-            .approve(from, ITIP20::approveCall { spender: STABLECOIN_EXCHANGE_ADDRESS, amount })?;
+        path_usd.approve(
+            from,
+            ITIP20::approveCall {
+                spender: STABLECOIN_EXCHANGE_ADDRESS,
+                amount,
+            },
+        )?;
 
         let from_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
 
@@ -541,7 +578,13 @@ mod tests {
         let recipient_balance_before =
             path_usd.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
-        let result = path_usd.transfer(sender, ITIP20::transferCall { to: recipient, amount })?;
+        let result = path_usd.transfer(
+            sender,
+            ITIP20::transferCall {
+                to: recipient,
+                amount,
+            },
+        )?;
         assert!(result);
 
         let sender_balance_after =
@@ -566,11 +609,19 @@ mod tests {
         path_usd.initialize(admin)?;
 
         path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        path_usd.token.grant_role_internal(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
+        path_usd
+            .token
+            .grant_role_internal(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
 
         path_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
-        let result = path_usd.transfer(sender, ITIP20::transferCall { to: recipient, amount });
+        let result = path_usd.transfer(
+            sender,
+            ITIP20::transferCall {
+                to: recipient,
+                amount,
+            },
+        );
 
         assert_eq!(
             result.unwrap_err(),
@@ -602,8 +653,10 @@ mod tests {
 
         let to_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
 
-        let allowance_before =
-            path_usd.allowance(ITIP20::allowanceCall { owner: from, spender })?;
+        let allowance_before = path_usd.allowance(ITIP20::allowanceCall {
+            owner: from,
+            spender,
+        })?;
 
         let result =
             path_usd.transfer_from(spender, ITIP20::transferFromCall { from, to, amount })?;
@@ -612,7 +665,10 @@ mod tests {
 
         let from_balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
         let to_balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
-        let allowance_after = path_usd.allowance(ITIP20::allowanceCall { owner: from, spender })?;
+        let allowance_after = path_usd.allowance(ITIP20::allowanceCall {
+            owner: from,
+            spender,
+        })?;
 
         assert_eq!(from_balance_after, from_balance_before - amount);
         assert_eq!(to_balance_after, to_balance_before + amount);
@@ -632,7 +688,9 @@ mod tests {
 
         path_usd.initialize(admin)?;
         path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        path_usd.token.grant_role_internal(to, *RECEIVE_WITH_MEMO_ROLE)?;
+        path_usd
+            .token
+            .grant_role_internal(to, *RECEIVE_WITH_MEMO_ROLE)?;
 
         path_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
@@ -671,7 +729,11 @@ mod tests {
 
         path_usd.transfer_with_memo(
             sender,
-            ITIP20::transferWithMemoCall { to: recipient, amount, memo: memo.into() },
+            ITIP20::transferWithMemoCall {
+                to: recipient,
+                amount,
+                memo: memo.into(),
+            },
         )?;
 
         let sender_balance_after =
@@ -696,7 +758,9 @@ mod tests {
 
         path_usd.initialize(admin)?;
         path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        path_usd.token.grant_role_internal(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
+        path_usd
+            .token
+            .grant_role_internal(recipient, *RECEIVE_WITH_MEMO_ROLE)?;
 
         path_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
@@ -707,7 +771,11 @@ mod tests {
 
         path_usd.transfer_with_memo(
             sender,
-            ITIP20::transferWithMemoCall { to: recipient, amount, memo: memo.into() },
+            ITIP20::transferWithMemoCall {
+                to: recipient,
+                amount,
+                memo: memo.into(),
+            },
         )?;
 
         let sender_balance_after =
@@ -735,8 +803,13 @@ mod tests {
 
         path_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
-        path_usd
-            .approve(from, ITIP20::approveCall { spender: STABLECOIN_EXCHANGE_ADDRESS, amount })?;
+        path_usd.approve(
+            from,
+            ITIP20::approveCall {
+                spender: STABLECOIN_EXCHANGE_ADDRESS,
+                amount,
+            },
+        )?;
 
         let from_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
         let to_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
@@ -747,7 +820,12 @@ mod tests {
 
         let result = path_usd.transfer_from_with_memo(
             STABLECOIN_EXCHANGE_ADDRESS,
-            ITIP20::transferFromWithMemoCall { from, to, amount, memo: memo.into() },
+            ITIP20::transferFromWithMemoCall {
+                from,
+                to,
+                amount,
+                memo: memo.into(),
+            },
         )?;
 
         assert!(result);
@@ -786,19 +864,29 @@ mod tests {
 
         let from_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
         let to_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
-        let allowance_before =
-            path_usd.allowance(ITIP20::allowanceCall { owner: from, spender })?;
+        let allowance_before = path_usd.allowance(ITIP20::allowanceCall {
+            owner: from,
+            spender,
+        })?;
 
         let result = path_usd.transfer_from_with_memo(
             spender,
-            ITIP20::transferFromWithMemoCall { from, to, amount, memo: memo.into() },
+            ITIP20::transferFromWithMemoCall {
+                from,
+                to,
+                amount,
+                memo: memo.into(),
+            },
         )?;
 
         assert!(result);
 
         let from_balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
         let to_balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
-        let allowance_after = path_usd.allowance(ITIP20::allowanceCall { owner: from, spender })?;
+        let allowance_after = path_usd.allowance(ITIP20::allowanceCall {
+            owner: from,
+            spender,
+        })?;
 
         assert_eq!(from_balance_after, from_balance_before - amount);
         assert_eq!(to_balance_after, to_balance_before + amount);
@@ -819,7 +907,9 @@ mod tests {
 
         path_usd.initialize(admin)?;
         path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        path_usd.token.grant_role_internal(to, *RECEIVE_WITH_MEMO_ROLE)?;
+        path_usd
+            .token
+            .grant_role_internal(to, *RECEIVE_WITH_MEMO_ROLE)?;
 
         path_usd.mint(admin, ITIP20::mintCall { to: from, amount })?;
 
@@ -827,19 +917,29 @@ mod tests {
 
         let from_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
         let to_balance_before = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
-        let allowance_before =
-            path_usd.allowance(ITIP20::allowanceCall { owner: from, spender })?;
+        let allowance_before = path_usd.allowance(ITIP20::allowanceCall {
+            owner: from,
+            spender,
+        })?;
 
         let result = path_usd.transfer_from_with_memo(
             spender,
-            ITIP20::transferFromWithMemoCall { from, to, amount, memo: memo.into() },
+            ITIP20::transferFromWithMemoCall {
+                from,
+                to,
+                amount,
+                memo: memo.into(),
+            },
         )?;
 
         assert!(result);
 
         let from_balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: from })?;
         let to_balance_after = path_usd.balance_of(ITIP20::balanceOfCall { account: to })?;
-        let allowance_after = path_usd.allowance(ITIP20::allowanceCall { owner: from, spender })?;
+        let allowance_after = path_usd.allowance(ITIP20::allowanceCall {
+            owner: from,
+            spender,
+        })?;
 
         assert_eq!(from_balance_after, from_balance_before - amount);
         assert_eq!(to_balance_after, to_balance_before + amount);
@@ -859,7 +959,9 @@ mod tests {
 
         // Grant PAUSE_ROLE and UNPAUSE_ROLE
         path_usd.token.grant_role_internal(pauser, *PAUSE_ROLE)?;
-        path_usd.token.grant_role_internal(unpauser, *UNPAUSE_ROLE)?;
+        path_usd
+            .token
+            .grant_role_internal(unpauser, *UNPAUSE_ROLE)?;
 
         // Verify initial state (not paused)
         assert!(!path_usd.paused().unwrap());
@@ -886,28 +988,46 @@ mod tests {
         // Grant ISSUER_ROLE to user
         path_usd
             .token
-            .grant_role(admin, IRolesAuth::grantRoleCall { role: *ISSUER_ROLE, account: user })
+            .grant_role(
+                admin,
+                IRolesAuth::grantRoleCall {
+                    role: *ISSUER_ROLE,
+                    account: user,
+                },
+            )
             .unwrap();
 
         // Check that user has the role
         assert!(
             path_usd
                 .token
-                .has_role(IRolesAuth::hasRoleCall { role: *ISSUER_ROLE, account: user })
+                .has_role(IRolesAuth::hasRoleCall {
+                    role: *ISSUER_ROLE,
+                    account: user,
+                })
                 .expect("Could not get role")
         );
 
         // Revoke the role
         path_usd
             .token
-            .revoke_role(admin, IRolesAuth::revokeRoleCall { role: *ISSUER_ROLE, account: user })
+            .revoke_role(
+                admin,
+                IRolesAuth::revokeRoleCall {
+                    role: *ISSUER_ROLE,
+                    account: user,
+                },
+            )
             .unwrap();
 
         // Check that user no longer has the role
         assert!(
             !path_usd
                 .token
-                .has_role(IRolesAuth::hasRoleCall { role: *ISSUER_ROLE, account: user })
+                .has_role(IRolesAuth::hasRoleCall {
+                    role: *ISSUER_ROLE,
+                    account: user,
+                })
                 .expect("Could not get role")
         );
         Ok(())
@@ -928,14 +1048,24 @@ mod tests {
         // Set supply cap
         path_usd
             .token
-            .set_supply_cap(admin, ITIP20::setSupplyCapCall { newSupplyCap: supply_cap })
+            .set_supply_cap(
+                admin,
+                ITIP20::setSupplyCapCall {
+                    newSupplyCap: supply_cap,
+                },
+            )
             .unwrap();
 
         assert_eq!(path_usd.token.supply_cap().unwrap(), supply_cap);
 
         // Try to mint more than supply cap
-        let result =
-            path_usd.mint(admin, ITIP20::mintCall { to: recipient, amount: U256::from(1001) });
+        let result = path_usd.mint(
+            admin,
+            ITIP20::mintCall {
+                to: recipient,
+                amount: U256::from(1001),
+            },
+        );
 
         assert_eq!(
             result.unwrap_err(),
@@ -958,9 +1088,12 @@ mod tests {
         path_usd.token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         // Set supply cap to u128 max plus one
-        let result = path_usd
-            .token
-            .set_supply_cap(admin, ITIP20::setSupplyCapCall { newSupplyCap: bad_supply_cap });
+        let result = path_usd.token.set_supply_cap(
+            admin,
+            ITIP20::setSupplyCapCall {
+                newSupplyCap: bad_supply_cap,
+            },
+        );
 
         assert_eq!(
             result.unwrap_err(),
@@ -970,17 +1103,33 @@ mod tests {
         // Set supply cap
         path_usd
             .token
-            .set_supply_cap(admin, ITIP20::setSupplyCapCall { newSupplyCap: supply_cap })
+            .set_supply_cap(
+                admin,
+                ITIP20::setSupplyCapCall {
+                    newSupplyCap: supply_cap,
+                },
+            )
             .unwrap();
 
         // Try to mint the exact supply cap
-        path_usd.mint(admin, ITIP20::mintCall { to: recipient, amount: U256::from(1000) }).unwrap();
+        path_usd
+            .mint(
+                admin,
+                ITIP20::mintCall {
+                    to: recipient,
+                    amount: U256::from(1000),
+                },
+            )
+            .unwrap();
 
         // Try to set the supply cap to something lower than the total supply
         let smaller_supply_cap = U256::from(999);
-        let result = path_usd
-            .token
-            .set_supply_cap(admin, ITIP20::setSupplyCapCall { newSupplyCap: smaller_supply_cap });
+        let result = path_usd.token.set_supply_cap(
+            admin,
+            ITIP20::setSupplyCapCall {
+                newSupplyCap: smaller_supply_cap,
+            },
+        );
 
         assert_eq!(
             result.unwrap_err(),
@@ -1003,12 +1152,17 @@ mod tests {
             .token
             .change_transfer_policy_id(
                 admin,
-                ITIP20::changeTransferPolicyIdCall { newPolicyId: new_policy_id },
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: new_policy_id,
+                },
             )
             .unwrap();
 
         assert_eq!(
-            path_usd.token.transfer_policy_id().expect("Could not get policy"),
+            path_usd
+                .token
+                .transfer_policy_id()
+                .expect("Could not get policy"),
             new_policy_id
         );
 
@@ -1042,7 +1196,13 @@ mod tests {
         path_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
         // Post-Allegretto: transfer should work without TRANSFER_ROLE
-        let result = path_usd.transfer(sender, ITIP20::transferCall { to: recipient, amount })?;
+        let result = path_usd.transfer(
+            sender,
+            ITIP20::transferCall {
+                to: recipient,
+                amount,
+            },
+        )?;
 
         assert!(result);
 
@@ -1075,7 +1235,11 @@ mod tests {
         // Post-Allegretto: transfer_from should work without TRANSFER_ROLE
         let result = path_usd.transfer_from(
             spender,
-            ITIP20::transferFromCall { from: owner, to: recipient, amount },
+            ITIP20::transferFromCall {
+                from: owner,
+                to: recipient,
+                amount,
+            },
         )?;
 
         assert!(result);
@@ -1105,11 +1269,14 @@ mod tests {
         // Mint to sender without any special roles
         path_usd.mint(admin, ITIP20::mintCall { to: sender, amount })?;
 
-        // Post-Allegretto: transfer_with_memo should work without TRANSFER_ROLE or
-        // RECEIVE_WITH_MEMO_ROLE
+        // Post-Allegretto: transfer_with_memo should work without TRANSFER_ROLE or RECEIVE_WITH_MEMO_ROLE
         path_usd.transfer_with_memo(
             sender,
-            ITIP20::transferWithMemoCall { to: recipient, amount, memo: memo.into() },
+            ITIP20::transferWithMemoCall {
+                to: recipient,
+                amount,
+                memo: memo.into(),
+            },
         )?;
 
         let sender_balance = path_usd.balance_of(ITIP20::balanceOfCall { account: sender })?;

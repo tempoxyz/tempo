@@ -14,17 +14,26 @@ use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
 async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url.clone());
+    let provider = ProviderBuilder::new()
+        .wallet(wallet)
+        .connect_http(http_url.clone());
 
     // Create another wallet for sending different transactions
-    let wallet2 = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).index(1)?.build()?;
+    let wallet2 = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
     let caller2 = wallet2.address();
-    let provider2 = ProviderBuilder::new().wallet(wallet2).connect_http(http_url.clone());
+    let provider2 = ProviderBuilder::new()
+        .wallet(wallet2)
+        .connect_http(http_url.clone());
 
     // Ensure the native account balance is 0
     let balance1 = provider.get_account_info(caller).await?.balance;
@@ -47,8 +56,18 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
 
     // Mint tokens for testing
     let mint_amount = U256::from(15_000_000);
-    token.mint(caller, mint_amount).send().await?.get_receipt().await?;
-    token2.mint(caller2, mint_amount).send().await?.get_receipt().await?;
+    token
+        .mint(caller, mint_amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    token2
+        .mint(caller2, mint_amount)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
 
     // Step 1: Send N blocks worth of non-payment transactions
     // Use multiple accounts sending in parallel for speed
@@ -64,7 +83,9 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
             .index(i as u32 + 2)? // Start from index 2 (0 and 1 are already used)
             .build()?;
         let address = wallet.address();
-        let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url.clone());
+        let provider = ProviderBuilder::new()
+            .wallet(wallet)
+            .connect_http(http_url.clone());
         accounts.push(address);
         providers.push(provider);
     }
@@ -99,7 +120,11 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
         }
 
         // Wait for all transactions in this batch
-        println!("Batch {}: Sending {} transactions...", batch + 1, batch_futures.len());
+        println!(
+            "Batch {}: Sending {} transactions...",
+            batch + 1,
+            batch_futures.len()
+        );
         let pending_txs = futures::future::try_join_all(batch_futures).await?;
 
         // Collect receipts
@@ -126,7 +151,10 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
         }
     }
 
-    println!("\nNon-payment transactions were included in {} unique blocks", block_numbers.len());
+    println!(
+        "\nNon-payment transactions were included in {} unique blocks",
+        block_numbers.len()
+    );
     assert!(
         block_numbers.len() >= 3,
         "Expected at least 3 blocks of non-payment transactions, got {}",
@@ -152,10 +180,16 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
 
     // Find blocks that are reasonably full (at least 50 txs each)
     let min_txs_for_full_block = 50;
-    let full_blocks: Vec<_> =
-        txs_per_block.iter().filter(|(_, count)| **count >= min_txs_for_full_block).collect();
+    let full_blocks: Vec<_> = txs_per_block
+        .iter()
+        .filter(|(_, count)| **count >= min_txs_for_full_block)
+        .collect();
 
-    println!("\nFull blocks (>= {} txs): {} blocks", min_txs_for_full_block, full_blocks.len());
+    println!(
+        "\nFull blocks (>= {} txs): {} blocks",
+        min_txs_for_full_block,
+        full_blocks.len()
+    );
     assert!(
         full_blocks.len() >= 3,
         "Expected at least 3 full blocks with >= {} transactions, got {} full blocks",
@@ -176,7 +210,10 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
     let expected_total_payments = mixed_batches * payments_per_batch;
 
     for batch in 0..mixed_batches {
-        println!("\nMixed batch {}: Sending non-payment AND payment transactions...", batch + 1);
+        println!(
+            "\nMixed batch {}: Sending non-payment AND payment transactions...",
+            batch + 1
+        );
 
         // Create interleaved transactions - mix them together
         let mut all_futures = vec![];
@@ -252,7 +289,10 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
         }
 
         for receipt in batch_payment_receipts {
-            assert!(receipt.status(), "Payment tx should succeed despite continued load");
+            assert!(
+                receipt.status(),
+                "Payment tx should succeed despite continued load"
+            );
             payment_receipts.push(receipt);
         }
 
@@ -277,7 +317,10 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
     println!("\n=== Test Results ===");
 
     // Expectation 1: All payment transactions should be included despite continued DeFi load
-    assert!(!payment_receipts.is_empty(), "Payment transactions should be included");
+    assert!(
+        !payment_receipts.is_empty(),
+        "Payment transactions should be included"
+    );
     for receipt in &payment_receipts {
         assert!(receipt.status(), "Payment transaction should succeed");
     }
@@ -308,7 +351,10 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
     println!(
         "Successfully processed {total_non_payment} non-payment and {total_payment} payment transactions"
     );
-    println!("  Initial non-payment load: {} transactions", non_payment_receipts.len());
+    println!(
+        "  Initial non-payment load: {} transactions",
+        non_payment_receipts.len()
+    );
     println!(
         "  Continued non-payment load (during payment phase): {} transactions",
         continued_non_payment_receipts.len()
@@ -331,8 +377,10 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
     }
 
     // Find blocks that have both types
-    let mixed_blocks: std::collections::HashSet<_> =
-        non_payment_blocks.intersection(&payment_blocks).cloned().collect();
+    let mixed_blocks: std::collections::HashSet<_> = non_payment_blocks
+        .intersection(&payment_blocks)
+        .cloned()
+        .collect();
 
     assert!(
         !mixed_blocks.is_empty(),
@@ -359,7 +407,10 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
 async fn test_payment_lane_ordering() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     // Create multiple accounts to avoid nonce ordering issues.
@@ -370,9 +421,12 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
     const NUM_ACCOUNTS: usize = 10;
 
     for i in 0..NUM_ACCOUNTS {
-        let wallet =
-            MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).index(i as u32)?.build()?;
-        let provider = ProviderBuilder::new().wallet(wallet.clone()).connect_http(http_url.clone());
+        let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+            .index(i as u32)?
+            .build()?;
+        let provider = ProviderBuilder::new()
+            .wallet(wallet.clone())
+            .connect_http(http_url.clone());
 
         wallets.push(wallet);
         providers.push(provider);
@@ -455,7 +509,10 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
     }
 
     println!("\nSending all transactions concurrently...");
-    let all_txs = join_all(tx_futures).await.into_iter().collect::<Result<Vec<_>, _>>()?;
+    let all_txs = join_all(tx_futures)
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
     println!("\nWaiting for all transactions to be mined...");
 
@@ -473,7 +530,10 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
             // or there's another issue
             panic!("{tx_type} transaction failed - this might indicate improper lane ordering");
         }
-        println!("  {} transaction succeeded (gas used: {})", tx_type, receipt.gas_used);
+        println!(
+            "  {} transaction succeeded (gas used: {})",
+            tx_type, receipt.gas_used
+        );
     }
 
     Ok(())
@@ -483,7 +543,10 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
 async fn test_payment_lane_gas_limits() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -492,7 +555,12 @@ async fn test_payment_lane_gas_limits() -> eyre::Result<()> {
 
     // Setup a TIP20 token for payment transactions
     let token = crate::utils::setup_test_token(provider.clone(), caller).await?;
-    token.mint(caller, U256::from(1_000_000)).send().await?.get_receipt().await?;
+    token
+        .mint(caller, U256::from(1_000_000))
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
 
     // Test that payment transactions can use gas even when non-payment gas is exhausted
     // First, send high-gas non-payment transactions to approach the limit
@@ -530,7 +598,10 @@ async fn test_payment_lane_gas_limits() -> eyre::Result<()> {
 
         let pending_tx = provider.send_transaction(tx).await?;
         let receipt = pending_tx.get_receipt().await?;
-        assert!(receipt.status(), "Payment tx should succeed even with high non-payment gas usage");
+        assert!(
+            receipt.status(),
+            "Payment tx should succeed even with high non-payment gas usage"
+        );
         println!("Payment tx {} succeeded, used {} gas", i, receipt.gas_used);
     }
 

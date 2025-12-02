@@ -55,17 +55,20 @@ pub trait TempoHardforks: EthereumHardforks {
 
     /// Convenience method to check if Adagio hardfork is active at a given timestamp
     fn is_adagio_active_at_timestamp(&self, timestamp: u64) -> bool {
-        self.tempo_fork_activation(TempoHardfork::Adagio).active_at_timestamp(timestamp)
+        self.tempo_fork_activation(TempoHardfork::Adagio)
+            .active_at_timestamp(timestamp)
     }
 
     /// Convenience method to check if Andantino hardfork is active at a given timestamp
     fn is_moderato_active_at_timestamp(&self, timestamp: u64) -> bool {
-        self.tempo_fork_activation(TempoHardfork::Moderato).active_at_timestamp(timestamp)
+        self.tempo_fork_activation(TempoHardfork::Moderato)
+            .active_at_timestamp(timestamp)
     }
 
     /// Convenience method to check if Allegretto hardfork is active at a given timestamp
     fn is_allegretto_active_at_timestamp(&self, timestamp: u64) -> bool {
-        self.tempo_fork_activation(TempoHardfork::Allegretto).active_at_timestamp(timestamp)
+        self.tempo_fork_activation(TempoHardfork::Allegretto)
+            .active_at_timestamp(timestamp)
     }
 
     /// Retrieves the latest Tempo hardfork active at a given timestamp.

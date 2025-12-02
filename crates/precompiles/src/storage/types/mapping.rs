@@ -38,7 +38,9 @@ impl<K, V, Base: SlotId> Mapping<K, V, Base> {
     /// as struct fields and accessed via macro-generated methods.
     #[inline]
     pub const fn new() -> Self {
-        Self { _phantom: PhantomData }
+        Self {
+            _phantom: PhantomData,
+        }
     }
 
     /// Returns the U256 base storage slot number for this mapping.
@@ -208,9 +210,9 @@ impl<K, V, Base: SlotId> Mapping<K, V, Base> {
 
     /// Writes a packed field within a value stored in a mapping.
     ///
-    /// Use this when you have a mapping and the VALUES in that mapping are structs with packed
-    /// fields. This method computes the mapping slot and writes a specific packed field,
-    /// preserving other fields in the same slot.
+    /// Use this when you have a mapping and the VALUES in that mapping are structs with packed fields.
+    /// This method computes the mapping slot and writes a specific packed field, preserving other
+    /// fields in the same slot.
     #[inline]
     pub fn write_at_offset_packed<S: StorageOps>(
         storage: &mut S,
@@ -237,9 +239,9 @@ impl<K, V, Base: SlotId> Mapping<K, V, Base> {
 
     /// Deletes a packed field within a value stored in a mapping (sets bytes to zero).
     ///
-    /// Use this when you have a mapping and the VALUES in that mapping are structs with packed
-    /// fields. This method computes the mapping slot and clears a specific packed field,
-    /// preserving other fields in the same slot.
+    /// Use this when you have a mapping and the VALUES in that mapping are structs with packed fields.
+    /// This method computes the mapping slot and clears a specific packed field, preserving other
+    /// fields in the same slot.
     #[inline]
     pub fn delete_at_offset_packed<S: StorageOps>(
         storage: &mut S,
@@ -666,7 +668,10 @@ mod tests {
     fn setup_test_contract<'a>(
         storage: &'a mut HashMapStorageProvider,
     ) -> TestContract<'a, HashMapStorageProvider> {
-        TestContract { address: Address::random(), storage }
+        TestContract {
+            address: Address::random(),
+            storage,
+        }
     }
 
     // Test SlotId implementations

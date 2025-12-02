@@ -33,10 +33,19 @@ fn test_mixed_slot_allocation() {
     assert_eq!(mixed.sload_field_d().unwrap(), U256::from(400));
 
     // Verify actual slot assignments
-    assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::from(100))); // field_a
-    assert_eq!(s.storage.sload(s.address, U256::from(5)), Ok(U256::from(200))); // field_b
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(0)),
+        Ok(U256::from(100))
+    ); // field_a
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(5)),
+        Ok(U256::from(200))
+    ); // field_b
     assert_eq!(s.storage.sload(s.address, U256::ONE), Ok(U256::from(300))); // field_c
-    assert_eq!(s.storage.sload(s.address, U256::from(0x10)), Ok(U256::from(400))); // field_d (hex slot)
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(0x10)),
+        Ok(U256::from(400))
+    ); // field_d (hex slot)
 }
 
 #[test]
@@ -106,12 +115,30 @@ fn test_base_slots() {
 
     // Verify actual slot assignments
     assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::ONE)); // field_a
-    assert_eq!(s.storage.sload(s.address, U256::from(100)), Ok(U256::from(2))); // field_b
-    assert_eq!(s.storage.sload(s.address, U256::from(101)), Ok(U256::from(3))); // field_c
-    assert_eq!(s.storage.sload(s.address, U256::from(200)), Ok(U256::from(4))); // field_d
-    assert_eq!(s.storage.sload(s.address, U256::from(201)), Ok(U256::from(5))); // field_e
-    assert_eq!(s.storage.sload(s.address, U256::from(50)), Ok(U256::from(6))); // field_f
-    assert_eq!(s.storage.sload(s.address, U256::from(51)), Ok(U256::from(7))); // field_g
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(100)),
+        Ok(U256::from(2))
+    ); // field_b
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(101)),
+        Ok(U256::from(3))
+    ); // field_c
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(200)),
+        Ok(U256::from(4))
+    ); // field_d
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(201)),
+        Ok(U256::from(5))
+    ); // field_e
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(50)),
+        Ok(U256::from(6))
+    ); // field_f
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(51)),
+        Ok(U256::from(7))
+    ); // field_g
 
     // Verify slots module
     assert_eq!(slots::FIELD_A, U256::from(0));
@@ -147,10 +174,22 @@ fn test_base_slot_with_regular_slot() {
 
     // Verify slot assignments
     assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::ONE)); // field_a
-    assert_eq!(s.storage.sload(s.address, U256::from(100)), Ok(U256::from(2))); // field_b
-    assert_eq!(s.storage.sload(s.address, U256::from(101)), Ok(U256::from(3))); // field_c
-    assert_eq!(s.storage.sload(s.address, U256::from(50)), Ok(U256::from(4))); // field_d
-    assert_eq!(s.storage.sload(s.address, U256::from(102)), Ok(U256::from(5))); // field_e
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(100)),
+        Ok(U256::from(2))
+    ); // field_b
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(101)),
+        Ok(U256::from(3))
+    ); // field_c
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(50)),
+        Ok(U256::from(4))
+    ); // field_d
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(102)),
+        Ok(U256::from(5))
+    ); // field_e
 
     // Verify slots module
     assert_eq!(slots::FIELD_A, U256::from(0));

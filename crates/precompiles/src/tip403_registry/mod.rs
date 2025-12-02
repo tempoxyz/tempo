@@ -35,8 +35,10 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
 
     /// Initializes the registry contract.
     pub fn initialize(&mut self) -> Result<()> {
-        self.storage
-            .set_code(TIP403_REGISTRY_ADDRESS, Bytecode::new_legacy(Bytes::from_static(&[0xef])))?;
+        self.storage.set_code(
+            TIP403_REGISTRY_ADDRESS,
+            Bytecode::new_legacy(Bytes::from_static(&[0xef])),
+        )?;
 
         Ok(())
     }
@@ -76,13 +78,18 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
 
         // Increment counter
         self.sstore_policy_id_counter(
-            new_policy_id.checked_add(1).ok_or(TempoPrecompileError::under_overflow())?,
+            new_policy_id
+                .checked_add(1)
+                .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
         // Store policy data
         self.sstore_policy_data(
             new_policy_id,
-            PolicyData { policy_type: call.policyType as u8, admin: call.admin },
+            PolicyData {
+                policy_type: call.policyType as u8,
+                admin: call.admin,
+            },
         )?;
 
         // Emit events
@@ -119,11 +126,19 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
 
         // Increment counter
         self.sstore_policy_id_counter(
-            new_policy_id.checked_add(1).ok_or(TempoPrecompileError::under_overflow())?,
+            new_policy_id
+                .checked_add(1)
+                .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
         // Store policy data
-        self.set_policy_data(new_policy_id, PolicyData { policy_type: policy_type as u8, admin })?;
+        self.set_policy_data(
+            new_policy_id,
+            PolicyData {
+                policy_type: policy_type as u8,
+                admin,
+            },
+        )?;
 
         // Set initial accounts
         for account in call.accounts.iter() {
@@ -197,7 +212,13 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
         }
 
         // Update admin policy ID
-        self.set_policy_data(call.policyId, PolicyData { admin: call.admin, ..data })?;
+        self.set_policy_data(
+            call.policyId,
+            PolicyData {
+                admin: call.admin,
+                ..data
+            },
+        )?;
 
         self.storage.emit_event(
             TIP403_REGISTRY_ADDRESS,
@@ -377,10 +398,10 @@ mod tests {
         )?;
 
         // User should not be authorized initially
-        assert!(
-            !registry
-                .is_authorized(ITIP403Registry::isAuthorizedCall { policyId: policy_id, user })?
-        );
+        assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+            policyId: policy_id,
+            user,
+        })?);
 
         // Add user to whitelist
         registry.modify_policy_whitelist(
@@ -393,10 +414,10 @@ mod tests {
         )?;
 
         // User should now be authorized
-        assert!(
-            registry
-                .is_authorized(ITIP403Registry::isAuthorizedCall { policyId: policy_id, user })?
-        );
+        assert!(registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+            policyId: policy_id,
+            user,
+        })?);
 
         Ok(())
     }
@@ -418,10 +439,10 @@ mod tests {
         )?;
 
         // User should be authorized initially (not in blacklist)
-        assert!(
-            registry
-                .is_authorized(ITIP403Registry::isAuthorizedCall { policyId: policy_id, user })?
-        );
+        assert!(registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+            policyId: policy_id,
+            user,
+        })?);
 
         // Add user to blacklist
         registry.modify_policy_blacklist(
@@ -434,10 +455,10 @@ mod tests {
         )?;
 
         // User should no longer be authorized
-        assert!(
-            !registry
-                .is_authorized(ITIP403Registry::isAuthorizedCall { policyId: policy_id, user })?
-        );
+        assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+            policyId: policy_id,
+            user,
+        })?);
 
         Ok(())
     }

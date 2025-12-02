@@ -124,8 +124,13 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipFeeManager<'a, S> {
             }
             ITIPFeeAMM::burnCall::SELECTOR => {
                 mutate::<ITIPFeeAMM::burnCall>(calldata, msg_sender, |s, call| {
-                    let (amount_user_token, amount_validator_token) =
-                        self.burn(s, call.userToken, call.validatorToken, call.liquidity, call.to)?;
+                    let (amount_user_token, amount_validator_token) = self.burn(
+                        s,
+                        call.userToken,
+                        call.validatorToken,
+                        call.liquidity,
+                        call.to,
+                    )?;
 
                     Ok(ITIPFeeAMM::burnReturn {
                         amountUserToken: amount_user_token,
@@ -186,17 +191,32 @@ mod tests {
 
         // Initialize token
         tip20_token
-            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, user, Address::ZERO)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                user,
+                Address::ZERO,
+            )
             .unwrap();
 
         // Grant issuer role to user and mint tokens
         tip20_token.grant_role_internal(user, *ISSUER_ROLE).unwrap();
 
-        tip20_token.mint(user, ITIP20::mintCall { to: user, amount }).unwrap();
+        tip20_token
+            .mint(user, ITIP20::mintCall { to: user, amount })
+            .unwrap();
 
         // Approve fee manager to spend user's tokens
         tip20_token
-            .approve(user, ITIP20::approveCall { spender: TIP_FEE_MANAGER_ADDRESS, amount })
+            .approve(
+                user,
+                ITIP20::approveCall {
+                    spender: TIP_FEE_MANAGER_ADDRESS,
+                    amount,
+                },
+            )
             .unwrap();
     }
 
@@ -213,7 +233,14 @@ mod tests {
         let token = token_id_to_address(1);
         let mut tip20_token = TIP20Token::from_address(token, &mut storage);
         tip20_token
-            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
@@ -240,7 +267,10 @@ mod tests {
         let mut fee_manager = TipFeeManager::new(&mut storage);
         let validator = Address::random();
 
-        let calldata = IFeeManager::setValidatorTokenCall { token: Address::ZERO }.abi_encode();
+        let calldata = IFeeManager::setValidatorTokenCall {
+            token: Address::ZERO,
+        }
+        .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), validator);
         expect_precompile_revert(&result, TIPFeeAMMError::invalid_token());
 
@@ -260,7 +290,14 @@ mod tests {
         let token = token_id_to_address(1);
         let mut tip20_token = TIP20Token::from_address(token, &mut storage);
         tip20_token
-            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
@@ -287,7 +324,10 @@ mod tests {
         let mut fee_manager = TipFeeManager::new(&mut storage);
         let user = Address::random();
 
-        let calldata = IFeeManager::setUserTokenCall { token: Address::ZERO }.abi_encode();
+        let calldata = IFeeManager::setUserTokenCall {
+            token: Address::ZERO,
+        }
+        .abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), user);
         expect_precompile_revert(&result, TIPFeeAMMError::invalid_token());
     }
@@ -300,9 +340,14 @@ mod tests {
         let token_a = Address::random();
         let token_b = Address::random();
 
-        let calldata = ITIPFeeAMM::getPoolIdCall { userToken: token_a, validatorToken: token_b };
+        let calldata = ITIPFeeAMM::getPoolIdCall {
+            userToken: token_a,
+            validatorToken: token_b,
+        };
         let calldata = calldata.abi_encode();
-        let result = fee_manager.call(&Bytes::from(calldata), Address::random()).unwrap();
+        let result = fee_manager
+            .call(&Bytes::from(calldata), Address::random())
+            .unwrap();
         // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
         assert_eq!(result.gas_used, 0);
 
@@ -320,7 +365,10 @@ mod tests {
         let token_b = Address::random();
 
         // Get pool using ITIPFeeAMM interface
-        let get_pool_call = ITIPFeeAMM::getPoolCall { userToken: token_a, validatorToken: token_b };
+        let get_pool_call = ITIPFeeAMM::getPoolCall {
+            userToken: token_a,
+            validatorToken: token_b,
+        };
         let calldata = get_pool_call.abi_encode();
         let result = fee_manager.call(&Bytes::from(calldata), Address::random())?;
         // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
@@ -342,14 +390,24 @@ mod tests {
         let token_b = Address::random();
 
         // Test that pool ID is same regardless of token order
-        let calldata1 =
-            ITIPFeeAMM::getPoolIdCall { userToken: token_a, validatorToken: token_b }.abi_encode();
-        let result1 = fee_manager.call(&Bytes::from(calldata1), Address::random()).unwrap();
+        let calldata1 = ITIPFeeAMM::getPoolIdCall {
+            userToken: token_a,
+            validatorToken: token_b,
+        }
+        .abi_encode();
+        let result1 = fee_manager
+            .call(&Bytes::from(calldata1), Address::random())
+            .unwrap();
         let id1 = B256::abi_decode(&result1.bytes).unwrap();
 
-        let calldata2 =
-            ITIPFeeAMM::getPoolIdCall { userToken: token_b, validatorToken: token_a }.abi_encode();
-        let result2 = fee_manager.call(&Bytes::from(calldata2), Address::random()).unwrap();
+        let calldata2 = ITIPFeeAMM::getPoolIdCall {
+            userToken: token_b,
+            validatorToken: token_a,
+        }
+        .abi_encode();
+        let result2 = fee_manager
+            .call(&Bytes::from(calldata2), Address::random())
+            .unwrap();
         let id2 = B256::abi_decode(&result2.bytes).unwrap();
 
         // Pool IDs should be the same since tokens are not ordered in FeeAMM (unlike TIPFeeAMM)
@@ -364,11 +422,15 @@ mod tests {
         let validator = Address::random();
 
         // Test that IFeeManager properly validates tokens (zero address)
-        let set_validator_call = IFeeManager::setValidatorTokenCall { token: Address::ZERO };
+        let set_validator_call = IFeeManager::setValidatorTokenCall {
+            token: Address::ZERO,
+        };
         let result = fee_manager.call(&Bytes::from(set_validator_call.abi_encode()), validator);
         expect_precompile_revert(&result, TIPFeeAMMError::invalid_token());
 
-        let set_user_call = IFeeManager::setUserTokenCall { token: Address::ZERO };
+        let set_user_call = IFeeManager::setUserTokenCall {
+            token: Address::ZERO,
+        };
         let result = fee_manager.call(&Bytes::from(set_user_call.abi_encode()), user);
         expect_precompile_revert(&result, TIPFeeAMMError::invalid_token());
     }
@@ -437,8 +499,10 @@ mod tests {
         let mut fee_manager = TipFeeManager::new(&mut storage);
 
         // Get pool ID first
-        let pool_id_call =
-            ITIPFeeAMM::getPoolIdCall { userToken: user_token, validatorToken: validator_token };
+        let pool_id_call = ITIPFeeAMM::getPoolIdCall {
+            userToken: user_token,
+            validatorToken: validator_token,
+        };
         let pool_id_result = fee_manager.call(&Bytes::from(pool_id_call.abi_encode()), user)?;
         let pool_id = B256::abi_decode(&pool_id_result.bytes)?;
 
@@ -466,8 +530,8 @@ mod tests {
         // Should return liquidity amount
         let liquidity = U256::abi_decode(&result.bytes)?;
 
-        // For first mint with validator token only, liquidity should be (amount / 2) -
-        // MIN_LIQUIDITY MIN_LIQUIDITY = 1000, so (10000 / 2) - 1000 = 4000
+        // For first mint with validator token only, liquidity should be (amount / 2) - MIN_LIQUIDITY
+        // MIN_LIQUIDITY = 1000, so (10000 / 2) - 1000 = 4000
         assert_eq!(liquidity, U256::from(4000u64));
 
         // Check total supply after mint should equal liquidity + MIN_LIQUIDITY
@@ -484,8 +548,10 @@ mod tests {
         assert_eq!(total_supply_increase, expected_total_supply);
 
         // Verify pool state
-        let pool_call =
-            ITIPFeeAMM::getPoolCall { userToken: user_token, validatorToken: validator_token };
+        let pool_call = ITIPFeeAMM::getPoolCall {
+            userToken: user_token,
+            validatorToken: validator_token,
+        };
         let pool_result = fee_manager.call(&Bytes::from(pool_call.abi_encode()), user)?;
         let pool = ITIPFeeAMM::Pool::abi_decode(&pool_result.bytes)?;
 
@@ -493,7 +559,10 @@ mod tests {
         assert_eq!(pool.reserveValidatorToken, 10000);
 
         // Verify LP token balance
-        let balance_call = ITIPFeeAMM::liquidityBalancesCall { poolId: pool_id, user: to };
+        let balance_call = ITIPFeeAMM::liquidityBalancesCall {
+            poolId: pool_id,
+            user: to,
+        };
         let balance_result = fee_manager.call(&Bytes::from(balance_call.abi_encode()), user)?;
         let balance = U256::abi_decode(&balance_result.bytes)?;
 
@@ -538,7 +607,10 @@ mod tests {
 
         // Verify the error can be decoded as UnknownFunctionSelector
         let decoded_error = UnknownFunctionSelector::abi_decode(&output.bytes);
-        assert!(decoded_error.is_ok(), "Should decode as UnknownFunctionSelector");
+        assert!(
+            decoded_error.is_ok(),
+            "Should decode as UnknownFunctionSelector"
+        );
 
         // Verify the selector matches what we sent
         let error = decoded_error.unwrap();
@@ -578,7 +650,10 @@ mod tests {
 
         // Verify the error can be decoded as UnknownFunctionSelector
         let decoded_error = UnknownFunctionSelector::abi_decode(&output.bytes);
-        assert!(decoded_error.is_ok(), "Should decode as UnknownFunctionSelector");
+        assert!(
+            decoded_error.is_ok(),
+            "Should decode as UnknownFunctionSelector"
+        );
 
         // Verify it's the mint selector
         let error = decoded_error.unwrap();

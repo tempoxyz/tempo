@@ -30,7 +30,14 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
 
             Ok(tx.into_signed(signature).into())
         } else {
-            let Self { inner, fee_token, calls, key_type, key_data, aa_authorization_list } = self;
+            let Self {
+                inner,
+                fee_token,
+                calls,
+                key_type,
+                key_data,
+                aa_authorization_list,
+            } = self;
             let envelope =
                 match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(inner.clone())
                 {
@@ -47,16 +54,18 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     }
                 };
 
-            Ok(envelope.try_into().map_err(|e: ValueError<EthereumTxEnvelope<TxEip4844>>| {
-                e.map(|_inner| Self {
-                    inner,
-                    fee_token,
-                    calls,
-                    key_type,
-                    key_data,
-                    aa_authorization_list,
-                })
-            })?)
+            Ok(envelope
+                .try_into()
+                .map_err(|e: ValueError<EthereumTxEnvelope<TxEip4844>>| {
+                    e.map(|_inner| Self {
+                        inner,
+                        fee_token,
+                        calls,
+                        key_type,
+                        key_data,
+                        aa_authorization_list,
+                    })
+                })?)
         }
     }
 }
@@ -68,7 +77,14 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
         self,
         evm_env: &EvmEnv<Spec, TempoBlockEnv>,
     ) -> Result<TempoTxEnv, Self::Err> {
-        let Self { inner, fee_token, calls, key_type, key_data, aa_authorization_list } = self;
+        let Self {
+            inner,
+            fee_token,
+            calls,
+            key_type,
+            key_data,
+            aa_authorization_list,
+        } = self;
         Ok(TempoTxEnv {
             inner: inner.try_into_tx_env(evm_env)?,
             fee_token,
@@ -126,12 +142,12 @@ fn create_mock_aa_signature(key_type: &SignatureType, key_data: Option<&Bytes>) 
         }
         SignatureType::WebAuthn => {
             // Create a dummy WebAuthn signature with the specified size
-            // key_data contains the total size of webauthn_data (excluding 128 bytes for public
-            // keys) Default: 200 bytes if no key_data provided
+            // key_data contains the total size of webauthn_data (excluding 128 bytes for public keys)
+            // Default: 200 bytes if no key_data provided
 
-            // Base clientDataJSON template (50 bytes):
-            // {"type":"webauthn.get","challenge":"","origin":""} Authenticator data (37
-            // bytes): 32 rpIdHash + 1 flags + 4 signCount Minimum total: 87 bytes
+            // Base clientDataJSON template (50 bytes): {"type":"webauthn.get","challenge":"","origin":""}
+            // Authenticator data (37 bytes): 32 rpIdHash + 1 flags + 4 signCount
+            // Minimum total: 87 bytes
             const BASE_CLIENT_JSON: &str = r#"{"type":"webauthn.get","challenge":"","origin":""}"#;
             const AUTH_DATA_SIZE: usize = 37;
             const MIN_WEBAUTHN_SIZE: usize = AUTH_DATA_SIZE + BASE_CLIENT_JSON.len(); // 87 bytes

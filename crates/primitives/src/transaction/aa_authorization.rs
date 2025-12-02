@@ -99,10 +99,10 @@ impl AASignedAuthorization {
 
     /// Outputs the length of the authorization's fields, without a RLP header.
     fn fields_len(&self) -> usize {
-        self.inner.chain_id.length() +
-            self.inner.address.length() +
-            self.inner.nonce.length() +
-            self.signature.length()
+        self.inner.chain_id.length()
+            + self.inner.address.length()
+            + self.inner.nonce.length()
+            + self.signature.length()
     }
 
     /// Calculates a heuristic for the in-memory size of this authorization
@@ -135,7 +135,11 @@ impl Decodable for AASignedAuthorization {
 
 impl Encodable for AASignedAuthorization {
     fn encode(&self, buf: &mut dyn BufMut) {
-        Header { list: true, payload_length: self.fields_len() }.encode(buf);
+        Header {
+            list: true,
+            payload_length: self.fields_len(),
+        }
+        .encode(buf);
         self.inner.chain_id.encode(buf);
         self.inner.address.encode(buf);
         self.inner.nonce.encode(buf);

@@ -61,7 +61,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         let index = self.sload_stream_index(stream_key)?.to::<usize>();
 
         let length = StreamEndingAt::len(self, end_time)?;
-        let last_index = length.checked_sub(1).ok_or(TempoPrecompileError::under_overflow())?;
+        let last_index = length
+            .checked_sub(1)
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
         // If removing element that's not the last, swap with last element
         if index != last_index {
@@ -97,8 +99,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
             return Ok(());
         }
 
-        let mut next_timestamp =
-            last_updated.checked_add(1).ok_or(TempoPrecompileError::under_overflow())?;
+        let mut next_timestamp = last_updated
+            .checked_add(1)
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
         while current_timestamp >= next_timestamp {
             let tokens = self.sload_streams_ending_at(next_timestamp)?;
@@ -115,8 +118,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
             // Clear all elements from the vec
             self.clear_streams_ending_at(next_timestamp)?;
 
-            next_timestamp =
-                next_timestamp.checked_add(1).ok_or(TempoPrecompileError::under_overflow())?;
+            next_timestamp = next_timestamp
+                .checked_add(1)
+                .ok_or(TempoPrecompileError::under_overflow())?;
         }
 
         self.sstore_last_updated_timestamp(current_timestamp)?;
@@ -299,12 +303,23 @@ mod tests {
 
         // Mint tokens for the reward
         let reward_amount = U256::from(100e18);
-        token.mint(admin, ITIP20::mintCall { to: admin, amount: reward_amount })?;
+        token.mint(
+            admin,
+            ITIP20::mintCall {
+                to: admin,
+                amount: reward_amount,
+            },
+        )?;
 
         // Start a reward stream that lasts 5 seconds from current time (1500)
         let current_time = token.storage().timestamp().to::<u128>();
-        let stream_id = token
-            .start_reward(admin, ITIP20::startRewardCall { amount: reward_amount, secs: 5 })?;
+        let stream_id = token.start_reward(
+            admin,
+            ITIP20::startRewardCall {
+                amount: reward_amount,
+                secs: 5,
+            },
+        )?;
         assert_eq!(stream_id, 1);
 
         let end_time = current_time + 5;

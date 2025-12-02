@@ -82,8 +82,13 @@ impl ExecutionRuntime {
                 while let Some(msg) = from_handle.recv().await {
                     match msg {
                         Message::AddValidator(add_validator) => {
-                            let AddValidator { http_url, address, public_key, addr, response } =
-                                *add_validator;
+                            let AddValidator {
+                                http_url,
+                                address,
+                                public_key,
+                                addr,
+                                response,
+                            } = *add_validator;
                             let provider = ProviderBuilder::new()
                                 .wallet(wallet.clone())
                                 .connect_http(http_url);
@@ -106,8 +111,12 @@ impl ExecutionRuntime {
                             let _ = response.send(receipt);
                         }
                         Message::ChangeValidatorStatus(change_validator_status) => {
-                            let ChangeValidatorStatus { http_url, active, address, response } =
-                                *change_validator_status;
+                            let ChangeValidatorStatus {
+                                http_url,
+                                active,
+                                address,
+                                response,
+                            } = *change_validator_status;
                             let provider = ProviderBuilder::new()
                                 .wallet(wallet.clone())
                                 .connect_http(http_url);
@@ -144,7 +153,11 @@ impl ExecutionRuntime {
             })
         });
 
-        Self { rt, _tempdir: tempdir, to_runtime }
+        Self {
+            rt,
+            _tempdir: tempdir,
+            to_runtime,
+        }
     }
 
     pub async fn add_validator(
@@ -156,7 +169,16 @@ impl ExecutionRuntime {
     ) -> eyre::Result<TransactionReceipt> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.to_runtime
-            .send(AddValidator { http_url, address, public_key, addr, response: tx }.into())
+            .send(
+                AddValidator {
+                    http_url,
+                    address,
+                    public_key,
+                    addr,
+                    response: tx,
+                }
+                .into(),
+            )
             .wrap_err("the execution runtime went away")?;
         rx.await
             .wrap_err("the execution runtime dropped the response channel before sending a receipt")
@@ -170,7 +192,15 @@ impl ExecutionRuntime {
     ) -> eyre::Result<TransactionReceipt> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.to_runtime
-            .send(ChangeValidatorStatus { address, active, http_url, response: tx }.into())
+            .send(
+                ChangeValidatorStatus {
+                    address,
+                    active,
+                    http_url,
+                    response: tx,
+                }
+                .into(),
+            )
             .wrap_err("the execution runtime went away")?;
         rx.await
             .wrap_err("the execution runtime dropped the response channel before sending a receipt")
@@ -185,7 +215,16 @@ impl ExecutionRuntime {
     ) -> eyre::Result<TransactionReceipt> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.to_runtime
-            .send(AddValidator { http_url, address, public_key, addr, response: tx }.into())
+            .send(
+                AddValidator {
+                    http_url,
+                    address,
+                    public_key,
+                    addr,
+                    response: tx,
+                }
+                .into(),
+            )
             .wrap_err("the execution runtime went away")?;
         rx.await
             .wrap_err("the execution runtime dropped the response channel before sending a receipt")
@@ -195,7 +234,13 @@ impl ExecutionRuntime {
     pub async fn spawn_node(&self, name: &str) -> eyre::Result<ExecutionNode> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.to_runtime
-            .send(SpawnNode { name: name.to_string(), response: tx }.into())
+            .send(
+                SpawnNode {
+                    name: name.to_string(),
+                    response: tx,
+                }
+                .into(),
+            )
             .wrap_err("the execution runtime went away")?;
         rx.await.wrap_err(
             "the execution runtime dropped the response channel before sending an execution node",
@@ -204,7 +249,9 @@ impl ExecutionRuntime {
 
     /// Instructs the runtime to stop and exit.
     pub fn stop(self) -> eyre::Result<()> {
-        self.to_runtime.send(Message::Stop).wrap_err("the execution runtime went away")?;
+        self.to_runtime
+            .send(Message::Stop)
+            .wrap_err("the execution runtime went away")?;
         match self.rt.join() {
             Ok(()) => Ok(()),
             Err(e) => std::panic::resume_unwind(e),
@@ -228,7 +275,9 @@ impl ExecutionNode {
         let other_record = other.node.network.local_node_record();
         let mut events = self.node.network.event_listener();
 
-        self.node.network.add_trusted_peer(other_record.id, other_record.tcp_addr());
+        self.node
+            .network
+            .add_trusted_peer(other_record.id, other_record.tcp_addr());
 
         match events.next().await {
             Some(NetworkEvent::Peer(PeerEvent::PeerAdded(_))) => (),
@@ -240,7 +289,11 @@ impl ExecutionNode {
             ev => panic!("Expected an active peer session event, got: {ev:?}"),
         }
 
-        tracing::debug!("Connected peers: {:?} -> {:?}", self_record.id, other_record.id);
+        tracing::debug!(
+            "Connected peers: {:?} -> {:?}",
+            self_record.id,
+            other_record.id
+        );
     }
 }
 
@@ -255,8 +308,10 @@ impl std::fmt::Debug for ExecutionNode {
 }
 
 pub fn genesis() -> Genesis {
-    serde_json::from_str(include_str!("../../node/tests/assets/test-genesis-moderato.json"))
-        .unwrap()
+    serde_json::from_str(include_str!(
+        "../../node/tests/assets/test-genesis-moderato.json"
+    ))
+    .unwrap()
 }
 
 // TODO(janis): allow configuring this.
@@ -265,12 +320,20 @@ pub fn chainspec() -> TempoChainSpec {
 }
 
 pub fn insert_allegretto(mut genesis: Genesis, timestamp: u64) -> Genesis {
-    genesis.config.extra_fields.insert_value("allegrettoTime".to_string(), timestamp).unwrap();
+    genesis
+        .config
+        .extra_fields
+        .insert_value("allegrettoTime".to_string(), timestamp)
+        .unwrap();
     genesis
 }
 
 pub fn insert_epoch_length(mut genesis: Genesis, epoch_length: u64) -> Genesis {
-    genesis.config.extra_fields.insert_value("epochLength".to_string(), epoch_length).unwrap();
+    genesis
+        .config
+        .extra_fields
+        .insert_value("epochLength".to_string(), epoch_length)
+        .unwrap();
     genesis
 }
 
@@ -278,7 +341,11 @@ pub fn insert_validators(
     mut genesis: Genesis,
     validators: tempo_commonware_node_config::Peers,
 ) -> Genesis {
-    genesis.config.extra_fields.insert_value("validators".to_string(), validators).unwrap();
+    genesis
+        .config
+        .extra_fields
+        .insert_value("validators".to_string(), validators)
+        .unwrap();
     genesis
 }
 
@@ -299,8 +366,8 @@ pub fn insert_public_polynomial(
 /// Difference compared to starting the node through the binary:
 ///
 /// 1. faucet is always disabled
-/// 2. components are not provided (looking at the node command, the components are not passed to
-///    it).
+/// 2. components are not provided (looking at the node command, the components
+///    are not passed to it).
 /// 3. consensus config is not necessary
 pub async fn launch_execution_node<P: AsRef<Path>>(
     executor: TaskExecutor,
@@ -341,7 +408,10 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         .launch()
         .await
         .wrap_err("failed launching node")?;
-    Ok(ExecutionNode { node: node_handle.node, _exit_fut: node_handle.node_exit_future })
+    Ok(ExecutionNode {
+        node: node_handle.node,
+        _exit_fut: node_handle.node_exit_future,
+    })
 }
 
 #[derive(Debug)]

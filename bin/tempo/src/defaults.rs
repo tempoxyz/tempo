@@ -13,7 +13,9 @@ fn init_download_urls() {
         long_help: None,
     };
 
-    download_defaults.try_init().expect("failed to initialize download URLs");
+    download_defaults
+        .try_init()
+        .expect("failed to initialize download URLs");
 }
 
 fn init_payload_builder_defaults() {

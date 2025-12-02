@@ -49,10 +49,16 @@ impl TempoTransactionRequest {
 
     pub fn build_fee_token(self) -> Result<TxFeeToken, ValueError<Self>> {
         let Some(to) = self.inner.to else {
-            return Err(ValueError::new(self, "Missing 'to' field for FeeToken transaction."));
+            return Err(ValueError::new(
+                self,
+                "Missing 'to' field for FeeToken transaction.",
+            ));
         };
         let Some(nonce) = self.inner.nonce else {
-            return Err(ValueError::new(self, "Missing 'nonce' field for FeeToken transaction."));
+            return Err(ValueError::new(
+                self,
+                "Missing 'nonce' field for FeeToken transaction.",
+            ));
         };
         let Some(gas_limit) = self.inner.gas else {
             return Err(ValueError::new(
@@ -91,11 +97,17 @@ impl TempoTransactionRequest {
 
     pub fn build_aa(self) -> Result<TxAA, ValueError<Self>> {
         if self.calls.is_empty() && self.inner.to.is_none() {
-            return Err(ValueError::new(self, "Missing 'calls' or 'to' field for AA transaction."));
+            return Err(ValueError::new(
+                self,
+                "Missing 'calls' or 'to' field for AA transaction.",
+            ));
         }
 
         let Some(nonce) = self.inner.nonce else {
-            return Err(ValueError::new(self, "Missing 'nonce' field for FeeToken transaction."));
+            return Err(ValueError::new(
+                self,
+                "Missing 'nonce' field for FeeToken transaction.",
+            ));
         };
         let Some(gas_limit) = self.inner.gas else {
             return Err(ValueError::new(
@@ -154,7 +166,11 @@ impl AsMut<TransactionRequest> for TempoTransactionRequest {
 
 impl From<TransactionRequest> for TempoTransactionRequest {
     fn from(value: TransactionRequest) -> Self {
-        Self { inner: value, fee_token: None, ..Default::default() }
+        Self {
+            inner: value,
+            fee_token: None,
+            ..Default::default()
+        }
     }
 }
 
@@ -266,18 +282,26 @@ impl From<AASigned> for TempoTransactionRequest {
 impl From<TempoTypedTransaction> for TempoTransactionRequest {
     fn from(value: TempoTypedTransaction) -> Self {
         match value {
-            TempoTypedTransaction::Legacy(tx) => {
-                Self { inner: tx.into(), fee_token: None, ..Default::default() }
-            }
-            TempoTypedTransaction::Eip2930(tx) => {
-                Self { inner: tx.into(), fee_token: None, ..Default::default() }
-            }
-            TempoTypedTransaction::Eip1559(tx) => {
-                Self { inner: tx.into(), fee_token: None, ..Default::default() }
-            }
-            TempoTypedTransaction::Eip7702(tx) => {
-                Self { inner: tx.into(), fee_token: None, ..Default::default() }
-            }
+            TempoTypedTransaction::Legacy(tx) => Self {
+                inner: tx.into(),
+                fee_token: None,
+                ..Default::default()
+            },
+            TempoTypedTransaction::Eip2930(tx) => Self {
+                inner: tx.into(),
+                fee_token: None,
+                ..Default::default()
+            },
+            TempoTypedTransaction::Eip1559(tx) => Self {
+                inner: tx.into(),
+                fee_token: None,
+                ..Default::default()
+            },
+            TempoTypedTransaction::Eip7702(tx) => Self {
+                inner: tx.into(),
+                fee_token: None,
+                ..Default::default()
+            },
             TempoTypedTransaction::FeeToken(tx) => Self {
                 fee_token: tx.fee_token,
                 inner: TransactionRequest::from_transaction(tx),

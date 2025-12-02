@@ -117,7 +117,11 @@ where
             let chunk_bytes = chunk_value.to_be_bytes::<32>();
 
             // For the last chunk, only take the remaining bytes
-            let bytes_to_take = if i == chunks - 1 { length - (i * 32) } else { 32 };
+            let bytes_to_take = if i == chunks - 1 {
+                length - (i * 32)
+            } else {
+                32
+            };
             data.extend_from_slice(&chunk_bytes[..bytes_to_take]);
         }
 
@@ -309,7 +313,10 @@ mod tests {
 
     /// Helper to create a test contract with fresh storage.
     fn setup_test_contract() -> TestContract {
-        TestContract { address: Address::random(), storage: HashMapStorageProvider::new(1) }
+        TestContract {
+            address: Address::random(),
+            storage: HashMapStorageProvider::new(1),
+        }
     }
 
     // Strategy for generating random U256 slot values that won't overflow

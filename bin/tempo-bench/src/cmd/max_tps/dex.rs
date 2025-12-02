@@ -15,7 +15,10 @@ pub(super) async fn setup(
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
 ) -> eyre::Result<(Address, Vec<Address>)> {
-    info!(signers = signer_providers.len(), user_tokens, "Setting up DEX");
+    info!(
+        signers = signer_providers.len(),
+        user_tokens, "Setting up DEX"
+    );
 
     // Grab first signer provider
     let (signer, provider) = signer_providers.first().unwrap();
@@ -33,10 +36,19 @@ pub(super) async fn setup(
         .try_collect::<Vec<_>>()
         .await?;
 
-    let user_token_addresses = user_tokens.iter().map(|token| *token.address()).collect::<Vec<_>>();
-    let all_tokens =
-        user_tokens.iter().cloned().chain(std::iter::once(quote_token.clone())).collect::<Vec<_>>();
-    let all_token_addresses = all_tokens.iter().map(|token| *token.address()).collect::<Vec<_>>();
+    let user_token_addresses = user_tokens
+        .iter()
+        .map(|token| *token.address())
+        .collect::<Vec<_>>();
+    let all_tokens = user_tokens
+        .iter()
+        .cloned()
+        .chain(std::iter::once(quote_token.clone()))
+        .collect::<Vec<_>>();
+    let all_token_addresses = all_tokens
+        .iter()
+        .map(|token| *token.address())
+        .collect::<Vec<_>>();
 
     // Create exchange pairs for each user token
     info!("Creating exchange pairs");
@@ -103,8 +115,7 @@ pub(super) async fn setup(
     .await
     .context("Failed to approve tokens")?;
 
-    // Place flip orders of `order_amount` with tick `tick_over` and flip tick `tick_under` for each
-    // signer and each token
+    // Place flip orders of `order_amount` with tick `tick_over` and flip tick `tick_under` for each signer and each token
     let order_amount = 1000000000000u128;
     let tick_over = exchange.priceToTick(100010).call().await?;
     let tick_under = exchange.priceToTick(99990).call().await?;
@@ -145,7 +156,13 @@ where
 {
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
     let receipt = factory
-        .createToken("Test".to_owned(), "TEST".to_owned(), "USD".to_owned(), quote_token, admin)
+        .createToken(
+            "Test".to_owned(),
+            "TEST".to_owned(),
+            "USD".to_owned(),
+            quote_token,
+            admin,
+        )
         .send()
         .await?
         .get_receipt()
@@ -156,7 +173,12 @@ where
     let token = ITIP20::new(token_addr, provider.clone());
     let roles = IRolesAuth::new(*token.address(), provider);
 
-    roles.grantRole(*ISSUER_ROLE, admin).send().await?.get_receipt().await?;
+    roles
+        .grantRole(*ISSUER_ROLE, admin)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
 
     Ok(token)
 }

@@ -23,9 +23,13 @@ impl Mailbox {
     ) -> eyre::Result<Option<IntermediateOutcome>> {
         let (response, rx) = oneshot::channel();
         self.inner
-            .unbounded_send(Message::in_current_span(GetIntermediateDealing { epoch, response }))
+            .unbounded_send(Message::in_current_span(GetIntermediateDealing {
+                epoch,
+                response,
+            }))
             .wrap_err("failed sending message to actor")?;
-        rx.await.wrap_err("actor dropped channel before responding with ceremony deal outcome")
+        rx.await
+            .wrap_err("actor dropped channel before responding with ceremony deal outcome")
     }
 
     pub(crate) async fn get_public_ceremony_outcome(&self) -> eyre::Result<PublicOutcome> {
@@ -33,7 +37,8 @@ impl Mailbox {
         self.inner
             .unbounded_send(Message::in_current_span(GetOutcome { response }))
             .wrap_err("failed sending message to actor")?;
-        rx.await.wrap_err("actor dropped channel before responding with ceremony deal outcome")
+        rx.await
+            .wrap_err("actor dropped channel before responding with ceremony deal outcome")
     }
 }
 
@@ -44,7 +49,10 @@ pub(super) struct Message {
 
 impl Message {
     fn in_current_span(cmd: impl Into<Command>) -> Self {
-        Self { cause: Span::current(), command: cmd.into() }
+        Self {
+            cause: Span::current(),
+            command: cmd.into(),
+        }
     }
 }
 

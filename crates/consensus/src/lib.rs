@@ -24,8 +24,11 @@ use tempo_primitives::{
 
 // End-of-block system transactions (required)
 const END_OF_BLOCK_SYSTEM_TX_COUNT: usize = 3;
-const END_OF_BLOCK_SYSTEM_TX_ADDRESSES: [Address; END_OF_BLOCK_SYSTEM_TX_COUNT] =
-    [TIP_FEE_MANAGER_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, Address::ZERO];
+const END_OF_BLOCK_SYSTEM_TX_ADDRESSES: [Address; END_OF_BLOCK_SYSTEM_TX_COUNT] = [
+    TIP_FEE_MANAGER_ADDRESS,
+    STABLECOIN_EXCHANGE_ADDRESS,
+    Address::ZERO,
+];
 
 /// How far in the future the block timestamp can be.
 pub const ALLOWED_FUTURE_BLOCK_TIME_SECONDS: u64 = 3;
@@ -70,8 +73,8 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
         }
 
         // Validate the non-payment gas limit
-        if header.general_gas_limit !=
-            (header.gas_limit() - header.shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
+        if header.general_gas_limit
+            != (header.gas_limit() - header.shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
         {
             return Err(ConsensusError::Other(
                 "Non-payment gas limit does not match header gas limit".to_string(),
@@ -103,8 +106,10 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
             self.inner.chain_spec(),
         )?;
 
-        if let Some(blob_params) =
-            self.inner.chain_spec().blob_params_at_timestamp(header.timestamp())
+        if let Some(blob_params) = self
+            .inner
+            .chain_spec()
+            .blob_params_at_timestamp(header.timestamp())
         {
             validate_against_parent_4844(header.header(), parent.header(), blob_params)?;
         }
@@ -146,11 +151,15 @@ impl Consensus<Block> for TempoConsensus {
         // If the moderator hardfork is not active, validate that the TIP20 Rewards Registry system
         // tx is the first transaction in the block. If the block timestamp is post moderato, skip
         // this step
-        if !self.inner.chain_spec().is_moderato_active_at_timestamp(block.timestamp()) {
+        if !self
+            .inner
+            .chain_spec()
+            .is_moderato_active_at_timestamp(block.timestamp())
+        {
             // Check for optional rewards registry system transaction at the start
-            if let Some(first_tx) = transactions.first() &&
-                first_tx.is_system_tx() &&
-                first_tx.to().unwrap_or_default() != TIP20_REWARDS_REGISTRY_ADDRESS
+            if let Some(first_tx) = transactions.first()
+                && first_tx.is_system_tx()
+                && first_tx.to().unwrap_or_default() != TIP20_REWARDS_REGISTRY_ADDRESS
             {
                 return Err(ConsensusError::Other(
                     "First transaction must be rewards registry if it's a system tx".to_string(),
@@ -158,12 +167,18 @@ impl Consensus<Block> for TempoConsensus {
             }
         }
 
-        // Get the last END_OF_BLOCK_SYSTEM_TX_COUNT transactions and validate they are end-of-block
-        // system txs
+        // Get the last END_OF_BLOCK_SYSTEM_TX_COUNT transactions and validate they are end-of-block system txs
         let end_of_block_system_txs = transactions
-            .get(transactions.len().saturating_sub(END_OF_BLOCK_SYSTEM_TX_COUNT)..)
+            .get(
+                transactions
+                    .len()
+                    .saturating_sub(END_OF_BLOCK_SYSTEM_TX_COUNT)..,
+            )
             .map(|slice| {
-                slice.iter().filter(|tx| tx.is_system_tx()).collect::<Vec<&TempoTxEnvelope>>()
+                slice
+                    .iter()
+                    .filter(|tx| tx.is_system_tx())
+                    .collect::<Vec<&TempoTxEnvelope>>()
             })
             .unwrap_or_default();
 
@@ -174,8 +189,9 @@ impl Consensus<Block> for TempoConsensus {
         }
 
         // Validate that the sequence of end-of-block system txs is correct
-        for (tx, expected_to) in
-            end_of_block_system_txs.into_iter().zip(END_OF_BLOCK_SYSTEM_TX_ADDRESSES)
+        for (tx, expected_to) in end_of_block_system_txs
+            .into_iter()
+            .zip(END_OF_BLOCK_SYSTEM_TX_ADDRESSES)
         {
             if tx.to().unwrap_or_default() != expected_to {
                 return Err(ConsensusError::Other(

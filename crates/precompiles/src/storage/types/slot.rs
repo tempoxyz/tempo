@@ -59,7 +59,9 @@ impl<T, Id: SlotId> Slot<T, Id> {
     /// as struct fields and accessed via macro-generated methods.
     #[inline]
     pub const fn new() -> Self {
-        Self { _phantom: PhantomData }
+        Self {
+            _phantom: PhantomData,
+        }
     }
 
     /// Returns the U256 storage slot number.
@@ -320,7 +322,10 @@ mod tests {
     fn setup_test_contract<'a>(
         storage: &'a mut HashMapStorageProvider,
     ) -> TestContract<'a, HashMapStorageProvider> {
-        TestContract { address: Address::random(), storage }
+        TestContract {
+            address: Address::random(),
+            storage,
+        }
     }
 
     // Test SlotId implementations

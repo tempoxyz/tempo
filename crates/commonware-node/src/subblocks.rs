@@ -138,7 +138,9 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
 
     /// Returns a handle to the subblocks service.
     pub(crate) fn mailbox(&self) -> Mailbox {
-        Mailbox { tx: self.actions_tx.clone() }
+        Mailbox {
+            tx: self.actions_tx.clone(),
+        }
     }
 
     pub(crate) async fn run(
@@ -200,7 +202,10 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
     }
 
     fn on_new_subblock_transaction(&self, transaction: Recovered<TempoTxEnvelope>) {
-        if !transaction.subblock_proposer().is_some_and(|k| k.matches(self.signer.public_key())) {
+        if !transaction
+            .subblock_proposer()
+            .is_some_and(|k| k.matches(self.signer.public_key()))
+        {
             return;
         }
         let mut txs = self.subblock_transactions.lock();
@@ -224,21 +229,21 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             _ => return,
         };
 
-        if let Some((round, tip, cert)) = &mut self.consensus_tip &&
-            *round <= new_round
+        if let Some((round, tip, cert)) = &mut self.consensus_tip
+            && *round <= new_round
         {
             *round = new_round;
             *cert = new_cert;
 
-            if let Some(new_tip) = new_tip &&
-                *tip != new_tip
+            if let Some(new_tip) = new_tip
+                && *tip != new_tip
             {
                 // Clear collected subblocks if we have a new tip.
                 self.subblocks.clear();
                 *tip = new_tip;
             }
-        } else if self.consensus_tip.is_none() &&
-            let Some(new_tip) = new_tip
+        } else if self.consensus_tip.is_none()
+            && let Some(new_tip) = new_tip
         {
             // Initialize consensus tip once we know the tip block hash.
             self.consensus_tip = Some((new_round, new_tip, new_cert));
@@ -282,8 +287,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
 
         debug!(?next_proposer, ?next_round, "determined next proposer");
 
-        // Spawn new subblock building task if the current one is assuming different proposer or
-        // parent hash.
+        // Spawn new subblock building task if the current one is assuming different proposer or parent hash.
         if self
             .subblock_builder_handle
             .as_ref()
@@ -306,21 +310,28 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         let fee_recipient = self.fee_recipient;
         let timeout = self.time_to_build_subblock;
         let span = Span::current();
-        let handle = self.context.with_label("validate_subblock").shared(true).spawn(move |_| {
-            build_subblock(
-                transactions,
-                node,
-                parent_hash,
-                num_validators,
-                signer,
-                fee_recipient,
-                timeout,
-            )
-            .instrument(span)
-        });
+        let handle = self
+            .context
+            .with_label("validate_subblock")
+            .shared(true)
+            .spawn(move |_| {
+                build_subblock(
+                    transactions,
+                    node,
+                    parent_hash,
+                    num_validators,
+                    signer,
+                    fee_recipient,
+                    timeout,
+                )
+                .instrument(span)
+            });
 
-        self.subblock_builder_handle =
-            Some(BuildSubblockTask { handle, parent_hash, proposer: next_proposer });
+        self.subblock_builder_handle = Some(BuildSubblockTask {
+            handle,
+            parent_hash,
+            proposer: next_proposer,
+        });
     }
 
     #[instrument(skip_all, err(level = Level::WARN), fields(sender = %sender, msg_bytes = message.len()))]
@@ -401,7 +412,11 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         );
         if next_proposer != self.signer.public_key() {
             let _ = network_tx
-                .send(Recipients::One(next_proposer), alloy_rlp::encode(&*subblock).into(), true)
+                .send(
+                    Recipients::One(next_proposer),
+                    alloy_rlp::encode(&*subblock).into(),
+                    true,
+                )
                 .await;
         } else {
             self.on_validated_subblock(subblock);
@@ -452,7 +467,10 @@ impl Mailbox {
         parent: BlockHash,
     ) -> Result<Vec<RecoveredSubBlock>, RecvError> {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        let _ = self.tx.unbounded_send(Message::GetSubBlocks { parent, response: tx });
+        let _ = self.tx.unbounded_send(Message::GetSubBlocks {
+            parent,
+            response: tx,
+        });
         rx.recv()
     }
 }
@@ -461,7 +479,9 @@ impl Reporter for Mailbox {
     type Activity = Activity<Scheme<PublicKey, MinSig>, Digest>;
 
     async fn report(&mut self, activity: Self::Activity) -> () {
-        let _ = self.tx.unbounded_send(Message::Consensus(Box::new(activity)));
+        let _ = self
+            .tx
+            .unbounded_send(Message::Consensus(Box::new(activity)));
     }
 }
 
@@ -470,9 +490,14 @@ fn evm_at_block(
     hash: BlockHash,
 ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>> {
     let db = State::builder()
-        .with_database(StateProviderDatabase::new(node.provider.state_by_block_hash(hash)?))
+        .with_database(StateProviderDatabase::new(
+            node.provider.state_by_block_hash(hash)?,
+        ))
         .build();
-    let header = node.provider.header(hash)?.ok_or(ProviderError::BestBlockNotFound)?;
+    let header = node
+        .provider
+        .header(hash)?
+        .ok_or(ProviderError::BestBlockNotFound)?;
 
     Ok(node.evm_config.evm_for_block(db, &header)?)
 }
@@ -529,12 +554,18 @@ async fn build_subblock(
         }
     };
 
-    let subblock =
-        SubBlock { version: SubBlockVersion::V1, fee_recipient, parent_hash, transactions };
+    let subblock = SubBlock {
+        version: SubBlockVersion::V1,
+        fee_recipient,
+        parent_hash,
+        transactions,
+    };
 
     let signature = signer.sign(None, subblock.signature_hash().as_slice());
-    let signed_subblock =
-        SignedSubBlock { inner: subblock, signature: Bytes::copy_from_slice(signature.as_ref()) };
+    let signed_subblock = SignedSubBlock {
+        inner: subblock,
+        signature: Bytes::copy_from_slice(signature.as_ref()),
+    };
 
     RecoveredSubBlock::new_unchecked(
         signed_subblock,
@@ -569,12 +600,13 @@ async fn validate_subblock(
         return Err(eyre::eyre!("invalid signature"));
     }
 
-    if subblock
-        .transactions
-        .iter()
-        .any(|tx| tx.subblock_proposer().is_none_or(|proposer| !proposer.matches(&sender)))
-    {
-        return Err(eyre::eyre!("all transactions must specify the subblock validator"));
+    if subblock.transactions.iter().any(|tx| {
+        tx.subblock_proposer()
+            .is_none_or(|proposer| !proposer.matches(&sender))
+    }) {
+        return Err(eyre::eyre!(
+            "all transactions must specify the subblock validator"
+        ));
     }
 
     // Recover subblock transactions and convert it into a `RecoveredSubBlock`.
@@ -583,18 +615,26 @@ async fn validate_subblock(
     let mut evm = evm_at_block(&node, subblock.parent_hash)?;
 
     let epoch = utils::epoch(epoch_length, evm.block().number.to::<u64>() + 1);
-    let scheme = scheme_provider.scheme(epoch).ok_or_eyre("scheme not found")?;
+    let scheme = scheme_provider
+        .scheme(epoch)
+        .ok_or_eyre("scheme not found")?;
 
-    eyre::ensure!(scheme.participants().iter().any(|p| p == &sender), "sender is not a validator");
+    eyre::ensure!(
+        scheme.participants().iter().any(|p| p == &sender),
+        "sender is not a validator"
+    );
 
     // Bound subblock size at a value proportional to `TEMPO_SHARED_GAS_DIVISOR`.
     //
     // This ensures we never collect too many subblocks to fit into a new proposal.
-    let max_size = MAX_RLP_BLOCK_SIZE /
-        TEMPO_SHARED_GAS_DIVISOR as usize /
-        scheme.participants().len() as usize;
+    let max_size = MAX_RLP_BLOCK_SIZE
+        / TEMPO_SHARED_GAS_DIVISOR as usize
+        / scheme.participants().len() as usize;
     if subblock.total_tx_size() > max_size {
-        warn!(size = subblock.total_tx_size(), max_size, "subblock is too large, skipping");
+        warn!(
+            size = subblock.total_tx_size(),
+            max_size, "subblock is too large, skipping"
+        );
         return Ok(());
     }
 

@@ -27,7 +27,10 @@ pub(super) struct Message {
 
 impl Message {
     fn in_current_span(activity: impl Into<Activity>) -> Self {
-        Self { cause: Span::current(), activity: activity.into() }
+        Self {
+            cause: Span::current(),
+            activity: activity.into(),
+        }
     }
 }
 
@@ -66,8 +69,7 @@ impl Reporter for Mailbox {
     type Activity = Activity;
 
     async fn report(&mut self, command: Self::Activity) {
-        // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels
-        // instead?
+        // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
         if let Err(error) = self
             .inner
             .unbounded_send(Message::in_current_span(command))

@@ -16,8 +16,7 @@ pub mod tokens_by_address;
 pub trait TempoTokenApi {
     /// Gets paginated role change history for TIP-20 tokens on Tempo.
     ///
-    /// Tracks role grants and revocations from the RoleMembershipUpdated event for audit trails and
-    /// compliance monitoring.
+    /// Tracks role grants and revocations from the RoleMembershipUpdated event for audit trails and compliance monitoring.
     ///
     /// Uses cursor-based pagination for stable iteration through role changes.
     #[method(name = "getRoleHistory")]

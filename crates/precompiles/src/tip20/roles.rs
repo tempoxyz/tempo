@@ -157,8 +157,9 @@ mod tests {
     #[test]
     fn test_role_contract_grant_and_check() {
         let mut storage = HashMapStorageProvider::new(1);
-        let test_address =
-            Address::from([0x20, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let test_address = Address::from([
+            0x20, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]);
         let mut token = TIP20Token::from_address(test_address, &mut storage);
 
         let admin = Address::from([1u8; 20]);
@@ -167,23 +168,42 @@ mod tests {
 
         // Initialize and grant admin
         token
-            .initialize("name", "symbol", "currency", Address::ZERO, admin, Address::ZERO)
+            .initialize(
+                "name",
+                "symbol",
+                "currency",
+                Address::ZERO,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         // Test hasRole
         let has_admin = token
-            .has_role(IRolesAuth::hasRoleCall { account: admin, role: DEFAULT_ADMIN_ROLE })
+            .has_role(IRolesAuth::hasRoleCall {
+                account: admin,
+                role: DEFAULT_ADMIN_ROLE,
+            })
             .expect("Should have admin");
         assert!(has_admin);
 
         // Grant custom role
         token
-            .grant_role(admin, IRolesAuth::grantRoleCall { role: custom_role, account: user })
+            .grant_role(
+                admin,
+                IRolesAuth::grantRoleCall {
+                    role: custom_role,
+                    account: user,
+                },
+            )
             .unwrap();
 
         // Check custom role
         let has_custom = token
-            .has_role(IRolesAuth::hasRoleCall { account: user, role: custom_role })
+            .has_role(IRolesAuth::hasRoleCall {
+                account: user,
+                role: custom_role,
+            })
             .expect("Should have role");
         assert!(has_custom);
 
@@ -203,14 +223,24 @@ mod tests {
 
         // Initialize and grant admin
         token
-            .initialize("name", "symbol", "currency", Address::ZERO, admin, Address::ZERO)
+            .initialize(
+                "name",
+                "symbol",
+                "currency",
+                Address::ZERO,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         // Set custom admin for role
         token
             .set_role_admin(
                 admin,
-                IRolesAuth::setRoleAdminCall { role: custom_role, adminRole: admin_role },
+                IRolesAuth::setRoleAdminCall {
+                    role: custom_role,
+                    adminRole: admin_role,
+                },
             )
             .unwrap();
 
@@ -231,15 +261,28 @@ mod tests {
         let custom_role = keccak256(b"CUSTOM_ROLE");
 
         token
-            .initialize("name", "symbol", "currency", Address::ZERO, Address::ZERO, Address::ZERO)
+            .initialize(
+                "name",
+                "symbol",
+                "currency",
+                Address::ZERO,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
         token.grant_role_internal(user, custom_role).unwrap();
 
         // Renounce role
-        token.renounce_role(user, IRolesAuth::renounceRoleCall { role: custom_role }).unwrap();
+        token
+            .renounce_role(user, IRolesAuth::renounceRoleCall { role: custom_role })
+            .unwrap();
 
         // Check role is removed
-        assert!(!token.has_role_internal(user, custom_role).expect("Could not get role"));
+        assert!(
+            !token
+                .has_role_internal(user, custom_role)
+                .expect("Could not get role")
+        );
     }
 
     #[test]
@@ -253,18 +296,30 @@ mod tests {
         let custom_role = keccak256(b"CUSTOM_ROLE");
 
         token
-            .initialize("name", "symbol", "currency", Address::ZERO, Address::ZERO, Address::ZERO)
+            .initialize(
+                "name",
+                "symbol",
+                "currency",
+                Address::ZERO,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
 
         // Try to grant role without permission
-        let result =
-            token.grant_role(user, IRolesAuth::grantRoleCall { role: custom_role, account: other });
+        let result = token.grant_role(
+            user,
+            IRolesAuth::grantRoleCall {
+                role: custom_role,
+                account: other,
+            },
+        );
 
         assert!(matches!(
             result,
-            Err(TempoPrecompileError::RolesAuthError(RolesAuthError::Unauthorized(
-                IRolesAuth::Unauthorized {}
-            )))
+            Err(TempoPrecompileError::RolesAuthError(
+                RolesAuthError::Unauthorized(IRolesAuth::Unauthorized {})
+            ))
         ));
     }
 }

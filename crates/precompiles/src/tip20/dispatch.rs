@@ -116,13 +116,21 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
 
             ITIP20::feeRecipientCall::SELECTOR => {
                 if !self.storage.spec().is_allegretto() {
-                    return unknown_selector(selector, self.storage.gas_used(), self.storage.spec());
+                    return unknown_selector(
+                        selector,
+                        self.storage.gas_used(),
+                        self.storage.spec(),
+                    );
                 }
                 view::<ITIP20::feeRecipientCall>(calldata, |_call| self.sload_fee_recipient())
             }
             ITIP20::setFeeRecipientCall::SELECTOR => {
                 if !self.storage.spec().is_allegretto() {
-                    return unknown_selector(selector, self.storage.gas_used(), self.storage.spec());
+                    return unknown_selector(
+                        selector,
+                        self.storage.gas_used(),
+                        self.storage.spec(),
+                    );
                 }
                 mutate_void::<ITIP20::setFeeRecipientCall>(calldata, msg_sender, |s, call| {
                     self.set_fee_recipient(s, call.newRecipient)
@@ -207,7 +215,8 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
 
             ITIP20::userRewardInfoCall::SELECTOR => {
                 view::<ITIP20::userRewardInfoCall>(calldata, |call| {
-                    self.get_user_reward_info(call.account).map(|info| info.into())
+                    self.get_user_reward_info(call.account)
+                        .map(|info| info.into())
                 })
             }
 
@@ -288,18 +297,34 @@ mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO).unwrap();
+        token
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
+            .unwrap();
 
         // Grant ISSUER_ROLE to admin
         use alloy::primitives::keccak256;
         let issuer_role = keccak256(b"ISSUER_ROLE");
         token
-            .grant_role(admin, IRolesAuth::grantRoleCall { role: issuer_role, account: admin })
+            .grant_role(
+                admin,
+                IRolesAuth::grantRoleCall {
+                    role: issuer_role,
+                    account: admin,
+                },
+            )
             .unwrap();
 
         // Mint to set the balance first
         let test_balance = U256::from(1000);
-        token.mint(admin, ITIP20::mintCall { to: account, amount: test_balance }).unwrap();
+        token
+            .mint(
+                admin,
+                ITIP20::mintCall {
+                    to: account,
+                    amount: test_balance,
+                },
+            )
+            .unwrap();
 
         // Valid balanceOf call
         let balance_of_call = ITIP20::balanceOfCall { account };
@@ -325,13 +350,21 @@ mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO).unwrap();
+        token
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
+            .unwrap();
 
         // Grant ISSUER_ROLE to sender
         use alloy::primitives::keccak256;
         let issuer_role = keccak256(b"ISSUER_ROLE");
         token
-            .grant_role(admin, IRolesAuth::grantRoleCall { role: issuer_role, account: sender })
+            .grant_role(
+                admin,
+                IRolesAuth::grantRoleCall {
+                    role: issuer_role,
+                    account: sender,
+                },
+            )
             .unwrap();
 
         // Check initial balance is zero
@@ -339,7 +372,10 @@ mod tests {
         assert_eq!(initial_balance, U256::ZERO);
 
         // Create mint call
-        let mint_call = ITIP20::mintCall { to: recipient, amount: mint_amount };
+        let mint_call = ITIP20::mintCall {
+            to: recipient,
+            amount: mint_amount,
+        };
         let calldata = mint_call.abi_encode();
 
         // Execute mint
@@ -366,27 +402,49 @@ mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO).unwrap();
+        token
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
+            .unwrap();
 
         // Grant ISSUER_ROLE to admin
         use alloy::primitives::keccak256;
         let issuer_role = keccak256(b"ISSUER_ROLE");
         token
-            .grant_role(admin, IRolesAuth::grantRoleCall { role: issuer_role, account: admin })
+            .grant_role(
+                admin,
+                IRolesAuth::grantRoleCall {
+                    role: issuer_role,
+                    account: admin,
+                },
+            )
             .unwrap();
 
         // Set up initial balance for sender by minting
-        token.mint(admin, ITIP20::mintCall { to: sender, amount: initial_sender_balance }).unwrap();
+        token
+            .mint(
+                admin,
+                ITIP20::mintCall {
+                    to: sender,
+                    amount: initial_sender_balance,
+                },
+            )
+            .unwrap();
 
         // Check initial balances
         assert_eq!(
             token.balance_of(ITIP20::balanceOfCall { account: sender })?,
             initial_sender_balance
         );
-        assert_eq!(token.balance_of(ITIP20::balanceOfCall { account: recipient })?, U256::ZERO);
+        assert_eq!(
+            token.balance_of(ITIP20::balanceOfCall { account: recipient })?,
+            U256::ZERO
+        );
 
         // Create transfer call
-        let transfer_call = ITIP20::transferCall { to: recipient, amount: transfer_amount };
+        let transfer_call = ITIP20::transferCall {
+            to: recipient,
+            amount: transfer_amount,
+        };
         let calldata = transfer_call.abi_encode();
 
         // Execute transfer
@@ -403,7 +461,10 @@ mod tests {
         let final_recipient_balance =
             token.balance_of(ITIP20::balanceOfCall { account: recipient })?;
 
-        assert_eq!(final_sender_balance, initial_sender_balance - transfer_amount);
+        assert_eq!(
+            final_sender_balance,
+            initial_sender_balance - transfer_amount
+        );
         assert_eq!(final_recipient_balance, transfer_amount);
 
         Ok(())
@@ -423,19 +484,38 @@ mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO).unwrap();
+        token
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
+            .unwrap();
 
         // Grant ISSUER_ROLE to admin
         let issuer_role = keccak256(b"ISSUER_ROLE");
         token
-            .grant_role(admin, IRolesAuth::grantRoleCall { role: issuer_role, account: admin })
+            .grant_role(
+                admin,
+                IRolesAuth::grantRoleCall {
+                    role: issuer_role,
+                    account: admin,
+                },
+            )
             .unwrap();
 
         // Mint initial balance to owner
-        token.mint(admin, ITIP20::mintCall { to: owner, amount: initial_owner_balance }).unwrap();
+        token
+            .mint(
+                admin,
+                ITIP20::mintCall {
+                    to: owner,
+                    amount: initial_owner_balance,
+                },
+            )
+            .unwrap();
 
         // Owner approves spender
-        let approve_call = ITIP20::approveCall { spender, amount: approve_amount };
+        let approve_call = ITIP20::approveCall {
+            spender,
+            amount: approve_amount,
+        };
         let calldata = approve_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), owner).unwrap();
         // HashMapStorageProvider does not have gas accounting, so we expect 0
@@ -448,8 +528,11 @@ mod tests {
         assert_eq!(allowance, approve_amount);
 
         // Spender transfers from owner to recipient
-        let transfer_from_call =
-            ITIP20::transferFromCall { from: owner, to: recipient, amount: transfer_amount };
+        let transfer_from_call = ITIP20::transferFromCall {
+            from: owner,
+            to: recipient,
+            amount: transfer_amount,
+        };
         let calldata = transfer_from_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), spender).unwrap();
         // HashMapStorageProvider does not have gas accounting, so we expect 0
@@ -484,7 +567,9 @@ mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO).unwrap();
+        token
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
+            .unwrap();
 
         // Grant PAUSE_ROLE to pauser and UNPAUSE_ROLE to unpauser
         use alloy::primitives::keccak256;
@@ -492,11 +577,23 @@ mod tests {
         let unpause_role = keccak256(b"UNPAUSE_ROLE");
 
         token
-            .grant_role(admin, IRolesAuth::grantRoleCall { role: pause_role, account: pauser })
+            .grant_role(
+                admin,
+                IRolesAuth::grantRoleCall {
+                    role: pause_role,
+                    account: pauser,
+                },
+            )
             .unwrap();
 
         token
-            .grant_role(admin, IRolesAuth::grantRoleCall { role: unpause_role, account: unpauser })
+            .grant_role(
+                admin,
+                IRolesAuth::grantRoleCall {
+                    role: unpause_role,
+                    account: unpauser,
+                },
+            )
             .unwrap();
 
         // Verify initial state (not paused)
@@ -536,29 +633,56 @@ mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO).unwrap();
+        token
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
+            .unwrap();
 
         // Grant ISSUER_ROLE to admin and burner
         use alloy::primitives::keccak256;
         let issuer_role = keccak256(b"ISSUER_ROLE");
 
         token
-            .grant_role(admin, IRolesAuth::grantRoleCall { role: issuer_role, account: admin })
+            .grant_role(
+                admin,
+                IRolesAuth::grantRoleCall {
+                    role: issuer_role,
+                    account: admin,
+                },
+            )
             .unwrap();
 
         token
-            .grant_role(admin, IRolesAuth::grantRoleCall { role: issuer_role, account: burner })
+            .grant_role(
+                admin,
+                IRolesAuth::grantRoleCall {
+                    role: issuer_role,
+                    account: burner,
+                },
+            )
             .unwrap();
 
         // Mint initial balance to burner
-        token.mint(admin, ITIP20::mintCall { to: burner, amount: initial_balance }).unwrap();
+        token
+            .mint(
+                admin,
+                ITIP20::mintCall {
+                    to: burner,
+                    amount: initial_balance,
+                },
+            )
+            .unwrap();
 
         // Check initial state
-        assert_eq!(token.balance_of(ITIP20::balanceOfCall { account: burner })?, initial_balance);
+        assert_eq!(
+            token.balance_of(ITIP20::balanceOfCall { account: burner })?,
+            initial_balance
+        );
         assert_eq!(token.total_supply()?, initial_balance);
 
         // Burn tokens
-        let burn_call = ITIP20::burnCall { amount: burn_amount };
+        let burn_call = ITIP20::burnCall {
+            amount: burn_amount,
+        };
         let calldata = burn_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), burner).unwrap();
         // HashMapStorageProvider does not have gas accounting, so we expect 0
@@ -584,7 +708,14 @@ mod tests {
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token
         token
-            .initialize("Test Token", "TEST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
+            .initialize(
+                "Test Token",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         // Test name()
@@ -644,17 +775,27 @@ mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO).unwrap();
+        token
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
+            .unwrap();
 
         // Grant ISSUER_ROLE to admin
         use alloy::primitives::keccak256;
         let issuer_role = keccak256(b"ISSUER_ROLE");
         token
-            .grant_role(admin, IRolesAuth::grantRoleCall { role: issuer_role, account: admin })
+            .grant_role(
+                admin,
+                IRolesAuth::grantRoleCall {
+                    role: issuer_role,
+                    account: admin,
+                },
+            )
             .unwrap();
 
         // Set supply cap
-        let set_cap_call = ITIP20::setSupplyCapCall { newSupplyCap: supply_cap };
+        let set_cap_call = ITIP20::setSupplyCapCall {
+            newSupplyCap: supply_cap,
+        };
         let calldata = set_cap_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), admin).unwrap();
 
@@ -662,7 +803,10 @@ mod tests {
         assert_eq!(result.gas_used, 0);
 
         // Try to mint more than supply cap
-        let mint_call = ITIP20::mintCall { to: recipient, amount: mint_amount };
+        let mint_call = ITIP20::mintCall {
+            to: recipient,
+            amount: mint_amount,
+        };
         let calldata = mint_call.abi_encode();
         let output = token.call(&Bytes::from(calldata), admin)?;
         assert!(output.reverted);
@@ -684,20 +828,28 @@ mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token with admin
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO).unwrap();
+        token
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
+            .unwrap();
 
         // Grant a role to user1
         use alloy::primitives::keccak256;
         let issuer_role = keccak256(b"ISSUER_ROLE");
 
-        let grant_call = IRolesAuth::grantRoleCall { role: issuer_role, account: user1 };
+        let grant_call = IRolesAuth::grantRoleCall {
+            role: issuer_role,
+            account: user1,
+        };
         let calldata = grant_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), admin).unwrap();
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);
 
         // Check that user1 has the role
-        let has_role_call = IRolesAuth::hasRoleCall { role: issuer_role, account: user1 };
+        let has_role_call = IRolesAuth::hasRoleCall {
+            role: issuer_role,
+            account: user1,
+        };
         let calldata = has_role_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), admin).unwrap();
         // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
@@ -706,14 +858,20 @@ mod tests {
         assert!(has_role);
 
         // Check that user2 doesn't have the role
-        let has_role_call = IRolesAuth::hasRoleCall { role: issuer_role, account: user2 };
+        let has_role_call = IRolesAuth::hasRoleCall {
+            role: issuer_role,
+            account: user2,
+        };
         let calldata = has_role_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), admin).unwrap();
         let has_role = bool::abi_decode(&result.bytes).unwrap();
         assert!(!has_role);
 
         // Test unauthorized mint (should fail)
-        let mint_call = ITIP20::mintCall { to: user2, amount: U256::from(100) };
+        let mint_call = ITIP20::mintCall {
+            to: user2,
+            amount: U256::from(100),
+        };
         let calldata = mint_call.abi_encode();
         let output = token.call(&Bytes::from(calldata.clone()), unauthorized)?;
         assert!(output.reverted);
@@ -740,21 +898,40 @@ mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize and setup
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO).unwrap();
+        token
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
+            .unwrap();
 
         use alloy::primitives::keccak256;
         let issuer_role = keccak256(b"ISSUER_ROLE");
         token
-            .grant_role(admin, IRolesAuth::grantRoleCall { role: issuer_role, account: admin })
+            .grant_role(
+                admin,
+                IRolesAuth::grantRoleCall {
+                    role: issuer_role,
+                    account: admin,
+                },
+            )
             .unwrap();
 
         // Mint initial balance
-        token.mint(admin, ITIP20::mintCall { to: sender, amount: initial_balance }).unwrap();
+        token
+            .mint(
+                admin,
+                ITIP20::mintCall {
+                    to: sender,
+                    amount: initial_balance,
+                },
+            )
+            .unwrap();
 
         // Transfer with memo
         let memo = alloy::primitives::B256::from([1u8; 32]);
-        let transfer_call =
-            ITIP20::transferWithMemoCall { to: recipient, amount: transfer_amount, memo };
+        let transfer_call = ITIP20::transferWithMemoCall {
+            to: recipient,
+            amount: transfer_amount,
+            memo,
+        };
         let calldata = transfer_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), sender).unwrap();
         // HashMapStorageProvider does not have gas accounting, so we expect 0
@@ -783,10 +960,14 @@ mod tests {
         initialize_path_usd(&mut storage, admin).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         // Initialize token
-        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO).unwrap();
+        token
+            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
+            .unwrap();
 
         // Admin can change transfer policy ID
-        let change_policy_call = ITIP20::changeTransferPolicyIdCall { newPolicyId: new_policy_id };
+        let change_policy_call = ITIP20::changeTransferPolicyIdCall {
+            newPolicyId: new_policy_id,
+        };
         let calldata = change_policy_call.abi_encode();
         let result = token.call(&Bytes::from(calldata), admin).unwrap();
         // HashMapStorageProvider does not have gas accounting, so we expect 0
@@ -818,7 +999,14 @@ mod tests {
         initialize_path_usd(&mut storage, Address::ZERO).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
         token
-            .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, Address::ZERO, Address::ZERO)
+            .initialize(
+                "Test",
+                "TST",
+                "USD",
+                PATH_USD_ADDRESS,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
 
         let itip20_unsupported =

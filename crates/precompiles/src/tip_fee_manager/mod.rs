@@ -82,7 +82,10 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     /// This ensures the [`TipFeeManager`] isn't empty and prevents state clear.
     pub fn initialize(&mut self) -> Result<()> {
         // must ensure the account is not empty, by setting some code
-        self.storage.set_code(self.address, Bytecode::new_legacy(Bytes::from_static(&[0xef])))
+        self.storage.set_code(
+            self.address,
+            Bytecode::new_legacy(Bytes::from_static(&[0xef])),
+        )
     }
 
     /// Returns the default fee token based on the current hardfork.
@@ -98,7 +101,11 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     pub fn get_validator_token(&mut self, beneficiary: Address) -> Result<Address> {
         let token = self.sload_validator_tokens(beneficiary)?;
 
-        if token.is_zero() { Ok(self.default_fee_token()) } else { Ok(token) }
+        if token.is_zero() {
+            Ok(self.default_fee_token())
+        } else {
+            Ok(token)
+        }
     }
 
     pub fn set_validator_token(
@@ -111,9 +118,9 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             return Err(FeeManagerError::invalid_token().into());
         }
 
-        if sender == beneficiary ||
-            (self.storage.spec().is_allegretto() &&
-                self.sload_validator_in_fees_array(sender)?)
+        if sender == beneficiary
+            || (self.storage.spec().is_allegretto()
+                && self.sload_validator_in_fees_array(sender)?)
         {
             return Err(FeeManagerError::cannot_change_within_block().into());
         }
@@ -237,8 +244,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
                 self.increment_collected_fees(beneficiary, actual_spending)?;
             }
         } else {
-            // Post-Allegretto: calculate the actual fee amount and save it in per-validator
-            // collected fees
+            // Post-Allegretto: calculate the actual fee amount and save it in per-validator collected fees
             let amount = if fee_token == validator_token {
                 actual_spending
             } else {
@@ -297,7 +303,9 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             // If FeeManager or validator are blacklisted, we are not transferring any fees
             if token.is_transfer_authorized(self.address, beneficiary)? {
                 // Bound fee transfer to contract balance
-                let balance = token.balance_of(ITIP20::balanceOfCall { account: self.address })?;
+                let balance = token.balance_of(ITIP20::balanceOfCall {
+                    account: self.address,
+                })?;
 
                 if !balance.is_zero() {
                     token
@@ -384,7 +392,9 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         let collected_fees = self.sload_collected_fees(validator)?;
         self.sstore_collected_fees(
             validator,
-            collected_fees.checked_add(amount).ok_or(TempoPrecompileError::under_overflow())?,
+            collected_fees
+                .checked_add(amount)
+                .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
         // If this is the first fee for the validator, record it in validators with fees
@@ -403,7 +413,11 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
     pub fn validator_tokens(&mut self, call: IFeeManager::validatorTokensCall) -> Result<Address> {
         let token = self.sload_validator_tokens(call.validator)?;
 
-        if token.is_zero() { Ok(self.default_fee_token()) } else { Ok(token) }
+        if token.is_zero() {
+            Ok(self.default_fee_token())
+        } else {
+            Ok(token)
+        }
     }
 
     pub fn get_fee_token_balance(
@@ -426,10 +440,14 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         }
 
         let mut tip20_token = TIP20Token::from_address(token, self.storage);
-        let token_balance =
-            tip20_token.balance_of(ITIP20::balanceOfCall { account: call.sender })?;
+        let token_balance = tip20_token.balance_of(ITIP20::balanceOfCall {
+            account: call.sender,
+        })?;
 
-        Ok(IFeeManager::getFeeTokenBalanceReturn { _0: token, _1: token_balance })
+        Ok(IFeeManager::getFeeTokenBalanceReturn {
+            _0: token,
+            _1: token_balance,
+        })
     }
 }
 
@@ -457,19 +475,31 @@ mod tests {
 
         // Initialize token
         tip20_token
-            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, user, Address::ZERO)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                user,
+                Address::ZERO,
+            )
             .unwrap();
 
         // Grant issuer role to user and mint tokens
         tip20_token.grant_role_internal(user, *ISSUER_ROLE).unwrap();
 
-        tip20_token.mint(user, ITIP20::mintCall { to: user, amount }).unwrap();
+        tip20_token
+            .mint(user, ITIP20::mintCall { to: user, amount })
+            .unwrap();
 
         // Approve fee manager
         tip20_token
             .approve(
                 user,
-                ITIP20::approveCall { spender: TIP_FEE_MANAGER_ADDRESS, amount: U256::MAX },
+                ITIP20::approveCall {
+                    spender: TIP_FEE_MANAGER_ADDRESS,
+                    amount: U256::MAX,
+                },
             )
             .unwrap();
     }
@@ -486,7 +516,14 @@ mod tests {
         let token = token_id_to_address(1);
         let mut tip20_token = TIP20Token::from_address(token, &mut storage);
         tip20_token
-            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, user, Address::ZERO)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                user,
+                Address::ZERO,
+            )
             .unwrap();
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
@@ -512,12 +549,16 @@ mod tests {
         let mut fee_manager = TipFeeManager::new(&mut storage);
 
         // Try to set PathUSD as user token - should fail
-        let call = IFeeManager::setUserTokenCall { token: PATH_USD_ADDRESS };
+        let call = IFeeManager::setUserTokenCall {
+            token: PATH_USD_ADDRESS,
+        };
         let result = fee_manager.set_user_token(user, call);
 
         assert!(matches!(
             result,
-            Err(TempoPrecompileError::FeeManagerError(FeeManagerError::InvalidToken(_)))
+            Err(TempoPrecompileError::FeeManagerError(
+                FeeManagerError::InvalidToken(_)
+            ))
         ));
 
         Ok(())
@@ -535,7 +576,9 @@ mod tests {
         let mut fee_manager = TipFeeManager::new(&mut storage);
 
         // Try to set PathUSD as user token - should succeed pre-Moderato
-        let call = IFeeManager::setUserTokenCall { token: PATH_USD_ADDRESS };
+        let call = IFeeManager::setUserTokenCall {
+            token: PATH_USD_ADDRESS,
+        };
         let result = fee_manager.set_user_token(user, call);
 
         // Pre-Moderato: should be allowed to set PathUSD as user token
@@ -557,7 +600,14 @@ mod tests {
         let token = token_id_to_address(1);
         let mut tip20_token = TIP20Token::from_address(token, &mut storage);
         tip20_token
-            .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
+            .initialize(
+                "TestToken",
+                "TEST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
@@ -618,7 +668,9 @@ mod tests {
             .unwrap();
 
         // Set user token
-        fee_manager.set_user_token(user, IFeeManager::setUserTokenCall { token }).unwrap();
+        fee_manager
+            .set_user_token(user, IFeeManager::setUserTokenCall { token })
+            .unwrap();
 
         // Call collect_fee_pre_tx directly
         let result = fee_manager.collect_fee_pre_tx(user, token, max_amount, validator);
@@ -637,13 +689,19 @@ mod tests {
         // Setup token with balance for fee manager
         let admin = Address::random();
 
-        // Initialize token and give fee manager tokens (simulating that collect_fee_pre_tx already
-        // happened)
+        // Initialize token and give fee manager tokens (simulating that collect_fee_pre_tx already happened)
         {
             initialize_path_usd(&mut storage, admin).unwrap();
             let mut tip20_token = TIP20Token::from_address(token, &mut storage);
             tip20_token
-                .initialize("TestToken", "TEST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
+                .initialize(
+                    "TestToken",
+                    "TEST",
+                    "USD",
+                    PATH_USD_ADDRESS,
+                    admin,
+                    Address::ZERO,
+                )
                 .unwrap();
 
             tip20_token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -672,7 +730,9 @@ mod tests {
             .unwrap();
 
         // Set user token
-        fee_manager.set_user_token(user, IFeeManager::setUserTokenCall { token }).unwrap();
+        fee_manager
+            .set_user_token(user, IFeeManager::setUserTokenCall { token })
+            .unwrap();
 
         // Call collect_fee_post_tx directly
         let result =
@@ -699,7 +759,14 @@ mod tests {
         let token = token_id_to_address(rand::random::<u64>());
         let mut tip20_token = TIP20Token::from_address(token, &mut storage);
         tip20_token
-            .initialize("NonUSD", "NonUSD", "NonUSD", PATH_USD_ADDRESS, admin, Address::ZERO)
+            .initialize(
+                "NonUSD",
+                "NonUSD",
+                "NonUSD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         let validator = Address::random();
@@ -710,13 +777,19 @@ mod tests {
         let call = IFeeManager::setUserTokenCall { token };
         let result = fee_manager.set_user_token(user, call);
 
-        assert!(matches!(result, Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))));
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
+        ));
 
         // Set beneficiary to a random address to avoid `CannotChangeWithinBlock` error
         let call = IFeeManager::setValidatorTokenCall { token };
         let result = fee_manager.set_validator_token(validator, call, Address::random());
 
-        assert!(matches!(result, Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))));
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
+        ));
 
         Ok(())
     }
@@ -747,8 +820,13 @@ mod tests {
             tip20_token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
             // Mint tokens simulating `collected fees - attack burn`
-            tip20_token
-                .mint(admin, ITIP20::mintCall { to: TIP_FEE_MANAGER_ADDRESS, amount: balance })?;
+            tip20_token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: TIP_FEE_MANAGER_ADDRESS,
+                    amount: balance,
+                },
+            )?;
         }
 
         {
@@ -778,8 +856,9 @@ mod tests {
             tip20_token.balance_of(ITIP20::balanceOfCall { account: validator })?;
         assert_eq!(validator_balance, balance);
 
-        let fee_manager_balance =
-            tip20_token.balance_of(ITIP20::balanceOfCall { account: TIP_FEE_MANAGER_ADDRESS })?;
+        let fee_manager_balance = tip20_token.balance_of(ITIP20::balanceOfCall {
+            account: TIP_FEE_MANAGER_ADDRESS,
+        })?;
         assert_eq!(fee_manager_balance, U256::ZERO);
 
         Ok(())

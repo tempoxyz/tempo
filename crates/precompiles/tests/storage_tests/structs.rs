@@ -19,7 +19,11 @@ fn test_struct_storage() {
 
     let mut s = setup_storage();
 
-    let block = TestBlock { field1: U256::from(1000), field2: U256::from(2000), field3: 3000 };
+    let block = TestBlock {
+        field1: U256::from(1000),
+        field2: U256::from(2000),
+        field3: 3000,
+    };
 
     // Scope the layout to ensure it's dropped before we access storage directly
     {
@@ -35,10 +39,22 @@ fn test_struct_storage() {
     }
 
     // Verify actual slot assignments
-    assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::from(100))); // field_a
-    assert_eq!(s.storage.sload(s.address, U256::from(10)), Ok(U256::from(1000))); // block.field1
-    assert_eq!(s.storage.sload(s.address, U256::from(11)), Ok(U256::from(2000))); // block.field2
-    assert_eq!(s.storage.sload(s.address, U256::from(12)), Ok(U256::from(3000))); // block.field3
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(0)),
+        Ok(U256::from(100))
+    ); // field_a
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(10)),
+        Ok(U256::from(1000))
+    ); // block.field1
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(11)),
+        Ok(U256::from(2000))
+    ); // block.field2
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(12)),
+        Ok(U256::from(3000))
+    ); // block.field3
     assert_eq!(s.storage.sload(s.address, U256::ONE), Ok(U256::from(200))); // field_b
 
     // Verify slots module
@@ -57,17 +73,40 @@ fn test_struct_storage() {
         let addr2 = test_address(20);
         let addr3 = test_address(30);
 
-        layout.sstore_address_mapping(addr1, U256::from(1000)).unwrap();
-        layout.sstore_address_mapping(addr2, U256::from(2000)).unwrap();
-        layout.sstore_address_mapping(addr3, U256::from(3000)).unwrap();
+        layout
+            .sstore_address_mapping(addr1, U256::from(1000))
+            .unwrap();
+        layout
+            .sstore_address_mapping(addr2, U256::from(2000))
+            .unwrap();
+        layout
+            .sstore_address_mapping(addr3, U256::from(3000))
+            .unwrap();
 
-        assert_eq!(layout.sload_address_mapping(addr1).unwrap(), U256::from(1000));
-        assert_eq!(layout.sload_address_mapping(addr2).unwrap(), U256::from(2000));
-        assert_eq!(layout.sload_address_mapping(addr3).unwrap(), U256::from(3000));
+        assert_eq!(
+            layout.sload_address_mapping(addr1).unwrap(),
+            U256::from(1000)
+        );
+        assert_eq!(
+            layout.sload_address_mapping(addr2).unwrap(),
+            U256::from(2000)
+        );
+        assert_eq!(
+            layout.sload_address_mapping(addr3).unwrap(),
+            U256::from(3000)
+        );
 
         // Test block_mapping with TestBlock values
-        let block1 = TestBlock { field1: U256::from(111), field2: U256::from(222), field3: 333 };
-        let block2 = TestBlock { field1: U256::from(444), field2: U256::from(555), field3: 666 };
+        let block1 = TestBlock {
+            field1: U256::from(111),
+            field2: U256::from(222),
+            field3: 333,
+        };
+        let block2 = TestBlock {
+            field1: U256::from(444),
+            field2: U256::from(555),
+            field3: 666,
+        };
 
         layout.sstore_block_mapping(1u64, block1.clone()).unwrap();
         layout.sstore_block_mapping(2u64, block2.clone()).unwrap();
@@ -76,10 +115,17 @@ fn test_struct_storage() {
         assert_eq!(layout.sload_block_mapping(2u64).unwrap(), block2);
 
         // Verify non-existent keys return default values
-        assert_eq!(layout.sload_address_mapping(test_address(99)).unwrap(), U256::ZERO);
+        assert_eq!(
+            layout.sload_address_mapping(test_address(99)).unwrap(),
+            U256::ZERO
+        );
         assert_eq!(
             layout.sload_block_mapping(999u64).unwrap(),
-            TestBlock { field1: U256::ZERO, field2: U256::ZERO, field3: 0 }
+            TestBlock {
+                field1: U256::ZERO,
+                field2: U256::ZERO,
+                field3: 0,
+            }
         );
     }
 }
@@ -96,7 +142,11 @@ fn test_delete_struct_field_in_contract() {
 
     let mut s = setup_storage();
 
-    let block = TestBlock { field1: U256::from(1000), field2: U256::from(2000), field3: 3000 };
+    let block = TestBlock {
+        field1: U256::from(1000),
+        field2: U256::from(2000),
+        field3: 3000,
+    };
 
     // Scope the layout to store data
     {
@@ -112,10 +162,22 @@ fn test_delete_struct_field_in_contract() {
     }
 
     // Verify storage slots before delete
-    assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::from(100))); // field_a
-    assert_eq!(s.storage.sload(s.address, U256::from(10)), Ok(U256::from(1000))); // block.field1
-    assert_eq!(s.storage.sload(s.address, U256::from(11)), Ok(U256::from(2000))); // block.field2
-    assert_eq!(s.storage.sload(s.address, U256::from(12)), Ok(U256::from(3000))); // block.field3
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(0)),
+        Ok(U256::from(100))
+    ); // field_a
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(10)),
+        Ok(U256::from(1000))
+    ); // block.field1
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(11)),
+        Ok(U256::from(2000))
+    ); // block.field2
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(12)),
+        Ok(U256::from(3000))
+    ); // block.field3
     assert_eq!(s.storage.sload(s.address, U256::ONE), Ok(U256::from(200))); // field_b
 
     // Delete the block field using the generated delete method
@@ -130,7 +192,10 @@ fn test_delete_struct_field_in_contract() {
     assert_eq!(s.storage.sload(s.address, U256::from(12)), Ok(U256::ZERO));
 
     // Verify other fields are untouched
-    assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::from(100))); // field_a
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(0)),
+        Ok(U256::from(100))
+    ); // field_a
     assert_eq!(s.storage.sload(s.address, U256::ONE), Ok(U256::from(200))); // field_b
 
     // Verify loading the block returns default values
@@ -138,7 +203,11 @@ fn test_delete_struct_field_in_contract() {
         let mut layout = Layout::_new(s.address, s.storage());
         assert_eq!(
             layout.sload_block().unwrap(),
-            TestBlock { field1: U256::ZERO, field2: U256::ZERO, field3: 0 }
+            TestBlock {
+                field1: U256::ZERO,
+                field2: U256::ZERO,
+                field3: 0,
+            }
         );
     }
 }
@@ -155,8 +224,11 @@ fn test_user_profile_struct_in_contract() {
 
     let mut s = setup_storage();
 
-    let profile =
-        UserProfile { owner: test_address(42), active: true, balance: U256::from(999_999) };
+    let profile = UserProfile {
+        owner: test_address(42),
+        active: true,
+        balance: U256::from(999_999),
+    };
 
     // Store data
     {
@@ -176,11 +248,16 @@ fn test_user_profile_struct_in_contract() {
     assert_eq!(
         s.storage.sload(s.address, U256::from(20)),
         // Packed: owner (20 bytes) + active (1 byte)
-        Ok("0x000000000000000000000001000000000000000000000000000000000000002A"
-            .parse::<U256>()
-            .unwrap())
+        Ok(
+            "0x000000000000000000000001000000000000000000000000000000000000002A"
+                .parse::<U256>()
+                .unwrap()
+        )
     );
-    assert_eq!(s.storage.sload(s.address, U256::from(21)), Ok(U256::from(999_999))); // profile.balance
+    assert_eq!(
+        s.storage.sload(s.address, U256::from(21)),
+        Ok(U256::from(999_999))
+    ); // profile.balance
 
     // Verify slots module
     assert_eq!(slots::COUNTER, U256::from(0));
@@ -206,7 +283,11 @@ fn test_user_profile_struct_in_contract() {
         let mut layout = Layout::_new(s.address, s.storage());
         assert_eq!(
             layout.sload_profile().unwrap(),
-            UserProfile { owner: Address::ZERO, active: false, balance: U256::ZERO }
+            UserProfile {
+                owner: Address::ZERO,
+                active: false,
+                balance: U256::ZERO,
+            }
         );
     }
 }

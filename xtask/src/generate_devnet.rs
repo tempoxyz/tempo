@@ -38,11 +38,19 @@ pub(crate) struct GenerateDevnet {
 
 impl GenerateDevnet {
     pub(crate) async fn run(self) -> eyre::Result<()> {
-        let Self { output, force, image_tag, genesis_url, genesis_args } = self;
+        let Self {
+            output,
+            force,
+            image_tag,
+            genesis_url,
+            genesis_args,
+        } = self;
 
         let seed = genesis_args.seed;
-        let (genesis, consensus_config) =
-            genesis_args.generate_genesis().await.wrap_err("failed to generate genesis")?;
+        let (genesis, consensus_config) = genesis_args
+            .generate_genesis()
+            .await
+            .wrap_err("failed to generate genesis")?;
 
         let consensus_config = consensus_config
             .ok_or_eyre("no consensus config generated; did you provide --validators?")?;

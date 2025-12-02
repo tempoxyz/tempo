@@ -117,7 +117,9 @@ mod tests {
         let owner_call = IValidatorConfig::ownerCall {};
         let calldata = owner_call.abi_encode();
 
-        let result = validator_config.call(&Bytes::from(calldata), sender).unwrap();
+        let result = validator_config
+            .call(&Bytes::from(calldata), sender)
+            .unwrap();
         // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
         assert_eq!(result.gas_used, 0);
 
@@ -147,7 +149,9 @@ mod tests {
         };
         let calldata = add_call.abi_encode();
 
-        let result = validator_config.call(&Bytes::from(calldata), owner).unwrap();
+        let result = validator_config
+            .call(&Bytes::from(calldata), owner)
+            .unwrap();
 
         // HashMapStorageProvider does not have gas accounting, so we expect 0
         assert_eq!(result.gas_used, 0);

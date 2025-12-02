@@ -16,10 +16,16 @@ fn test_round_trip_operations_in_contract() {
 
     let mut s = setup_storage();
 
-    let original_block =
-        TestBlock { field1: U256::from(789), field2: U256::from(987), field3: 555 };
-    let original_profile =
-        UserProfile { owner: test_address(99), active: true, balance: U256::from(12345) };
+    let original_block = TestBlock {
+        field1: U256::from(789),
+        field2: U256::from(987),
+        field3: 555,
+    };
+    let original_profile = UserProfile {
+        owner: test_address(99),
+        active: true,
+        balance: U256::from(12345),
+    };
 
     // Round 1: Store and load
     {
@@ -45,18 +51,33 @@ fn test_round_trip_operations_in_contract() {
         let mut layout = Layout::_new(s.address, s.storage());
         assert_eq!(
             layout.sload_block().unwrap(),
-            TestBlock { field1: U256::ZERO, field2: U256::ZERO, field3: 0 }
+            TestBlock {
+                field1: U256::ZERO,
+                field2: U256::ZERO,
+                field3: 0,
+            }
         );
         assert_eq!(
             layout.sload_profile().unwrap(),
-            UserProfile { owner: Address::ZERO, active: false, balance: U256::ZERO }
+            UserProfile {
+                owner: Address::ZERO,
+                active: false,
+                balance: U256::ZERO,
+            }
         );
     }
 
     // Round 3: Store new values
-    let new_block = TestBlock { field1: U256::from(111), field2: U256::from(222), field3: 333 };
-    let new_profile =
-        UserProfile { owner: test_address(88), active: false, balance: U256::from(54321) };
+    let new_block = TestBlock {
+        field1: U256::from(111),
+        field2: U256::from(222),
+        field3: 333,
+    };
+    let new_profile = UserProfile {
+        owner: test_address(88),
+        active: false,
+        balance: U256::from(54321),
+    };
 
     {
         let mut layout = Layout::_new(s.address, s.storage());

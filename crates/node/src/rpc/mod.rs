@@ -90,7 +90,10 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
     pub fn new(
         eth_api: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
     ) -> Self {
-        Self { inner: eth_api, subblock_transactions_tx: broadcast::channel(100).0 }
+        Self {
+            inner: eth_api,
+            subblock_transactions_tx: broadcast::channel(100).0,
+        }
     }
 
     /// Returns a [`broadcast::Receiver`] for subblock transactions.
@@ -244,11 +247,15 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         _evm_env: &EvmEnvFor<Self::Evm>,
         tx_env: &TxEnvFor<Self::Evm>,
     ) -> Result<u64, Self::Error> {
-        let fee_payer = tx_env.fee_payer().map_err(EVMError::<ProviderError, _>::from)?;
+        let fee_payer = tx_env
+            .fee_payer()
+            .map_err(EVMError::<ProviderError, _>::from)?;
         let fee_token = db
             .get_fee_token(tx_env, Address::ZERO, fee_payer, TempoHardfork::default())
             .map_err(Into::into)?;
-        let fee_token_balance = db.get_token_balance(fee_token, fee_payer).map_err(Into::into)?;
+        let fee_token_balance = db
+            .get_token_balance(fee_token, fee_payer)
+            .map_err(Into::into)?;
 
         Ok(fee_token_balance
             // multiply by the scaling factor
@@ -285,9 +292,11 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
             Either::Left(async move {
                 let tx_hash = *tx.value().tx_hash();
 
-                self.subblock_transactions_tx.send(tx.into_value()).map_err(|_| {
-                    EthApiError::from(RethError::msg("subblocks service channel closed"))
-                })?;
+                self.subblock_transactions_tx
+                    .send(tx.into_value())
+                    .map_err(|_| {
+                        EthApiError::from(RethError::msg("subblocks service channel closed"))
+                    })?;
 
                 Ok(tx_hash)
             })

@@ -12,7 +12,10 @@ use tempo_chainspec::spec::TEMPO_BASE_FEE;
 async fn test_get_transaction_by_sender_and_nonce() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
@@ -38,14 +41,27 @@ async fn test_get_transaction_by_sender_and_nonce() -> eyre::Result<()> {
     let nonce_after = provider.get_transaction_count(caller).await?;
     assert_eq!(nonce_after, nonce_before + 1);
 
-    let fetched_tx = provider.get_transaction_by_sender_nonce(caller, nonce_before).await?;
+    let fetched_tx = provider
+        .get_transaction_by_sender_nonce(caller, nonce_before)
+        .await?;
 
-    assert!(fetched_tx.is_some(), "Transaction should be found by sender and nonce");
+    assert!(
+        fetched_tx.is_some(),
+        "Transaction should be found by sender and nonce"
+    );
 
     let tx = fetched_tx.unwrap();
-    assert_eq!(*tx.inner.tx_hash(), tx_hash, "Transaction hash should match");
+    assert_eq!(
+        *tx.inner.tx_hash(),
+        tx_hash,
+        "Transaction hash should match"
+    );
     assert_eq!(tx.from(), caller, "Transaction sender should match");
-    assert_eq!(tx.inner.nonce(), nonce_before, "Transaction nonce should match");
+    assert_eq!(
+        tx.inner.nonce(),
+        nonce_before,
+        "Transaction nonce should match"
+    );
 
     Ok(())
 }

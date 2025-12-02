@@ -25,13 +25,28 @@ fn peers_snapshot() {
 #[test]
 fn peers_roundtrip() {
     let peers: Peers = OrderedAssociated::from_iter([
-        (PrivateKey::from_seed(0).public_key(), "127.0.0.1:8000".parse::<SocketAddr>().unwrap()),
-        (PrivateKey::from_seed(1).public_key(), "192.168.0.1:9000".parse::<SocketAddr>().unwrap()),
-        (PrivateKey::from_seed(2).public_key(), "1.1.1.1:58".parse::<SocketAddr>().unwrap()),
-        (PrivateKey::from_seed(3).public_key(), "172.3.2.4:42".parse::<SocketAddr>().unwrap()),
+        (
+            PrivateKey::from_seed(0).public_key(),
+            "127.0.0.1:8000".parse::<SocketAddr>().unwrap(),
+        ),
+        (
+            PrivateKey::from_seed(1).public_key(),
+            "192.168.0.1:9000".parse::<SocketAddr>().unwrap(),
+        ),
+        (
+            PrivateKey::from_seed(2).public_key(),
+            "1.1.1.1:58".parse::<SocketAddr>().unwrap(),
+        ),
+        (
+            PrivateKey::from_seed(3).public_key(),
+            "172.3.2.4:42".parse::<SocketAddr>().unwrap(),
+        ),
     ])
     .into();
-    assert_eq!(peers, serde_json::from_str(&serde_json::to_string(&peers).unwrap()).unwrap(),);
+    assert_eq!(
+        peers,
+        serde_json::from_str(&serde_json::to_string(&peers).unwrap()).unwrap(),
+    );
 }
 
 #[should_panic(expected = "duplicate key")]
@@ -55,7 +70,10 @@ fn signing_key_snapshot() {
 #[test]
 fn signing_key_roundtrip() {
     let signing_key: SigningKey = PrivateKey::from_seed(42).into();
-    assert_eq!(signing_key, SigningKey::try_from_hex(&signing_key.to_string()).unwrap(),);
+    assert_eq!(
+        signing_key,
+        SigningKey::try_from_hex(&signing_key.to_string()).unwrap(),
+    );
 }
 
 #[test]
@@ -71,7 +89,10 @@ fn signing_share_roundtrip() {
         &mut rng, None, 1, quorum,
     );
     let signing_share: SigningShare = shares.remove(0).into();
-    assert_eq!(signing_share, SigningShare::try_from_hex(&signing_share.to_string()).unwrap(),);
+    assert_eq!(
+        signing_share,
+        SigningShare::try_from_hex(&signing_share.to_string()).unwrap(),
+    );
 }
 
 #[track_caller]

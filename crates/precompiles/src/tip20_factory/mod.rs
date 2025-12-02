@@ -36,8 +36,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
     /// Also ensures the [`TIP20Factory`] account isn't empty and prevents state clear.
     pub fn initialize(&mut self) -> Result<()> {
         // must ensure the account is not empty, by setting some code
-        self.storage
-            .set_code(TIP20_FACTORY_ADDRESS, Bytecode::new_legacy(Bytes::from_static(&[0xef])))
+        self.storage.set_code(
+            TIP20_FACTORY_ADDRESS,
+            Bytecode::new_legacy(Bytes::from_static(&[0xef])),
+        )
     }
 
     pub fn create_token(
@@ -64,18 +66,17 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
         } else if self.storage.spec().is_moderato() {
-            // Post-Moderato: Fixed validation - quote token id must be < current token_id (strictly
-            // less than).
-            if !is_tip20(call.quoteToken) ||
-                address_to_token_id_unchecked(call.quoteToken) >= token_id
+            // Post-Moderato: Fixed validation - quote token id must be < current token_id (strictly less than).
+            if !is_tip20(call.quoteToken)
+                || address_to_token_id_unchecked(call.quoteToken) >= token_id
             {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
         } else {
             // Pre-Moderato: Original validation with off-by-one bug for consensus compatibility.
             // The buggy check allowed quote_token_id == token_id to pass.
-            if !is_tip20(call.quoteToken) ||
-                address_to_token_id_unchecked(call.quoteToken) > token_id
+            if !is_tip20(call.quoteToken)
+                || address_to_token_id_unchecked(call.quoteToken) > token_id
             {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
@@ -110,7 +111,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
 
         // increase the token counter
         self.sstore_token_id_counter(
-            token_id.checked_add(U256::ONE).ok_or(TempoPrecompileError::under_overflow())?,
+            token_id
+                .checked_add(U256::ONE)
+                .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
         Ok(token_address)
@@ -145,7 +148,9 @@ mod tests {
 
         let mut factory = TIP20Factory::new(&mut storage);
 
-        factory.initialize().expect("Factory initialization should succeed");
+        factory
+            .initialize()
+            .expect("Factory initialization should succeed");
         let call = ITIP20Factory::createTokenCall {
             name: "Test Token".to_string(),
             symbol: "TEST".to_string(),
@@ -154,11 +159,13 @@ mod tests {
             admin: sender,
         };
 
-        let token_addr_0 =
-            factory.create_token(sender, call.clone()).expect("Token creation should succeed");
+        let token_addr_0 = factory
+            .create_token(sender, call.clone())
+            .expect("Token creation should succeed");
 
-        let token_addr_1 =
-            factory.create_token(sender, call).expect("Token creation should succeed");
+        let token_addr_1 = factory
+            .create_token(sender, call)
+            .expect("Token creation should succeed");
 
         let factory_events = storage.events.get(&TIP20_FACTORY_ADDRESS).unwrap();
         assert_eq!(factory_events.len(), 2);
@@ -195,7 +202,9 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut factory = TIP20Factory::new(&mut storage);
 
-        factory.initialize().expect("Factory initialization should succeed");
+        factory
+            .initialize()
+            .expect("Factory initialization should succeed");
 
         let sender = Address::random();
 
@@ -220,7 +229,9 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut factory = TIP20Factory::new(&mut storage);
 
-        factory.initialize().expect("Factory initialization should succeed");
+        factory
+            .initialize()
+            .expect("Factory initialization should succeed");
 
         let sender = Address::random();
         let non_existent_tip20 = token_id_to_address(5);
@@ -241,14 +252,15 @@ mod tests {
 
     #[test]
     fn test_create_token_off_by_one_rejected_post_moderato() {
-        // Test the off-by-one bug fix: using token_id as quote token should be rejected
-        // post-Moderato
+        // Test the off-by-one bug fix: using token_id as quote token should be rejected post-Moderato
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let sender = Address::random();
         initialize_path_usd(&mut storage, sender).unwrap();
 
         let mut factory = TIP20Factory::new(&mut storage);
-        factory.initialize().expect("Factory initialization should succeed");
+        factory
+            .initialize()
+            .expect("Factory initialization should succeed");
 
         // Get the current token_id (should be 1)
         let current_token_id = factory.token_id_counter().unwrap();
@@ -282,7 +294,9 @@ mod tests {
         initialize_path_usd(&mut storage, sender).unwrap();
 
         let mut factory = TIP20Factory::new(&mut storage);
-        factory.initialize().expect("Factory initialization should succeed");
+        factory
+            .initialize()
+            .expect("Factory initialization should succeed");
 
         // Current token_id should be 1
         assert_eq!(factory.token_id_counter().unwrap(), U256::from(1));
@@ -301,9 +315,11 @@ mod tests {
         let result = factory.create_token(sender, call);
 
         // This should fail with InvalidQuoteToken from factory validation
-        // Currently this test will PASS (not fail) because factory validation is skipped
-        // pre-Moderato
-        assert!(result.is_err(), "Should fail when using a not-yet-created token as quote token");
+        // Currently this test will PASS (not fail) because factory validation is skipped pre-Moderato
+        assert!(
+            result.is_err(),
+            "Should fail when using a not-yet-created token as quote token"
+        );
         if let Err(e) = result {
             assert_eq!(
                 e,
@@ -315,14 +331,15 @@ mod tests {
 
     #[test]
     fn test_create_token_off_by_one_allowed_pre_moderato() {
-        // Test the off-by-one bug: using token_id as quote token is allowed pre-Moderato (buggy
-        // behavior)
+        // Test the off-by-one bug: using token_id as quote token is allowed pre-Moderato (buggy behavior)
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let sender = Address::random();
         initialize_path_usd(&mut storage, sender).unwrap();
 
         let mut factory = TIP20Factory::new(&mut storage);
-        factory.initialize().expect("Factory initialization should succeed");
+        factory
+            .initialize()
+            .expect("Factory initialization should succeed");
 
         // Get the current token_id (should be 1)
         let current_token_id = factory.token_id_counter().unwrap();
@@ -351,7 +368,10 @@ mod tests {
             Err(e) => {
                 // If it fails, it should NOT be due to InvalidQuoteToken validation
                 assert!(
-                    !matches!(e, TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(_))),
+                    !matches!(
+                        e,
+                        TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(_))
+                    ),
                     "Pre-Moderato should not reject with InvalidQuoteToken when quote_token_id == token_id (buggy > logic)"
                 );
             }
