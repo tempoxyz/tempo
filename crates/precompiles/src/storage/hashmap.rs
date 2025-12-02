@@ -151,4 +151,9 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     fn set_spec(&mut self, spec: TempoHardfork) {
         self.spec = spec;
     }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    fn clear_transient(&mut self) {
+        self.transient.clear();
+    }
 }

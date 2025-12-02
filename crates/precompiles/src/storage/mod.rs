@@ -89,14 +89,21 @@ pub trait PrecompileStorageProvider {
     fn set_spec(&mut self, _spec: TempoHardfork) {
         unimplemented!("set_spec only available for test storage providers")
     }
+    #[cfg(any(test, feature = "test-utils"))]
+    fn clear_transient(&mut self) {
+        unimplemented!("clear_transient only available for test storage providers")
+    }
 }
 
 /// Storage operations for a given (contract) address.
+///
+/// Abstracts over persistent storage (SLOAD/SSTORE) and transient storage (TLOAD/TSTORE).
+/// Implementors must route to the appropriate opcode.
 pub trait StorageOps {
-    /// Performs an SSTORE operation at the provided slot, with the given value.
-    fn sstore(&mut self, slot: U256, value: U256) -> Result<()>;
-    /// Performs an SLOAD operation at the provided slot.
-    fn sload(&self, slot: U256) -> Result<U256>;
+    /// Stores a value at the provided slot.
+    fn store(&mut self, slot: U256, value: U256) -> Result<()>;
+    /// Loads a value from the provided slot.
+    fn load(&self, slot: U256) -> Result<U256>;
 }
 
 /// Trait providing access to a contract's address.

@@ -263,6 +263,24 @@ fn gen_handler_struct(
             fn delete(&mut self) -> crate::error::Result<()> {
                 self.as_slot().delete()
             }
+
+            /// Reads the struct from transient storage.
+            #[inline]
+            fn t_read(&self) -> crate::error::Result<#struct_name> {
+                self.as_slot().t_read()
+            }
+
+            /// Writes the struct to transient storage.
+            #[inline]
+            fn t_write(&mut self, value: #struct_name) -> crate::error::Result<()> {
+                self.as_slot().t_write(value)
+            }
+
+            /// Deletes the struct from transient storage.
+            #[inline]
+            fn t_delete(&mut self) -> crate::error::Result<()> {
+                self.as_slot().t_delete()
+            }
         }
     }
 }

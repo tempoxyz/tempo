@@ -92,7 +92,7 @@ where
     S: StorageOps,
     F: FnOnce(Vec<u8>) -> Result<T>,
 {
-    let base_value = storage.sload(base_slot)?;
+    let base_value = storage.load(base_slot)?;
     let is_long = is_long_string(base_value);
     let length = calc_string_length(base_value, is_long);
 
@@ -104,7 +104,7 @@ where
 
         for i in 0..chunks {
             let slot = slot_start + U256::from(i);
-            let chunk_value = storage.sload(slot)?;
+            let chunk_value = storage.load(slot)?;
             let chunk_bytes = chunk_value.to_be_bytes::<32>();
 
             // For the last chunk, only take the remaining bytes
@@ -130,9 +130,9 @@ fn store_bytes_like<S: StorageOps>(bytes: &[u8], storage: &mut S, base_slot: U25
     let length = bytes.len();
 
     if length <= 31 {
-        storage.sstore(base_slot, encode_short_string(bytes))
+        storage.store(base_slot, encode_short_string(bytes))
     } else {
-        storage.sstore(base_slot, encode_long_string_length(length))?;
+        storage.store(base_slot, encode_long_string_length(length))?;
 
         // Store data in chunks at keccak256(base_slot) + i
         let slot_start = calc_data_slot(base_slot);
@@ -148,7 +148,7 @@ fn store_bytes_like<S: StorageOps>(bytes: &[u8], storage: &mut S, base_slot: U25
             let mut chunk_bytes = [0u8; 32];
             chunk_bytes[..chunk.len()].copy_from_slice(chunk);
 
-            storage.sstore(slot, U256::from_be_bytes(chunk_bytes))?;
+            storage.store(slot, U256::from_be_bytes(chunk_bytes))?;
         }
 
         Ok(())
@@ -160,7 +160,7 @@ fn store_bytes_like<S: StorageOps>(bytes: &[u8], storage: &mut S, base_slot: U25
 /// Clears both the main slot and any keccak256-addressed data slots for long strings.
 #[inline]
 fn delete_bytes_like<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<()> {
-    let base_value = storage.sload(base_slot)?;
+    let base_value = storage.load(base_slot)?;
     let is_long = is_long_string(base_value);
 
     if is_long {
@@ -172,12 +172,12 @@ fn delete_bytes_like<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<
         // Clear all data slots
         for i in 0..chunks {
             let slot = slot_start + U256::from(i);
-            storage.sstore(slot, U256::ZERO)?;
+            storage.store(slot, U256::ZERO)?;
         }
     }
 
     // Clear the main slot
-    storage.sstore(base_slot, U256::ZERO)
+    storage.store(base_slot, U256::ZERO)
 }
 
 /// Compute the storage slot where long string data begins.

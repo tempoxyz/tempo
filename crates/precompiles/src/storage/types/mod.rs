@@ -164,6 +164,15 @@ pub trait Handler<T: Storable> {
 
     /// Deletes the value from storage (sets to zero).
     fn delete(&mut self) -> Result<()>;
+
+    /// Reads the value from storage.
+    fn t_read(&self) -> Result<T>;
+
+    /// Writes the value to storage.
+    fn t_write(&mut self, value: T) -> Result<()>;
+
+    /// Deletes the value from storage (sets to zero).
+    fn t_delete(&mut self) -> Result<()>;
 }
 
 /// High-level storage operations for storable types.
@@ -186,16 +195,16 @@ pub trait Storable: StorableType + Sized {
         match ctx.packed_offset() {
             None => {
                 for offset in 0..Self::SLOTS {
-                    storage.sstore(slot + U256::from(offset), U256::ZERO)?;
+                    storage.store(slot + U256::from(offset), U256::ZERO)?;
                 }
                 Ok(())
             }
             Some(offset) => {
                 // For packed context, we need to preserve other fields in the slot
                 let bytes = Self::BYTES;
-                let current = storage.sload(slot)?;
+                let current = storage.load(slot)?;
                 let cleared = crate::storage::packing::zero_packed_value(current, offset, bytes)?;
-                storage.sstore(slot, cleared)
+                storage.store(slot, cleared)
             }
         }
     }
@@ -241,9 +250,9 @@ impl<T: Packable> Storable for T {
         const { assert!(T::IS_PACKABLE, "Packable requires IS_PACKABLE to be true") };
 
         match ctx.packed_offset() {
-            None => storage.sload(slot).map(Self::from_word),
+            None => storage.load(slot).map(Self::from_word),
             Some(offset) => {
-                let slot_value = storage.sload(slot)?;
+                let slot_value = storage.load(slot)?;
                 packing::extract_packed_value(slot_value, offset, Self::BYTES)
             }
         }
@@ -254,11 +263,11 @@ impl<T: Packable> Storable for T {
         const { assert!(T::IS_PACKABLE, "Packable requires IS_PACKABLE to be true") };
 
         match ctx.packed_offset() {
-            None => storage.sstore(slot, self.to_word()),
+            None => storage.store(slot, self.to_word()),
             Some(offset) => {
-                let current = storage.sload(slot)?;
+                let current = storage.load(slot)?;
                 let updated = packing::insert_packed_value(current, self, offset, Self::BYTES)?;
-                storage.sstore(slot, updated)
+                storage.store(slot, updated)
             }
         }
     }

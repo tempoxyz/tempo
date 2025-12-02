@@ -384,7 +384,7 @@ fn gen_packed_array_load(array_size: &usize, elem_byte_count: &usize) -> TokenSt
             let slot_idx = calc_element_slot(i, #elem_byte_count);
             let offset = calc_element_offset(i, #elem_byte_count);
             let slot_addr = base_slot + U256::from(slot_idx);
-            let slot_value = storage.sload(slot_addr)?;
+            let slot_value = storage.load(slot_addr)?;
             result[i] = extract_packed_value(slot_value, offset, #elem_byte_count)?;
         }
         Ok(result)
@@ -411,7 +411,7 @@ fn gen_packed_array_store(array_size: &usize, elem_byte_count: &usize) -> TokenS
                 }
             }
 
-            storage.sstore(slot_addr, slot_value)?;
+            storage.store(slot_addr, slot_value)?;
         }
         Ok(())
     }

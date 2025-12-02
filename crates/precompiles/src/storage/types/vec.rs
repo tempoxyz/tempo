@@ -44,7 +44,7 @@ where
         debug_assert_eq!(ctx, LayoutCtx::FULL, "Dynamic arrays cannot be packed");
 
         // Read length from base slot
-        let length_value = storage.sload(len_slot)?;
+        let length_value = storage.load(len_slot)?;
         let length = length_value.to::<usize>();
 
         if length == 0 {
@@ -64,7 +64,7 @@ where
         debug_assert_eq!(ctx, LayoutCtx::FULL, "Dynamic arrays cannot be packed");
 
         // Write length to base slot
-        storage.sstore(len_slot, U256::from(self.len()))?;
+        storage.store(len_slot, U256::from(self.len()))?;
 
         if self.is_empty() {
             return Ok(());
@@ -84,11 +84,11 @@ where
         debug_assert_eq!(ctx, LayoutCtx::FULL, "Dynamic arrays cannot be packed");
 
         // Read length from base slot to determine how many slots to clear
-        let length_value = storage.sload(len_slot)?;
+        let length_value = storage.load(len_slot)?;
         let length = length_value.to::<usize>();
 
         // Clear base slot (length)
-        storage.sstore(len_slot, U256::ZERO)?;
+        storage.store(len_slot, U256::ZERO)?;
 
         if length == 0 {
             return Ok(());
@@ -99,7 +99,7 @@ where
             // Clear packed element slots. Vec elements can't be split across slots.
             let slot_count = calc_packed_slot_count(length, T::BYTES);
             for slot_idx in 0..slot_count {
-                storage.sstore(data_start + U256::from(slot_idx), U256::ZERO)?;
+                storage.store(data_start + U256::from(slot_idx), U256::ZERO)?;
             }
         } else {
             // Clear unpacked element slots (multi-slot aware)
@@ -168,6 +168,24 @@ where
     #[inline]
     fn delete(&mut self) -> Result<()> {
         self.as_slot().delete()
+    }
+
+    /// Reads the entire vector from transient storage.
+    #[inline]
+    fn t_read(&self) -> Result<Vec<T>> {
+        self.as_slot().t_read()
+    }
+
+    /// Writes the entire vector to transient storage.
+    #[inline]
+    fn t_write(&mut self, value: Vec<T>) -> Result<()> {
+        self.as_slot().t_write(value)
+    }
+
+    /// Deletes the entire vector from transient storage.
+    #[inline]
+    fn t_delete(&mut self) -> Result<()> {
+        self.as_slot().t_delete()
     }
 }
 
@@ -326,7 +344,7 @@ where
 
     for slot_idx in 0..slot_count {
         let slot_addr = data_start + U256::from(slot_idx);
-        let slot_value = storage.sload(slot_addr)?;
+        let slot_value = storage.load(slot_addr)?;
         let slot_packed = PackedSlot(slot_value);
 
         // How many elements in this slot?
@@ -382,7 +400,7 @@ where
         let end_elem = (start_elem + elements_per_slot).min(elements.len());
 
         let slot_value = build_packed_slot(&elements[start_elem..end_elem], byte_count)?;
-        storage.sstore(slot_addr, slot_value)?;
+        storage.store(slot_addr, slot_value)?;
     }
 
     Ok(())
@@ -456,11 +474,11 @@ where
 struct PackedSlot(U256);
 
 impl StorageOps for PackedSlot {
-    fn sload(&self, _slot: U256) -> Result<U256> {
+    fn load(&self, _slot: U256) -> Result<U256> {
         Ok(self.0)
     }
 
-    fn sstore(&mut self, _slot: U256, value: U256) -> Result<()> {
+    fn store(&mut self, _slot: U256, value: U256) -> Result<()> {
         self.0 = value;
         Ok(())
     }
