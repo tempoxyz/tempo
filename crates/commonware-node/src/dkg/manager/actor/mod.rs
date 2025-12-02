@@ -394,7 +394,7 @@ where
     }
 
     /// Starts a new ceremony for the epoch state tracked by the actor.
-    #[instrument(skip_all, fields(me = %self.config.me.public_key()))]
+    #[instrument(skip_all, fields(me = %self.config.me.public_key(), current_epoch = tracing::field::Empty))]
     async fn start_ceremony_for_current_epoch_state<TReceiver, TSender>(
         &mut self,
         tx: &mut Tx<ContextCell<TContext>>,
@@ -404,6 +404,7 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
+        Span::current().record("current_epoch", self.current_epoch_state(tx).await.epoch());
         if tx.has_post_allegretto_state().await {
             self.start_post_allegretto_ceremony(tx, mux).await
         } else {
@@ -413,9 +414,10 @@ where
 
     /// Registers the new epoch by reporting to the epoch manager that it should
     /// be entered and registering its peers on the peers manager.
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(epoch = tracing::field::Empty))]
     async fn register_current_epoch_state(&mut self, tx: &mut Tx<ContextCell<TContext>>) {
         let epoch_state = self.current_epoch_state(tx).await;
+        Span::current().record("epoch", epoch_state.epoch());
 
         if let Some(previous_epoch) = epoch_state.epoch().checked_sub(1)
             && let boundary_height =

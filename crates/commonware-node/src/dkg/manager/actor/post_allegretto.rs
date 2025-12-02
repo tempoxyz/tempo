@@ -82,18 +82,11 @@ where
     {
         let block_epoch = utils::epoch(self.config.epoch_length, block.height());
 
-        // Get current epoch state
-        let current_epoch_state: EpochState = match tx.get_epoch::<EpochState>().await {
-            Ok(Some(state)) => state,
-            Ok(None) => {
-                warn!("no post-allegretto epoch state found");
-                return;
-            }
-            Err(e) => {
-                warn!(%e, "failed to read post-allegretto epoch state");
-                return;
-            }
-        };
+        let current_epoch_state: EpochState = tx
+            .get_epoch()
+            .await
+            .expect("must be able to read epoch")
+            .expect("post-allegretto epoch state must exist");
 
         // Replay protection: if the node shuts down right after the last block
         // of the outgoing epoch was processed, but before the first block of
@@ -292,7 +285,7 @@ where
         Ok(self.start_post_allegretto_ceremony(tx, mux).await)
     }
 
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(epoch = tracing::field::Empty))]
     pub(super) async fn start_post_allegretto_ceremony<TReceiver, TSender>(
         &mut self,
         tx: &mut Tx<ContextCell<TContext>>,
@@ -303,12 +296,13 @@ where
         TSender: Sender<PublicKey = PublicKey>,
     {
         let epoch_state: EpochState = tx
-            .get_epoch::<EpochState>()
+            .get_epoch()
             .await
             .expect("must be able to read epoch")
             .expect(
                 "the post-allegretto epoch state must exist in order to start a ceremony for it",
             );
+        Span::current().record("epoch", epoch_state.epoch());
 
         let config = ceremony::Config {
             namespace: self.config.namespace.clone(),
@@ -357,12 +351,12 @@ where
         tx: &mut Tx<ContextCell<TContext>>,
     ) {
         let old_epoch_state: EpochState = tx
-            .get_epoch::<EpochState>()
+            .get_epoch()
             .await
             .expect("must be able to read epoch")
             .expect("there must always exist an epoch state");
 
-        let dkg_outcome: DkgOutcome = tx
+        let dkg_outcome = tx
             .get_dkg_outcome()
             .await
             .expect("must be able to read dkg outcome")

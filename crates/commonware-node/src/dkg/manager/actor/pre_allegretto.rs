@@ -49,7 +49,6 @@ where
         let has_pre = tx.has_pre_allegretto_state().await;
 
         if !has_post && !has_pre {
-            // Genesis initialization
             tx.set_epoch(EpochState {
                 epoch: 0,
                 participants: self.config.initial_validators.keys().clone(),
@@ -91,6 +90,7 @@ where
             block.derived_epoch = utils::epoch(self.config.epoch_length, block.height()),
             block.height = block.height(),
             block.timestamp = block.timestamp(),
+            latest_epoch = tracing::field::Empty,
         ),
     )]
     pub(super) async fn handle_finalized_pre_allegretto<TReceiver, TSender>(
@@ -104,6 +104,9 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
+        if let Ok(Some(epoch_state)) = tx.get_epoch::<EpochState>().await {
+            Span::current().record("latest_epoch", epoch_state.epoch());
+        }
         // Special case the last height.
         //
         // On the last height, the new ("current") ceremony can be entered
@@ -112,12 +115,12 @@ where
             utils::is_last_block_in_epoch(self.config.epoch_length, block.height())
         {
             let epoch_state: EpochState = tx
-                .get_epoch::<EpochState>()
+                .get_epoch()
                 .await
                 .expect("must be able to read epoch")
                 .expect("pre-allegretto epoch state must exist");
 
-            if block_epoch + 1 == epoch_state.epoch {
+            if block_epoch + 1 == epoch_state.epoch() {
                 if self
                     .config
                     .execution_node
@@ -140,7 +143,6 @@ where
                                 deleting current pre-allegretto epoch state and leaving \
                                 DKG logic to the post-hardfork routines",
                             );
-                            // Delete pre-allegretto current epoch state
                             tx.remove_epoch(HardforkRegime::PreAllegretto);
                             return;
                         }
@@ -159,10 +161,10 @@ where
                     .epoch_manager
                     .report(
                         epoch::Enter {
-                            epoch: epoch_state.epoch,
-                            public: epoch_state.public.clone(),
-                            share: epoch_state.share.clone(),
-                            participants: epoch_state.participants.clone(),
+                            epoch: epoch_state.epoch(),
+                            public: epoch_state.public_polynomial().clone(),
+                            share: epoch_state.private_share().clone(),
+                            participants: epoch_state.participants().clone(),
                         }
                         .into(),
                     )
@@ -178,14 +180,14 @@ where
                 if maybe_ceremony.is_none()
                     || maybe_ceremony
                         .as_ref()
-                        .is_some_and(|ceremony| ceremony.epoch() != epoch_state.epoch)
+                        .is_some_and(|ceremony| ceremony.epoch() != epoch_state.epoch())
                 {
                     maybe_ceremony
                         .replace(self.start_pre_allegretto_ceremony(tx, ceremony_mux).await);
                 }
 
                 tx.set_validators(
-                    epoch_state.epoch,
+                    epoch_state.epoch(),
                     ValidatorState::with_unknown_contract_state(
                         self.config.initial_validators.clone(),
                     ),
@@ -279,7 +281,7 @@ where
         let (public, share) = ceremony_outcome.role.into_key_pair();
 
         let old_epoch_state: EpochState = tx
-            .get_epoch::<EpochState>()
+            .get_epoch()
             .await
             .expect("must be able to read epoch")
             .expect("there must always be a current epoch state");
@@ -303,7 +305,7 @@ where
         }
     }
 
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(epoch = tracing::field::Empty))]
     pub(super) async fn start_pre_allegretto_ceremony<TReceiver, TSender>(
         &mut self,
         tx: &mut Tx<ContextCell<TContext>>,
@@ -314,10 +316,11 @@ where
         TSender: Sender<PublicKey = PublicKey>,
     {
         let epoch_state: EpochState = tx
-            .get_epoch::<EpochState>()
+            .get_epoch()
             .await
             .expect("must be able to read epoch")
             .expect("the epoch state must always exist during the lifetime of the actor");
+        Span::current().record("epoch", epoch_state.epoch());
 
         let config = ceremony::Config {
             namespace: self.config.namespace.clone(),
@@ -363,7 +366,7 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let epoch_state: EpochState = tx.get_epoch::<EpochState>().await?.expect(
+        let epoch_state: EpochState = tx.get_epoch().await?.expect(
             "when transitioning from pre-allegretto static validator sets to \
                 post-allegretto dynamic validator sets the pre-allegretto epoch \
                 state must exist",
