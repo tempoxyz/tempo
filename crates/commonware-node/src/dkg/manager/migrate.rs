@@ -70,7 +70,6 @@ where
 
     info!("migrating old metadata stores to unified database");
 
-    // First, determine the current epoch from the epoch metadata to bound our search
     let current_epoch = get_current_epoch_for_migration(context, partition_prefix).await;
 
     migrate_ceremony_metadata(context, partition_prefix, tx, current_epoch).await?;
@@ -92,7 +91,6 @@ async fn get_current_epoch_for_migration<TContext>(
 where
     TContext: Clock + Metrics + Storage,
 {
-    // Try post-allegretto first
     let post_metadata: Metadata<ContextCell<TContext>, U64, post_allegretto::EpochState> =
         init_metadata(
             context,
@@ -105,7 +103,6 @@ where
         return Some(state.epoch());
     }
 
-    // Try pre-allegretto
     let pre_metadata: Metadata<ContextCell<TContext>, U64, pre_allegretto::EpochState> =
         init_metadata(
             context,

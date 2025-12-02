@@ -286,7 +286,6 @@ where
             .expect("must be able to read epoch")
             .expect("there must always be a current epoch state");
 
-        // Move current to previous
         tx.set_previous_epoch(old_epoch_state)
             .expect("must be able to set previous epoch");
 

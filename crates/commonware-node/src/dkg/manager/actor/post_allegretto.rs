@@ -391,7 +391,6 @@ where
             validator_state: new_validator_state.clone(),
         };
 
-        // Move current to previous
         tx.set_previous_epoch(old_epoch_state)
             .expect("must be able to set previous epoch");
 
@@ -406,7 +405,6 @@ where
         &mut self,
         tx: &mut Tx<ContextCell<TContext>>,
     ) {
-        // Try to get and remove post-allegretto previous epoch state
         let epoch_to_shutdown =
             if let Ok(Some(old_epoch_state)) = tx.get_previous_epoch::<EpochState>().await {
                 tx.remove_previous_epoch(HardforkRegime::PostAllegretto);
