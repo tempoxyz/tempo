@@ -439,15 +439,6 @@ fn create_path_usd_token(
     let mut token = TIP20Token::new(0, &mut provider);
     token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
-    token
-        .set_supply_cap(
-            admin,
-            ITIP20::setSupplyCapCall {
-                newSupplyCap: U256::from(u128::MAX),
-            },
-        )
-        .expect("Could not set PathUSD supply cap");
-
     // Mint to all recipients
     for recipient in recipients.iter().progress() {
         token
