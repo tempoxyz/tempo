@@ -1,0 +1,50 @@
+import ReadParameters from '../../../../snippets/read-parameters.mdx'
+
+# `policy.isAuthorized`
+
+Checks if an address is authorized by a transfer policy.
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { client } from './viem.config'
+
+const isAuthorized = await client.policy.isAuthorized({
+  address: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
+  policyId: 1n,
+})
+
+console.log('Is authorized:', isAuthorized)
+// @log: Is authorized: true
+```
+
+```ts twoslash [viem.config.ts] filename="viem.config.ts"
+// [!include ~/snippets/viem.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = boolean
+```
+
+## Parameters
+
+### address
+
+- **Type:** `Address`
+
+Address to check authorization for.
+
+### policyId
+
+- **Type:** `bigint`
+
+ID of the policy to check against.
+
+<ReadParameters />
+

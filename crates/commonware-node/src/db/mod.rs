@@ -186,6 +186,16 @@ where
         self.writes.insert(key_hash, None);
     }
 
+    /// Check if a key exists in the store.
+    ///
+    /// This checks pending writes first, then falls back to the store.
+    pub async fn exists<K>(&mut self, key: K) -> bool
+    where
+        K: AsRef<[u8]>,
+    {
+        self.get_raw(key).await.ok().flatten().is_some()
+    }
+
     /// Get the node version that last wrote to this database.
     ///
     /// Returns None if no version has been written yet (new database).

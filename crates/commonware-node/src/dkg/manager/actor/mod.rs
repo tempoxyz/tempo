@@ -20,6 +20,7 @@ use commonware_utils::{
     Acknowledgement, quorum,
     sequence::FixedBytes,
     set::{Ordered, OrderedAssociated},
+    union,
 };
 
 use eyre::{OptionExt as _, eyre};
@@ -29,14 +30,14 @@ use rand_core::CryptoRngCore;
 use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::PublicOutcome;
 use tempo_node::TempoFullNode;
-use tracing::{Span, info, instrument, warn};
+use tracing::{Span, error, info, instrument, warn};
 
 use crate::{
     consensus::block::Block,
     db::{DkgEpochStore, DkgOutcomeStore, MetadataDatabase, Tx, ValidatorsStore},
     dkg::{
         HardforkRegime,
-        ceremony::{self, Ceremony},
+        ceremony::{self, Ceremony, OUTCOME_NAMESPACE},
         manager::{
             DecodedValidator,
             ingress::{Finalize, GetIntermediateDealing, GetOutcome},
@@ -199,6 +200,13 @@ where
         while let Some(message) = self.mailbox.next().await {
             let cause = message.cause;
             match message.command {
+                super::Command::Finalize(finalize) => {
+                    // Create transaction for finalize, commit after
+                    let mut tx = self.db.read_write().expect("must be able to open tx");
+                    self.handle_finalized(cause, finalize, &mut ceremony, &mut ceremony_mux, &mut tx)
+                        .await;
+                    tx.commit().await.expect("must be able to commit finalize tx");
+                }
                 super::Command::GetIntermediateDealing(get_ceremony_deal) => {
                     let _: Result<_, _> = self
                         .handle_get_intermediate_dealing(
@@ -212,12 +220,39 @@ where
                     let _: Result<_, _> =
                         self.handle_get_outcome(cause, get_ceremony_outcome).await;
                 }
-                super::Command::Finalize(finalize) => {
-                    // Create transaction for finalize, commit after
+
+                // Verifies some DKG dealing based on the current state the DKG manager
+                // is in. This is a request when verifying proposals. It relies on the
+                // fact that a new epoch (and hence a different hardfork regime) will
+                // only be entered once the finalized height of the current epoch was seen.
+                //
+                // Furthermore, extra data headers are only checked for intermediate
+                // dealings up but excluding the last height of an epoch.
+                //
+                // In other words: no dealing will ever have to be verified if it is
+                // for another epoch than the currently latest one.
+                super::Command::VerifyDealing(verify_dealing) => {
                     let mut tx = self.db.read_write().expect("must be able to open tx");
-                    self.handle_finalized(cause, finalize, &mut ceremony, &mut ceremony_mux, &mut tx)
-                        .await;
-                    tx.commit().await.expect("must be able to commit finalize tx");
+                    let outcome = if tx.has_post_allegretto_state().await {
+                        verify_dealing
+                            .dealing
+                            .verify(&union(&self.config.namespace, OUTCOME_NAMESPACE))
+                    } else if tx
+                        .get_epoch::<pre_allegretto::EpochState>(HardforkRegime::PreAllegretto)
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some()
+                    {
+                        verify_dealing.dealing.verify_pre_allegretto(&union(
+                            &self.config.namespace,
+                            OUTCOME_NAMESPACE,
+                        ))
+                    } else {
+                        error!("could not determine if we are running pre- or post allegretto;");
+                        continue;
+                    };
+                    let _ = verify_dealing.response.send(outcome);
                 }
             }
         }
@@ -391,20 +426,11 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        if self.has_post_allegretto_state(tx).await {
+        if tx.has_post_allegretto_state().await {
             self.start_post_allegretto_ceremony(tx, mux).await
         } else {
             self.start_pre_allegretto_ceremony(tx, mux).await
         }
-    }
-
-    /// Returns true if post-allegretto epoch state exists.
-    async fn has_post_allegretto_state(&self, tx: &mut Tx<ContextCell<TContext>>) -> bool {
-        tx.get_epoch::<post_allegretto::EpochState>(HardforkRegime::PostAllegretto)
-            .await
-            .ok()
-            .flatten()
-            .is_some()
     }
 
     /// Registers the new epoch by reporting to the epoch manager that it should
@@ -546,7 +572,7 @@ where
             .execution_node
             .chain_spec()
             .is_allegretto_active_at_timestamp(block.timestamp())
-            && self.has_post_allegretto_state(tx).await
+            && tx.has_post_allegretto_state().await
     }
 
     /// Returns the previous epoch state.

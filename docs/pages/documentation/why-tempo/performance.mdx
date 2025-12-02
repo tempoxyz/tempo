@@ -1,0 +1,10 @@
+# Performance
+
+Tempo is built for high-performance, targeting 100,000 transactions per second (TPS) with sub-second finality. This performance is achieved through a combination of optimized execution environments and cutting-edge consensus mechanisms to ensure raw throughput along with native features like our [payment lanes](/documentation/protocol/blockspace/payment-lanes) and native batching of transactions to ensure that developers can easily and reliably access this performance.
+
+## Throughput
+Tempo builds on and extends the most performant EVM (Ethereum Virtual Machine) execution client, Reth, a client that is also relied upon by several other blockchains including Ethereum, Base and Arc. We have the deep expertise to continue to push the frontier of blockchains: Tempo houses the team that built and maintains Reth, and several other pieces of core blockchain developer software such as Foundry. As such, we are already benchmarking 20k TPS in testnet with a clear line of sight to an order of magnitude higher by mainnet.
+
+## Finality
+
+Public blockchains that support financial activity need to balance two contradictory demands. On the one hand, the blockchain needs fast finality: e.g., a payment made on the blockchain should be quickly confirmed as final, with no risk of being "re-orged" out as can happen on many blockchains today. On the other hand, the blockchain also needs to degrade gracefully under suboptimal network conditions. Simple solutions to the former problem involve making network assumptions and then simply halting the network when those assumptions aren't satisfied. Tempo uses Commonware's implementation of the Simplex Consensus Algorithm. This cutting-edge algorithm optimally trades off these two contradictory desiderata: fast (sub-second) finality in "normal" network conditions, while still being able to make progress and process transactions when network conditions degrade.

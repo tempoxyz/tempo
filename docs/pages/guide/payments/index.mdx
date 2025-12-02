@@ -1,0 +1,56 @@
+import LucideSend from '~icons/lucide/send'
+import LucideHandshake from '~icons/lucide/handshake'
+import LucideCircleDollarSign from '~icons/lucide/circle-dollar-sign'
+import LucideHeartHandshake from '~icons/lucide/heart-handshake'
+import LucideRepeat from '~icons/lucide/repeat'
+import LucideLock from '~icons/lucide/lock'
+import * as Card from "../../../components/Card.tsx"
+
+# Stablecoin Payments
+
+Send and receive payments using stablecoins on Tempo. Learn how to integrate payments into your application with flexible fee options and sponsorship capabilities.
+
+<Card.Container>
+  <Card.Link
+    description="Send stablecoin payments between accounts with optional memos for reconciliation"
+    href="/guide/payments/send-a-payment"
+    icon={LucideSend}
+    title="Send a Payment"
+  />
+
+  <Card.Link
+    description="Accept payments from users and integrate payment flows into your application"
+    href="/guide/payments/accept-a-payment"
+    icon={LucideHandshake}
+    title="Accept a Payment"
+  />
+
+  <Card.Link
+    description="Configure users to pay transaction fees in any supported stablecoin"
+    href="/guide/payments/pay-fees-in-any-stablecoin"
+    icon={LucideCircleDollarSign}
+    title="Pay Fees in Any Stablecoin"
+  />
+
+  <Card.Link
+    description="Sponsor transaction fees for your users to enable gasless transactions"
+    href="/guide/payments/sponsor-user-fees"
+    icon={LucideHeartHandshake}
+    title="Sponsor User Fees"
+  />
+
+  <Card.Link
+    description="Set up recurring payments and subscriptions with scheduled transactions"
+    href="/guide/payments/start-a-subscription"
+    icon={LucideRepeat}
+    title="Start a Subscription"
+  />
+
+  <Card.Link
+    description="Enable private payments with enhanced privacy features"
+    href="/guide/payments/private-payments"
+    icon={LucideLock}
+    title="Private Payments"
+  />
+</Card.Container>
+

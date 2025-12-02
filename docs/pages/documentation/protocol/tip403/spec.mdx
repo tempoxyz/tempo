@@ -1,0 +1,317 @@
+# TIP-403: Policy Registry System
+
+## Abstract
+
+TIP-403 provides a policy registry system that allows TIP-20 tokens to inherit access control and compliance policies. The registry supports two types of policies (whitelist and blacklist) and includes special built-in policies for common use cases. Policies can be shared across multiple tokens, enabling consistent compliance enforcement.
+
+The TIP403Registry is deployed at address `0x403c000000000000000000000000000000000000`.
+
+## Motivation
+
+Token issuers often need to implement compliance policies such as KYC/AML requirements, access control, and risk management. Without a standardized system, each token would need to implement its own policy logic, making policy management more difficult.
+
+## Specification
+
+The TIP-403 registry stores policies that TIP-20 tokens check against on any token transfer. Policies are associated with a unique `policyId`, can either be a blacklist or a whitelist policy, and contain a list of addresses. This list of addresses can be updated by the policy `admin`.
+
+Custom policies start with `policyId = 2`. The registry reserves the first two ids for built-in policies: 
+1. `policyId = 0` is the `always-reject` policy and rejects all token transfers
+2. `policyId = 1` is the `always-allow` policy and allows all token transfers
+
+The `policyIdCounter` starts at `2` and increments with each new policy creation.
+
+### Policy Types
+
+TIP-403 supports two policy types:
+
+* **Whitelist Policies:** Only addresses in the whitelist can transfer tokens. All other addresses are blocked
+* **Blacklist Policies:** Addresses in the blacklist are blocked from transferring tokens. All other addresses can transfer
+
+### Storage and State
+
+The registry maintains the following state:
+
+- `policyIdCounter`: Starts at `2`, increments with each new policy creation. Returns the next policy ID that will be assigned.
+- `policyData`: Mapping from `policyId` to `PolicyData` struct containing policy type and admin address.
+- `policySet`: Internal mapping from `policyId` to address to boolean, tracking which addresses are in each policy's set.
+
+### Interfaces
+
+#### Contract Types
+
+```solidity
+interface ITIP403Registry {
+    enum PolicyType {
+        WHITELIST,
+        BLACKLIST
+    }
+
+    struct PolicyData {
+        PolicyType policyType;
+        address admin;
+    }
+}
+```
+
+#### Policy Creation
+
+```solidity
+function createPolicy(
+    /** Address that can modify this policy */
+    address admin,
+    /** Type of policy (whitelist or blacklist) */
+    PolicyType policyType
+) public returns (
+    /** ID of the newly created policy */
+    uint64 newPolicyId
+)
+```
+
+Creates a new policy with the specified admin and type. Returns the unique policy ID associated with the created policy.
+
+**Access Control:** Anyone can create a policy. The creator specifies an admin address that can modify the policy.
+
+**Behavior:**
+- Assigns the next available `policyId` starting from `2`
+- Sets the policy admin to the specified address
+- Initializes an empty policy set
+
+Emits `PolicyCreated(newPolicyId, msg.sender, policyType)` and `PolicyAdminUpdated(newPolicyId, msg.sender, admin)` events.
+
+```solidity
+function createPolicyWithAccounts(
+    /** Address that can modify this policy */
+    address admin,
+    /** Type of policy (whitelist or blacklist) */
+    PolicyType policyType,
+    /** Initial addresses to add to the policy */
+    address[] calldata accounts
+) public returns (
+    /** ID of the newly created policy */
+    uint64 newPolicyId
+)
+```
+
+Creates a policy and immediately adds the provided accounts to the policy set. Returns the unique policy ID associated with the created policy.
+
+**Access Control:** Anyone can create a policy.
+
+**Behavior:**
+- Assigns the next available `policyId` starting from `2`
+- Sets the policy admin to the specified address
+- Adds all provided accounts to the policy set
+- For whitelist policies: adds accounts as authorized
+- For blacklist policies: adds accounts as restricted
+
+Emits `PolicyCreated(newPolicyId, msg.sender, policyType)`, `PolicyAdminUpdated(newPolicyId, msg.sender, admin)`, and either `WhitelistUpdated` or `BlacklistUpdated` events for each account added.
+
+#### Policy Administration
+
+These policy administrative functions can only be called by the current policy admin.
+
+```solidity
+function setPolicyAdmin(
+    /** ID of the policy to update */
+    uint64 policyId,
+    /** New admin address for the policy */
+    address admin
+) external
+```
+
+Transfers admin rights to another address.
+
+**Access Control:** Only the current policy admin can call this function. Reverts with `Unauthorized()` if caller is not the policy admin.
+
+**Behavior:**
+- Updates the policy's admin address
+- The new admin immediately gains full control over the policy
+- The old admin loses all permissions
+
+Emits `PolicyAdminUpdated(policyId, msg.sender, admin)` event.
+
+```solidity
+function modifyPolicyWhitelist(
+    /** ID of the whitelist policy */
+    uint64 policyId,
+    /** Address to add or remove */
+    address account,
+    /** true to allow, false to block */
+    bool allowed
+) external
+```
+
+Adds or removes addresses from a whitelist policy.
+
+**Access Control:** Only the policy admin can call this function. Reverts with `Unauthorized()` if caller is not the policy admin.
+
+**Behavior:**
+- `allowed = true` adds the address to the whitelist (authorized to transfer)
+- `allowed = false` removes the address from the whitelist (not authorized)
+- Reverts with `IncompatiblePolicyType()` if policy is not a whitelist
+
+Emits `WhitelistUpdated(policyId, msg.sender, account, allowed)` event.
+
+```solidity
+function modifyPolicyBlacklist(
+    /** ID of the blacklist policy */
+    uint64 policyId,
+    /** Address to add or remove */
+    address account,
+    /** true to block, false to allow */
+    bool restricted
+) external
+```
+
+Adds or removes addresses from a blacklist policy.
+
+**Access Control:** Only the policy admin can call this function. Reverts with `Unauthorized()` if caller is not the policy admin.
+
+**Behavior:**
+- `restricted = true` adds the address to the blacklist (not authorized to transfer)
+- `restricted = false` removes the address from the blacklist (authorized)
+- Reverts with `IncompatiblePolicyType()` if policy is not a blacklist
+
+Emits `BlacklistUpdated(policyId, msg.sender, account, restricted)` event.
+
+#### Viewing Policy State
+
+```solidity
+function isAuthorized(
+    /** Policy ID to check against */
+    uint64 policyId,
+    /** Address to check */
+    address user
+) external view returns (
+    /** true if authorized, false if blocked */
+    bool
+)
+```
+
+Returns whether the provided user is allowed to transfer tokens under the provided policy ID.
+
+**Behavior:**
+- For `policyId = 0` (always-reject): Always returns `false`
+- For `policyId = 1` (always-allow): Always returns `true`
+- For whitelist policies: Returns `true` if address is in the whitelist, `false` otherwise
+- For blacklist policies: Returns `true` if address is NOT in the blacklist, `false` if it is
+
+**Implementation Logic:**
+```solidity
+if (policyId < 2) {
+    return policyId == 1; // 0 = reject, 1 = allow
+}
+PolicyData memory data = policyData[policyId];
+return data.policyType == PolicyType.WHITELIST
+    ? policySet[policyId][user]
+    : !policySet[policyId][user];
+```
+
+```solidity
+function policyIdCounter() external view returns (
+    /** The next policy ID that will be assigned to a newly created policy */
+    uint64
+)
+```
+
+Returns the next policy ID that will be assigned to a newly created policy. Starts at `2` and increments with each policy creation.
+
+```solidity
+function policyData(
+    /** ID of the policy to query */
+    uint64 policyId
+) external view returns (
+    /** Type of the policy (whitelist or blacklist) */
+    PolicyType policyType,
+    /** Admin address of the policy */
+    address admin
+)
+```
+
+Returns the policy type and admin address of the policy associated with the provided policy ID.
+
+#### Usage with TIP-20 Tokens
+
+TIP-20 tokens store the current TIP403 registry policy ID they adhere to in its storage. On any token transfer, it performs a TIP-403 policy check. The policy to use for the token can only be set by the admin of the token.
+
+**Default Policy:** New tokens start with `transferPolicyId = 1` (always-allow policy).
+
+**Policy Changes:** When a token's transfer policy is changed via `changeTransferPolicyId()`, all future transfers are immediately subject to the new policy. The change takes effect immediately - there is no delay or grace period.
+
+A quick example is shown below to create and set a policy:
+
+```solidity
+address admin = address(this);
+
+// Create policy with registry
+uint64 policyId = tip403Registry.createPolicy(admin, PolicyType.WHITELIST);
+
+// Set policy on the token
+token.changeTransferPolicyId(policyId);
+```
+
+#### Events
+
+```solidity
+event PolicyCreated(
+    /** ID of the newly created policy */
+    uint64 indexed policyId,
+    /** Address that created the policy */
+    address indexed updater,
+    /** Type of policy created */
+    PolicyType policyType
+);
+```
+
+Emitted when a new policy is created. Triggered by `createPolicy()` and `createPolicyWithAccounts()`.
+
+```solidity
+event PolicyAdminUpdated(
+    /** ID of the policy */
+    uint64 indexed policyId,
+    /** Address that made the change */
+    address indexed updater,
+    /** New admin address */
+    address indexed admin
+);
+```
+
+Emitted when a policy's admin is changed. Triggered by `createPolicy()`, `createPolicyWithAccounts()`, and `setPolicyAdmin()`.
+
+```solidity
+event WhitelistUpdated(
+    /** ID of the whitelist policy */
+    uint64 indexed policyId,
+    /** Address that made the change */
+    address indexed updater,
+    /** Account that was added or removed */
+    address indexed account,
+    /** true if added, false if removed */
+    bool allowed
+);
+```
+
+Emitted when an address is added to or removed from a whitelist policy. Triggered by `modifyPolicyWhitelist()` and `createPolicyWithAccounts()` when creating a whitelist policy.
+
+```solidity
+event BlacklistUpdated(
+    /** ID of the blacklist policy */
+    uint64 indexed policyId,
+    /** Address that made the change */
+    address indexed updater,
+    /** Account that was added or removed */
+    address indexed account,
+    /** true if blocked, false if unblocked */
+    bool restricted
+);
+```
+
+Emitted when an address is added to or removed from a blacklist policy. Triggered by `modifyPolicyBlacklist()` and `createPolicyWithAccounts()` when creating a blacklist policy.
+
+#### Errors
+
+The contract defines the following custom errors:
+
+```solidity
+error Unauthorized();              // Caller is not the policy admin
+error IncompatiblePolicyType();    // Wrong policy type for the operation
+```
