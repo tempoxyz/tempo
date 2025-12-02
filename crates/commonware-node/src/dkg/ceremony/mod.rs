@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use alloy_consensus::BlockHeader as _;
 use commonware_codec::{Decode as _, Encode as _};
 use commonware_consensus::{Block as _, types::Epoch};
 use commonware_cryptography::{
@@ -21,7 +22,7 @@ use commonware_utils::{max_faults, set::Ordered, union};
 use eyre::{WrapErr as _, bail, ensure};
 use futures::FutureExt as _;
 use indexmap::IndexSet;
-use prometheus_client::metrics::counter::Counter;
+use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
 use tracing::{Level, debug, error, info, instrument, warn};
 
@@ -102,6 +103,7 @@ where
 
     receiver: SubReceiver<TReceiver>,
     sender: SubSender<TSender>,
+    metrics: Metrics,
 }
 
 impl<TReceiver, TSender> Ceremony<TReceiver, TSender>
@@ -110,15 +112,25 @@ where
     TSender: Sender<PublicKey = PublicKey>,
 {
     /// Initialize a DKG ceremony.
+    #[instrument(skip_all, fields(for_epoch = config.epoch), err)]
     pub(super) async fn init<TContext>(
         context: &mut TContext,
         mux: &mut MuxHandle<TSender, TReceiver>,
         tx: &mut Tx<TContext>,
         config: Config,
+        metrics: Metrics,
     ) -> eyre::Result<Self>
     where
         TContext: Clock + CryptoRngCore + RuntimeMetrics + Storage,
     {
+        // Reset the cumulants for the current ceremony back to zero instead
+        // of creating fresh metrics: registering new metrics would just push
+        // more and more into the prometheus registry without ever pruning.
+        metrics.reset_per_ceremony_metrics();
+
+        metrics.dealers.set(config.dealers.len() as i64);
+        metrics.players.set(config.players.len() as i64);
+
         let (sender, receiver) = mux
             .register(config.epoch)
             .await
@@ -243,6 +255,9 @@ where
             });
         };
 
+        metrics.how_often_player.inc_by(player_me.is_some() as u64);
+        metrics.how_often_dealer.inc_by(dealer_me.is_some() as u64);
+
         let previous = config.share.clone().map_or_else(
             || Role::Verifier {
                 public: config.public.clone(),
@@ -261,6 +276,7 @@ where
             arbiter,
             receiver,
             sender,
+            metrics,
         })
     }
 
@@ -345,6 +361,10 @@ where
                     ));
                 })
                 .await?;
+                // When self-distributing, we also "receive" the share and "send" an ack to ourselves
+                self.metrics.shares_distributed.inc();
+                self.metrics.acks_received.inc();
+                self.metrics.acks_sent.inc();
                 continue;
             }
 
@@ -372,6 +392,7 @@ where
                 warn!(%player, "failed to send share to player");
             } else {
                 info!(%player, "sent share to player");
+                self.metrics.shares_distributed.inc();
             }
         }
         Ok(())
@@ -437,6 +458,7 @@ where
     where
         TContext: Clock + RuntimeMetrics + Storage,
     {
+        self.metrics.acks_received.inc();
         let Some(dealer_me) = &mut self.dealer_me else {
             return Ok("not a dealer, dropping ack");
         };
@@ -504,6 +526,7 @@ where
     where
         TContext: Clock + RuntimeMetrics + Storage,
     {
+        self.metrics.shares_received.inc();
         let Some(player_me) = &mut self.player_me else {
             return Ok("not a player, dropping share");
         };
@@ -542,6 +565,7 @@ where
             .await
             .wrap_err("failed returning ack to peer")?;
 
+        self.metrics.acks_sent.inc();
         Ok("recorded share and returned signed ack to peer")
     }
 
@@ -558,9 +582,16 @@ where
     where
         TContext: Clock + RuntimeMetrics + Storage,
     {
+        // Track empty vs failed metrics separately
+        if block.header().extra_data().is_empty() {
+            self.metrics.dealings_empty.inc();
+            return Ok(());
+        }
+
         let block_outcome = match block.try_read_ceremony_deal_outcome() {
             Ok(outcome) => outcome,
             Err(e) => {
+                self.metrics.bad_dealings.inc();
                 info!(%e, "block contained no usable intermediate deal outcome");
                 return Ok(());
             }
@@ -597,6 +628,7 @@ where
                     block_outcome.commitment(),
                 )
         }) {
+            self.metrics.bad_dealings.inc();
             self.arbiter.disqualify(block_outcome.dealer().clone());
             bail!("invalid ack signatures; disqualifying dealer");
         }
@@ -656,6 +688,7 @@ where
             );
         }
 
+        self.metrics.dealings_read.inc();
         Ok(())
     }
 
@@ -883,17 +916,48 @@ impl Role {
     }
 }
 
+/// Ceremony specific metrics.
 #[derive(Clone)]
 pub(super) struct Metrics {
+    pub(super) shares_distributed: Gauge,
+    pub(super) shares_received: Gauge,
+    pub(super) acks_received: Gauge,
+    pub(super) acks_sent: Gauge,
+    pub(super) dealings_read: Gauge,
+    pub(super) dealings_empty: Gauge,
+    pub(super) bad_dealings: Gauge,
+
     failures: Counter,
     successes: Counter,
+    pub(super) dealers: Gauge,
+    pub(super) players: Gauge,
+
+    pub(super) how_often_dealer: Counter,
+    pub(super) how_often_player: Counter,
 }
 
 impl Metrics {
     /// Construct and register the ceremony-related metrics on `context`.
+    ///
+    /// Note: because there exists no long-lived ceremony specific context,
+    /// most of the metrics defined here carry a manual `ceremony` prefix.
     pub(super) fn register<C: RuntimeMetrics>(context: &C) -> Self {
         let failures = Counter::default();
         let successes = Counter::default();
+
+        let dealers = Gauge::default();
+        let players = Gauge::default();
+
+        let how_often_dealer = Counter::default();
+        let how_often_player = Counter::default();
+
+        let shares_distributed = Gauge::default();
+        let shares_received = Gauge::default();
+        let acks_received = Gauge::default();
+        let acks_sent = Gauge::default();
+        let dealings_read = Gauge::default();
+        let dealings_empty = Gauge::default();
+        let bad_dealings = Gauge::default();
 
         context.register(
             "ceremony_failures",
@@ -905,11 +969,93 @@ impl Metrics {
             "the number of successful ceremonies a node participated in",
             successes.clone(),
         );
+        context.register(
+            "ceremony_dealers",
+            "the number of dealers in the currently running ceremony",
+            dealers.clone(),
+        );
+        context.register(
+            "ceremony_players",
+            "the number of players in the currently running ceremony",
+            players.clone(),
+        );
+
+        // no prefix for legacy reasons
+        context.register(
+            "how_often_dealer",
+            "number of the times as node was active as a dealer",
+            how_often_dealer.clone(),
+        );
+        // no prefix for for legacy reasons
+        context.register(
+            "how_often_player",
+            "number of the times as node was active as a player",
+            how_often_player.clone(),
+        );
+
+        context.register(
+            "ceremony_shares_distributed",
+            "the number of shares distributed by this node as a dealer in the current ceremony",
+            shares_distributed.clone(),
+        );
+        context.register(
+            "ceremony_shares_received",
+            "the number of shares received by this node as a playr in the current ceremony",
+            shares_received.clone(),
+        );
+        context.register(
+            "ceremony_acks_received",
+            "the number of acknowledgments received by this node as a dealer in the current ceremony",
+            acks_received.clone(),
+        );
+        context.register(
+            "ceremony_acks_sent",
+            "the number of acknowledgments sent by this node as a player in the current ceremony",
+            acks_sent.clone(),
+        );
+        context.register(
+            "ceremony_dealings_read",
+            "the number of dealings read from the blockchain in the current ceremony",
+            dealings_read.clone(),
+        );
+        context.register(
+            "ceremony_dealings_empty",
+            "the number of blocks with empty extra_data (no dealing) in the current ceremony",
+            dealings_empty.clone(),
+        );
+        context.register(
+            "ceremony_bad_dealings",
+            "the number of blocks where decoding and verifying dealings failed in the current ceremony",
+            bad_dealings.clone(),
+        );
 
         Self {
+            shares_distributed,
+            shares_received,
+            acks_received,
+            acks_sent,
+            dealings_read,
+            dealings_empty,
+            bad_dealings,
+            dealers,
+            players,
+            how_often_dealer,
+            how_often_player,
             failures,
             successes,
         }
+    }
+
+    /// Resets per-ceremony gauges to zero. Called when a new ceremony is
+    /// initialized.
+    fn reset_per_ceremony_metrics(&self) {
+        self.shares_distributed.set(0);
+        self.shares_received.set(0);
+        self.acks_received.set(0);
+        self.acks_sent.set(0);
+        self.dealings_read.set(0);
+        self.dealings_empty.set(0);
+        self.bad_dealings.set(0);
     }
 
     /// Increments the failed ceremonies counter.

@@ -331,9 +331,10 @@ where
             players: epoch_state.participants.clone(),
         };
 
-        let ceremony = ceremony::Ceremony::init(&mut self.context, mux, tx, config)
-            .await
-            .expect("must always be able to initialize ceremony");
+        let ceremony =
+            ceremony::Ceremony::init(&mut self.context, mux, tx, config, self.metrics.ceremony.clone())
+                .await
+                .expect("must always be able to initialize ceremony");
 
         info!(
             us = %self.config.me,
