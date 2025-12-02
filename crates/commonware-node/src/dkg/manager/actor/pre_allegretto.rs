@@ -21,7 +21,7 @@ use crate::{
     consensus::block::Block,
     db::{CeremonyStore, DkgEpochStore, Tx, ValidatorsStore},
     dkg::{
-        HardforkRegime,
+        HardforkRegime, RegimeEpochState,
         ceremony::{self, Ceremony},
         manager::validators::ValidatorState,
     },
@@ -468,4 +468,8 @@ impl Read for EpochState {
             share,
         })
     }
+}
+
+impl RegimeEpochState for EpochState {
+    const REGIME: HardforkRegime = HardforkRegime::PreAllegretto;
 }

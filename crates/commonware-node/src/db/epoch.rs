@@ -1,8 +1,7 @@
 use std::future::Future;
 
 use super::Tx;
-use crate::dkg::HardforkRegime;
-use commonware_codec::{EncodeSize, Read, Write};
+use crate::dkg::{HardforkRegime, RegimeEpochState};
 use commonware_runtime::{Clock, Metrics, Storage};
 use eyre::Result;
 
@@ -26,30 +25,20 @@ where
     TContext: Clock + Metrics + Storage,
 {
     /// Get the current epoch state for the given hardfork regime.
-    fn get_epoch<S>(
+    fn get_epoch<S: RegimeEpochState>(
         &mut self,
-        regime: HardforkRegime,
-    ) -> impl Future<Output = Result<Option<S>>> + Send
-    where
-        S: Read<Cfg = ()>;
+    ) -> impl Future<Output = Result<Option<S>>> + Send;
 
     /// Set the current epoch state for the given hardfork regime.
-    fn set_epoch<S>(&mut self, regime: HardforkRegime, state: S) -> Result<()>
-    where
-        S: Write + EncodeSize;
+    fn set_epoch<S: RegimeEpochState>(&mut self, state: S) -> Result<()>;
 
     /// Get the previous epoch state for the given hardfork regime.
-    fn get_previous_epoch<S>(
+    fn get_previous_epoch<S: RegimeEpochState>(
         &mut self,
-        regime: HardforkRegime,
-    ) -> impl Future<Output = Result<Option<S>>> + Send
-    where
-        S: Read<Cfg = ()>;
+    ) -> impl Future<Output = Result<Option<S>>> + Send;
 
     /// Set the previous epoch state for the given hardfork regime.
-    fn set_previous_epoch<S>(&mut self, regime: HardforkRegime, state: S) -> Result<()>
-    where
-        S: Write + EncodeSize;
+    fn set_previous_epoch<S: RegimeEpochState>(&mut self, state: S) -> Result<()>;
 
     /// Remove the previous epoch state for the given hardfork regime.
     fn remove_previous_epoch(&mut self, regime: HardforkRegime);
@@ -65,32 +54,20 @@ impl<TContext> DkgEpochStore<TContext> for Tx<TContext>
 where
     TContext: Clock + Metrics + Storage,
 {
-    async fn get_epoch<S>(&mut self, regime: HardforkRegime) -> Result<Option<S>>
-    where
-        S: Read<Cfg = ()>,
-    {
-        self.get(current_epoch_key(regime)).await
+    async fn get_epoch<S: RegimeEpochState>(&mut self) -> Result<Option<S>> {
+        self.get(current_epoch_key(S::REGIME)).await
     }
 
-    fn set_epoch<S>(&mut self, regime: HardforkRegime, state: S) -> Result<()>
-    where
-        S: Write + EncodeSize,
-    {
-        self.insert(current_epoch_key(regime), state)
+    fn set_epoch<S: RegimeEpochState>(&mut self, state: S) -> Result<()> {
+        self.insert(current_epoch_key(S::REGIME), state)
     }
 
-    async fn get_previous_epoch<S>(&mut self, regime: HardforkRegime) -> Result<Option<S>>
-    where
-        S: Read<Cfg = ()>,
-    {
-        self.get(previous_epoch_key(regime)).await
+    async fn get_previous_epoch<S: RegimeEpochState>(&mut self) -> Result<Option<S>> {
+        self.get(previous_epoch_key(S::REGIME)).await
     }
 
-    fn set_previous_epoch<S>(&mut self, regime: HardforkRegime, state: S) -> Result<()>
-    where
-        S: Write + EncodeSize,
-    {
-        self.insert(previous_epoch_key(regime), state)
+    fn set_previous_epoch<S: RegimeEpochState>(&mut self, state: S) -> Result<()> {
+        self.insert(previous_epoch_key(S::REGIME), state)
     }
 
     fn remove_previous_epoch(&mut self, regime: HardforkRegime) {

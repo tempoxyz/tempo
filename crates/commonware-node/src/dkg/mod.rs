@@ -1,3 +1,5 @@
+use commonware_codec::{EncodeSize, Read, Write};
+
 pub mod ceremony;
 pub mod manager;
 
@@ -5,4 +7,9 @@ pub mod manager;
 pub enum HardforkRegime {
     PreAllegretto,
     PostAllegretto,
+}
+
+/// Trait for epoch state types that are associated with a specific hardfork regime.
+pub trait RegimeEpochState: Read<Cfg = ()> + Write + EncodeSize {
+    const REGIME: HardforkRegime;
 }
