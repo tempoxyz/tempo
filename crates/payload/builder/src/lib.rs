@@ -672,6 +672,7 @@ where
             timestamp = sealed_block.timestamp_millis(),
             gas_limit = sealed_block.gas_limit(),
             gas_used,
+            extra_data = %sealed_block.extra_data(),
             total_transactions,
             payment_transactions,
             ?elapsed,
