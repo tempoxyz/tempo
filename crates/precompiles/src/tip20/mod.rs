@@ -335,6 +335,11 @@ impl TIP20Token {
         Ok(())
     }
 
+    /// Gets the current fee recipient
+    pub fn get_fee_recipient(&mut self, msg_sender: Address) -> Result<Address> {
+        self.fee_recipient.read()
+    }
+
     // Token operations
     /// Mints new tokens to specified address
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
@@ -1535,961 +1540,944 @@ pub(crate) mod tests {
         })
     }
 
-    // #[test]
-    // fn test_transfer_from_insufficient_allowance() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-    //     let from = Address::random();
-    //     let spender = Address::random();
-    //     let to = Address::random();
-    //     let amount = U256::random();
-    //     let token_id = 1;
-    //     initialize_path_usd(admin)?;
-    //     let mut token = TIP20Token::new(token_id);
-    //     token
-    //         .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
-    //         .unwrap();
-
-    //     token.grant_role_internal(admin, *ISSUER_ROLE)?;
-
-    //     token
-    //         .mint(admin, ITIP20::mintCall { to: from, amount })
-    //         .unwrap();
-
-    //     let result = token.transfer_from(spender, ITIP20::transferFromCall { from, to, amount });
-    //     assert!(matches!(
-    //         result,
-    //         Err(TempoPrecompileError::TIP20(
-    //             TIP20Error::InsufficientAllowance(_)
-    //         ))
-    //     ));
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_system_transfer_from() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-    //     let from = Address::random();
-    //     let to = Address::random();
-    //     let amount = U256::random();
-    //     let token_id = 1;
-    //     initialize_path_usd(admin)?;
-    //     let mut token = TIP20Token::new(token_id);
-    //     token
-    //         .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
-    //         .unwrap();
-
-    //     token.grant_role_internal(admin, *ISSUER_ROLE)?;
-
-    //     token
-    //         .mint(admin, ITIP20::mintCall { to: from, amount })
-    //         .unwrap();
-
-    //     let result = token.system_transfer_from(from, to, amount);
-    //     assert!(result.is_ok());
-
-    //     assert_eq!(
-    //         storage.events[&token_id_to_address(token_id)].last(),
-    //         Some(&TIP20Event::Transfer(ITIP20::Transfer { from, to, amount }).into_log_data())
-    //     );
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_initialize_sets_next_quote_token() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-
-    //     let token_id = setup_factory_with_token(&mut storage, admin, "Test", "TST");
-    //     let mut token = TIP20Token::new(token_id);
-
-    //     // Verify both quoteToken and nextQuoteToken are set to the same value
-    //     assert_eq!(token.quote_token()?, PATH_USD_ADDRESS);
-    //     assert_eq!(token.next_quote_token()?, PATH_USD_ADDRESS);
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_update_quote_token() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-
-    //     let (token_id, quote_token_id) = setup_token_with_custom_quote_token(&mut storage, admin);
-    //     let quote_token_address = token_id_to_address(quote_token_id);
-
-    //     let mut token = TIP20Token::new(token_id);
-
-    //     // Set next quote token
-    //     token
-    //         .set_next_quote_token(
-    //             admin,
-    //             ITIP20::setNextQuoteTokenCall {
-    //                 newQuoteToken: quote_token_address,
-    //             },
-    //         )
-    //         .unwrap();
-
-    //     // Verify next quote token was set
-    //     assert_eq!(token.next_quote_token()?, quote_token_address);
-
-    //     // Verify event was emitted
-    //     let events = &storage.events[&token_id_to_address(token_id)];
-    //     assert_eq!(
-    //         events.last().unwrap(),
-    //         &TIP20Event::NextQuoteTokenSet(ITIP20::NextQuoteTokenSet {
-    //             updater: admin,
-    //             nextQuoteToken: quote_token_address,
-    //         })
-    //         .into_log_data()
-    //     );
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_update_quote_token_requires_admin() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-    //     let non_admin = Address::random();
-    //     let token_id = 1;
-    //     initialize_path_usd(admin)?;
-    //     let mut token = TIP20Token::new(token_id);
-    //     token
-    //         .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
-    //         .unwrap();
-
-    //     let quote_token_address = token_id_to_address(2);
-
-    //     // Try to set next quote token as non-admin
-    //     let result = token.set_next_quote_token(
-    //         non_admin,
-    //         ITIP20::setNextQuoteTokenCall {
-    //             newQuoteToken: quote_token_address,
-    //         },
-    //     );
-
-    //     assert!(matches!(
-    //         result,
-    //         Err(TempoPrecompileError::RolesAuthError(
-    //             RolesAuthError::Unauthorized(_)
-    //         ))
-    //     ));
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_update_quote_token_rejects_non_tip20() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-
-    //     let token_id = setup_factory_with_token(&mut storage, admin, "Test", "TST");
-    //     let mut token = TIP20Token::new(token_id);
-
-    //     // Try to set a non-TIP20 address (random address that doesn't match TIP20 pattern)
-    //     let non_tip20_address = Address::random();
-    //     let result = token.set_next_quote_token(
-    //         admin,
-    //         ITIP20::setNextQuoteTokenCall {
-    //             newQuoteToken: non_tip20_address,
-    //         },
-    //     );
-
-    //     assert!(matches!(
-    //         result,
-    //         Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
-    //             _
-    //         )))
-    //     ));
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_update_quote_token_rejects_undeployed_token() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-
-    //     let token_id = setup_factory_with_token(&mut storage, admin, "Test", "TST");
-    //     let mut token = TIP20Token::new(token_id);
-
-    //     // Try to set a TIP20 address that hasn't been deployed yet (token_id = 999)
-    //     // This has the correct TIP20 address pattern but hasn't been created
-    //     let undeployed_token_address = token_id_to_address(999);
-    //     let result = token.set_next_quote_token(
-    //         admin,
-    //         ITIP20::setNextQuoteTokenCall {
-    //             newQuoteToken: undeployed_token_address,
-    //         },
-    //     );
-
-    //     assert!(matches!(
-    //         result,
-    //         Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
-    //             _
-    //         )))
-    //     ));
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_finalize_quote_token_update() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-
-    //     let (token_id, quote_token_id) = setup_token_with_custom_quote_token(&mut storage, admin);
-    //     let quote_token_address = token_id_to_address(quote_token_id);
-
-    //     let mut token = TIP20Token::new(token_id);
-
-    //     // Set next quote token
-    //     token
-    //         .set_next_quote_token(
-    //             admin,
-    //             ITIP20::setNextQuoteTokenCall {
-    //                 newQuoteToken: quote_token_address,
-    //             },
-    //         )
-    //         .unwrap();
-
-    //     // Complete the update
-    //     token
-    //         .complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {})
-    //         .unwrap();
-
-    //     // Verify quote token was updated
-    //     assert_eq!(token.quote_token()?, quote_token_address);
-
-    //     // Verify event was emitted
-    //     let events = &storage.events[&token_id_to_address(token_id)];
-    //     assert_eq!(
-    //         events.last().unwrap(),
-    //         &TIP20Event::QuoteTokenUpdate(ITIP20::QuoteTokenUpdate {
-    //             updater: admin,
-    //             newQuoteToken: quote_token_address,
-    //         })
-    //         .into_log_data()
-    //     );
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_finalize_quote_token_update_detects_loop() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-
-    //     initialize_path_usd(admin)?;
-    //     let mut factory = TIP20Factory::new(&mut storage);
-    //     factory.initialize().unwrap();
-
-    //     // Create token_b first (links to LINKING_USD)
-    //     let token_b_id =
-    //         create_token_via_factory(&mut factory, admin, "Token B", "TKB", PATH_USD_ADDRESS);
-    //     let token_b_address = token_id_to_address(token_b_id);
-
-    //     // Create token_a (links to token_b)
-    //     let token_a_id =
-    //         create_token_via_factory(&mut factory, admin, "Token A", "TKA", token_b_address);
-    //     let token_a_address = token_id_to_address(token_a_id);
-
-    //     // Now try to set token_a as the next quote token for token_b (would create A -> B -> A loop)
-    //     let mut token_b = TIP20Token::new(token_b_id, &mut storage);
-    //     token_b
-    //         .set_next_quote_token(
-    //             admin,
-    //             ITIP20::setNextQuoteTokenCall {
-    //                 newQuoteToken: token_a_address,
-    //             },
-    //         )
-    //         .unwrap();
-
-    //     // Try to complete the update - should fail due to loop detection
-    //     let result =
-    //         token_b.complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {});
-
-    //     assert!(matches!(
-    //         result,
-    //         Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
-    //             _
-    //         )))
-    //     ));
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_finalize_quote_token_update_requires_admin() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-    //     let non_admin = Address::random();
-
-    //     let (token_id, quote_token_id) = setup_token_with_custom_quote_token(&mut storage, admin);
-    //     let quote_token_address = token_id_to_address(quote_token_id);
-
-    //     let mut token = TIP20Token::new(token_id);
-
-    //     // Set next quote token as admin
-    //     token.set_next_quote_token(
-    //         admin,
-    //         ITIP20::setNextQuoteTokenCall {
-    //             newQuoteToken: quote_token_address,
-    //         },
-    //     )?;
-
-    //     // Try to complete update as non-admin
-    //     let result =
-    //         token.complete_quote_token_update(non_admin, ITIP20::completeQuoteTokenUpdateCall {});
-
-    //     assert!(matches!(
-    //         result,
-    //         Err(TempoPrecompileError::RolesAuthError(
-    //             RolesAuthError::Unauthorized(_)
-    //         ))
-    //     ));
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_tip20_token_prefix() {
-    //     assert_eq!(
-    //         TIP20_TOKEN_PREFIX,
-    //         [
-    //             0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-    //         ]
-    //     );
-    //     assert_eq!(
-    //         &DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.as_slice()[..12],
-    //         &TIP20_TOKEN_PREFIX
-    //     );
-    // }
-
-    // #[test]
-    // fn test_arbitrary_currency() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-
-    //     for _ in 0..50 {
-    //         let mut token = TIP20Token::new(1, &mut storage);
-
-    //         let currency: String = thread_rng()
-    //             .sample_iter(&Alphanumeric)
-    //             .take(31)
-    //             .map(char::from)
-    //             .collect();
-
-    //         // Initialize token with the random currency
-    //         token.initialize(
-    //             "Test",
-    //             "TST",
-    //             &currency,
-    //             PATH_USD_ADDRESS,
-    //             admin,
-    //             Address::ZERO,
-    //         )?;
-
-    //         // Verify the currency was stored and can be retrieved correctly
-    //         let stored_currency = token.currency()?;
-    //         assert_eq!(stored_currency, currency,);
-    //     }
-
-    //     Ok(())
-    // }
-
-    // //
-    // #[test]
-    // #[ignore = "NOTE(rusowsky): this doesn't panic anymore, as storage primitives can handle long strings now"]
-    // fn test_invalid_currency() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-
-    //     for _ in 0..10 {
-    //         let mut token = TIP20Token::new(1, &mut storage);
-
-    //         let currency: String = thread_rng()
-    //             .sample_iter(&Alphanumeric)
-    //             .take(32)
-    //             .map(char::from)
-    //             .collect();
-
-    //         let result = token.initialize(
-    //             "Test",
-    //             "TST",
-    //             &currency,
-    //             PATH_USD_ADDRESS,
-    //             admin,
-    //             Address::ZERO,
-    //         );
-    //         assert!(matches!(
-    //             result,
-    //             Err(TempoPrecompileError::TIP20(TIP20Error::StringTooLong(_)))
-    //         ),);
-    //     }
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_from_address() {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-
-    //     // Create a token to get a valid address
-    //     let token_id = setup_factory_with_token(&mut storage, admin, "TEST", "TST");
-    //     let token_address = token_id_to_address(token_id);
-
-    //     // Test from_address creates same instance as new()
-    //     let addr_via_new = {
-    //         let token = TIP20Token::new(token_id);
-    //         token.address
-    //     };
-
-    //     let addr_via_from_address = {
-    //         let token = TIP20Token::from_address(token_address, &mut storage);
-    //         token.address
-    //     };
-
-    //     assert_eq!(
-    //         addr_via_new, addr_via_from_address,
-    //         "Both methods should create token with same address"
-    //     );
-    //     assert_eq!(
-    //         addr_via_from_address, token_address,
-    //         "from_address should use the provided address"
-    //     );
-    // }
-
-    // #[test]
-    // fn test_new_invalid_quote_token() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-
-    //     let currency: String = thread_rng()
-    //         .sample_iter(&Alphanumeric)
-    //         .take(31)
-    //         .map(char::from)
-    //         .collect();
-
-    //     let mut token = TIP20Token::new(1, &mut storage);
-    //     token.initialize(
-    //         "Token",
-    //         "T",
-    //         &currency,
-    //         PATH_USD_ADDRESS,
-    //         admin,
-    //         Address::ZERO,
-    //     )?;
-
-    //     // Try to create a new USD token with the arbitrary token as the quote token, this should fail
-    //     let token_address = token.address;
-    //     let mut usd_token = TIP20Token::new(2, &mut storage);
-    //     let result = usd_token.initialize(
-    //         "USD Token",
-    //         "USDT",
-    //         USD_CURRENCY,
-    //         token_address,
-    //         admin,
-    //         Address::ZERO,
-    //     );
-
-    //     assert!(matches!(
-    //         result,
-    //         Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
-    //             _
-    //         )))
-    //     ));
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_new_valid_quote_token() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-
-    //     initialize_path_usd(admin)?;
-    //     let mut usd_token1 = TIP20Token::new(1, &mut storage);
-    //     usd_token1.initialize(
-    //         "USD Token",
-    //         "USDT",
-    //         USD_CURRENCY,
-    //         PATH_USD_ADDRESS,
-    //         admin,
-    //         Address::ZERO,
-    //     )?;
-
-    //     // USD token with USD token as quote
-    //     let usd_token1_address = token_id_to_address(1);
-    //     let mut usd_token2 = TIP20Token::new(2, &mut storage);
-    //     let result = usd_token2.initialize(
-    //         "USD Token 2",
-    //         "USD2",
-    //         USD_CURRENCY,
-    //         usd_token1_address,
-    //         admin,
-    //         Address::ZERO,
-    //     );
-    //     assert!(result.is_ok());
-
-    //     // Create non USD token
-    //     let currency_1: String = thread_rng()
-    //         .sample_iter(&Alphanumeric)
-    //         .take(31)
-    //         .map(char::from)
-    //         .collect();
-
-    //     let mut token_1 = TIP20Token::new(3, &mut storage);
-    //     token_1.initialize(
-    //         "Token 1",
-    //         "TK1",
-    //         &currency_1,
-    //         PATH_USD_ADDRESS,
-    //         admin,
-    //         Address::ZERO,
-    //     )?;
-
-    //     // Create a non USD token with non USD quote token
-    //     let currency_2: String = thread_rng()
-    //         .sample_iter(&Alphanumeric)
-    //         .take(31)
-    //         .map(char::from)
-    //         .collect();
-
-    //     let token_1_address = token_id_to_address(3);
-    //     let mut token_2 = TIP20Token::new(4, &mut storage);
-    //     let result = token_2.initialize(
-    //         "Token 2",
-    //         "TK2",
-    //         &currency_2,
-    //         token_1_address,
-    //         admin,
-    //         Address::ZERO,
-    //     );
-    //     assert!(result.is_ok());
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_update_quote_token_invalid_token() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-
-    //     initialize_path_usd(admin)?;
-
-    //     let currency: String = thread_rng()
-    //         .sample_iter(&Alphanumeric)
-    //         .take(31)
-    //         .map(char::from)
-    //         .collect();
-
-    //     let mut token_1 = TIP20Token::new(1, &mut storage);
-    //     token_1.initialize(
-    //         "Token 1",
-    //         "TK1",
-    //         &currency,
-    //         PATH_USD_ADDRESS,
-    //         admin,
-    //         Address::ZERO,
-    //     )?;
-
-    //     // Create a new USD token
-    //     let mut usd_token = TIP20Token::new(2, &mut storage);
-    //     usd_token.initialize(
-    //         "USD Token",
-    //         "USDT",
-    //         USD_CURRENCY,
-    //         PATH_USD_ADDRESS,
-    //         admin,
-    //         Address::ZERO,
-    //     )?;
-
-    //     // Try to update the USD token's quote token to the arbitrary currency token, this should fail
-    //     let token_1_address = token_id_to_address(1);
-    //     let result = usd_token.set_next_quote_token(
-    //         admin,
-    //         ITIP20::setNextQuoteTokenCall {
-    //             newQuoteToken: token_1_address,
-    //         },
-    //     );
-
-    //     assert!(matches!(
-    //         result,
-    //         Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
-    //             _
-    //         )))
-    //     ));
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_is_tip20() {
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let sender = Address::random();
-    //     initialize_path_usd(sender).unwrap();
-
-    //     let mut factory = TIP20Factory::new(&mut storage);
-
-    //     factory
-    //         .initialize()
-    //         .expect("Factory initialization should succeed");
-
-    //     factory
-    //         .initialize()
-    //         .expect("Factory initialization should succeed");
-    //     let created_tip20 = factory
-    //         .create_token(
-    //             sender,
-    //             ITIP20Factory::createTokenCall {
-    //                 name: "Test Token".to_string(),
-    //                 symbol: "TEST".to_string(),
-    //                 currency: "USD".to_string(),
-    //                 quoteToken: crate::PATH_USD_ADDRESS,
-    //                 admin: sender,
-    //             },
-    //         )
-    //         .expect("Token creation should succeed");
-    //     let non_tip20 = Address::random();
-
-    //     assert!(is_tip20(PATH_USD_ADDRESS));
-    //     assert!(is_tip20(created_tip20));
-    //     assert!(!is_tip20(non_tip20));
-    // }
-
-    // #[test]
-    // fn test_transfer_fee_pre_tx_handles_rewards_post_moderato() -> eyre::Result<()> {
-    //     // Test with Moderato hardfork (rewards should be handled)
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-    //     let user = Address::random();
-
-    //     let mint_amount = U256::from(1000e18);
-    //     let reward_amount = U256::from(100e18);
-
-    //     // Setup token with rewards enabled
-    //     let (token_id, initial_opted_in) =
-    //         setup_token_with_rewards(&mut storage, admin, user, mint_amount, reward_amount)?;
-
-    //     storage.set_spec(TempoHardfork::Moderato);
-
-    //     // Transfer fee from user
-    //     let fee_amount = U256::from(100e18);
-    //     let mut token = TIP20Token::new(token_id);
-    //     token.transfer_fee_pre_tx(user, fee_amount)?;
-
-    //     // After transfer_fee_pre_tx, the opted-in supply should be decreased
-    //     let final_opted_in = token.get_opted_in_supply()?;
-    //     assert_eq!(
-    //         final_opted_in,
-    //         initial_opted_in - fee_amount.to::<u128>(),
-    //         "opted-in supply should decrease by fee amount"
-    //     );
-
-    //     // User should have accumulated rewards (verify rewards were updated)
-    //     let user_info = token.sload_user_reward_info(user)?;
-    //     assert!(
-    //         user_info.reward_balance > U256::ZERO,
-    //         "user should have accumulated rewards"
-    //     );
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_transfer_fee_pre_tx_no_rewards_pre_moderato() -> eyre::Result<()> {
-    //     // Test with Adagio (pre-Moderato) - rewards should NOT be handled
-    //     let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-    //     let admin = Address::random();
-    //     let user = Address::random();
-
-    //     let mint_amount = U256::from(1000e18);
-    //     let reward_amount = U256::from(100e18);
-
-    //     // Setup token with rewards enabled
-    //     let (token_id, initial_opted_in) =
-    //         setup_token_with_rewards(&mut storage, admin, user, mint_amount, reward_amount)?;
-
-    //     // Transfer fee from user
-    //     let fee_amount = U256::from(100e18);
-    //     let mut token = TIP20Token::new(token_id);
-    //     token.transfer_fee_pre_tx(user, fee_amount)?;
-
-    //     // Pre-Moderato: opted-in supply should NOT be decreased (rewards not handled)
-    //     let final_opted_in = token.get_opted_in_supply()?;
-    //     assert_eq!(
-    //         final_opted_in, initial_opted_in,
-    //         "opted-in supply should NOT change pre-Moderato"
-    //     );
-
-    //     // User should NOT have accumulated rewards (rewards not handled)
-    //     let user_info = token.sload_user_reward_info(user)?;
-    //     assert_eq!(
-    //         user_info.reward_balance,
-    //         U256::ZERO,
-    //         "user should NOT have accumulated rewards pre-Moderato"
-    //     );
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_transfer_fee_post_tx_handles_rewards_post_moderato() -> eyre::Result<()> {
-    //     // Test with Moderato hardfork (rewards should be handled)
-    //     let mut storage = HashMapStorageProvider::new(1);
-    //     let admin = Address::random();
-    //     let user = Address::random();
-
-    //     let mint_amount = U256::from(1000e18);
-    //     let reward_amount = U256::from(100e18);
-
-    //     // Setup token with rewards enabled
-    //     let (token_id, _initial_opted_in) =
-    //         setup_token_with_rewards(&mut storage, admin, user, mint_amount, reward_amount)?;
-
-    //     storage.set_spec(TempoHardfork::Moderato);
-
-    //     // Simulate fee transfer: first take fee from user
-    //     let fee_amount = U256::from(100e18);
-    //     {
-    //         let mut token = TIP20Token::new(token_id);
-    //         token.transfer_fee_pre_tx(user, fee_amount)?;
-    //     }
-
-    //     // Get opted-in supply after pre_tx
-    //     let opted_in_after_pre = {
-    //         let mut token = TIP20Token::new(token_id);
-    //         token.get_opted_in_supply()?
-    //     };
-
-    //     // Now refund part of it back
-    //     let refund_amount = U256::from(40e18);
-    //     let actual_used = U256::from(60e18);
-    //     {
-    //         let mut token = TIP20Token::new(token_id);
-    //         token.transfer_fee_post_tx(user, refund_amount, actual_used)?;
-    //     }
-
-    //     // After transfer_fee_post_tx, the opted-in supply should increase by refund amount
-    //     let final_opted_in = {
-    //         let mut token = TIP20Token::new(token_id);
-    //         token.get_opted_in_supply()?
-    //     };
-
-    //     assert_eq!(
-    //         final_opted_in,
-    //         opted_in_after_pre + refund_amount.to::<u128>(),
-    //         "opted-in supply should increase by refund amount"
-    //     );
-
-    //     // User should have accumulated rewards
-    //     let user_info = {
-    //         let mut token = TIP20Token::new(token_id);
-    //         token.sload_user_reward_info(user)?
-    //     };
-    //     assert!(
-    //         user_info.reward_balance > U256::ZERO,
-    //         "user should have accumulated rewards"
-    //     );
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_transfer_fee_post_tx_no_rewards_pre_moderato() -> eyre::Result<()> {
-    //     // Test with Adagio (pre-Moderato) - rewards should NOT be handled
-    //     let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-    //     let admin = Address::random();
-    //     let user = Address::random();
-
-    //     let mint_amount = U256::from(1000e18);
-    //     let reward_amount = U256::from(100e18);
-
-    //     // Setup token with rewards enabled
-    //     let (token_id, initial_opted_in) =
-    //         setup_token_with_rewards(&mut storage, admin, user, mint_amount, reward_amount)?;
-
-    //     // Simulate fee transfer: first take fee from user
-    //     let fee_amount = U256::from(100e18);
-    //     {
-    //         let mut token = TIP20Token::new(token_id);
-    //         token.transfer_fee_pre_tx(user, fee_amount)?;
-    //     }
-
-    //     // Get opted-in supply after pre_tx (should be unchanged pre-Moderato)
-    //     let opted_in_after_pre = {
-    //         let mut token = TIP20Token::new(token_id);
-    //         token.get_opted_in_supply()?
-    //     };
-    //     assert_eq!(
-    //         opted_in_after_pre, initial_opted_in,
-    //         "opted-in supply should be unchanged in pre_tx pre-Moderato"
-    //     );
-
-    //     // Now refund part of it back
-    //     let refund_amount = U256::from(40e18);
-    //     let actual_used = U256::from(60e18);
-    //     {
-    //         let mut token = TIP20Token::new(token_id);
-    //         token.transfer_fee_post_tx(user, refund_amount, actual_used)?;
-    //     }
-
-    //     // After transfer_fee_post_tx, the opted-in supply should still be unchanged (rewards not handled)
-    //     let final_opted_in = {
-    //         let mut token = TIP20Token::new(token_id);
-    //         token.get_opted_in_supply()?
-    //     };
-
-    //     assert_eq!(
-    //         final_opted_in, initial_opted_in,
-    //         "opted-in supply should remain unchanged pre-Moderato"
-    //     );
-
-    //     // User should NOT have accumulated rewards
-    //     let user_info = {
-    //         let mut token = TIP20Token::new(token_id);
-    //         token.sload_user_reward_info(user)?
-    //     };
-    //     assert_eq!(
-    //         user_info.reward_balance,
-    //         U256::ZERO,
-    //         "user should NOT have accumulated rewards pre-Moderato"
-    //     );
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_initialize_supply_cap_post_moderato() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-    //     let admin = Address::random();
-
-    //     let token_id = setup_factory_with_token(&mut storage, admin, "Test", "TST");
-    //     let mut token = TIP20Token::new(token_id);
-
-    //     let supply_cap = token.supply_cap()?;
-    //     assert_eq!(supply_cap, U256::from(u128::MAX),);
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_initialize_supply_cap_pre_moderato() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-    //     let admin = Address::random();
-
-    //     let token_id = setup_factory_with_token(&mut storage, admin, "Test", "TST");
-    //     let mut token = TIP20Token::new(token_id);
-
-    //     let supply_cap = token.supply_cap()?;
-    //     assert_eq!(supply_cap, U256::MAX,);
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_unable_to_burn_blocked_from_protected_address() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
-    //     let admin = Address::random();
-    //     let burner = Address::random();
-
-    //     // Initialize token
-    //     initialize_path_usd(admin)?;
-    //     let token_id = 1;
-    //     let mut token = TIP20Token::new(token_id);
-    //     token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
-
-    //     // Grant BURN_BLOCKED_ROLE to burner
-    //     token.grant_role_internal(burner, *BURN_BLOCKED_ROLE)?;
-
-    //     // Simulate collected fees
-    //     token.grant_role_internal(admin, *ISSUER_ROLE)?;
-    //     token.mint(
-    //         admin,
-    //         ITIP20::mintCall {
-    //             to: TIP_FEE_MANAGER_ADDRESS,
-    //             amount: U256::from(1000),
-    //         },
-    //     )?;
-
-    //     // Attempt to burn from FeeManager
-    //     let result = token.burn_blocked(
-    //         burner,
-    //         ITIP20::burnBlockedCall {
-    //             from: TIP_FEE_MANAGER_ADDRESS,
-    //             amount: U256::from(500),
-    //         },
-    //     );
-
-    //     assert!(matches!(
-    //         result,
-    //         Err(TempoPrecompileError::TIP20(TIP20Error::ProtectedAddress(_)))
-    //     ));
-
-    //     // Verify FeeManager balance is unchanged
-    //     let balance = token.balance_of(ITIP20::balanceOfCall {
-    //         account: TIP_FEE_MANAGER_ADDRESS,
-    //     })?;
-    //     assert_eq!(balance, U256::from(1000));
-
-    //     // Mint tokens to StablecoinExchange
-    //     token.mint(
-    //         admin,
-    //         ITIP20::mintCall {
-    //             to: STABLECOIN_EXCHANGE_ADDRESS,
-    //             amount: U256::from(1000),
-    //         },
-    //     )?;
-
-    //     // Attempt to burn from StablecoinExchange
-    //     let result = token.burn_blocked(
-    //         burner,
-    //         ITIP20::burnBlockedCall {
-    //             from: STABLECOIN_EXCHANGE_ADDRESS,
-    //             amount: U256::from(500),
-    //         },
-    //     );
-
-    //     assert!(matches!(
-    //         result,
-    //         Err(TempoPrecompileError::TIP20(TIP20Error::ProtectedAddress(_)))
-    //     ));
-
-    //     // Verify StablecoinExchange balance is unchanged
-    //     let balance = token.balance_of(ITIP20::balanceOfCall {
-    //         account: STABLECOIN_EXCHANGE_ADDRESS,
-    //     })?;
-    //     assert_eq!(balance, U256::from(1000));
-
-    //     Ok(())
-    // }
-
-    // #[test]
-    // fn test_set_fee_recipient() -> eyre::Result<()> {
-    //     let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-    //     let admin = Address::random();
-
-    //     let token_id = setup_factory_with_token(&mut storage, admin, "Test", "TST");
-    //     let mut token = TIP20Token::new(token_id);
-
-    //     let fee_recipient = token.sload_fee_recipient()?;
-    //     assert_eq!(fee_recipient, Address::ZERO);
-
-    //     let expected_recipient = Address::random();
-    //     token.set_fee_recipient(admin, expected_recipient)?;
-
-    //     let fee_recipient = token.sload_fee_recipient()?;
-    //     assert_eq!(fee_recipient, expected_recipient);
-
-    //     let result = token.set_fee_recipient(Address::random(), expected_recipient);
-    //     assert!(result.is_err());
-
-    //     Ok(())
-    // }
+    #[test]
+    fn test_transfer_from_insufficient_allowance() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+
+        StorageContext::enter(&mut storage, || {
+            initialize_path_usd(admin)?;
+            let mut token = TIP20Token::new(1);
+            token
+                .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
+                .unwrap();
+            token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+            let from = Address::random();
+            let spender = Address::random();
+            let to = Address::random();
+            let amount = U256::random();
+
+            token.mint(admin, ITIP20::mintCall { to: from, amount })?;
+
+            let result =
+                token.transfer_from(spender, ITIP20::transferFromCall { from, to, amount });
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(
+                    TIP20Error::InsufficientAllowance(_)
+                ))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_system_transfer_from() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+
+        StorageContext::enter(&mut storage, || {
+            initialize_path_usd(admin)?;
+            let mut token = TIP20Token::new(1);
+            token
+                .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
+                .unwrap();
+            token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+            let from = Address::random();
+            let to = Address::random();
+            let amount = U256::random();
+
+            token.mint(admin, ITIP20::mintCall { to: from, amount })?;
+
+            let result = token.system_transfer_from(from, to, amount);
+            assert!(result.is_ok());
+
+            token.assert_emited_events(vec![
+                TIP20Event::Transfer(ITIP20::Transfer {
+                    from: Address::ZERO,
+                    to: from,
+                    amount,
+                }),
+                TIP20Event::Mint(ITIP20::Mint { to: from, amount }),
+                TIP20Event::Transfer(ITIP20::Transfer { from, to, amount }),
+            ]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_initialize_sets_next_quote_token() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+
+        StorageContext::enter(&mut storage, || {
+            let token_id = setup_factory_with_token(admin, "Test", "TST")?;
+            let token = TIP20Token::new(token_id);
+
+            assert_eq!(token.quote_token()?, PATH_USD_ADDRESS);
+            assert_eq!(token.next_quote_token()?, PATH_USD_ADDRESS);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_update_quote_token() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+
+        StorageContext::enter(&mut storage, || {
+            let (token_id, quote_token_id) = setup_token_with_custom_quote_token(admin)?;
+            let mut token = TIP20Token::new(token_id);
+            let quote_token_address = token_id_to_address(quote_token_id);
+
+            token.set_next_quote_token(
+                admin,
+                ITIP20::setNextQuoteTokenCall {
+                    newQuoteToken: quote_token_address,
+                },
+            )?;
+
+            assert_eq!(token.next_quote_token()?, quote_token_address);
+
+            token.assert_emited_events(vec![TIP20Event::NextQuoteTokenSet(
+                ITIP20::NextQuoteTokenSet {
+                    updater: admin,
+                    nextQuoteToken: quote_token_address,
+                },
+            )]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_update_quote_token_requires_admin() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+        let non_admin = Address::random();
+
+        StorageContext::enter(&mut storage, || {
+            initialize_path_usd(admin)?;
+            let mut token = TIP20Token::new(1);
+            token
+                .initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)
+                .unwrap();
+
+            let quote_token_address = token_id_to_address(2);
+
+            // Try to set next quote token as non-admin
+            let result = token.set_next_quote_token(
+                non_admin,
+                ITIP20::setNextQuoteTokenCall {
+                    newQuoteToken: quote_token_address,
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::RolesAuthError(
+                    RolesAuthError::Unauthorized(_)
+                ))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_update_quote_token_rejects_non_tip20() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+
+        StorageContext::enter(&mut storage, || {
+            let token_id = setup_factory_with_token(admin, "Test", "TST")?;
+            let mut token = TIP20Token::new(token_id);
+
+            let non_tip20_address = Address::random();
+            let result = token.set_next_quote_token(
+                admin,
+                ITIP20::setNextQuoteTokenCall {
+                    newQuoteToken: non_tip20_address,
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                    _
+                )))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_update_quote_token_rejects_undeployed_token() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+
+        StorageContext::enter(&mut storage, || {
+            let token_id = setup_factory_with_token(admin, "Test", "TST")?;
+            let mut token = TIP20Token::new(token_id);
+
+            let undeployed_token_address = token_id_to_address(999);
+            let result = token.set_next_quote_token(
+                admin,
+                ITIP20::setNextQuoteTokenCall {
+                    newQuoteToken: undeployed_token_address,
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                    _
+                )))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_finalize_quote_token_update() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+
+        StorageContext::enter(&mut storage, || {
+            let (token_id, quote_token_id) = setup_token_with_custom_quote_token(admin)?;
+            let quote_token_address = token_id_to_address(quote_token_id);
+            let mut token = TIP20Token::new(token_id);
+
+            token.set_next_quote_token(
+                admin,
+                ITIP20::setNextQuoteTokenCall {
+                    newQuoteToken: quote_token_address,
+                },
+            )?;
+
+            token.complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {})?;
+            assert_eq!(token.quote_token()?, quote_token_address);
+
+            token.assert_emited_events(vec![
+                TIP20Event::NextQuoteTokenSet(ITIP20::NextQuoteTokenSet {
+                    updater: admin,
+                    nextQuoteToken: quote_token_address,
+                }),
+                TIP20Event::QuoteTokenUpdate(ITIP20::QuoteTokenUpdate {
+                    updater: admin,
+                    newQuoteToken: quote_token_address,
+                }),
+            ]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_finalize_quote_token_update_detects_loop() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+
+        StorageContext::enter(&mut storage, || {
+            initialize_path_usd(admin)?;
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            let token_b_id =
+                create_token_via_factory(&mut factory, admin, "Token B", "TKB", PATH_USD_ADDRESS)?;
+            let token_b_address = token_id_to_address(token_b_id);
+
+            let token_a_id =
+                create_token_via_factory(&mut factory, admin, "Token A", "TKA", token_b_address)?;
+            let token_a_address = token_id_to_address(token_a_id);
+
+            let mut token_b = TIP20Token::new(token_b_id);
+            token_b.set_next_quote_token(
+                admin,
+                ITIP20::setNextQuoteTokenCall {
+                    newQuoteToken: token_a_address,
+                },
+            )?;
+
+            // Try to complete the update - should fail due to loop detection
+            let result =
+                token_b.complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {});
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                    _
+                )))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_finalize_quote_token_update_requires_admin() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+        let non_admin = Address::random();
+
+        StorageContext::enter(&mut storage, || {
+            let (token_id, quote_token_id) = setup_token_with_custom_quote_token(admin)?;
+            let quote_token_address = token_id_to_address(quote_token_id);
+            let mut token = TIP20Token::new(token_id);
+
+            token.set_next_quote_token(
+                admin,
+                ITIP20::setNextQuoteTokenCall {
+                    newQuoteToken: quote_token_address,
+                },
+            )?;
+
+            let result = token
+                .complete_quote_token_update(non_admin, ITIP20::completeQuoteTokenUpdateCall {});
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::RolesAuthError(
+                    RolesAuthError::Unauthorized(_)
+                ))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_tip20_token_prefix() {
+        assert_eq!(
+            TIP20_TOKEN_PREFIX,
+            [
+                0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            ]
+        );
+        assert_eq!(
+            &DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.as_slice()[..12],
+            &TIP20_TOKEN_PREFIX
+        );
+    }
+
+    #[test]
+    fn test_arbitrary_currency() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+
+        StorageContext::enter(&mut storage, || {
+            for _ in 0..50 {
+                let mut token = TIP20Token::new(1);
+
+                let currency: String = thread_rng()
+                    .sample_iter(&Alphanumeric)
+                    .take(31)
+                    .map(char::from)
+                    .collect();
+
+                // Initialize token with the random currency
+                token.initialize(
+                    "Test",
+                    "TST",
+                    &currency,
+                    PATH_USD_ADDRESS,
+                    admin,
+                    Address::ZERO,
+                )?;
+
+                // Verify the currency was stored and can be retrieved correctly
+                let stored_currency = token.currency()?;
+                assert_eq!(stored_currency, currency);
+            }
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[ignore = "NOTE(rusowsky): this doesn't panic anymore, as storage primitives can handle long strings now"]
+    fn test_invalid_currency() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+
+        StorageContext::enter(&mut storage, || {
+            for _ in 0..10 {
+                let mut token = TIP20Token::new(1);
+
+                let currency: String = thread_rng()
+                    .sample_iter(&Alphanumeric)
+                    .take(32)
+                    .map(char::from)
+                    .collect();
+
+                let result = token.initialize(
+                    "Test",
+                    "TST",
+                    &currency,
+                    PATH_USD_ADDRESS,
+                    admin,
+                    Address::ZERO,
+                );
+                assert!(matches!(
+                    result,
+                    Err(TempoPrecompileError::TIP20(TIP20Error::StringTooLong(_)))
+                ));
+            }
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_from_address() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+
+        StorageContext::enter(&mut storage, || {
+            let token_id = setup_factory_with_token(admin, "TEST", "TST")?;
+            let token_address = token_id_to_address(token_id);
+
+            let addr_via_new = {
+                let token = TIP20Token::new(token_id);
+                token.address
+            };
+
+            let addr_via_from_address = {
+                let token = TIP20Token::from_address(token_address);
+                token.address
+            };
+
+            assert_eq!(
+                addr_via_new, addr_via_from_address,
+                "Both methods should create token with same address"
+            );
+            assert_eq!(
+                addr_via_from_address, token_address,
+                "from_address should use the provided address"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_new_invalid_quote_token() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+
+        StorageContext::enter(&mut storage, || {
+            let currency: String = thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(31)
+                .map(char::from)
+                .collect();
+
+            let mut token = TIP20Token::new(1);
+            token.initialize(
+                "Token",
+                "T",
+                &currency,
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )?;
+
+            // Try to create a new USD token with the arbitrary token as the quote token, this should fail
+            let token_address = token.address;
+            let mut usd_token = TIP20Token::new(2);
+            let result = usd_token.initialize(
+                "USD Token",
+                "USDT",
+                USD_CURRENCY,
+                token_address,
+                admin,
+                Address::ZERO,
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                    _
+                )))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_new_valid_quote_token() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+
+        StorageContext::enter(&mut storage, || {
+            initialize_path_usd(admin)?;
+            let mut usd_token1 = TIP20Token::new(1);
+            usd_token1.initialize(
+                "USD Token",
+                "USDT",
+                USD_CURRENCY,
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )?;
+
+            // USD token with USD token as quote
+            let usd_token1_address = token_id_to_address(1);
+            let mut usd_token2 = TIP20Token::new(2);
+            let result = usd_token2.initialize(
+                "USD Token 2",
+                "USD2",
+                USD_CURRENCY,
+                usd_token1_address,
+                admin,
+                Address::ZERO,
+            );
+            assert!(result.is_ok());
+
+            // Create non USD token
+            let currency_1: String = thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(31)
+                .map(char::from)
+                .collect();
+
+            let mut token_1 = TIP20Token::new(3);
+            token_1.initialize(
+                "Token 1",
+                "TK1",
+                &currency_1,
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )?;
+
+            // Create a non USD token with non USD quote token
+            let currency_2: String = thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(31)
+                .map(char::from)
+                .collect();
+
+            let token_1_address = token_id_to_address(3);
+            let mut token_2 = TIP20Token::new(4);
+            let result = token_2.initialize(
+                "Token 2",
+                "TK2",
+                &currency_2,
+                token_1_address,
+                admin,
+                Address::ZERO,
+            );
+            assert!(result.is_ok());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_update_quote_token_invalid_token() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+
+        StorageContext::enter(&mut storage, || {
+            initialize_path_usd(admin)?;
+
+            let currency: String = thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(31)
+                .map(char::from)
+                .collect();
+
+            let mut token_1 = TIP20Token::new(1);
+            token_1.initialize(
+                "Token 1",
+                "TK1",
+                &currency,
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )?;
+
+            // Create a new USD token
+            let mut usd_token = TIP20Token::new(2);
+            usd_token.initialize(
+                "USD Token",
+                "USDT",
+                USD_CURRENCY,
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )?;
+
+            // Try to update the USD token's quote token to the arbitrary currency token, this should fail
+            let token_1_address = token_id_to_address(1);
+            let result = usd_token.set_next_quote_token(
+                admin,
+                ITIP20::setNextQuoteTokenCall {
+                    newQuoteToken: token_1_address,
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                    _
+                )))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_is_tip20() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+
+        StorageContext::enter(&mut storage, || {
+            initialize_path_usd(admin)?;
+
+            let mut factory = TIP20Factory::new();
+
+            factory
+                .initialize()
+                .expect("Factory initialization should succeed");
+
+            factory
+                .initialize()
+                .expect("Factory initialization should succeed");
+            let created_tip20 = factory
+                .create_token(
+                    admin,
+                    ITIP20Factory::createTokenCall {
+                        name: "Test Token".to_string(),
+                        symbol: "TEST".to_string(),
+                        currency: "USD".to_string(),
+                        quoteToken: crate::PATH_USD_ADDRESS,
+                        admin,
+                    },
+                )
+                .expect("Token creation should succeed");
+            let non_tip20 = Address::random();
+
+            assert!(is_tip20(PATH_USD_ADDRESS));
+            assert!(is_tip20(created_tip20));
+            assert!(!is_tip20(non_tip20));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_transfer_fee_pre_tx_handles_rewards_post_moderato() -> eyre::Result<()> {
+        // Test with Moderato hardfork (rewards should be handled)
+        let (mut storage, admin) = setup_storage();
+        storage.set_spec(TempoHardfork::Moderato);
+
+        StorageContext::enter(&mut storage, || {
+            let user = Address::random();
+
+            let mint_amount = U256::from(1000e18);
+            let reward_amount = U256::from(100e18);
+
+            // Setup token with rewards enabled
+            let (token_id, initial_opted_in) =
+                setup_token_with_rewards(admin, user, mint_amount, reward_amount)?;
+
+            // Transfer fee from user
+            let fee_amount = U256::from(100e18);
+            let mut token = TIP20Token::new(token_id);
+            token.transfer_fee_pre_tx(user, fee_amount)?;
+
+            // After transfer_fee_pre_tx, the opted-in supply should be decreased
+            let final_opted_in = token.get_opted_in_supply()?;
+            assert_eq!(
+                final_opted_in,
+                initial_opted_in - fee_amount.to::<u128>(),
+                "opted-in supply should decrease by fee amount"
+            );
+
+            // User should have accumulated rewards (verify rewards were updated)
+            let user_info = token.get_user_reward_info(user)?;
+            assert!(
+                user_info.reward_balance > U256::ZERO,
+                "user should have accumulated rewards"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_transfer_fee_pre_tx_no_rewards_pre_moderato() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+        storage.set_spec(TempoHardfork::Adagio);
+
+        StorageContext::enter(&mut storage, || {
+            let user = Address::random();
+
+            let mint_amount = U256::from(1000e18);
+            let reward_amount = U256::from(100e18);
+
+            // Setup token with rewards enabled
+            let (token_id, initial_opted_in) =
+                setup_token_with_rewards(admin, user, mint_amount, reward_amount)?;
+
+            // Transfer fee from user
+            let fee_amount = U256::from(100e18);
+            let mut token = TIP20Token::new(token_id);
+            token.transfer_fee_pre_tx(user, fee_amount)?;
+
+            // Pre-Moderato: opted-in supply should NOT be decreased (rewards not handled)
+            let final_opted_in = token.get_opted_in_supply()?;
+            assert_eq!(
+                final_opted_in, initial_opted_in,
+                "opted-in supply should NOT change pre-Moderato"
+            );
+
+            // User should NOT have accumulated rewards (rewards not handled)
+            let user_info = token.get_user_reward_info(user)?;
+            assert_eq!(
+                user_info.reward_balance,
+                U256::ZERO,
+                "user should NOT have accumulated rewards pre-Moderato"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_transfer_fee_post_tx_handles_rewards_post_moderato() -> eyre::Result<()> {
+        // Test with Moderato hardfork (rewards should be handled)
+        let (mut storage, admin) = setup_storage();
+        storage.set_spec(TempoHardfork::Moderato);
+
+        StorageContext::enter(&mut storage, || {
+            let user = Address::random();
+
+            let mint_amount = U256::from(1000e18);
+            let reward_amount = U256::from(100e18);
+
+            // Setup token with rewards enabled
+            let (token_id, _initial_opted_in) =
+                setup_token_with_rewards(admin, user, mint_amount, reward_amount)?;
+
+            // Simulate fee transfer: first take fee from user
+            let fee_amount = U256::from(100e18);
+            let mut token = TIP20Token::new(token_id);
+            token.transfer_fee_pre_tx(user, fee_amount)?;
+
+            // Get opted-in supply after pre_tx
+            let opted_in_after_pre = token.get_opted_in_supply()?;
+
+            // Now refund part of it back
+            let refund_amount = U256::from(40e18);
+            let actual_used = U256::from(60e18);
+            let mut token = TIP20Token::new(token_id);
+            token.transfer_fee_post_tx(user, refund_amount, actual_used)?;
+
+            // After transfer_fee_post_tx, the opted-in supply should increase by refund amount
+            let final_opted_in = token.get_opted_in_supply()?;
+
+            assert_eq!(
+                final_opted_in,
+                opted_in_after_pre + refund_amount.to::<u128>(),
+                "opted-in supply should increase by refund amount"
+            );
+
+            // User should have accumulated rewards
+            let user_info = token.get_user_reward_info(user)?;
+            assert!(
+                user_info.reward_balance > U256::ZERO,
+                "user should have accumulated rewards"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_transfer_fee_post_tx_no_rewards_pre_moderato() -> eyre::Result<()> {
+        // Test with Adagio (pre-Moderato) - rewards should NOT be handled
+        let (mut storage, admin) = setup_storage();
+        let user = Address::random();
+
+        storage.set_spec(TempoHardfork::Adagio);
+
+        StorageContext::enter(&mut storage, || {
+            let mint_amount = U256::from(1000e18);
+            let reward_amount = U256::from(100e18);
+
+            // Setup token with rewards enabled
+            let (token_id, initial_opted_in) =
+                setup_token_with_rewards(admin, user, mint_amount, reward_amount)?;
+
+            // Simulate fee transfer: first take fee from user
+            let fee_amount = U256::from(100e18);
+            let mut token = TIP20Token::new(token_id);
+            token.transfer_fee_pre_tx(user, fee_amount)?;
+
+            // Get opted-in supply after pre_tx (should be unchanged pre-Moderato)
+            let opted_in_after_pre = token.get_opted_in_supply()?;
+            assert_eq!(
+                opted_in_after_pre, initial_opted_in,
+                "opted-in supply should be unchanged in pre_tx pre-Moderato"
+            );
+
+            // Now refund part of it back
+            let refund_amount = U256::from(40e18);
+            let actual_used = U256::from(60e18);
+            token.transfer_fee_post_tx(user, refund_amount, actual_used)?;
+
+            // After transfer_fee_post_tx, the opted-in supply should still be unchanged (rewards not handled)
+            let final_opted_in = token.get_opted_in_supply()?;
+
+            assert_eq!(
+                final_opted_in, initial_opted_in,
+                "opted-in supply should remain unchanged pre-Moderato"
+            );
+
+            // User should NOT have accumulated rewards
+            let user_info = token.get_user_reward_info(user)?;
+            assert_eq!(
+                user_info.reward_balance,
+                U256::ZERO,
+                "user should NOT have accumulated rewards pre-Moderato"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_initialize_supply_cap_post_moderato() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+
+        storage.set_spec(TempoHardfork::Moderato);
+
+        StorageContext::enter(&mut storage, || {
+            let token_id = setup_factory_with_token(admin, "Test", "TST")?;
+            let token = TIP20Token::new(token_id);
+
+            let supply_cap = token.supply_cap()?;
+            assert_eq!(supply_cap, U256::from(u128::MAX));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_initialize_supply_cap_pre_moderato() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+
+        storage.set_spec(TempoHardfork::Adagio);
+
+        StorageContext::enter(&mut storage, || {
+            let token_id = setup_factory_with_token(admin, "Test", "TST")?;
+            let token = TIP20Token::new(token_id);
+
+            let supply_cap = token.supply_cap()?;
+            assert_eq!(supply_cap, U256::MAX);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_unable_to_burn_blocked_from_protected_address() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+        let burner = Address::random();
+
+        storage.set_spec(TempoHardfork::Allegretto);
+
+        StorageContext::enter(&mut storage, || {
+            // Initialize token
+            initialize_path_usd(admin)?;
+            let token_id = 1;
+            let mut token = TIP20Token::new(token_id);
+            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
+
+            // Grant BURN_BLOCKED_ROLE to burner
+            token.grant_role_internal(burner, *BURN_BLOCKED_ROLE)?;
+
+            // Simulate collected fees
+            token.grant_role_internal(admin, *ISSUER_ROLE)?;
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: TIP_FEE_MANAGER_ADDRESS,
+                    amount: U256::from(1000),
+                },
+            )?;
+
+            // Attempt to burn from FeeManager
+            let result = token.burn_blocked(
+                burner,
+                ITIP20::burnBlockedCall {
+                    from: TIP_FEE_MANAGER_ADDRESS,
+                    amount: U256::from(500),
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::ProtectedAddress(_)))
+            ));
+
+            // Verify FeeManager balance is unchanged
+            let balance = token.balance_of(ITIP20::balanceOfCall {
+                account: TIP_FEE_MANAGER_ADDRESS,
+            })?;
+            assert_eq!(balance, U256::from(1000));
+
+            // Mint tokens to StablecoinExchange
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: STABLECOIN_EXCHANGE_ADDRESS,
+                    amount: U256::from(1000),
+                },
+            )?;
+
+            // Attempt to burn from StablecoinExchange
+            let result = token.burn_blocked(
+                burner,
+                ITIP20::burnBlockedCall {
+                    from: STABLECOIN_EXCHANGE_ADDRESS,
+                    amount: U256::from(500),
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::ProtectedAddress(_)))
+            ));
+
+            // Verify StablecoinExchange balance is unchanged
+            let balance = token.balance_of(ITIP20::balanceOfCall {
+                account: STABLECOIN_EXCHANGE_ADDRESS,
+            })?;
+            assert_eq!(balance, U256::from(1000));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_fee_recipient() -> eyre::Result<()> {
+        let (mut storage, admin) = setup_storage();
+
+        storage.set_spec(TempoHardfork::Adagio);
+
+        StorageContext::enter(&mut storage, || {
+            let token_id = setup_factory_with_token(admin, "Test", "TST")?;
+            let mut token = TIP20Token::new(token_id);
+
+            let fee_recipient = token.get_fee_recipient(admin)?;
+            assert_eq!(fee_recipient, Address::ZERO);
+
+            let expected_recipient = Address::random();
+            token.set_fee_recipient(admin, expected_recipient)?;
+
+            let fee_recipient = token.get_fee_recipient(admin)?;
+            assert_eq!(fee_recipient, expected_recipient);
+
+            let result = token.set_fee_recipient(Address::random(), expected_recipient);
+            assert!(result.is_err());
+
+            Ok(())
+        })
+    }
 }
