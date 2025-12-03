@@ -171,6 +171,10 @@ impl reth_primitives_traits::header::HeaderMut for TempoHeader {
         self.inner.set_block_number(number);
     }
 
+    fn set_timestamp(&mut self, timestamp: u64) {
+        self.inner.set_timestamp(timestamp);
+    }
+
     fn set_state_root(&mut self, state_root: B256) {
         self.inner.set_state_root(state_root);
     }

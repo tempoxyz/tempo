@@ -19,7 +19,7 @@ use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter,
     components::{
         BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
-        PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder,
+        PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
         BasicEngineValidatorBuilder, EngineValidatorAddOn, EngineValidatorBuilder, EthApiBuilder,
@@ -454,7 +454,9 @@ where
         });
         let protocol_pool = TxPoolBuilder::new(ctx)
             .with_validator(validator)
-            .build_and_spawn_maintenance_task(blob_store, pool_config)?;
+            .build(blob_store, pool_config.clone());
+
+        spawn_maintenance_tasks(ctx, protocol_pool.clone(), &pool_config)?;
 
         // Spawn (protocol) mempool maintenance tasks
         let task_pool = protocol_pool.clone();
