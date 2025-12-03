@@ -799,6 +799,7 @@ mod tests {
         use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
 
         let (mut storage, admin) = setup_storage();
+        storage.set_spec(TempoHardfork::Allegretto);
 
         StorageContext::enter(&mut storage, || {
             initialize_path_usd(admin).unwrap();
