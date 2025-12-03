@@ -29,7 +29,7 @@ use reth_node_builder::{
 use reth_node_ethereum::EthereumNetworkBuilder;
 use reth_primitives_traits::SealedHeader;
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
-use reth_rpc_builder::Identity;
+use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::RpcNodeCore;
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::TransactionValidationTaskExecutor;
@@ -186,6 +186,10 @@ where
                 modules.merge_configured(token.into_rpc())?;
                 modules.merge_configured(policy.into_rpc())?;
                 modules.merge_configured(eth_ext.into_rpc())?;
+
+                container
+                    .modules
+                    .merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;
 
                 Ok(())
             })
