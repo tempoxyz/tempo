@@ -869,6 +869,7 @@ where
             })
         } else {
             journal.checkpoint_commit();
+            evm.collected_fee = gas_balance_spending;
 
             Ok(())
         }
@@ -880,7 +881,7 @@ where
         exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
     ) -> Result<(), Self::Error> {
         // Call collectFeePostTx on TipFeeManager precompile
-        let context = evm.ctx();
+        let context = &mut evm.inner.ctx;
         let tx = context.tx();
         let basefee = context.block().basefee() as u128;
         let effective_gas_price = tx.effective_gas_price(basefee);
@@ -893,6 +894,16 @@ where
             context.block.blob_gasprice().unwrap_or_default(),
         )? - tx.value
             - actual_spending;
+
+        
+        // Skip `collectFeePostTx` call if the initial fee collected in 
+        // `collectFeePreTx` was zero, but spending is non-zero.
+        //
+        // This is normally unreachable unless the gas price was increased mid-transaction,
+        // which is only possible when there are some EVM customizations involved (e.g Foundry EVM).
+        if evm.collected_fee.is_zero() && !actual_spending.is_zero() {
+            return Ok(())
+        }
 
         // Create storage provider and fee manager
         let (journal, block) = (&mut context.journaled_state, &context.block);
