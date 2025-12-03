@@ -314,6 +314,11 @@ where
 
         let start = Instant::now();
 
+        let block_time_millis =
+            (attributes.timestamp_millis() - parent_header.timestamp_millis()) as f64;
+        self.metrics.block_time_millis.record(block_time_millis);
+        self.metrics.block_time_millis_last.set(block_time_millis);
+
         let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
         let state = StateProviderDatabase::new(&state_provider);
         let mut db = State::builder()

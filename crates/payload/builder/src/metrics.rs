@@ -4,6 +4,10 @@ use reth_metrics::{Metrics, metrics::Histogram};
 #[derive(Metrics, Clone)]
 #[metrics(scope = "tempo_payload_builder")]
 pub(crate) struct TempoPayloadBuilderMetrics {
+    /// Block time in milliseconds.
+    pub(crate) block_time_millis: Histogram,
+    /// Block time in milliseconds.
+    pub(crate) block_time_millis_last: Gauge,
     /// Number of transactions in the payload.
     pub(crate) total_transactions: Histogram,
     /// Number of payment transactions in the payload.
@@ -24,8 +28,8 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) payload_finalization_duration_seconds: Histogram,
     /// Total time it took to build the payload in seconds.
     pub(crate) payload_build_duration_seconds: Histogram,
-    /// Gas per second calculated as gas_used / payload_build_duration
+    /// Gas per second calculated as gas_used / payload_build_duration.
     pub(crate) gas_per_second: Histogram,
-    /// Gas per second for the last payload calculated as gas_used / payload_build_duration
+    /// Gas per second for the last payload calculated as gas_used / payload_build_duration.
     pub(crate) gas_per_second_last: Gauge,
 }
