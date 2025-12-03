@@ -281,13 +281,13 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             // FIXME: Since allegretto is already live, this should be gated behind a subsequent
             // hardfork.
             if self.storage.spec().is_allegretto() {
-                self.set_balance(user, token, 0)?;
-                self.transfer_from(token, user, remaining)
-            } else {
                 self.transfer_from(token, user, remaining)?;
                 self.set_balance(user, token, 0)?;
 
                 Ok(())
+            } else {
+                self.set_balance(user, token, 0)?;
+                self.transfer_from(token, user, remaining)
             }
         }
     }
