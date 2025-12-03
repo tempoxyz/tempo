@@ -11264,11 +11264,9 @@ version = "0.7.1"
 dependencies = [
  "alloy",
  "alloy-consensus",
- "async-trait",
  "clap",
  "crossbeam-utils",
  "dashmap 6.1.0",
- "derive_more",
  "eyre",
  "fastrand",
  "futures",
