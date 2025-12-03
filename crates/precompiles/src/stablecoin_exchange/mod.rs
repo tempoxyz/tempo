@@ -4867,8 +4867,8 @@ mod tests {
     }
 
     #[test]
-    fn test_decrement_balance_zeroes_balance_pre_allegretto() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+    fn test_decrement_balance_zeroes_balance_pre_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -4905,8 +4905,8 @@ mod tests {
     }
 
     #[test]
-    fn test_decrement_balance_preserves_balance_post_allegretto() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+    fn test_decrement_balance_preserves_balance_post_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
