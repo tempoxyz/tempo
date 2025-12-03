@@ -7,6 +7,11 @@ on:
     tags:
       - "v*.*.*"
   workflow_dispatch:
+    inputs:
+      nightly:
+        description: "Tag nightly"
+        type: boolean
+        default: false
   workflow_call:
   schedule:
     - cron: "5 9 * * *"
@@ -51,6 +56,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ matrix.binary.name }}
           tags: |
             type=schedule,pattern=nightly
+            type=raw,value=nightly,enable=${{ github.event.inputs.nightly }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
