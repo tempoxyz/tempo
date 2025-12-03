@@ -1,0 +1,53 @@
+import { Faucet } from '../../../components/Faucet.tsx'
+
+# Add Funds to Your Balance
+
+Get test tokens to start building on Tempo testnet.
+
+## Direct Access
+
+You can access the faucet directly here in the docs.
+
+<Faucet />
+
+## Testnet Faucet RPC
+
+The public testnet also offers an RPC endpoint for requesting test tokens.
+The faucet endpoint is only available at the official Tempo testnet RPC endpoint.
+
+Request test tokens using the `tempo_fundAddress` RPC method:
+
+```bash
+cast rpc tempo_fundAddress <YOUR_ADDRESS> \
+  --rpc-url https://rpc.testnet.tempo.xyz
+```
+
+Replace `<YOUR_ADDRESS>` with your wallet address.
+
+## What You'll Receive
+
+The faucet provides test stablecoins:
+
+- **LinkingUSD** - `0x20c0000000000000000000000000000000000000`
+- **AlphaUSD** - `0x20c0000000000000000000000000000000000001`
+- **BetaUSD** - `0x20c0000000000000000000000000000000000002`
+- **ThetaUSD** - `0x20c0000000000000000000000000000000000003`
+
+Each request drips a sufficient amount for testing and development.
+
+## Faucet Limits
+
+- **Rate Limit**: One request per address per day
+- **Amount**: Fixed amount per request
+- **Availability**: Subject to faucet balance
+
+## Verify Your Balance
+
+After requesting tokens, verify your balance:
+
+```bash
+# Check AlphaUSD balance
+cast erc20 balance 0x20c0000000000000000000000000000000000001 \
+  <YOUR_ADDRESS> \
+  --rpc-url https://rpc.testnet.tempo.xyz
+```

@@ -1,0 +1,40 @@
+import LucideCoins from '~icons/lucide/coins'
+import LucidePlus from '~icons/lucide/plus'
+import LucideCircleDollarSign from '~icons/lucide/circle-dollar-sign'
+import LucideSettings from '~icons/lucide/settings'
+import * as Card from "../../../components/Card.tsx"
+
+# Stablecoin Issuance
+
+Create and manage your own stablecoin on Tempo. Learn how to issue tokens, manage supply, and integrate with Tempo's payment infrastructure.
+
+<Card.Container>
+  <Card.Link
+    description="Create your own stablecoin using the TIP-20 token standard with built-in compliance features"
+    href="/guide/issuance/create-a-stablecoin"
+    icon={LucideCoins}
+    title="Create a Stablecoin"
+  />
+
+  <Card.Link
+    description="Mint new tokens to increase supply and distribute your stablecoin"
+    href="/guide/issuance/mint-stablecoins"
+    icon={LucidePlus}
+    title="Mint Stablecoins"
+  />
+
+  <Card.Link
+    description="Enable users to pay transaction fees using your stablecoin"
+    href="/guide/issuance/use-for-fees"
+    icon={LucideCircleDollarSign}
+    title="Use Your Stablecoin for Fees"
+  />
+
+  <Card.Link
+    description="Manage roles, permissions, supply caps, and transfer policies for your stablecoin"
+    href="/guide/issuance/manage-stablecoin"
+    icon={LucideSettings}
+    title="Manage Your Stablecoin"
+  />
+</Card.Container>
+

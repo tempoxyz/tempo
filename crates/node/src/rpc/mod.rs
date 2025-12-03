@@ -107,8 +107,8 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthApiTypes for TempoEthApi<N> {
     type NetworkTypes = TempoNetwork;
     type RpcConvert = DynRpcConverter<TempoEvmConfig, TempoNetwork>;
 
-    fn tx_resp_builder(&self) -> &Self::RpcConvert {
-        self.inner.tx_resp_builder()
+    fn converter(&self) -> &Self::RpcConvert {
+        self.inner.converter()
     }
 }
 

@@ -1,0 +1,66 @@
+import LucideSend from '~icons/lucide/send'
+import LucideFingerprint from '~icons/lucide/fingerprint'
+import LucideRocket from '~icons/lucide/rocket'
+import LucideCoins from '~icons/lucide/coins'
+import LucideArrowRightLeft from '~icons/lucide/arrow-right-left'
+import LucideHandshake from '~icons/lucide/handshake'
+import LucideUsers from '~icons/lucide/users'
+import LucideHandCoins from '~icons/lucide/hand-coins'
+import LucideCircleQuestionMark from '~icons/lucide/circle-question-mark'
+import LucideGauge from '~icons/lucide/gauge'
+import * as Card from "../../components/Card.tsx"
+
+# Build on Tempo
+
+Welcome to the Tempo Guides. These guides will handhold you through the process of building applications, wallets, 
+and beyond, using Tempo's payment-centric infrastructure.
+
+<Card.Container>
+  <Card.Link
+    description="Learn how to integrate Tempo into your application, wallet or infrastructure"
+    href="/guide/quickstart/integrate-tempo"
+    icon={LucideGauge}
+    title="Integrate Tempo"
+  />
+  <Card.Link
+    description="Learn how Tempo works: protocol overview, tokens, fees, and more"
+    href="/documentation/protocol"
+    icon={LucideGauge}
+    title="Tempo Protocol"
+  />
+</Card.Container>
+
+## Start Building on Tempo
+
+Learn how to integrate stablecoin features into your product by following interactive guides below.
+
+<Card.Container>
+  <Card.Link
+    description="Use embedded passkey accounts or connect your app to wallets"
+    href="/guide/use-accounts"
+    icon={LucideUsers}
+    title="Create & Use Accounts"
+    sampleHref="https://github.com/tempoxyz/tempo-ts/tree/main/examples/accounts"
+  />
+  <Card.Link
+    description="Send and receive payments using stablecoins"
+    href="/guide/payments"
+    icon={LucideSend}
+    title="Make Payments"
+    sampleHref="https://github.com/tempoxyz/tempo-ts/tree/main/examples/payments"
+  />
+  <Card.Link
+    description="Issue and manage your own stablecoin"
+    href="/guide/issuance"
+    icon={LucideCoins}
+    title="Issue Stablecoins"
+    sampleHref="https://github.com/tempoxyz/tempo-ts/tree/main/examples/issuance"
+  />
+  <Card.Link
+    description="Exchange stablecoins with built-in Stablecoin Exchange"
+    href="/guide/stablecoin-exchange"
+    icon={LucideArrowRightLeft}
+    title="Exchange Stablecoins"
+    sampleHref="https://github.com/tempoxyz/tempo-ts/tree/main/examples/exchange"
+  />
+</Card.Container>

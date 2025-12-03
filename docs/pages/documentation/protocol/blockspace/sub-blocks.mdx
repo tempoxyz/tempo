@@ -1,0 +1,63 @@
+# Validator Sub-blocks
+
+In traditional blockchains, only the current block proposer can include transactions. This means validators must wait for their scheduled slot to provide fast inclusion for their users. Tempo changes this by letting **all validators** contribute transactions to every block through sub-blocks.
+
+For validators, this is good as they no longer have to wait for their turn as proposer to provide low-latency inclusion for their users. They have guaranteed access to blockspace in every block, allowing them to include transactions whenever needed. Validators can also ensure a specific transaction execution order within their sub-block, giving them controlled ordering of their transactions.
+
+For users, this is good because transactions can be included faster since they can go through any validator, not just the current proposer. Access to blockspace becomes more predictable as it is smoothed across all validators rather than being concentrated with a single proposer. Time-sensitive transactions benefit from lower latency and can be included more quickly.
+
+
+## How a Block is Built
+
+Tempo allows every validator to propose transactions in every block, not just when it's their turn to be the main proposer. This is done through a mechanism called **sub-blocks**.
+
+::::steps
+
+### Validators Create Sub-blocks
+
+Each validator (including the main proposer) can create their own sub-block containing:
+- A list of transactions they want to include
+- Their fee recipient address
+- Their signature over the contents
+
+Validators send their sub-blocks directly to the main proposer.
+
+### Main Proposer Fills Their Section
+
+The main proposer includes their own transactions first, taking up a portion of the block's total gas limit. This is the proposer's guaranteed space.
+
+### Proposer Includes Sub-blocks
+
+The proposer collects sub-blocks from other validators and includes them in the block. Each validator gets an equal share of the remaining gas limit.
+
+For example, if there are 10 validators total:
+- Main proposer gets their guaranteed portion
+- The remaining space is divided equally among all 10 validators (including the proposer)
+- Each validator can fill their allocation with transactions from their sub-block
+
+### Proposer Gets Bonus Gas
+
+For each sub-block that doesn't use its full gas allocation, the proposer gains that unused gas as a bonus. They can use this to include additional transactions at the end of the block.
+
+This incentivizes proposers to include as many sub-blocks as possible.
+
+### Block is Complete
+
+The final block structure looks like:
+1. **Main proposer transactions** - Proposer's guaranteed space
+2. **Sub-block transactions** - Transactions from all validators' sub-blocks
+3. **Bonus transactions** - Extra transactions using accumulated unused gas
+
+::::
+
+:::note
+**Reserved Nonce Space**
+
+To prevent transaction conflicts, each validator has a reserved nonce space. Transactions in sub-blocks use special nonce sequence keys that identify which validator proposed them. This ensures that validators can't interfere with each other's transactions.
+:::
+
+:::warning
+**Current Limitations**
+
+Sub-blocks currently only support free transactions (transactions with `maxFeePerGas=0`). Paid transactions will be enabled when the Fee Manager is updated to handle fee accounting across sub-blocks.
+:::

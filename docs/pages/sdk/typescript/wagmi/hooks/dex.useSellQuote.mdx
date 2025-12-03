@@ -1,0 +1,52 @@
+# `dex.useSellQuote`
+
+Gets the quote for selling a specific amount of tokens.
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+// @errors: 2322
+import { config } from './wagmi.config'
+declare module 'wagmi' {
+  interface Register {
+    config: typeof config
+  }
+}
+// ---cut---
+import { Hooks } from 'tempo.ts/wagmi'
+import { parseUnits } from 'viem'
+
+const { data: quote } = Hooks.dex.useSellQuote({
+  amountIn: parseUnits('100', 6),
+  tokenIn: '0x20c0000000000000000000000000000000000001',
+  tokenOut: '0x20c0000000000000000000000000000000000002',
+})
+
+console.log('Amount received:', quote)
+// @log: Amount received: 99700000n
+```
+
+```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+See [TanStack Query query docs](https://tanstack.com/query/v5/docs/framework/react/reference/useQuery) for more info hook return types.
+
+### data
+
+See [Wagmi Action `dex.getSellQuote` Return Type](/sdk/typescript/wagmi/actions/dex.getSellQuote#return-type)
+
+## Parameters
+
+See [Wagmi Action `dex.getSellQuote` Parameters](/sdk/typescript/wagmi/actions/dex.getSellQuote#parameters)
+
+### query
+
+See the [TanStack Query query docs](https://tanstack.com/query/v5/docs/framework/react/reference/useQuery) for more info hook parameters.

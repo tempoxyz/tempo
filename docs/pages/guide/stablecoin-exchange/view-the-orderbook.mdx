@@ -1,0 +1,195 @@
+import { IndexSupplyQuery } from '../../../components/IndexSupplyQuery'
+
+
+# View the Orderbook
+
+Query and inspect the orderbook to see available liquidity, price levels, and individual orders on Tempo's Stablecoin Exchange.
+
+## Recommended Approach
+
+We recommend using indexed data to query the orderbook for better performance and ease of use. While you can query logs and transactions directly from an RPC node, indexed data providers offer structured SQL interfaces that make complex queries simpler and more efficient.
+
+In this guide, we use [Index Supply](https://www.indexsupply.net) as our indexing provider, but you're free to choose your own indexing solution or query the chain directly based on your needs.
+
+## Recipes
+
+### Get the current spread
+
+Query the best bid and ask prices to calculate the current spread for a token pair.
+
+Find the highest bid prices (buyers) for AlphaUSD. This query filters out fully filled and cancelled orders, groups by price level (tick), and shows the top 5 bid prices with their total liquidity.
+
+<IndexSupplyQuery
+  title={'Best Bid Prices for AlphaUSD'}
+  query={`SELECT
+    COALESCE(o.tick, f.tick) as price,
+    SUM(COALESCE(o.amount, 0) + COALESCE(f.amount, 0)) as total_liquidity
+  FROM orderplaced o
+  FULL OUTER JOIN fliporderplaced f
+    ON o."orderId" = f."orderId"
+  WHERE (o.token = '0x20c0000000000000000000000000000000000001' OR f.token = '0x20c0000000000000000000000000000000000001')
+    AND (o."isBid" = true OR f."isBid" = true)
+    AND NOT EXISTS (
+      SELECT 1 FROM orderfilled
+      WHERE orderfilled."orderId" = COALESCE(o."orderId", f."orderId")
+        AND orderfilled."partialFill" = false
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM ordercancelled
+      WHERE ordercancelled."orderId" = COALESCE(o."orderId", f."orderId")
+    )
+  GROUP BY price
+  ORDER BY price DESC
+  LIMIT 5`}
+  signatures={["OrderPlaced", "FlipOrderPlaced", "OrderFilled", "OrderCancelled"]}
+/>
+
+Find the lowest ask prices (sellers) for AlphaUSD. The spread is the difference between the highest bid and lowest ask price.
+
+<IndexSupplyQuery
+  title={'Best Ask Prices for AlphaUSD'}
+  query={`SELECT
+    COALESCE(o.tick, f.tick) as price,
+    SUM(COALESCE(o.amount, 0) + COALESCE(f.amount, 0)) as total_liquidity
+  FROM orderplaced o
+  FULL OUTER JOIN fliporderplaced f
+    ON o."orderId" = f."orderId"
+  WHERE (o.token = '0x20c0000000000000000000000000000000000001' OR f.token = '0x20c0000000000000000000000000000000000001')
+    AND (o."isBid" = false OR f."isBid" = false)
+    AND NOT EXISTS (
+      SELECT 1 FROM orderfilled
+      WHERE orderfilled."orderId" = COALESCE(o."orderId", f."orderId")
+        AND orderfilled."partialFill" = false
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM ordercancelled
+      WHERE ordercancelled."orderId" = COALESCE(o."orderId", f."orderId")
+    )
+  GROUP BY price
+  ORDER BY price
+  LIMIT 5`}
+  signatures={["OrderPlaced", "FlipOrderPlaced", "OrderFilled", "OrderCancelled"]}
+/>
+
+### Inspect order depth
+
+View aggregated liquidity at each price level to understand the orderbook structure.
+
+This query shows all active orders from both OrderPlaced and FlipOrderPlaced events for BetaUSD.
+
+<IndexSupplyQuery
+  title={'BetaUSD Order Depth by Price Level'}
+  query={`SELECT
+    COALESCE(o.tick, f.tick) as price,
+    COALESCE(o."isBid", f."isBid") as is_bid,
+    COUNT(COALESCE(o."orderId", f."orderId")) as num_orders,
+    SUM(COALESCE(o.amount, 0) + COALESCE(f.amount, 0)) as total_amount
+  FROM orderplaced o
+  FULL OUTER JOIN fliporderplaced f
+    ON o."orderId" = f."orderId"
+  WHERE (o.token = '0x20c0000000000000000000000000000000000002' OR f.token = '0x20c0000000000000000000000000000000000002')
+    AND NOT EXISTS (
+      SELECT 1 FROM orderfilled
+      WHERE orderfilled."orderId" = COALESCE(o."orderId", f."orderId")
+        AND orderfilled."partialFill" = false
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM ordercancelled
+      WHERE ordercancelled."orderId" = COALESCE(o."orderId", f."orderId")
+    )
+  GROUP BY price, is_bid
+  ORDER BY is_bid DESC, price
+  LIMIT 50`}
+  signatures={["OrderPlaced", "FlipOrderPlaced", "OrderFilled", "OrderCancelled"]}
+/>
+
+### Inspect an individual order
+
+#### Order details 
+
+Get detailed information about a specific order including its placement details, fill history, and cancellation status.
+
+This query inspects the details of the most recent order for AlphaUSD. It shows when the order was created, at what price (tick), the order size, and who placed it.
+
+<IndexSupplyQuery
+  title={'Order Placement Details'}
+  query={`SELECT
+    "orderId",
+    tick,
+    "isBid",
+    amount,
+    maker,
+    token,
+    block_num,
+    tx_hash
+  FROM orderplaced
+  WHERE token = '0x20c0000000000000000000000000000000000001'
+  ORDER BY block_num DESC
+  LIMIT 1`}
+  signatures={["OrderPlaced"]}
+/>
+
+#### Order fill status
+
+Check if an order has been partially or fully filled. This query shows up to 5 fill events for order number `2`, including the amount filled in each transaction and whether it was a partial fill.
+
+<IndexSupplyQuery
+  title={'Order Fill History'}
+  query={`SELECT
+    "orderId",
+    "amountFilled",
+    "partialFill",
+    block_num,
+    tx_hash
+  FROM orderfilled
+  WHERE "orderId" = 2
+  ORDER BY block_num DESC
+  LIMIT 5`}
+  signatures={["OrderFilled"]}
+/>
+
+#### Cancelled orders
+
+Check if an order has been cancelled. This query returns an order for AlphaUSD that was explicitly cancelled by the maker before being fully filled.
+
+<IndexSupplyQuery
+  title={'Order Cancellation Status'}
+  query={`SELECT
+    oc."orderId",
+    oc.block_num,
+    oc.tx_hash
+  FROM ordercancelled oc
+  INNER JOIN orderplaced op ON oc."orderId" = op."orderId"
+  WHERE op.token = '0x20c0000000000000000000000000000000000001'
+  ORDER BY op.block_num DESC
+  LIMIT 1`}
+  signatures={["OrderCancelled", "OrderPlaced"]}
+/>
+
+### Get recent trade prices
+
+View the last prices a token traded at to understand recent market activity.
+
+This query joins order fill events with their corresponding placement details to show the price tick and amount for recent trades.
+
+<IndexSupplyQuery
+  title={'Recent Trade Prices for AlphaUSD'}
+  query={`SELECT
+    ofl.block_num,
+    ofl."orderId",
+    COALESCE(o.tick, f.tick) as price,
+    ofl."amountFilled",
+    COALESCE(o."isBid", f."isBid") as "isBid"
+  FROM orderfilled ofl
+  LEFT JOIN orderplaced o
+    ON ofl."orderId" = o."orderId"
+    AND o.token = '0x20c0000000000000000000000000000000000001'
+  LEFT JOIN fliporderplaced f
+    ON ofl."orderId" = f."orderId"
+    AND f.token = '0x20c0000000000000000000000000000000000001'
+  WHERE o."orderId" IS NOT NULL OR f."orderId" IS NOT NULL
+  ORDER BY ofl.block_num DESC
+  LIMIT 10`}
+  signatures={["OrderFilled", "OrderPlaced", "FlipOrderPlaced"]}
+/>
+

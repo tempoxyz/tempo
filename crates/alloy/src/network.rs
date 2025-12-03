@@ -11,11 +11,17 @@ use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
 use alloy_provider::fillers::{
     ChainIdFiller, GasFiller, JoinFill, NonceFiller, RecommendedFillers,
 };
-use alloy_rpc_types_eth::AccessList;
+use alloy_rpc_types_eth::{AccessList, Block, Transaction};
+use alloy_signer::Signature;
 use alloy_signer_local::PrivateKeySigner;
 use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
 };
+
+/// Set of recommended fillers.
+///
+/// `N` is a nonce filler.
+pub(crate) type TempoFillers<N> = JoinFill<GasFiller, JoinFill<N, ChainIdFiller>>;
 
 /// The Tempo specific configuration of [`Network`] schema and consensus primitives.
 #[derive(Default, Debug, Clone, Copy)]
@@ -29,13 +35,10 @@ impl Network for TempoNetwork {
     type ReceiptEnvelope = TempoReceipt;
     type Header = TempoHeader;
     type TransactionRequest = TempoTransactionRequest;
-    type TransactionResponse = alloy_rpc_types_eth::Transaction<TempoTxEnvelope>;
+    type TransactionResponse = Transaction<TempoTxEnvelope>;
     type ReceiptResponse = TempoTransactionReceipt;
     type HeaderResponse = TempoHeaderResponse;
-    type BlockResponse = alloy_rpc_types_eth::Block<
-        alloy_rpc_types_eth::Transaction<TempoTxEnvelope>,
-        Self::HeaderResponse,
-    >;
+    type BlockResponse = Block<Transaction<TempoTxEnvelope>, Self::HeaderResponse>;
 }
 
 impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
@@ -138,10 +141,13 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     fn complete_type(&self, ty: TempoTxType) -> Result<(), Vec<&'static str>> {
         match ty {
             TempoTxType::FeeToken => self.complete_fee_token(),
-            ty => self.inner.complete_type(
-                ty.try_into()
-                    .expect("should not be reachable with fee token tx"),
-            ),
+            TempoTxType::AA => self.complete_aa(),
+            TempoTxType::Legacy
+            | TempoTxType::Eip2930
+            | TempoTxType::Eip1559
+            | TempoTxType::Eip7702 => self
+                .inner
+                .complete_type(ty.try_into().expect("tempo tx types checked")),
         }
     }
 
@@ -184,7 +190,9 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn prep_for_submission(&mut self) {
-        self.inner.prep_for_submission()
+        self.inner.transaction_type = Some(self.output_tx_type() as u8);
+        self.inner.trim_conflicting_keys();
+        self.inner.populate_blob_hashes();
     }
 
     fn build_unsigned(self) -> BuildResult<TempoTypedTransaction, TempoNetwork> {
@@ -331,7 +339,7 @@ impl TempoTransactionRequest {
 }
 
 impl RecommendedFillers for TempoNetwork {
-    type RecommendedFillers = JoinFill<GasFiller, JoinFill<NonceFiller, ChainIdFiller>>;
+    type RecommendedFillers = TempoFillers<NonceFiller>;
 
     fn recommended_fillers() -> Self::RecommendedFillers {
         Default::default()
@@ -355,37 +363,15 @@ impl NetworkWallet<TempoNetwork> for EthereumWallet {
     async fn sign_transaction_from(
         &self,
         sender: Address,
-        tx: TempoTypedTransaction,
+        mut tx: TempoTypedTransaction,
     ) -> alloy_signer::Result<TempoTxEnvelope> {
         let signer = self.signer_by_address(sender).ok_or_else(|| {
             alloy_signer::Error::other(format!("Missing signing credential for {sender}"))
         })?;
-        match tx {
-            TempoTypedTransaction::Legacy(mut t) => {
-                let sig = signer.sign_transaction(&mut t).await?;
-                Ok(t.into_signed(sig).into())
-            }
-            TempoTypedTransaction::Eip2930(mut t) => {
-                let sig = signer.sign_transaction(&mut t).await?;
-                Ok(t.into_signed(sig).into())
-            }
-            TempoTypedTransaction::Eip1559(mut t) => {
-                let sig = signer.sign_transaction(&mut t).await?;
-                Ok(t.into_signed(sig).into())
-            }
-            TempoTypedTransaction::Eip7702(mut t) => {
-                let sig = signer.sign_transaction(&mut t).await?;
-                Ok(t.into_signed(sig).into())
-            }
-            TempoTypedTransaction::FeeToken(mut t) => {
-                let sig = signer.sign_transaction(&mut t).await?;
-                Ok(t.into_signed(sig).into())
-            }
-            TempoTypedTransaction::AA(mut t) => {
-                let sig = signer.sign_transaction(&mut t).await?;
-                Ok(t.into_signed(sig.into()).into())
-            }
-        }
+        let sig = signer
+            .sign_transaction(dyn_signable_from_typed(&mut tx))
+            .await?;
+        Ok(typed_into_signed(tx, sig))
     }
 }
 
@@ -394,6 +380,32 @@ impl IntoWallet<TempoNetwork> for PrivateKeySigner {
 
     fn into_wallet(self) -> Self::NetworkWallet {
         self.into()
+    }
+}
+
+/// Converts a [`TempoTypedTransaction`] into a [`TempoTxEnvelope`] with the given signature.
+pub fn typed_into_signed(tx: TempoTypedTransaction, sig: Signature) -> TempoTxEnvelope {
+    match tx {
+        TempoTypedTransaction::Legacy(tx) => tx.into_signed(sig).into(),
+        TempoTypedTransaction::Eip2930(tx) => tx.into_signed(sig).into(),
+        TempoTypedTransaction::Eip1559(tx) => tx.into_signed(sig).into(),
+        TempoTypedTransaction::Eip7702(tx) => tx.into_signed(sig).into(),
+        TempoTypedTransaction::AA(tx) => tx.into_signed(sig.into()).into(),
+        TempoTypedTransaction::FeeToken(tx) => tx.into_signed(sig).into(),
+    }
+}
+
+/// Get inner typed transaction as a mutable reference to [`SignableTransaction<Signature>`].
+pub fn dyn_signable_from_typed(
+    tx: &mut TempoTypedTransaction,
+) -> &mut dyn SignableTransaction<Signature> {
+    match tx {
+        TempoTypedTransaction::Legacy(tx) => tx,
+        TempoTypedTransaction::Eip2930(tx) => tx,
+        TempoTypedTransaction::Eip1559(tx) => tx,
+        TempoTypedTransaction::Eip7702(tx) => tx,
+        TempoTypedTransaction::AA(tx) => tx,
+        TempoTypedTransaction::FeeToken(tx) => tx,
     }
 }
 

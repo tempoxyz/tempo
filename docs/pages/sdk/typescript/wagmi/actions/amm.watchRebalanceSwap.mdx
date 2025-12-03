@@ -1,0 +1,78 @@
+# `amm.watchRebalanceSwap`
+
+Watches for rebalance swap events on the Fee AMM.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { Actions } from 'tempo.ts/wagmi'
+import { config } from './wagmi.config'
+
+const unwatch = Actions.amm.watchRebalanceSwap(config, {
+  onRebalanceSwap: (args, log) => {
+    console.log('Amount in:', args.amountIn)
+    console.log('Amount out:', args.amountOut)
+    console.log('Recipient:', args.to)
+    console.log('User token:', args.userToken)
+    console.log('Validator token:', args.validatorToken)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onRebalanceSwap
+
+- **Type:**
+
+```ts
+declare function onRebalanceSwap(args: Args, log: Log): void
+
+type Args = {
+  /** Amount of validator token swapped in */
+  amountIn: bigint
+  /** Amount of user token received */
+  amountOut: bigint
+  /** Address that received the user token */
+  to: Address
+  /** Address of the user token */
+  userToken: Address
+  /** Address of the validator token */
+  validatorToken: Address
+}
+```
+
+Callback to invoke when a rebalance swap occurs.
+
+### userToken (optional)
+
+- **Type:** `Address | undefined`
+
+Filter events by user token address.
+
+### validatorToken (optional)
+
+- **Type:** `Address | undefined`
+
+Filter events by validator token address.
+

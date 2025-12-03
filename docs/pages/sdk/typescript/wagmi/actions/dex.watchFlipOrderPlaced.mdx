@@ -1,0 +1,68 @@
+# `dex.watchFlipOrderPlaced`
+
+Watches for flip order placed events on the Stablecoin Exchange.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { Actions } from 'tempo.ts/wagmi'
+import { config } from './wagmi.config'
+
+const unwatch = Actions.dex.watchFlipOrderPlaced(config, {
+  onFlipOrderPlaced: (args, log) => {
+    console.log('Flip order placed:', args.orderId)
+    console.log('Maker:', args.maker)
+    console.log('Amount:', args.amount)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onFlipOrderPlaced
+
+- **Type:** `(args: FlipOrderPlacedArgs, log: Log) => void`
+
+Callback to invoke when a flip order is placed.
+
+The `args` object contains:
+- `orderId: bigint` - ID of the placed order
+- `maker: Address` - Address that placed the order
+- `token: Address` - Address of the base token
+- `amount: bigint` - Amount of tokens in the order
+- `isBid: boolean` - Whether this is a buy order
+- `tick: number` - Price tick for the order
+- `flipTick: number` - Target tick to flip to when filled
+
+### maker (optional)
+
+- **Type:** `Address | undefined`
+
+Filter events by maker address.
+
+### token (optional)
+
+- **Type:** `Address | undefined`
+
+Filter events by base token address.
+

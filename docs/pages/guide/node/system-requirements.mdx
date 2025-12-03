@@ -1,0 +1,33 @@
+# System Requirements
+
+These are the minimum and recommended system requirements for running a validator/RPC node.
+It is likely, that the nodes will not require as much resources at the beginning of the chain,
+but we still highly recommend to follow the recommended specifications. This will allow for future growth and scalability.
+
+## RPC Node
+
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| **CPU** | 8 cores | 16+ cores |
+| **RAM** | 16 GB | 32 GB |
+| **Storage** | 250 GB SSD | 500 GB NVMe |
+| **Network** | 500 Mbps | 1 Gbps |
+
+## Validator Node
+
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| **CPU** | 8 cores | 16+ cores |
+| **RAM** | 16 GB | 32 GB |
+| **Storage** | 100 GB NVMe | 1 TB NVMe |
+| **Network** | 1 Gbps | 1 Gbps |
+
+## Ports
+
+| Port | Protocol | Purpose | Expose |
+|------|----------|---------|--------|
+| 30303 | TCP/UDP | Execution P2P | Public |
+| 8000 | TCP | Consensus P2P | Validators only |
+| 8545 | TCP | HTTP RPC | Optional |
+| 8546 | TCP | WebSocket RPC | Optional |
+| 9000 | TCP | Metrics | Internal |

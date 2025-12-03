@@ -130,6 +130,19 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
     }
 
+    /// Validates that a trading pair exists or creates the pair if
+    /// the chain height is post allegretto hardfork
+    fn validate_or_create_pair(&mut self, book: &Orderbook, token: Address) -> Result<()> {
+        if book.base.is_zero() {
+            if self.storage.spec().is_allegretto() {
+                self.create_pair(token)?;
+            } else {
+                return Err(StablecoinExchangeError::pair_does_not_exist().into());
+            }
+        }
+        Ok(())
+    }
+
     /// Fetch order from storage. If the order is currently pending or filled, this function returns
     /// `StablecoinExchangeError::OrderDoesNotExist`
     pub fn get_order(&mut self, order_id: u128) -> Result<Order> {
@@ -490,9 +503,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let book_key = compute_book_key(token, quote_token);
 
         let book = self.sload_books(book_key)?;
-        if book.base.is_zero() {
-            return Err(StablecoinExchangeError::pair_does_not_exist().into());
-        }
+        self.validate_or_create_pair(&book, token)?;
 
         // Validate tick is within bounds
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
@@ -579,9 +590,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         // Check book existence (only after Moderato hardfork)
         if self.storage.spec().is_moderato() {
             let book = self.sload_books(book_key)?;
-            if book.base.is_zero() {
-                return Err(StablecoinExchangeError::pair_does_not_exist().into());
-            }
+            self.validate_or_create_pair(&book, token)?;
         }
 
         // Validate tick and flip_tick are within bounds
@@ -1399,7 +1408,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 let base_needed = remaining_out
                     .checked_mul(orderbook::PRICE_SCALE as u128)
                     .and_then(|v| v.checked_div(price as u128))
-                    .expect("Base needed calculation overflow");
+                    .ok_or(TempoPrecompileError::under_overflow())?;
                 let fill_amount = if base_needed > level.total_liquidity {
                     level.total_liquidity
                 } else {
@@ -1416,7 +1425,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 let quote_needed = fill_amount
                     .checked_mul(price as u128)
                     .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                    .expect("Quote needed calculation overflow");
+                    .ok_or(TempoPrecompileError::under_overflow())?;
                 (fill_amount, quote_needed)
             };
 
@@ -1424,7 +1433,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 fill_amount
                     .checked_mul(price as u128)
                     .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                    .expect("Amount out calculation overflow")
+                    .ok_or(TempoPrecompileError::under_overflow())?
             } else {
                 fill_amount
             };
@@ -1602,18 +1611,43 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
             let price = orderbook::tick_to_price(current_tick);
 
-            let fill_amount = if remaining_in > level.total_liquidity {
-                level.total_liquidity
-            } else {
-                remaining_in
-            };
-            let amount_out_tick = fill_amount
-                .checked_mul(price as u128)
-                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                .expect("Amount out calculation overflow");
+            // Compute (fill_amount, amount_out_tick, amount_consumed) based on hardfork
+            let (fill_amount, amount_out_tick, amount_consumed) =
+                if self.storage.spec().is_allegretto() {
+                    // Post-allegretto: logic accounts for `is_bid`
+                    if is_bid {
+                        // For bids: remaining_in is base, amount_out is quote
+                        let fill = remaining_in.min(level.total_liquidity);
+                        let quote_out = fill
+                            .checked_mul(price as u128)
+                            .ok_or(TempoPrecompileError::under_overflow())?
+                            / orderbook::PRICE_SCALE as u128;
+                        (fill, quote_out, fill)
+                    } else {
+                        // For asks: remaining_in is quote, amount_out is base
+                        let base_to_get = remaining_in
+                            .checked_mul(orderbook::PRICE_SCALE as u128)
+                            .and_then(|v| v.checked_div(price as u128))
+                            .ok_or(TempoPrecompileError::under_overflow())?;
+                        let fill = base_to_get.min(level.total_liquidity);
+                        let quote_consumed = fill
+                            .checked_mul(price as u128)
+                            .ok_or(TempoPrecompileError::under_overflow())?
+                            / orderbook::PRICE_SCALE as u128;
+                        (fill, fill, quote_consumed)
+                    }
+                } else {
+                    // Pre-allegretto: doesn't account for `is_bid`
+                    let fill = remaining_in.min(level.total_liquidity);
+                    let amount_out_tick = fill
+                        .checked_mul(price as u128)
+                        .ok_or(TempoPrecompileError::under_overflow())?
+                        / orderbook::PRICE_SCALE as u128;
+                    (fill, amount_out_tick, fill)
+                };
 
             remaining_in = remaining_in
-                .checked_sub(fill_amount)
+                .checked_sub(amount_consumed)
                 .ok_or(TempoPrecompileError::under_overflow())?;
             amount_out = amount_out
                 .checked_add(amount_out_tick)
@@ -4662,6 +4696,162 @@ mod tests {
                 ))
             ),
             "Should return InvalidToken error for non-TIP20 token post-Allegretto"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_quote_exact_in_handles_both_directions() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+        let amount = MIN_ORDER_AMOUNT;
+        let tick = 100_i16;
+        let price = orderbook::tick_to_price(tick);
+
+        // Calculate escrow for bid order (quote needed to buy `amount` base)
+        let bid_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+        let (base_token, quote_token) =
+            setup_test_tokens(exchange.storage, admin, alice, exchange.address, bid_escrow);
+        exchange.create_pair(base_token)?;
+        let book_key = compute_book_key(base_token, quote_token);
+        mint_and_approve_token(exchange.storage, 1, admin, alice, exchange.address, amount);
+
+        // Place a bid order (alice wants to buy base with quote)
+        exchange.place(alice, base_token, amount, true, tick)?;
+        exchange.execute_block(Address::ZERO)?;
+
+        // Test is_bid == true: base -> quote
+        let quoted_out_bid = exchange.quote_exact_in(book_key, amount, true)?;
+        let expected_quote_out = amount
+            .checked_mul(price as u128)
+            .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+            .expect("calculation");
+        assert_eq!(
+            quoted_out_bid, expected_quote_out,
+            "quote_exact_in with is_bid=true should return quote amount"
+        );
+
+        // Place an ask order (alice wants to sell base for quote)
+        exchange.place(alice, base_token, amount, false, tick)?;
+        exchange.execute_block(Address::ZERO)?;
+
+        // Test is_bid == false: quote -> base
+        let quote_in = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+        let quoted_out_ask = exchange.quote_exact_in(book_key, quote_in, false)?;
+        let expected_base_out = quote_in
+            .checked_mul(orderbook::PRICE_SCALE as u128)
+            .and_then(|v| v.checked_div(price as u128))
+            .expect("calculation");
+        assert_eq!(
+            quoted_out_ask, expected_base_out,
+            "quote_exact_in with is_bid=false should return base amount"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_place_auto_creates_pair_post_allegretto() -> Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+        let admin = Address::random();
+        let user = Address::random();
+
+        // Setup tokens
+        let (base_token, quote_token) =
+            setup_test_tokens(exchange.storage, admin, user, exchange.address, 100_000_000);
+
+        // Before placing order, verify pair doesn't exist
+        let book_key = compute_book_key(base_token, quote_token);
+        let book_before = exchange.sload_books(book_key)?;
+        assert!(book_before.base.is_zero(),);
+
+        // Transfer tokens to exchange first
+        let mut base = TIP20Token::new(1, exchange.storage);
+        base.transfer(
+            user,
+            ITIP20::transferCall {
+                to: exchange.address,
+                amount: U256::from(MIN_ORDER_AMOUNT),
+            },
+        )
+        .expect("Base token transfer failed");
+
+        // Place an order which should also create the pair
+        exchange.place(user, base_token, MIN_ORDER_AMOUNT, true, 0)?;
+
+        let book_after = exchange.sload_books(book_key)?;
+        assert_eq!(book_after.base, base_token);
+
+        // Verify PairCreated event was emitted (along with OrderPlaced)
+        let events = &exchange.storage.events[&exchange.address];
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0],
+            StablecoinExchangeEvents::PairCreated(IStablecoinExchange::PairCreated {
+                key: book_key,
+                base: base_token,
+                quote: quote_token,
+            })
+            .into_log_data()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_place_flip_auto_creates_pair_post_allegretto() -> Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let admin = Address::random();
+        let user = Address::random();
+
+        // Setup tokens
+        let (base_token, quote_token) =
+            setup_test_tokens(exchange.storage, admin, user, exchange.address, 100_000_000);
+
+        // Before placing flip order, verify pair doesn't exist
+        let book_key = compute_book_key(base_token, quote_token);
+        let book_before = exchange.sload_books(book_key)?;
+        assert!(book_before.base.is_zero(),);
+
+        // Transfer tokens to exchange first
+        let mut base = TIP20Token::new(1, exchange.storage);
+        base.transfer(
+            user,
+            ITIP20::transferCall {
+                to: exchange.address,
+                amount: U256::from(MIN_ORDER_AMOUNT),
+            },
+        )
+        .expect("Base token transfer failed");
+
+        // Place a flip order which should also create the pair
+        exchange.place_flip(user, base_token, MIN_ORDER_AMOUNT, true, 0, 10)?;
+
+        let book_after = exchange.sload_books(book_key)?;
+        assert_eq!(book_after.base, base_token);
+
+        // Verify PairCreated event was emitted (along with FlipOrderPlaced)
+        let events = &exchange.storage.events[&exchange.address];
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0],
+            StablecoinExchangeEvents::PairCreated(IStablecoinExchange::PairCreated {
+                key: book_key,
+                base: base_token,
+                quote: quote_token,
+            })
+            .into_log_data()
         );
 
         Ok(())
