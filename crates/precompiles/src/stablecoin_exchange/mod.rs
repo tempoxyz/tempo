@@ -4868,8 +4868,9 @@ mod tests {
 
     #[test]
     fn test_decrement_balance_zeroes_balance_pre_allegro_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut exchange = StablecoinExchange::new(&mut storage);
+
         exchange.initialize()?;
 
         let alice = Address::random();
@@ -4895,11 +4896,7 @@ mod tests {
         let result = exchange.place(alice, base_address, MIN_ORDER_AMOUNT, false, tick);
 
         assert!(result.is_err());
-        assert_eq!(
-            exchange.balance_of(alice, base_address)?,
-            0,
-            "Pre-Allegretto: balance is zeroed before transfer_from"
-        );
+        assert_eq!(exchange.balance_of(alice, base_address)?, 0);
 
         Ok(())
     }
@@ -4930,14 +4927,10 @@ mod tests {
         assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
 
         let tick = 0i16;
-        let result = exchange.place(alice, base_address, MIN_ORDER_AMOUNT, false, tick);
+        let result = exchange.place(alice, base_address, MIN_ORDER_AMOUNT * 2, false, tick);
 
         assert!(result.is_err());
-        assert_eq!(
-            exchange.balance_of(alice, base_address)?,
-            internal_balance,
-            "Post-Allegretto: balance is preserved when transfer_from fails"
-        );
+        assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
 
         Ok(())
     }
