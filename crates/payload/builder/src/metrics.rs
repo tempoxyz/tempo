@@ -1,3 +1,4 @@
+use metrics::Gauge;
 use reth_metrics::{Metrics, metrics::Histogram};
 
 #[derive(Metrics, Clone)]
@@ -7,6 +8,8 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) total_transactions: Histogram,
     /// Number of payment transactions in the payload.
     pub(crate) payment_transactions: Histogram,
+    /// Amount of gas used in the payload.
+    pub(crate) gas_used: Histogram,
     /// The time it took to prepare system transactions in seconds.
     pub(crate) prepare_system_transactions_duration_seconds: Histogram,
     /// The time it took to execute start-of-block system transactions in seconds.
@@ -21,4 +24,8 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) payload_finalization_duration_seconds: Histogram,
     /// Total time it took to build the payload in seconds.
     pub(crate) payload_build_duration_seconds: Histogram,
+    /// Gas per second calculated as gas_used / payload_build_duration
+    pub(crate) gas_per_second: Histogram,
+    /// Gas per second for the last payload calculated as gas_used / payload_build_duration
+    pub(crate) gas_per_second_last: Gauge,
 }
