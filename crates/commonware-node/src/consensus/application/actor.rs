@@ -33,7 +33,7 @@ use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{
     StreamExt as _, TryFutureExt as _,
     channel::{mpsc, oneshot},
-    future::{Either, always_ready, try_join},
+    future::{Either, always_ready, ready, try_join},
 };
 use rand::{CryptoRng, Rng};
 use reth_node_builder::ConsensusEngineHandle;
@@ -479,18 +479,14 @@ impl Inner<Init> {
             return Ok(parent);
         }
 
-        if let Err(error) = self
-            .state
-            .executor_mailbox
-            .canonicalize_head(parent.height(), parent.digest())
-        {
-            tracing::warn!(
-                %error,
-                parent.height = parent.height(),
-                parent.digest = %parent.digest(),
-                "failed updating canonical head to parent",
-            );
-        }
+        ready(
+            self.state
+                .executor_mailbox
+                .canonicalize_head(parent.height(), parent.digest()),
+        )
+        .and_then(|ack| ack.map_err(eyre::Report::new))
+        .await
+        .wrap_err("failed updating canonical head to parent")?;
 
         // Query DKG manager for ceremony data before building payload
         // This data will be passed to the payload builder via attributes

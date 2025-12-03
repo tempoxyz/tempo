@@ -106,17 +106,13 @@ pub static ANDANTINO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     TempoChainSpec::from_genesis(genesis).into()
 });
 
-/// Development chainspec that extends [`ANDANTINO`] testnet with dev accounts from the vanilla
+/// Development chainspec with funded dev accounts and activated tempo hardforks
+///
+/// `cargo x generate-genesis -o dev.json --accounts 10`
 pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
-    let mut genesis = ANDANTINO.genesis().clone();
-    genesis
-        .alloc
-        .extend(reth_chainspec::DEV.genesis().alloc.clone());
-
-    let mut spec = TempoChainSpec::from_genesis(genesis);
-    // update chainid to dev
-    spec.inner.chain = Chain::dev();
-    spec.into()
+    let genesis: Genesis = serde_json::from_str(include_str!("./genesis/dev.json"))
+        .expect("`./genesis/dev.json` must be present and deserializable");
+    TempoChainSpec::from_genesis(genesis).into()
 });
 
 /// Tempo chain spec type.

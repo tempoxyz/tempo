@@ -314,6 +314,11 @@ where
 
         let start = Instant::now();
 
+        let block_time_millis =
+            (attributes.timestamp_millis() - parent_header.timestamp_millis()) as f64;
+        self.metrics.block_time_millis.record(block_time_millis);
+        self.metrics.block_time_millis_last.set(block_time_millis);
+
         let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
         let state = StateProviderDatabase::new(&state_provider);
         let mut db = State::builder()
@@ -628,6 +633,7 @@ where
         self.metrics
             .total_transactions
             .record(block.transaction_count() as f64);
+        self.metrics.gas_used.record(block.gas_used() as f64);
 
         let requests = chain_spec
             .is_prague_active_at_timestamp(attributes.timestamp())
@@ -644,6 +650,9 @@ where
 
         let elapsed = start.elapsed();
         self.metrics.payload_build_duration_seconds.record(elapsed);
+        let gas_per_second = sealed_block.gas_used() as f64 / elapsed.as_secs_f64();
+        self.metrics.gas_per_second.record(gas_per_second);
+        self.metrics.gas_per_second_last.set(gas_per_second);
 
         info!(
             sealed_block_header = ?sealed_block.sealed_header(),

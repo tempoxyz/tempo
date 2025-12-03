@@ -19,7 +19,7 @@ use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter,
     components::{
         BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
-        PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder,
+        PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
         BasicEngineValidatorBuilder, EngineValidatorAddOn, EngineValidatorBuilder, EthApiBuilder,
@@ -454,18 +454,20 @@ where
         });
         let protocol_pool = TxPoolBuilder::new(ctx)
             .with_validator(validator)
-            .build_and_spawn_maintenance_task(blob_store, pool_config)?;
+            .build(blob_store, pool_config.clone());
+
+        // Wrap the protocol pool in our hybrid TempoTransactionPool
+        let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);
+
+        spawn_maintenance_tasks(ctx, transaction_pool.clone(), &pool_config)?;
 
         // Spawn (protocol) mempool maintenance tasks
-        let task_pool = protocol_pool.clone();
+        let task_pool = transaction_pool.clone();
         let task_provider = ctx.provider().clone();
         ctx.task_executor().spawn_critical(
             "txpool maintenance (protocol) - evict expired AA txs",
             tempo_transaction_pool::maintain::evict_expired_aa_txs(task_pool, task_provider),
         );
-
-        // Wrap the protocol pool in our hybrid TempoTransactionPool
-        let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);
 
         // Spawn (AA 2d nonce) mempool maintenance tasks
         ctx.task_executor().spawn_critical(

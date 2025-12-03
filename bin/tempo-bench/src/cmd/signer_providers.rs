@@ -2,36 +2,42 @@ use std::sync::Arc;
 
 use alloy::{
     providers::{
-        DynProvider, Provider, ProviderBuilder, RootProvider, SendableTx,
+        DynProvider, Provider, ProviderBuilder, RootProvider,
         fillers::{CachedNonceManager, FillProvider, TxFiller},
     },
     signers::local::{MnemonicBuilder, PrivateKeySigner},
-    transports::{TransportResult, http::reqwest::Url},
+    transports::http::reqwest::Url,
 };
 use indicatif::ProgressIterator;
 use rand::seq::IndexedRandom;
-use tempo_alloy::{TempoNetwork, rpc::TempoTransactionRequest};
+use tempo_alloy::TempoNetwork;
 
-type UnsignedProviderFactory = Box<dyn Fn(Url, CachedNonceManager) -> Arc<dyn FillProviderExt>>;
-type SignedProviderFactory =
-    Box<dyn Fn(PrivateKeySigner, Url, CachedNonceManager) -> Arc<dyn FillProviderExt>>;
+type BenchProvider<F> = FillProvider<F, RootProvider<TempoNetwork>, TempoNetwork>;
+type UnsignedProviderFactory<F> =
+    Box<dyn Fn(Url, CachedNonceManager) -> BenchProvider<F> + Send + Sync>;
+type SignedProviderFactory = Box<
+    dyn Fn(PrivateKeySigner, Url, CachedNonceManager) -> DynProvider<TempoNetwork> + Send + Sync,
+>;
 
 /// Manages signers and target URLs for creating providers.
-#[derive(Clone)]
-pub(crate) struct SignerProviderManager(Arc<SignerProviderManagerInner>);
+#[derive(Debug, Clone)]
+pub(crate) struct SignerProviderManager<F: TxFiller<TempoNetwork>>(
+    Arc<SignerProviderManagerInner<F>>,
+);
 
-struct SignerProviderManagerInner {
+#[derive(Debug)]
+struct SignerProviderManagerInner<F: TxFiller<TempoNetwork>> {
     /// List of private key signers.
     signers: Vec<PrivateKeySigner>,
     /// List of target URLs.
     target_urls: Vec<Url>,
     /// Providers without signing capabilities.
-    unsigned_providers: Vec<BenchProvider>,
+    unsigned_providers: Vec<BenchProvider<F>>,
     /// List of providers (one per signer) with random target URLs.
-    signer_providers: Vec<(PrivateKeySigner, BenchProvider)>,
+    signer_providers: Vec<(PrivateKeySigner, DynProvider<TempoNetwork>)>,
 }
 
-impl SignerProviderManager {
+impl<F: TxFiller<TempoNetwork> + 'static> SignerProviderManager<F> {
     /// Create a new instance of [`SignerProviderManager`].
     ///
     /// 1. Creates `accounts` signers from the `mnemonic` starting with `from_mnemonic_index` index.
@@ -43,7 +49,7 @@ impl SignerProviderManager {
         from_mnemonic_index: u32,
         accounts: u64,
         target_urls: Vec<Url>,
-        unsigned_provider_factory: UnsignedProviderFactory,
+        unsigned_provider_factory: UnsignedProviderFactory<F>,
         signed_provider_factory: SignedProviderFactory,
     ) -> Self {
         let cached_nonce_manager = CachedNonceManager::default();
@@ -55,12 +61,7 @@ impl SignerProviderManager {
         let unsigned_providers = target_urls
             .iter()
             .cloned()
-            .map(|target_url| {
-                BenchProvider((unsigned_provider_factory)(
-                    target_url,
-                    cached_nonce_manager.clone(),
-                ))
-            })
+            .map(|target_url| (unsigned_provider_factory)(target_url, cached_nonce_manager.clone()))
             .collect();
         let signer_providers = signers
             .iter()
@@ -68,11 +69,11 @@ impl SignerProviderManager {
             .cloned()
             .map(|signer| {
                 let target_url = target_urls.choose(&mut rand::rng()).unwrap().clone();
-                let provider = BenchProvider((signed_provider_factory)(
+                let provider = (signed_provider_factory)(
                     signer.clone(),
                     target_url,
                     cached_nonce_manager.clone(),
-                ));
+                );
                 (signer, provider)
             })
             .collect();
@@ -99,12 +100,12 @@ impl SignerProviderManager {
     }
 
     /// Returns a list of providers (one per signer) with random target URLs.
-    pub fn signer_providers(&self) -> &[(PrivateKeySigner, BenchProvider)] {
+    pub fn signer_providers(&self) -> &[(PrivateKeySigner, DynProvider<TempoNetwork>)] {
         &self.0.signer_providers
     }
 
     /// Returns a random signer without signing capabilities.
-    pub fn random_unsigned_provider(&self) -> BenchProvider {
+    pub fn random_unsigned_provider(&self) -> BenchProvider<F> {
         self.0
             .unsigned_providers
             .choose(&mut rand::rng())
@@ -115,32 +116,5 @@ impl SignerProviderManager {
     /// Returns a random signer.
     pub fn random_signer(&self) -> &PrivateKeySigner {
         self.0.signers.choose(&mut rand::rng()).unwrap()
-    }
-}
-
-/// A trait that exposes [`FillProvider::fill`] method.
-#[async_trait::async_trait]
-pub trait FillProviderExt: Provider<TempoNetwork> {
-    async fn fill(&self, tx: TempoTransactionRequest) -> TransportResult<SendableTx<TempoNetwork>>;
-}
-
-#[async_trait::async_trait]
-impl<P, F> FillProviderExt for FillProvider<F, P, TempoNetwork>
-where
-    P: Provider<TempoNetwork> + Send + Sync,
-    F: TxFiller<TempoNetwork> + Send + Sync,
-{
-    async fn fill(&self, tx: TempoTransactionRequest) -> TransportResult<SendableTx<TempoNetwork>> {
-        FillProvider::fill(self, tx).await
-    }
-}
-
-/// [`Provider`] that can also fill transactions with [`FillProviderExt::fill`].
-#[derive(Clone, derive_more::Deref)]
-pub(crate) struct BenchProvider(Arc<dyn FillProviderExt>);
-
-impl Provider<TempoNetwork> for BenchProvider {
-    fn root(&self) -> &RootProvider<TempoNetwork> {
-        self.0.root()
     }
 }
