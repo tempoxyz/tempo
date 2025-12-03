@@ -27,9 +27,7 @@ alloy = { workspace = true, features = [
     "sol-types",
 ] }
 alloy-consensus = { workspace = true, features = ["secp256k1"] }
-async-trait.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
-derive_more.workspace = true
 eyre.workspace = true
 futures.workspace = true
 hex.workspace = true
