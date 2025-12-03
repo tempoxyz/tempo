@@ -35,6 +35,10 @@ pub struct TempoGenesisInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     allegretto_time: Option<u64>,
 
+    /// Timestamp of Allegro-Moderato hardfork activation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allegro_moderato_time: Option<u64>,
+
     /// The epoch length used by consensus.
     #[serde(skip_serializing_if = "Option::is_none")]
     epoch_length: Option<u64>,
@@ -131,6 +135,7 @@ impl TempoChainSpec {
             adagio_time,
             moderato_time,
             allegretto_time,
+            allegro_moderato_time,
             ..
         } = TempoGenesisInfo::extract_from(&genesis);
 
@@ -141,6 +146,7 @@ impl TempoChainSpec {
             (TempoHardfork::Adagio, adagio_time),
             (TempoHardfork::Moderato, moderato_time),
             (TempoHardfork::Allegretto, allegretto_time),
+            (TempoHardfork::AllegroModerato, allegro_moderato_time),
         ]
         .into_iter()
         .filter_map(|(fork, time)| time.map(|time| (fork, ForkCondition::Timestamp(time))));
@@ -360,6 +366,7 @@ mod tests {
                 "adagioTime": 1000,
                 "moderatoTime": 2000,
                 "allegrettoTime": 3000,
+                "allegroModeratoTime": 4000,
             },
             "alloc": {}
         });
@@ -442,6 +449,39 @@ mod tests {
         assert!(
             chainspec.is_allegretto_active_at_timestamp(4000),
             "Allegretto should be active after its activation timestamp"
+        );
+
+        // Test AllegroModerato activation
+        let activation = chainspec.fork(TempoHardfork::AllegroModerato);
+        assert_eq!(
+            activation,
+            ForkCondition::Timestamp(4000),
+            "AllegroModerato should be activated at the parsed timestamp from extra_fields"
+        );
+
+        assert!(
+            !chainspec.is_allegro_moderato_active_at_timestamp(0),
+            "AllegroModerato should not be active before its activation timestamp"
+        );
+        assert!(
+            !chainspec.is_allegro_moderato_active_at_timestamp(1000),
+            "AllegroModerato should not be active at Adagio's activation timestamp"
+        );
+        assert!(
+            !chainspec.is_allegro_moderato_active_at_timestamp(2000),
+            "AllegroModerato should not be active at Moderato's activation timestamp"
+        );
+        assert!(
+            !chainspec.is_allegro_moderato_active_at_timestamp(3000),
+            "AllegroModerato should not be active at Allegretto's activation timestamp"
+        );
+        assert!(
+            chainspec.is_allegro_moderato_active_at_timestamp(4000),
+            "AllegroModerato should be active at its activation timestamp"
+        );
+        assert!(
+            chainspec.is_allegro_moderato_active_at_timestamp(5000),
+            "AllegroModerato should be active after its activation timestamp"
         );
     }
 
@@ -532,7 +572,8 @@ mod tests {
                 "cancunTime": 0,
                 "adagioTime": 1000,
                 "moderatoTime": 2000,
-                "allegrettoTime": 3000
+                "allegrettoTime": 3000,
+                "allegroModeratoTime": 4000
             },
             "alloc": {}
         });
@@ -584,11 +625,25 @@ mod tests {
             "Should return Allegretto at its activation time"
         );
 
-        // After Allegretto
+        // Between Allegretto and AllegroModerato
+        assert_eq!(
+            chainspec.tempo_hardfork_at(3500),
+            TempoHardfork::Allegretto,
+            "Should return Allegretto between Allegretto and AllegroModerato activation"
+        );
+
+        // At AllegroModerato time
         assert_eq!(
             chainspec.tempo_hardfork_at(4000),
-            TempoHardfork::Allegretto,
-            "Should return Allegretto after its activation time"
+            TempoHardfork::AllegroModerato,
+            "Should return AllegroModerato at its activation time"
+        );
+
+        // After AllegroModerato
+        assert_eq!(
+            chainspec.tempo_hardfork_at(5000),
+            TempoHardfork::AllegroModerato,
+            "Should return AllegroModerato after its activation time"
         );
     }
 }
