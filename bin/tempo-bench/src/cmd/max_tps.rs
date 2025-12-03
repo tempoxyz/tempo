@@ -319,20 +319,18 @@ impl MaxTpsArgs {
                     .get_receipt()
                     .map(move |result| (hash, result))
             })
-            .for_each_concurrent(self.max_concurrent_requests, async |result| {
-                let (hash, result) = result.await;
-                match result {
-                    Ok(_) => {
-                        successful.fetch_add(1, Ordering::Relaxed);
-                    }
-                    Err(PendingTransactionError::TxWatcher(WatchTxError::Timeout)) => {
-                        timeout.fetch_add(1, Ordering::Relaxed);
-                        error!(?hash, "Transaction receipt retrieval timed out");
-                    }
-                    Err(err) => {
-                        failed.fetch_add(1, Ordering::Relaxed);
-                        error!(?hash, "Transaction receipt retrieval failed: {}", err);
-                    }
+            .buffered(self.max_concurrent_requests)
+            .for_each(async |(hash, result)| match result {
+                Ok(_) => {
+                    successful.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(PendingTransactionError::TxWatcher(WatchTxError::Timeout)) => {
+                    timeout.fetch_add(1, Ordering::Relaxed);
+                    error!(?hash, "Transaction receipt retrieval timed out");
+                }
+                Err(err) => {
+                    failed.fetch_add(1, Ordering::Relaxed);
+                    error!(?hash, "Transaction receipt retrieval failed: {}", err);
                 }
             })
             .await;
