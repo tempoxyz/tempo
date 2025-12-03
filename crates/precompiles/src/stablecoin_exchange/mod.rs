@@ -278,9 +278,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 .checked_sub(user_balance)
                 .ok_or(TempoPrecompileError::under_overflow())?;
 
-            // FIXME: Since allegretto is already live, this should be gated behind a subsequent
-            // hardfork.
-            if self.storage.spec().is_allegretto() {
+            // Post allegro-moderato hardfork, set balance after transfer from
+            if self.storage.spec().is_allegro_moderato() {
                 self.transfer_from(token, user, remaining)?;
                 self.set_balance(user, token, 0)?;
 
