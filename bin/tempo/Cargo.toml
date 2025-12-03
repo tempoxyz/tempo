@@ -22,6 +22,7 @@ tempo-evm.workspace = true
 tempo-faucet.workspace = true
 
 commonware-runtime = { workspace = true, features = ["external"] }
+commonware-cryptography.workspace = true
 futures = { workspace = true, features = ["executor"] }
 reth-cli-commands.workspace = true
 reth-cli-util.workspace = true

@@ -18,12 +18,14 @@
 mod defaults;
 
 use clap::Parser;
+use commonware_cryptography::Signer;
 use commonware_runtime::{Metrics, Runner};
 use eyre::WrapErr as _;
 use futures::{FutureExt as _, future::FusedFuture as _};
 use reth_ethereum::{
     chainspec::EthChainSpec as _,
     cli::{Cli, Commands},
+    evm::revm::primitives::B256,
 };
 use reth_ethereum_cli as _;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
@@ -183,12 +185,16 @@ fn main() -> eyre::Result<()> {
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
         let faucet_args = args.faucet_args.clone();
+        let validator_key = args
+            .consensus
+            .signing_key()?
+            .map(|signing_key| B256::from_slice(signing_key.public_key().as_ref()));
 
         let NodeHandle {
             node,
             node_exit_future,
         } = builder
-            .node(TempoNode::new(&args.node_args))
+            .node(TempoNode::new(&args.node_args, validator_key))
             .apply(|mut builder: WithLaunchContext<_>| {
                 if let Some(follow_url) = &args.follow {
                     builder.config_mut().debug.rpc_consensus_url = Some(follow_url.clone());

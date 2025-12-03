@@ -1,5 +1,9 @@
 //! Command line arguments for configuring the consensus layer of a tempo node.
-use std::{net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, path::PathBuf, sync::OnceLock};
+
+use commonware_cryptography::ed25519::PrivateKey;
+use eyre::Context;
+use tempo_commonware_node_config::SigningKey;
 
 const DEFAULT_MAX_MESSAGE_SIZE_BYTES: usize = reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 
@@ -11,7 +15,7 @@ pub struct Args {
         long = "consensus.signing-key",
         required_unless_present_any = ["follow", "dev"],
     )]
-    pub signing_key: Option<PathBuf>,
+    signing_key: Option<PathBuf>,
 
     /// The file containing a share of the bls12-381 threshold signing key.
     #[arg(long = "consensus.signing-share")]
@@ -122,4 +126,36 @@ pub struct Args {
     /// once we sent it in the first time.
     #[arg(long = "consensus.subblock-broadcast-interval", default_value = "50ms")]
     pub subblock_broadcast_interval: jiff::SignedDuration,
+
+    /// Cache for the signing key loaded from CLI-provided file.
+    #[clap(skip)]
+    loaded_signing_key: OnceLock<Option<PrivateKey>>,
+}
+
+impl Args {
+    /// Returns the signing key loaded from specified file.
+    pub fn signing_key(&self) -> eyre::Result<Option<PrivateKey>> {
+        if let Some(signing_key) = self.loaded_signing_key.get() {
+            return Ok(signing_key.clone());
+        }
+
+        let signing_key = self
+            .signing_key
+            .as_ref()
+            .map(|path| {
+                SigningKey::read_from_file(path)
+                    .wrap_err_with(|| {
+                        format!(
+                            "failed reading private ed25519 signing key share from file `{}`",
+                            path.display()
+                        )
+                    })
+                    .map(|signing_key| signing_key.into_inner())
+            })
+            .transpose()?;
+
+        let _ = self.loaded_signing_key.set(signing_key.clone());
+
+        Ok(signing_key)
+    }
 }
