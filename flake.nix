@@ -54,7 +54,6 @@
 
         withMaxPerf = prev: {
           cargoBuildCommand = "cargo build --profile=maxperf";
-          cargoExtraArgs = prev.cargoExtraArgs or "" + " --features=asm-keccak,jemalloc,otlp";
           RUSTFLAGS = prev.RUSTFLAGS or [ ] ++ [
             "-Ctarget-cpu=native"
           ];
