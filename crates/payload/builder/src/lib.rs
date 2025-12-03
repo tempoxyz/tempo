@@ -342,7 +342,7 @@ where
         let mut non_payment_gas_used = 0;
         // initial block size usage - size of withdrawals plus 1Kb of overhead for the block header
         let mut block_size_used = attributes.withdrawals().length() + 1024;
-        let mut payment_transactions = 0;
+        let mut payment_transactions = 0u64;
         let mut total_fees = U256::ZERO;
 
         // If building an empty payload, don't include any subblocks
@@ -606,7 +606,10 @@ where
             .record(execution_elapsed);
         self.metrics
             .payment_transactions
-            .record(payment_transactions);
+            .record(payment_transactions as f64);
+        self.metrics
+            .payment_transactions_last
+            .set(payment_transactions as f64);
 
         // Apply system transactions
         let system_txs_execution_start = Instant::now();
@@ -630,10 +633,18 @@ where
         self.metrics
             .payload_finalization_duration_seconds
             .record(builder_finish_elapsed);
+
+        let total_transactions = block.transaction_count();
         self.metrics
             .total_transactions
-            .record(block.transaction_count() as f64);
-        self.metrics.gas_used.record(block.gas_used() as f64);
+            .record(total_transactions as f64);
+        self.metrics
+            .total_transactions_last
+            .set(total_transactions as f64);
+
+        let gas_used = block.gas_used();
+        self.metrics.gas_used.record(gas_used as f64);
+        self.metrics.gas_used_last.set(gas_used as f64);
 
         let requests = chain_spec
             .is_prague_active_at_timestamp(attributes.timestamp())
@@ -655,9 +666,14 @@ where
         self.metrics.gas_per_second_last.set(gas_per_second);
 
         info!(
-            sealed_block_header = ?sealed_block.sealed_header(),
-            total_transactions = block.transaction_count(),
-            ?payment_transactions,
+            parent_hash = ?sealed_block.parent_hash(),
+            number = sealed_block.number(),
+            hash = ?sealed_block.hash(),
+            timestamp = sealed_block.timestamp_millis(),
+            gas_limit = sealed_block.gas_limit(),
+            gas_used,
+            total_transactions,
+            payment_transactions,
             ?elapsed,
             ?execution_elapsed,
             ?builder_finish_elapsed,
