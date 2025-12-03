@@ -650,7 +650,7 @@ where
 
         let elapsed = start.elapsed();
         self.metrics.payload_build_duration_seconds.record(elapsed);
-        let gas_per_second = sealed_block.gas_used() as f64 / elapsed.as_secs() as f64;
+        let gas_per_second = sealed_block.gas_used() as f64 / elapsed.as_secs_f64();
         self.metrics.gas_per_second.record(gas_per_second);
         self.metrics.gas_per_second_last.set(gas_per_second);
 
