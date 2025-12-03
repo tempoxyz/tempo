@@ -2,15 +2,29 @@
 //!
 //! This module provides the infrastructure for managing hardfork transitions in Tempo.
 //!
-//! ## Usage
+//! ## Adding a New Hardfork
 //!
-//! When a new hardfork is needed:
-//! 1. Add a new variant to `TempoHardfork` (e.g., `Allegro`, `Vivace`)
-//! 2. Add a field to `TempoGenesisInfo` in `spec.rs` (e.g., `allegro_time: Option<u64>`)
-//! 3. Add the hardfork to the `tempo_hardfork_opts` array in `TempoChainSpec::from_genesis`
-//! 4. Add a convenience method to `TempoHardforks` trait (optional, for ergonomics)
-//! 5. Update genesis files with the activation timestamp (e.g., `"allegroTime": 1234567890`)
-//! 6. Use hardfork checks in the EVM handler and precompiles to gate new features
+//! When a new hardfork is needed (e.g., `Vivace`):
+//!
+//! ### In `hardfork.rs`:
+//! 1. Add a new variant to `TempoHardfork` enum
+//! 2. Add `is_vivace()` method to `TempoHardfork` impl
+//! 3. Add `is_vivace_active_at_timestamp()` to `TempoHardforks` trait
+//! 4. Update `tempo_hardfork_at()` to check for the new hardfork first (latest hardfork is checked first)
+//! 5. Add `TempoHardfork::Vivace => Self::OSAKA` (or appropriate SpecId) in `From<TempoHardfork> for SpecId`
+//! 6. Update `From<SpecId> for TempoHardfork` to check for the new hardfork first
+//! 7. Add test `test_is_vivace` and update existing `is_*` tests to include the new variant
+//!
+//! ### In `spec.rs`:
+//! 8. Add `vivace_time: Option<u64>` field to `TempoGenesisInfo`
+//! 9. Extract `vivace_time` in `TempoChainSpec::from_genesis`
+//! 10. Add `(TempoHardfork::Vivace, vivace_time)` to `tempo_forks` vec
+//! 11. Update tests to include `"vivaceTime": <timestamp>` in genesis JSON
+//!
+//! ### In genesis files and generator:
+//! 12. Add `"vivaceTime": 0` to `genesis/dev.json`
+//! 13. Add `vivace_time: Option<u64>` arg to `xtask/src/genesis_args.rs`
+//! 14. Add insertion of `"vivaceTime"` to chain_config.extra_fields
 //!
 //! ## Current State
 //!
