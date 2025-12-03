@@ -8,8 +8,7 @@ use reth_tracing::{
     tracing::{debug, error, info},
 };
 use tempo_alloy::{
-    TempoNetwork, dyn_signable_from_typed, primitives::TempoTxEnvelope,
-    provider::ext::TempoProviderBuilderExt, typed_into_signed,
+    TempoNetwork, primitives::TempoTxEnvelope, provider::ext::TempoProviderBuilderExt,
 };
 
 use alloy::{
@@ -617,8 +616,8 @@ async fn generate_transactions(input: GenerateTransactionsInput) -> eyre::Result
         .progress()
         .map(|(tx, signer)| -> eyre::Result<TempoTxEnvelope> {
             let mut tx = tx.build_unsigned()?;
-            let sig = signer.sign_transaction_sync(dyn_signable_from_typed(&mut tx))?;
-            Ok(typed_into_signed(tx, sig))
+            let sig = signer.sign_transaction_sync(tx.as_dyn_signable_mut())?;
+            Ok(tx.into_envelope(sig))
         })
         .map(|result| result.map(|tx| tx.encoded_2718()))
         .collect::<eyre::Result<Vec<_>>>()?;

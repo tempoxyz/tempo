@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use crate::rpc::{TempoHeaderResponse, TempoTransactionReceipt, TempoTransactionRequest};
-use alloy_consensus::{SignableTransaction, TxType, error::UnsupportedTransactionType};
+use alloy_consensus::{TxType, error::UnsupportedTransactionType};
 
 use alloy_network::{
     BuildResult, Ethereum, EthereumWallet, IntoWallet, Network, NetworkWallet, TransactionBuilder,
@@ -12,7 +12,6 @@ use alloy_provider::fillers::{
     ChainIdFiller, GasFiller, JoinFill, NonceFiller, RecommendedFillers,
 };
 use alloy_rpc_types_eth::{AccessList, Block, Transaction};
-use alloy_signer::Signature;
 use alloy_signer_local::PrivateKeySigner;
 use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
@@ -368,10 +367,8 @@ impl NetworkWallet<TempoNetwork> for EthereumWallet {
         let signer = self.signer_by_address(sender).ok_or_else(|| {
             alloy_signer::Error::other(format!("Missing signing credential for {sender}"))
         })?;
-        let sig = signer
-            .sign_transaction(dyn_signable_from_typed(&mut tx))
-            .await?;
-        Ok(typed_into_signed(tx, sig))
+        let sig = signer.sign_transaction(tx.as_dyn_signable_mut()).await?;
+        Ok(tx.into_envelope(sig))
     }
 }
 
@@ -380,32 +377,6 @@ impl IntoWallet<TempoNetwork> for PrivateKeySigner {
 
     fn into_wallet(self) -> Self::NetworkWallet {
         self.into()
-    }
-}
-
-/// Converts a [`TempoTypedTransaction`] into a [`TempoTxEnvelope`] with the given signature.
-pub fn typed_into_signed(tx: TempoTypedTransaction, sig: Signature) -> TempoTxEnvelope {
-    match tx {
-        TempoTypedTransaction::Legacy(tx) => tx.into_signed(sig).into(),
-        TempoTypedTransaction::Eip2930(tx) => tx.into_signed(sig).into(),
-        TempoTypedTransaction::Eip1559(tx) => tx.into_signed(sig).into(),
-        TempoTypedTransaction::Eip7702(tx) => tx.into_signed(sig).into(),
-        TempoTypedTransaction::AA(tx) => tx.into_signed(sig.into()).into(),
-        TempoTypedTransaction::FeeToken(tx) => tx.into_signed(sig).into(),
-    }
-}
-
-/// Get inner typed transaction as a mutable reference to [`SignableTransaction<Signature>`].
-pub fn dyn_signable_from_typed(
-    tx: &mut TempoTypedTransaction,
-) -> &mut dyn SignableTransaction<Signature> {
-    match tx {
-        TempoTypedTransaction::Legacy(tx) => tx,
-        TempoTypedTransaction::Eip2930(tx) => tx,
-        TempoTypedTransaction::Eip1559(tx) => tx,
-        TempoTypedTransaction::Eip7702(tx) => tx,
-        TempoTypedTransaction::AA(tx) => tx,
-        TempoTypedTransaction::FeeToken(tx) => tx,
     }
 }
 
