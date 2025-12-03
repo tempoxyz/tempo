@@ -1,3 +1,4 @@
+use metrics::Gauge;
 use reth_metrics::{Metrics, metrics::Histogram};
 
 #[derive(Metrics, Clone)]
@@ -25,4 +26,6 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) payload_build_duration_seconds: Histogram,
     /// Gas per second calculated as gas_used / payload_build_duration
     pub(crate) gas_per_second: Histogram,
+    /// Gas per second for the last payload calculated as gas_used / payload_build_duration
+    pub(crate) gas_per_second_last: Gauge,
 }
