@@ -11798,6 +11798,7 @@ dependencies = [
  "tempo-chainspec",
  "tempo-commonware-node-config",
  "tempo-contracts",
+ "tempo-dkg-onchain-artifacts",
  "tempo-evm",
  "tempo-precompiles",
  "thiserror 2.0.17",

@@ -7,6 +7,7 @@ use std::{fmt::Display, net::SocketAddr, path::Path};
 
 use commonware_codec::{DecodeExt as _, Encode as _, FixedSize, Read};
 use commonware_cryptography::{
+    Signer,
     bls12381::primitives::{
         group::Share,
         poly::Public,
@@ -14,7 +15,7 @@ use commonware_cryptography::{
     },
     ed25519::{PrivateKey, PublicKey},
 };
-use commonware_utils::set::OrderedAssociated;
+use commonware_utils::set::{Ordered, OrderedAssociated};
 use indexmap::IndexMap;
 use serde::{
     Deserialize,
@@ -40,6 +41,14 @@ impl Peers {
 
     pub fn into_inner(self) -> OrderedAssociated<PublicKey, SocketAddr> {
         self.inner
+    }
+
+    pub fn public_keys(&self) -> &Ordered<PublicKey> {
+        self.inner.keys()
+    }
+
+    pub fn socket_addresses(&self) -> &[SocketAddr] {
+        self.inner.values()
     }
 }
 
@@ -178,6 +187,10 @@ pub struct SigningKey {
 impl SigningKey {
     pub fn into_inner(self) -> PrivateKey {
         self.inner
+    }
+
+    pub fn public_key(&self) -> PublicKey {
+        self.inner.public_key()
     }
 
     pub fn read_from_file<P: AsRef<Path>>(path: P) -> Result<Self, SigningKeyError> {

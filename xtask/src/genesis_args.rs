@@ -4,7 +4,9 @@ use alloy::{
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
 use alloy_primitives::Bytes;
-use eyre::WrapErr as _;
+use commonware_codec::Encode as _;
+use commonware_cryptography::ed25519::PublicKey;
+use eyre::{OptionExt as _, WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use rayon::prelude::*;
 use reth_evm::{
@@ -24,8 +26,10 @@ use tempo_commonware_node_config::{Peers, PublicPolynomial, SigningKey, SigningS
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, DEFAULT_7702_DELEGATE_ADDRESS,
     MULTICALL_ADDRESS, PERMIT2_ADDRESS, SAFE_DEPLOYER_ADDRESS,
-    contracts::ARACHNID_CREATE2_FACTORY_BYTECODE, precompiles::ITIP20Factory,
+    contracts::ARACHNID_CREATE2_FACTORY_BYTECODE,
+    precompiles::{ITIP20Factory, IValidatorConfig},
 };
+use tempo_dkg_onchain_artifacts::PublicOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
@@ -87,11 +91,17 @@ pub(crate) struct GenesisArgs {
     #[arg(long)]
     pub allegretto_time: Option<u64>,
 
+    /// The hard-coded length of an epoch in blocks.
     #[arg(long, default_value_t = 302_400)]
     epoch_length: u64,
 
     /// A comma-separated list of `<ip>:<port>`.
-    #[arg(long, value_name = "<ip>:<port>", value_delimiter = ',')]
+    #[arg(
+        long,
+        value_name = "<ip>:<port>",
+        value_delimiter = ',',
+        required_if_eq("allegretto_time", "0")
+    )]
     validators: Vec<SocketAddr>,
 
     /// A fixed seed to generate all signing keys and group shares. This is
@@ -100,10 +110,20 @@ pub(crate) struct GenesisArgs {
     pub(crate) seed: Option<u64>,
 }
 
+#[derive(Clone, Debug)]
 pub(crate) struct ConsensusConfig {
     pub(crate) public_polynomial: PublicPolynomial,
     pub(crate) peers: Peers,
     pub(crate) validators: Vec<Validator>,
+}
+impl ConsensusConfig {
+    pub(crate) fn to_genesis_dkg_outcome(&self) -> PublicOutcome {
+        PublicOutcome {
+            epoch: 0,
+            participants: self.peers.public_keys().clone(),
+            public: self.public_polynomial.clone().into_inner(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -114,6 +134,10 @@ pub(crate) struct Validator {
 }
 
 impl Validator {
+    pub(crate) fn public_key(&self) -> PublicKey {
+        self.signing_key.public_key()
+    }
+
     pub(crate) fn dst_dir(&self, path: impl AsRef<Path>) -> PathBuf {
         path.as_ref().join(self.addr.to_string())
     }
@@ -198,8 +222,21 @@ impl GenesisArgs {
         println!("Initializing TIP20RewardsRegistry");
         initialize_tip20_rewards_registry(&mut evm)?;
 
+        println!(
+            "generating consensus config for validators: {:?}",
+            self.validators
+        );
+        let consensus_config = generate_consensus_config(&self.validators, self.seed);
+
         println!("Initializing validator config");
-        initialize_validator_config(admin, &mut evm)?;
+        initialize_validator_config(
+            admin,
+            &mut evm,
+            self.allegretto_time,
+            &consensus_config,
+            // Skip admin
+            &addresses[1..],
+        )?;
 
         println!("Initializing fee manager");
         initialize_fee_manager(
@@ -307,12 +344,6 @@ impl GenesisArgs {
             },
         );
 
-        println!(
-            "generating consensus config for validators: {:?}",
-            self.validators
-        );
-        let consensus_config = generate_consensus_config(&self.validators, self.seed);
-
         let mut chain_config = ChainConfig {
             chain_id: self.chain_id,
             homestead_block: Some(0),
@@ -365,11 +396,22 @@ impl GenesisArgs {
             )?;
         }
 
+        let extra_data =
+            consensus_config
+                .as_ref()
+                .map_or(Bytes::from_static(b"tempo-genesis"), |cfg| {
+                    cfg.to_genesis_dkg_outcome()
+                        .encode()
+                        .freeze()
+                        .to_vec()
+                        .into()
+                });
+
         let mut genesis = Genesis::default()
             .with_gas_limit(self.gas_limit)
             .with_base_fee(Some(self.base_fee_per_gas))
             .with_nonce(0x42)
-            .with_extra_data(Bytes::from_static(b"tempo-genesis"))
+            .with_extra_data(extra_data)
             .with_coinbase(self.coinbase);
 
         genesis.alloc = genesis_alloc;
@@ -617,6 +659,9 @@ fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
 fn initialize_validator_config(
     admin: Address,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+    allegretto_time: Option<u64>,
+    consensus_config: &Option<ConsensusConfig>,
+    addresses: &[Address],
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
@@ -626,36 +671,76 @@ fn initialize_validator_config(
     validator_config
         .initialize(admin)
         .wrap_err("failed to initialize validator config contract")?;
+
+    if allegretto_time.is_some_and(|time| time == 0) {
+        let consensus_config = consensus_config
+            .clone()
+            .ok_or_eyre("allegretto time is 0, but no consensus config was passed")?;
+        println!(
+            "writing {} validators into contract",
+            consensus_config.validators.len()
+        );
+        for (i, validator) in consensus_config.validators.iter().enumerate() {
+            #[expect(non_snake_case, reason = "field of a snakeCase smart contract call")]
+            let newValidatorAddress = *addresses.get(i).ok_or_else(|| {
+                eyre!(
+                    "need `{}` addresses for all validators, but only `{}` were generated",
+                    consensus_config.validators.len(),
+                    addresses.len()
+                )
+            })?;
+            let public_key = validator.public_key();
+            let addr = validator.addr;
+            validator_config
+                .add_validator(
+                    admin,
+                    IValidatorConfig::addValidatorCall {
+                        newValidatorAddress,
+                        publicKey: public_key.encode().freeze().as_ref().try_into().unwrap(),
+                        active: true,
+                        inboundAddress: addr.to_string(),
+                        outboundAddress: addr.to_string(),
+                    },
+                )
+                .wrap_err("failed to execute smart contract call to add validator to evm state")?;
+            println!(
+                "added validator\
+                \n\tpublic key: {public_key}\
+                \n\tonchain address: {newValidatorAddress}\
+                \n\tnet address: {addr}"
+            );
+        }
+    }
     Ok(())
 }
 
 /// Generates the consensus configs of the validators.
 fn generate_consensus_config(
-    addresses: &[SocketAddr],
+    validators: &[SocketAddr],
     seed: Option<u64>,
 ) -> Option<ConsensusConfig> {
     use commonware_cryptography::{PrivateKeyExt as _, Signer as _, ed25519::PrivateKey};
     use rand::SeedableRng as _;
 
-    if addresses.is_empty() {
+    if validators.is_empty() {
         println!("no validator socket addresses provided; not generating consensus config");
         return None;
     }
 
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
-    let mut signers = (0..addresses.len())
+    let mut signers = (0..validators.len())
         .map(|_| PrivateKey::from_rng(&mut rng))
         .collect::<Vec<_>>();
 
     // generate consensus key
-    let threshold = commonware_utils::quorum(addresses.len() as u32);
+    let threshold = commonware_utils::quorum(validators.len() as u32);
     let (polynomial, shares) = commonware_cryptography::bls12381::dkg::ops::generate_shares::<
         _,
         commonware_cryptography::bls12381::primitives::variant::MinSig,
-    >(&mut rng, None, addresses.len() as u32, threshold);
+    >(&mut rng, None, validators.len() as u32, threshold);
 
     signers.sort_by_key(|signer| signer.public_key());
-    let peers = addresses
+    let peers = validators
         .iter()
         .zip(signers.iter())
         .map(|(addr, private_key)| (private_key.public_key(), *addr))
@@ -669,6 +754,7 @@ fn generate_consensus_config(
             signing_share: SigningShare::from(share),
         });
     }
+
     Some(ConsensusConfig {
         peers: peers.into(),
         public_polynomial: polynomial.into(),
