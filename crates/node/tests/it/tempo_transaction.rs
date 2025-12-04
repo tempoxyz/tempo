@@ -25,7 +25,7 @@ use tempo_primitives::{
         KeyAuthorization, SignedKeyAuthorization,
         tempo_transaction::Call,
         tt_signature::{
-            AASignature, P256SignatureWithPreHash, PrimitiveSignature, WebAuthnSignature,
+            P256SignatureWithPreHash, PrimitiveSignature, TempoSignature, WebAuthnSignature,
         },
         tt_signed::AASigned,
     },
@@ -70,7 +70,7 @@ async fn fund_address_with_fee_tokens(
     // Sign and send the funding transaction
     let sig_hash = funding_tx.signature_hash();
     let signature = funder_signer.sign_hash_sync(&sig_hash)?;
-    let aa_signature = AASignature::Primitive(PrimitiveSignature::Secp256k1(signature));
+    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature));
     let signed_funding_tx = AASigned::new_unhashed(funding_tx, aa_signature);
     let funding_envelope: TempoTxEnvelope = signed_funding_tx.into();
     let mut encoded_funding = Vec::new();
@@ -252,14 +252,14 @@ fn create_secp256k1_authorization<T>(
     delegate_address: Address,
     signer: &T,
 ) -> eyre::Result<(
-    tempo_primitives::transaction::AASignedAuthorization,
+    tempo_primitives::transaction::TempoSignedAuthorization,
     Address,
 )>
 where
     T: SignerSync + alloy::signers::Signer,
 {
     use alloy_eips::eip7702::Authorization;
-    use tempo_primitives::transaction::AASignedAuthorization;
+    use tempo_primitives::transaction::TempoSignedAuthorization;
 
     let authority_addr = signer.address();
 
@@ -271,10 +271,10 @@ where
 
     let sig_hash = compute_authorization_signature_hash(&auth);
     let signature = signer.sign_hash_sync(&sig_hash)?;
-    let aa_sig = tempo_primitives::transaction::tt_signature::AASignature::Primitive(
+    let aa_sig = tempo_primitives::transaction::tt_signature::TempoSignature::Primitive(
         tempo_primitives::transaction::tt_signature::PrimitiveSignature::Secp256k1(signature),
     );
-    let signed_auth = AASignedAuthorization::new_unchecked(auth, aa_sig);
+    let signed_auth = TempoSignedAuthorization::new_unchecked(auth, aa_sig);
 
     Ok((signed_auth, authority_addr))
 }
@@ -284,7 +284,7 @@ fn create_p256_authorization(
     chain_id: u64,
     delegate_address: Address,
 ) -> eyre::Result<(
-    tempo_primitives::transaction::AASignedAuthorization,
+    tempo_primitives::transaction::TempoSignedAuthorization,
     Address,
     p256::ecdsa::SigningKey,
 )> {
@@ -292,8 +292,8 @@ fn create_p256_authorization(
     use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
     use sha2::{Digest, Sha256};
     use tempo_primitives::transaction::{
-        AASignedAuthorization,
-        tt_signature::{AASignature, P256SignatureWithPreHash},
+        TempoSignedAuthorization,
+        tt_signature::{P256SignatureWithPreHash, TempoSignature},
     };
 
     let signing_key = SigningKey::random(&mut OsRng);
@@ -321,14 +321,14 @@ fn create_p256_authorization(
     let signature: p256::ecdsa::Signature = signing_key.sign_prehash(&pre_hashed)?;
     let sig_bytes = signature.to_bytes();
 
-    let aa_sig = AASignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
+    let aa_sig = TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
         r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
         s: alloy::primitives::B256::from_slice(&sig_bytes[32..64]),
         pub_key_x,
         pub_key_y,
         pre_hash: true,
     }));
-    let signed_auth = AASignedAuthorization::new_unchecked(auth, aa_sig);
+    let signed_auth = TempoSignedAuthorization::new_unchecked(auth, aa_sig);
 
     Ok((signed_auth, authority_addr, signing_key))
 }
@@ -338,7 +338,7 @@ fn create_webauthn_authorization(
     chain_id: u64,
     delegate_address: Address,
 ) -> eyre::Result<(
-    tempo_primitives::transaction::AASignedAuthorization,
+    tempo_primitives::transaction::TempoSignedAuthorization,
     Address,
     p256::ecdsa::SigningKey,
 )> {
@@ -347,8 +347,8 @@ fn create_webauthn_authorization(
     use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
     use sha2::{Digest, Sha256};
     use tempo_primitives::transaction::{
-        AASignedAuthorization,
-        tt_signature::{AASignature, WebAuthnSignature},
+        TempoSignedAuthorization,
+        tt_signature::{TempoSignature, WebAuthnSignature},
     };
 
     let signing_key = SigningKey::random(&mut OsRng);
@@ -398,14 +398,14 @@ fn create_webauthn_authorization(
     webauthn_data.extend_from_slice(&authenticator_data);
     webauthn_data.extend_from_slice(client_data_json.as_bytes());
 
-    let aa_sig = AASignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
+    let aa_sig = TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
         webauthn_data: Bytes::from(webauthn_data),
         r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
         s: alloy::primitives::B256::from_slice(&sig_bytes[32..64]),
         pub_key_x,
         pub_key_y,
     }));
-    let signed_auth = AASignedAuthorization::new_unchecked(auth, aa_sig);
+    let signed_auth = TempoSignedAuthorization::new_unchecked(auth, aa_sig);
 
     Ok((signed_auth, authority_addr, signing_key))
 }
@@ -536,7 +536,7 @@ fn generate_p256_access_key() -> (
 fn create_key_authorization(
     root_signer: &impl SignerSync,
     access_key_addr: Address,
-    access_key_signature: AASignature,
+    access_key_signature: TempoSignature,
     chain_id: u64,
     expiry: Option<u64>,
     spending_limits: Option<Vec<tempo_primitives::transaction::TokenLimit>>,
@@ -562,7 +562,7 @@ fn create_key_authorization(
 async fn submit_and_mine_aa_tx(
     setup: &mut SingleNodeSetup,
     tx: TempoTransaction,
-    signature: AASignature,
+    signature: TempoSignature,
 ) -> eyre::Result<B256> {
     let signed_tx = AASigned::new_unhashed(tx, signature);
     let envelope: TempoTxEnvelope = signed_tx.into();
@@ -582,7 +582,7 @@ fn sign_aa_tx_with_p256_access_key(
     access_pub_key_x: &B256,
     access_pub_key_y: &B256,
     root_key_addr: Address,
-) -> eyre::Result<AASignature> {
+) -> eyre::Result<TempoSignature> {
     use p256::ecdsa::signature::hazmat::PrehashSigner;
     use sha2::{Digest, Sha256};
     use tempo_primitives::transaction::tt_signature::P256SignatureWithPreHash;
@@ -601,7 +601,7 @@ fn sign_aa_tx_with_p256_access_key(
         pre_hash: true,
     });
 
-    Ok(AASignature::Keychain(
+    Ok(TempoSignature::Keychain(
         tempo_primitives::transaction::KeychainSignature::new(root_key_addr, inner_signature),
     ))
 }
@@ -634,8 +634,8 @@ fn create_balance_of_call(account: Address) -> Call {
 /// Helper to create a mock P256 signature for key authorization
 /// This is used when creating a KeyAuthorization - the actual signature is from the root key,
 /// but we need to specify the access key's public key coordinates
-fn create_mock_p256_sig(pub_key_x: B256, pub_key_y: B256) -> AASignature {
-    AASignature::Primitive(PrimitiveSignature::P256(
+fn create_mock_p256_sig(pub_key_x: B256, pub_key_y: B256) -> TempoSignature {
+    TempoSignature::Primitive(PrimitiveSignature::P256(
         tempo_primitives::transaction::tt_signature::P256SignatureWithPreHash {
             r: B256::ZERO,
             s: B256::ZERO,
@@ -680,7 +680,7 @@ fn create_basic_aa_tx(
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
-        aa_authorization_list: vec![],
+        tempo_authorization_list: vec![],
     }
 }
 
@@ -690,10 +690,10 @@ fn create_basic_aa_tx(
 fn sign_aa_tx_secp256k1(
     tx: &TempoTransaction,
     signer: &impl SignerSync,
-) -> eyre::Result<AASignature> {
+) -> eyre::Result<TempoSignature> {
     let sig_hash = tx.signature_hash();
     let signature = signer.sign_hash_sync(&sig_hash)?;
-    Ok(AASignature::Primitive(PrimitiveSignature::Secp256k1(
+    Ok(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
         signature,
     )))
 }
@@ -704,7 +704,7 @@ fn sign_aa_tx_p256(
     signing_key: &p256::ecdsa::SigningKey,
     pub_key_x: B256,
     pub_key_y: B256,
-) -> eyre::Result<AASignature> {
+) -> eyre::Result<TempoSignature> {
     use p256::ecdsa::signature::hazmat::PrehashSigner;
     use sha2::{Digest, Sha256};
     use tempo_primitives::transaction::tt_signature::P256SignatureWithPreHash;
@@ -714,7 +714,7 @@ fn sign_aa_tx_p256(
     let p256_signature: p256::ecdsa::Signature = signing_key.sign_prehash(&pre_hashed)?;
     let sig_bytes = p256_signature.to_bytes();
 
-    Ok(AASignature::Primitive(PrimitiveSignature::P256(
+    Ok(TempoSignature::Primitive(PrimitiveSignature::P256(
         P256SignatureWithPreHash {
             r: B256::from_slice(&sig_bytes[0..32]),
             s: B256::from_slice(&sig_bytes[32..64]),
@@ -750,7 +750,7 @@ fn sign_aa_tx_webauthn(
     pub_key_x: B256,
     pub_key_y: B256,
     origin: &str,
-) -> eyre::Result<AASignature> {
+) -> eyre::Result<TempoSignature> {
     use p256::ecdsa::signature::hazmat::PrehashSigner;
     use sha2::{Digest, Sha256};
 
@@ -773,7 +773,7 @@ fn sign_aa_tx_webauthn(
     webauthn_data.extend_from_slice(&authenticator_data);
     webauthn_data.extend_from_slice(client_data_json.as_bytes());
 
-    Ok(AASignature::Primitive(PrimitiveSignature::WebAuthn(
+    Ok(TempoSignature::Primitive(PrimitiveSignature::WebAuthn(
         WebAuthnSignature {
             webauthn_data: Bytes::from(webauthn_data),
             r: B256::from_slice(&sig_bytes[0..32]),
@@ -787,7 +787,7 @@ fn sign_aa_tx_webauthn(
 // ===== Transaction Encoding Helper Functions =====
 
 /// Helper to encode an AA transaction
-fn encode_aa_tx(tx: TempoTransaction, signature: AASignature) -> Vec<u8> {
+fn encode_aa_tx(tx: TempoTransaction, signature: TempoSignature) -> Vec<u8> {
     let signed_tx = AASigned::new_unhashed(tx, signature);
     let envelope: TempoTxEnvelope = signed_tx.into();
     let mut encoded = Vec::new();
@@ -1048,7 +1048,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         let signature = alice_signer.sign_hash_sync(&sig_hash)?;
         let signed_tx = AASigned::new_unhashed(
             tx,
-            AASignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
         );
         let envelope: TempoTxEnvelope = signed_tx.into();
         let encoded = envelope.encoded_2718();
@@ -1463,7 +1463,7 @@ async fn send_tx(
     let signature = alice_signer.sign_hash_sync(&sig_hash)?;
     let signed_tx = AASigned::new_unhashed(
         tx,
-        AASignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
     );
     let envelope: TempoTxEnvelope = signed_tx.into();
     let encoded = envelope.encoded_2718();
@@ -1851,13 +1851,14 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     webauthn_data1.extend_from_slice(&authenticator_data1);
     webauthn_data1.extend_from_slice(client_data_json1.as_bytes());
 
-    let aa_signature1 = AASignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
-        webauthn_data: Bytes::from(webauthn_data1),
-        r: alloy::primitives::B256::from_slice(&sig_bytes1[0..32]),
-        s: alloy::primitives::B256::from_slice(&sig_bytes1[32..64]),
-        pub_key_x: wrong_pub_key_x, // WRONG public key
-        pub_key_y: wrong_pub_key_y, // WRONG public key
-    }));
+    let aa_signature1 =
+        TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
+            webauthn_data: Bytes::from(webauthn_data1),
+            r: alloy::primitives::B256::from_slice(&sig_bytes1[0..32]),
+            s: alloy::primitives::B256::from_slice(&sig_bytes1[32..64]),
+            pub_key_x: wrong_pub_key_x, // WRONG public key
+            pub_key_y: wrong_pub_key_y, // WRONG public key
+        }));
 
     // Try to verify - should fail
     let recovery_result1 = aa_signature1.recover_signer(&sig_hash1);
@@ -1901,13 +1902,14 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     webauthn_data2.extend_from_slice(&authenticator_data2);
     webauthn_data2.extend_from_slice(client_data_json2.as_bytes());
 
-    let aa_signature2 = AASignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
-        webauthn_data: Bytes::from(webauthn_data2),
-        r: alloy::primitives::B256::from_slice(&sig_bytes2[0..32]),
-        s: alloy::primitives::B256::from_slice(&sig_bytes2[32..64]),
-        pub_key_x: correct_pub_key_x, // Correct public key
-        pub_key_y: correct_pub_key_y, // But signature is from wrong private key
-    }));
+    let aa_signature2 =
+        TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
+            webauthn_data: Bytes::from(webauthn_data2),
+            r: alloy::primitives::B256::from_slice(&sig_bytes2[0..32]),
+            s: alloy::primitives::B256::from_slice(&sig_bytes2[32..64]),
+            pub_key_x: correct_pub_key_x, // Correct public key
+            pub_key_y: correct_pub_key_y, // But signature is from wrong private key
+        }));
 
     // Try to verify - should fail
     let recovery_result2 = aa_signature2.recover_signer(&sig_hash2);
@@ -1951,13 +1953,14 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     webauthn_data3.extend_from_slice(&authenticator_data3);
     webauthn_data3.extend_from_slice(client_data_json3.as_bytes());
 
-    let aa_signature3 = AASignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
-        webauthn_data: Bytes::from(webauthn_data3),
-        r: alloy::primitives::B256::from_slice(&sig_bytes3[0..32]),
-        s: alloy::primitives::B256::from_slice(&sig_bytes3[32..64]),
-        pub_key_x: correct_pub_key_x,
-        pub_key_y: correct_pub_key_y,
-    }));
+    let aa_signature3 =
+        TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
+            webauthn_data: Bytes::from(webauthn_data3),
+            r: alloy::primitives::B256::from_slice(&sig_bytes3[0..32]),
+            s: alloy::primitives::B256::from_slice(&sig_bytes3[32..64]),
+            pub_key_x: correct_pub_key_x,
+            pub_key_y: correct_pub_key_y,
+        }));
 
     // Try to verify - should fail during WebAuthn data validation
     let recovery_result3 = aa_signature3.recover_signer(&sig_hash3);
@@ -2000,13 +2003,14 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     webauthn_data4.extend_from_slice(&authenticator_data4);
     webauthn_data4.extend_from_slice(client_data_json4.as_bytes());
 
-    let aa_signature4 = AASignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
-        webauthn_data: Bytes::from(webauthn_data4),
-        r: alloy::primitives::B256::from_slice(&sig_bytes4[0..32]),
-        s: alloy::primitives::B256::from_slice(&sig_bytes4[32..64]),
-        pub_key_x: correct_pub_key_x,
-        pub_key_y: correct_pub_key_y,
-    }));
+    let aa_signature4 =
+        TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
+            webauthn_data: Bytes::from(webauthn_data4),
+            r: alloy::primitives::B256::from_slice(&sig_bytes4[0..32]),
+            s: alloy::primitives::B256::from_slice(&sig_bytes4[32..64]),
+            pub_key_x: correct_pub_key_x,
+            pub_key_y: correct_pub_key_y,
+        }));
 
     // Try to verify - should fail during WebAuthn data validation
     let recovery_result4 = aa_signature4.recover_signer(&sig_hash4);
@@ -2069,8 +2073,8 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     bad_webauthn_data.extend_from_slice(&bad_auth_data);
     bad_webauthn_data.extend_from_slice(bad_client_data.as_bytes());
 
-    let bad_aa_signature =
-        AASignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
+    let bad_tempo_signature =
+        TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
             webauthn_data: Bytes::from(bad_webauthn_data),
             r: alloy::primitives::B256::from_slice(&bad_sig_bytes[0..32]),
             s: alloy::primitives::B256::from_slice(&bad_sig_bytes[32..64]),
@@ -2078,7 +2082,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
             pub_key_y: correct_pub_key_y,
         }));
 
-    let signed_bad_tx = AASigned::new_unhashed(bad_tx, bad_aa_signature);
+    let signed_bad_tx = AASigned::new_unhashed(bad_tx, bad_tempo_signature);
     let bad_envelope: TempoTxEnvelope = signed_bad_tx.into();
     let mut encoded_bad = Vec::new();
     bad_envelope.encode_2718(&mut encoded_bad);
@@ -2174,7 +2178,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
-        aa_authorization_list: vec![],
+        tempo_authorization_list: vec![],
     };
 
     // Sign with P256
@@ -2270,7 +2274,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
 
     // Verify it used P256 signature
     match aa_tx.signature() {
-        AASignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
+        TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
             pre_hash,
             ..
         })) => {
@@ -2428,7 +2432,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     tx.fee_payer_signature = Some(fee_payer_signature);
 
     // Create signed transaction with user's signature
-    let aa_signature = AASignature::Primitive(PrimitiveSignature::Secp256k1(user_signature));
+    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(user_signature));
     let encoded = encode_aa_tx(tx.clone(), aa_signature.clone());
 
     // Recreate envelope for verification
@@ -2523,7 +2527,7 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
     // Sign the transaction with secp256k1
     let sig_hash = tx.signature_hash();
     let signature = alice_signer.sign_hash_sync(&sig_hash)?;
-    let aa_signature = AASignature::Primitive(PrimitiveSignature::Secp256k1(signature));
+    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature));
     let signed_tx = AASigned::new_unhashed(tx, aa_signature);
 
     // Convert to envelope and encode
@@ -2658,7 +2662,7 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_aa_authorization_list() -> eyre::Result<()> {
+async fn test_tempo_authorization_list() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     println!("\n=== Testing EIP-7702 Authorization List with AA Signatures ===\n");
@@ -2757,13 +2761,13 @@ async fn test_aa_authorization_list() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        aa_authorization_list: vec![auth1_signed, auth2_signed, auth3_signed], // All 3 authorizations
+        tempo_authorization_list: vec![auth1_signed, auth2_signed, auth3_signed], // All 3 authorizations
         ..Default::default()
     };
 
     println!(
         "  Created tx request with {} authorizations (Secp256k1, P256, WebAuthn)",
-        tx_request.aa_authorization_list.len()
+        tx_request.tempo_authorization_list.len()
     );
 
     // Build the AA transaction from the request
@@ -2774,8 +2778,8 @@ async fn test_aa_authorization_list() -> eyre::Result<()> {
     // Sign the transaction with sender's secp256k1 key
     let tx_sig_hash = tx.signature_hash();
     let tx_signature = sender_signer.sign_hash_sync(&tx_sig_hash)?;
-    let tx_aa_signature = AASignature::Primitive(PrimitiveSignature::Secp256k1(tx_signature));
-    let signed_tx = AASigned::new_unhashed(tx, tx_aa_signature);
+    let tx_tempo_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(tx_signature));
+    let signed_tx = AASigned::new_unhashed(tx, tx_tempo_signature);
 
     // Convert to envelope and encode
     let envelope: TempoTxEnvelope = signed_tx.into();
@@ -2814,11 +2818,11 @@ async fn test_aa_authorization_list() -> eyre::Result<()> {
         println!("\n--- Verifying authorization list in transaction ---");
         println!(
             "  Authorization list length: {}",
-            aa_tx.tx().aa_authorization_list.len()
+            aa_tx.tx().tempo_authorization_list.len()
         );
 
         // Verify each authorization can be recovered
-        for (i, aa_auth) in aa_tx.tx().aa_authorization_list.iter().enumerate() {
+        for (i, aa_auth) in aa_tx.tx().tempo_authorization_list.iter().enumerate() {
             match aa_auth.recover_authority() {
                 Ok(authority) => {
                     println!("  ✓ Authorization {} recovered: {}", i + 1, authority);
@@ -2916,7 +2920,7 @@ async fn test_aa_bump_nonce_on_failure() -> eyre::Result<()> {
     // Sign the transaction with secp256k1
     let sig_hash = tx.signature_hash();
     let signature = alice_signer.sign_hash_sync(&sig_hash)?;
-    let aa_signature = AASignature::Primitive(PrimitiveSignature::Secp256k1(signature));
+    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature));
     let signed_tx = AASigned::new_unhashed(tx, aa_signature);
 
     // Convert to envelope and encode
@@ -3126,7 +3130,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
 
     // Wrap it in a Keychain signature with the root key address
     let aa_signature =
-        AASignature::Keychain(tempo_primitives::transaction::KeychainSignature::new(
+        TempoSignature::Keychain(tempo_primitives::transaction::KeychainSignature::new(
             root_key_addr, // The root account this transaction is for
             inner_signature,
         ));
@@ -3269,7 +3273,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
             "  Transaction signature type: {:?}",
             aa_signed.signature().signature_type()
         );
-        if let AASignature::Keychain(ks) = aa_signed.signature() {
+        if let TempoSignature::Keychain(ks) = aa_signed.signature() {
             println!("  Keychain user_address: {}", ks.user_address);
             println!(
                 "  Keychain inner signature type: {:?}",
@@ -3461,14 +3465,14 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
-        aa_authorization_list: vec![],
+        tempo_authorization_list: vec![],
     };
     let sig_hash = tx.signature_hash();
     let signature = root_signer.sign_hash_sync(&sig_hash)?;
     let _tx_hash = submit_and_mine_aa_tx(
         &mut setup,
         tx,
-        AASignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
     )
     .await?;
     nonce += 1; // Increment after successful submission
@@ -3478,7 +3482,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
     println!("Test 2: Duplicate key authorization");
     let (_, pub_x, pub_y, access_key_addr) = generate_p256_access_key();
     // Create a mock P256 signature to indicate this is a P256 key
-    let mock_p256_sig = AASignature::Primitive(PrimitiveSignature::P256(
+    let mock_p256_sig = TempoSignature::Primitive(PrimitiveSignature::P256(
         tempo_primitives::transaction::tt_signature::P256SignatureWithPreHash {
             r: B256::ZERO,
             s: B256::ZERO,
@@ -3518,14 +3522,14 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth.clone()),
-        aa_authorization_list: vec![],
+        tempo_authorization_list: vec![],
     };
     let sig_hash = tx1.signature_hash();
     let signature = root_signer.sign_hash_sync(&sig_hash)?;
     let _tx_hash = submit_and_mine_aa_tx(
         &mut setup,
         tx1,
-        AASignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
     )
     .await?;
     nonce += 1;
@@ -3551,13 +3555,13 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth),
-        aa_authorization_list: vec![],
+        tempo_authorization_list: vec![],
     };
     let sig_hash2 = tx2.signature_hash();
     let signature2 = root_signer.sign_hash_sync(&sig_hash2)?;
     let signed_tx2 = AASigned::new_unhashed(
         tx2,
-        AASignature::Primitive(PrimitiveSignature::Secp256k1(signature2)),
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature2)),
     );
     let envelope2: TempoTxEnvelope = signed_tx2.into();
     let mut encoded2 = Vec::new();
@@ -3602,7 +3606,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
     // Test 3: Access key trying to authorize another key (should fail)
     println!("Test 3: Unauthorized authorize attempt");
     let (access_key_1, pub_x_1, pub_y_1, access_addr_1) = generate_p256_access_key();
-    let mock_p256_sig_1 = AASignature::Primitive(PrimitiveSignature::P256(
+    let mock_p256_sig_1 = TempoSignature::Primitive(PrimitiveSignature::P256(
         tempo_primitives::transaction::tt_signature::P256SignatureWithPreHash {
             r: B256::ZERO,
             s: B256::ZERO,
@@ -3642,21 +3646,21 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth_1),
-        aa_authorization_list: vec![],
+        tempo_authorization_list: vec![],
     };
     let sig_hash = tx3.signature_hash();
     let signature = root_signer.sign_hash_sync(&sig_hash)?;
     let _tx_hash = submit_and_mine_aa_tx(
         &mut setup,
         tx3,
-        AASignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
     )
     .await?;
     nonce += 1;
 
     // Try to authorize second key using first access key (should fail)
     let (_, pub_x_2, pub_y_2, access_addr_2) = generate_p256_access_key();
-    let mock_p256_sig_2 = AASignature::Primitive(PrimitiveSignature::P256(
+    let mock_p256_sig_2 = TempoSignature::Primitive(PrimitiveSignature::P256(
         tempo_primitives::transaction::tt_signature::P256SignatureWithPreHash {
             r: B256::ZERO,
             s: B256::ZERO,
@@ -3691,7 +3695,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth_2),
-        aa_authorization_list: vec![],
+        tempo_authorization_list: vec![],
     };
     // Sign with access_key_1 (not root_key) - this should fail validation
     let signature =
@@ -3755,7 +3759,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
     let spending_limit = U256::from(5u64) * U256::from(10).pow(U256::from(18)); // 5 tokens
     let over_limit_amount = U256::from(10u64) * U256::from(10).pow(U256::from(18)); // 10 tokens
 
-    let mock_p256_sig = AASignature::Primitive(PrimitiveSignature::P256(
+    let mock_p256_sig = TempoSignature::Primitive(PrimitiveSignature::P256(
         tempo_primitives::transaction::tt_signature::P256SignatureWithPreHash {
             r: B256::ZERO,
             s: B256::ZERO,
@@ -3798,14 +3802,14 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth.clone()),
-        aa_authorization_list: vec![],
+        tempo_authorization_list: vec![],
     };
 
     let sig = root_signer.sign_hash_sync(&auth_tx.signature_hash())?;
     let _tx_hash = submit_and_mine_aa_tx(
         &mut setup,
         auth_tx,
-        AASignature::Primitive(PrimitiveSignature::Secp256k1(sig)),
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(sig)),
     )
     .await?;
     nonce += 1;
@@ -3835,7 +3839,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
-        aa_authorization_list: vec![],
+        tempo_authorization_list: vec![],
     };
 
     let access_sig = sign_aa_tx_with_p256_access_key(
@@ -3896,7 +3900,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
-        aa_authorization_list: vec![],
+        tempo_authorization_list: vec![],
     };
 
     let access_sig = sign_aa_tx_with_p256_access_key(
@@ -3957,7 +3961,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
-        aa_authorization_list: vec![],
+        tempo_authorization_list: vec![],
     };
 
     let access_sig = sign_aa_tx_with_p256_access_key(
@@ -4230,7 +4234,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
-        aa_authorization_list: vec![],
+        tempo_authorization_list: vec![],
     };
 
     let unlimited_sig2 = sign_aa_tx_with_p256_access_key(
@@ -4662,7 +4666,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
     }];
 
     let mock_p256_sig =
-        AASignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
+        TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
             r: B256::ZERO,
             s: B256::ZERO,
             pub_key_x: authorized_pub_key_x,
@@ -4705,7 +4709,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth),
-        aa_authorization_list: vec![],
+        tempo_authorization_list: vec![],
     };
 
     let auth_sig = sign_aa_tx_with_p256_access_key(
@@ -4766,7 +4770,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None, // No auth needed - key already authorized
-        aa_authorization_list: vec![],
+        tempo_authorization_list: vec![],
     };
 
     let positive_sig = sign_aa_tx_with_p256_access_key(
@@ -4839,7 +4843,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         valid_after: None,
         access_list: Default::default(),
         key_authorization: None,
-        aa_authorization_list: vec![],
+        tempo_authorization_list: vec![],
     };
 
     // Sign with UNAUTHORIZED key
@@ -4945,7 +4949,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(invalid_key_auth),
-        aa_authorization_list: vec![],
+        tempo_authorization_list: vec![],
     };
 
     // Sign the transaction with the new key we're trying to authorize
@@ -5022,7 +5026,7 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
     let signature = wallet.sign_hash_sync(&sig_hash)?;
     let signed_tx = AASigned::new_unhashed(
         tx,
-        AASignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
     );
     let envelope: TempoTxEnvelope = signed_tx.into();
     let encoded = envelope.encoded_2718();
@@ -5094,7 +5098,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
     // Generate an access key
     let (_, pub_x, pub_y, access_key_addr) = generate_p256_access_key();
 
-    let mock_p256_sig = AASignature::Primitive(PrimitiveSignature::P256(
+    let mock_p256_sig = TempoSignature::Primitive(PrimitiveSignature::P256(
         tempo_primitives::transaction::tt_signature::P256SignatureWithPreHash {
             r: B256::ZERO,
             s: B256::ZERO,
@@ -5139,14 +5143,14 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth_wrong_chain),
-        aa_authorization_list: vec![],
+        tempo_authorization_list: vec![],
     };
 
     let sig_hash = tx_wrong_chain.signature_hash();
     let signature = root_signer.sign_hash_sync(&sig_hash)?;
     let signed_tx = AASigned::new_unhashed(
         tx_wrong_chain,
-        AASignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
     );
     let envelope: TempoTxEnvelope = signed_tx.into();
     let mut encoded = Vec::new();
@@ -5196,7 +5200,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         valid_after: None,
         access_list: Default::default(),
         key_authorization: Some(key_auth_wildcard),
-        aa_authorization_list: vec![],
+        tempo_authorization_list: vec![],
     };
 
     let sig_hash = tx_wildcard.signature_hash();
@@ -5204,7 +5208,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
     let tx_hash = submit_and_mine_aa_tx(
         &mut setup,
         tx_wildcard,
-        AASignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
     )
     .await?;
     println!("  ✓ Wildcard chain_id KeyAuthorization accepted (tx: {tx_hash})");

@@ -1064,7 +1064,7 @@ mod tests {
         transaction::{
             TempoTransaction,
             tempo_transaction::Call,
-            tt_signature::{AASignature, PrimitiveSignature},
+            tt_signature::{PrimitiveSignature, TempoSignature},
             tt_signed::AASigned,
         },
     };
@@ -1100,7 +1100,7 @@ mod tests {
 
         // Create a dummy signature
         let signature =
-            AASignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
         let aa_signed = AASigned::new_unhashed(tx, signature);
         let envelope: TempoTxEnvelope = aa_signed.into();
 

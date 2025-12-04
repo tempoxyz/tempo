@@ -1,6 +1,6 @@
 use super::{
-    tempo_transaction::{AA_TX_TYPE_ID, TempoTransaction},
-    tt_signature::AASignature,
+    tempo_transaction::{TEMPO_TX_TYPE_ID, TempoTransaction},
+    tt_signature::TempoSignature,
 };
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eips::{
@@ -28,7 +28,7 @@ pub struct AASigned {
     /// The inner Tempo transaction
     tx: TempoTransaction,
     /// The signature (can be secp256k1, P256, Webauthn, Keychain)
-    signature: AASignature,
+    signature: TempoSignature,
     /// Cached transaction hash
     #[doc(alias = "tx_hash", alias = "transaction_hash")]
     hash: OnceLock<B256>,
@@ -37,7 +37,7 @@ pub struct AASigned {
 impl AASigned {
     /// Instantiate from a transaction and signature with a known hash.
     /// Does not verify the signature.
-    pub fn new_unchecked(tx: TempoTransaction, signature: AASignature, hash: B256) -> Self {
+    pub fn new_unchecked(tx: TempoTransaction, signature: TempoSignature, hash: B256) -> Self {
         let value = OnceLock::new();
         #[allow(clippy::useless_conversion)]
         value.get_or_init(|| hash.into());
@@ -50,7 +50,7 @@ impl AASigned {
 
     /// Instantiate from a transaction and signature without computing the hash.
     /// Does not verify the signature.
-    pub const fn new_unhashed(tx: TempoTransaction, signature: AASignature) -> Self {
+    pub const fn new_unhashed(tx: TempoTransaction, signature: TempoSignature) -> Self {
         Self {
             tx,
             signature,
@@ -70,7 +70,7 @@ impl AASigned {
     }
 
     /// Returns a reference to the signature.
-    pub const fn signature(&self) -> &AASignature {
+    pub const fn signature(&self) -> &TempoSignature {
         &self.signature
     }
 
@@ -121,7 +121,7 @@ impl AASigned {
     }
 
     /// Splits the transaction into parts.
-    pub fn into_parts(self) -> (TempoTransaction, AASignature, B256) {
+    pub fn into_parts(self) -> (TempoTransaction, TempoSignature, B256) {
         let hash = *self.hash();
         (self.tx, self.signature, hash)
     }
@@ -139,7 +139,7 @@ impl AASigned {
     /// EIP-2718 encode the signed transaction.
     pub fn eip2718_encode(&self, out: &mut dyn BufMut) {
         // Type byte
-        out.put_u8(AA_TX_TYPE_ID);
+        out.put_u8(TEMPO_TX_TYPE_ID);
         // RLP fields
         self.rlp_encode(out);
     }
@@ -169,7 +169,7 @@ impl AASigned {
         }
 
         // Parse signature
-        let signature = AASignature::from_bytes(&sig_bytes).map_err(alloy_rlp::Error::Custom)?;
+        let signature = TempoSignature::from_bytes(&sig_bytes).map_err(alloy_rlp::Error::Custom)?;
 
         Ok(Self::new_unhashed(tx, signature))
     }
@@ -183,7 +183,7 @@ impl TxHashRef for AASigned {
 
 impl Typed2718 for AASigned {
     fn ty(&self) -> u8 {
-        AA_TX_TYPE_ID
+        TEMPO_TX_TYPE_ID
     }
 }
 
@@ -346,7 +346,7 @@ impl Encodable2718 for AASigned {
 
 impl Decodable2718 for AASigned {
     fn typed_decode(ty: u8, buf: &mut &[u8]) -> Eip2718Result<Self> {
-        if ty != AA_TX_TYPE_ID {
+        if ty != TEMPO_TX_TYPE_ID {
             return Err(Eip2718Error::UnexpectedType(ty));
         }
         Self::rlp_decode(buf).map_err(Into::into)
@@ -361,7 +361,7 @@ impl Decodable2718 for AASigned {
 impl<'a> arbitrary::Arbitrary<'a> for AASigned {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         let tx = TempoTransaction::arbitrary(u)?;
-        let signature = AASignature::arbitrary(u)?;
+        let signature = TempoSignature::arbitrary(u)?;
         Ok(Self::new_unhashed(tx, signature))
     }
 }
@@ -376,7 +376,7 @@ mod serde_impl {
     struct AASignedHelper<'a> {
         #[serde(flatten)]
         tx: Cow<'a, TempoTransaction>,
-        signature: Cow<'a, AASignature>,
+        signature: Cow<'a, TempoSignature>,
         hash: Cow<'a, B256>,
     }
 
@@ -413,7 +413,7 @@ mod serde_impl {
     mod tests {
         use crate::transaction::{
             tempo_transaction::{Call, TempoTransaction},
-            tt_signature::{AASignature, PrimitiveSignature},
+            tt_signature::{PrimitiveSignature, TempoSignature},
         };
         use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
 
@@ -437,8 +437,9 @@ mod serde_impl {
             };
 
             // Create a secp256k1 signature
-            let signature =
-                AASignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+            let signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                Signature::test_signature(),
+            ));
 
             let aa_signed = super::super::AASigned::new_unhashed(tx, signature);
 

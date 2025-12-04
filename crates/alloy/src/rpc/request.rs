@@ -7,7 +7,7 @@ use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use tempo_primitives::{
     AASigned, SignatureType, TempoTransaction, TempoTxEnvelope, TxFeeToken,
-    transaction::{AASignedAuthorization, Call, TempoTypedTransaction},
+    transaction::{Call, TempoSignedAuthorization, TempoTypedTransaction},
 };
 
 use crate::TempoNetwork;
@@ -39,9 +39,13 @@ pub struct TempoTransactionRequest {
     /// Required when key_type is WebAuthn to calculate calldata gas costs.
     pub key_data: Option<Bytes>,
 
-    /// Optional AA authorization list for Tempo transactions (supports multiple signature types)
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub aa_authorization_list: Vec<AASignedAuthorization>,
+    /// Optional authorization list for Tempo transactions (supports multiple signature types)
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "aa_authorization_list"
+    )]
+    pub tempo_authorization_list: Vec<TempoSignedAuthorization>,
 }
 
 impl TempoTransactionRequest {
@@ -166,7 +170,7 @@ impl TempoTransactionRequest {
             fee_token: self.fee_token,
             access_list: self.inner.access_list.unwrap_or_default(),
             calls,
-            aa_authorization_list: self.aa_authorization_list,
+            tempo_authorization_list: self.tempo_authorization_list,
             nonce_key: self.nonce_key.unwrap_or_default(),
             key_authorization: None,
         })
@@ -287,7 +291,7 @@ impl From<TempoTransaction> for TempoTransactionRequest {
                 transaction_type: Some(tx.ty()),
             },
             calls: tx.calls,
-            aa_authorization_list: tx.aa_authorization_list,
+            tempo_authorization_list: tx.tempo_authorization_list,
             key_type: None,
             key_data: None,
             nonce_key: Some(tx.nonce_key),

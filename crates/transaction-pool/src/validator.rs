@@ -585,7 +585,7 @@ mod tests {
         use tempo_primitives::transaction::{
             TempoTransaction,
             tempo_transaction::Call,
-            tt_signature::{AASignature, PrimitiveSignature},
+            tt_signature::{PrimitiveSignature, TempoSignature},
             tt_signed::AASigned,
         };
 
@@ -606,13 +606,13 @@ mod tests {
             valid_after,
             valid_before,
             access_list: Default::default(),
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             key_authorization: None,
         };
 
         let signed_tx = AASigned::new_unhashed(
             tx_aa,
-            AASignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
         );
         let envelope: TempoTxEnvelope = signed_tx.into();
         let recovered = envelope.try_into_recovered().unwrap();
@@ -778,7 +778,7 @@ mod tests {
         use tempo_primitives::transaction::{
             TempoTransaction,
             tempo_transaction::Call,
-            tt_signature::{AASignature, PrimitiveSignature},
+            tt_signature::{PrimitiveSignature, TempoSignature},
             tt_signed::AASigned,
         };
 
@@ -804,13 +804,13 @@ mod tests {
             valid_after: None,
             valid_before: None,
             access_list: Default::default(),
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             key_authorization: None,
         };
 
         let signed_tx = AASigned::new_unhashed(
             tx_aa,
-            AASignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
         );
         let envelope: TempoTxEnvelope = signed_tx.into();
         let recovered = envelope.try_into_recovered().unwrap();

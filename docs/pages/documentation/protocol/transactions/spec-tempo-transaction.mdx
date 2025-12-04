@@ -41,7 +41,7 @@ pub struct TempoTransaction {
     valid_before: Option<u64>,                  // Transaction expiration timestamp
     valid_after: Option<u64>,                   // Transaction can only be included after this timestamp
     key_authorization: Option<SignedKeyAuthorization>, // Access key authorization (optional)
-    aa_authorization_list: Vec<AASignedAuthorization>, // EIP-7702 style authorizations with AA signatures
+    aa_authorization_list: Vec<TempoSignedAuthorization>, // EIP-7702 style authorizations with AA signatures
 }
 
 // Call structure for batching
@@ -158,7 +158,7 @@ The `aa_authorization_list` field enables EIP-7702 style delegation with support
 ```rust
 pub struct TempoSignedAuthorization {
     inner: Authorization,      // Standard EIP-7702 authorization
-    signature: AASignature,    // Can be Secp256k1, P256, or WebAuthn
+    signature: TempoSignature,    // Can be Secp256k1, P256, or WebAuthn
 }
 ```
 
@@ -427,7 +427,7 @@ The transaction is RLP encoded as follows:
     fee_payer_signature,     // 0x80 if None, RLP list [v, r, s] if Some
     aa_authorization_list,   // EIP-7702 style authorization list with AA signatures
     key_authorization?,      // Only encoded if present (backwards compatible)
-    sender_signature         // AASignature bytes (secp256k1, P256, WebAuthn, or Keychain)
+    sender_signature         // TempoSignature bytes (secp256k1, P256, WebAuthn, or Keychain)
 ])
 ```
 
@@ -452,7 +452,7 @@ rlp([
 - Optional fields encode as `0x80` (EMPTY_STRING_CODE) when `None`
 - The `key_authorization` field is truly optional - when `None`, no bytes are encoded (backwards compatible)
 - The `calls` field is a list that must contain at least one Call (empty calls list is invalid)
-- The `sender_signature` field is the final field and contains the AASignature bytes (secp256k1, P256, WebAuthn, or Keychain)
+- The `sender_signature` field is the final field and contains the TempoSignature bytes (secp256k1, P256, WebAuthn, or Keychain)
 - KeyAuthorization uses RLP trailing field semantics for optional `expiry` and `limits`
 
 ### WebAuthn Signature Verification

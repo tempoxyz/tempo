@@ -155,10 +155,12 @@ impl TempoTxEnvelope {
         }
     }
 
-    /// Returns the AA authorization list if present (for Tempo transactions)
-    pub fn aa_authorization_list(&self) -> Option<&[crate::transaction::AASignedAuthorization]> {
+    /// Returns the Tempo authorization list if present (for Tempo transactions)
+    pub fn tempo_authorization_list(
+        &self,
+    ) -> Option<&[crate::transaction::TempoSignedAuthorization]> {
         match self {
-            Self::AA(tx) => Some(&tx.tx().aa_authorization_list),
+            Self::AA(tx) => Some(&tx.tx().tempo_authorization_list),
             _ => None,
         }
     }
@@ -495,7 +497,7 @@ impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoTxEnvelop
 
 #[cfg(feature = "reth-codec")]
 mod codec {
-    use crate::{AASignature, TempoTransaction};
+    use crate::{TempoSignature, TempoTransaction};
 
     use super::*;
     use alloy_eips::eip2718::EIP7702_TX_TYPE_ID;
@@ -546,9 +548,9 @@ mod codec {
                 }
                 TempoTxType::AA => {
                     let (tx, buf) = TempoTransaction::from_compact(buf, buf.len());
-                    // For Tempo transactions, we need to decode the signature bytes as AASignature
+                    // For Tempo transactions, we need to decode the signature bytes as TempoSignature
                     let (sig_bytes, buf) = Bytes::from_compact(buf, buf.len());
-                    let aa_sig = AASignature::from_bytes(&sig_bytes)
+                    let aa_sig = TempoSignature::from_bytes(&sig_bytes)
                         .map_err(|e| panic!("Failed to decode AA signature: {e}"))
                         .unwrap();
                     let tx = AASigned::new_unhashed(tx, aa_sig);
@@ -572,7 +574,7 @@ mod codec {
                 Self::Eip7702(tx) => tx.tx().to_compact(buf),
                 Self::AA(tx) => {
                     let mut len = tx.tx().to_compact(buf);
-                    // Also encode the AASignature as Bytes
+                    // Also encode the TempoSignature as Bytes
                     len += tx.signature().to_bytes().to_compact(buf);
                     len
                 }
@@ -615,7 +617,7 @@ mod codec {
                     COMPACT_EXTENDED_IDENTIFIER_FLAG
                 }
                 Self::AA => {
-                    buf.put_u8(crate::transaction::AA_TX_TYPE_ID);
+                    buf.put_u8(crate::transaction::TEMPO_TX_TYPE_ID);
                     COMPACT_EXTENDED_IDENTIFIER_FLAG
                 }
                 Self::FeeToken => {
@@ -639,7 +641,7 @@ mod codec {
                         let extended_identifier = buf.get_u8();
                         match extended_identifier {
                             EIP7702_TX_TYPE_ID => Self::Eip7702,
-                            crate::transaction::AA_TX_TYPE_ID => Self::AA,
+                            crate::transaction::TEMPO_TX_TYPE_ID => Self::AA,
                             crate::transaction::FEE_TOKEN_TX_TYPE_ID => Self::FeeToken,
                             _ => panic!("Unsupported TxType identifier: {extended_identifier}"),
                         }

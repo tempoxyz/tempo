@@ -32,7 +32,7 @@ use tempo_primitives::{
     transaction::{
         calc_gas_balance_spending,
         tempo_transaction::Call,
-        tt_signature::{AASignature, PrimitiveSignature},
+        tt_signature::{PrimitiveSignature, TempoSignature},
         tt_signed::AASigned,
     },
 };
@@ -185,7 +185,7 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
     // Sign the AA transaction
     let sig_hash = tx_aa.signature_hash();
     let signature = signer_wallet.sign_hash_sync(&sig_hash)?;
-    let aa_signature = AASignature::Primitive(PrimitiveSignature::Secp256k1(signature));
+    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature));
     let signed_tx = AASigned::new_unhashed(tx_aa, aa_signature);
 
     let envelope: TempoTxEnvelope = signed_tx.into();

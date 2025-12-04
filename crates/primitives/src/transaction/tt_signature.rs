@@ -441,7 +441,7 @@ impl<'a> arbitrary::Arbitrary<'a> for KeychainSignature {
 #[cfg_attr(feature = "serde", serde(untagged, rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
-pub enum AASignature {
+pub enum TempoSignature {
     /// Primitive signature types: Secp256k1, P256, or WebAuthn
     Primitive(PrimitiveSignature),
 
@@ -452,7 +452,7 @@ pub enum AASignature {
     Keychain(KeychainSignature),
 }
 
-impl AASignature {
+impl TempoSignature {
     /// Parse signature from bytes with backward compatibility
     ///
     /// For backward compatibility with existing secp256k1 signatures:
@@ -583,13 +583,13 @@ impl AASignature {
     }
 }
 
-impl Default for AASignature {
+impl Default for TempoSignature {
     fn default() -> Self {
         Self::Primitive(PrimitiveSignature::default())
     }
 }
 
-impl alloy_rlp::Encodable for AASignature {
+impl alloy_rlp::Encodable for TempoSignature {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
         let bytes = self.to_bytes();
         alloy_rlp::Encodable::encode(&bytes, out);
@@ -600,7 +600,7 @@ impl alloy_rlp::Encodable for AASignature {
     }
 }
 
-impl alloy_rlp::Decodable for AASignature {
+impl alloy_rlp::Decodable for TempoSignature {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let bytes: Bytes = alloy_rlp::Decodable::decode(buf)?;
         Self::from_bytes(&bytes).map_err(alloy_rlp::Error::Custom)
@@ -608,7 +608,7 @@ impl alloy_rlp::Decodable for AASignature {
 }
 
 #[cfg(feature = "reth-codec")]
-impl reth_codecs::Compact for AASignature {
+impl reth_codecs::Compact for TempoSignature {
     fn to_compact<B>(&self, buf: &mut B) -> usize
     where
         B: alloy_rlp::BufMut + AsMut<[u8]>,
@@ -621,13 +621,13 @@ impl reth_codecs::Compact for AASignature {
     fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
         // Delegate to Bytes::from_compact which handles variable-length decoding
         let (bytes, rest) = Bytes::from_compact(buf, len);
-        let signature =
-            Self::from_bytes(&bytes).expect("Failed to decode AASignature from compact encoding");
+        let signature = Self::from_bytes(&bytes)
+            .expect("Failed to decode TempoSignature from compact encoding");
         (signature, rest)
     }
 }
 
-impl From<Signature> for AASignature {
+impl From<Signature> for TempoSignature {
     fn from(signature: Signature) -> Self {
         Self::Primitive(PrimitiveSignature::Secp256k1(signature))
     }
@@ -1014,15 +1014,15 @@ mod tests {
     }
 
     #[test]
-    fn test_aa_signature_from_bytes_secp256k1() {
+    fn test_tempo_signature_from_bytes_secp256k1() {
         use super::SECP256K1_SIGNATURE_LENGTH;
 
         // Secp256k1 signatures are detected by length (65 bytes), no type identifier
         let sig_bytes = vec![0u8; SECP256K1_SIGNATURE_LENGTH];
-        let result = AASignature::from_bytes(&sig_bytes);
+        let result = TempoSignature::from_bytes(&sig_bytes);
 
         assert!(result.is_ok());
-        if let AASignature::Primitive(PrimitiveSignature::Secp256k1(_)) = result.unwrap() {
+        if let TempoSignature::Primitive(PrimitiveSignature::Secp256k1(_)) = result.unwrap() {
             // Expected
         } else {
             panic!("Expected Primitive(Secp256k1) variant");
@@ -1030,15 +1030,15 @@ mod tests {
     }
 
     #[test]
-    fn test_aa_signature_from_bytes_p256() {
+    fn test_tempo_signature_from_bytes_p256() {
         use super::{P256_SIGNATURE_LENGTH, SIGNATURE_TYPE_P256};
 
         let mut sig_bytes = vec![SIGNATURE_TYPE_P256];
         sig_bytes.extend_from_slice(&[0u8; P256_SIGNATURE_LENGTH]);
-        let result = AASignature::from_bytes(&sig_bytes);
+        let result = TempoSignature::from_bytes(&sig_bytes);
 
         assert!(result.is_ok());
-        if let AASignature::Primitive(PrimitiveSignature::P256(_)) = result.unwrap() {
+        if let TempoSignature::Primitive(PrimitiveSignature::P256(_)) = result.unwrap() {
             // Expected
         } else {
             panic!("Expected Primitive(P256) variant");
@@ -1046,15 +1046,15 @@ mod tests {
     }
 
     #[test]
-    fn test_aa_signature_from_bytes_webauthn() {
+    fn test_tempo_signature_from_bytes_webauthn() {
         use super::SIGNATURE_TYPE_WEBAUTHN;
 
         let mut sig_bytes = vec![SIGNATURE_TYPE_WEBAUTHN];
         sig_bytes.extend_from_slice(&[0u8; 200]); // 200 bytes of WebAuthn data
-        let result = AASignature::from_bytes(&sig_bytes);
+        let result = TempoSignature::from_bytes(&sig_bytes);
 
         assert!(result.is_ok());
-        if let AASignature::Primitive(PrimitiveSignature::WebAuthn(_)) = result.unwrap() {
+        if let TempoSignature::Primitive(PrimitiveSignature::WebAuthn(_)) = result.unwrap() {
             // Expected
         } else {
             panic!("Expected Primitive(WebAuthn) variant");
@@ -1062,7 +1062,7 @@ mod tests {
     }
 
     #[test]
-    fn test_aa_signature_roundtrip() {
+    fn test_tempo_signature_roundtrip() {
         use super::{
             P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SIGNATURE_TYPE_P256,
             SIGNATURE_TYPE_WEBAUTHN,
@@ -1070,37 +1070,37 @@ mod tests {
 
         // Test secp256k1 (no type identifier, detected by 65-byte length)
         let sig1_bytes = vec![1u8; SECP256K1_SIGNATURE_LENGTH];
-        let sig1 = AASignature::from_bytes(&sig1_bytes).unwrap();
+        let sig1 = TempoSignature::from_bytes(&sig1_bytes).unwrap();
         let encoded1 = sig1.to_bytes();
         assert_eq!(encoded1.len(), SECP256K1_SIGNATURE_LENGTH); // No type identifier
         // Verify roundtrip
-        let decoded1 = AASignature::from_bytes(&encoded1).unwrap();
+        let decoded1 = TempoSignature::from_bytes(&encoded1).unwrap();
         assert_eq!(sig1, decoded1);
 
         // Test P256
         let mut sig2_bytes = vec![SIGNATURE_TYPE_P256];
         sig2_bytes.extend_from_slice(&[2u8; P256_SIGNATURE_LENGTH]);
-        let sig2 = AASignature::from_bytes(&sig2_bytes).unwrap();
+        let sig2 = TempoSignature::from_bytes(&sig2_bytes).unwrap();
         let encoded2 = sig2.to_bytes();
         assert_eq!(encoded2.len(), 1 + P256_SIGNATURE_LENGTH);
         // Verify roundtrip
-        let decoded2 = AASignature::from_bytes(&encoded2).unwrap();
+        let decoded2 = TempoSignature::from_bytes(&encoded2).unwrap();
         assert_eq!(sig2, decoded2);
 
         // Test WebAuthn
         let mut sig3_bytes = vec![SIGNATURE_TYPE_WEBAUTHN];
         sig3_bytes.extend_from_slice(&[3u8; 200]);
-        let sig3 = AASignature::from_bytes(&sig3_bytes).unwrap();
+        let sig3 = TempoSignature::from_bytes(&sig3_bytes).unwrap();
         let encoded3 = sig3.to_bytes();
         assert_eq!(encoded3.len(), 1 + 200);
         // Verify roundtrip
-        let decoded3 = AASignature::from_bytes(&encoded3).unwrap();
+        let decoded3 = TempoSignature::from_bytes(&encoded3).unwrap();
         assert_eq!(sig3, decoded3);
     }
 
     #[test]
     #[cfg(feature = "serde")]
-    fn test_aa_signature_serde_roundtrip() {
+    fn test_tempo_signature_serde_roundtrip() {
         // Test serde roundtrip for all signature types
 
         // Test Secp256k1
@@ -1111,23 +1111,24 @@ mod tests {
             alloy_primitives::U256::from_be_slice(&s_bytes),
             false,
         );
-        let secp256k1_sig = AASignature::Primitive(PrimitiveSignature::Secp256k1(sig));
+        let secp256k1_sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(sig));
 
         let json = serde_json::to_string(&secp256k1_sig).unwrap();
-        let decoded: AASignature = serde_json::from_str(&json).unwrap();
+        let decoded: TempoSignature = serde_json::from_str(&json).unwrap();
         assert_eq!(secp256k1_sig, decoded, "Secp256k1 serde roundtrip failed");
 
         // Test P256
-        let p256_sig = AASignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
-            r: B256::from([1u8; 32]),
-            s: B256::from([2u8; 32]),
-            pub_key_x: B256::from([3u8; 32]),
-            pub_key_y: B256::from([4u8; 32]),
-            pre_hash: true,
-        }));
+        let p256_sig =
+            TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
+                r: B256::from([1u8; 32]),
+                s: B256::from([2u8; 32]),
+                pub_key_x: B256::from([3u8; 32]),
+                pub_key_y: B256::from([4u8; 32]),
+                pre_hash: true,
+            }));
 
         let json = serde_json::to_string(&p256_sig).unwrap();
-        let decoded: AASignature = serde_json::from_str(&json).unwrap();
+        let decoded: TempoSignature = serde_json::from_str(&json).unwrap();
         assert_eq!(p256_sig, decoded, "P256 serde roundtrip failed");
 
         // Verify camelCase naming
@@ -1146,7 +1147,7 @@ mod tests {
 
         // Test WebAuthn
         let webauthn_sig =
-            AASignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
+            TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
                 r: B256::from([5u8; 32]),
                 s: B256::from([6u8; 32]),
                 pub_key_x: B256::from([7u8; 32]),
@@ -1155,7 +1156,7 @@ mod tests {
             }));
 
         let json = serde_json::to_string(&webauthn_sig).unwrap();
-        let decoded: AASignature = serde_json::from_str(&json).unwrap();
+        let decoded: TempoSignature = serde_json::from_str(&json).unwrap();
         assert_eq!(webauthn_sig, decoded, "WebAuthn serde roundtrip failed");
 
         // Verify camelCase naming

@@ -8,13 +8,13 @@ use reth_primitives_traits::InMemorySize;
 use crate::{
     subblock::{PartialValidatorKey, has_sub_block_nonce_key_prefix},
     transaction::{
-        AASignature, AASigned, AASignedAuthorization, KeyAuthorization,
+        AASigned, KeyAuthorization, TempoSignature, TempoSignedAuthorization,
         key_authorization::SignedKeyAuthorization,
     },
 };
 
 /// Tempo transaction type byte (0x76)
-pub const AA_TX_TYPE_ID: u8 = 0x76;
+pub const TEMPO_TX_TYPE_ID: u8 = 0x76;
 
 /// Magic byte for the fee payer signature
 pub const FEE_PAYER_SIGNATURE_MAGIC_BYTE: u8 = 0x78;
@@ -187,7 +187,7 @@ pub struct TempoTransaction {
     /// Access list (EIP-2930)
     pub access_list: AccessList,
 
-    /// AA-specific fields
+    /// TT-specific fields
 
     /// Nonce key for 2D nonce system
     /// Key 0 is the protocol nonce, keys 1-N are user nonces for parallelization
@@ -217,15 +217,16 @@ pub struct TempoTransaction {
     /// The authorization must be signed with the root key, the tx can be signed by the Keychain signature.
     pub key_authorization: Option<SignedKeyAuthorization>,
 
-    /// Authorization list (EIP-7702 style with AA signatures)
-    pub aa_authorization_list: Vec<AASignedAuthorization>,
+    /// Authorization list (EIP-7702 style with Tempo signatures)
+    #[cfg_attr(feature = "serde", serde(rename = "aa_authorization_list"))]
+    pub tempo_authorization_list: Vec<TempoSignedAuthorization>,
 }
 
 impl TempoTransaction {
     /// Get the transaction type
     #[doc(alias = "transaction_type")]
     pub const fn tx_type() -> u8 {
-        AA_TX_TYPE_ID
+        TEMPO_TX_TYPE_ID
     }
 
     /// Validates the transaction according to the spec rules
@@ -245,7 +246,7 @@ impl TempoTransaction {
 
         // Authorization list validation: Cannot have Create in any call when aa_authorization_list is non-empty
         // This follows EIP-7702 semantics - when using delegation
-        if !self.aa_authorization_list.is_empty() {
+        if !self.tempo_authorization_list.is_empty() {
             for call in &self.calls {
                 if call.to.is_create() {
                     return Err(
@@ -277,11 +278,11 @@ impl TempoTransaction {
         mem::size_of::<Option<u64>>() + // valid_after
         // key_authorization (optional)
         self.key_authorization.as_ref().map(|k| k.size()).unwrap_or(mem::size_of::<Option<KeyAuthorization>>()) +
-        self.aa_authorization_list.iter().map(|auth| auth.size()).sum::<usize>() // authorization_list
+        self.tempo_authorization_list.iter().map(|auth| auth.size()).sum::<usize>() // authorization_list
     }
 
     /// Convert the transaction into a signed transaction
-    pub fn into_signed(self, signature: AASignature) -> AASigned {
+    pub fn into_signed(self, signature: TempoSignature) -> AASigned {
         AASigned::new_unhashed(self, signature)
     }
 
@@ -355,7 +356,7 @@ impl TempoTransaction {
             } +
             signature_length(&self.fee_payer_signature) +
             // authorization_list
-            self.aa_authorization_list.length() +
+            self.tempo_authorization_list.length() +
             // key_authorization (only included if present)
             if let Some(key_auth) = &self.key_authorization {
                 key_auth.length()
@@ -400,7 +401,7 @@ impl TempoTransaction {
         encode_signature(&self.fee_payer_signature, out);
 
         // Encode authorization_list
-        self.aa_authorization_list.encode(out);
+        self.tempo_authorization_list.encode(out);
 
         // Encode key_authorization (truly optional - only encoded if present)
         if let Some(key_auth) = &self.key_authorization {
@@ -500,7 +501,7 @@ impl TempoTransaction {
             return Err(alloy_rlp::Error::InputTooShort);
         };
 
-        let aa_authorization_list = Decodable::decode(buf)?;
+        let tempo_authorization_list = Decodable::decode(buf)?;
 
         // Decode optional key_authorization field at the end
         // Check if the next byte looks like it could be a KeyAuthorization (RLP list)
@@ -534,7 +535,7 @@ impl TempoTransaction {
             valid_before,
             valid_after,
             key_authorization,
-            aa_authorization_list,
+            tempo_authorization_list,
         };
 
         // Validate the transaction
@@ -658,7 +659,7 @@ impl Transaction for TempoTransaction {
 
 impl Typed2718 for TempoTransaction {
     fn ty(&self) -> u8 {
-        AA_TX_TYPE_ID
+        TEMPO_TX_TYPE_ID
     }
 }
 
@@ -807,7 +808,7 @@ impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
             valid_before,
             valid_after,
             key_authorization: u.arbitrary()?,
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
         })
     }
 }
@@ -873,7 +874,7 @@ mod compact {
         fee_payer_signature: Option<Signature>,
         valid_before: Option<u64>,
         valid_after: Option<u64>,
-        aa_authorization_list: Vec<AASignedAuthorization>,
+        tempo_authorization_list: Vec<TempoSignedAuthorization>,
     }
 
     #[derive(Compact)]
@@ -892,7 +893,7 @@ mod compact {
         valid_before: Option<u64>,
         valid_after: Option<u64>,
         key_authorization: Option<SignedKeyAuthorization>,
-        aa_authorization_list: Vec<AASignedAuthorization>,
+        tempo_authorization_list: Vec<TempoSignedAuthorization>,
     }
 
     impl Compact for TempoTransaction {
@@ -929,7 +930,7 @@ mod compact {
             flags.set_valid_after_len(valid_after_len as u8);
             let key_authorization_len = self.key_authorization.to_compact(&mut buffer);
             flags.set_key_authorization_len(key_authorization_len as u8);
-            self.aa_authorization_list.to_compact(&mut buffer);
+            self.tempo_authorization_list.to_compact(&mut buffer);
             let flags = flags.into_bytes();
             total_length += flags.len() + buffer.len();
             buf.put_slice(&flags);
@@ -961,7 +962,7 @@ mod compact {
                         valid_before,
                         valid_after,
                         key_authorization,
-                        aa_authorization_list,
+                        tempo_authorization_list,
                     },
                     buf,
                 ) = NewTempoTransaction::from_compact(buf, len);
@@ -980,7 +981,7 @@ mod compact {
                         valid_before,
                         valid_after,
                         key_authorization,
-                        aa_authorization_list,
+                        tempo_authorization_list,
                     },
                     buf,
                 )
@@ -999,7 +1000,7 @@ mod compact {
                         fee_payer_signature,
                         valid_before,
                         valid_after,
-                        aa_authorization_list,
+                        tempo_authorization_list,
                     },
                     buf,
                 ) = OldTempoTransaction::from_compact(buf, len);
@@ -1019,7 +1020,7 @@ mod compact {
                         valid_before,
                         valid_after,
                         key_authorization: None,
-                        aa_authorization_list,
+                        tempo_authorization_list,
                     },
                     buf,
                 )
@@ -1031,7 +1032,9 @@ mod compact {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::tt_signature::{AASignature, PrimitiveSignature, derive_p256_address};
+    use crate::transaction::tt_signature::{
+        PrimitiveSignature, TempoSignature, derive_p256_address,
+    };
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, bytes, hex};
     use alloy_rlp::{Decodable, Encodable};
 
@@ -1048,7 +1051,7 @@ mod tests {
         let tx1 = TempoTransaction {
             valid_before: Some(100),
             valid_after: Some(50),
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             calls: vec![dummy_call.clone()],
             ..Default::default()
         };
@@ -1058,7 +1061,7 @@ mod tests {
         let tx2 = TempoTransaction {
             valid_before: Some(50),
             valid_after: Some(100),
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             calls: vec![dummy_call.clone()],
             ..Default::default()
         };
@@ -1068,7 +1071,7 @@ mod tests {
         let tx3 = TempoTransaction {
             valid_before: Some(100),
             valid_after: Some(100),
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             calls: vec![dummy_call.clone()],
             ..Default::default()
         };
@@ -1078,7 +1081,7 @@ mod tests {
         let tx4 = TempoTransaction {
             valid_before: Some(100),
             valid_after: None,
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             calls: vec![dummy_call],
             ..Default::default()
         };
@@ -1094,7 +1097,7 @@ mod tests {
     #[test]
     fn test_tx_type() {
         assert_eq!(TempoTransaction::tx_type(), 0x76);
-        assert_eq!(AA_TX_TYPE_ID, 0x76);
+        assert_eq!(TEMPO_TX_TYPE_ID, 0x76);
     }
 
     #[test]
@@ -1103,19 +1106,19 @@ mod tests {
 
         // Secp256k1 (detected by 65-byte length, no type identifier)
         let sig1_bytes = vec![0u8; SECP256K1_SIGNATURE_LENGTH];
-        let sig1 = AASignature::from_bytes(&sig1_bytes).unwrap();
+        let sig1 = TempoSignature::from_bytes(&sig1_bytes).unwrap();
         assert_eq!(sig1.signature_type(), SignatureType::Secp256k1);
 
         // P256
         let mut sig2_bytes = vec![SIGNATURE_TYPE_P256];
         sig2_bytes.extend_from_slice(&[0u8; P256_SIGNATURE_LENGTH]);
-        let sig2 = AASignature::from_bytes(&sig2_bytes).unwrap();
+        let sig2 = TempoSignature::from_bytes(&sig2_bytes).unwrap();
         assert_eq!(sig2.signature_type(), SignatureType::P256);
 
         // WebAuthn
         let mut sig3_bytes = vec![SIGNATURE_TYPE_WEBAUTHN];
         sig3_bytes.extend_from_slice(&[0u8; 200]);
-        let sig3 = AASignature::from_bytes(&sig3_bytes).unwrap();
+        let sig3 = TempoSignature::from_bytes(&sig3_bytes).unwrap();
         assert_eq!(sig3.signature_type(), SignatureType::WebAuthn);
     }
 
@@ -1141,7 +1144,7 @@ mod tests {
             valid_before: Some(1000000),
             valid_after: Some(500000),
             key_authorization: None,
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
         };
 
         // Encode
@@ -1193,7 +1196,7 @@ mod tests {
             valid_before: Some(1000),
             valid_after: None,
             key_authorization: None,
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
         };
 
         // Encode
@@ -1456,7 +1459,7 @@ mod tests {
 
         // The fee_payer_signature_hash should start with the magic byte
         // We can't directly inspect the hash construction, but we can verify it's different
-        // from the sender signature hash which uses AA_TX_TYPE_ID (0x76)
+        // from the sender signature hash which uses TEMPO_TX_TYPE_ID (0x76)
         let sender_hash = tx.signature_hash();
         let fee_payer_hash = tx.fee_payer_signature_hash(sender);
 
@@ -1493,7 +1496,7 @@ mod tests {
             fee_payer_signature: None, // No fee payer
             valid_before: Some(1000),
             valid_after: None,
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             access_list: Default::default(),
             key_authorization: None,
         };
@@ -1555,7 +1558,7 @@ mod tests {
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000),
             valid_after: None,
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             access_list: Default::default(),
             key_authorization: None,
         };
@@ -1619,7 +1622,7 @@ mod tests {
             fee_payer_signature: None,
             valid_before: Some(1000),
             valid_after: None,
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             access_list: Default::default(),
             key_authorization: None,
         };
@@ -1692,7 +1695,7 @@ mod tests {
             valid_before: Some(1000000),
             valid_after: Some(500000),
             key_authorization: None, // No key authorization
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
         };
 
         // Encode the transaction
@@ -1780,11 +1783,11 @@ mod tests {
             valid_before: None,
             valid_after: None,
             key_authorization: None, // No key_authorization
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
         };
 
         let signature =
-            AASignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
         let signed = AASigned::new_unhashed(tx, signature);
 
         // Test direct RLP encoding/decoding
@@ -1823,11 +1826,11 @@ mod tests {
             valid_before: None,
             valid_after: None,
             key_authorization: None, // No key_authorization
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
         };
 
         let signature =
-            AASignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
         let signed = AASigned::new_unhashed(tx, signature);
         let envelope = TempoTxEnvelope::AA(signed);
 
@@ -1900,7 +1903,7 @@ mod tests {
             valid_before: Some(1000000),
             valid_after: Some(500000),
             key_authorization: None,
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
         };
 
         // Encode the transaction normally
