@@ -8,11 +8,11 @@ import LucideBookOpen from '~icons/lucide/book-open'
 
 Distribute rewards to token holders using TIP-20's built-in reward distribution mechanism. Rewards allow parties to incentivize holders of a token by distributing tokens proportionally based on their balance.
 
-Rewards can be distributed by anyone on any TIP-20 token, and claimed by any holder who has opted in. This guide covers both the issuer and token holder use cases: in general issuers distribute rewards for holders to claim. While the demo below uses a token you create, the same principles apply to any token.
+Rewards can be distributed by anyone on any TIP-20 token, and claimed by any holder who has opted in. This guide covers both the reward distributor and token holder use cases. While the demo below uses a token you create, the same principles apply to any token.
 
 ## Demo
 
-Try out the complete rewards flow: issue a token, opt in to receive rewards on it, create a reward for yourself, and claim it.
+Try out the complete rewards flow: create a token, opt in to receive rewards on it, create a reward for yourself, and claim it.
 
 <Demo.Container name="Distribute Rewards" footerVariant="source" src="tempoxyz/tempo-ts/tree/main/examples/issuance">
   <Step.Connect stepNumber={1} />
@@ -31,7 +31,7 @@ Try out the complete rewards flow: issue a token, opt in to receive rewards on i
 
 ### [Optional] Create a Stablecoin
 
-If you would like to distribute rewards on a token you have issued, follow the [Create a Stablecoin](/guide/issuance/create-a-stablecoin) guide to deploy your token.
+If you would like to distribute rewards on a token you have created, follow the [Create a Stablecoin](/guide/issuance/create-a-stablecoin) guide to deploy your token.
 
 ### Tell Your Users to Opt In to Rewards
 
@@ -93,7 +93,7 @@ export const config = createConfig({
 
 ### Make a Reward Distribution
 
-Anyone can make a reward distribution that allocates tokens to all opted-in holders proportionally based on their balance. In general, this will be done by the issuer.
+Anyone can make a reward distribution that allocates tokens to all opted-in holders proportionally based on their balance.
 
 :::code-group
 
