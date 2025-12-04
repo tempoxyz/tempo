@@ -1,24 +1,61 @@
 # TIP-20 Standard
 
-TIP-20 is Tempo's native token standard for stablecoins and payment tokens. It extends ERC-20 with payment-focused controls and is the foundation for paying transaction fees and routing liquidity on Tempo.
+TIP-20 is Tempo's native token standard for stablecoins and payment tokens. It extends ERC-20 with payment-focused controls and is the foundation for paying transaction fees and routing liquidity on Tempo. We recommend stablecoin issuers use TIP-20 to issue their tokens.
 
 ## What is TIP-20?
 
-- **Payment-native**: Fixed 6 decimal precision, optional memos on transfers, and guards that prevent sending tokens to other TIP-20 contracts.
-- **Deterministic addresses**: Deployed through the TIP-20 Factory to vanity addresses with the `0x20c…` prefix, making tokens easy to recognize and index.
-- **Backward compatible**: Standard ERC-20 calls (`transfer`, `approve`, `transferFrom`) work as expected while adding Tempo-specific capabilities.
+TIP-20 tokens are precompiled contracts that provide a standardized, efficient implementation for stablecoins on Tempo. They extend ERC-20 with features essential for real-world payments:
 
-## Why use TIP-20 on Tempo
+- **Payment-native design**: Fixed 6 decimal precision for consistent pricing, optional 32-byte memos on transfers for payment references, and guards that prevent sending tokens to other TIP-20 contracts.
+- **Deterministic addresses**: Deployed through the [TIP-20 Factory](/documentation/protocol/tip20/spec#tip20factory) to vanity addresses with the `0x20c…` prefix, making tokens easy to recognize and index.
+- **Backward compatible**: Standard ERC-20 calls (`transfer`, `approve`, `transferFrom`) work as expected while adding Tempo-specific capabilities described below.
 
-- **Pay fees in your own stablecoin**: Any USD TIP-20 can be a fee token; the [Fee AMM](/documentation/protocol/fees/spec-fee-amm) converts to the validator's preferred token automatically.
-- **Compliance by default**: Integrates with the [TIP-403 policy registry](/documentation/protocol/tip403/overview) for allow/deny lists and uses role-based permissions for minting, burning, and administration.
-- **Operational control**: Pause transfers, cap supply, or delegate roles without custom contract changes.
-- **Payment-friendly UX**: Consistent decimals, on-chain memos for invoices or references, and safeguards that reduce accidental loss.
-- **Built-in liquidity paths**: Each token sets a quote token for the [stablecoin exchange](/documentation/protocol/exchange), so routing is deterministic and predictable.
+## Core Features
+
+### Currency Declaration
+
+Every TIP-20 token declares a currency identifier (e.g., `"USD"`, `"EUR"`) that identifies the real-world asset backing the token. This enables proper routing and pricing in Tempo's [stablecoin exchange](/documentation/protocol/exchange). USD-denominated tokens can be used to pay transaction fees. See the [TIP-20 specification](/documentation/protocol/tip20/spec#currency-and-quote-tokens) for details.
+
+### Role-Based Access Control (RBAC)
+
+TIP-20 includes a built-in [RBAC system](/documentation/protocol/tip403/spec#tip-20-token-roles) that separates administrative responsibilities:
+
+- **ISSUER_ROLE**: Grants permission to mint and burn tokens, enabling controlled token issuance
+- **PAUSE_ROLE** / **UNPAUSE_ROLE**: Allows pausing and unpausing token transfers for emergency controls
+- **BURN_BLOCKED_ROLE**: Permits burning tokens from blocked addresses (e.g., for compliance actions)
+
+Roles can be granted, revoked, and delegated without custom contract changes. This enables issuers to separate operational roles (e.g., who can mint) from administrative roles (e.g., who can pause). Learn more in the [TIP-20 specification](/documentation/protocol/tip20/spec#roles).
+
+### TIP-403 Transfer Policies
+
+TIP-20 tokens integrate with the [TIP-403 Policy Registry](/documentation/protocol/tip403/overview) to enforce compliance policies. Each token can reference a policy that controls who can send and receive tokens:
+
+- **Whitelist policies**: Only addresses in the whitelist can transfer tokens
+- **Blacklist policies**: Addresses in the blacklist are blocked from transferring tokens
+
+Policies can be shared across multiple tokens, enabling consistent compliance enforcement across your token ecosystem. See the [TIP-403 specification](/documentation/protocol/tip403/spec) for details.
+
+### Pay Fees in Any Stablecoin
+
+Any USD-denominated TIP-20 token can be used to pay transaction fees on Tempo. The [Fee AMM](/documentation/protocol/fees/spec-fee-amm) automatically converts your token to the validator's preferred fee token, eliminating the need for users to hold a separate gas token. This feature works natively—no additional infrastructure or integration required.
+
+### Quote Tokens for Exchange Routing
+
+Each TIP-20 token declares a `quoteToken` that defines its default trading pair in the [stablecoin exchange](/documentation/protocol/exchange). This enables deterministic and predictable routing for cross-stablecoin payments and trades. Quote tokens can be updated through a staged update process. See the [TIP-20 specification](/documentation/protocol/tip20/spec#currency-and-quote-tokens) for details.
+
+### Operational Controls
+
+- **Supply caps**: Set maximum token supply to control issuance
+- **Pause/unpause**: Emergency controls to halt transfers when needed
+- **Transfer memos**: Attach 32-byte memos to transfers for payment references, invoice IDs, or transaction notes
+
+### Reward Distribution
+
+TIP-20 supports an opt-in [reward distribution system](/documentation/protocol/tip20-rewards/overview) that allows issuers to distribute rewards to token holders. Rewards can be claimed by holders or automatically forwarded to designated recipient addresses.
 
 ## Build with TIP-20
 
-- Start testing with predeployed stablecoins in [`predeployed-contracts`](/guide/quickstart/predeployed-contracts).
-- Issue your own stablecoin via the [TIP-20 Factory](/documentation/protocol/tip20/spec) using the [Create a stablecoin](/guide/issuance/create-a-stablecoin) guide.
-- Integrate balances and transfers through the SDKs in [Make payments](/guide/payments) or standard RPC calls.
-- Dive deeper in the [TIP-20 overview](/documentation/protocol/tip20/overview) and full [specification](/documentation/protocol/tip20/spec).
+- Start testing with predeployed stablecoins in [`predeployed-contracts`](/guide/quickstart/predeployed-contracts)
+- Issue your own stablecoin via the [TIP-20 Factory](/documentation/protocol/tip20/spec#tip20factory) using the [Create a stablecoin](/guide/issuance/create-a-stablecoin) guide
+- Integrate balances and transfers through the SDKs in [Make payments](/guide/payments) or standard RPC calls
+- Dive deeper in the [TIP-20 overview](/documentation/protocol/tip20/overview) and full [specification](/documentation/protocol/tip20/spec)
