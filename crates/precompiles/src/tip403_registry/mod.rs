@@ -306,6 +306,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
         self.sstore_policy_set(policy_id, account, value)
     }
 
+    // NOTE: must be synced with `fn can_fee_payer_transfer` @crates/revm/src/common.rs
     fn is_authorized_internal(&mut self, policy_id: u64, user: Address) -> Result<bool> {
         // Special case for always-allow and always-reject policies
         if policy_id < 2 {
@@ -326,7 +327,6 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
             ITIP403Registry::PolicyType::BLACKLIST => !is_in_set,
             ITIP403Registry::PolicyType::__Invalid => false,
         };
-
         Ok(auth)
     }
 }

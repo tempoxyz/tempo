@@ -1,0 +1,65 @@
+# `token.watchCreate`
+
+Watches for new TIP20 token creation events on the TIP20 Factory.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { client } from './viem.config'
+
+const unwatch = client.token.watchCreate({
+  onTokenCreated: (args, log) => {
+    console.log('Creator:', args.creator)
+    console.log('Name:', args.name)
+    console.log('Symbol:', args.symbol)
+    console.log('Token address:', args.tokenAddress)
+    console.log('Token ID:', args.tokenId)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [viem.config.ts] filename="viem.config.ts"
+// [!include ~/snippets/viem.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onTokenCreated
+
+- **Type:**
+
+```ts
+declare function onTokenCreated(args: Args, log: Log): void
+
+type Args = {
+  /** Address that created the token */
+  creator: Address
+  /** Name of the token */
+  name: string
+  /** Symbol of the token */
+  symbol: string
+  /** Address of the created token */
+  tokenAddress: Address
+  /** ID of the created token */
+  tokenId: bigint
+}
+```
+
+Callback to invoke when a new TIP20 token is created.
+
+

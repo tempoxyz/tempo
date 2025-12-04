@@ -15,13 +15,10 @@ pub(super) async fn setup(
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
 ) -> eyre::Result<(Address, Vec<Address>)> {
-    info!(
-        signers = signer_providers.len(),
-        user_tokens, "Setting up DEX"
-    );
-
     // Grab first signer provider
-    let (signer, provider) = signer_providers.first().unwrap();
+    let (signer, provider) = signer_providers
+        .first()
+        .ok_or_eyre("No signer providers found")?;
     let caller = signer.address();
 
     info!("Creating tokens");
@@ -79,8 +76,8 @@ pub(super) async fn setup(
             .iter()
             .map(|(signer, _)| signer.address())
             .flat_map(|signer| {
-                #[expect(clippy::redundant_iter_cloned)] // False positive
-                all_tokens.iter().cloned().map(move |token| {
+                all_tokens.iter().map(move |token| {
+                    let token = token.clone();
                     Box::pin(async move {
                         let tx = token.mint(signer, mint_amount);
                         tx.send().await
@@ -167,18 +164,25 @@ where
         .await?
         .get_receipt()
         .await?;
-    let event = receipt.logs()[0].log_decode::<ITIP20Factory::TokenCreated>()?;
+    let event = receipt
+        .decoded_log::<ITIP20Factory::TokenCreated>()
+        .ok_or_eyre("Token creation event not found")?;
+    assert_receipt(receipt)
+        .await
+        .context("Failed to create token")?;
 
-    let token_addr = token_id_to_address(event.data().tokenId.to());
+    let token_addr = token_id_to_address(event.tokenId.to());
     let token = ITIP20::new(token_addr, provider.clone());
     let roles = IRolesAuth::new(*token.address(), provider);
-
-    roles
+    let grant_role_receipt = roles
         .grantRole(*ISSUER_ROLE, admin)
         .send()
         .await?
         .get_receipt()
         .await?;
+    assert_receipt(grant_role_receipt)
+        .await
+        .context("Failed to grant issuer role")?;
 
     Ok(token)
 }

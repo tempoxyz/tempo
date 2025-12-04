@@ -1,0 +1,56 @@
+# `dex.watchOrderCancelled`
+
+Watches for order cancelled events on the Stablecoin Exchange.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { Actions } from 'tempo.ts/wagmi'
+import { config } from './wagmi.config'
+
+const unwatch = Actions.dex.watchOrderCancelled(config, {
+  onOrderCancelled: (args, log) => {
+    console.log('Order cancelled:', args.orderId)
+    console.log('Maker:', args.maker)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onOrderCancelled
+
+- **Type:** `(args: OrderCancelledArgs, log: Log) => void`
+
+Callback to invoke when an order is cancelled.
+
+The `args` object contains:
+- `orderId: bigint` - ID of the cancelled order
+- `maker: Address` - Address that cancelled the order
+
+### orderId (optional)
+
+- **Type:** `bigint | undefined`
+
+Filter events by order ID.
+

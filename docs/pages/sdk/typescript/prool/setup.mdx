@@ -1,0 +1,44 @@
+# Setup
+
+Setup the Tempo extension for Prool by following the steps below.
+
+::::steps
+
+## Install
+
+To add Prool to your project, install the required packages:
+
+:::code-group
+```bash [npm]
+npm i tempo.ts prool
+```
+```bash [pnpm]
+pnpm i tempo.ts prool
+```
+:::
+
+- [Prool](https://github.com/wevm/prool) is a library that provides programmatic HTTP testing instances for Ethereum.
+
+## Create Instance
+
+You can programmatically start a Tempo node instance in TypeScript using `Instance.tempo`:
+
+```ts
+import { Instance } from 'tempo.ts/prool';
+
+const instance = Instance.tempo();
+
+await instance.start();
+// ...
+await instance.stop();
+```
+
+## Next Steps
+
+After you have set up Tempo with Prool, you can now:
+
+- Easily use Tempo in your test suite with Vitest
+- Run Tempo locally alongside your Vite or Next.js development server
+
+::::
+

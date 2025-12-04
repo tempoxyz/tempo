@@ -4,6 +4,7 @@
 
 use crate::{
     aa_2d_pool::{AA2dNonceKeys, AA2dPool, AASequenceId},
+    amm::AmmLiquidityCache,
     best::MergeBestTransactions,
     transaction::TempoPooledTransaction,
     validator::TempoTransactionValidator,
@@ -69,6 +70,19 @@ impl<Client> TempoTransactionPool<Client>
 where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
 {
+    /// Obtains a clone of the shared [`AmmLiquidityCache`].
+    pub fn amm_liquidity_cache(&self) -> AmmLiquidityCache {
+        self.protocol_pool
+            .validator()
+            .validator()
+            .amm_liquidity_cache()
+    }
+
+    /// Returns the configured client
+    pub fn client(&self) -> &Client {
+        self.protocol_pool.validator().validator().client()
+    }
+
     /// Updates the 2d nonce pool with the given state changes.
     pub(crate) fn on_aa_2d_nonce_changes(&self, on_chain_ids: HashMap<AASequenceId, u64>) {
         if on_chain_ids.is_empty() {

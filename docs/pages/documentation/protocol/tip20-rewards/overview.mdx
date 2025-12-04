@@ -1,0 +1,37 @@
+import LucideFileText from '~icons/lucide/file-text'
+import LucideGift from '~icons/lucide/gift'
+import LucideTrendingUp from '~icons/lucide/trending-up'
+import * as Card from "../../../../components/Card.tsx"
+
+# TIP-20 Rewards
+
+TIP-20 Rewards is a built-in mechanism that allows token issuers to efficiently distribute rewards to token holders proportional to their holdings. The system supports both streaming rewards (distributed linearly over time) and instant rewards, all while maintaining low gas costs at scale and complying with [TIP-403 transfer policies](/documentation/protocol/tip403/spec).
+
+Traditional reward mechanisms require tokens to be staked in separate contracts, which fragments user holdings and adds complexity to wallet implementations. TIP-20 Rewards solves this by:
+
+- **Built-in Distribution**: Rewards are integrated directly into the token contract, no separate staking required
+- **Opt-in Participation**: Users choose whether to participate by setting a reward recipient
+- **Proportional Distribution**: Rewards accrue based on token holdings automatically
+- **Instant Rewards**: Distribute rewards immediately to opted-in holders
+- **Efficient at Scale**: Constant-time updates regardless of the number of token holders
+- **Policy Compliant**: All reward transfers respect TIP-403 transfer policies
+
+Note: Time-based streaming rewards are planned for a future upgrade. Until then, attempting to create a timed distribution will revert (calling `startReward(amount, seconds_)` with `seconds_ > 0` reverts with `ScheduledRewardsDisabled()`).
+
+## Links
+
+<Card.Container>
+  <Card.Link
+    description="Complete technical specification for rewards distribution"
+    href="/documentation/protocol/tip20-rewards/spec"
+    icon={LucideFileText}
+    title="Rewards Specification"
+  />
+  <Card.Link
+    description="Distribute rewards to token holders"
+    href="/guide/issuance/distribute-rewards"
+    icon={LucideTrendingUp}
+    title="Guide: Distribute Rewards"
+  />
+</Card.Container>
+

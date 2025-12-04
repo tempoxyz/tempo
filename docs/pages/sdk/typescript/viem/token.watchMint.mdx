@@ -1,0 +1,65 @@
+# `token.watchMint`
+
+Watches for token mint events on TIP20 tokens.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { client } from './viem.config'
+
+const unwatch = client.token.watchMint({
+  onMint: (args, log) => {
+    console.log('Amount:', args.amount)
+    console.log('Minter:', args.minter)
+    console.log('To:', args.to)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [viem.config.ts] filename="viem.config.ts"
+// [!include ~/snippets/viem.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onMint
+
+- **Type:**
+
+```ts
+declare function onMint(args: Args, log: Log): void
+
+type Args = {
+  /** Amount minted */
+  amount: bigint
+  /** Address that initiated the mint */
+  minter: Address
+  /** Address that received the tokens */
+  to: Address
+}
+```
+
+Callback to invoke when tokens are minted.
+
+### token
+
+- **Type:** `Address | bigint`
+
+Address or ID of the TIP20 token to watch.
+
+

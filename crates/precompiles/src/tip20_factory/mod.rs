@@ -42,6 +42,12 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         )
     }
 
+    /// Returns true if the factory has been initialized (has code set).
+    pub fn is_initialized(&mut self) -> Result<bool> {
+        let info = self.storage.get_account_info(TIP20_FACTORY_ADDRESS)?;
+        Ok(info.code.is_some())
+    }
+
     pub fn create_token(
         &mut self,
         sender: Address,

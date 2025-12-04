@@ -1,0 +1,51 @@
+import { Callout } from 'vocs/components'
+import LucideArrowLeftRight from '~icons/lucide/arrow-left-right'
+import LucideDroplet from '~icons/lucide/droplet'
+import LucideWallet from '~icons/lucide/wallet'
+import * as Card from "../../../../components/Card.tsx"
+
+# Exchanging Tokens
+
+Tempo features an enshrined decentralized exchange (DEX) designed specifically for trading between stablecoins of the same underlying asset (e.g., USDC to USDT). The exchange provides optimal pricing for cross-stablecoin payments while minimizing chain load from excessive market activity.
+
+The exchange operates as a singleton precompiled contract at address `0xdec0000000000000000000000000000000000000`. It maintains an order book with separate queues for each price tick, using price-time priority for order matching.
+
+Trading pairs are determined by each token's quote token. All TIP-20 tokens specify a quote token for trading on the exchange. Tokens can choose [pathUSD](/documentation/protocol/exchange/pathUSD) as their quote token. See the [Stablecoin Exchange Specification](/documentation/protocol/exchange/spec) for detailed information on the exchange structure.
+
+The exchange supports three types of orders, each with different execution behavior:
+
+| Order Type | Description |
+|------------|-------------|
+| [**Limit Orders**](/documentation/protocol/exchange/providing-liquidity#limit-orders) | Place orders at specific price levels that wait in the book until matched or cancelled. New orders are queued and added to the book at the end of the block. |
+| [**Flip Orders**](/documentation/protocol/exchange/providing-liquidity#flip-orders) | Special orders that automatically reverse to the opposite side when completely filled, acting like a perpetual liquidity pool. Filled flip orders automatically create new orders on the opposite side during end-of-block settlement. |
+| [**Market Orders**](/documentation/protocol/exchange/executing-swaps#swap-functions) | Execute immediately against the best available orders in the book (via swap functions). Swaps and cancellations execute immediately within the transaction. |
+
+This execution model prevents MEV by making it impossible to backrun new orders or perform JIT liquidity attacks. For the complete execution mechanics, see the [Stablecoin Exchange Specification](/documentation/protocol/exchange/spec).
+
+To get started with the exchange, explore these guides:
+
+<Card.Container>
+  <Card.Link
+    description="Quote prices and swap between stablecoins"
+    href="/documentation/protocol/exchange/executing-swaps"
+    icon={LucideArrowLeftRight}
+    title="Executing Swaps"
+  />
+  <Card.Link
+    description="Place orders and flip orders to earn spreads"
+    href="/documentation/protocol/exchange/providing-liquidity"
+    icon={LucideDroplet}
+    title="Providing Liquidity"
+  />
+  <Card.Link
+    description="Manage token balances on the exchange to save gas costs"
+    href="/documentation/protocol/exchange/exchange-balance"
+    icon={LucideWallet}
+    title="Exchange Balance"
+  />
+</Card.Container>
+
+
+<Callout type="info">
+  For a more complete technical specification including design decisions and details of execution semantics, see the [Stablecoin Exchange Specification](/documentation/protocol/exchange/spec).
+</Callout>
