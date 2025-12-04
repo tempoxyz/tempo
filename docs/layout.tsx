@@ -1,4 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Analytics } from '@vercel/analytics/react'
+import { SpeedInsights } from '@vercel/speed-insights/react'
+import { NuqsAdapter } from 'nuqs/adapters/react-router/v7'
 import { Json } from 'ox'
 import React from 'react'
 import { Toaster } from 'sonner'
@@ -32,7 +35,9 @@ export default function Layout(
     <>
       <WagmiProvider config={config}>
         <QueryClientProvider client={queryClient}>
-          <DemoContextProvider>{props.children}</DemoContextProvider>
+          <NuqsAdapter>
+            <DemoContextProvider>{props.children}</DemoContextProvider>
+          </NuqsAdapter>
         </QueryClientProvider>
       </WagmiProvider>
 
@@ -48,6 +53,8 @@ export default function Layout(
           },
         }}
       />
+      <SpeedInsights />
+      <Analytics />
     </>
   )
 }

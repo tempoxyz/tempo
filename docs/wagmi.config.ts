@@ -1,5 +1,5 @@
 import { QueryClient } from '@tanstack/react-query'
-import { tempoAndantino, tempoLocal } from 'tempo.ts/chains'
+import { tempoAndantino, tempoLocal, tempoTestnet } from 'tempo.ts/chains'
 import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 import {
   type CreateConfigParameters,
@@ -20,11 +20,12 @@ export function getConfig(options: getConfig.Options = {}) {
     },
     chains: [
       import.meta.env.VITE_LOCAL !== 'true'
-        ? tempoAndantino({ feeToken })
+        ? tempoTestnet({ feeToken })
         : tempoLocal({ feeToken }),
     ],
     connectors: [
       webAuthn({
+        grantAccessKey: true,
         keyManager: KeyManager.localStorage(),
       }),
     ],
@@ -35,7 +36,10 @@ export function getConfig(options: getConfig.Options = {}) {
     }),
     transports: {
       [tempoAndantino.id]: webSocket(
-        'wss://rpc.testnet.tempo.xyz?supersecretargument=pleasedonotusemeinprod',
+        'wss://rpc-orchestra.testnet.tempo.xyz/zealous-mayer',
+        {
+          keepAlive: { interval: 1_000 },
+        },
       ),
       [tempoLocal.id]: http(undefined, {
         batch: true,

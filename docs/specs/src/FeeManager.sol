@@ -9,7 +9,7 @@ import { ITIP20 } from "./interfaces/ITIP20.sol";
 
 contract FeeManager is IFeeManager, FeeAMM {
 
-    address internal constant LINKING_USD = 0x20C0000000000000000000000000000000000000;
+    address internal constant PATH_USD = 0x20C0000000000000000000000000000000000000;
 
     // Validator token preferences
     mapping(address => address) public validatorTokens;
@@ -40,62 +40,33 @@ contract FeeManager is IFeeManager, FeeAMM {
         _;
     }
 
-    // TODO: could just call this on the TIP20Factory contract
-    function isTIP20(address token) internal pure returns (bool) {
-        return bytes14(bytes20(token)) == 0x20c0000000000000000000000000;
-    }
-
     function setValidatorToken(address token) external onlyDirectCall {
         // prevent changing within the validator's own block to avoid edge cases
         require(msg.sender != block.coinbase, "CANNOT_CHANGE_WITHIN_BLOCK");
         // prevent changing if validator already has collected fees in this block
         require(collectedFeesByValidator[msg.sender] == 0, "CANNOT_CHANGE_WITH_PENDING_FEES");
-        require(isTIP20(token), "INVALID_TOKEN");
-        require(
-            keccak256(bytes(ITIP20(token).currency())) == keccak256(bytes("USD")), "INVALID_TOKEN"
-        );
+        _requireUSDTIP20(token);
         validatorTokens[msg.sender] = token;
         emit ValidatorTokenSet(msg.sender, token);
     }
 
     function setUserToken(address token) external onlyDirectCall {
-        require(isTIP20(token), "INVALID_TOKEN");
-        // forbid setting linkingUSD as the user's fee token
-        require(token != LINKING_USD, "CANNOT_SET_LINKINGUSD");
-        require(
-            keccak256(bytes(ITIP20(token).currency())) == keccak256(bytes("USD")), "INVALID_TOKEN"
-        );
+        _requireUSDTIP20(token);
         userTokens[msg.sender] = token;
         emit UserTokenSet(msg.sender, token);
     }
 
     // This function is called by the protocol before any transaction is executed.
-    // If it reverts, the transaction is invalid
-    function collectFeePreTx(
-        address user,
-        address txToAddress,
-        uint256 maxAmount,
-        address feeRecipient
-    ) external returns (address userToken) {
+    // If it reverts, the transaction is invalid.
+    // NOTE: The fee token (userToken) is determined by the protocol before calling this function
+    // using logic that considers: tx.feeToken, setUserToken calls, userTokens storage, tx.to if TIP-20.
+    function collectFeePreTx(address user, address userToken, uint256 maxAmount) external {
         require(msg.sender == address(0), "ONLY_PROTOCOL");
 
-        // Get fee recipient's preferred token (fallback to linkingUSD if not set)
-        address validatorToken = validatorTokens[feeRecipient];
+        // Get fee recipient's preferred token (fallback to PATH_USD if not set)
+        address validatorToken = validatorTokens[block.coinbase];
         if (validatorToken == address(0)) {
-            validatorToken = LINKING_USD;
-        }
-
-        // Get user's preferred token
-        // Logic is: transaction > account > contract > validator
-        // TODO: once transactions can set their preferred fee token, add this to the logic
-        // TODO: special-case the logic for when txToAddress is this contract, as per the spec
-        userToken = userTokens[user];
-        if (userToken == address(0)) {
-            if (isTIP20(txToAddress)) {
-                userToken = txToAddress;
-            } else {
-                userToken = validatorToken;
-            }
+            validatorToken = PATH_USD;
         }
 
         // If user token is different from validator token, reserve AMM liquidity
@@ -103,7 +74,7 @@ contract FeeManager is IFeeManager, FeeAMM {
             reserveLiquidity(userToken, validatorToken, maxAmount);
         }
 
-        ITIP20(userToken).systemTransferFrom(user, address(this), maxAmount);
+        ITIP20(userToken).transferFeePreTx(user, maxAmount);
     }
 
     // This function is called by the protocol after a transaction is executed.
@@ -112,21 +83,26 @@ contract FeeManager is IFeeManager, FeeAMM {
         address user,
         uint256 maxAmount,
         uint256 actualUsed,
-        address userToken,
-        address validatorToken,
-        address feeRecipient
+        address userToken
     ) external {
         require(msg.sender == address(0), "ONLY_PROTOCOL");
+
+        // Get fee recipient and validator token from environment
+        address feeRecipient = block.coinbase;
+        address validatorToken = validatorTokens[feeRecipient];
+        if (validatorToken == address(0)) {
+            validatorToken = PATH_USD;
+        }
 
         // Calculate refund amount
         uint256 refundAmount = maxAmount - actualUsed;
 
-        // Refund unused tokens to user
-        if (refundAmount > 0) {
-            IERC20(userToken).transfer(user, refundAmount);
-        }
+        // Refund unused tokens to user (handles rewards and emits Transfer event for actualUsed)
+        ITIP20(userToken).transferFeePostTx(user, refundAmount, actualUsed);
 
-        releaseLiquidityPostTx(userToken, validatorToken, refundAmount);
+        if (userToken != validatorToken) {
+            releaseLiquidityPostTx(userToken, validatorToken, refundAmount);
+        }
 
         // Track collected fees (only the actual used amount)
         if (actualUsed > 0) {
@@ -186,9 +162,9 @@ contract FeeManager is IFeeManager, FeeAMM {
 
             if (amount > 0) {
                 address validatorToken = validatorTokens[validator];
-                // Fallback to linkingUSD if validator hasn't set one
+                // Fallback to pathUSD if validator hasn't set one
                 if (validatorToken == address(0)) {
-                    validatorToken = LINKING_USD;
+                    validatorToken = PATH_USD;
                 }
 
                 IERC20(validatorToken).transfer(validator, amount);
