@@ -94,7 +94,10 @@ jobs:
           TOKEN: ${{ secrets.TEMPO_GITHUB_PAT }}
         run: |
           authenticated_url="https://${GITHUB_ACTOR}:${TOKEN}@github.com/"
+          # Rewrite SSH URLs to authenticated HTTPS
           git config --global url."$authenticated_url".insteadOf "ssh://git@github.com/"
+          # Also rewrite plain HTTPS URLs to authenticated HTTPS
+          git config --global url."$authenticated_url".insteadOf "https://github.com/"
 
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
