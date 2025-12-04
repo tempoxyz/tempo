@@ -1,6 +1,6 @@
 # TIP-20 Standard
 
-TIP-20 is Tempo's native token standard for stablecoins and payment tokens. It extends ERC-20 with payment-focused controls and is the foundation for paying transaction fees and routing liquidity on Tempo. We recommend stablecoin issuers use TIP-20 to issue their tokens.
+TIP-20 is Tempo's native token standard for stablecoins and payment tokens. It extends ERC-20 with payment-focused controls and is the foundation for paying transaction fees and routing liquidity on Tempo. We recommend stablecoin issuers use TIP-20 to issue their tokens, both for standardization and to benefit from Tempo protocol features described below.
 
 ## What is TIP-20?
 
@@ -10,7 +10,11 @@ TIP-20 tokens are precompiled contracts that provide a standardized, efficient i
 - **Deterministic addresses**: Deployed through the [TIP-20 Factory](/documentation/protocol/tip20/spec#tip20factory) to vanity addresses with the 12-byte `0x20C0000000000000000000000000` prefix, making tokens easy to recognize and index.
 - **Backward compatible**: Standard ERC-20 calls (`transfer`, `approve`, `transferFrom`) work as expected while adding Tempo-specific capabilities described below.
 
-## Core Features
+## Key Benefits
+
+### Payments Lane 
+
+Tempo has dedicated payment lanes: reserved blockspace for payment TIP-20 transactions that other applications cannot consume. Even if there are extremely popular applications on the chain competing for blockspace, payroll runs or customer disbursements execute predictably. Learn more about the [payments lane](/documentation/protocol/blockspace/payment-lane-specification).
 
 ### Currency Declaration
 
@@ -19,6 +23,7 @@ A TIP-20 token can declare a currency identifier (e.g., `"USD"`, `"EUR"`) that i
 ### Pay Fees in Any Stablecoin
 
 Any USD-denominated TIP-20 token can be used to pay transaction fees on Tempo. The [Fee AMM](/documentation/protocol/fees/spec-fee-amm) automatically converts your token to the validator's preferred fee token, eliminating the need for users to hold a separate gas token. This feature works natively: no additional infrastructure or integration required.
+
 
 
 ### Role-Based Access Control (RBAC)
