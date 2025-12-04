@@ -2,7 +2,7 @@
 
 use crate::{
     PATH_USD_ADDRESS, Precompile, Result,
-    storage::{StorageContext, hashmap::HashMapStorageProvider},
+    storage::{ContractStorage, StorageContext, hashmap::HashMapStorageProvider},
     tip20::{self, ITIP20, TIP20Token},
     tip20_factory::{self, TIP20Factory},
 };
@@ -85,18 +85,53 @@ pub fn setup_storage() -> (HashMapStorageProvider, Address) {
     (HashMapStorageProvider::new(1), Address::random())
 }
 
-/// Builder for TIP20 token setup in tests.
-///
-/// Handles PathUSD initialization, factory creation, role grants, minting,
-/// approvals, and reward configuration in a single chainable API.
+/// Setup mode - determines how the token is obtained.
 #[derive(Default)]
 #[cfg(any(test, feature = "test-utils"))]
-pub struct TIP20Builder {
-    name: String,
-    symbol: String,
-    currency: String,
+enum Action {
+    #[default]
+    /// Ensure PathUSD (token 0) is deployed and configure it.
+    PathUSD,
+
+    /// Create and configure a new token using the TIP20Factory.
+    CreateToken {
+        name: &'static str,
+        symbol: &'static str,
+        currency: &'static str,
+    },
+    /// Configure an existing token at the given address
+    ConfigureToken { address: Address },
+}
+
+/// Helper for TIP20 token setup in tests.
+///
+/// Supports creating new tokens, configuring PathUSD, or modifying existing tokens.
+/// Uses a chainable API for role grants, minting, approvals, and rewards.
+///
+/// # Examples
+///
+/// ```ignore
+/// // Initialize and configure PathUSD
+/// TIP20Setup::path_usd(admin)
+///     .with_issuer(admin)
+///     .apply()?;
+///
+/// // Create a new token
+/// let token = TIP20Setup::new("MyToken", "MTK", admin)
+///     .with_mint(user, amount)
+///     .apply()?;
+///
+/// // Configure an existing token
+/// TIP20Setup::from_address(token_address, admin)
+///     .with_mint(user, amount)
+///     .apply()?;
+/// ```
+#[derive(Default)]
+#[cfg(any(test, feature = "test-utils"))]
+pub struct TIP20Setup {
+    action: Action,
     quote_token: Option<Address>,
-    admin: Address,
+    admin: Option<Address>,
     fee_recipient: Address,
     roles: Vec<(Address, B256)>,
     mints: Vec<(Address, U256)>,
@@ -106,23 +141,48 @@ pub struct TIP20Builder {
 }
 
 #[cfg(any(test, feature = "test-utils"))]
-impl TIP20Builder {
-    /// Create a new token builder with required fields.
-    ///
-    /// Defaults to `currency: "USD"`, `quote_token: PathUSD`, `fee_recipient: Address::ZERO`
-    pub fn new(name: &str, symbol: &str, admin: Address) -> Self {
+impl TIP20Setup {
+    /// Configure PathUSD (token 0).
+    pub fn path_usd(admin: Address) -> Self {
         Self {
-            name: name.to_string(),
-            symbol: symbol.to_string(),
-            currency: "USD".to_string(),
-            admin,
+            action: Action::PathUSD,
+            admin: Some(admin),
             ..Default::default()
         }
     }
 
-    /// Set the token currency (default: "USD").
-    pub fn currency(mut self, currency: &str) -> Self {
-        self.currency = currency.to_string();
+    /// Create a new token via factory. Ensures that `PathUSD` and `TIP20Factory` are initialized.
+    ///
+    /// Defaults to `currency: "USD"`, `quote_token: PathUSD`, `fee_recipient: Address::ZERO`
+    pub fn create(name: &'static str, symbol: &'static str, admin: Address) -> Self {
+        Self {
+            action: Action::CreateToken {
+                name,
+                symbol,
+                currency: "USD",
+            },
+            admin: Some(admin),
+            ..Default::default()
+        }
+    }
+
+    /// Configure an existing token at the given address.
+    pub fn config(address: Address) -> Self {
+        Self {
+            action: Action::ConfigureToken { address },
+            ..Default::default()
+        }
+    }
+
+    /// Set the token currency (default: "USD"). Only applies to new tokens.
+    pub fn currency(mut self, currency: &'static str) -> Self {
+        if let Action::CreateToken {
+            currency: ref mut c,
+            ..
+        } = self.action
+        {
+            *c = currency;
+        }
         self
     }
 
@@ -140,8 +200,7 @@ impl TIP20Builder {
 
     /// Grant ISSUER_ROLE to an account.
     pub fn with_issuer(self, account: Address) -> Self {
-        use crate::tip20::ISSUER_ROLE;
-        self.with_role(account, *ISSUER_ROLE)
+        self.with_role(account, *tip20::ISSUER_ROLE)
     }
 
     /// Grant an arbitrary role to an account.
@@ -177,10 +236,14 @@ impl TIP20Builder {
     }
 
     /// Initialize PathUSD (token 0) if needed and return it.
-    pub fn path_usd(admin: Address) -> Result<TIP20Token> {
+    fn path_usd_inner(&self) -> Result<TIP20Token> {
         if is_initialized(PATH_USD_ADDRESS) {
             return Ok(TIP20Token::from_address(PATH_USD_ADDRESS));
         }
+
+        let admin = self
+            .admin
+            .expect("pathUSD is uninitialized and requires an admin");
 
         // In Allegretto, PathUSD is token 0 created via factory with quoteToken=0
         if StorageContext.spec().is_allegretto() {
@@ -219,32 +282,45 @@ impl TIP20Builder {
         Ok(factory)
     }
 
-    /// Build the token, returning just the TIP20Token.
-    pub fn build(self) -> Result<TIP20Token> {
-        self.build_with_id().map(|(_, token)| token)
+    /// Apply the configuration, returning just the TIP20Token.
+    pub fn apply(self) -> Result<TIP20Token> {
+        self.apply_with_id().map(|(_, token)| token)
     }
 
-    /// Build the token, returning both token_id and TIP20Token.
-    pub fn build_with_id(self) -> Result<(u64, TIP20Token)> {
-        // Initialize factory and pathUSD if needed
-        let mut factory = Self::factory()?;
-        let _ = Self::path_usd(self.admin)?;
+    /// Apply the configuration, returning both token_id and TIP20Token.
+    pub fn apply_with_id(self) -> Result<(u64, TIP20Token)> {
+        let mut token = match self.action {
+            Action::PathUSD => self.path_usd_inner()?,
+            Action::CreateToken {
+                name,
+                symbol,
+                currency,
+            } => {
+                let mut factory = Self::factory()?;
+                self.path_usd_inner()?;
 
-        // Create token via factory
-        let quote = self.quote_token.unwrap_or(PATH_USD_ADDRESS);
-        let token_address = factory.create_token(
-            self.admin,
-            tip20_factory::ITIP20Factory::createTokenCall {
-                name: self.name,
-                symbol: self.symbol,
-                currency: self.currency,
-                quoteToken: quote,
-                admin: self.admin,
-            },
-        )?;
-
-        let token_id = tip20::address_to_token_id_unchecked(token_address);
-        let mut token = TIP20Token::new(token_id);
+                let admin = self.admin.expect("initializing a token requires an admin");
+                let quote = self.quote_token.unwrap_or(PATH_USD_ADDRESS);
+                let token_address = factory.create_token(
+                    admin,
+                    tip20_factory::ITIP20Factory::createTokenCall {
+                        name: name.to_string(),
+                        symbol: symbol.to_string(),
+                        currency: currency.to_string(),
+                        quoteToken: quote,
+                        admin,
+                    },
+                )?;
+                TIP20Token::from_address(token_address)
+            }
+            Action::ConfigureToken { address } => {
+                assert!(
+                    is_initialized(address),
+                    "token not initialized, use `fn create` instead"
+                );
+                TIP20Token::from_address(address)
+            }
+        };
 
         // Apply roles
         for (account, role) in self.roles {
@@ -253,7 +329,8 @@ impl TIP20Builder {
 
         // Apply mints
         for (to, amount) in self.mints {
-            token.mint(self.admin, ITIP20::mintCall { to, amount })?;
+            let admin = get_tip20_admin(token.address()).expect("unable to get token admin");
+            token.mint(admin, ITIP20::mintCall { to, amount })?;
         }
 
         // Apply approvals
@@ -268,9 +345,11 @@ impl TIP20Builder {
 
         // Start reward streams
         for (amount, secs) in self.reward_streams {
-            token.start_reward(self.admin, ITIP20::startRewardCall { amount, secs })?;
+            let admin = get_tip20_admin(token.address()).expect("unable to get token admin");
+            token.start_reward(admin, ITIP20::startRewardCall { amount, secs })?;
         }
 
+        let token_id = tip20::address_to_token_id_unchecked(token.address());
         Ok((token_id, token))
     }
 }
@@ -279,6 +358,23 @@ impl TIP20Builder {
 #[cfg(any(test, feature = "test-utils"))]
 fn is_initialized(address: Address) -> bool {
     crate::storage::StorageContext.has_bytecode(address)
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+fn get_tip20_admin(token: Address) -> Option<Address> {
+    use alloy::sol_types::SolEvent;
+    use tempo_contracts::precompiles::ITIP20Factory;
+
+    let events = StorageContext.get_events(TIP20_FACTORY_ADDRESS);
+    for log in events {
+        if let Ok(event) = ITIP20Factory::TokenCreated::decode_log_data(log)
+            && event.token == token
+        {
+            return Some(event.admin);
+        }
+    }
+
+    None
 }
 
 /// Test helper function for constructing EVM words from hex string literals.

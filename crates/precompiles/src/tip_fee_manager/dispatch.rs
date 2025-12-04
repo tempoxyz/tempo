@@ -171,7 +171,7 @@ mod tests {
     use crate::{
         Precompile, TIP_FEE_MANAGER_ADDRESS, expect_precompile_revert,
         storage::{ContractStorage, StorageContext, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Builder, assert_full_coverage, check_selector_coverage},
+        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
         tip_fee_manager::{
             FeeManagerError,
             amm::{MIN_LIQUIDITY, PoolKey},
@@ -193,7 +193,7 @@ mod tests {
         let admin = Address::random();
         let validator = Address::random();
         StorageContext::enter(&mut storage, || {
-            let token = TIP20Builder::new("TestToken", "TST", admin).build()?;
+            let token = TIP20Setup::create("TestToken", "TST", admin).apply()?;
             let mut fee_manager = TipFeeManager::new();
 
             let calldata = IFeeManager::setValidatorTokenCall {
@@ -238,7 +238,7 @@ mod tests {
         let admin = Address::random();
         let user = Address::random();
         StorageContext::enter(&mut storage, || {
-            let token = TIP20Builder::new("TestToken", "TST", admin).build()?;
+            let token = TIP20Setup::create("TestToken", "TST", admin).apply()?;
             let mut fee_manager = TipFeeManager::new();
 
             let calldata = IFeeManager::setUserTokenCall {
@@ -436,17 +436,17 @@ mod tests {
         let admin = Address::random();
         let user = Address::random();
         StorageContext::enter(&mut storage, || {
-            let user_token = TIP20Builder::new("UserToken", "UTK", admin)
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
                 .with_issuer(admin)
                 .with_mint(user, U256::from(1000000_u64))
                 .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-                .build()?;
+                .apply()?;
 
-            let validator_token = TIP20Builder::new("ValidatorToken", "VTK", admin)
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
                 .with_issuer(admin)
                 .with_mint(user, U256::from(1000000_u64))
                 .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-                .build()?;
+                .apply()?;
 
             let mut fee_manager = TipFeeManager::new();
 
@@ -567,17 +567,17 @@ mod tests {
         let admin = Address::random();
         let user = Address::random();
         StorageContext::enter(&mut storage, || {
-            let user_token = TIP20Builder::new("UserToken", "UTK", admin)
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
                 .with_issuer(admin)
                 .with_mint(user, U256::from(1000000_u64))
                 .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-                .build()?;
+                .apply()?;
 
-            let validator_token = TIP20Builder::new("ValidatorToken", "VTK", admin)
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
                 .with_issuer(admin)
                 .with_mint(user, U256::from(1000000_u64))
                 .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-                .build()?;
+                .apply()?;
 
             let mut fee_manager = TipFeeManager::new();
 

@@ -443,7 +443,7 @@ mod tests {
         TIP_FEE_MANAGER_ADDRESS,
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageContext, hashmap::HashMapStorageProvider},
-        test_util::TIP20Builder,
+        test_util::TIP20Setup,
         tip20::{ITIP20, is_tip20, token_id_to_address},
     };
 
@@ -452,9 +452,9 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let user = Address::random();
         StorageContext::enter(&mut storage, || {
-            let token = TIP20Builder::new("Test", "TST", user)
+            let token = TIP20Setup::create("Test", "TST", user)
                 .with_issuer(user)
-                .build()?;
+                .apply()?;
 
             let mut fee_manager = TipFeeManager::new();
 
@@ -476,7 +476,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let user = Address::random();
         StorageContext::enter(&mut storage, || {
-            let path_usd = TIP20Builder::path_usd(user)?;
+            let path_usd = TIP20Setup::path_usd(user).apply()?;
             let mut fee_manager = TipFeeManager::new();
 
             // Try to set PathUSD as user token - should fail post-Moderato
@@ -495,7 +495,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let user = Address::random();
         StorageContext::enter(&mut storage, || {
-            let path_usd = TIP20Builder::path_usd(user)?;
+            let path_usd = TIP20Setup::path_usd(user).apply()?;
             let mut fee_manager = TipFeeManager::new();
 
             // Try to set PathUSD as user token - should succeed pre-Moderato
@@ -518,7 +518,7 @@ mod tests {
         let admin = Address::random();
         let beneficiary = Address::random();
         StorageContext::enter(&mut storage, || {
-            let token = TIP20Builder::new("Test", "TST", admin).build()?;
+            let token = TIP20Setup::create("Test", "TST", admin).apply()?;
             let mut fee_manager = TipFeeManager::new();
 
             let call = IFeeManager::setValidatorTokenCall {
@@ -553,7 +553,7 @@ mod tests {
         let beneficiary = Address::random();
         let admin = Address::random();
         StorageContext::enter(&mut storage, || {
-            let token = TIP20Builder::new("Test", "TST", admin).build()?;
+            let token = TIP20Setup::create("Test", "TST", admin).apply()?;
             let mut fee_manager = TipFeeManager::new();
 
             // Simulate validator having pending fees by setting validator_in_fees_array
@@ -623,11 +623,11 @@ mod tests {
         StorageContext::enter(&mut storage, || {
             let max_amount = U256::from(10000);
 
-            let token = TIP20Builder::new("Test", "TST", user)
+            let token = TIP20Setup::create("Test", "TST", user)
                 .with_issuer(user)
                 .with_mint(user, U256::from(u64::MAX))
                 .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-                .build()?;
+                .apply()?;
 
             let mut fee_manager = TipFeeManager::new();
 
@@ -670,10 +670,10 @@ mod tests {
             let refund_amount = U256::from(4000);
 
             // Mint to FeeManager (simulating collect_fee_pre_tx already happened)
-            let token = TIP20Builder::new("Test", "TST", admin)
+            let token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(100000000000000_u64))
-                .build()?;
+                .apply()?;
 
             let mut fee_manager = TipFeeManager::new();
 
@@ -725,9 +725,9 @@ mod tests {
         let beneficiary = Address::random();
         StorageContext::enter(&mut storage, || {
             // Create a non-USD token
-            let non_usd_token = TIP20Builder::new("NonUSD", "EUR", admin)
+            let non_usd_token = TIP20Setup::create("NonUSD", "EUR", admin)
                 .currency("EUR")
-                .build()?;
+                .apply()?;
 
             let mut fee_manager = TipFeeManager::new();
 
@@ -767,10 +767,10 @@ mod tests {
             let balance = U256::from(500);
 
             // Create token and mint only `balance` to FeeManager (less than collected_fees)
-            let token = TIP20Builder::new("Test", "TST", admin)
+            let token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, balance)
-                .build()?;
+                .apply()?;
 
             let mut fee_manager = TipFeeManager::new();
 

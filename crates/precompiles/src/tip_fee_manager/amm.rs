@@ -698,7 +698,7 @@ mod tests {
     use crate::{
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageContext, hashmap::HashMapStorageProvider},
-        test_util::TIP20Builder,
+        test_util::TIP20Setup,
         tip_fee_manager::TIPFeeAMMError,
     };
     use alloy::primitives::Address;
@@ -727,7 +727,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         StorageContext::enter(&mut storage, || {
-            let token = TIP20Builder::new("Test", "TST", admin).build()?;
+            let token = TIP20Setup::create("Test", "TST", admin).apply()?;
             let mut amm = TipFeeManager::new();
             let result = amm.mint(
                 admin,
@@ -752,7 +752,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         StorageContext::enter(&mut storage, || {
-            let token = TIP20Builder::new("Test", "TST", admin).build()?;
+            let token = TIP20Setup::create("Test", "TST", admin).apply()?;
             let mut amm = TipFeeManager::new();
             let result = amm.burn(
                 admin,
@@ -776,8 +776,8 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         StorageContext::enter(&mut storage, || {
-            let user_token = TIP20Builder::new("UserToken", "UTK", admin).build()?;
-            let validator_token = TIP20Builder::new("ValidatorToken", "VTK", admin).build()?;
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin).apply()?;
 
             let mut amm = TipFeeManager::new();
             let liquidity = uint!(100000_U256) * uint!(10_U256).pow(U256::from(6));
@@ -810,8 +810,8 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         StorageContext::enter(&mut storage, || {
-            let user_token = TIP20Builder::new("UserToken", "UTK", admin).build()?;
-            let validator_token = TIP20Builder::new("ValidatorToken", "VTK", admin).build()?;
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin).apply()?;
 
             let mut amm = TipFeeManager::new();
             let small_liquidity = uint!(100_U256) * uint!(10_U256).pow(U256::from(6));
@@ -842,8 +842,8 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         StorageContext::enter(&mut storage, || {
-            let user_token = TIP20Builder::new("UserToken", "UTK", admin).build()?;
-            let validator_token = TIP20Builder::new("ValidatorToken", "VTK", admin).build()?;
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin).apply()?;
 
             let mut amm = TipFeeManager::new();
             let liquidity = uint!(100000_U256) * uint!(10_U256).pow(U256::from(6));
@@ -883,8 +883,8 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         StorageContext::enter(&mut storage, || {
-            let user_token = TIP20Builder::new("UserToken", "UTK", admin).build()?;
-            let validator_token = TIP20Builder::new("ValidatorToken", "VTK", admin).build()?;
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin).apply()?;
 
             let mut amm = TipFeeManager::new();
             let initial = uint!(100000_U256) * uint!(10_U256).pow(U256::from(6));
@@ -933,8 +933,8 @@ mod tests {
         let admin = Address::random();
         let to = Address::random();
         StorageContext::enter(&mut storage, || {
-            let user_token = TIP20Builder::new("UserToken", "UTK", admin).build()?;
-            let validator_token = TIP20Builder::new("ValidatorToken", "VTK", admin).build()?;
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin).apply()?;
 
             let mut amm = TipFeeManager::new();
             let initial_liquidity = uint!(100000_U256) * uint!(10_U256).pow(U256::from(6));
@@ -1013,8 +1013,8 @@ mod tests {
         let admin = Address::random();
         let to = Address::random();
         StorageContext::enter(&mut storage, || {
-            let user_token = TIP20Builder::new("UserToken", "UTK", admin).build()?;
-            let validator_token = TIP20Builder::new("ValidatorToken", "VTK", admin).build()?;
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin).apply()?;
 
             let mut amm = TipFeeManager::new();
             let amount = uint!(100000_U256) * uint!(10_U256).pow(U256::from(6));
@@ -1048,8 +1048,8 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         StorageContext::enter(&mut storage, || {
-            let user_token = TIP20Builder::new("UserToken", "UTK", admin).build()?;
-            let validator_token = TIP20Builder::new("ValidatorToken", "VTK", admin).build()?;
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin).apply()?;
 
             let mut amm = TipFeeManager::new();
             let liquidity = uint!(100_U256) * uint!(10_U256).pow(U256::from(6));
@@ -1081,10 +1081,10 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         StorageContext::enter(&mut storage, || {
-            let eur_token = TIP20Builder::new("EuroToken", "EUR", admin)
+            let eur_token = TIP20Setup::create("EuroToken", "EUR", admin)
                 .currency("EUR")
-                .build()?;
-            let usd_token = TIP20Builder::new("USDToken", "USD", admin).build()?;
+                .apply()?;
+            let usd_token = TIP20Setup::create("USDToken", "USD", admin).apply()?;
             let mut amm = TipFeeManager::new();
 
             let result = amm.mint(
@@ -1121,10 +1121,10 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         StorageContext::enter(&mut storage, || {
-            let eur_token = TIP20Builder::new("EuroToken", "EUR", admin)
+            let eur_token = TIP20Setup::create("EuroToken", "EUR", admin)
                 .currency("EUR")
-                .build()?;
-            let usd_token = TIP20Builder::new("USDToken", "USD", admin).build()?;
+                .apply()?;
+            let usd_token = TIP20Setup::create("USDToken", "USD", admin).apply()?;
             let mut amm = TipFeeManager::new();
 
             let result = amm.burn(
@@ -1160,10 +1160,10 @@ mod tests {
         let admin = Address::random();
         let to = Address::random();
         StorageContext::enter(&mut storage, || {
-            let eur_token = TIP20Builder::new("EuroToken", "EUR", admin)
+            let eur_token = TIP20Setup::create("EuroToken", "EUR", admin)
                 .currency("EUR")
-                .build()?;
-            let usd_token = TIP20Builder::new("USDToken", "USD", admin).build()?;
+                .apply()?;
+            let usd_token = TIP20Setup::create("USDToken", "USD", admin).apply()?;
             let mut amm = TipFeeManager::new();
 
             let result = amm.rebalance_swap(
@@ -1198,7 +1198,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         StorageContext::enter(&mut storage, || {
-            let token = TIP20Builder::new("Test", "TST", admin).build()?;
+            let token = TIP20Setup::create("Test", "TST", admin).apply()?;
             let mut amm = TipFeeManager::new();
             let result = amm.mint_with_validator_token(
                 admin,
@@ -1222,8 +1222,8 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         StorageContext::enter(&mut storage, || {
-            let user_token = TIP20Builder::new("UserToken", "UTK", admin).build()?;
-            let validator_token = TIP20Builder::new("ValidatorToken", "VTK", admin).build()?;
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin).apply()?;
             let mut amm = TipFeeManager::new();
 
             // MIN_LIQUIDITY = 1000, amount/2 must be > 1000, so 2000 should fail

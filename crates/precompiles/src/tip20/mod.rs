@@ -928,10 +928,7 @@ pub(crate) mod tests {
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, ITIP20Factory};
 
     use super::*;
-    use crate::{
-        PATH_USD_ADDRESS, error::TempoPrecompileError, storage::PrecompileStorageProvider,
-        test_util::setup_storage,
-    };
+    use crate::{PATH_USD_ADDRESS, error::TempoPrecompileError, test_util::setup_storage};
     use rand::{Rng, distributions::Alphanumeric, thread_rng};
 
     /// Initialize PathUSD token

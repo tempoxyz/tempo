@@ -141,7 +141,7 @@ mod tests {
     use crate::{
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageContext, hashmap::HashMapStorageProvider},
-        test_util::TIP20Builder,
+        test_util::TIP20Setup,
         tip20_rewards_registry::TIP20RewardsRegistry,
     };
     use alloy::primitives::Address;
@@ -305,10 +305,10 @@ mod tests {
             let mut registry = TIP20RewardsRegistry::new();
             registry.initialize()?;
 
-            let mut token = TIP20Builder::new("Test", "TST", admin)
+            let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
                 .with_mint(admin, U256::from(100e18 as u128))
-                .build()?;
+                .apply()?;
             let token_addr = token.address();
 
             // Start a reward stream that lasts 5 seconds from current time (1500)
