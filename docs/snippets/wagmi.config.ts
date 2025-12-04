@@ -1,7 +1,6 @@
-/**
- * biome-ignore-all lint: snippet
- * biome-ignore-all format: snippet
- */
+// @ts-nocheck
+// biome-ignore-all lint: snippet
+// biome-ignore-all format: snippet
 
 // [!region setup]
 import { tempo } from 'tempo.ts/chains'
