@@ -99,27 +99,11 @@ export default defineConfig({
                 text: 'Add funds to your balance',
                 link: '/guide/use-accounts/add-funds',
               },
-              {
-                text: 'Batch Transactions 🚧',
-                disabled: true,
-                link: '/guide/use-accounts/batch-transactions',
-              },
-              {
-                text: 'Fee Sponsorship 🚧',
-                disabled: true,
-                link: '/guide/use-accounts/fee-sponsorship',
-              },
-              {
-                text: 'Scheduled Transactions 🚧',
-                disabled: true,
-                link: '/guide/use-accounts/scheduled-transactions',
-              },
-              {
-                text: 'WebAuthn/P256 Signatures 🚧',
-                disabled: true,
-                link: '/guide/use-accounts/webauthn-p256-signatures',
-              },
             ],
+          },
+          {
+            text: 'Use Tempo Transactions',
+            link: '/guide/tempo-transaction',
           },
           {
             text: 'Make Payments',
@@ -197,8 +181,7 @@ export default defineConfig({
                 link: '/guide/stablecoin-exchange',
               },
               {
-                text: 'Managing fee liquidity 🚧',
-                disabled: true,
+                text: 'Managing fee liquidity',
                 link: '/guide/stablecoin-exchange/managing-fee-liquidity',
               },
               {
@@ -208,11 +191,6 @@ export default defineConfig({
               {
                 text: 'View the orderbook',
                 link: '/guide/stablecoin-exchange/view-the-orderbook',
-              },
-              {
-                text: 'Create your own stablecoin pair 🚧',
-                disabled: true,
-                link: '/guide/stablecoin-exchange/create-pair',
               },
               {
                 text: 'Providing liquidity',
@@ -232,6 +210,10 @@ export default defineConfig({
           {
             text: 'TypeScript',
             link: '/guide/sdks/typescript',
+          },
+          {
+            text: 'Go',
+            link: '/guide/sdks/go',
           },
           {
             text: 'Foundry',
@@ -366,14 +348,6 @@ export default defineConfig({
                 text: 'Specification',
                 link: '/documentation/protocol/tip20-rewards/spec',
               },
-              {
-                text: 'Reference Implementation',
-                link: 'https://github.com/tempoxyz/docs/blob/main/specs/src/TIP20RewardRegistry.sol',
-              },
-              {
-                text: 'Rust Implementation',
-                link: 'https://github.com/tempoxyz/tempo/tree/main/crates/precompiles/src/tip20_rewards_registry',
-              },
             ],
           },
           {
@@ -487,8 +461,8 @@ export default defineConfig({
                 link: '/documentation/protocol/exchange/spec',
               },
               {
-                text: 'linkingUSD',
-                link: '/documentation/protocol/exchange/linkingUSD',
+                text: 'pathUSD',
+                link: '/documentation/protocol/exchange/pathUSD',
               },
               {
                 text: 'Executing Swaps',
@@ -687,18 +661,6 @@ export default defineConfig({
               {
                 text: 'Reward',
                 items: [
-                  {
-                    text: 'cancel',
-                    link: '/sdk/typescript/viem/reward.cancel',
-                  },
-                  {
-                    text: 'getStream',
-                    link: '/sdk/typescript/viem/reward.getStream',
-                  },
-                  {
-                    text: 'getTotalPerSecond',
-                    link: '/sdk/typescript/viem/reward.getTotalPerSecond',
-                  },
                   {
                     text: 'setRecipient',
                     link: '/sdk/typescript/viem/reward.setRecipient',
@@ -1543,6 +1505,15 @@ export default defineConfig({
           },
         ],
       },
+      {
+        text: 'Prool Reference',
+        items: [
+          {
+            text: 'Setup',
+            link: '/sdk/typescript/prool/setup',
+          },
+        ],
+      },
     ],
   },
   topNav: [
@@ -1552,19 +1523,24 @@ export default defineConfig({
       text: 'SDKs',
       items: [
         { text: 'TypeScript', link: '/sdk/typescript' },
+        { text: 'Go', link: '/guide/sdks/go', match: '/_' },
         { text: 'Foundry', link: '/guide/sdks/foundry', match: '/_' },
         { text: 'Rust', link: '/guide/sdks/rust', match: '/_' },
       ],
     },
   ],
-  twoslash: {
-    compilerOptions: {
-      moduleResolution: ModuleResolutionKind.Bundler,
-    },
-    extraFiles: {
-      'twoslash-env.d.ts': twoslashSupportFile,
-    },
-  },
+  twoslash:
+    // biome-ignore lint/style/noNonNullAssertion: _
+    process.env['DISABLE_TWOSLASH']! === 'true'
+      ? false
+      : {
+          compilerOptions: {
+            moduleResolution: ModuleResolutionKind.Bundler,
+          },
+          extraFiles: {
+            'twoslash-env.d.ts': twoslashSupportFile,
+          },
+        },
   vite: {
     plugins: [
       {

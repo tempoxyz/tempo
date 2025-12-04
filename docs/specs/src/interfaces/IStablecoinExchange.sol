@@ -48,6 +48,7 @@ interface IStablecoinExchange {
     error PairAlreadyExists();
     error OrderDoesNotExist();
     error IdenticalTokens();
+    error InvalidToken();
     error TickOutOfBounds(int16 tick);
     error InvalidTick();
     error InvalidFlipTick();

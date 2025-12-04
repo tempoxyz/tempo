@@ -1,6 +1,7 @@
 import LucideDroplet from '~icons/lucide/droplet'
 import LucideFileText from '~icons/lucide/file-text'
 import LucideWallet from '~icons/lucide/wallet'
+import LucideShieldCheck from '~icons/lucide/shield-check'
 import * as Card from "../../../../components/Card.tsx"
 
 # Transaction Fees
@@ -14,12 +15,6 @@ Tempo uses a fixed base fee (rather than a variable base fee as in EIP-1559), se
 ## Learn More
 
 <Card.Container>
-  <Card.Link
-    description="Configure users to pay fees in any supported stablecoin"
-    href="/guide/payments/pay-fees-in-any-stablecoin"
-    icon={LucideWallet}
-    title="Pay Fees in Any Stablecoin"
-  />
   <Card.Link
     description="Provide liquidity to enable fee token conversions"
     href="/guide/stablecoin-exchange/managing-fee-liquidity"
@@ -37,5 +32,17 @@ Tempo uses a fixed base fee (rather than a variable base fee as in EIP-1559), se
     href="/documentation/protocol/fees/spec-fee-amm"
     icon={LucideFileText}
     title="Fee AMM Specification"
+  />
+  <Card.Link
+    description="Sponsor transaction fees"
+    href="/guide/payments/sponsor-user-fees"
+    icon={LucideShieldCheck}
+    title="Guide: Sponsor Transaction Fees"
+  />
+  <Card.Link
+    description="Pay fees in any supported stablecoin"
+    href="/guide/payments/pay-fees-in-any-stablecoin"
+    icon={LucideWallet}
+    title="Guide: Pay Fees in Any Supported Stablecoin"
   />
 </Card.Container>

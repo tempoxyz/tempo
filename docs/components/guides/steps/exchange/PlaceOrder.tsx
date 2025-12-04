@@ -5,7 +5,7 @@ import { type Log, parseUnits } from 'viem'
 import { useAccount, useAccountEffect, useSendCallsSync } from 'wagmi'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
-import { alphaUsd, linkingUsd } from '../../tokens'
+import { alphaUsd, pathUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function PlaceOrder(props: DemoStepProps) {
@@ -51,7 +51,7 @@ export function PlaceOrder(props: DemoStepProps) {
     Actions.token.approve.call({
       spender: Addresses.stablecoinExchange,
       amount,
-      token: linkingUsd,
+      token: pathUsd,
     }),
     Actions.dex.place.call({
       amount,

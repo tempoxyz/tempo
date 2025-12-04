@@ -33,10 +33,10 @@ Ensure that you have set up your client by following the [guide](/guide/sdks/typ
 To place an order, you need to approve the Stablecoin DEX contract to spend the order's "spend" token.
 
 :::info
-The code samples in this guide will place orders on the `AlphaUSD` / `LinkingUSD` pair.
+The code samples in this guide will place orders on the `AlphaUSD` / `pathUSD` pair.
 
 The "spend" token is the token that will be spent to place the order.
-- buying `AlphaUSD` spends `LinkingUSD`
+- buying `AlphaUSD` spends `pathUSD`
 - selling `AlphaUSD` spends `AlphaUSD`
 :::
 
@@ -52,13 +52,13 @@ The "spend" token is the token that will be spent to place the order.
 import { Addresses, Hooks } from 'tempo.ts/wagmi'
 import { parseUnits } from 'viem'
 
-const linkingUsd = '0x20c0000000000000000000000000000000000000'
+const pathUsd = '0x20c0000000000000000000000000000000000000'
 const alphaUsd = '0x20c0000000000000000000000000000000000001'
 
 function ApproveSpend(props: { orderType: 'buy' | 'sell' }) {
   const { orderType } = props
-  // buying AlphaUSD requires we spend LinkingUSD // [!code hl]
-  const spendToken = orderType === 'buy' ? linkingUsd : alphaUsd // [!code hl]
+  // buying AlphaUSD requires we spend pathUSD // [!code hl]
+  const spendToken = orderType === 'buy' ? pathUsd : alphaUsd // [!code hl]
   // [!code hl]
   const { mutate: approve } = Hooks.token.useApproveSync() // [!code hl]
 
@@ -104,13 +104,13 @@ import { Actions, Addresses } from 'tempo.ts/viem'
 import { parseUnits } from 'viem'
 import { useSendCallsSync } from 'wagmi' // [!code hl]
 
-const linkingUsd = '0x20c0000000000000000000000000000000000000'
+const pathUsd = '0x20c0000000000000000000000000000000000000'
 const alphaUsd = '0x20c0000000000000000000000000000000000001'
 
 function PlaceOrder(props: { orderType: 'buy' | 'sell' }) {
   const { orderType } = props
-  // buying AlphaUSD requires we spend LinkingUSD
-  const spendToken = orderType === 'buy' ? linkingUsd : alphaUsd
+  // buying AlphaUSD requires we spend pathUSD
+  const spendToken = orderType === 'buy' ? pathUsd : alphaUsd
 
   const sendCalls = useSendCallsSync() // [!code hl]
 
@@ -207,7 +207,7 @@ import { Hooks } from 'tempo.ts/wagmi'
 import { parseUnits } from 'viem'
 import { useSendCallsSync } from 'wagmi'
 
-const linkingUsd = '0x20c0000000000000000000000000000000000000'
+const pathUsd = '0x20c0000000000000000000000000000000000000'
 const alphaUsd = '0x20c0000000000000000000000000000000000001'
 
 function ManageOrder() {
@@ -219,7 +219,7 @@ function ManageOrder() {
       Actions.token.approve.call({
         spender: Addresses.stablecoinExchange,
         amount: parseUnits('100', 6),
-        token: linkingUsd,
+        token: pathUsd,
       }),
       Actions.dex.place.call({
         token: alphaUsd,
@@ -265,7 +265,7 @@ function ManageOrder() {
 :::
 
 ### Determining quote token
-Each token has a designated quote token that it trades against on the DEX. For most stablecoins, this will be `linkingUSD`.
+Each token has a designated quote token that it trades against on the DEX. For most stablecoins, this will be `pathUSD`.
 
 Use the `token.useGetMetadata` hook to retrieve a token's quote token.
 
@@ -288,7 +288,7 @@ const { data: metadata } = Hooks.token.useGetMetadata({ // [!code focus]
 
 console.log('Token:', metadata?.symbol)
 // @log: Token: AlphaUSD
-console.log('Quote Token:', metadata?.quoteToken) // returns `linkingUSD` address 
+console.log('Quote Token:', metadata?.quoteToken) // returns `pathUSD` address 
 // @log: Quote Token: 0x20c0000000000000000000000000000000000000
 ```
 
@@ -310,13 +310,13 @@ import { Actions, Addresses } from 'tempo.ts/viem'
 import { parseUnits } from 'viem'
 import { useSendCallsSync } from 'wagmi'
 
-const linkingUsd = '0x20c0000000000000000000000000000000000000'
+const pathUsd = '0x20c0000000000000000000000000000000000000'
 const alphaUsd = '0x20c0000000000000000000000000000000000001'
 
 function PlaceFlipOrder(props: { orderType: 'buy' | 'sell' }) {
   const { orderType } = props
-  // buying AlphaUSD requires we spend LinkingUSD
-  const spendToken = orderType === 'buy' ? linkingUsd : alphaUsd
+  // buying AlphaUSD requires we spend pathUSD
+  const spendToken = orderType === 'buy' ? pathUsd : alphaUsd
 
   const sendCalls = useSendCallsSync()
 
@@ -351,7 +351,7 @@ function PlaceFlipOrder(props: { orderType: 'buy' | 'sell' }) {
 
 ### Place order at specific price
 
-Ticks represent prices relative to the quote token (usually linkingUSD). The formula is:
+Ticks represent prices relative to the quote token (usually pathUSD). The formula is:
 
 ```
 tick = (price - 1) * 100_000
