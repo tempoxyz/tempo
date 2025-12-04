@@ -154,6 +154,97 @@ mod tests {
         }
     }
 
+    // -- WORD REPRESENTATION TESTS ------------------------------------------------
+
+    #[test]
+    fn test_unsigned_word_byte_representation() {
+        // u8: single byte, right-aligned
+        assert_eq!(0u8.to_word(), gen_word_from(&["0x00"]));
+        assert_eq!(1u8.to_word(), gen_word_from(&["0x01"]));
+        assert_eq!(255u8.to_word(), gen_word_from(&["0xFF"]));
+        assert!(u8::from_word(gen_word_from(&["0x0100"])).is_err()); // 256, doesn't fit in u8
+
+        // u16: 2 bytes, right-aligned
+        assert_eq!(0u16.to_word(), gen_word_from(&["0x0000"]));
+        assert_eq!(256u16.to_word(), gen_word_from(&["0x0100"]));
+        assert_eq!(u16::MAX.to_word(), gen_word_from(&["0xFFFF"]));
+        assert!(u16::from_word(gen_word_from(&["0x010000"])).is_err()); // 2**16 + 1 doesn't fit in u16
+
+        // u32: 4 bytes, right-aligned
+        assert_eq!(0u32.to_word(), gen_word_from(&["0x00000000"]));
+        assert_eq!(0x12345678u32.to_word(), gen_word_from(&["0x12345678"]));
+        assert_eq!(u32::MAX.to_word(), gen_word_from(&["0xFFFFFFFF"]));
+
+        // u64: 8 bytes, right-aligned
+        assert_eq!(0u64.to_word(), gen_word_from(&["0x0000000000000000"]));
+        assert_eq!(
+            0x123456789ABCDEFu64.to_word(),
+            gen_word_from(&["0x0123456789ABCDEF"])
+        );
+        assert_eq!(u64::MAX.to_word(), gen_word_from(&["0xFFFFFFFFFFFFFFFF"]));
+
+        // u128: 16 bytes, right-aligned
+        assert_eq!(
+            0u128.to_word(),
+            gen_word_from(&["0x00000000000000000000000000000000"])
+        );
+        assert_eq!(
+            u128::MAX.to_word(),
+            gen_word_from(&["0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"])
+        );
+    }
+
+    #[test]
+    fn test_signed_word_byte_representation() {
+        // i8: single byte, right-aligned, two's complement
+        assert_eq!(0i8.to_word(), gen_word_from(&["0x00"]));
+        assert_eq!(1i8.to_word(), gen_word_from(&["0x01"]));
+        assert_eq!((-1i8).to_word(), gen_word_from(&["0xFF"]));
+        assert_eq!((-2i8).to_word(), gen_word_from(&["0xFE"]));
+        assert_eq!(127i8.to_word(), gen_word_from(&["0x7F"])); // i8::MAX
+        assert_eq!((-128i8).to_word(), gen_word_from(&["0x80"])); // i8::MIN
+        assert!(i8::from_word(gen_word_from(&["0x0100"])).is_err()); // 256, doesn't fit in u8
+
+        // i16: 2 bytes, right-aligned, two's complement
+        assert_eq!(0i16.to_word(), gen_word_from(&["0x0000"]));
+        assert_eq!(1i16.to_word(), gen_word_from(&["0x0001"]));
+        assert_eq!((-1i16).to_word(), gen_word_from(&["0xFFFF"]));
+        assert_eq!((-2i16).to_word(), gen_word_from(&["0xFFFE"]));
+        assert_eq!(i16::MAX.to_word(), gen_word_from(&["0x7FFF"]));
+        assert_eq!(i16::MIN.to_word(), gen_word_from(&["0x8000"]));
+        assert!(i16::from_word(gen_word_from(&["0x010000"])).is_err()); // 2**16 + 1 doesn't fit in u16
+
+        // i32: 4 bytes, right-aligned, two's complement
+        assert_eq!(0i32.to_word(), gen_word_from(&["0x00000000"]));
+        assert_eq!(i32::MAX.to_word(), gen_word_from(&["0x7FFFFFFF"]));
+        assert_eq!((-1i32).to_word(), gen_word_from(&["0xFFFFFFFF"]));
+        assert_eq!(i32::MIN.to_word(), gen_word_from(&["0x80000000"]));
+
+        // i64: 8 bytes, right-aligned, two's complement
+        assert_eq!(0i64.to_word(), gen_word_from(&["0x0000000000000000"]));
+        assert_eq!(i64::MAX.to_word(), gen_word_from(&["0x7FFFFFFFFFFFFFFF"]));
+        assert_eq!((-1i64).to_word(), gen_word_from(&["0xFFFFFFFFFFFFFFFF"]));
+        assert_eq!(i64::MIN.to_word(), gen_word_from(&["0x8000000000000000"]));
+
+        // i128: 16 bytes, right-aligned, two's complement
+        assert_eq!(
+            0i128.to_word(),
+            gen_word_from(&["0x00000000000000000000000000000000"])
+        );
+        assert_eq!(
+            i128::MAX.to_word(),
+            gen_word_from(&["0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"])
+        );
+        assert_eq!(
+            (-1i128).to_word(),
+            gen_word_from(&["0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"])
+        );
+        assert_eq!(
+            i128::MIN.to_word(),
+            gen_word_from(&["0x80000000000000000000000000000000"])
+        );
+    }
+
     // -- PRIMITIVE SLOT CONTENT VALIDATION TESTS ----------------------------------
 
     #[test]
