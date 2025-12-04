@@ -685,7 +685,14 @@ impl AA2dPool {
     }
 
     /// Processes state updates and updates internal state accordingly.
-    pub fn on_state_updates(&mut self, state: &HashMap<Address, BundleAccount>) {
+    #[expect(clippy::type_complexity)]
+    pub(crate) fn on_state_updates(
+        &mut self,
+        state: &HashMap<Address, BundleAccount>,
+    ) -> (
+        Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+        Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    ) {
         let mut changes = HashMap::default();
 
         for (account, state) in state {
@@ -707,7 +714,7 @@ impl AA2dPool {
             changes.insert(AASequenceId::new(*account, U256::ZERO), nonce);
         }
 
-        self.on_nonce_changes(changes);
+        self.on_nonce_changes(changes)
     }
 
     /// Asserts that all assumptions are valid.

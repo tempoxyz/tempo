@@ -109,9 +109,9 @@ where
 {
     let mut events = pool.client().canonical_state_stream();
     while let Some(notification) = events.next().await {
-        pool.aa_pool()
-            .write()
-            .on_state_updates(notification.committed().execution_outcome().state().state());
+        pool.notify_aa_pool_on_state_updates(
+            notification.committed().execution_outcome().state().state(),
+        );
     }
 }
 

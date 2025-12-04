@@ -7,7 +7,7 @@ use crate::{
     tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, map::HashMap};
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
 use reth_eth_wire_types::HandleMempoolData;
@@ -24,6 +24,7 @@ use reth_transaction_pool::{
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
 };
+use revm::database::BundleAccount;
 use std::{collections::HashSet, sync::Arc, time::Instant};
 use tempo_chainspec::TempoChainSpec;
 
@@ -74,6 +75,15 @@ where
     /// Returns the configured client
     pub fn client(&self) -> &Client {
         self.protocol_pool.validator().validator().client()
+    }
+
+    /// Updates the 2d nonce pool with the given state changes.
+    pub(crate) fn notify_aa_pool_on_state_updates(&self, state: &HashMap<Address, BundleAccount>) {
+        let (promoted, _mined) = self.aa_2d_pool.write().on_state_updates(state);
+        // Note: mined transactions are notified via the vanilla pool updates
+        self.protocol_pool
+            .inner()
+            .notify_on_transaction_updates(promoted, Vec::new());
     }
 
     fn add_validated_transactions(
