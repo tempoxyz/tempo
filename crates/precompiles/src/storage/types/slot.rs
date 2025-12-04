@@ -34,12 +34,6 @@ pub struct Slot<T> {
     _ty: PhantomData<T>,
 }
 
-impl<T> Default for Slot<T> {
-    fn default() -> Self {
-        Self::new(U256::ZERO, Address::ZERO)
-    }
-}
-
 impl<T> Slot<T> {
     /// Creates a new `Slot` with the given slot number and address.
     ///
