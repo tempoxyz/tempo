@@ -14,8 +14,14 @@ export function OptInToRewards(props: DemoStepProps) {
   const queryClient = useQueryClient()
   const tokenAddress = getData('tokenAddress')
 
+  const [expanded, setExpanded] = React.useState(true)
+
   const { data: balance } = Hooks.token.useGetBalance({
     account: address,
+    token: tokenAddress,
+  })
+
+  const { data: metadata } = Hooks.token.useGetMetadata({
     token: tokenAddress,
   })
 
@@ -29,6 +35,7 @@ export function OptInToRewards(props: DemoStepProps) {
 
   useAccountEffect({
     onDisconnect() {
+      setExpanded(true)
       setRecipient.reset()
     },
   })
@@ -46,10 +53,19 @@ export function OptInToRewards(props: DemoStepProps) {
       active={active}
       completed={setRecipient.isSuccess}
       number={stepNumber}
-      title="Opt in to receive rewards."
+      title={`Opt in to receive ${metadata?.name || 'token'} rewards.`}
       error={setRecipient.error}
       actions={
-        !setRecipient.isSuccess && (
+        setRecipient.isSuccess ? (
+          <Button
+            variant="default"
+            onClick={() => setExpanded(!expanded)}
+            className="text-[14px] -tracking-[2%] font-normal"
+            type="button"
+          >
+            {expanded ? 'Hide' : 'Show'}
+          </Button>
+        ) : (
           <Button
             variant={active ? 'accent' : 'default'}
             disabled={!active || setRecipient.isPending}
@@ -67,7 +83,7 @@ export function OptInToRewards(props: DemoStepProps) {
         )
       }
     >
-      {setRecipient.data && (
+      {setRecipient.data && expanded && (
         <div className="flex ml-6 flex-col gap-3 py-4">
           <div className="ps-5 border-gray4 border-s-2">
             <div className="text-[13px] text-gray9 -tracking-[2%]">

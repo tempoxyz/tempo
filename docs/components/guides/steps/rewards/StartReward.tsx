@@ -7,8 +7,7 @@ import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
-
-const REWARD_AMOUNT = '50'
+import { REWARD_AMOUNT, REWARD_RECIPIENT_UNSET } from './Constants'
 
 export function StartReward(props: DemoStepProps) {
   const { stepNumber, last = false } = props
@@ -16,6 +15,8 @@ export function StartReward(props: DemoStepProps) {
   const { getData, setData } = useDemoContext()
   const queryClient = useQueryClient()
   const tokenAddress = getData('tokenAddress')
+
+  const [expanded, setExpanded] = React.useState(true)
 
   const { data: balance } = Hooks.token.useGetBalance({
     account: address,
@@ -45,6 +46,7 @@ export function StartReward(props: DemoStepProps) {
 
   useAccountEffect({
     onDisconnect() {
+      setExpanded(true)
       start.reset()
     },
   })
@@ -57,8 +59,7 @@ export function StartReward(props: DemoStepProps) {
         tokenAddress &&
         metadata &&
         !!rewardInfo &&
-        rewardInfo.rewardRecipient !==
-          '0x0000000000000000000000000000000000000000',
+        rewardInfo.rewardRecipient !== REWARD_RECIPIENT_UNSET,
     )
     if (last) return activeWithBalance
     return activeWithBalance && !start.isSuccess
@@ -77,10 +78,19 @@ export function StartReward(props: DemoStepProps) {
       active={active}
       completed={start.isSuccess}
       number={stepNumber}
-      title={`Start a reward of ${REWARD_AMOUNT} tokens.`}
+      title={`Start a reward of ${REWARD_AMOUNT} ${metadata?.name || 'tokens'}.`}
       error={start.error}
       actions={
-        !start.isSuccess && (
+        start.isSuccess ? (
+          <Button
+            variant="default"
+            onClick={() => setExpanded(!expanded)}
+            className="text-[14px] -tracking-[2%] font-normal"
+            type="button"
+          >
+            {expanded ? 'Hide' : 'Show'}
+          </Button>
+        ) : (
           <Button
             variant={active ? 'accent' : 'default'}
             disabled={!active || start.isPending || !metadata}
@@ -98,12 +108,11 @@ export function StartReward(props: DemoStepProps) {
         )
       }
     >
-      {start.data && (
+      {start.data && expanded && (
         <div className="flex ml-6 flex-col gap-3 py-4">
           <div className="ps-5 border-gray4 border-s-2">
             <div className="text-[13px] text-gray9 -tracking-[2%]">
-              Successfully started reward distribution of {REWARD_AMOUNT}{' '}
-              tokens.
+              Successfully started reward distribution.
             </div>
             <ExplorerLink hash={start.data.receipt.transactionHash} />
           </div>
