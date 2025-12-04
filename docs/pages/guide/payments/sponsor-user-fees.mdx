@@ -5,6 +5,7 @@ import LucideBook from '~icons/lucide/book'
 import LucideCoins from '~icons/lucide/coins'
 import LucideFileCode from '~icons/lucide/file-code'
 import LucideLayers from '~icons/lucide/layers'
+import { PublicTestnetSponsorTip } from '../../../snippets/public-testnet-sponsor-tip.mdx'
 
 # Sponsor User Fees
 
@@ -39,9 +40,7 @@ You can stand up a minimal fee payer service using the `Handler.feePayer` handle
 
 Use the `withFeePayer` transport provided by the TypeScript SDK ([link](/sdk/typescript/viem/withFeePayer)). It routes transactions to the configured fee payer service for sponsorship when `feePayer: true` is requested on a transaction.
 
-:::info
-In this example we are using the public testnet fee payer service at `https://sponsor.testnet.tempo.xyz` as the fee payer service.
-:::
+<PublicTestnetSponsorTip />
 
 ```ts twoslash [wagmi.config.ts]
 // @noErrors
