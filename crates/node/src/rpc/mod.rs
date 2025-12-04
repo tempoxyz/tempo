@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod amm;
 pub mod dex;
 pub mod error;
@@ -5,6 +6,7 @@ pub mod eth_ext;
 pub mod policy;
 pub mod token;
 
+pub use admin::{TempoAdminApi, TempoAdminApiServer};
 use alloy_primitives::{Address, B256};
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use amm::{TempoAmm, TempoAmmApiServer};
