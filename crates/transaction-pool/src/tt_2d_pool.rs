@@ -91,8 +91,9 @@ impl AA2dPool {
 
     /// Entrypoint for adding a 2d AA transaction.
     ///
-    /// ## Limitations
-    /// * This currently assumes that the account's nonce key is already tracked in [`AA2dNonceKeys`], if not then this transaction is considered pending.
+    /// `on_chain_nonce` is expected to be the nonce of the sender at the time of validation.
+    /// If transaction is using 2D nonces, this is expected to be the nonce corresponding
+    /// to the transaction's nonce key.
     pub(crate) fn add_transaction(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
@@ -529,7 +530,7 @@ impl AA2dPool {
         }
     }
 
-    /// Updates the internal state based on the state changes of the `NonceManager` [`NONCE_PRECOMPILE_ADDRESS`](tempo_precompiles::NONCE_PRECOMPILE_ADDRESS).
+    /// Updates the internal state based on the state changes of the `NonceManager` [`NONCE_PRECOMPILE_ADDRESS`].
     ///
     /// This takes a vec of changed [`AASequenceId`] with their current on chain nonce.
     ///

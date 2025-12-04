@@ -54,11 +54,6 @@ impl<Client> TempoTransactionPool<Client> {
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
         }
     }
-
-    /// Obtains a clone of the shared [`AA2dNonceKeys`].
-    pub fn aa_pool(&self) -> &RwLock<AA2dPool> {
-        &self.aa_2d_pool
-    }
 }
 impl<Client> TempoTransactionPool<Client>
 where
