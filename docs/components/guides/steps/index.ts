@@ -1,3 +1,5 @@
+export { BurnFeeAmmLiquidity } from './amm/BurnFeeAmmLiquidity'
+export { CheckFeeAmmPool } from './amm/CheckFeeAmmPool'
 export { MintFeeAmmLiquidity } from './amm/MintFeeAmmLiquidity'
 export { SelectFeeToken } from './amm/SelectFeeToken'
 export { Connect } from './auth/Connect'

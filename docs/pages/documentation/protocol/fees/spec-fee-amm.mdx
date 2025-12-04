@@ -157,7 +157,7 @@ The `FeeManager` is a singleton contract that implements all the functions of th
 function setUserToken(address token) external
 ```
 
-Sets the default fee token preference for the caller (user). Requires token to be a USD TIP-20 token. Cannot set linkingUSD as user's fee token. Emits `UserTokenSet` event. Access: Direct calls only (not via delegatecall).
+Sets the default fee token preference for the caller (user). Requires token to be a USD TIP-20 token. Emits `UserTokenSet` event. Access: Direct calls only (not via delegatecall).
 
 ```solidity
 function setValidatorToken(address token) external
@@ -168,26 +168,23 @@ Sets the fee token preference for the caller (validator). Requires token to be a
 ```solidity
 function collectFeePreTx(
     address user,
-    address txToAddress,
-    uint256 maxAmount,
-    address feeRecipient
-) external returns (address userToken)
+    address userToken,
+    uint256 maxAmount
+) external
 ```
 
-Called by the protocol before transaction execution. Determines user's fee token preference (transaction → account → contract → validator). Reserves AMM liquidity if user token differs from validator token. Collects maximum possible fee from user. Returns user's token preference. Access: Protocol only (`msg.sender == address(0)`).
+Called by the protocol before transaction execution. The fee token (`userToken`) is determined by the protocol before calling using logic that considers: explicit tx fee token, setUserToken calls, stored user preference, tx.to if TIP-20. Reserves AMM liquidity if user token differs from validator token. Collects maximum possible fee from user. Access: Protocol only (`msg.sender == address(0)`).
 
 ```solidity
 function collectFeePostTx(
     address user,
     uint256 maxAmount,
     uint256 actualUsed,
-    address userToken,
-    address validatorToken,
-    address feeRecipient
+    address userToken
 ) external
 ```
 
-Called by the protocol after transaction execution. Calculates refund amount: `refundAmount = maxAmount - actualUsed`. Refunds unused tokens to user. Releases reserved liquidity for refunded amount. Tracks collected fees for block-end settlement. Access: Protocol only (`msg.sender == address(0)`).
+Called by the protocol after transaction execution. The validator token and fee recipient are inferred from `block.coinbase`. Calculates refund amount: `refundAmount = maxAmount - actualUsed`. Refunds unused tokens to user. Releases reserved liquidity for refunded amount. Tracks collected fees for block-end settlement. Access: Protocol only (`msg.sender == address(0)`).
 
 ```solidity
 function executeBlock() external
@@ -214,18 +211,19 @@ Called once in a system transaction at the end of each block. Processes all coll
 ### Fee Collection Flow
 
 1. **Pre-Transaction**:
+   - Protocol determines user's fee token using logic that considers: explicit tx fee token, setUserToken calls, stored user preference, tx.to if TIP-20
    - Protocol calculates maximum gas needed (`maxAmount = gasLimit * maxFeePerGas`)
-   - `FeeManager.collectFeePreTx()` is called:
-     - Determines user's fee token preference (transaction → account → contract → validator)
+   - `FeeManager.collectFeePreTx(user, userToken, maxAmount)` is called:
      - If user token differs from validator token, reserves AMM liquidity via `reserveLiquidity()`
-     - Collects maximum fee from user using `systemTransferFrom()`
+     - Collects maximum fee from user using `transferFeePreTx()`
    - If any check fails (insufficient balance, insufficient liquidity), transaction is invalid
 
 2. **Post-Transaction**:
    - Calculate actual gas used (`actualUsed = gasUsed * gasPrice`)
-   - `FeeManager.collectFeePostTx()` is called:
+   - `FeeManager.collectFeePostTx(user, maxAmount, actualUsed, userToken)` is called:
+     - Validator token and fee recipient are inferred from `block.coinbase`
      - Calculates refund: `refundAmount = maxAmount - actualUsed`
-     - Refunds unused tokens to user
+     - Refunds unused tokens to user via `transferFeePostTx()`
      - Releases reserved liquidity for refunded amount via `releaseLiquidityPostTx()`
      - Tracks collected fees (actual used amount) for block-end settlement
 

@@ -113,7 +113,7 @@ export function Example() {
         onClick={() =>
           connect.connect({
             connector,
-            capabilities: { createAccount: true },
+            capabilities: { type: 'sign-up' },
           })
         }
       >
@@ -191,7 +191,7 @@ export function Example() {
         onClick={() =>
           connect.connect({
             connector,
-            capabilities: { createAccount: true },
+            capabilities: { type: 'sign-up' },
           })
         }
       >
