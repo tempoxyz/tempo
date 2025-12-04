@@ -85,7 +85,7 @@ type ReturnType = {
   durationSeconds: number
   /** Address that funded the stream */
   funder: Address
-  /** Unique stream ID (0 for immediate distributions, >0 for streaming) */
+  /** Unique stream ID (0 for immediate distributions; all that is currently supported) */
   id: bigint
   /** Transaction receipt */
   receipt: TransactionReceipt
@@ -104,7 +104,7 @@ The amount of tokens to distribute. Must be greater than 0.
 
 - **Type:** `number`
 
-The duration in seconds. Use `0` for immediate distribution, or `>0` for linear streaming over time.
+The duration in seconds. Currently, must be `0` (meaning immediate distribution).
 
 ### token
 

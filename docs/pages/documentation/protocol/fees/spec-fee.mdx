@@ -42,6 +42,32 @@ If the `fee_payer_signature` field is set, then it is used to derive the `fee_pa
 
 For purposes of [fee token preferences](#fee-token-preferences), the `fee_payer` is the account that chooses the fee token.
 
+### Fee sponsorship flow
+
+Presence of the `fee_payer_signature` field authorizes a third party to pay the transaction's gas costs while the original sender executes the transaction logic.
+
+:::steps
+#### Sender signs the transaction
+The sender signs the transaction with their private key, signing over a blank fee token field. This means the sender delegates the choice of which fee token to use to the fee payer.
+
+#### Fee payer selects and signs
+The fee payer selects which fee token to use, then signs over the transaction.
+
+#### Transaction submission
+The fee token and fee payer signature is added to the transaction using the `fee_payer_signature` field and is then submitted.
+
+#### Network validation
+The network validates both signatures and executes the transaction.
+:::
+
+#### Validation
+
+When `feePayerSignature` is present:
+* Both sender and fee payer signatures must be valid
+* Fee payer must have sufficient balance in the fee token
+* Transaction is rejected if either signature fails or fee payer's balance is insufficient
+
+
 ## Fee token preferences
 
 The protocol checks for token preferences in four ways, with this order of precedence:
@@ -49,16 +75,15 @@ The protocol checks for token preferences in four ways, with this order of prece
 1. Transaction (set by the `fee_token` field of the transaction)
 2. Account (set on the FeeManager contract by the `fee_payer` of the transaction)
 3. TIP-20 contract (if transaction is calling any function on a TIP-20 contract, the transaction uses that token as its fee token)
-4. Validator (if validator sets a fee preference)
+4. PathUSD (as a fallback)
 
 The protocol checks preferences at each of these levels, stopping at the first one at which a preference is specified. At that level, the protocol performs the following checks. If any of the checks fail, the transaction is invalid (without looking at any further levels):
 
 * The token must be a TIP-20 token whose currency is USD.
-* The token must not be [linkingUSD](/documentation/protocol/exchange/linkingUSD). (While validators can accept fees in linkingUSD, users cannot pay fees in linkingUSD.)
 * The user must have sufficient balance in that token to pay the `gasLimit` on the transaction at the transaction's `gasPrice`.
 * There must be sufficient liquidity on the [fee AMM](/documentation/protocol/fees/spec-fee-amm.mdx), as discussed in that specification.
 
-If no preference is specified at the transaction, account, or contract level, the transaction is invalid.
+If no preference is specified at the transaction, account, or contract level, the protocol falls back to [pathUSD](#pathusd).
 
 ### Transaction level
 
@@ -70,7 +95,7 @@ For [sponsored transactions](#fee-payer), the `tx.origin` address does not sign 
 
 An account can specify a fee token preference for all transactions for which it is the `fee_payer` (including both transactions it sponsors as well as non-sponsored transactions for which it is the `tx.origin`). This overrides any preference set at the contract or validator level.
 
-To set its preference, the account can call the `setUserToken` function on the FeeManager precompile. This call reverts if the user specifies linkingUSD as their fee token.
+To set its preference, the account can call the `setUserToken` function on the FeeManager precompile.
 
 At this step, the protocol does one more check:
 
@@ -82,9 +107,9 @@ At this step, the protocol does one more check:
 
 If the top-level call of a transaction is to a TIP-20 contract for which the currency is USD, or _all_ of the top-level calls of a native-AA transaction are to the same TIP-20 contract for which the currency is USD, that token is used as the user's fee token for that transaction (unless there is a preference specified at the [transaction](#transaction-level) or [account](#account-level) level).
 
-### Validator level
+### pathUSD
 
-If no fee preference is set at the transaction, account, or contract level, the default fee token is the [current validator's preferred fee token](#validator-preferences). If that token is linkingUSD, the transaction is invalid (since linkingUSD cannot be paid by a user).
+If no fee preference is set at the transaction, account, or contract level, the protocol falls back to [pathUSD](/documentation/protocol/exchange/pathUSD.mdx) as the user's fee token preference. 
 
 ## Validator preferences
 
@@ -102,6 +127,8 @@ feeManager.setValidatorToken(preferredTokenAddress);
 After setting a validator token preference, all fees collected in blocks the validator proposes will be automatically converted to the chosen token (if needed) and transferred to the validator's account.
 
 On the Andantino testnet, validators currently expect alphaUSD (one of the tokens distributed by the faucet) as their fee token.
+
+If validators have not specified a fee token preference, the protocol falls back to expecting pathUSD as their fee token.
 
 ### Removing validator preference
 

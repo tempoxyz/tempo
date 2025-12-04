@@ -18,16 +18,20 @@ interface ITIP20 {
     /// @notice Error when an invalid currency identifier is provided.
     error InvalidCurrency();
     error InvalidQuoteToken();
+    error InvalidBaseToken();
 
     /// @notice Error when attempting to transfer to an invalid recipient address.
     error InvalidRecipient();
     error InvalidSupplyCap();
     error NoOptedInSupply();
-    error NotStreamFunder();
+    /// @notice Error when starting a reward stream with seconds > 0
+    error ScheduledRewardsDisabled();
 
     /// @notice Error when a transfer is blocked by the current transfer policy.
     error PolicyForbids();
-    error StreamInactive();
+
+    /// @notice Error when attempting to burn from a protected address.
+    error ProtectedAddress();
     error SupplyCapExceeded();
 
     /// @notice Emitted when an allowance is set between owner and spender.
@@ -57,7 +61,6 @@ interface ITIP20 {
     /// @param isPaused The new pause state of the contract.
     event PauseStateUpdate(address indexed updater, bool isPaused);
     event QuoteTokenUpdate(address indexed updater, ITIP20 indexed newQuoteToken);
-    event RewardCanceled(address indexed funder, uint64 indexed id, uint256 refund);
     event RewardRecipientSet(address indexed holder, address indexed recipient);
     event RewardScheduled(
         address indexed funder, uint64 indexed id, uint256 amount, uint32 durationSeconds
@@ -131,8 +134,6 @@ interface ITIP20 {
     /// @param memo The memo to attach to the burn operation.
     function burnWithMemo(uint256 amount, bytes32 memo) external;
 
-    function cancelReward(uint64 id) external returns (uint256 refund);
-
     /// @notice Changes the transfer policy identifier.
     /// @param newPolicyId The new policy identifier to set.
     function changeTransferPolicyId(uint64 newPolicyId) external;
@@ -145,24 +146,7 @@ interface ITIP20 {
 
     function decimals() external pure returns (uint8);
 
-    /// @notice Finalizes all TIP20 reward streams ending at `endTime`.
-    /// @param endTime Timestamp used to specify which reward streams to finalize.
-    function finalizeStreams(uint64 endTime) external;
-
-    function getStream(uint64 id)
-        external
-        view
-        returns (
-            address funder,
-            uint64 startTime,
-            uint64 endTime,
-            uint256 ratePerSecondScaled,
-            uint256 amountTotal
-        );
-
     function globalRewardPerToken() external view returns (uint256);
-
-    function lastUpdateTime() external view returns (uint64);
 
     /// @notice Mints new tokens to a specified address.
     /// @param to The address to mint tokens to.
@@ -179,8 +163,6 @@ interface ITIP20 {
 
     function nextQuoteToken() external view returns (ITIP20);
 
-    function nextStreamId() external view returns (uint64);
-
     function optedInSupply() external view returns (uint128);
 
     /// @notice Pauses the contract, preventing transfers and other operations.
@@ -192,8 +174,6 @@ interface ITIP20 {
 
     function quoteToken() external view returns (ITIP20);
 
-    function scheduledRateDecrease(uint64) external view returns (uint256);
-
     function setNextQuoteToken(ITIP20 newQuoteToken) external;
 
     function setRewardRecipient(address newRewardRecipient) external;
@@ -202,17 +182,6 @@ interface ITIP20 {
 
     function startReward(uint256 amount, uint32 seconds_) external returns (uint64);
 
-    function streams(uint64)
-        external
-        view
-        returns (
-            address funder,
-            uint64 startTime,
-            uint64 endTime,
-            uint256 ratePerSecondScaled,
-            uint256 amountTotal
-        );
-
     /// @notice Returns the maximum supply cap for the token.
     /// @return The supply cap amount.
     function supplyCap() external view returns (uint256);
@@ -220,8 +189,6 @@ interface ITIP20 {
     function symbol() external view returns (string memory);
 
     function systemTransferFrom(address from, address to, uint256 amount) external returns (bool);
-
-    function totalRewardPerSecond() external view returns (uint256);
 
     /// @notice Returns the total token supply.
     /// @return The total amount of tokens in circulation.

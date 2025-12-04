@@ -13,7 +13,7 @@ For general information about Foundry, see the [Foundry documentation](https://g
 This will install the latest `nightly` release of the Tempo fork.
 
 ```bash
-curl -L https://foundry.paradigm.xyz | bash
+curl -L https://tempo.xyz/foundry | bash
 foundryup -n tempo
 ```
 
@@ -84,8 +84,25 @@ forge create src/Mail.sol:Mail \
   --verify \
   --constructor-args 0x20c0000000000000000000000000000000000001
 
+# Deploy a simple contract with custom fee token
+forge create src/Mail.sol:Mail \
+  --fee-token <FEE_TOKEN_ADDRESS>
+  --rpc-url $TEMPO_RPC_URL \
+  --interactive \
+  --broadcast \
+  --verify \
+  --constructor-args 0x20c0000000000000000000000000000000000001
+
 # Run a deployment script and verify on Tempo's explorer
 forge script script/Mail.s.sol \
+  --interactive \
+  --sender <YOUR_WALLET_ADDRESS> \
+  --broadcast \
+  --verify
+
+# Run a deployment script with custom fee token and verify on Tempo's explorer
+forge script script/Mail.s.sol \
+  --fee-token <FEE_TOKEN_ADDRESS>
   --interactive \
   --sender <YOUR_WALLET_ADDRESS> \
   --broadcast \
@@ -113,6 +130,18 @@ cast erc20 balance <TOKEN_ADDRESS> <YOUR_WALLET_ADDRESS> \
 
 # Transfer some of your ERC20 tokens:
 cast erc20 transfer <TOKEN_ADDRESS> <RECEIVER_ADDRESS> <AMOUNT> \
+  --rpc-url $TEMPO_RPC_URL \
+  --interactive
+
+# Transfer some of your ERC20 tokens with custom fee token:
+cast erc20 transfer <TOKEN_ADDRESS> <RECEIVER_ADDRESS> <AMOUNT> \
+  --fee-token <FEE_TOKEN_ADDRESS>
+  --rpc-url $TEMPO_RPC_URL \
+  --interactive
+
+# Send a transaction with custom fee token:
+cast send <CONTRACT_ADDRESS> <FUNCTION_SIGNATURE> \
+  --fee-token <FEE_TOKEN_ADDRESS> \
   --rpc-url $TEMPO_RPC_URL \
   --interactive
 
