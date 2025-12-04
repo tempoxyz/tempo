@@ -454,7 +454,7 @@ export default defineConfig({
       ],
       '/learn': [
         {
-          text: 'Overview',
+          text: 'Learn Home',
           link: '/learn',
         },
         {
@@ -499,6 +499,15 @@ export default defineConfig({
             },
           ],
         },
+        {
+          text: 'More About Tempo',
+          items: [
+            {
+              text: 'Tempo Overview',
+              link: '/learn/tempo-overview',
+            },
+          ],
+        }
       ],
       '/sdk/typescript': [
         {
