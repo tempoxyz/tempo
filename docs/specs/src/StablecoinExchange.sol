@@ -979,11 +979,12 @@ contract StablecoinExchange is IStablecoinExchange {
     /// @param baseForQuote True if spending base for quote, false if spending quote for base
     /// @param amountIn Exact amount of input tokens to spend
     /// @return amountOut Amount of output tokens received
-    function _quoteExactIn(bytes32 key, Orderbook storage book, bool baseForQuote, uint128 amountIn)
-        internal
-        view
-        returns (uint128 amountOut)
-    {
+    function _quoteExactIn(
+        bytes32 key,
+        Orderbook storage book,
+        bool baseForQuote,
+        uint128 amountIn
+    ) internal view returns (uint128 amountOut) {
         uint128 remainingIn = amountIn;
 
         if (baseForQuote) {

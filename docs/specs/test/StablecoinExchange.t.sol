@@ -703,9 +703,10 @@ contract StablecoinExchangeTest is BaseTest {
     }
 
     // Test withdraw validation
-    function testFuzz_Withdraw_RevertIf_InsufficientBalance(uint128 balance, uint128 withdrawAmount)
-        public
-    {
+    function testFuzz_Withdraw_RevertIf_InsufficientBalance(
+        uint128 balance,
+        uint128 withdrawAmount
+    ) public {
         vm.assume(balance < type(uint128).max); // Avoid overflow in balance + 1
         withdrawAmount = uint128(bound(withdrawAmount, balance + 1, type(uint128).max));
 
