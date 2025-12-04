@@ -2,7 +2,7 @@ use alloy::{
     network::ReceiptResponse,
     primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
-    signers::local::{LocalSigner, MnemonicBuilder, PrivateKeySigner},
+    signers::local::{MnemonicBuilder, PrivateKeySigner},
     sol_types::SolEvent,
 };
 use alloy_network::TransactionBuilder;
