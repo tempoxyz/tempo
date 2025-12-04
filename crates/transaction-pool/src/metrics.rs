@@ -18,9 +18,6 @@ pub struct AA2dPoolMetrics {
     /// Number of queued (non-executable) transactions in the AA2D pool
     pub queued_transactions: Gauge,
 
-    /// Number of unique addresses with tracked nonce keys
-    pub tracked_addresses: Gauge,
-
     /// Total number of tracked (address, nonce_key) pairs
     pub tracked_nonce_keys: Gauge,
 
@@ -50,11 +47,6 @@ impl AA2dPoolMetrics {
     #[inline]
     pub fn inc_nonce_key_count(&self, nonce_keys: usize) {
         self.tracked_nonce_keys.increment(nonce_keys as f64);
-    }
-    /// Update the nonce key tracking metrics
-    #[inline]
-    pub fn set_tracked_address_count(&self, addresses: usize) {
-        self.tracked_addresses.set(addresses as f64);
     }
 
     /// Increment the inserted transactions counter

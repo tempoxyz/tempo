@@ -1,26 +1,27 @@
 /// Basic 2D nonce pool for user nonces (nonce_key > 0) that are tracked on chain.
 use crate::{metrics::AA2dPoolMetrics, transaction::TempoPooledTransaction};
-use alloy_primitives::{Address, B256, TxHash, U256};
-use parking_lot::RwLock;
+use alloy_primitives::{Address, B256, TxHash, U256, map::HashMap};
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_tracing::tracing::trace;
 use reth_transaction_pool::{
-    BestTransactions, CoinbaseTipOrdering, PoolResult, PoolTransaction, PriceBumpConfig, Priority,
-    SubPool, SubPoolLimit, TransactionOrdering, TransactionOrigin, ValidPoolTransaction,
+    BestTransactions, CoinbaseTipOrdering, PoolResult, PriceBumpConfig, Priority, SubPool,
+    SubPoolLimit, TransactionOrdering, TransactionOrigin, ValidPoolTransaction,
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
     pool::{AddedPendingTransaction, AddedTransaction, QueuedReason, pending::PendingTransaction},
 };
+use revm::database::BundleAccount;
 use std::{
     collections::{
         BTreeMap, BTreeSet,
         Bound::{Excluded, Unbounded},
-        HashMap, HashSet,
+        HashSet,
         btree_map::Entry,
         hash_map,
     },
     sync::Arc,
 };
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::slots, storage::double_mapping_slot};
 
 type Ordering = CoinbaseTipOrdering<TempoPooledTransaction>;
 
@@ -47,8 +48,14 @@ pub struct AA2dPool {
     by_id: BTreeMap<AA2dTransactionId, AA2dInternalTransaction>,
     /// _All_ transactions by hash.
     by_hash: HashMap<TxHash, Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-    /// Keeps track of the known nonce key values per account.
-    nonce_keys: AA2dNonceKeys,
+    /// Reverse index for the storage slot of an account's nonce
+    ///
+    /// ```solidity
+    ///  mapping(address => mapping(uint256 => uint64)) public nonces
+    /// ```
+    ///
+    /// This identifies the account and nonce key based on the slot in the `NonceManager`.
+    address_slots: HashMap<U256, (Address, U256)>,
     /// Settings for this sub-pool.
     config: AA2dPoolConfig,
     /// Metrics for tracking pool statistics
@@ -57,19 +64,19 @@ pub struct AA2dPool {
 
 impl Default for AA2dPool {
     fn default() -> Self {
-        Self::new(AA2dPoolConfig::default(), AA2dNonceKeys::default())
+        Self::new(AA2dPoolConfig::default())
     }
 }
 
 impl AA2dPool {
     /// Creates a new instance with the givenconfig and nonce keys
-    pub fn new(config: AA2dPoolConfig, nonce_keys: AA2dNonceKeys) -> Self {
+    pub fn new(config: AA2dPoolConfig) -> Self {
         Self {
             submission_id: 0,
             independent_transactions: Default::default(),
             by_id: Default::default(),
             by_hash: Default::default(),
-            nonce_keys,
+            address_slots: Default::default(),
             config,
             metrics: AA2dPoolMetrics::default(),
         }
@@ -89,9 +96,10 @@ impl AA2dPool {
     pub(crate) fn add_transaction(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+        on_chain_nonce: u64,
     ) -> PoolResult<AddedTransaction<TempoPooledTransaction>> {
         debug_assert!(
-            transaction.transaction.is_aa_2d(),
+            transaction.transaction.is_aa(),
             "only AA transactions are supported"
         );
         if self.contains(transaction.hash()) {
@@ -106,13 +114,10 @@ impl AA2dPool {
             .aa_transaction_id()
             .expect("Transaction added to AA2D pool must be an AA transaction");
 
-        let on_chain_nonce = self
-            .nonce_keys
-            .current_nonce(
-                transaction.transaction.sender_ref(),
-                &tx_id.seq_id.nonce_key,
-            )
-            .unwrap_or_default();
+        // Cache the nonce key slot for reverse lookup, if this transaction uses 2D nonce.
+        if transaction.transaction.has_non_zero_nonce_key() {
+            self.record_2d_slot(transaction.sender(), tx_id.seq_id.nonce_key);
+        }
 
         if transaction.nonce() < on_chain_nonce {
             // outdated transaction
@@ -530,13 +535,15 @@ impl AA2dPool {
     ///
     /// This will prune mined transactions and promote unblocked transactions if any, returns `(promoted, mined)`
     #[allow(clippy::type_complexity)]
-    pub(crate) fn on_aa_2d_nonce_changes(
+    pub(crate) fn on_nonce_changes(
         &mut self,
         on_chain_ids: HashMap<AASequenceId, u64>,
     ) -> (
         Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
         Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     ) {
+        trace!(target: "txpool::2d", ?on_chain_ids, "processing nonce changes");
+
         let mut promoted = Vec::new();
         let mut mined_ids = Vec::new();
 
@@ -653,15 +660,54 @@ impl AA2dPool {
         self.by_hash.values().filter(|tx| tx.propagate).cloned()
     }
 
-    /// Returns the shared instance of the [`AA2dNonceKeys`]
-    pub(crate) fn aa_2d_nonce_keys(&self) -> &AA2dNonceKeys {
-        &self.nonce_keys
-    }
-
     const fn next_id(&mut self) -> u64 {
         let id = self.submission_id;
         self.submission_id = self.submission_id.wrapping_add(1);
         id
+    }
+
+    /// Caches the 2D nonce key slot for the given sender and nonce key.
+    fn record_2d_slot(&mut self, address: Address, nonce_key: U256) {
+        trace!(target: "txpool::2d", ?address, ?nonce_key, "recording 2d nonce slot");
+        let slot = double_mapping_slot(
+            address.as_slice(),
+            nonce_key.to_be_bytes::<32>(),
+            slots::NONCES,
+        );
+
+        if self
+            .address_slots
+            .insert(slot, (address, nonce_key))
+            .is_none()
+        {
+            self.metrics.inc_nonce_key_count(1);
+        }
+    }
+
+    /// Processes state updates and updates internal state accordingly.
+    pub fn on_state_updates(&mut self, state: &HashMap<Address, BundleAccount>) {
+        let mut changes = HashMap::default();
+
+        for (account, state) in state {
+            if account == &NONCE_PRECOMPILE_ADDRESS {
+                // Process known 2D nonce slot changes.
+                for (slot, value) in state.storage.iter() {
+                    if let Some((address, nonce_key)) = self.address_slots.get(slot) {
+                        changes.insert(
+                            AASequenceId::new(*address, *nonce_key),
+                            value.present_value.saturating_to(),
+                        );
+                    }
+                }
+            }
+            let nonce = state
+                .account_info()
+                .map(|info| info.nonce)
+                .unwrap_or_default();
+            changes.insert(AASequenceId::new(*account, U256::ZERO), nonce);
+        }
+
+        self.on_nonce_changes(changes);
     }
 
     /// Asserts that all assumptions are valid.
@@ -806,129 +852,6 @@ pub struct AA2dPoolConfig {
     pub aa_2d_limit: SubPoolLimit,
 }
 
-/// Keeps track of the account's nonce keys.
-///
-/// This tries to be in sync with the state
-#[derive(Default, Debug, Clone)]
-pub struct AA2dNonceKeys {
-    inner: Arc<RwLock<AA2dNonceKeysInner>>,
-    /// Metrics for tracking pool statistics
-    metrics: AA2dPoolMetrics,
-}
-
-impl AA2dNonceKeys {
-    /// Inserts/Updates the latest account info
-    pub fn insert(&self, address: Address, nonce_key: U256, nonce: u64, slot: U256) {
-        trace!(target: "txpool::2d", ?address, ?nonce_key, ?nonce, ?slot, "inserting 2d nonce info");
-        let (address_count, new_nonce_key) =
-            self.inner.write().insert(address, nonce_key, nonce, slot);
-        if new_nonce_key {
-            self.metrics.inc_nonce_key_count(1);
-        }
-        self.metrics.set_tracked_address_count(address_count);
-    }
-
-    /// Returns the tracked nonce for this address' nonce key.
-    pub fn current_nonce(&self, address: &Address, nonce_key: &U256) -> Option<u64> {
-        self.inner.read().current_nonce(address, nonce_key)
-    }
-
-    /// Update the tracked nonces for the slots and return the new on chain identifiers for the changed slots.
-    ///
-    /// Note: This only updates existing, tracked slots.
-    pub(crate) fn update_tracked(
-        &self,
-        changed_slots: impl IntoIterator<Item = (U256, U256)>,
-    ) -> HashMap<AASequenceId, u64> {
-        self.inner.write().update_tracked(changed_slots)
-    }
-
-    /// Returns the number of tracked addresses and total tracked nonce keys.
-    ///
-    /// Returns (number of addresses, total number of nonce keys across all addresses)
-    pub fn tracked_counts(&self) -> (usize, usize) {
-        let inner = self.inner.read();
-        let num_addresses = inner.address_to_nonce_keys.len();
-        let num_nonce_keys = inner
-            .address_to_nonce_keys
-            .values()
-            .map(|keys| keys.len())
-            .sum();
-        (num_addresses, num_nonce_keys)
-    }
-}
-
-/// Keeps track of the account's nonce keys.
-///
-/// This tries to be in sync with the
-#[derive(Default, Debug)]
-struct AA2dNonceKeysInner {
-    /// Keeps track of the on chain nonce for an account's nonce key.
-    address_to_nonce_keys: HashMap<Address, HashMap<U256, u64>>,
-    /// Reverse index for the storage slot of an account's nonce
-    ///
-    /// ```solidity
-    ///  mapping(address => mapping(uint256 => uint64)) public nonces
-    /// ```
-    ///
-    /// This identifies the account and nonce key based on the slot in the `NonceManager`.
-    address_slots: HashMap<U256, (Address, U256)>,
-}
-
-impl AA2dNonceKeysInner {
-    /// Inserts the nonce key info for the account's nonce key.
-    ///
-    /// Returns the number of tracked addresses and whether the nonce key was new.
-    fn insert(
-        &mut self,
-        address: Address,
-        nonce_key: U256,
-        nonce: u64,
-        slot: U256,
-    ) -> (usize, bool) {
-        let new_key = self
-            .address_to_nonce_keys
-            .entry(address)
-            .or_default()
-            .insert(nonce_key, nonce)
-            .is_none();
-        self.address_slots.insert(slot, (address, nonce_key));
-
-        (self.address_slots.len(), new_key)
-    }
-
-    fn current_nonce(&self, address: &Address, nonce_key: &U256) -> Option<u64> {
-        self.address_to_nonce_keys
-            .get(address)?
-            .get(nonce_key)
-            .copied()
-    }
-
-    fn update_tracked(
-        &mut self,
-        changed_slots: impl IntoIterator<Item = (U256, U256)>,
-    ) -> HashMap<AASequenceId, u64> {
-        let mut ids = HashMap::new();
-        for (account_nonce_key_slot, nonce) in changed_slots {
-            if let Some((address, nonce_key)) = self.address_slots.get(&account_nonce_key_slot)
-                && let Some(nonce_keys) = self.address_to_nonce_keys.get_mut(address)
-            {
-                match nonce_keys.entry(*nonce_key) {
-                    hash_map::Entry::Occupied(mut entry) => {
-                        let new_nonce = nonce.saturating_to();
-                        entry.insert(new_nonce);
-                        ids.insert(AASequenceId::new(*address, *nonce_key), new_nonce);
-                    }
-                    hash_map::Entry::Vacant(_) => {
-                        // we haven't tracked this key yet, so we ignore
-                    }
-                }
-            }
-        }
-        ids
-    }
-}
-
 #[derive(Debug, Clone)]
 struct AA2dInternalTransaction {
     /// Keeps track of the transaction
@@ -1057,7 +980,7 @@ mod tests {
     use alloy_consensus::Transaction;
     use alloy_primitives::{Address, Signature, TxKind, U256};
     use reth_primitives_traits::Recovered;
-    use reth_transaction_pool::ValidPoolTransaction;
+    use reth_transaction_pool::{PoolTransaction, ValidPoolTransaction};
     use std::{collections::HashSet, time::Instant};
     use tempo_primitives::{
         TempoTxEnvelope,
@@ -1127,25 +1050,20 @@ mod tests {
         }
     }
 
-    #[test]
-    fn insert_pending() {
+    #[test_case::test_case(U256::ZERO)]
+    #[test_case::test_case(U256::random())]
+    fn insert_pending(nonce_key: U256) {
         let mut pool = AA2dPool::default();
-        let nonces = pool.nonce_keys.clone();
 
         // Set up a sender with a tracked nonce key
         let sender = Address::random();
-        let nonce_key = U256::from(1);
-        let storage_slot = U256::from(12345); // Arbitrary slot for testing
-
-        // Track the nonce key starting at nonce 0
-        nonces.insert(sender, nonce_key, 0, storage_slot);
 
         // Create a transaction with nonce_key=1, nonce=0 (should be pending)
         let tx = create_aa_tx(sender, nonce_key, 0);
         let valid_tx = wrap_valid_tx(tx, TransactionOrigin::Local);
 
         // Add the transaction to the pool
-        let result = pool.add_transaction(Arc::new(valid_tx));
+        let result = pool.add_transaction(Arc::new(valid_tx), 0);
 
         // Should be added as pending
         assert!(result.is_ok(), "Transaction should be added successfully");
@@ -1163,25 +1081,20 @@ mod tests {
         pool.assert_invariants();
     }
 
-    #[test]
-    fn insert_with_nonce_gap_then_fill() {
+    #[test_case::test_case(U256::ZERO)]
+    #[test_case::test_case(U256::random())]
+    fn insert_with_nonce_gap_then_fill(nonce_key: U256) {
         let mut pool = AA2dPool::default();
-        let nonces = pool.nonce_keys.clone();
 
         // Set up a sender with a tracked nonce key
         let sender = Address::random();
-        let nonce_key = U256::from(1);
-        let storage_slot = U256::from(12345);
-
-        // Track the nonce key starting at nonce 0
-        nonces.insert(sender, nonce_key, 0, storage_slot);
 
         // Step 1: Insert transaction with nonce=1 (creates a gap, should be queued)
         let tx1 = create_aa_tx(sender, nonce_key, 1);
         let valid_tx1 = wrap_valid_tx(tx1, TransactionOrigin::Local);
         let tx1_hash = *valid_tx1.hash();
 
-        let result1 = pool.add_transaction(Arc::new(valid_tx1));
+        let result1 = pool.add_transaction(Arc::new(valid_tx1), 0);
 
         // Should be queued due to nonce gap
         assert!(
@@ -1220,7 +1133,7 @@ mod tests {
         let valid_tx0 = wrap_valid_tx(tx0, TransactionOrigin::Local);
         let tx0_hash = *valid_tx0.hash();
 
-        let result0 = pool.add_transaction(Arc::new(valid_tx0));
+        let result0 = pool.add_transaction(Arc::new(valid_tx0), 0);
 
         // Should be pending and promote tx1
         assert!(
@@ -1280,25 +1193,20 @@ mod tests {
         pool.assert_invariants();
     }
 
-    #[test]
-    fn replace_pending_transaction() {
+    #[test_case::test_case(U256::ZERO)]
+    #[test_case::test_case(U256::random())]
+    fn replace_pending_transaction(nonce_key: U256) {
         let mut pool = AA2dPool::default();
-        let nonces = pool.nonce_keys.clone();
 
         // Set up a sender with a tracked nonce key
         let sender = Address::random();
-        let nonce_key = U256::from(1);
-        let storage_slot = U256::from(12345);
-
-        // Track the nonce key starting at nonce 0
-        nonces.insert(sender, nonce_key, 0, storage_slot);
 
         // Step 1: Insert initial pending transaction with lower gas price
         let tx_low = create_aa_tx_with_gas(sender, nonce_key, 0, 1_000_000_000, 2_000_000_000);
         let valid_tx_low = wrap_valid_tx(tx_low, TransactionOrigin::Local);
         let tx_low_hash = *valid_tx_low.hash();
 
-        let result_low = pool.add_transaction(Arc::new(valid_tx_low));
+        let result_low = pool.add_transaction(Arc::new(valid_tx_low), 0);
 
         // Should be pending (at on-chain nonce)
         assert!(
@@ -1340,7 +1248,7 @@ mod tests {
         let valid_tx_high = wrap_valid_tx(tx_high, TransactionOrigin::Local);
         let tx_high_hash = *valid_tx_high.hash();
 
-        let result_high = pool.add_transaction(Arc::new(valid_tx_high));
+        let result_high = pool.add_transaction(Arc::new(valid_tx_high), 0);
 
         // Should successfully replace
         assert!(
@@ -1415,18 +1323,13 @@ mod tests {
         pool.assert_invariants();
     }
 
-    #[test]
-    fn on_chain_nonce_update_with_gaps() {
+    #[test_case::test_case(U256::ZERO)]
+    #[test_case::test_case(U256::random())]
+    fn on_chain_nonce_update_with_gaps(nonce_key: U256) {
         let mut pool = AA2dPool::default();
-        let nonces = pool.nonce_keys.clone();
 
         // Set up a sender with a tracked nonce key
         let sender = Address::random();
-        let nonce_key = U256::from(1);
-        let storage_slot = U256::from(12345);
-
-        // Track the nonce key starting at nonce 0
-        nonces.insert(sender, nonce_key, 0, storage_slot);
 
         // Insert transactions with nonces: 0, 1, 3, 4, 6
         // Expected initial state:
@@ -1451,11 +1354,11 @@ mod tests {
         let tx6_hash = *valid_tx6.hash();
 
         // Add all transactions
-        pool.add_transaction(Arc::new(valid_tx0)).unwrap();
-        pool.add_transaction(Arc::new(valid_tx1)).unwrap();
-        pool.add_transaction(Arc::new(valid_tx3)).unwrap();
-        pool.add_transaction(Arc::new(valid_tx4)).unwrap();
-        pool.add_transaction(Arc::new(valid_tx6)).unwrap();
+        pool.add_transaction(Arc::new(valid_tx0), 0).unwrap();
+        pool.add_transaction(Arc::new(valid_tx1), 0).unwrap();
+        pool.add_transaction(Arc::new(valid_tx3), 0).unwrap();
+        pool.add_transaction(Arc::new(valid_tx4), 0).unwrap();
+        pool.add_transaction(Arc::new(valid_tx6), 0).unwrap();
 
         // Verify initial state
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
@@ -1480,10 +1383,10 @@ mod tests {
 
         // Step 1: Simulate mining block with nonces 0 and 1
         // New on-chain nonce becomes 2
-        let mut on_chain_ids = HashMap::new();
+        let mut on_chain_ids = HashMap::default();
         on_chain_ids.insert(seq_id, 2u64);
 
-        let (promoted, mined) = pool.on_aa_2d_nonce_changes(on_chain_ids);
+        let (promoted, mined) = pool.on_nonce_changes(on_chain_ids);
 
         // Verify mined transactions
         assert_eq!(mined.len(), 2, "Should have mined 2 transactions (0, 1)");
@@ -1552,10 +1455,10 @@ mod tests {
 
         // Step 2: Simulate mining block with nonce 2
         // New on-chain nonce becomes 3
-        let mut on_chain_ids = HashMap::new();
+        let mut on_chain_ids = HashMap::default();
         on_chain_ids.insert(seq_id, 3u64);
 
-        let (promoted, mined) = pool.on_aa_2d_nonce_changes(on_chain_ids);
+        let (promoted, mined) = pool.on_nonce_changes(on_chain_ids);
 
         // No transactions should be mined (nonce 2 was never in pool)
         assert_eq!(
@@ -1617,24 +1520,20 @@ mod tests {
         pool.assert_invariants();
     }
 
-    #[test]
-    fn reject_outdated_transaction() {
+    #[test_case::test_case(U256::ZERO)]
+    #[test_case::test_case(U256::random())]
+    fn reject_outdated_transaction(nonce_key: U256) {
         let mut pool = AA2dPool::default();
-        let nonces = pool.nonce_keys.clone();
 
         // Set up a sender with a tracked nonce key
         let sender = Address::random();
-        let nonce_key = U256::from(1);
-        let storage_slot = U256::from(12345);
 
-        // Track the nonce key with on-chain nonce at 5
-        nonces.insert(sender, nonce_key, 5, storage_slot);
-
-        // Try to insert a transaction with nonce 3 (outdated)
+        // Create a transaction with nonce 3 (outdated)
         let tx = create_aa_tx(sender, nonce_key, 3);
         let valid_tx = wrap_valid_tx(tx, TransactionOrigin::Local);
 
-        let result = pool.add_transaction(Arc::new(valid_tx));
+        // Try to insert it and specify the on-chain nonce 5, making it outdated
+        let result = pool.add_transaction(Arc::new(valid_tx), 5);
 
         // Should fail with nonce error
         assert!(result.is_err(), "Should reject outdated transaction");
@@ -1659,30 +1558,26 @@ mod tests {
         pool.assert_invariants();
     }
 
-    #[test]
-    fn replace_with_insufficient_price_bump() {
+    #[test_case::test_case(U256::ZERO)]
+    #[test_case::test_case(U256::random())]
+    fn replace_with_insufficient_price_bump(nonce_key: U256) {
         let mut pool = AA2dPool::default();
-        let nonces = pool.nonce_keys.clone();
 
         // Set up a sender
         let sender = Address::random();
-        let nonce_key = U256::from(1);
-        let storage_slot = U256::from(12345);
-
-        nonces.insert(sender, nonce_key, 0, storage_slot);
 
         // Insert initial transaction
         let tx_low = create_aa_tx_with_gas(sender, nonce_key, 0, 1_000_000_000, 2_000_000_000);
         let valid_tx_low = wrap_valid_tx(tx_low, TransactionOrigin::Local);
 
-        pool.add_transaction(Arc::new(valid_tx_low)).unwrap();
+        pool.add_transaction(Arc::new(valid_tx_low), 0).unwrap();
 
         // Try to replace with only 5% price bump (default requires 10%)
         let tx_insufficient =
             create_aa_tx_with_gas(sender, nonce_key, 0, 1_050_000_000, 2_100_000_000);
         let valid_tx_insufficient = wrap_valid_tx(tx_insufficient, TransactionOrigin::Local);
 
-        let result = pool.add_transaction(Arc::new(valid_tx_insufficient));
+        let result = pool.add_transaction(Arc::new(valid_tx_insufficient), 0);
 
         // Should fail with ReplacementUnderpriced
         assert!(
@@ -1699,16 +1594,12 @@ mod tests {
         pool.assert_invariants();
     }
 
-    #[test]
-    fn fill_gap_in_middle() {
+    #[test_case::test_case(U256::ZERO)]
+    #[test_case::test_case(U256::random())]
+    fn fill_gap_in_middle(nonce_key: U256) {
         let mut pool = AA2dPool::default();
-        let nonces = pool.nonce_keys.clone();
 
         let sender = Address::random();
-        let nonce_key = U256::from(1);
-        let storage_slot = U256::from(12345);
-
-        nonces.insert(sender, nonce_key, 0, storage_slot);
 
         // Insert transactions: 0, 1, 3, 4 (gap at 2)
         let tx0 = create_aa_tx(sender, nonce_key, 0);
@@ -1716,13 +1607,13 @@ mod tests {
         let tx3 = create_aa_tx(sender, nonce_key, 3);
         let tx4 = create_aa_tx(sender, nonce_key, 4);
 
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
             .unwrap();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
             .unwrap();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)), 0)
             .unwrap();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx4, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx4, TransactionOrigin::Local)), 0)
             .unwrap();
 
         // Verify initial state: 0, 1 pending | 3, 4 queued
@@ -1734,7 +1625,7 @@ mod tests {
         let tx2 = create_aa_tx(sender, nonce_key, 2);
         let valid_tx2 = wrap_valid_tx(tx2, TransactionOrigin::Local);
 
-        let result = pool.add_transaction(Arc::new(valid_tx2));
+        let result = pool.add_transaction(Arc::new(valid_tx2), 0);
         assert!(result.is_ok(), "Should successfully add tx2");
 
         // Verify tx3 and tx4 were promoted
@@ -1761,16 +1652,12 @@ mod tests {
         pool.assert_invariants();
     }
 
-    #[test]
-    fn remove_pending_transaction() {
+    #[test_case::test_case(U256::ZERO)]
+    #[test_case::test_case(U256::random())]
+    fn remove_pending_transaction(nonce_key: U256) {
         let mut pool = AA2dPool::default();
-        let nonces = pool.nonce_keys.clone();
 
         let sender = Address::random();
-        let nonce_key = U256::from(1);
-        let storage_slot = U256::from(12345);
-
-        nonces.insert(sender, nonce_key, 0, storage_slot);
 
         // Insert consecutive transactions: 0, 1, 2
         let tx0 = create_aa_tx(sender, nonce_key, 0);
@@ -1783,9 +1670,9 @@ mod tests {
 
         let tx1_hash = *valid_tx1.hash();
 
-        pool.add_transaction(Arc::new(valid_tx0)).unwrap();
-        pool.add_transaction(Arc::new(valid_tx1)).unwrap();
-        pool.add_transaction(Arc::new(valid_tx2)).unwrap();
+        pool.add_transaction(Arc::new(valid_tx0), 0).unwrap();
+        pool.add_transaction(Arc::new(valid_tx1), 0).unwrap();
+        pool.add_transaction(Arc::new(valid_tx2), 0).unwrap();
 
         // All should be pending
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
@@ -1822,19 +1709,15 @@ mod tests {
         pool.assert_invariants();
     }
 
-    #[test]
-    fn multiple_senders_independent_set() {
+    #[test_case::test_case(U256::ZERO, U256::random())]
+    #[test_case::test_case(U256::random(), U256::ZERO)]
+    #[test_case::test_case(U256::random(), U256::random())]
+    fn multiple_senders_independent_set(nonce_key_a: U256, nonce_key_b: U256) {
         let mut pool = AA2dPool::default();
-        let nonces = pool.nonce_keys.clone();
 
         // Set up two senders with different nonce keys
         let sender_a = Address::random();
         let sender_b = Address::random();
-        let nonce_key_a = U256::from(1);
-        let nonce_key_b = U256::from(2);
-
-        nonces.insert(sender_a, nonce_key_a, 0, U256::from(1111));
-        nonces.insert(sender_b, nonce_key_b, 0, U256::from(2222));
 
         // Insert transactions for both senders
         // Sender A: [0, 1]
@@ -1852,10 +1735,10 @@ mod tests {
 
         let tx_a0_hash = *valid_tx_a0.hash();
 
-        pool.add_transaction(Arc::new(valid_tx_a0)).unwrap();
-        pool.add_transaction(Arc::new(valid_tx_a1)).unwrap();
-        pool.add_transaction(Arc::new(valid_tx_b0)).unwrap();
-        pool.add_transaction(Arc::new(valid_tx_b1)).unwrap();
+        pool.add_transaction(Arc::new(valid_tx_a0), 0).unwrap();
+        pool.add_transaction(Arc::new(valid_tx_a1), 0).unwrap();
+        pool.add_transaction(Arc::new(valid_tx_b0), 0).unwrap();
+        pool.add_transaction(Arc::new(valid_tx_b1), 0).unwrap();
 
         // Both senders' tx0 should be in independent set
         let sender_a_id = AASequenceId::new(sender_a, nonce_key_a);
@@ -1883,10 +1766,10 @@ mod tests {
         assert_eq!(queued_count, 0, "No transactions should be queued");
 
         // Simulate mining sender A's tx0
-        let mut on_chain_ids = HashMap::new();
+        let mut on_chain_ids = HashMap::default();
         on_chain_ids.insert(sender_a_id, 1u64);
 
-        let (promoted, mined) = pool.on_aa_2d_nonce_changes(on_chain_ids);
+        let (promoted, mined) = pool.on_nonce_changes(on_chain_ids);
 
         // Only sender A's tx0 should be mined
         assert_eq!(mined.len(), 1, "Only sender A's tx0 should be mined");
@@ -1918,26 +1801,21 @@ mod tests {
         pool.assert_invariants();
     }
 
-    #[test]
-    fn concurrent_replacements_same_nonce() {
+    #[test_case::test_case(U256::ZERO)]
+    #[test_case::test_case(U256::random())]
+    fn concurrent_replacements_same_nonce(nonce_key: U256) {
         let mut pool = AA2dPool::default();
-        let nonces = pool.nonce_keys.clone();
         let sender = Address::random();
-        let nonce_key = U256::from(42);
         let seq_id = AASequenceId {
             address: sender,
             nonce_key,
         };
-        let storage_slot = U256::from(12345);
-
-        // Track the nonce key
-        nonces.insert(sender, nonce_key, 0, storage_slot);
 
         // Insert initial transaction at nonce 0 with gas prices 1_000_000_000, 2_000_000_000
         let tx0 = create_aa_tx_with_gas(sender, nonce_key, 0, 1_000_000_000, 2_000_000_000);
         let tx0_hash = *tx0.hash();
         let valid_tx0 = wrap_valid_tx(tx0, TransactionOrigin::Local);
-        let result = pool.add_transaction(Arc::new(valid_tx0));
+        let result = pool.add_transaction(Arc::new(valid_tx0), 0);
         assert!(result.is_ok());
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
         assert_eq!(pending_count + queued_count, 1);
@@ -1946,7 +1824,7 @@ mod tests {
         let tx0_replacement1 =
             create_aa_tx_with_gas(sender, nonce_key, 0, 1_050_000_000, 2_100_000_000);
         let valid_tx1 = wrap_valid_tx(tx0_replacement1, TransactionOrigin::Local);
-        let result = pool.add_transaction(Arc::new(valid_tx1));
+        let result = pool.add_transaction(Arc::new(valid_tx1), 0);
         assert!(result.is_err(), "Should reject insufficient price bump");
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
         assert_eq!(pending_count + queued_count, 1);
@@ -1960,7 +1838,7 @@ mod tests {
             create_aa_tx_with_gas(sender, nonce_key, 0, 1_100_000_000, 2_200_000_000);
         let tx0_replacement2_hash = *tx0_replacement2.hash();
         let valid_tx2 = wrap_valid_tx(tx0_replacement2, TransactionOrigin::Local);
-        let result = pool.add_transaction(Arc::new(valid_tx2));
+        let result = pool.add_transaction(Arc::new(valid_tx2), 0);
         assert!(result.is_ok(), "Should accept 10% price bump");
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
         assert_eq!(pending_count + queued_count, 1, "Pool size should remain 1");
@@ -1975,7 +1853,7 @@ mod tests {
             create_aa_tx_with_gas(sender, nonce_key, 0, 1_500_000_000, 3_000_000_000);
         let tx0_replacement3_hash = *tx0_replacement3.hash();
         let valid_tx3 = wrap_valid_tx(tx0_replacement3, TransactionOrigin::Local);
-        let result = pool.add_transaction(Arc::new(valid_tx3));
+        let result = pool.add_transaction(Arc::new(valid_tx3), 0);
         assert!(result.is_ok(), "Should accept higher price bump");
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
         assert_eq!(pending_count + queued_count, 1);
@@ -1995,20 +1873,15 @@ mod tests {
         pool.assert_invariants();
     }
 
-    #[test]
-    fn long_gap_chain() {
+    #[test_case::test_case(U256::ZERO)]
+    #[test_case::test_case(U256::random())]
+    fn long_gap_chain(nonce_key: U256) {
         let mut pool = AA2dPool::default();
-        let nonces = pool.nonce_keys.clone();
         let sender = Address::random();
-        let nonce_key = U256::from(42);
         let seq_id = AASequenceId {
             address: sender,
             nonce_key,
         };
-        let storage_slot = U256::from(12345);
-
-        // Track the nonce key
-        nonces.insert(sender, nonce_key, 0, storage_slot);
 
         // Insert transactions with large gaps: [0, 5, 10, 15]
         let tx0 = create_aa_tx(sender, nonce_key, 0);
@@ -2016,13 +1889,13 @@ mod tests {
         let tx10 = create_aa_tx(sender, nonce_key, 10);
         let tx15 = create_aa_tx(sender, nonce_key, 15);
 
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
             .unwrap();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx5, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx5, TransactionOrigin::Local)), 0)
             .unwrap();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx10, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx10, TransactionOrigin::Local)), 0)
             .unwrap();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx15, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx15, TransactionOrigin::Local)), 0)
             .unwrap();
 
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
@@ -2057,7 +1930,7 @@ mod tests {
         // Fill gap [1,2,3,4]
         for nonce in 1..=4 {
             let tx = create_aa_tx(sender, nonce_key, nonce);
-            pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)))
+            pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0)
                 .unwrap();
         }
 
@@ -2091,7 +1964,7 @@ mod tests {
         // Fill gap [6,7,8,9]
         for nonce in 6..=9 {
             let tx = create_aa_tx(sender, nonce_key, nonce);
-            pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)))
+            pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0)
                 .unwrap();
         }
 
@@ -2118,7 +1991,7 @@ mod tests {
         // Fill final gap [11,12,13,14]
         for nonce in 11..=14 {
             let tx = create_aa_tx(sender, nonce_key, nonce);
-            pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)))
+            pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0)
                 .unwrap();
         }
 
@@ -2137,25 +2010,20 @@ mod tests {
         pool.assert_invariants();
     }
 
-    #[test]
-    fn remove_from_middle_of_chain() {
+    #[test_case::test_case(U256::ZERO)]
+    #[test_case::test_case(U256::random())]
+    fn remove_from_middle_of_chain(nonce_key: U256) {
         let mut pool = AA2dPool::default();
-        let nonces = pool.nonce_keys.clone();
         let sender = Address::random();
-        let nonce_key = U256::from(42);
         let seq_id = AASequenceId {
             address: sender,
             nonce_key,
         };
-        let storage_slot = U256::from(12345);
-
-        // Track the nonce key
-        nonces.insert(sender, nonce_key, 0, storage_slot);
 
         // Insert continuous sequence [0,1,2,3,4]
         for nonce in 0..=4 {
             let tx = create_aa_tx(sender, nonce_key, nonce);
-            pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)))
+            pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0)
                 .unwrap();
         }
 
@@ -2191,31 +2059,26 @@ mod tests {
         pool.assert_invariants();
     }
 
-    #[test]
-    fn independent_set_after_multiple_promotions() {
+    #[test_case::test_case(U256::ZERO)]
+    #[test_case::test_case(U256::random())]
+    fn independent_set_after_multiple_promotions(nonce_key: U256) {
         let mut pool = AA2dPool::default();
-        let nonces = pool.nonce_keys.clone();
         let sender = Address::random();
-        let nonce_key = U256::from(42);
         let seq_id = AASequenceId {
             address: sender,
             nonce_key,
         };
-        let storage_slot = U256::from(12345);
-
-        // Track the nonce key
-        nonces.insert(sender, nonce_key, 0, storage_slot);
 
         // Start with gaps: insert [0, 2, 4]
         let tx0 = create_aa_tx(sender, nonce_key, 0);
         let tx2 = create_aa_tx(sender, nonce_key, 2);
         let tx4 = create_aa_tx(sender, nonce_key, 4);
 
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
             .unwrap();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)), 0)
             .unwrap();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx4, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx4, TransactionOrigin::Local)), 0)
             .unwrap();
 
         // Only tx0 should be in independent set
@@ -2229,7 +2092,7 @@ mod tests {
 
         // Fill first gap: insert [1]
         let tx1 = create_aa_tx(sender, nonce_key, 1);
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
             .unwrap();
 
         // Now [0, 1, 2] should be pending, tx4 still queued
@@ -2243,7 +2106,7 @@ mod tests {
 
         // Fill second gap: insert [3]
         let tx3 = create_aa_tx(sender, nonce_key, 3);
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)), 0)
             .unwrap();
 
         // Now all [0,1,2,3,4] should be pending
@@ -2252,9 +2115,9 @@ mod tests {
         assert_eq!(queued_count, 0);
 
         // Simulate mining [0,1]
-        let mut on_chain_ids = HashMap::new();
+        let mut on_chain_ids = HashMap::default();
         on_chain_ids.insert(seq_id, 2u64);
-        let (promoted, mined) = pool.on_aa_2d_nonce_changes(on_chain_ids);
+        let (promoted, mined) = pool.on_nonce_changes(on_chain_ids);
 
         // Should have mined [0,1], no promotions (already pending)
         assert_eq!(mined.len(), 2);
@@ -2274,7 +2137,6 @@ mod tests {
     #[test]
     fn stress_test_many_senders() {
         let mut pool = AA2dPool::default();
-        let nonces = pool.nonce_keys.clone();
         const NUM_SENDERS: usize = 100;
         const TXS_PER_SENDER: u64 = 5;
 
@@ -2282,17 +2144,13 @@ mod tests {
         let mut senders = Vec::new();
         for i in 0..NUM_SENDERS {
             let sender = Address::from_word(B256::from(U256::from(i)));
-            let nonce_key = U256::from(i + 1); // Must be non-zero for is_aa_2d()
-            let storage_slot = U256::from(12345 + i);
+            let nonce_key = U256::from(i);
             senders.push((sender, nonce_key));
-
-            // Track the nonce key
-            nonces.insert(sender, nonce_key, 0, storage_slot);
 
             // Insert transactions [0,1,2,3,4] for each sender
             for nonce in 0..TXS_PER_SENDER {
                 let tx = create_aa_tx(sender, nonce_key, nonce);
-                pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)))
+                pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0)
                     .unwrap();
             }
         }
@@ -2331,7 +2189,7 @@ mod tests {
         }
 
         // Simulate mining first transaction for each sender
-        let mut on_chain_ids = HashMap::new();
+        let mut on_chain_ids = HashMap::default();
         for (sender, nonce_key) in &senders {
             let seq_id = AASequenceId {
                 address: *sender,
@@ -2340,7 +2198,7 @@ mod tests {
             on_chain_ids.insert(seq_id, 1u64);
         }
 
-        let (promoted, mined) = pool.on_aa_2d_nonce_changes(on_chain_ids);
+        let (promoted, mined) = pool.on_nonce_changes(on_chain_ids);
 
         // Should have mined NUM_SENDERS transactions
         assert_eq!(mined.len(), NUM_SENDERS);
@@ -2371,20 +2229,15 @@ mod tests {
         pool.assert_invariants();
     }
 
-    #[test]
-    fn on_chain_nonce_update_to_queued_tx_with_gaps() {
+    #[test_case::test_case(U256::ZERO)]
+    #[test_case::test_case(U256::random())]
+    fn on_chain_nonce_update_to_queued_tx_with_gaps(nonce_key: U256) {
         let mut pool = AA2dPool::default();
-        let nonces = pool.nonce_keys.clone();
         let sender = Address::random();
-        let nonce_key = U256::from(42);
         let seq_id = AASequenceId {
             address: sender,
             nonce_key,
         };
-        let storage_slot = U256::from(12345);
-
-        // Track the nonce key
-        nonces.insert(sender, nonce_key, 0, storage_slot);
 
         // Start with gaps: insert [0, 3, 5]
         // This creates: tx0 (pending), tx3 (queued), tx5 (queued)
@@ -2392,11 +2245,11 @@ mod tests {
         let tx3 = create_aa_tx(sender, nonce_key, 3);
         let tx5 = create_aa_tx(sender, nonce_key, 5);
 
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
             .unwrap();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)), 0)
             .unwrap();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx5, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx5, TransactionOrigin::Local)), 0)
             .unwrap();
 
         // Only tx0 should be in independent set
@@ -2410,11 +2263,11 @@ mod tests {
 
         // Fill gaps to get [0, 1, 2, 3, 5]
         let tx1 = create_aa_tx(sender, nonce_key, 1);
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
             .unwrap();
 
         let tx2 = create_aa_tx(sender, nonce_key, 2);
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)), 0)
             .unwrap();
 
         // Now [0,1,2,3] should be pending, tx5 still queued
@@ -2426,10 +2279,9 @@ mod tests {
         assert_eq!(pool.independent_transactions.len(), 1);
         assert!(pool.independent_transactions.contains_key(&seq_id));
 
-        let mut on_chain_ids = HashMap::new();
+        let mut on_chain_ids = HashMap::default();
         on_chain_ids.insert(seq_id, 3u64);
-        nonces.insert(sender, nonce_key, 3, storage_slot);
-        let (_promoted, mined) = pool.on_aa_2d_nonce_changes(on_chain_ids);
+        let (_promoted, mined) = pool.on_nonce_changes(on_chain_ids);
 
         // Should have mined [0,1,2]
         assert_eq!(mined.len(), 3, "Should mine transactions [0,1,2]");
@@ -2456,7 +2308,7 @@ mod tests {
         // Now insert tx4 to fill the gap between tx3 and tx5
         // This is where the original test failure occurred
         let tx4 = create_aa_tx(sender, nonce_key, 4);
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx4, TransactionOrigin::Local)))
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx4, TransactionOrigin::Local)), 3)
             .unwrap();
 
         // After inserting tx4, we should have [3, 4, 5] all in the pool

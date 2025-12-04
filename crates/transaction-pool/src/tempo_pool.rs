@@ -3,11 +3,8 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    amm::AmmLiquidityCache,
-    best::MergeBestTransactions,
-    transaction::TempoPooledTransaction,
-    tt_2d_pool::{AA2dNonceKeys, AA2dPool, AASequenceId},
-    validator::TempoTransactionValidator,
+    amm::AmmLiquidityCache, best::MergeBestTransactions, transaction::TempoPooledTransaction,
+    tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
 use alloy_primitives::{Address, B256};
@@ -27,11 +24,7 @@ use reth_transaction_pool::{
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
 };
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-    time::Instant,
-};
+use std::{collections::HashSet, sync::Arc, time::Instant};
 use tempo_chainspec::TempoChainSpec;
 
 /// Tempo transaction pool that routes based on nonce_key
@@ -62,8 +55,8 @@ impl<Client> TempoTransactionPool<Client> {
     }
 
     /// Obtains a clone of the shared [`AA2dNonceKeys`].
-    pub fn aa_2d_nonce_keys(&self) -> AA2dNonceKeys {
-        self.aa_2d_pool.read().aa_2d_nonce_keys().clone()
+    pub fn aa_pool(&self) -> &RwLock<AA2dPool> {
+        &self.aa_2d_pool
     }
 }
 impl<Client> TempoTransactionPool<Client>
@@ -83,18 +76,6 @@ where
         self.protocol_pool.validator().validator().client()
     }
 
-    /// Updates the 2d nonce pool with the given state changes.
-    pub(crate) fn on_aa_2d_nonce_changes(&self, on_chain_ids: HashMap<AASequenceId, u64>) {
-        if on_chain_ids.is_empty() {
-            return;
-        }
-        let (promoted, _mined) = self.aa_2d_pool.write().on_aa_2d_nonce_changes(on_chain_ids);
-        // Note: mined transactions are notified via the vanilla pool updates
-        self.protocol_pool
-            .inner()
-            .notify_on_transaction_updates(promoted, Vec::new());
-    }
-
     fn add_validated_transactions(
         &self,
         origin: TransactionOrigin,
@@ -103,7 +84,7 @@ where
         if transactions.iter().any(|outcome| {
             outcome
                 .as_valid_transaction()
-                .map(|tx| tx.transaction().is_aa_2d())
+                .map(|tx| tx.transaction().has_non_zero_nonce_key())
                 .unwrap_or(false)
         }) {
             // mixed or 2d only
@@ -133,7 +114,7 @@ where
                 propagate,
                 authorities,
             } => {
-                if transaction.transaction().is_aa_2d() {
+                if transaction.transaction().has_non_zero_nonce_key() {
                     let transaction = transaction.into_transaction();
                     let sender_id = self
                         .protocol_pool
@@ -149,7 +130,10 @@ where
                         authority_ids: authorities
                             .map(|auths| self.protocol_pool.inner().get_sender_ids(auths)),
                     };
-                    let added = self.aa_2d_pool.write().add_transaction(Arc::new(tx))?;
+                    let added = self
+                        .aa_2d_pool
+                        .write()
+                        .add_transaction(Arc::new(tx), state_nonce)?;
                     let hash = *added.hash();
                     if let Some(pending) = added.as_pending() {
                         self.protocol_pool

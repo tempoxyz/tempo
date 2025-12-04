@@ -19,4 +19,4 @@ pub mod metrics;
 pub mod tt_2d_pool;
 
 pub use metrics::AA2dPoolMetrics;
-pub use tt_2d_pool::{AA2dNonceKeys, AA2dPool, AA2dPoolConfig};
+pub use tt_2d_pool::{AA2dPool, AA2dPoolConfig};
