@@ -56,7 +56,7 @@ pub async fn run_consensus_stack(
 
     let (mut network, oracle) = instantiate_network(
         context,
-        signing_key.clone(),
+        signing_key.clone().into_inner(),
         config.listen_address,
         config.mailbox_size,
         config.max_message_size_bytes,
@@ -97,7 +97,7 @@ pub async fn run_consensus_stack(
         peer_manager: oracle.clone(),
         // TODO: Set this through config?
         partition_prefix: "engine".into(),
-        signer: signing_key,
+        signer: signing_key.into_inner(),
         share,
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,

@@ -1,7 +1,9 @@
 //! Command line arguments for configuring the consensus layer of a tempo node.
 use std::{net::SocketAddr, path::PathBuf, sync::OnceLock};
 
-use commonware_cryptography::ed25519::PrivateKey;
+use commonware_cryptography::{
+    ed25519::{PublicKey},
+};
 use eyre::Context;
 use tempo_commonware_node_config::SigningKey;
 
@@ -129,12 +131,12 @@ pub struct Args {
 
     /// Cache for the signing key loaded from CLI-provided file.
     #[clap(skip)]
-    loaded_signing_key: OnceLock<Option<PrivateKey>>,
+    loaded_signing_key: OnceLock<Option<SigningKey>>,
 }
 
 impl Args {
     /// Returns the signing key loaded from specified file.
-    pub fn signing_key(&self) -> eyre::Result<Option<PrivateKey>> {
+    pub(crate) fn signing_key(&self) -> eyre::Result<Option<SigningKey>> {
         if let Some(signing_key) = self.loaded_signing_key.get() {
             return Ok(signing_key.clone());
         }
@@ -143,19 +145,24 @@ impl Args {
             .signing_key
             .as_ref()
             .map(|path| {
-                SigningKey::read_from_file(path)
-                    .wrap_err_with(|| {
-                        format!(
-                            "failed reading private ed25519 signing key share from file `{}`",
-                            path.display()
-                        )
-                    })
-                    .map(|signing_key| signing_key.into_inner())
+                SigningKey::read_from_file(path).wrap_err_with(|| {
+                    format!(
+                        "failed reading private ed25519 signing key share from file `{}`",
+                        path.display()
+                    )
+                })
             })
             .transpose()?;
 
         let _ = self.loaded_signing_key.set(signing_key.clone());
 
         Ok(signing_key)
+    }
+
+    /// Returns the public key derived from the configured signing key, if any.
+    pub fn public_key(&self) -> eyre::Result<Option<PublicKey>> {
+        Ok(self
+            .signing_key()?
+            .map(|signing_key| signing_key.public_key()))
     }
 }

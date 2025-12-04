@@ -11209,7 +11209,6 @@ name = "tempo"
 version = "0.7.1"
 dependencies = [
  "clap",
- "commonware-cryptography",
  "commonware-runtime",
  "eyre",
  "futures",
@@ -11376,6 +11375,7 @@ dependencies = [
  "commonware-cryptography",
  "commonware-utils",
  "const-hex",
+ "derive_more",
  "indexmap 2.12.1",
  "rand 0.8.5",
  "serde",

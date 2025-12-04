@@ -18,7 +18,6 @@
 mod defaults;
 
 use clap::Parser;
-use commonware_cryptography::Signer;
 use commonware_runtime::{Metrics, Runner};
 use eyre::WrapErr as _;
 use futures::{FutureExt as _, future::FusedFuture as _};
@@ -187,8 +186,8 @@ fn main() -> eyre::Result<()> {
         let faucet_args = args.faucet_args.clone();
         let validator_key = args
             .consensus
-            .signing_key()?
-            .map(|signing_key| B256::from_slice(signing_key.public_key().as_ref()));
+            .public_key()?
+            .map(|key| B256::from_slice(key.as_ref()));
 
         let NodeHandle {
             node,
