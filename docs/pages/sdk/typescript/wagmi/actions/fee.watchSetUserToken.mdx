@@ -1,0 +1,57 @@
+# `fee.watchSetUserToken`
+
+Watches for user token set events on the Fee Manager.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { Actions } from 'tempo.ts/wagmi'
+import { config } from './wagmi.config'
+
+const unwatch = Actions.fee.watchSetUserToken(config, {
+  onUserTokenSet: (args, log) => {
+    console.log('User:', args.user)
+    console.log('New fee token:', args.userToken)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onUserTokenSet
+
+- **Type:**
+
+```ts
+declare function onUserTokenSet(args: Args, log: Log): void
+
+type Args = {
+  /** Address of the user */
+  user: Address
+  /** Address of the new fee token */
+  userToken: Address
+}
+```
+
+Callback to invoke when a user token is set.
+

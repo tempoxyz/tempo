@@ -1,0 +1,38 @@
+import { Callout } from 'vocs/components'
+
+import LucideServer from '~icons/lucide/server'
+import LucideHardDrive from '~icons/lucide/hard-drive'
+import LucideDownload from '~icons/lucide/download'
+import LucidePlay from '~icons/lucide/play'
+import * as Card from "../../../components/Card.tsx"
+
+# Tempo Node
+
+Running a Tempo node allows you to interact with the network directly, providing your own RPC access or contributing to network infrastructure. Nodes provide JSON-RPC API access for applications, explorers, and wallets but do not participate in consensus.
+
+## Getting Started
+
+<Card.Container>
+  <Card.Link
+    description="Hardware and software requirements for running a node"
+    href="/guide/node/system-requirements"
+    icon={LucideHardDrive}
+    title="System Requirements"
+  />
+  <Card.Link
+    description="Download and install the Tempo node software"
+    href="/guide/node/installation"
+    icon={LucideDownload}
+    title="Installation"
+  />
+  <Card.Link
+    description="Configure and run a full RPC node"
+    href="/guide/node/usage"
+    icon={LucidePlay}
+    title="Running an RPC Node"
+  />
+</Card.Container>
+
+<Callout type="info">
+  Validator onboarding requires coordination with the Tempo team. Reach out to us if you are interested.
+</Callout>

@@ -134,6 +134,13 @@ pub enum TempoPoolTransactionError {
     #[error("AA transaction with subblock nonce key prefix aren't supported in the pool")]
     SubblockNonceKey,
 
+    /// Thrown if the fee payer of a transaction cannot transfer (is blacklisted) the fee token, thus making the payment impossible.
+    #[error("Fee payer {fee_payer} is blacklisted by fee token: {fee_token}")]
+    BlackListedFeePayer {
+        fee_token: Address,
+        fee_payer: Address,
+    },
+
     /// Thrown when we couldn't find a recently used validator token that has enough liquidity
     /// in fee AMM pair with the user token this transaction will pay fees in.
     #[error(
@@ -148,6 +155,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             Self::ExceedsNonPaymentLimit
             | Self::InvalidFeeToken(_)
             | Self::MissingFeeToken
+            | Self::BlackListedFeePayer { .. }
             | Self::InvalidValidBefore { .. }
             | Self::InvalidValidAfter { .. }
             | Self::Keychain(_)

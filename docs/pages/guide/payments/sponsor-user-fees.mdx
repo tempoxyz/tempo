@@ -1,0 +1,214 @@
+import * as Card from '../../../components/Card.tsx'
+import * as Demo from '../../../components/guides/Demo.tsx'
+import * as Step from '../../../components/guides/steps'
+import LucideBook from '~icons/lucide/book'
+import LucideCoins from '~icons/lucide/coins'
+import LucideFileCode from '~icons/lucide/file-code'
+import LucideLayers from '~icons/lucide/layers'
+
+# Sponsor User Fees
+
+Enable gasless transactions by sponsoring transaction fees for your users. Tempo's native fee sponsorship allows applications to pay fees on behalf of users, improving UX and removing friction from payment flows.
+
+## Demo
+
+<Demo.Container name="Sponsor User Fees" footerVariant="source" src="tempoxyz/tempo-ts/tree/main/examples/payments">
+  <Step.CreateSponsorAccount stepNumber={1} />
+  <Step.FundSponsorAccount stepNumber={2} />
+  <Step.Connect stepNumber={3} />
+  <Step.AddFunds stepNumber={4} />
+  <Step.SendSponsoredPayment stepNumber={5} last />
+</Demo.Container>
+
+## Steps
+
+::::steps
+
+### Create and fund sponsor account
+
+Create and fund an account to sponsor transaction fees for your users.
+
+<Demo.Container name="Sponsor User Fees" footerVariant="source" src="tempoxyz/tempo-ts/tree/main/examples/payments">
+  <Step.CreateSponsorAccount stepNumber={1} />
+  <Step.FundSponsorAccount stepNumber={2} />
+</Demo.Container>
+
+:::code-group
+
+```tsx twoslash [CreateAndFundSponsorAccount.ts]
+// @noErrors
+import { Hooks } from 'tempo.ts/wagmi'
+import { privateKeyToAccount } from 'viem/accounts'
+
+function CreateAndFundSponsorAccount() {
+  const { mutate, isPending } = Hooks.faucet.useFundSync() // [!code hl]
+
+  return (
+    <button 
+      onClick={() => {
+        const account = privateKeyToAccount('0x...') // [!code hl]
+        mutate({ account: account.address }) // [!code hl]
+      }} 
+      disabled={isPending}
+    >
+      Create and fund sponsor account
+    </button>
+  )
+}
+```
+
+```tsx twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+### Sponsor your user's payments
+
+Now you can pass your sponsor account as the `feePayer` parameter when sending a payment.
+
+See the [Send a payment](/guide/payments/send-a-payment) guide for more details on how to send a payment.
+
+:::info
+You can also sponsor transactions with a fee payer relay. See the [recipe below](/guide/payments/sponsor-user-fees#fee-payer-relay) for more details.
+:::
+
+
+<Demo.Container name="Sponsor User Fees" footerVariant="source" src="tempoxyz/tempo-ts/tree/main/examples/payments">
+  <Step.CreateSponsorAccount stepNumber={1} />
+  <Step.FundSponsorAccount stepNumber={2} />
+  <Step.Connect stepNumber={3} />
+  <Step.AddFunds stepNumber={4} />
+  <Step.SendSponsoredPayment stepNumber={5} last />
+</Demo.Container>
+
+:::code-group
+
+```tsx twoslash [SendSponsoredPayment.tsx]
+import React from 'react'
+import { Hooks } from 'tempo.ts/wagmi'
+import { parseUnits } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
+
+const alphaUsd = '0x20c0000000000000000000000000000000000001'
+
+// @noErrors
+function SendSponsoredPayment() {
+  const sponsorAccount = privateKeyToAccount('0x...')
+  const sendPayment = Hooks.token.useTransferSync() // [!code hl]
+  const metadata = Hooks.token.useGetMetadata({
+    token: alphaUsd,
+  })
+
+  return (
+    <form onSubmit={
+      (event) => {
+        event.preventDefault()
+        const formData = new FormData(event.target as HTMLFormElement)
+
+        const recipient = (formData.get('recipient') ||
+          '0x0000000000000000000000000000000000000000') as `0x${string}`
+
+        sendPayment.mutate({ // [!code hl]
+          amount: parseUnits('100', metadata.data.decimals), // [!code hl]
+          feePayer: sponsorAccount, // [!code hl]
+          to: recipient, // [!code hl]
+          token: alphaUsd, // [!code hl]
+          feeToken: alphaUsd, // [!code hl]
+        }) // [!code hl]
+      }
+    }>
+      <div>
+        <label htmlFor="recipient"> Recipient address </label>
+        <input type="text" placeholder="0x..." />
+      </div>
+      <button type="submit" disabled={sendPayment.isPending}>
+        Send Payment
+      </button>
+    </form>
+  )
+}
+```
+
+```tsx twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+## Next Steps
+
+Now that you've implemented fee sponsorship, you can:
+- Run a [fee payer relay](/guide/payments/sponsor-user-fees#fee-payer-relay) server that sponsors client transactions
+- Learn more about [Account Abstraction transactions](/documentation/protocol/transactions/spec-account-abstraction#fee-payer-signature-details) and fee payer signature details
+- Explore [Batch Transactions](/guide/use-accounts/batch-transactions) to sponsor multiple operations at once
+- Understand how to [Pay Fees in Any Stablecoin](/guide/payments/pay-fees-in-any-stablecoin) 
+
+::::
+
+## Recipes
+
+### Fee payer relay
+
+Tempo's TypeScript SDK provides a [`withFeePayer` helper](/sdk/typescript/viem/withFeePayer) that simplifies fee sponsorship. It creates a transport that routes transactions to a fee payer service when `feePayer: true` is requested on a transaction. You can also specify whether the sponsored transaction should be broadcasted by the fee payer or your default transport with the `policy` parameter.
+
+:::code-group
+
+```ts twoslash [client.ts]
+// @noErrors
+// [!include ~/snippets/unformatted/withFeePayer.ts:client]
+
+// [!include ~/snippets/unformatted/withFeePayer.ts:usage]
+```
+
+```ts twoslash [server.ts]
+// @noErrors
+// [!include ~/snippets/unformatted/withFeePayer.ts:server]
+```
+
+:::
+
+## Best practices
+
+1. **Set sponsorship limits**: Implement daily or per-user limits to control costs
+2. **Monitor expenses**: Track sponsorship costs regularly to stay within budget
+3. **Consider selective sponsorship**: Only sponsor fees for specific operations or user segments
+4. **Educate users**: Clearly communicate when fees are being sponsored
+
+### Security Considerations
+
+- **Transaction-specific**: Fee payer signatures are tied to specific transactions
+- **No delegation risk**: Fee payer can't execute arbitrary transactions
+- **Balance checks**: Network verifies fee payer has sufficient balance
+- **Signature validation**: Both signatures must be valid
+
+## Learning Resources
+
+<Card.Container>
+  <Card.Link
+    description="Deep dive into how fee sponsorship works under the hood"
+    href="/guide/use-accounts/fee-sponsorship"
+    icon={LucideBook}
+    title="Fee Sponsorship Specification"
+  />
+  <Card.Link
+    description="Technical specification for AA transactions and fee payer signature details"
+    href="/documentation/protocol/transactions/spec-account-abstraction"
+    icon={LucideFileCode}
+    title="Account Abstraction Transaction Spec"
+  />
+  <Card.Link
+    description="Learn how to sponsor fees for multiple operations at once"
+    href="/guide/use-accounts/batch-transactions"
+    icon={LucideLayers}
+    title="Batch Transactions Guide"
+  />
+  <Card.Link
+    description="Understand fee token selection and how to pay with different stablecoins"
+    href="/guide/payments/pay-fees-in-any-stablecoin"
+    icon={LucideCoins}
+    title="Pay Fees in Any Stablecoin"
+  />
+</Card.Container>

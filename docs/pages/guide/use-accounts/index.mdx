@@ -1,0 +1,39 @@
+import LucideFingerprint from '~icons/lucide/fingerprint'
+import LucideWallet from '~icons/lucide/wallet'
+import LucideCoins from '~icons/lucide/coins'
+import * as Card from "../../../components/Card.tsx"
+
+# Create & Use Accounts
+
+Create and integrate Tempo accounts into your product with domain-bound passkeys or connecting your app to EVM-compatible wallets.
+
+:::tip
+**Should I use a Passkey account or a wallet?**
+
+- If you need a **domain-bound account** experience, you can embed a Passkey account. 
+- If you need a **universal account** experience, you can integrate your app with wallets.
+
+You can even use both if you would like to offer both experiences.
+:::
+
+<Card.Container>
+  <Card.Link
+    description="Use domain-bound passkey accounts for an Embedded Account experience"
+    href="/guide/use-accounts/embed-passkeys"
+    icon={LucideFingerprint}
+    title="Embed Passkey Accounts"
+  />
+  <Card.Link
+    description="Connect your app to wallets using MetaMask and others for a Universal Account experience"
+    href="/guide/use-accounts/connect-to-wallets"
+    icon={LucideWallet}
+    title="Connect to Wallets"
+  />
+  <Card.Link
+    description="Add test stablecoins to your account balance using the testnet faucet"
+    href="/guide/faucet"
+    icon={LucideCoins}
+    title="Add Test Funds to Your Account"
+  />
+</Card.Container>
+

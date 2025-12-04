@@ -1,8 +1,8 @@
 use super::{aa_signed::AASigned, fee_token::TxFeeToken};
 use crate::{TxAA, subblock::PartialValidatorKey};
 use alloy_consensus::{
-    EthereumTxEnvelope, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
-    TypedTransaction,
+    EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
+    TxLegacy, TxType, TypedTransaction,
     error::{UnsupportedTransactionType, ValueError},
     transaction::Either,
 };
@@ -392,6 +392,32 @@ impl From<Signed<TxFeeToken>> for TempoTxEnvelope {
 impl From<AASigned> for TempoTxEnvelope {
     fn from(value: AASigned) -> Self {
         Self::AA(value)
+    }
+}
+
+impl TempoTypedTransaction {
+    /// Converts this typed transaction into a signed [`TempoTxEnvelope`]
+    pub fn into_envelope(self, sig: Signature) -> TempoTxEnvelope {
+        match self {
+            Self::Legacy(tx) => tx.into_signed(sig).into(),
+            Self::Eip2930(tx) => tx.into_signed(sig).into(),
+            Self::Eip1559(tx) => tx.into_signed(sig).into(),
+            Self::Eip7702(tx) => tx.into_signed(sig).into(),
+            Self::AA(tx) => tx.into_signed(sig.into()).into(),
+            Self::FeeToken(tx) => tx.into_signed(sig).into(),
+        }
+    }
+
+    /// Returns a dyn mutable reference to the underlying transaction
+    pub fn as_dyn_signable_mut(&mut self) -> &mut dyn SignableTransaction<Signature> {
+        match self {
+            Self::Legacy(tx) => tx,
+            Self::Eip2930(tx) => tx,
+            Self::Eip1559(tx) => tx,
+            Self::Eip7702(tx) => tx,
+            Self::AA(tx) => tx,
+            Self::FeeToken(tx) => tx,
+        }
     }
 }
 

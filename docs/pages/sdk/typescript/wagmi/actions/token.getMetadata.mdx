@@ -1,0 +1,60 @@
+import ReadParameters from '../../../../../snippets/read-parameters.mdx'
+
+# `token.getMetadata`
+
+Gets the metadata for a TIP-20 token, including name, symbol, decimals, currency, and total supply.
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { Actions } from 'tempo.ts/wagmi'
+import { config } from './wagmi.config'
+
+const metadata = await Actions.token.getMetadataSync(config, {
+  token: '0x20c0000000000000000000000000000000000000',
+})
+
+console.log('Currency:', metadata.currency)
+// @log: Currency: USD
+console.log('Decimals:', metadata.decimals)
+// @log: Decimals: 18
+console.log('Name:', metadata.name)
+// @log: Name: United States Dollar
+console.log('Symbol:', metadata.symbol)
+// @log: Symbol: USD
+console.log('Total Supply:', metadata.totalSupply)
+// @log: Total Supply: 1000000000000000000000n
+```
+
+```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = {
+  currency: string
+  decimals: number
+  name: string
+  symbol: string
+  totalSupply: bigint
+}
+```
+
+## Parameters
+
+### token (optional)
+
+- **Type:** `Address | bigint`
+- **Default:** `Addresses.pathUsd` (Token ID 0)
+
+Address or ID of the TIP-20 token.
+
+<ReadParameters wagmi />
+
