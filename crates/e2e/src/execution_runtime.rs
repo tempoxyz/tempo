@@ -7,8 +7,8 @@ use alloy::{
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
     transports::http::reqwest::Url,
 };
-use alloy_evm::EvmFactory as _;
-use alloy_genesis::Genesis;
+use alloy_evm::{EvmFactory as _, EvmInternals, revm::inspector::JournalExt as _};
+use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::Address;
 use commonware_codec::Encode;
 use commonware_cryptography::{
@@ -42,12 +42,17 @@ use reth_rpc_builder::RpcModuleSelection;
 use tempfile::TempDir;
 use tempo_chainspec::TempoChainSpec;
 use tempo_commonware_node_config::{Peers, PublicPolynomial};
+use tempo_dkg_onchain_artifacts::PublicOutcome;
 use tempo_node::{
     TempoFullNode,
     evm::{TempoEvmFactory, evm::TempoEvm},
     node::TempoNode,
 };
-use tempo_precompiles::{VALIDATOR_CONFIG_ADDRESS, validator_config::IValidatorConfig};
+use tempo_precompiles::{
+    VALIDATOR_CONFIG_ADDRESS,
+    storage::evm::EvmPrecompileStorageProvider,
+    validator_config::{IValidatorConfig, ValidatorConfig},
+};
 
 const ADMIN_INDEX: u32 = 0;
 const VALIDATOR_START_INDEX: u32 = 1;
@@ -124,12 +129,12 @@ impl Builder {
         genesis
             .config
             .extra_fields
-            .insert_value("publicPolynomial".to_string(), public_polynomial)
+            .insert_value("publicPolynomial".to_string(), public_polynomial.clone())
             .wrap_err("failed to insert public polynomial into genesis")?;
         genesis
             .config
             .extra_fields
-            .insert_value("validators".to_string(), validators)
+            .insert_value("validators".to_string(), validators.clone())
             .wrap_err("failed to insert validators into genesis")?;
 
         if let Some(allegretto_time) = allegretto_time {
@@ -138,6 +143,71 @@ impl Builder {
                 .extra_fields
                 .insert_value("allegrettoTime".to_string(), allegretto_time)
                 .wrap_err("failed to insert allegretto timestamp into genesis")?;
+
+            genesis.extra_data = PublicOutcome {
+                epoch: 0,
+                participants: validators.public_keys().clone(),
+                public: public_polynomial.into_inner(),
+            }
+            .encode()
+            .freeze()
+            .to_vec()
+            .into();
+
+            let mut evm = setup_tempo_evm();
+
+            {
+                let ctx = evm.ctx_mut();
+                let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+                let mut provider =
+                    EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+
+                // TODO(janis): figure out the owner of the test-genesis.json
+                let mut validator_config = ValidatorConfig::new(&mut provider);
+                validator_config
+                    .initialize(admin())
+                    .wrap_err("Failed to initialize validator config")
+                    .unwrap();
+
+                for (i, (peer, addr)) in validators.into_inner().iter_pairs().enumerate() {
+                    validator_config
+                        .add_validator(
+                            admin(),
+                            IValidatorConfig::addValidatorCall {
+                                newValidatorAddress: validator(i as u32),
+                                publicKey: peer.encode().freeze().as_ref().try_into().unwrap(),
+                                active: true,
+                                inboundAddress: addr.to_string(),
+                                outboundAddress: addr.to_string(),
+                            },
+                        )
+                        .unwrap();
+                }
+            }
+
+            let evm_state = evm.ctx_mut().journaled_state.evm_state();
+            for (address, account) in evm_state.iter() {
+                let storage = if !account.storage.is_empty() {
+                    Some(
+                        account
+                            .storage
+                            .iter()
+                            .map(|(key, val)| ((*key).into(), val.present_value.into()))
+                            .collect(),
+                    )
+                } else {
+                    None
+                };
+                genesis.alloc.insert(
+                    *address,
+                    GenesisAccount {
+                        nonce: Some(account.info.nonce),
+                        code: account.info.code.as_ref().map(|c| c.original_bytes()),
+                        storage,
+                        ..Default::default()
+                    },
+                );
+            }
         }
 
         let chain_spec = TempoChainSpec::from_genesis(genesis);
@@ -540,4 +610,11 @@ pub fn validator(idx: u32) -> Address {
 
 pub fn address(index: u32) -> Address {
     secret_key_to_address(MnemonicBuilder::from_phrase_nth(TEST_MNEMONIC, index).credential())
+}
+
+fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>> {
+    let db = CacheDB::default();
+    let env = EvmEnv::default();
+    let factory = TempoEvmFactory::default();
+    factory.create_evm(db, env)
 }
