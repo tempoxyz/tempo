@@ -20,7 +20,7 @@ impl<T: TransactionOrdering> BestPriorityTransactions<T>
     }
 }
 impl BestPriorityTransactions<CoinbaseTipOrdering<TempoPooledTransaction>>
-    for crate::aa_2d_pool::BestAA2dTransactions
+    for crate::tt_2d_pool::BestAA2dTransactions
 {
     fn next_tx_and_priority(&mut self) -> Option<(Self::Item, Priority<u128>)> {
         Self::next_tx_and_priority(self)
