@@ -10,10 +10,16 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) block_time_millis_last: Gauge,
     /// Number of transactions in the payload.
     pub(crate) total_transactions: Histogram,
+    /// Number of transactions in the payload.
+    pub(crate) total_transactions_last: Gauge,
     /// Number of payment transactions in the payload.
     pub(crate) payment_transactions: Histogram,
+    /// Number of payment transactions in the payload.
+    pub(crate) payment_transactions_last: Gauge,
     /// Amount of gas used in the payload.
     pub(crate) gas_used: Histogram,
+    /// Amount of gas used in the payload.
+    pub(crate) gas_used_last: Gauge,
     /// The time it took to prepare system transactions in seconds.
     pub(crate) prepare_system_transactions_duration_seconds: Histogram,
     /// The time it took to execute start-of-block system transactions in seconds.

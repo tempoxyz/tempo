@@ -353,7 +353,8 @@ export function Login() {
               connect.connect({
                 connector,
                 capabilities: {
-                  createAccount: { label: 'Tempo Docs' },
+                  label: 'Tempo Docs',
+                  type: 'sign-up',
                 },
               })
             }

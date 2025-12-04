@@ -19,7 +19,7 @@ use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Metrics as _;
 use eyre::{OptionExt, WrapErr as _, eyre};
-use tempo_commonware_node_config::{SigningKey, SigningShare};
+use tempo_commonware_node_config::SigningShare;
 use tempo_node::TempoFullNode;
 
 use crate::config::{
@@ -51,21 +51,12 @@ pub async fn run_consensus_stack(
         .map(|signing_share| signing_share.into_inner());
 
     let signing_key = config
-        .signing_key
-        .ok_or_eyre("required option `consensus.signing-key` not set")
-        .and_then(|signing_key| {
-            SigningKey::read_from_file(&signing_key).wrap_err_with(|| {
-                format!(
-                    "failed reading private ed25519 signing key share from file `{}`",
-                    signing_key.display()
-                )
-            })
-        })?
-        .into_inner();
+        .signing_key()?
+        .ok_or_eyre("required option `consensus.signing-key` not set")?;
 
     let (mut network, oracle) = instantiate_network(
         context,
-        signing_key.clone(),
+        signing_key.clone().into_inner(),
         config.listen_address,
         config.mailbox_size,
         config.max_message_size_bytes,
@@ -106,7 +97,7 @@ pub async fn run_consensus_stack(
         peer_manager: oracle.clone(),
         // TODO: Set this through config?
         partition_prefix: "engine".into(),
-        signer: signing_key,
+        signer: signing_key.into_inner(),
         share,
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,

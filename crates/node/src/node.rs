@@ -2,11 +2,13 @@ use crate::{
     TempoPayloadTypes,
     engine::TempoEngineValidator,
     rpc::{
-        TempoAmm, TempoAmmApiServer, TempoDex, TempoDexApiServer, TempoEthApiBuilder, TempoEthExt,
-        TempoEthExtApiServer, TempoPolicy, TempoPolicyApiServer, TempoToken, TempoTokenApiServer,
+        TempoAdminApi, TempoAdminApiServer, TempoAmm, TempoAmmApiServer, TempoDex,
+        TempoDexApiServer, TempoEthApiBuilder, TempoEthExt, TempoEthExtApiServer, TempoPolicy,
+        TempoPolicyApiServer, TempoToken, TempoTokenApiServer,
     },
 };
 use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
+use alloy_primitives::B256;
 use reth_chainspec::EthChainSpec;
 use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_ethereum::provider::CanonStateSubscriptions;
@@ -29,7 +31,7 @@ use reth_node_builder::{
 use reth_node_ethereum::EthereumNetworkBuilder;
 use reth_primitives_traits::SealedHeader;
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
-use reth_rpc_builder::Identity;
+use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::RpcNodeCore;
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::TransactionValidationTaskExecutor;
@@ -72,13 +74,16 @@ impl TempoNodeArgs {
 pub struct TempoNode {
     /// Transaction pool builder.
     pool_builder: TempoPoolBuilder,
+    /// Validator public key for `admin_validatorKey` RPC method.
+    validator_key: Option<B256>,
 }
 
 impl TempoNode {
     /// Create new instance of a Tempo node
-    pub fn new(args: &TempoNodeArgs) -> Self {
+    pub fn new(args: &TempoNodeArgs, validator_key: Option<B256>) -> Self {
         Self {
             pool_builder: args.pool_builder(),
+            validator_key,
         }
     }
 
@@ -126,33 +131,20 @@ pub struct TempoAddOns<
     RpcMiddleware = Identity,
 > {
     inner: RpcAddOns<N, EthB, PVB, NoopEngineApiBuilder, EVB, RpcMiddleware>,
+    validator_key: Option<B256>,
 }
 
-impl<N, EthB, PVB, EVB, RpcMiddleware> TempoAddOns<N, EthB, PVB, EVB, RpcMiddleware>
+impl<N, EthB> TempoAddOns<N, EthB>
 where
     N: FullNodeComponents,
     EthB: EthApiBuilder<N>,
 {
     /// Creates a new instance from the inner `RpcAddOns`.
-    pub const fn new(
-        inner: RpcAddOns<N, EthB, PVB, NoopEngineApiBuilder, EVB, RpcMiddleware>,
-    ) -> Self {
-        Self { inner }
-    }
-}
-
-impl<N> Default for TempoAddOns<NodeAdapter<N>, TempoEthApiBuilder, TempoEngineValidatorBuilder>
-where
-    N: FullNodeTypes<Types = TempoNode>,
-{
-    fn default() -> Self {
-        Self::new(RpcAddOns::new(
-            TempoEthApiBuilder::default(),
-            TempoEngineValidatorBuilder::default(),
-            NoopEngineApiBuilder::default(),
-            BasicEngineValidatorBuilder::default(),
-            Default::default(),
-        ))
+    pub fn new(validator_key: Option<B256>) -> Self {
+        Self {
+            inner: Default::default(),
+            validator_key,
+        }
     }
 }
 
@@ -180,12 +172,14 @@ where
                 let token = TempoToken::new(eth_api.clone());
                 let policy = TempoPolicy::new(eth_api.clone());
                 let eth_ext = TempoEthExt::new(eth_api);
+                let admin = TempoAdminApi::new(self.validator_key);
 
                 modules.merge_configured(dex.into_rpc())?;
                 modules.merge_configured(amm.into_rpc())?;
                 modules.merge_configured(token.into_rpc())?;
                 modules.merge_configured(policy.into_rpc())?;
                 modules.merge_configured(eth_ext.into_rpc())?;
+                modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
 
                 Ok(())
             })
@@ -243,7 +237,7 @@ where
     }
 
     fn add_ons(&self) -> Self::AddOns {
-        TempoAddOns::default()
+        TempoAddOns::new(self.validator_key)
     }
 }
 
