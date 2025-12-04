@@ -12,7 +12,7 @@ use revm::context::{
     },
 };
 use tempo_primitives::{
-    AASignature, AASigned, TempoTxEnvelope, TxAA, TxFeeToken,
+    AASignature, AASigned, TempoTransaction, TempoTxEnvelope, TxFeeToken,
     transaction::{
         Call, RecoveredAAAuthorization, SignedKeyAuthorization, calc_gas_balance_spending,
     },
@@ -314,7 +314,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             let _ = keychain_sig.key_id(&aa_signed.signature_hash());
         }
 
-        let TxAA {
+        let TempoTransaction {
             chain_id,
             fee_token,
             max_priority_fee_per_gas,

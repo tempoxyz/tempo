@@ -22,7 +22,7 @@ use reth_ethereum::{
 use reth_node_core::primitives::transaction::TxHashRef;
 use tempo_chainspec::{hardfork::TempoHardforks, spec::TEMPO_BASE_FEE};
 use tempo_node::primitives::{
-    SubBlockMetadata, TempoTxEnvelope, TxAA,
+    SubBlockMetadata, TempoTransaction, TempoTxEnvelope,
     subblock::{PartialValidatorKey, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
     transaction::{Call, calc_gas_balance_spending},
 };
@@ -403,7 +403,7 @@ async fn submit_subblock_tx_from(node: &RunningNode, wallet: &PrivateKeySigner) 
         0
     };
 
-    let mut tx = TxAA {
+    let mut tx = TempoTransaction {
         chain_id: node.execution_node.node.provider.chain_spec().chain_id(),
         calls: vec![Call {
             to: Address::ZERO.into(),

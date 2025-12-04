@@ -1062,7 +1062,7 @@ mod tests {
     use tempo_primitives::{
         TempoTxEnvelope,
         transaction::{
-            TxAA,
+            TempoTransaction,
             aa_signature::{AASignature, PrimitiveSignature},
             aa_signed::AASigned,
             account_abstraction::Call,
@@ -1082,7 +1082,7 @@ mod tests {
         max_priority_fee: u128,
         max_fee: u128,
     ) -> TempoPooledTransaction {
-        let tx = TxAA {
+        let tx = TempoTransaction {
             max_priority_fee_per_gas: max_priority_fee,
             max_fee_per_gas: max_fee,
             gas_limit: 100_000,

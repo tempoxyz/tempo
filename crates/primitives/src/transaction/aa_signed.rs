@@ -1,6 +1,6 @@
 use super::{
     aa_signature::AASignature,
-    account_abstraction::{AA_TX_TYPE_ID, TxAA},
+    account_abstraction::{AA_TX_TYPE_ID, TempoTransaction},
 };
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eips::{
@@ -21,12 +21,12 @@ use std::sync::OnceLock;
 
 /// A transaction with an AA signature and hash seal.
 ///
-/// This wraps a TxAA transaction with its multi-signature-type signature
+/// This wraps a TempoTransaction transaction with its multi-signature-type signature
 /// (secp256k1, P256, Webauthn, Keychain) and provides a cached transaction hash.
 #[derive(Clone, Debug)]
 pub struct AASigned {
     /// The inner AA transaction
-    tx: TxAA,
+    tx: TempoTransaction,
     /// The signature (can be secp256k1, P256, Webauthn, Keychain)
     signature: AASignature,
     /// Cached transaction hash
@@ -37,7 +37,7 @@ pub struct AASigned {
 impl AASigned {
     /// Instantiate from a transaction and signature with a known hash.
     /// Does not verify the signature.
-    pub fn new_unchecked(tx: TxAA, signature: AASignature, hash: B256) -> Self {
+    pub fn new_unchecked(tx: TempoTransaction, signature: AASignature, hash: B256) -> Self {
         let value = OnceLock::new();
         #[allow(clippy::useless_conversion)]
         value.get_or_init(|| hash.into());
@@ -50,7 +50,7 @@ impl AASigned {
 
     /// Instantiate from a transaction and signature without computing the hash.
     /// Does not verify the signature.
-    pub const fn new_unhashed(tx: TxAA, signature: AASignature) -> Self {
+    pub const fn new_unhashed(tx: TempoTransaction, signature: AASignature) -> Self {
         Self {
             tx,
             signature,
@@ -60,12 +60,12 @@ impl AASigned {
 
     /// Returns a reference to the transaction.
     #[doc(alias = "transaction")]
-    pub const fn tx(&self) -> &TxAA {
+    pub const fn tx(&self) -> &TempoTransaction {
         &self.tx
     }
 
     /// Returns a mutable reference to the transaction.
-    pub const fn tx_mut(&mut self) -> &mut TxAA {
+    pub const fn tx_mut(&mut self) -> &mut TempoTransaction {
         &mut self.tx
     }
 
@@ -75,7 +75,7 @@ impl AASigned {
     }
 
     /// Returns the transaction without signature.
-    pub fn strip_signature(self) -> TxAA {
+    pub fn strip_signature(self) -> TempoTransaction {
         self.tx
     }
 
@@ -121,7 +121,7 @@ impl AASigned {
     }
 
     /// Splits the transaction into parts.
-    pub fn into_parts(self) -> (TxAA, AASignature, B256) {
+    pub fn into_parts(self) -> (TempoTransaction, AASignature, B256) {
         let hash = *self.hash();
         (self.tx, self.signature, hash)
     }
@@ -157,7 +157,7 @@ impl AASigned {
         }
 
         // Decode transaction fields directly from the buffer
-        let tx = TxAA::rlp_decode_fields(buf)?;
+        let tx = TempoTransaction::rlp_decode_fields(buf)?;
 
         // Decode signature bytes
         let sig_bytes: Bytes = Decodable::decode(buf)?;
@@ -360,7 +360,7 @@ impl Decodable2718 for AASigned {
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for AASigned {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        let tx = TxAA::arbitrary(u)?;
+        let tx = TempoTransaction::arbitrary(u)?;
         let signature = AASignature::arbitrary(u)?;
         Ok(Self::new_unhashed(tx, signature))
     }
@@ -375,7 +375,7 @@ mod serde_impl {
     #[derive(Serialize, Deserialize)]
     struct AASignedHelper<'a> {
         #[serde(flatten)]
-        tx: Cow<'a, TxAA>,
+        tx: Cow<'a, TempoTransaction>,
         signature: Cow<'a, AASignature>,
         hash: Cow<'a, B256>,
     }
@@ -413,14 +413,14 @@ mod serde_impl {
     mod tests {
         use crate::transaction::{
             aa_signature::{AASignature, PrimitiveSignature},
-            account_abstraction::{Call, TxAA},
+            account_abstraction::{Call, TempoTransaction},
         };
         use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
 
         #[test]
         fn test_serde_output() {
             // Create a simple AA transaction
-            let tx = TxAA {
+            let tx = TempoTransaction {
                 chain_id: 1337,
                 fee_token: None,
                 max_priority_fee_per_gas: 1000000000,

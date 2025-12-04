@@ -13,7 +13,7 @@ pub use aa_signature::{AASignature, KeychainSignature, PrimitiveSignature, deriv
 pub use aa_signed::AASigned;
 pub use account_abstraction::{
     AA_TX_TYPE_ID, Call, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH,
-    SECP256K1_SIGNATURE_LENGTH, SignatureType, TxAA,
+    SECP256K1_SIGNATURE_LENGTH, SignatureType, TempoTransaction,
 };
 pub use alloy_eips::eip7702::Authorization;
 pub use envelope::{TempoTxEnvelope, TempoTxType, TempoTypedTransaction};

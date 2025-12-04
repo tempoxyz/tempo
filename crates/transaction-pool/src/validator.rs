@@ -23,7 +23,7 @@ use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, compute_keys_slot,
     nonce::slots, storage::double_mapping_slot,
 };
-use tempo_primitives::{subblock::has_sub_block_nonce_key_prefix, transaction::TxAA};
+use tempo_primitives::{subblock::has_sub_block_nonce_key_prefix, transaction::TempoTransaction};
 use tempo_revm::TempoStateAccess;
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
@@ -192,7 +192,10 @@ where
     }
 
     /// Validates AA transaction time-bound conditionals
-    fn ensure_valid_conditionals(&self, tx: &TxAA) -> Result<(), TempoPoolTransactionError> {
+    fn ensure_valid_conditionals(
+        &self,
+        tx: &TempoTransaction,
+    ) -> Result<(), TempoPoolTransactionError> {
         // Reject AA txs where `valid_before` is too close to current time (or already expired).
         if let Some(valid_before) = tx.valid_before {
             // Uses tip_timestamp, as if the node is lagging lagging, the maintenance task will evict expired txs.
@@ -580,13 +583,13 @@ mod tests {
     ) -> TempoPooledTransaction {
         use alloy_primitives::{Signature, TxKind, address};
         use tempo_primitives::transaction::{
-            TxAA,
+            TempoTransaction,
             aa_signature::{AASignature, PrimitiveSignature},
             aa_signed::AASigned,
             account_abstraction::Call,
         };
 
-        let tx_aa = TxAA {
+        let tx_aa = TempoTransaction {
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 2_000_000_000,
@@ -773,7 +776,7 @@ mod tests {
             tip403_registry::{ITIP403Registry, PolicyData, slots as tip403_slots},
         };
         use tempo_primitives::transaction::{
-            TxAA,
+            TempoTransaction,
             aa_signature::{AASignature, PrimitiveSignature},
             aa_signed::AASigned,
             account_abstraction::Call,
@@ -784,7 +787,7 @@ mod tests {
         let policy_id: u64 = 2;
 
         // Create AA transaction with valid TIP20 fee_token
-        let tx_aa = TxAA {
+        let tx_aa = TempoTransaction {
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 2_000_000_000,

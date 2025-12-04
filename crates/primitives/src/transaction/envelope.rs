@@ -1,5 +1,5 @@
 use super::{aa_signed::AASigned, fee_token::TxFeeToken};
-use crate::{TxAA, subblock::PartialValidatorKey};
+use crate::{TempoTransaction, subblock::PartialValidatorKey};
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
     TxLegacy, TxType, TypedTransaction,
@@ -55,7 +55,7 @@ pub enum TempoTxEnvelope {
     Eip7702(Signed<TxEip7702>),
 
     /// Account Abstraction transaction (type 0x76)
-    #[envelope(ty = 0x76, typed = TxAA)]
+    #[envelope(ty = 0x76, typed = TempoTransaction)]
     AA(AASigned),
 
     /// Tempo fee token transaction (type 0x77)
@@ -456,8 +456,8 @@ impl From<TxFeeToken> for TempoTypedTransaction {
     }
 }
 
-impl From<TxAA> for TempoTypedTransaction {
-    fn from(value: TxAA) -> Self {
+impl From<TempoTransaction> for TempoTypedTransaction {
+    fn from(value: TempoTransaction) -> Self {
         Self::AA(value)
     }
 }
@@ -495,7 +495,7 @@ impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoTxEnvelop
 
 #[cfg(feature = "reth-codec")]
 mod codec {
-    use crate::{AASignature, TxAA};
+    use crate::{AASignature, TempoTransaction};
 
     use super::*;
     use alloy_eips::eip2718::EIP7702_TX_TYPE_ID;
@@ -545,7 +545,7 @@ mod codec {
                     (Self::Eip7702(tx), buf)
                 }
                 TempoTxType::AA => {
-                    let (tx, buf) = TxAA::from_compact(buf, buf.len());
+                    let (tx, buf) = TempoTransaction::from_compact(buf, buf.len());
                     // For AA transactions, we need to decode the signature bytes as AASignature
                     let (sig_bytes, buf) = Bytes::from_compact(buf, buf.len());
                     let aa_sig = AASignature::from_bytes(&sig_bytes)

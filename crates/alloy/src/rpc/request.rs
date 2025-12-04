@@ -6,7 +6,7 @@ use alloy_provider::Provider;
 use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use tempo_primitives::{
-    AASigned, SignatureType, TempoTxEnvelope, TxAA, TxFeeToken,
+    AASigned, SignatureType, TempoTransaction, TempoTxEnvelope, TxFeeToken,
     transaction::{AASignedAuthorization, Call, TempoTypedTransaction},
 };
 
@@ -23,7 +23,7 @@ pub struct TempoTransactionRequest {
     /// Optional fee token preference
     pub fee_token: Option<Address>,
 
-    /// Optional nonce key for a 2D [`TxAA`].
+    /// Optional nonce key for a 2D [`TempoTransaction`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nonce_key: Option<U256>,
 
@@ -51,12 +51,12 @@ impl TempoTransactionRequest {
         self
     }
 
-    /// Set the 2D nonce key for the [`TxAA`] transaction.
+    /// Set the 2D nonce key for the [`TempoTransaction`] transaction.
     pub fn set_nonce_key(&mut self, nonce_key: U256) {
         self.nonce_key = Some(nonce_key);
     }
 
-    /// Builder-pattern method for setting a 2D nonce key for a [`TxAA`].
+    /// Builder-pattern method for setting a 2D nonce key for a [`TempoTransaction`].
     pub fn with_nonce_key(mut self, nonce_key: U256) -> Self {
         self.nonce_key = Some(nonce_key);
         self
@@ -110,8 +110,8 @@ impl TempoTransactionRequest {
         })
     }
 
-    /// Attempts to build a [`TxAA`] with the configured fields.
-    pub fn build_aa(self) -> Result<TxAA, ValueError<Self>> {
+    /// Attempts to build a [`TempoTransaction`] with the configured fields.
+    pub fn build_aa(self) -> Result<TempoTransaction, ValueError<Self>> {
         if self.calls.is_empty() && self.inner.to.is_none() {
             return Err(ValueError::new(
                 self,
@@ -153,7 +153,7 @@ impl TempoTransactionRequest {
             });
         }
 
-        Ok(TxAA {
+        Ok(TempoTransaction {
             // TODO: use tempo mainnet chainid once assigned
             chain_id: self.inner.chain_id.unwrap_or(1),
             nonce,
@@ -224,7 +224,7 @@ impl FeeToken for TxFeeToken {
     }
 }
 
-impl FeeToken for TxAA {
+impl FeeToken for TempoTransaction {
     fn fee_token(&self) -> Option<Address> {
         self.fee_token
     }
@@ -264,8 +264,8 @@ impl<T: TransactionTrait + FeeToken> From<Signed<T>> for TempoTransactionRequest
     }
 }
 
-impl From<TxAA> for TempoTransactionRequest {
-    fn from(tx: TxAA) -> Self {
+impl From<TempoTransaction> for TempoTransactionRequest {
+    fn from(tx: TempoTransaction) -> Self {
         Self {
             fee_token: tx.fee_token,
             inner: TransactionRequest {
@@ -336,10 +336,10 @@ impl From<TempoTypedTransaction> for TempoTransactionRequest {
 
 /// Extension trait for [`CallBuilder`]
 pub trait TempoCallBuilderExt {
-    /// Sets the `fee_token` field in the [`TxAA`] or [`TxFeeToken`] transaction to the provided value
+    /// Sets the `fee_token` field in the [`TempoTransaction`] or [`TxFeeToken`] transaction to the provided value
     fn fee_token(self, fee_token: Address) -> Self;
 
-    /// Sets the `nonce_key` field in the [`TxAA`] transaction to the provided value
+    /// Sets the `nonce_key` field in the [`TempoTransaction`] transaction to the provided value
     fn nonce_key(self, nonce_key: U256) -> Self;
 }
 

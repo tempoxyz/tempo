@@ -158,8 +158,7 @@ impl Decodable for Call {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
-#[doc(alias = "TempoTransaction")]
-pub struct TxAA {
+pub struct TempoTransaction {
     /// EIP-155: Simple replay attack protection
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub chain_id: ChainId,
@@ -222,7 +221,7 @@ pub struct TxAA {
     pub aa_authorization_list: Vec<AASignedAuthorization>,
 }
 
-impl TxAA {
+impl TempoTransaction {
     /// Get the transaction type
     #[doc(alias = "transaction_type")]
     pub const fn tx_type() -> u8 {
@@ -439,7 +438,7 @@ impl TxAA {
         )
     }
 
-    /// Decodes the inner TxAA fields from RLP bytes
+    /// Decodes the inner TempoTransaction fields from RLP bytes
     pub(crate) fn rlp_decode_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let chain_id = Decodable::decode(buf)?;
         let max_priority_fee_per_gas = Decodable::decode(buf)?;
@@ -561,7 +560,7 @@ impl TxAA {
     }
 }
 
-impl Transaction for TxAA {
+impl Transaction for TempoTransaction {
     #[inline]
     fn chain_id(&self) -> Option<ChainId> {
         Some(self.chain_id)
@@ -657,13 +656,13 @@ impl Transaction for TxAA {
     }
 }
 
-impl Typed2718 for TxAA {
+impl Typed2718 for TempoTransaction {
     fn ty(&self) -> u8 {
         AA_TX_TYPE_ID
     }
 }
 
-impl SignableTransaction<Signature> for TxAA {
+impl SignableTransaction<Signature> for TempoTransaction {
     fn set_chain_id(&mut self, chain_id: ChainId) {
         self.chain_id = chain_id;
     }
@@ -702,7 +701,7 @@ impl SignableTransaction<Signature> for TxAA {
     }
 }
 
-impl Encodable for TxAA {
+impl Encodable for TempoTransaction {
     fn encode(&self, out: &mut dyn BufMut) {
         // Encode as RLP list of fields
         let payload_length = self.rlp_encoded_fields_length_default();
@@ -716,7 +715,7 @@ impl Encodable for TxAA {
     }
 }
 
-impl Decodable for TxAA {
+impl Decodable for TempoTransaction {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let header = alloy_rlp::Header::decode(buf)?;
         if !header.list {
@@ -740,18 +739,18 @@ impl Decodable for TxAA {
     }
 }
 
-impl reth_primitives_traits::InMemorySize for TxAA {
+impl reth_primitives_traits::InMemorySize for TempoTransaction {
     fn size(&self) -> usize {
         Self::size(self)
     }
 }
 
 #[cfg(feature = "serde-bincode-compat")]
-impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TxAA {}
+impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoTransaction {}
 
 // Custom Arbitrary implementation to ensure calls is never empty
 #[cfg(any(test, feature = "arbitrary"))]
-impl<'a> arbitrary::Arbitrary<'a> for TxAA {
+impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         // Generate all fields using the default Arbitrary implementation
         let chain_id = u.arbitrary()?;
@@ -861,7 +860,7 @@ mod compact {
 
     #[derive(Compact)]
 
-    struct OldTxAA {
+    struct OldTempoTransaction {
         chain_id: ChainId,
         fee_token: Option<Address>,
         max_priority_fee_per_gas: u128,
@@ -879,7 +878,7 @@ mod compact {
 
     #[derive(Compact)]
 
-    struct NewTxAA {
+    struct NewTempoTransaction {
         chain_id: ChainId,
         fee_token: Option<Address>,
         max_priority_fee_per_gas: u128,
@@ -896,13 +895,13 @@ mod compact {
         aa_authorization_list: Vec<AASignedAuthorization>,
     }
 
-    impl Compact for TxAA {
+    impl Compact for TempoTransaction {
         fn to_compact<B>(&self, buf: &mut B) -> usize
         where
             B: alloy_rlp::bytes::BufMut + AsMut<[u8]>,
         {
-            // copy-pasted expansion of NewTxAA
-            let mut flags = NewTxAAFlags::default();
+            // copy-pasted expansion of NewTempoTransaction
+            let mut flags = NewTempoTransactionFlags::default();
             let mut total_length = 0;
             let mut buffer = reth_codecs::__private::bytes::BytesMut::new();
             let chain_id_len = self.chain_id.to_compact(&mut buffer);
@@ -939,7 +938,7 @@ mod compact {
         }
 
         fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
-            // HACK: for OldTxAA 5th byte is highest non-zero chainid byte. For NewTxAA its
+            // HACK: for OldTempoTransaction 5th byte is highest non-zero chainid byte. For NewTempoTransaction its
             // either 1 (when keyAuthorization is Some) or 0 (when keyAuthorization is None)
             //
             // We infer the encoding version by checking this byte. The assumption here is that this
@@ -948,7 +947,7 @@ mod compact {
             // This is very hacky and should be removed ASAP.
             if buf[4] <= 1 {
                 let (
-                    NewTxAA {
+                    NewTempoTransaction {
                         chain_id,
                         fee_token,
                         max_priority_fee_per_gas,
@@ -965,7 +964,7 @@ mod compact {
                         aa_authorization_list,
                     },
                     buf,
-                ) = NewTxAA::from_compact(buf, len);
+                ) = NewTempoTransaction::from_compact(buf, len);
                 (
                     Self {
                         chain_id,
@@ -987,7 +986,7 @@ mod compact {
                 )
             } else {
                 let (
-                    OldTxAA {
+                    OldTempoTransaction {
                         chain_id,
                         fee_token,
                         max_priority_fee_per_gas,
@@ -1003,7 +1002,7 @@ mod compact {
                         aa_authorization_list,
                     },
                     buf,
-                ) = OldTxAA::from_compact(buf, len);
+                ) = OldTempoTransaction::from_compact(buf, len);
 
                 (
                     Self {
@@ -1046,7 +1045,7 @@ mod tests {
         };
 
         // Valid: valid_before > valid_after
-        let tx1 = TxAA {
+        let tx1 = TempoTransaction {
             valid_before: Some(100),
             valid_after: Some(50),
             aa_authorization_list: vec![],
@@ -1056,7 +1055,7 @@ mod tests {
         assert!(tx1.validate().is_ok());
 
         // Invalid: valid_before <= valid_after
-        let tx2 = TxAA {
+        let tx2 = TempoTransaction {
             valid_before: Some(50),
             valid_after: Some(100),
             aa_authorization_list: vec![],
@@ -1066,7 +1065,7 @@ mod tests {
         assert!(tx2.validate().is_err());
 
         // Invalid: valid_before == valid_after
-        let tx3 = TxAA {
+        let tx3 = TempoTransaction {
             valid_before: Some(100),
             valid_after: Some(100),
             aa_authorization_list: vec![],
@@ -1076,7 +1075,7 @@ mod tests {
         assert!(tx3.validate().is_err());
 
         // Valid: no valid_after
-        let tx4 = TxAA {
+        let tx4 = TempoTransaction {
             valid_before: Some(100),
             valid_after: None,
             aa_authorization_list: vec![],
@@ -1086,7 +1085,7 @@ mod tests {
         assert!(tx4.validate().is_ok());
 
         // Invalid: empty calls
-        let tx5 = TxAA {
+        let tx5 = TempoTransaction {
             ..Default::default()
         };
         assert!(tx5.validate().is_err());
@@ -1094,7 +1093,7 @@ mod tests {
 
     #[test]
     fn test_tx_type() {
-        assert_eq!(TxAA::tx_type(), 0x76);
+        assert_eq!(TempoTransaction::tx_type(), 0x76);
         assert_eq!(AA_TX_TYPE_ID, 0x76);
     }
 
@@ -1128,7 +1127,7 @@ mod tests {
             input: Bytes::from(vec![1, 2, 3, 4]),
         };
 
-        let tx = TxAA {
+        let tx = TempoTransaction {
             chain_id: 1,
             fee_token: Some(address!("0000000000000000000000000000000000000001")),
             max_priority_fee_per_gas: 1000000000,
@@ -1150,7 +1149,7 @@ mod tests {
         tx.encode(&mut buf);
 
         // Decode
-        let decoded = TxAA::decode(&mut buf.as_slice()).unwrap();
+        let decoded = TempoTransaction::decode(&mut buf.as_slice()).unwrap();
 
         // Verify fields
         assert_eq!(decoded.chain_id, tx.chain_id);
@@ -1180,7 +1179,7 @@ mod tests {
             input: Bytes::new(),
         };
 
-        let tx = TxAA {
+        let tx = TempoTransaction {
             chain_id: 1,
             fee_token: None,
             max_priority_fee_per_gas: 1000000000,
@@ -1202,7 +1201,7 @@ mod tests {
         tx.encode(&mut buf);
 
         // Decode
-        let decoded = TxAA::decode(&mut buf.as_slice()).unwrap();
+        let decoded = TempoTransaction::decode(&mut buf.as_slice()).unwrap();
 
         // Verify fields
         assert_eq!(decoded.chain_id, tx.chain_id);
@@ -1241,7 +1240,7 @@ mod tests {
         };
 
         // Test 1: Protocol nonce (key 0)
-        let tx1 = TxAA {
+        let tx1 = TempoTransaction {
             nonce_key: U256::ZERO,
             nonce: 1,
             calls: vec![dummy_call.clone()],
@@ -1252,7 +1251,7 @@ mod tests {
         assert_eq!(tx1.nonce_key, U256::ZERO);
 
         // Test 2: User nonce (key 1, nonce 0) - first transaction in parallel sequence
-        let tx2 = TxAA {
+        let tx2 = TempoTransaction {
             nonce_key: U256::from(1),
             nonce: 0,
             calls: vec![dummy_call.clone()],
@@ -1263,7 +1262,7 @@ mod tests {
         assert_eq!(tx2.nonce_key, U256::from(1));
 
         // Test 3: Different nonce key (key 42) - independent parallel sequence
-        let tx3 = TxAA {
+        let tx3 = TempoTransaction {
             nonce_key: U256::from(42),
             nonce: 10,
             calls: vec![dummy_call.clone()],
@@ -1275,13 +1274,13 @@ mod tests {
 
         // Test 4: Verify nonce independence between different keys
         // Transactions with same nonce but different keys are independent
-        let tx4a = TxAA {
+        let tx4a = TempoTransaction {
             nonce_key: U256::from(1),
             nonce: 100,
             calls: vec![dummy_call.clone()],
             ..Default::default()
         };
-        let tx4b = TxAA {
+        let tx4b = TempoTransaction {
             nonce_key: U256::from(2),
             nonce: 100,
             calls: vec![dummy_call],
@@ -1303,7 +1302,7 @@ mod tests {
             input: Bytes::new(),
         };
 
-        let tx = TxAA {
+        let tx = TempoTransaction {
             chain_id: 1,
             max_priority_fee_per_gas: 1000000000,
             max_fee_per_gas: 2000000000,
@@ -1332,7 +1331,7 @@ mod tests {
             input: Bytes::new(),
         };
 
-        let tx = TxAA {
+        let tx = TempoTransaction {
             max_priority_fee_per_gas: 1000000000,
             max_fee_per_gas: 2000000000,
             calls: vec![dummy_call],
@@ -1364,7 +1363,7 @@ mod tests {
         };
 
         // Transaction with fee_token = None
-        let tx_no_token = TxAA {
+        let tx_no_token = TempoTransaction {
             chain_id: 1,
             fee_token: None,
             max_priority_fee_per_gas: 1000000000,
@@ -1380,13 +1379,13 @@ mod tests {
         };
 
         // Transaction with fee_token = token1
-        let tx_token1 = TxAA {
+        let tx_token1 = TempoTransaction {
             fee_token: Some(token1),
             ..tx_no_token.clone()
         };
 
         // Transaction with fee_token = token2
-        let tx_token2 = TxAA {
+        let tx_token2 = TempoTransaction {
             fee_token: Some(token2),
             ..tx_no_token.clone()
         };
@@ -1441,7 +1440,7 @@ mod tests {
             input: Bytes::new(),
         };
 
-        let tx = TxAA {
+        let tx = TempoTransaction {
             chain_id: 1,
             fee_token: None,
             max_priority_fee_per_gas: 1000000000,
@@ -1482,7 +1481,7 @@ mod tests {
         };
 
         // Transaction WITHOUT fee_payer, fee_token = None
-        let tx_no_payer_no_token = TxAA {
+        let tx_no_payer_no_token = TempoTransaction {
             chain_id: 1,
             fee_token: None,
             max_priority_fee_per_gas: 1000000000,
@@ -1500,13 +1499,13 @@ mod tests {
         };
 
         // Transaction WITHOUT fee_payer, fee_token = token1
-        let tx_no_payer_token1 = TxAA {
+        let tx_no_payer_token1 = TempoTransaction {
             fee_token: Some(token1),
             ..tx_no_payer_no_token.clone()
         };
 
         // Transaction WITHOUT fee_payer, fee_token = token2
-        let tx_no_payer_token2 = TxAA {
+        let tx_no_payer_token2 = TempoTransaction {
             fee_token: Some(token2),
             ..tx_no_payer_no_token.clone()
         };
@@ -1544,7 +1543,7 @@ mod tests {
         };
 
         // Transaction with fee_token
-        let tx_with_token = TxAA {
+        let tx_with_token = TempoTransaction {
             chain_id: 1,
             fee_token: Some(token),
             max_priority_fee_per_gas: 1000000000,
@@ -1562,7 +1561,7 @@ mod tests {
         };
 
         // Transaction without fee_token
-        let tx_without_token = TxAA {
+        let tx_without_token = TempoTransaction {
             fee_token: None,
             ..tx_with_token.clone()
         };
@@ -1588,8 +1587,8 @@ mod tests {
         );
 
         // Decode and verify
-        let decoded_with = TxAA::decode(&mut buf_with.as_slice()).unwrap();
-        let decoded_without = TxAA::decode(&mut buf_without.as_slice()).unwrap();
+        let decoded_with = TempoTransaction::decode(&mut buf_with.as_slice()).unwrap();
+        let decoded_without = TempoTransaction::decode(&mut buf_without.as_slice()).unwrap();
 
         assert_eq!(decoded_with.fee_token, Some(token));
         assert_eq!(decoded_without.fee_token, None);
@@ -1608,7 +1607,7 @@ mod tests {
         };
 
         // Scenario 1: No fee payer, no token
-        let tx_no_payer_no_token = TxAA {
+        let tx_no_payer_no_token = TempoTransaction {
             chain_id: 1,
             fee_token: None,
             max_priority_fee_per_gas: 1000000000,
@@ -1626,19 +1625,19 @@ mod tests {
         };
 
         // Scenario 2: No fee payer, with token
-        let tx_no_payer_with_token = TxAA {
+        let tx_no_payer_with_token = TempoTransaction {
             fee_token: Some(token),
             ..tx_no_payer_no_token.clone()
         };
 
         // Scenario 3: With fee payer, no token
-        let tx_with_payer_no_token = TxAA {
+        let tx_with_payer_no_token = TempoTransaction {
             fee_payer_signature: Some(Signature::test_signature()),
             ..tx_no_payer_no_token.clone()
         };
 
         // Scenario 4: With fee payer, with token
-        let tx_with_payer_with_token = TxAA {
+        let tx_with_payer_with_token = TempoTransaction {
             fee_token: Some(token),
             fee_payer_signature: Some(Signature::test_signature()),
             ..tx_no_payer_no_token.clone()
@@ -1679,7 +1678,7 @@ mod tests {
         };
 
         // Create transaction WITHOUT key_authorization (old format)
-        let tx_without = TxAA {
+        let tx_without = TempoTransaction {
             chain_id: 1,
             fee_token: Some(address!("0000000000000000000000000000000000000001")),
             max_priority_fee_per_gas: 1000000000,
@@ -1701,7 +1700,7 @@ mod tests {
         tx_without.encode(&mut buf_without);
 
         // Decode it back
-        let decoded_without = TxAA::decode(&mut buf_without.as_slice()).unwrap();
+        let decoded_without = TempoTransaction::decode(&mut buf_without.as_slice()).unwrap();
 
         // Verify it matches
         assert_eq!(decoded_without.key_authorization, None);
@@ -1721,7 +1720,7 @@ mod tests {
         }
         .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
 
-        let tx_with = TxAA {
+        let tx_with = TempoTransaction {
             key_authorization: Some(key_auth.clone()),
             ..tx_without.clone()
         };
@@ -1731,7 +1730,7 @@ mod tests {
         tx_with.encode(&mut buf_with);
 
         // Decode it back
-        let decoded_with = TxAA::decode(&mut buf_with.as_slice()).unwrap();
+        let decoded_with = TempoTransaction::decode(&mut buf_with.as_slice()).unwrap();
 
         // Verify the key_authorization is preserved
         assert!(decoded_with.key_authorization.is_some());
@@ -1754,7 +1753,7 @@ mod tests {
         // Test that an old decoder (simulated by truncating at the right position)
         // can still decode a transaction without key_authorization
         // This simulates backwards compatibility with old code that doesn't know about key_authorization
-        let decoded_old_format = TxAA::decode(&mut buf_without.as_slice()).unwrap();
+        let decoded_old_format = TempoTransaction::decode(&mut buf_without.as_slice()).unwrap();
         assert_eq!(decoded_old_format.key_authorization, None);
     }
 
@@ -1767,7 +1766,7 @@ mod tests {
             input: Bytes::new(),
         };
 
-        let tx = TxAA {
+        let tx = TempoTransaction {
             chain_id: 0,
             fee_token: None,
             max_priority_fee_per_gas: 0,
@@ -1800,7 +1799,7 @@ mod tests {
 
     #[test]
     fn test_txaa_envelope_roundtrip_without_key_auth() {
-        // Test that TxAA in envelope works without key_authorization
+        // Test that TempoTransaction in envelope works without key_authorization
         use crate::TempoTxEnvelope;
         use alloy_eips::eip2718::{Decodable2718, Encodable2718};
 
@@ -1810,7 +1809,7 @@ mod tests {
             input: Bytes::new(),
         };
 
-        let tx = TxAA {
+        let tx = TempoTransaction {
             chain_id: 0,
             fee_token: None,
             max_priority_fee_per_gas: 0,
@@ -1880,14 +1879,14 @@ mod tests {
 
     #[test]
     fn test_txaa_decode_rejects_malformed_rlp() {
-        // Test that TxAA decoding rejects RLP with mismatched header length
+        // Test that TempoTransaction decoding rejects RLP with mismatched header length
         let call = Call {
             to: TxKind::Call(address!("0000000000000000000000000000000000000002")),
             value: U256::from(1000),
             input: Bytes::from(vec![1, 2, 3, 4]),
         };
 
-        let tx = TxAA {
+        let tx = TempoTransaction {
             chain_id: 1,
             fee_token: Some(address!("0000000000000000000000000000000000000001")),
             max_priority_fee_per_gas: 1000000000,
@@ -1912,7 +1911,7 @@ mod tests {
         let original_len = buf.len();
         buf.truncate(original_len - 5); // Remove 5 bytes from the end
 
-        let result = TxAA::decode(&mut buf.as_slice());
+        let result = TempoTransaction::decode(&mut buf.as_slice());
         assert!(
             result.is_err(),
             "Decoding should fail when data is truncated"
