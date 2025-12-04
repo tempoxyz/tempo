@@ -54,7 +54,7 @@ pub enum TempoTxEnvelope {
     #[envelope(ty = 4)]
     Eip7702(Signed<TxEip7702>),
 
-    /// Account Abstraction transaction (type 0x76)
+    /// Tempo transaction (type 0x76)
     #[envelope(ty = 0x76, typed = TempoTransaction)]
     AA(AASigned),
 
@@ -155,7 +155,7 @@ impl TempoTxEnvelope {
         }
     }
 
-    /// Returns the AA authorization list if present (for AA transactions)
+    /// Returns the AA authorization list if present (for Tempo transactions)
     pub fn aa_authorization_list(&self) -> Option<&[crate::transaction::AASignedAuthorization]> {
         match self {
             Self::AA(tx) => Some(&tx.tx().aa_authorization_list),
@@ -217,7 +217,7 @@ impl TempoTxEnvelope {
         tx.tx().subblock_proposer()
     }
 
-    /// Returns the [`AASigned`] transaction if this is an AA transaction.
+    /// Returns the [`AASigned`] transaction if this is a Tempo transaction.
     pub fn as_aa(&self) -> Option<&AASigned> {
         match self {
             Self::AA(tx) => Some(tx),
@@ -230,7 +230,7 @@ impl TempoTxEnvelope {
         self.as_aa().map(|tx| tx.tx().nonce_key)
     }
 
-    /// Returns true if this is an AA transaction
+    /// Returns true if this is a Tempo transaction
     pub fn is_aa(&self) -> bool {
         matches!(self, Self::AA(_))
     }
@@ -546,7 +546,7 @@ mod codec {
                 }
                 TempoTxType::AA => {
                     let (tx, buf) = TempoTransaction::from_compact(buf, buf.len());
-                    // For AA transactions, we need to decode the signature bytes as AASignature
+                    // For Tempo transactions, we need to decode the signature bytes as AASignature
                     let (sig_bytes, buf) = Bytes::from_compact(buf, buf.len());
                     let aa_sig = AASignature::from_bytes(&sig_bytes)
                         .map_err(|e| panic!("Failed to decode AA signature: {e}"))

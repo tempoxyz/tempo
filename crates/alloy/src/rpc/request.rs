@@ -27,11 +27,11 @@ pub struct TempoTransactionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nonce_key: Option<U256>,
 
-    /// Optional calls array, for AA transactions.
+    /// Optional calls array, for Tempo transactions.
     #[serde(default)]
     pub calls: Vec<Call>,
 
-    /// Optional key type for gas estimation of AA transactions.
+    /// Optional key type for gas estimation of Tempo transactions.
     /// Specifies the signature verification algorithm to calculate accurate gas costs.
     pub key_type: Option<SignatureType>,
 
@@ -39,7 +39,7 @@ pub struct TempoTransactionRequest {
     /// Required when key_type is WebAuthn to calculate calldata gas costs.
     pub key_data: Option<Bytes>,
 
-    /// Optional AA authorization list for AA transactions (supports multiple signature types)
+    /// Optional AA authorization list for Tempo transactions (supports multiple signature types)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aa_authorization_list: Vec<AASignedAuthorization>,
 }
@@ -115,32 +115,32 @@ impl TempoTransactionRequest {
         if self.calls.is_empty() && self.inner.to.is_none() {
             return Err(ValueError::new(
                 self,
-                "Missing 'calls' or 'to' field for AA transaction.",
+                "Missing 'calls' or 'to' field for Tempo transaction.",
             ));
         }
 
         let Some(nonce) = self.inner.nonce else {
             return Err(ValueError::new(
                 self,
-                "Missing 'nonce' field for AA transaction.",
+                "Missing 'nonce' field for Tempo transaction.",
             ));
         };
         let Some(gas_limit) = self.inner.gas else {
             return Err(ValueError::new(
                 self,
-                "Missing 'gas_limit' field for AA transaction.",
+                "Missing 'gas_limit' field for Tempo transaction.",
             ));
         };
         let Some(max_fee_per_gas) = self.inner.max_fee_per_gas else {
             return Err(ValueError::new(
                 self,
-                "Missing 'max_fee_per_gas' field for AA transaction.",
+                "Missing 'max_fee_per_gas' field for Tempo transaction.",
             ));
         };
         let Some(max_priority_fee_per_gas) = self.inner.max_priority_fee_per_gas else {
             return Err(ValueError::new(
                 self,
-                "Missing 'max_priority_fee_per_gas' field for AA transaction.",
+                "Missing 'max_priority_fee_per_gas' field for Tempo transaction.",
             ));
         };
 

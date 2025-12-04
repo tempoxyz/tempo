@@ -29,10 +29,10 @@ pub enum TempoInvalidTransaction {
     #[error("fee payer signature recovery failed")]
     InvalidFeePayerSignature,
 
-    // Account Abstraction (AA) transaction errors
+    // Tempo transaction errors
     /// Transaction cannot be included before validAfter timestamp.
     ///
-    /// AA transactions can specify a validAfter field to restrict when they can be included.
+    /// Tempo transactions can specify a validAfter field to restrict when they can be included.
     #[error(
         "transaction not valid yet: current block timestamp {current} < validAfter {valid_after}"
     )]
@@ -45,7 +45,7 @@ pub enum TempoInvalidTransaction {
 
     /// Transaction cannot be included after validBefore timestamp.
     ///
-    /// AA transactions can specify a validBefore field to restrict when they can be included.
+    /// Tempo transactions can specify a validBefore field to restrict when they can be included.
     #[error("transaction expired: current block timestamp {current} >= validBefore {valid_before}")]
     ValidBefore {
         /// The current block timestamp.
@@ -71,7 +71,7 @@ pub enum TempoInvalidTransaction {
 
     /// Insufficient gas for intrinsic cost.
     ///
-    /// AA transactions have variable intrinsic gas costs based on signature type and nonce usage.
+    /// Tempo transactions have variable intrinsic gas costs based on signature type and nonce usage.
     /// This error occurs when the gas_limit is less than the calculated intrinsic gas.
     #[error(
         "insufficient gas for intrinsic cost: gas_limit {gas_limit} < intrinsic_gas {intrinsic_gas}"

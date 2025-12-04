@@ -25,7 +25,7 @@ use std::sync::OnceLock;
 /// (secp256k1, P256, Webauthn, Keychain) and provides a cached transaction hash.
 #[derive(Clone, Debug)]
 pub struct AASigned {
-    /// The inner AA transaction
+    /// The inner Tempo transaction
     tx: TempoTransaction,
     /// The signature (can be secp256k1, P256, Webauthn, Keychain)
     signature: AASignature,
@@ -324,7 +324,7 @@ impl alloy_consensus::transaction::SignerRecoverable for AASigned {
     fn recover_signer_unchecked(
         &self,
     ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
-        // For AA transactions, verified and unverified recovery are the same
+        // For Tempo transactions, verified and unverified recovery are the same
         // since signature verification happens during recover_signer
         self.recover_signer()
     }
@@ -419,7 +419,7 @@ mod serde_impl {
 
         #[test]
         fn test_serde_output() {
-            // Create a simple AA transaction
+            // Create a simple Tempo transaction
             let tx = TempoTransaction {
                 chain_id: 1337,
                 fee_token: None,

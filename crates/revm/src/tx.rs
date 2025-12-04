@@ -18,10 +18,10 @@ use tempo_primitives::{
     },
 };
 
-/// Account Abstraction transaction environment.
+/// Tempo transaction environment for AA features.
 #[derive(Debug, Clone, Default)]
 pub struct AATxEnv {
-    /// Signature bytes for AA transactions
+    /// Signature bytes for Tempo transactions
     pub signature: AASignature,
 
     /// validBefore timestamp
@@ -30,7 +30,7 @@ pub struct AATxEnv {
     /// validAfter timestamp
     pub valid_after: Option<u64>,
 
-    /// Multiple calls for AA transactions
+    /// Multiple calls for Tempo transactions
     pub aa_calls: Vec<Call>,
 
     /// Authorization list (EIP-7702 with AA signatures)

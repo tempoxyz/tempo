@@ -13,7 +13,7 @@ use crate::{
     },
 };
 
-/// Account abstraction transaction type byte (0x76)
+/// Tempo transaction type byte (0x76)
 pub const AA_TX_TYPE_ID: u8 = 0x76;
 
 /// Magic byte for the fee payer signature
@@ -147,7 +147,7 @@ impl Decodable for Call {
     }
 }
 
-/// Account abstraction transaction following the Tempo spec.
+/// Tempo transaction following the Tempo spec.
 ///
 /// This transaction type supports:
 /// - Multiple signature types (secp256k1, P256, WebAuthn)
