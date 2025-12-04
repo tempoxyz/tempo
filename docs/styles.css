@@ -235,12 +235,14 @@
 
   --border-color-accent: var(--color-blue9);
   --border-color-accentHover: var(--color-blue10);
+  --border-color-active: light-dark(var(--color-black), var(--color-white));
   --border-color-primary: light-dark(var(--color-gray5), var(--color-gray4));
   --border-color-surface: light-dark(var(--color-gray4), var(--color-gray5));
 
   --text-color-accent: var(--color-blue10);
   --text-color-destructive: var(--color-red10);
   --text-color-invert: light-dark(var(--color-white), var(--color-black));
+  --text-color-active: light-dark(var(--color-black), var(--color-white));
   --text-color-primary: var(--color-gray12);
   --text-color-secondary: var(--color-gray10);
   --text-color-success: var(--color-green10);

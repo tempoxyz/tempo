@@ -1,404 +1,68 @@
 # TIP-20 Rewards Distribution
 
 ## Abstract
-
-This specification defines an opt-in, scalable, pro-rata streaming reward distribution mechanism for TIP-20 tokens. It introduces `startReward(amount, seconds)` as a function built into the TIP-20 token contract, which starts a linear stream that distributes `amount` evenly over `seconds`. Streams can be canceled by the funder. Users must opt in to rewards distribution and may delegate rewards to a chosen recipient. Accrued rewards are tracked in each user's `rewardBalance` and updated during balance-changing operations (transfers, mints, burns) or when changing the reward recipient. Users claim their accumulated rewards via `claimRewards()`.
-
-The design uses a scalable "reward-per-token" accumulator. The reward rate is tracked via a global `totalRewardPerSecond` and applied over time.
-
-The TIP20RewardsRegistry is deployed at address `0x3000000000000000000000000000000000000000`.
+An opt-in, scalable, pro-rata reward distribution mechanism built into TIP-20 tokens. The system uses a "reward-per-token" accumulator pattern to distribute rewards proportionally to opted-in holders without requiring staking or per-holder iteration. Rewards are distributed instantly; time-based streaming distributions are planned for a future upgrade.
 
 ## Motivation
-
-Many applications (such as incentive programs, reward distribution, deterministic inflation, and staking) often require pro-rata distribution of some tokens to existing holders of that token. Building this into the TIP-20 contract allows Tempo to support this behavior efficiently, without forcing users to stake their tokens on another contract or requiring distributors to loop over all holders.
+Many applications require pro-rata distribution of tokens to existing holders (incentive programs, deterministic inflation, staking rewards). Building this into TIP-20 allows efficient distribution without forcing users to stake tokens elsewhere or requiring distributors to loop over all holders.
 
 ## Specification
+The rewards mechanism allows anyone to distribute token rewards to opted-in holders proportionally based on holdings. Users must opt in to receiving rewards and may delegate rewards to a recipient address.
 
-The rewards mechanism allows anyone to distribute token rewards to a set of token holders in the same token. Rewards accrue proportionally based on holdings, and can be distributed over a duration linearly or as an instant payment.
-
-Users must opt in to receiving rewards. Once opted in, rewards accrue to a separate reward pool that users can withdraw from at any point. Users may also delegate rewards to a recipient address to receive their rewards instead.
-
-Reward payments comply with TIP-403 registry policies. See [TIP-403](/documentation/protocol/tip403/spec) for details.
-
-### State and Accounting
-
-| Name                                   | Description                                                                                           | Type                            |
-|---------------------------------------- |-------------------------------------------------------------------------------------------------------|---------------------------------|
-| `ACC_PRECISION`                        | Fixed-point scale for both the accumulator and per-second rate.                                       | `constant uint256 = 1e18`       |
-| `globalRewardPerToken`                 | Cumulative rewards per whole token, scaled by `ACC_PRECISION`.                                        | `uint256`                       |
-| `lastUpdateTime`                       | Last timestamp the accumulator was updated.                                                           | `uint64`                        |
-| `totalRewardPerSecond`                 | Aggregate per-second emission, scaled by `ACC_PRECISION`.                                             | `uint256`                       |
-| `optedInSupply`                        | Aggregate supply counted for rewards at moments of distribution updates.                              | `uint128`                       |
-| `nextStreamId`                         | Next unique RewardStream ID; starts at 1.                                                             | `uint64`                        |
-| `scheduledRateDecrease`                | Maps block timestamp to total reward rate decrease scheduled for that time.                           | `mapping(uint64 => uint256)`    |
-
-
-**Per User State:**
+## TIP-20 Rewards Functions
+These functions are part of the [ITIP20](/documentation/protocol/tip20/spec) interface:
 
 ```solidity
-struct UserRewardInfo {
-    // Current reward recipient (zero means opted-out)
-    address rewardRecipient;  
-    // Snapshot of globalRewardPerToken last time updated
-    uint256 rewardPerToken;   
-    // Accumulated unclaimed rewards for this user
-    uint256 rewardBalance;    // accumulated unclaimed rewards for this user
-}
+/// @notice Distribute rewards to opted-in token holders
+/// @param amount Amount of tokens to distribute
+/// @param seconds_ Must be 0; passing > 0 reverts with ScheduledRewardsDisabled()
+/// @return Always returns 0 for an instant distribution
+function startReward(uint256 amount, uint32 seconds_) external returns (uint64);
 
-// Reward information for each user
-mapping(address => UserRewardInfo) userRewardInfo` 
-```
+/// @notice Set the reward recipient for the caller (opt in/out of rewards)
+/// @param newRewardRecipient Recipient address (address(0) to opt out)
+function setRewardRecipient(address newRewardRecipient) external;
 
-**Streams:**
-```solidity
-struct RewardStream {
-    address funder;
-    uint64  startTime;
-    uint64  endTime;
-    uint256 ratePerSecondScaled; // amount / seconds * ACC_PRECISION
-    uint256 amountTotal;
-}
+/// @notice Claim all pending rewards for the caller
+/// @return maxAmount Amount claimed
+function claimRewards() external returns (uint256 maxAmount);
 
-mapping(uint64 => RewardStream) streams;
-```
-
-### Accrual Mechanism
-
-Accrual is piecewise-linear based on block time and current opted-in supply. Immediate payouts (when `seconds = 0`) directly increase `globalRewardPerToken` without affecting `totalRewardPerSecond`.
-
-The rewards mechanism uses an accumulator pattern for efficiency. Each token maintains a `totalRewardPerSecond` variable representing the summed emission rate of all active streaming rewards. This aggregate rate variable is increased when new streams start, and is decreased when streams end or are cancelled.
-
-A `globalRewardPerToken` accumulator tracks cumulative rewards per unit token, scaled by `ACC_PRECISION` (1e18). On each update, the system adds `(totalRewardPerSecond * elapsed) / optedInSupply` to the accumulator for streaming rewards, where `totalRewardPerSecond` is already scaled by `ACC_PRECISION`. For instant distributions, it adds `(amount * ACC_PRECISION) / optedInSupply` directly to the accumulator.
-
-Each user stores a local `rewardPerToken` snapshot capturing the `globalRewardPerToken` value at their last interaction. Pending rewards for any user are calculated as: `(globalRewardPerToken - rewardPerToken) * userBalance`.
-
-### TIP20RewardsRegistry
-
-The TIP20RewardsRegistry is a precompile at address `0x3000000000000000000000000000000000000000` that coordinates stream finalization across all TIP20 tokens in the system.
-
-#### Purpose
-
-The registry maintains a global index of all pending stream end times across all TIP20 tokens. During [block production](/documentation/protocol/blockspace/overview#block-body), the first transaction of every block will be a call to `finalizeStreams()` on the registry. This design ensures that streams will be finalized at their scheduled `endTime` by calling `finalizeStreams(timestamp)` on each token with streams ending at the current block timestamp.
-
-#### Interface
-
-```solidity
-interface ITIP20RewardsRegistry {
-    /// @notice Register a timestamp for stream finalization
-    /// @dev Called by TIP20 tokens when the first stream ending at `timestamp` is created
-    function addStream(uint128 endTime) external;
-
-    /// @notice Unregister a timestamp for stream finalization
-    /// @dev Called by TIP20 tokens when the last stream ending at `timestamp` is canceled
-    function removeStream(uint128 endTime) external;
-
-    /// @notice Finalize streams for all tokens ending from `lastUpdatedTimestamp` to current timestamp
-    function finalizeStreams() external;
-
-    /// @notice Returns the last timestamp that was finalized
-    function lastUpdatedTimestamp() external view returns (uint128);
-}
-```
-
-#### Behavior
-
-- **Registration**: When a TIP20 token creates the first stream ending at a particular timestamp, it calls `addStream(endTime)` to register that timestamp with the registry. Only TIP-20 tokens (addresses with prefix `0x20c000000000000000000000`) can call this function.
-
-- **Unregistration**: When a TIP20 token cancels the last stream ending at a particular timestamp, it calls `removeStream(endTime)` to unregister that timestamp. Only TIP-20 tokens can call this function.
-
-- **Finalization**: At the top of each block, a system transaction (from `address(0)`) calls `finalizeStreams()` on the TIP20RewardsRegistry. The registry loops through all timestamps from `lastUpdatedTimestamp` to the current block timestamp, and for each timestamp, calls `finalizeStreams(timestamp)` on each registered TIP20 token that has streams ending at that time.
-
-This design allows the system to efficiently track and finalize streams without requiring each token to maintain its own timer or iteration logic.
-
-#### TIP20: `finalizeStreams(uint64 endTime)` Function
-
-This function on each TIP20 token is callable only by the TIP20RewardsRegistry:
-
-```solidity
-function finalizeStreams(uint64 endTime) external;
-```
-
-**Access Control:** Only callable by the TIP20RewardsRegistry. Reverts with `Unauthorized()` if caller is not the registry.
-
-**Behavior:**
-1. Verifies the caller is the TIP20RewardsRegistry
-2. Loads the scheduled rate decrease for the given `endTime`
-3. Reverts if `scheduledRateDecrease[endTime] == 0` (no streams to finalize)
-4. Calls `_accrue(endTime)` to accrue rewards up to the finalization timestamp
-5. Decreases `totalRewardPerSecond` by `scheduledRateDecrease[endTime]`
-6. Deletes the `scheduledRateDecrease[endTime]` entry
-
-No transfers occur here; any rounding dust remains in the pool. This system transaction is triggered automatically when `scheduledRateDecrease[block.timestamp] > 0`.
-
-### Interfaces
-
-#### Rewards Structs
-
-```solidity
-interface ITIP20 {
-    struct RewardStream {
-        address funder;
-        uint64 startTime;
-        uint64 endTime;
-        uint256 ratePerSecondScaled;
-        uint256 amountTotal;
-    }
-
-    struct UserRewardInfo {
-        address rewardRecipient;
-        uint256 rewardPerToken;
-        uint256 rewardBalance;
-    }
-}
-```
-
-#### Reward Distribution Management Functions
-
-```solidity
-function startReward(
-    /** Amount of tokens to distribute */
-    uint256 amount,
-    /** Duration in seconds (0 for instant distribution) */
-    uint32 seconds_
-) external returns (
-    /** Stream ID (0 for instant, >0 for streaming) */
-    uint64
-);
-```
-
-Creates a reward distribution to token holders. Returns streamId of 0 for instant distributions (`seconds_ == 0`) or a unique streamId for streaming rewards. This function transfers tokens from the caller without needing or affecting approvals.
-
-**Access Control:** Requires the token to not be paused. Reverts with `ContractPaused()` if paused.
-
-**Behavior:**
-- Transfers `amount` of the TIP20 token from `msg.sender` into the token's reward pool (TIP-403 applies).
-- If `seconds_ == 0`, immediately distributes `amount` to current opted-in holders by increasing `globalRewardPerToken`.
-- If `seconds_ > 0`, starts a linear stream that emits evenly from `block.timestamp` to `block.timestamp + seconds_`.
-- Returns a unique `id` for later cancellation (always 0 for immediate payouts).
-- Reverts if `amount == 0` with `InvalidAmount()`.
-- Reverts with `NoOptedInSupply()` if `seconds_ == 0` and `optedInSupply == 0`.
-- Reverts with `PolicyForbids()` if `msg.sender` is not authorized under TIP-403.
-
-Emits `RewardScheduled(funder, id, amount, durationSeconds)` event.
-
-```solidity
-function cancelReward(
-    /** Stream ID to cancel */
-    uint64 id
-) external returns (
-    /** Amount refunded to funder (0 if TIP-403 forbids) */
-    uint256 refund
-);
-```
-
-Cancels an active reward stream associated with the id, only callable by the creator. Transfers the undistributed amount to the stream creator and returns that value.
-
-**Access Control:** Only the stream's funder can cancel it. Reverts with `NotStreamFunder()` if caller is not the funder.
-
-**Behavior:**
-- Stops future emission for that stream at `block.timestamp`.
-- Computes `refund = amountTotal - distributedSoFar` and attempts to transfer `refund` from the pool back to the funder (TIP-403 applies).
-- If the refund transfer is forbidden by TIP-403, the stream is still canceled and `refund == 0` is returned.
-- Reverts with `StreamInactive()` if stream does not exist, has already ended, or has already been canceled.
-
-Emits `RewardCanceled(funder, id, refund)` event.
-
-```solidity
-function getStream(
-    /** Stream ID to query */
-    uint64 id
-) external view returns (
-    /** Address that funded the stream */
-    address funder,
-    /** Timestamp when stream started */
-    uint64 startTime,
-    /** Timestamp when stream ends */
-    uint64 endTime,
-    /** Emission rate per second (scaled by ACC_PRECISION) */
-    uint256 ratePerSecondScaled,
-    /** Total amount in the stream */
-    uint256 amountTotal
-);
-```
-
-Returns details of the reward stream associated with id. Returns zero values if the stream does not exist.
-
-#### User Reward Functions
-
-```solidity
-function setRewardRecipient(
-    /** New reward recipient (address(0) to opt out) */
-    address newRewardRecipient
-) external;
-```
-
-Sets the reward recipient for the caller. This function opts the caller in or out of rewards distribution.
-
-**Access Control:** Requires the token to not be paused. Reverts with `ContractPaused()` if paused.
-
-**Behavior:**
-- If `newRewardRecipient` is `address(0)`, opts out `msg.sender` from rewards distribution.
-- Otherwise, opts in `msg.sender` for rewards and sets `newRewardRecipient` as the reward recipient for `msg.sender`.
-- May be called with `newRewardRecipient == msg.sender` to receive rewards directly.
-- Reverts if `newRewardRecipient` is not `address(0)` and either `msg.sender` or `newRewardRecipient` is not authorized to receive tokens under TIP-403.
-- Updates `rewardBalance` for `msg.sender` to reflect any accrued rewards before changing the recipient setting.
-- Updates `optedInSupply` based on whether the user is opting in or out.
-
-Emits `RewardRecipientSet(holder, recipient)` event.
-
-```solidity
-function claimRewards() external returns (
-    /** Amount claimed (may be less than rewardBalance if pool is insufficient) */
-    uint256 maxAmount
-);
-```
-
-Claims all pending rewards for the caller. Transfers accumulated rewards from `rewardBalance` to the caller's token balance.
-
-**Access Control:** Requires the token to not be paused. Reverts with `ContractPaused()` if paused. Reverts with `PolicyForbids()` if `msg.sender` is not authorized under TIP-403.
-
-**Behavior:**
-- Transfers accumulated rewards from `msg.sender`'s `rewardBalance` to their token balance.
-- Updates rewards before claiming.
-- Returns the amount transferred (may be less than `rewardBalance` if contract balance is insufficient).
-- If `msg.sender` has a `rewardRecipient` set, the claimed amount is added to `optedInSupply`.
-
-Emits `Transfer(address(this), msg.sender, maxAmount)` event.
-
-```solidity
-function userRewardInfo(
-    /** User address to query */
-    address user
-) external view returns (
-    /** Current reward recipient (address(0) if opted out) */
+/// @notice Get user reward info
+function userRewardInfo(address user) external view returns (
     address rewardRecipient,
-    /** Snapshot of globalRewardPerToken at last interaction */
     uint256 rewardPerToken,
-    /** Accumulated unclaimed rewards */
     uint256 rewardBalance
 );
-```
 
-Gets the reward info for a user, including their reward recipient address, their `rewardPerToken` snapshot at last interaction, and their unclaimed reward balance.
-
-#### State Variables
-
-```solidity
+// State variables
 function globalRewardPerToken() external view returns (uint256);
-```
-
-Cumulative rewards per unit token accumulator. This variable monotonically increases as rewards are distributed over time.
-
-```solidity
-function lastUpdateTime() external view returns (uint64);
-```
-
-Timestamp of the last reward accrual update.
-
-```solidity
-function totalRewardPerSecond() external view returns (uint256);
-```
-
-Aggregate emission rate of all active streaming rewards, scaled by `ACC_PRECISION` (1e18).
-
-```solidity
 function optedInSupply() external view returns (uint128);
 ```
 
-Total token supply that has opted in to receive rewards.
+## Accrual Mechanism
+The system uses an accumulator pattern:
+- `globalRewardPerToken`: Cumulative rewards per token (scaled by 1e18)
+- Each user stores a `rewardPerToken` snapshot; pending rewards = `(globalRewardPerToken - snapshot) * balance`
 
-```solidity
-function nextStreamId() external view returns (uint64);
-```
+Instant distributions (`seconds_ == 0`) add directly to `globalRewardPerToken` as:
+`deltaRPT = amount * 1e18 / optedInSupply`.
 
-The next stream ID that will be assigned when a new reward stream is created.
+## Opt-In Model
+Users must call `setRewardRecipient(recipient)` to opt in. When opted in:
+- User's balance contributes to `optedInSupply`
+- Rewards accrue to `rewardBalance` on balance-changing operations
+- Users can delegate rewards to another address
 
-```solidity
-function streams(uint64 id) external view returns (address funder, uint64 startTime, uint64 endTime, uint256 ratePerSecondScaled, uint256 amountTotal);
-```
+Setting recipient to `address(0)` opts out.
 
-Returns the reward stream details for the given stream ID.
+## TIP-403 Integration
+All token movements must pass TIP-403 policy checks:
+- `startReward`: Validates funder authorization
+- `setRewardRecipient`: Validates holder and recipient
+- `claimRewards`: Validates msg.sender
 
-```solidity
-function scheduledRateDecrease(uint64 timestamp) external view returns (uint256);
-```
-
-Returns the total rate decrease scheduled at the given timestamp when streams end.
-
-### Balance Changes and Reward Accounting
-
-On any change to a holder's balance (mint, burn, transfer in/out), the system updates accrued rewards before processing the balance change. The system calculates pending rewards based on the difference between the current `globalRewardPerToken` and the user's last recorded `rewardPerToken` snapshot, multiplied by the user's balance. Rewards are credited to the user's `rewardRecipient` if they have opted in.
-
-The system then adjusts `balanceOf[holder]` and `optedInSupply` based on the balance delta and whether the sender/receiver are opted in.
-
-### TIP-403 Policy Integration
-
-All movements of tokens precipitated by this mechanism must pass TIP-403 checks using the token's `transferPolicyId`:
-
-- `startReward` validates funder authorization before transferring tokens to the pool.
-- `setRewardRecipient` validates both holder and recipient authorization.
-- `claimRewards` validates that `msg.sender` is authorized before claiming rewards.
-- `cancelReward` attempts pool → funder; if forbidden by TIP-403, the stream is canceled but no refund is transferred (refund returns 0).
-
-If any check fails, revert `PolicyForbids()`.
-
-### Gas Considerations
-
-- `_accrue()` is O(1) and triggered on existing touchpoints (transfers, mints, burns, setting reward recipient, claiming rewards).
-- Starting/ending/canceling a stream is O(1).
-- No per-second or per-stream iteration is required; the scheduled end is a constant-time rate subtraction.
-- Per-holder costs arise on setting a reward recipient and on subsequent balance changes for opted-in holders.
-
-### Events
-
-```solidity
-event RewardScheduled(
-    /** Address that funded the reward stream */
-    address indexed funder,
-    /** Stream ID (0 for instant, >0 for streaming) */
-    uint64 indexed id,
-    /** Total amount in the stream */
-    uint256 amount,
-    /** Duration in seconds (0 for instant) */
-    uint32 durationSeconds
-);
-```
-
-Emitted when a reward stream is created. Triggered by `startReward()`.
-
-```solidity
-event RewardCanceled(
-    /** Address that funded the stream */
-    address indexed funder,
-    /** Stream ID that was canceled */
-    uint64 indexed id,
-    /** Amount refunded (0 if TIP-403 forbids) */
-    uint256 refund
-);
-```
-
-Emitted when a reward stream is canceled. Triggered by `cancelReward()`. The `refund` amount may be 0 if TIP-403 policy forbids the refund transfer.
-
-```solidity
-event RewardRecipientSet(
-    /** Address that set the recipient */
-    address indexed holder,
-    /** New reward recipient (address(0) if opting out) */
-    address indexed recipient
-);
-```
-
-Emitted when a user sets or changes their reward recipient. Triggered by `setRewardRecipient()`.
-
-### Errors
-
-```solidity
-error InvalidAmount();     // amount == 0
-error NotStreamFunder();   // cancel by non-funder
-error StreamInactive();    // cancel on non-existent or already-canceled stream
-error PolicyForbids();     // TIP-403 policy violation
-error NoOptedInSupply();   // No immediate payout when optedInSupply == 0
-error Unauthorized();      // Caller is not authorized (e.g., not TIP20RewardsRegistry for finalizeStreams)
-error ContractPaused();    // Token operations are blocked because the contract is paused
-```
+## Invariants
+- `globalRewardPerToken` must monotonically increase
+- `optedInSupply` must equal the sum of balances for all opted-in users
+- All token movements must comply with TIP-403 policies
 

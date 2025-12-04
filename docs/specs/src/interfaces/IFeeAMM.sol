@@ -4,6 +4,8 @@ pragma solidity ^0.8.13;
 interface IFeeAMM {
 
     error InsufficientLiquidity();
+    /// @notice Error when two-sided mint is called (disabled post-Moderato)
+    error MintDisabled();
 
     event Burn(
         address indexed sender,

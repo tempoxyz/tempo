@@ -50,15 +50,15 @@ For each validator `i`, define
 
 We use the two-dimensional nonce sequence to simplify transaction validity. In this construction, the nonce_key is a `u256` value. 
 
-Let `validatorPubKey` be the public key of the validator proposing a given sub-block. Let `validatorPubKey184` be the most significant 184 bits of the validator's public key. 
+Let `validatorPubKey` be the public key of the validator proposing a given sub-block. Let `validatorPubKey120` be the most significant 120 bits of the validator's public key. 
 
-We reserve sequence keys to each validator by requiring that the first (most significant) byte of the `sequence key` is the constant byte `0x5b`, and the next 23 bytes (184 bits) encode `validatorPubKey184`. 
+We reserve sequence keys to each validator by requiring that the first (most significant) byte of the `sequence key` is the constant byte `0x5b`, and the next 15 bytes (120 bits) encode `validatorPubKey120`. 
 
 Formally, we require that:
 
-1. The `sequence key` of any transaction in the sub-block is of the form `(0x5b << 248) + (validatorPubKey120 << 64) + x`, where `x` is a value between `0` and `2**64 - 1`. In other words, the most significant byte of the sequence key is always `0x5b`, the next 23 bytes are the most significant 184 bits of the validator's public key, and the final 8 bytes (64 bits) still allow for 2D-nonces.
+1. The `sequence key` of any transaction in the sub-block is of the form `(0x5b << 248) + (validatorPubKey120 << 128) + x`, where `x` is a value between `0` and `2**128 - 1`. In other words, the most significant byte of the sequence key is always `0x5b`, the next 15 bytes are the most significant 120 bits of the validator's public key, and the final 32 bytes (128 bits) still allow for 2D-nonces.
 
-2. No two validators share the same `validatorPubKey184`; each validator's reserved space is distinct.
+2. No two validators share the same `validatorPubKey120`; each validator's reserved space is distinct.
 
 This explicit prefixing with `0x5b` ensures the reserved sequence key space is unambiguous and disjoint across validators. Sub-block proposers control all sequence keys of the form above, and can ensure that nonces are sequential within their space.  
 
@@ -113,7 +113,7 @@ The block includes a **new system transaction**, whose call data contains, for e
   gasIncentiveLimit =  Σ(unreservedGas[i]) for all included sub-blocks [i]
   ```
 * Append transactions at the bottom up to this gas limit. 
-* Construct and include the [system transaction](#21-system-transaction) before the fee-AMM system transaction. 
+* Construct and include the [system transaction](#21-system-transaction) at the bottom of the block.
 
 
 #### 3.1 Proposer Incentives
@@ -143,8 +143,7 @@ Even if a transaction can pay its fees when the sub-block is created (i.e., when
 - The user's balance of the `fee_token` is insufficient (e.g., the user spent that balance in previous transactions in the block).
 - The user or validator changed their `fee_token` preference in the block and the transaction cannot pay its fees because of the new preference.
 
-In all these scenarios, we should treat the transaction as a 'reverted' transaction: fees for the transaction are paid to the extent possible. If a 'regular' revert would have triggered a nonce increase, we should increase the nonce. 
-
+In all these scenarios, transaction is considered valid, increments the nonce, skips fee payment and execution, and results in an exceptional halt.
 
 ### 5. Transaction Fee Accounting
 
@@ -153,6 +152,6 @@ The fee manager is updated to handle fee accounting across sub-blocks:
 - For the sub-block transactions, fees are paid to the `fee_recipient` of the sub-block (available from the system transaction).
 - For the gas incentive transactions, fees are paid to the proposer's `fee_recipient`.
 
-In all cases, the fee is paid in the preferred `fee_token` of the `fee_recipient`, using liquidity from the fee AMM as necessary (i.e., `validatorTokens[fee_recipient]` from the FeeManager contract). If the `fee_recipient`  has not set a preferred `fee_token`, then we use LinkingUSD as a fallback. 
+In all cases, the fee is paid in the preferred `fee_token` of the `fee_recipient`, using liquidity from the fee AMM as necessary (i.e., `validatorTokens[fee_recipient]` from the FeeManager contract). If the `fee_recipient`  has not set a preferred `fee_token`, then we use pathUSD as a fallback. 
 
 

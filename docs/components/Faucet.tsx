@@ -3,7 +3,12 @@ import { Hex } from 'ox'
 import * as React from 'react'
 import { Abis } from 'tempo.ts/viem'
 import { Actions, Hooks } from 'tempo.ts/wagmi'
-import { type Address, formatUnits, parseEventLogs } from 'viem'
+import {
+  type Address,
+  formatUnits,
+  type Hex as HexType,
+  parseEventLogs,
+} from 'viem'
 import { useAccount, useConfig } from 'wagmi'
 import LucideDollarSign from '~icons/lucide/dollar-sign'
 
@@ -15,6 +20,9 @@ export function Faucet() {
   const config = useConfig()
 
   const [lastAddress, setLastAddress] = React.useState<Address | undefined>(
+    undefined,
+  )
+  const [lastTxHashes, setLastTxHashes] = React.useState<HexType[] | undefined>(
     undefined,
   )
 
@@ -73,7 +81,14 @@ export function Faucet() {
             const formData = new FormData(event.target as HTMLFormElement)
             const address = formData.get('address')
             Hex.assert(address)
-            fund.mutate({ account: address })
+            fund.mutate(
+              { account: address },
+              {
+                onSuccess: (receipts) => {
+                  setLastTxHashes(receipts.map((r) => r.transactionHash))
+                },
+              },
+            )
             setLastAddress(address)
           }}
         >
@@ -104,26 +119,46 @@ export function Faucet() {
         </form>
 
         {fund.isSuccess && lastAddress && receivedTokens.data && (
-          // TODO: add link to explorer (address).
           <div className="flex flex-col text-[13px] text-gray9 gap-1">
             <div>
               Address{' '}
-              <span className="dark:text-white text-black">
+              <a
+                href={`https://explore.tempo.xyz/address/${lastAddress}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="dark:text-white text-black hover:underline"
+              >
                 {StringFormatter.truncate(lastAddress, {
                   start: 6,
                   end: 4,
                 })}
-              </span>{' '}
+              </a>{' '}
               successfully funded with:
             </div>
             <div className="flex flex-col gap-2">
-              {receivedTokens.data?.map((token) => (
-                // TODO: add link to explorer (receipt).
-                <div className="leading-none">
-                  → {new Intl.NumberFormat().format(Number(token.amount))}{' '}
-                  <span className="dark:text-white text-black">
-                    {token.name}
-                  </span>
+              {receivedTokens.data?.map((token, index) => (
+                <div className="leading-none" key={token.name}>
+                  →{' '}
+                  {lastTxHashes?.[index] ? (
+                    <a
+                      href={`https://explore.tempo.xyz/tx/${lastTxHashes[index]}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="hover:underline"
+                    >
+                      {new Intl.NumberFormat().format(Number(token.amount))}{' '}
+                      <span className="dark:text-white text-black">
+                        {token.name}
+                      </span>
+                    </a>
+                  ) : (
+                    <>
+                      {new Intl.NumberFormat().format(Number(token.amount))}{' '}
+                      <span className="dark:text-white text-black">
+                        {token.name}
+                      </span>
+                    </>
+                  )}
                 </div>
               ))}
             </div>

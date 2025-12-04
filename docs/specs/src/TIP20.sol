@@ -2,7 +2,6 @@
 pragma solidity ^0.8.13;
 
 import { TIP20Factory } from "./TIP20Factory.sol";
-import { TIP20RewardsRegistry } from "./TIP20RewardRegistry.sol";
 import { TIP403Registry } from "./TIP403Registry.sol";
 import { TIP20RolesAuth } from "./abstracts/TIP20RolesAuth.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
@@ -13,11 +12,10 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         TIP403Registry(0x403c000000000000000000000000000000000000);
 
     address internal constant TIP_FEE_MANAGER_ADDRESS = 0xfeEC000000000000000000000000000000000000;
+    address internal constant STABLECOIN_EXCHANGE_ADDRESS =
+        0xDEc0000000000000000000000000000000000000;
 
     address internal constant FACTORY = 0x20Fc000000000000000000000000000000000000;
-
-    TIP20RewardsRegistry internal constant TIP20_REWARDS_REGISTRY =
-        TIP20RewardsRegistry(0x3000000000000000000000000000000000000000);
 
     /*//////////////////////////////////////////////////////////////
                                 METADATA
@@ -83,21 +81,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
 
     uint256 internal constant ACC_PRECISION = 1e18;
     uint256 public globalRewardPerToken;
-    uint64 public lastUpdateTime;
-    uint256 public totalRewardPerSecond;
     uint128 public optedInSupply;
-    uint64 public nextStreamId = 1;
-
-    struct RewardStream {
-        address funder;
-        uint64 startTime;
-        uint64 endTime;
-        uint256 ratePerSecondScaled;
-        uint256 amountTotal;
-    }
-
-    mapping(uint64 => RewardStream) public streams;
-    mapping(uint64 => uint256) public scheduledRateDecrease;
 
     struct UserRewardInfo {
         address rewardRecipient;
@@ -140,7 +124,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     function completeQuoteTokenUpdate() external onlyRole(DEFAULT_ADMIN_ROLE) {
         // check that this does not create a loop, by looping through quote token until we reach the root
         ITIP20 current = nextQuoteToken;
-        while (address(current) != 0x20C0000000000000000000000000000000000000) {
+        while (address(current) != address(0)) {
             if (current == this) revert InvalidQuoteToken();
             current = current.quoteToken();
         }
@@ -178,6 +162,11 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     function burnBlocked(address from, uint256 amount) external onlyRole(BURN_BLOCKED_ROLE) {
+        // Prevent burning from protected precompile addresses
+        if (from == TIP_FEE_MANAGER_ADDRESS || from == STABLECOIN_EXCHANGE_ADDRESS) {
+            revert ProtectedAddress();
+        }
+
         // Only allow burning from addresses that are blocked from transferring.
         if (TIP403_REGISTRY.isAuthorized(transferPolicyId, from)) {
             revert PolicyForbids();
@@ -193,8 +182,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
 
     function mintWithMemo(address to, uint256 amount, bytes32 memo) external onlyRole(ISSUER_ROLE) {
         _mint(to, amount);
-        emit TransferWithMemo(address(0), to, amount, memo);
         emit Mint(to, amount);
+        emit TransferWithMemo(address(0), to, amount, memo);
     }
 
     function burnWithMemo(uint256 amount, bytes32 memo) external onlyRole(ISSUER_ROLE) {
@@ -203,8 +192,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
             _totalSupply -= uint128(amount);
         }
 
-        emit TransferWithMemo(msg.sender, address(0), amount, memo);
         emit Burn(msg.sender, amount);
+        emit TransferWithMemo(msg.sender, address(0), amount, memo);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -283,9 +272,6 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
             revert InsufficientBalance(balanceOf[from], amount, address(this));
         }
 
-        // Accrue rewards before any balance changes
-        _accrue(block.timestamp);
-
         // Handle reward accounting for opted-in sender
         address fromsRewardRecipient = _updateRewardsAndGetRecipient(from);
 
@@ -309,10 +295,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     function _mint(address to, uint256 amount) internal {
+        if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, to)) revert PolicyForbids();
         if (_totalSupply + amount > supplyCap) revert SupplyCapExceeded(); // Catches overflow.
-
-        // Accrue rewards before any balance changes
-        _accrue(block.timestamp);
 
         // Handle reward accounting for opted-in receiver
         address tosRewardRecipient = _updateRewardsAndGetRecipient(to);
@@ -393,8 +377,6 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
             revert InsufficientBalance(balanceOf[from], amount, address(this));
         }
 
-        _accrue(block.timestamp);
-
         address fromsRewardRecipient = _updateRewardsAndGetRecipient(from);
         if (fromsRewardRecipient != address(0)) {
             optedInSupply -= uint128(amount);
@@ -415,7 +397,6 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
             revert InsufficientBalance(feeManagerBalance, refund, address(this));
         }
 
-        // We assume that transferFeePreTx is always called first, so `_accrue` has already been called.
         address tosRewardRecipient = _updateRewardsAndGetRecipient(to);
         if (tosRewardRecipient != address(0)) {
             optedInSupply += uint128(refund);
@@ -433,23 +414,6 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
                         REWARD DISTRIBUTION
     //////////////////////////////////////////////////////////////*/
 
-    function _accrue(uint256 timestampToAccrueTo) internal {
-        uint256 elapsed = timestampToAccrueTo - lastUpdateTime;
-
-        if (elapsed == 0) return;
-
-        lastUpdateTime = uint64(timestampToAccrueTo);
-
-        // Clock keeps running even if optedInSupply == 0 (no backfill)
-        if (optedInSupply == 0) return;
-
-        if (totalRewardPerSecond > 0) {
-            // deltaRPT = totalRewardPerSecond * elapsed / optedInSupply
-            uint256 deltaRPT = (totalRewardPerSecond * elapsed) / uint256(optedInSupply);
-            globalRewardPerToken += deltaRPT;
-        }
-    }
-
     // Updates the rewards for `user` and their `rewardRecipient`
     function _updateRewardsAndGetRecipient(address user)
         internal
@@ -464,7 +428,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
             // No rewards to update if not opted-in
             if (rewardRecipient != address(0)) {
                 // Balance to update
-                uint256 reward = uint256(balanceOf[user]) * (rewardPerTokenDelta) / ACC_PRECISION;
+                uint256 reward = (uint256(balanceOf[user]) * (rewardPerTokenDelta)) / ACC_PRECISION;
 
                 userRewardInfo[rewardRecipient].rewardBalance += reward;
             }
@@ -472,9 +436,18 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         }
     }
 
-    function startReward(uint256 amount, uint32 seconds_) external notPaused returns (uint64) {
+    /// @notice Starts a reward distribution. Post-Moderato, only immediate rewards (seconds_ == 0) are allowed.
+    /// Scheduled/streaming rewards (seconds_ > 0) are disabled and will revert with ScheduledRewardsDisabled.
+    function startReward(uint256 amount, uint32 seconds_)
+        external
+        virtual
+        notPaused
+        returns (uint64)
+    {
         if (amount == 0) revert InvalidAmount();
-        if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)) revert PolicyForbids();
+        if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)) {
+            revert PolicyForbids();
+        }
 
         // Transfer tokens from sender to this contract
         _transfer(msg.sender, address(this), amount);
@@ -489,33 +462,12 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
             emit RewardScheduled(msg.sender, 0, amount, 0);
             return 0;
         } else {
-            // Streaming payout
-            uint256 rate = (amount * ACC_PRECISION) / seconds_;
-            uint64 id = nextStreamId++;
-            totalRewardPerSecond += rate;
-            uint64 endTime = uint64(block.timestamp) + seconds_;
-
-            streams[id] = RewardStream({
-                funder: msg.sender,
-                startTime: uint64(block.timestamp),
-                endTime: endTime,
-                ratePerSecondScaled: rate,
-                amountTotal: amount
-            });
-
-            uint256 cachedScheduleRateDecrease = scheduledRateDecrease[endTime];
-            scheduledRateDecrease[endTime] = cachedScheduleRateDecrease + rate;
-
-            // Add only if first stream
-            if (cachedScheduleRateDecrease == 0) {
-                TIP20_REWARDS_REGISTRY.addStream(endTime);
-            }
-            emit RewardScheduled(msg.sender, id, amount, seconds_);
-            return id;
+            // Scheduled/streaming rewards are disabled post-Moderato
+            revert ScheduledRewardsDisabled();
         }
     }
 
-    function setRewardRecipient(address newRewardRecipient) external notPaused {
+    function setRewardRecipient(address newRewardRecipient) external virtual notPaused {
         // Check TIP-403 authorization
         if (newRewardRecipient != address(0)) {
             if (
@@ -524,7 +476,6 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
             ) revert PolicyForbids();
         }
 
-        _accrue(block.timestamp);
         address oldRewardRecipient = _updateRewardsAndGetRecipient(msg.sender);
         if (oldRewardRecipient != address(0)) {
             if (newRewardRecipient == address(0)) {
@@ -538,10 +489,9 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         emit RewardRecipientSet(msg.sender, newRewardRecipient);
     }
 
-    function claimRewards() external notPaused returns (uint256 maxAmount) {
+    function claimRewards() external virtual notPaused returns (uint256 maxAmount) {
         if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)) revert PolicyForbids();
 
-        _accrue(block.timestamp);
         _updateRewardsAndGetRecipient(msg.sender);
 
         uint256 amount = userRewardInfo[msg.sender].rewardBalance;
@@ -558,86 +508,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         emit Transfer(address(this), msg.sender, maxAmount);
     }
 
-    function cancelReward(uint64 id) external returns (uint256 refund) {
-        RewardStream memory s = streams[id];
-        if (s.funder == address(0)) revert StreamInactive();
-        if (msg.sender != s.funder) revert NotStreamFunder();
-        if (block.timestamp >= s.endTime) revert StreamInactive();
-
-        _accrue(block.timestamp);
-
-        // Compute elapsed within the stream's window
-        uint256 t = block.timestamp <= s.startTime ? 0 : (block.timestamp - s.startTime);
-        uint256 distributed = (s.ratePerSecondScaled * t) / ACC_PRECISION;
-        if (distributed > s.amountTotal) distributed = s.amountTotal; // safety clamp
-        refund = s.amountTotal - distributed;
-
-        // Decrease totalRewardPerSecond
-        totalRewardPerSecond -= s.ratePerSecondScaled;
-
-        // Decrease scheduledRateDecrease (cancel the scheduled end)
-        uint256 newRate = scheduledRateDecrease[s.endTime] - s.ratePerSecondScaled;
-        scheduledRateDecrease[s.endTime] = newRate;
-
-        // Remove from registry
-        if (newRate == 0) {
-            TIP20_REWARDS_REGISTRY.removeStream(s.endTime);
-        }
-
-        // Delete stream
-        delete streams[id];
-
-        // Attempt to transfer refund from pool to funder (TIP-403 check)
-        if (
-            TIP403_REGISTRY.isAuthorized(transferPolicyId, address(this))
-                && TIP403_REGISTRY.isAuthorized(transferPolicyId, s.funder)
-        ) {
-            address funderRewardRecipient = _updateRewardsAndGetRecipient(s.funder);
-            if (funderRewardRecipient != address(0)) {
-                optedInSupply += uint128(refund);
-            }
-
-            unchecked {
-                balanceOf[address(this)] -= refund;
-                balanceOf[s.funder] += refund;
-            }
-            emit Transfer(address(this), s.funder, refund);
-        } else {
-            refund = 0;
-        }
-
-        emit RewardCanceled(s.funder, id, refund);
-        return refund;
-    }
-
-    function finalizeStreams(uint64 endTime) external {
-        if (msg.sender != address(TIP20_REWARDS_REGISTRY)) revert Unauthorized();
-
-        uint256 rateDecrease = scheduledRateDecrease[endTime];
-        require(rateDecrease > 0, "No streams to finalize");
-
-        _accrue(endTime);
-        totalRewardPerSecond -= rateDecrease;
-        delete scheduledRateDecrease[endTime];
-    }
-
     /*//////////////////////////////////////////////////////////////
                         REWARD DISTRIBUTION VIEWS
     //////////////////////////////////////////////////////////////*/
-
-    function getStream(uint64 id)
-        external
-        view
-        returns (
-            address funder,
-            uint64 startTime,
-            uint64 endTime,
-            uint256 ratePerSecondScaled,
-            uint256 amountTotal
-        )
-    {
-        RewardStream memory s = streams[id];
-        return (s.funder, s.startTime, s.endTime, s.ratePerSecondScaled, s.amountTotal);
-    }
 
     }

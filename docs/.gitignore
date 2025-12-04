@@ -14,5 +14,8 @@ specs/soljson-latest.js
 _
 tmp
 
+# Local claude settings
+.claude/settings.local.json
+
 # Sonda bundle diagnostic files
 .sonda

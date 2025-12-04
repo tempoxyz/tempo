@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-import { LinkingUSD } from "../src/LinkingUSD.sol";
 import { TIP20 } from "../src/TIP20.sol";
 import { TIP20Factory } from "../src/TIP20Factory.sol";
-import { TIP20RewardsRegistry } from "../src/TIP20RewardRegistry.sol";
 import { TIP403Registry } from "../src/TIP403Registry.sol";
 import { ITIP20 } from "../src/interfaces/ITIP20.sol";
 import { ITIP20RolesAuth } from "../src/interfaces/ITIP20RolesAuth.sol";
@@ -31,17 +29,15 @@ contract TIP20Test is BaseTest {
     event RewardScheduled(
         address indexed funder, uint64 indexed id, uint256 amount, uint32 durationSeconds
     );
-    event RewardCanceled(address indexed funder, uint64 indexed id, uint256 refund);
     event RewardRecipientSet(address indexed holder, address indexed recipient);
 
     function setUp() public override {
         super.setUp();
 
         linkedToken =
-            TIP20(factory.createToken("Linked Token", "LINK", "USD", TIP20(_LINKING_USD), admin));
-        anotherToken = TIP20(
-            factory.createToken("Another Token", "OTHER", "USD", TIP20(_LINKING_USD), admin)
-        );
+            TIP20(factory.createToken("Linked Token", "LINK", "USD", TIP20(_PATH_USD), admin));
+        anotherToken =
+            TIP20(factory.createToken("Another Token", "OTHER", "USD", TIP20(_PATH_USD), admin));
         token = TIP20(factory.createToken("Test Token", "TST", "USD", linkedToken, admin));
 
         // Setup roles and mint tokens
@@ -330,10 +326,10 @@ contract TIP20Test is BaseTest {
             emit Transfer(address(0), recipient, amount);
 
             vm.expectEmit(true, true, true, true);
-            emit TransferWithMemo(address(0), recipient, amount, TEST_MEMO);
+            emit Mint(recipient, amount);
 
             vm.expectEmit(true, true, true, true);
-            emit Mint(recipient, amount);
+            emit TransferWithMemo(address(0), recipient, amount, TEST_MEMO);
         }
 
         token.mintWithMemo(recipient, amount, TEST_MEMO);
@@ -359,10 +355,10 @@ contract TIP20Test is BaseTest {
             emit Transfer(admin, address(0), amount);
 
             vm.expectEmit(true, true, true, true);
-            emit TransferWithMemo(admin, address(0), amount, TEST_MEMO);
+            emit Burn(admin, amount);
 
             vm.expectEmit(true, true, true, true);
-            emit Burn(admin, amount);
+            emit TransferWithMemo(admin, address(0), amount, TEST_MEMO);
         }
 
         token.burnWithMemo(amount, TEST_MEMO);
@@ -418,6 +414,108 @@ contract TIP20Test is BaseTest {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+        }
+        vm.stopPrank();
+    }
+
+    function testPolicyForbidsAllCases() public {
+        // Setup: approve bob to spend alice's tokens
+        vm.prank(alice);
+        token.approve(bob, 1000e18);
+
+        // Change to policy 2 which blocks alice
+        vm.prank(admin);
+        token.changeTransferPolicyId(2);
+
+        // 1. mint - blocked recipient
+        vm.prank(admin);
+        try token.mint(alice, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 2. transfer - blocked sender
+        vm.prank(alice);
+        try token.transfer(bob, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 3. transferWithMemo - blocked sender
+        vm.prank(alice);
+        try token.transferWithMemo(bob, 100e18, TEST_MEMO) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 4. transferFrom - blocked from
+        vm.prank(bob);
+        try token.transferFrom(alice, charlie, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 5. transferFromWithMemo - blocked from
+        vm.prank(bob);
+        try token.transferFromWithMemo(alice, charlie, 100e18, TEST_MEMO) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 6. systemTransferFrom - blocked from
+        address feeManager = 0xfeEC000000000000000000000000000000000000;
+        vm.prank(feeManager);
+        try token.systemTransferFrom(alice, bob, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 7. startReward - blocked sender
+        vm.prank(alice);
+        try token.startReward(100e18, 0) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 8. setRewardRecipient - blocked sender
+        vm.prank(alice);
+        try token.setRewardRecipient(alice) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 9. setRewardRecipient - blocked recipient (bob sets alice as recipient)
+        vm.prank(bob);
+        try token.setRewardRecipient(alice) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 10. claimRewards - blocked sender
+        vm.prank(alice);
+        try token.claimRewards() {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 11. burnBlocked - reverts if from IS authorized (opposite logic)
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_BLOCKED_ROLE(), admin);
+        token.changeTransferPolicyId(1); // back to default where bob is authorized
+        try token.burnBlocked(bob, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
         }
         vm.stopPrank();
     }
@@ -479,6 +577,21 @@ contract TIP20Test is BaseTest {
 
     function testQuoteTokenSetInConstructor() public view {
         assertEq(address(token.quoteToken()), address(linkedToken));
+    }
+
+    function testChangeTransferPolicyId() public {
+        vm.prank(admin);
+        token.changeTransferPolicyId(42);
+        assertEq(token.transferPolicyId(), 42);
+    }
+
+    function testChangeTransferPolicyIdUnauthorized() public {
+        vm.prank(alice);
+        try token.changeTransferPolicyId(42) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+        }
     }
 
     function testSetNextQuoteTokenAndComplete() public {
@@ -549,6 +662,277 @@ contract TIP20Test is BaseTest {
         vm.stopPrank();
     }
 
+    function testSetNextQuoteTokenUsdRequiresUsdQuote() public {
+        TIP20 usdToken =
+            TIP20(factory.createToken("USD Token", "USD", "USD", TIP20(_PATH_USD), admin));
+
+        TIP20 nonUsdToken =
+            TIP20(factory.createToken("Euro Token", "EUR", "EUR", TIP20(_PATH_USD), admin));
+
+        vm.prank(admin);
+        try usdToken.setNextQuoteToken(nonUsdToken) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.InvalidQuoteToken.selector));
+        }
+    }
+
+    function testSetSupplyCapUnauthorized() public {
+        vm.prank(alice);
+        try token.setSupplyCap(2000e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+        }
+    }
+
+    function testSetSupplyCapBelowTotalSupply() public {
+        vm.prank(admin);
+        try token.setSupplyCap(1000e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.InvalidSupplyCap.selector));
+        }
+    }
+
+    function testSetSupplyCapAboveUint128Max() public {
+        vm.prank(admin);
+        try token.setSupplyCap(uint256(type(uint128).max) + 1) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.SupplyCapExceeded.selector));
+        }
+    }
+
+    function testUnpauseUnauthorized() public {
+        vm.prank(alice);
+        try token.unpause() {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+        }
+    }
+
+    function testMintUnauthorized() public {
+        vm.prank(alice);
+        try token.mint(bob, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+        }
+    }
+
+    function testBurnUnauthorized() public {
+        vm.prank(alice);
+        try token.burn(100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+        }
+    }
+
+    function testBurnInsufficientBalance() public {
+        vm.prank(admin);
+        try token.burn(100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(
+                err,
+                abi.encodeWithSelector(
+                    ITIP20.InsufficientBalance.selector, 0, 100e18, address(token)
+                )
+            );
+        }
+    }
+
+    function testBurnBlockedUnauthorized() public {
+        vm.prank(alice);
+        try token.burnBlocked(bob, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+        }
+    }
+
+    function testBurnBlockedFromAuthorizedAddress() public {
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_BLOCKED_ROLE(), admin);
+        try token.burnBlocked(alice, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+        vm.stopPrank();
+    }
+
+    function testBurnBlockedSuccess() public {
+        // Change to a policy where alice is blocked
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_BLOCKED_ROLE(), admin);
+        token.changeTransferPolicyId(2); // policy 2 blocks alice in mock
+
+        uint256 aliceBalanceBefore = token.balanceOf(alice);
+        uint256 totalSupplyBefore = token.totalSupply();
+
+        token.burnBlocked(alice, 100e18);
+
+        assertEq(token.balanceOf(alice), aliceBalanceBefore - 100e18);
+        assertEq(token.totalSupply(), totalSupplyBefore - 100e18);
+        vm.stopPrank();
+    }
+
+    function testTransferPolicyForbids() public {
+        vm.prank(alice);
+        token.approve(bob, 1000e18);
+
+        vm.prank(admin);
+        token.changeTransferPolicyId(2); // policy 2 blocks alice
+
+        vm.prank(alice);
+        try token.transfer(bob, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        vm.prank(alice);
+        try token.transferWithMemo(bob, 100e18, TEST_MEMO) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        vm.prank(bob);
+        try token.transferFrom(alice, charlie, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        vm.prank(bob);
+        try token.transferFromWithMemo(alice, charlie, 100e18, TEST_MEMO) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+    }
+
+    function testTransferInsufficientBalance() public {
+        vm.prank(alice);
+        try token.transfer(bob, 2000e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(
+                err,
+                abi.encodeWithSelector(
+                    ITIP20.InsufficientBalance.selector, 1000e18, 2000e18, address(token)
+                )
+            );
+        }
+    }
+
+    function testSystemTransferFrom() public {
+        // Unauthorized caller should fail
+        vm.prank(alice);
+        try token.systemTransferFrom(alice, bob, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            if (isTempo) {
+                // On Tempo, this function doesnt exist so expect invalid function selector error
+                bytes4 errorSelector = bytes4(err);
+                assertEq(uint32(errorSelector), uint32(0xaa4bc69a));
+            }
+        }
+
+        if (!isTempo) {
+            // Success case - called by FEE_MANAGER
+            address feeManager = 0xfeEC000000000000000000000000000000000000;
+            uint256 aliceBefore = token.balanceOf(alice);
+            uint256 bobBefore = token.balanceOf(bob);
+
+            vm.prank(feeManager);
+            bool success = token.systemTransferFrom(alice, bob, 100e18);
+
+            assertTrue(success);
+            assertEq(token.balanceOf(alice), aliceBefore - 100e18);
+            assertEq(token.balanceOf(bob), bobBefore + 100e18);
+        }
+    }
+
+    function testTransferFeePreTx() public {
+        address feeManager = 0xfeEC000000000000000000000000000000000000;
+
+        // Unauthorized
+        vm.prank(alice);
+        try token.transferFeePreTx(alice, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            if (isTempo) {
+                // On Tempo, this function doesnt exist so expect invalid function selector error
+                bytes4 errorSelector = bytes4(err);
+                assertEq(uint32(errorSelector), uint32(0xaa4bc69a));
+            }
+        }
+
+        if (!isTempo) {
+            // from == address(0)
+            vm.prank(feeManager);
+            try token.transferFeePreTx(address(0), 100e18) {
+                revert CallShouldHaveReverted();
+            } catch {
+                // Expected revert
+            }
+
+            // Success
+            uint256 aliceBefore = token.balanceOf(alice);
+            vm.prank(feeManager);
+            token.transferFeePreTx(alice, 100e18);
+            assertEq(token.balanceOf(alice), aliceBefore - 100e18);
+            assertEq(token.balanceOf(feeManager), 100e18);
+        }
+    }
+
+    function testTransferFeePostTx() public {
+        address feeManager = 0xfeEC000000000000000000000000000000000000;
+
+        if (!isTempo) {
+            // Setup: pre-transfer to fee manager
+            vm.prank(feeManager);
+            token.transferFeePreTx(alice, 100e18);
+
+            // Unauthorized
+            vm.prank(alice);
+            try token.transferFeePostTx(alice, 50e18, 50e18) {
+                revert CallShouldHaveReverted();
+            } catch {
+                // Expected revert
+            }
+
+            // to == address(0)
+            vm.prank(feeManager);
+            try token.transferFeePostTx(address(0), 50e18, 50e18) {
+                revert CallShouldHaveReverted();
+            } catch {
+                // Expected revert
+            }
+
+            // Success - refund 50, used 50
+            uint256 aliceBefore = token.balanceOf(alice);
+            vm.prank(feeManager);
+            token.transferFeePostTx(alice, 50e18, 50e18);
+            assertEq(token.balanceOf(alice), aliceBefore + 50e18);
+        } else {
+            vm.prank(alice);
+            try token.transferFeePostTx(alice, 50e18, 50e18) {
+                revert CallShouldHaveReverted();
+            } catch (bytes memory err) {
+                // On Tempo, this function doesnt exist so expect invalid function selector error
+                bytes4 errorSelector = bytes4(err);
+                assertEq(uint32(errorSelector), uint32(0xaa4bc69a));
+            }
+        }
+    }
+
     /*//////////////////////////////////////////////////////////////
                         LOOP PREVENTION TESTS
     //////////////////////////////////////////////////////////////*/
@@ -590,7 +974,7 @@ contract TIP20Test is BaseTest {
     }
 
     function testCompleteQuoteTokenUpdateCannotCreateLongerLoop() public {
-        // Create a longer chain: linkingUSD -> linkedToken -> token -> token2 -> token3
+        // Create a longer chain: pathUSD -> linkedToken -> token -> token2 -> token3
 
         TIP20 token2 = TIP20(factory.createToken("Token 2", "TK2", "USD", token, admin));
         TIP20 token3 = TIP20(factory.createToken("Token 3", "TK3", "USD", token2, admin));
@@ -1137,314 +1521,34 @@ contract TIP20Test is BaseTest {
     }
 
     /*//////////////////////////////////////////////////////////////
-                        STREAMING REWARDS TESTS
+                    SCHEDULED REWARDS DISABLED (POST-MODERATO)
     //////////////////////////////////////////////////////////////*/
 
-    function testCreateStreamBasic() public {
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Admin creates a 100 second stream
+    /// @notice Scheduled/streaming rewards (duration > 0) are disabled post-Moderato.
+    /// The startReward function should revert with ScheduledRewardsDisabled when duration > 0.
+    function test_ScheduledRewards_RevertsWithNonZeroDuration() public {
         vm.startPrank(admin);
         token.mint(admin, 1000e18);
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, false, true);
-            emit RewardScheduled(admin, 1, 100e18, 100);
-        }
-
-        assertEq(token.balanceOf(address(token)), 0);
-        uint64 streamId = token.startReward(100e18, 100);
-        assertEq(token.balanceOf(address(token)), 100e18);
-
-        vm.stopPrank();
-
-        assertEq(streamId, 1);
-        assertEq(token.nextStreamId(), 2);
-
-        // Check stream data
-        (address funder, uint64 startTime, uint64 endTime, uint256 rate, uint256 amount) =
-            token.getStream(1);
-        assertEq(funder, admin);
-        assertEq(startTime, block.timestamp);
-        assertEq(endTime, block.timestamp + 100);
-        assertEq(amount, 100e18);
-        assertGt(rate, 0);
-    }
-
-    function testStreamRewardsAccrueOverTime() public {
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Admin creates a 100 second stream with 100e18 tokens
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        token.startReward(100e18, 100);
-        vm.stopPrank();
-
-        // Fast forward 50 seconds (halfway through)
-        vm.warp(block.timestamp + 50);
-
-        // Claim rewards - Alice should have accrued ~50e18 (half of 100e18)
-        vm.prank(alice);
-        token.claimRewards();
-
-        assertEq(token.balanceOf(alice), 1050e18);
-    }
-
-    function testStreamRewardsFullDuration() public {
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Admin creates a 100 second stream
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        token.startReward(100e18, 100);
-        vm.stopPrank();
-
-        // Fast forward to exactly the stream end
-        vm.warp(block.timestamp + 100);
-
-        // Call finalizeStreams (system transaction)
-        vm.prank(address(_TIP20REWARDS_REGISTRY));
-        token.finalizeStreams(uint64(block.timestamp));
-
-        // Claim rewards - Alice should have accrued the full 100e18
-        vm.prank(alice);
-        token.claimRewards();
-
-        assertEq(token.balanceOf(alice), 1100e18);
-    }
-
-    function testCancelStreamBasic() public {
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Admin creates a 100 second stream
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        token.setRewardRecipient(bob);
-
-        uint256 initialOptedInSupply = token.optedInSupply();
-        assertEq(initialOptedInSupply, 2000e18);
-
-        uint64 streamId = token.startReward(100e18, 100);
-        assertEq(token.optedInSupply(), initialOptedInSupply - 100e18);
-        vm.stopPrank();
-
-        // Cancel stream after 25% of time has elapsed
-        vm.warp(block.timestamp + 25);
-        vm.startPrank(admin);
-        if (!isTempo) {
-            vm.expectEmit(true, true, false, true);
-            emit RewardCanceled(admin, streamId, 75e18);
-        }
-        uint256 refund = token.cancelReward(streamId);
-        vm.stopPrank();
-
-        // Should get back ~75e18 (75% of original amount)
-        assertEq(refund, 75e18);
-        assertEq(token.balanceOf(admin), 975e18);
-        assertEq(token.optedInSupply(), initialOptedInSupply - 25e18);
-    }
-
-    function testCancelStreamNotFunder() public {
-        // Admin creates a stream
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        uint64 streamId = token.startReward(100e18, 100);
-        vm.stopPrank();
-
-        // Alice tries to cancel it
-        vm.prank(alice);
-        try token.cancelReward(streamId) {
+        // Try to create a stream with non-zero duration - should revert
+        try token.startReward(100e18, 100) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20.NotStreamFunder.selector));
+            assertEq(err, abi.encodeWithSelector(ITIP20.ScheduledRewardsDisabled.selector));
         }
-    }
-
-    function testCancelStreamAlreadyEnded() public {
-        // Admin creates a stream
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        uint64 streamId = token.startReward(100e18, 100);
         vm.stopPrank();
-
-        // Fast forward past the end
-        vm.warp(block.timestamp + 101);
-
-        // Try to cancel - should fail
-        vm.prank(admin);
-        try token.cancelReward(streamId) {
-            revert CallShouldHaveReverted();
-        } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20.StreamInactive.selector));
-        }
     }
 
-    function testCancelStreamInactive() public {
-        // Try to cancel a non-existent stream
-        vm.prank(admin);
-        try token.cancelReward(999) {
-            revert CallShouldHaveReverted();
-        } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20.StreamInactive.selector));
-        }
-    }
-
-    function testMultipleOverlappingStreams() public {
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Admin creates two overlapping streams
-        vm.startPrank(admin);
-        token.mint(admin, 2000e18);
-
-        token.startReward(100e18, 100); // First stream starts at t=1, ends at t=101
-        vm.stopPrank();
-
-        // Wait 50 seconds to t=51
-        vm.warp(51);
-
-        // Claim rewards from first stream's first 50 seconds (50e18 accrued so far)
-        vm.prank(alice);
-        token.claimRewards();
-
-        // Admin starts second stream at t=51
-        vm.prank(admin);
-        token.startReward(100e18, 100); // Second stream: [51, 151]
-
-        // Fast forward another 50 seconds to t=101 (first stream ends, second is halfway)
-        vm.warp(101);
-
-        // Claim remaining rewards
-        // Alice should have: remaining 50e18 from first stream + ~50e18 from second stream
-        vm.prank(alice);
-        token.claimRewards();
-
-        assertApproxEqAbs(token.balanceOf(alice), 1150e18, 2e18);
-    }
-
-    function testFinalizeStreams() public {
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Admin creates a stream
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        token.startReward(100e18, 100);
-        vm.stopPrank();
-
-        uint256 rateBeforeEnd = token.totalRewardPerSecond();
-        assertGt(rateBeforeEnd, 0);
-
-        // Fast forward to exactly the end time
-        vm.warp(block.timestamp + 100);
-
-        // Call finalizeStreams from the registry address (system transaction)
-        vm.prank(address(_TIP20REWARDS_REGISTRY));
-        token.finalizeStreams(uint64(block.timestamp));
-
-        // Rate should now be 0
-        assertEq(token.totalRewardPerSecond(), 0);
-    }
-
-    function testFinalizeStreamsOnlySystem() public {
-        // Admin creates a stream
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        token.startReward(100e18, 100);
-        vm.stopPrank();
-
-        // Fast forward to end
-        vm.warp(block.timestamp + 100);
-
-        // Try to call finalizeStreams as non-zero address
-        vm.prank(alice);
-        try token.finalizeStreams(uint64(block.timestamp)) {
-            revert CallShouldHaveReverted();
-        } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
-        }
-    }
-
-    function testRewardWithZeroAmount() public {
+    /// @notice Zero amount should still revert with InvalidAmount before checking duration
+    function test_Reward_RevertsWithZeroAmount() public {
         vm.prank(admin);
         try token.startReward(0, 100) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(ITIP20.InvalidAmount.selector));
         }
-    }
 
-    function testStreamWithProRataDistribution() public {
-        // Alice and Bob opt in with different balances
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        vm.prank(bob);
-        token.setRewardRecipient(bob);
-
-        // Total opted in: alice 1000e18, bob 500e18 = 1500e18
-        assertEq(token.optedInSupply(), 1500e18);
-
-        // Admin creates a stream
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        token.startReward(150e18, 100);
         vm.stopPrank();
-
-        // Fast forward to end
-        vm.warp(block.timestamp + 100);
-
-        // Claim rewards
-        // Alice should get 2/3 (100e18), Bob should get 1/3 (50e18)
-        vm.prank(alice);
-        token.claimRewards();
-
-        vm.prank(bob);
-        token.claimRewards();
-
-        assertApproxEqAbs(token.balanceOf(alice), 1100e18, 1e18);
-        assertApproxEqAbs(token.balanceOf(bob), 550e18, 1e18);
-    }
-
-    function testStreamAccrualWithZeroOptedInSupply() public {
-        // Admin creates a stream when no one is opted in (starts at t=1)
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        token.startReward(100e18, 100); // Stream: [1, 101]
-        vm.stopPrank();
-
-        // Fast forward 50 seconds to t=51
-        vm.warp(51);
-
-        // Alice opts in now (at t=51)
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Fast forward to stream end at t=101
-        vm.warp(101);
-
-        // Finalize the stream (system transaction at endTime = 101)
-        vm.prank(address(_TIP20REWARDS_REGISTRY));
-        token.finalizeStreams(101);
-
-        // Claim rewards
-        // Alice should only get rewards for the time she was opted in (last 50 seconds)
-        // Since optedInSupply was 0 for first 50 seconds, those rewards are lost
-        vm.prank(alice);
-        token.claimRewards();
-
-        // Alice should have roughly 50e18 (rewards from last 50 seconds)
-        assertApproxEqAbs(token.balanceOf(alice), 1050e18, 2e18);
     }
 
     function testTransferRewardsAfterClaim() public {
@@ -1739,33 +1843,21 @@ contract TIP20Test is BaseTest {
         assertApproxEqAbs(token.balanceOf(bob), bobBalance + bobExpected, 1000);
     }
 
-    function testFuzz_streamingRewards(uint256 rewardAmount, uint32 duration, uint32 elapsedTime)
-        public
-    {
+    /// @notice Fuzz test for scheduled rewards - should always revert with ScheduledRewardsDisabled
+    function testFuzz_scheduledRewards_AlwaysReverts(uint256 rewardAmount, uint32 duration) public {
         rewardAmount = bound(rewardAmount, 1e18, 100e18);
-        duration = uint32(bound(duration, 100, 365 days));
-        elapsedTime = uint32(bound(elapsedTime, 50, duration - 1));
-
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
+        duration = uint32(bound(duration, 1, 365 days)); // duration > 0
 
         vm.startPrank(admin);
         token.mint(admin, rewardAmount);
-        token.setRewardRecipient(admin);
 
-        uint64 streamId = token.startReward(rewardAmount, duration);
-        assertGt(streamId, 0);
-
-        vm.warp(block.timestamp + elapsedTime);
-
-        uint256 refund = token.cancelReward(streamId);
+        // Should always revert with ScheduledRewardsDisabled for any non-zero duration
+        try token.startReward(rewardAmount, duration) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.ScheduledRewardsDisabled.selector));
+        }
         vm.stopPrank();
-
-        // Distributed amount should be proportional to time elapsed
-        uint256 distributed = rewardAmount - refund;
-        uint256 expected = (rewardAmount * elapsedTime) / duration;
-
-        assertApproxEqAbs(distributed, expected, 1e18);
     }
 
     function testFuzz_optedInSupplyConsistency(
@@ -1906,6 +1998,27 @@ contract TIP20Test is BaseTest {
 
         uint256 contractBalance = token.balanceOf(address(token));
         assertGe(contractBalance, totalClaimable, "CRITICAL: Contract balance < claimable rewards");
+    }
+
+    function testBurnBlocked_RevertsIf_ProtectedAddress() public {
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_BLOCKED_ROLE(), admin);
+
+        // Test burning from TIP_FEE_MANAGER_ADDRESS
+        try token.burnBlocked(0xfeEC000000000000000000000000000000000000, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.ProtectedAddress.selector));
+        }
+
+        // Test burning from STABLECOIN_EXCHANGE_ADDRESS
+        try token.burnBlocked(0xDEc0000000000000000000000000000000000000, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.ProtectedAddress.selector));
+        }
+
+        vm.stopPrank();
     }
 
 }

@@ -28,14 +28,56 @@ Next, we will configure a [Viem Client](https://viem.sh/get-started/clients/cust
 // [!include ~/snippets/viem.config.ts:setup]
 ```
 
-## Use Actions
+## Use Viem Actions
 
-Now you're ready to [start interacting](/sdk/typescript/viem/actions) with Tempo!
+Once we have configured our Viem client with Tempo, we can then use regular Viem actions (e.g. `sendTransactionSync`) 
+that are decorated with [Tempo properties](/documentation/protocol/transactions/spec-account-abstraction) 
+like `calls` (batch transactions), `feePayer` (fee sponsorship), `nonceKey` (concurrent transactions) and more!
 
 :::code-group
 
 ```ts twoslash [example.ts]
-import { formatUnits } from 'viem'
+import { client } from './viem.config'
+
+const receipt = await client.sendTransactionSync({
+  calls: [
+    {
+      data: '0xcafebabe00000000000000000000000000000001',
+      to: '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+    },
+    {
+      data: '0xdeadbeef00000000000000000000000000000002',
+      to: '0xfeedfacefeedfacefeedfacefeedfacefeedface'
+    },
+    {
+      data: '0xfeedface00000000000000000000000000000003',
+      to: '0xfeedfacefeedfacefeedfacefeedfacefeedface'
+    },
+  ],
+  feePayer: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045',
+  nonceKey: 1337n,
+})
+```
+
+```ts twoslash [viem.config.ts] filename="viem.config.ts"
+// [!include ~/snippets/viem.config.ts:setup]
+```
+
+:::
+
+:::tip
+
+[See all Viem Actions](https://viem.sh/docs/actions/public/introduction)
+
+:::
+
+## Use Tempo Actions
+
+You can also use [Tempo-specific Actions](/sdk/typescript/viem/actions):
+
+:::code-group
+
+```ts twoslash [example.ts]
 import { client } from './viem.config'
 
 const alphaUsd = '0x20c0000000000000000000000000000000000001'

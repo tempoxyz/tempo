@@ -39,7 +39,7 @@ export function PayWithFeeToken(props: DemoStepProps & { feeToken?: Address }) {
   const { data: feeTokenMetadata } = Hooks.token.useGetMetadata({
     token: feeToken,
   })
-  // Pool details. Fees are paid in feeToken, so it's the userToken
+  // Pool detals. Fees are paid in feeToken, so it's the userToken
   // validator token is a testnet property set at top of file
   const { data: pool } = Hooks.amm.usePool({
     userToken: feeToken,

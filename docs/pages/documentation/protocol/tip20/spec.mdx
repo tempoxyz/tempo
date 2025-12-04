@@ -266,22 +266,16 @@ interface ITIP20 {
     /// @param newQuoteToken The new quote token that has been set
     event QuoteTokenUpdate(address indexed updater, ITIP20 indexed newQuoteToken);
 
-    /// @notice Emitted when a reward stream is canceled and remaining funds are refunded
-    /// @param funder The account that originally funded the reward stream
-    /// @param id The identifier of the reward stream that was canceled
-    /// @param refund The amount of unclaimed rewards that were refunded
-    event RewardCanceled(address indexed funder, uint64 indexed id, uint256 refund);
-
     /// @notice Emitted when a holder sets or updates their reward recipient address
     /// @param holder The token holder configuring the recipient
     /// @param recipient The address that will receive claimed rewards
     event RewardRecipientSet(address indexed holder, address indexed recipient);
 
-    /// @notice Emitted when a new reward stream is scheduled
-    /// @param funder The account funding the reward stream
-    /// @param id The identifier of the reward stream
-    /// @param amount The total amount of tokens allocated to the reward stream
-    /// @param durationSeconds The duration of the reward stream in seconds
+    /// @notice Emitted when a reward distribution is scheduled
+    /// @param funder The account funding the reward distribution
+    /// @param id The identifier of the reward (0 for instant distributions)
+    /// @param amount The total amount of tokens allocated to the reward
+    /// @param durationSeconds The duration in seconds (must be 0 in current version)
     event RewardScheduled(
         address indexed funder,
         uint64 indexed id,
@@ -374,14 +368,11 @@ interface ITIP20 {
     /// @notice A rewards operation was attempted when no opted-in supply exists
     error NoOptedInSupply();
 
-    /// @notice The caller is not the recorded funder of the referenced reward stream
-    error NotStreamFunder();
-
     /// @notice The configured transfer policy denies authorization for the sender or recipient
     error PolicyForbids();
 
-    /// @notice The referenced reward stream is inactive, does not exist, or has already ended
-    error StreamInactive();
+    /// @notice Attempted to start a timed reward distribution; streaming is disabled
+    error ScheduledRewardsDisabled();
 
     /// @notice The attempted operation would cause total supply to exceed the configured supply cap
     error SupplyCapExceeded();
@@ -391,6 +382,12 @@ interface ITIP20 {
 
 }
 ```
+
+
+:::warning
+When interacting with precompiles, **always use the provided ABI** rather than reading directly from storage slots. Direct storage access may lead to undefined behavior.
+:::
+
 
 ## Memos
 Memo functions `transferWithMemo`, `transferFromWithMemo`, `mintWithMemo`, and `burnWithMemo` behave like their ERC-20 equivalents but additionally emit memo data in dedicated events. The memo is always a fixed 32-byte field. Callers should pack shorter strings or identifiers directly into this field, and use hashes or external references when the underlying payload exceeds 32 bytes.
@@ -418,6 +415,7 @@ Updating the quote token occurs in two phases:
 
 The implementation must validate that the new quote token is a TIP-20 token, matches currency rules, and does not create circular quote-token chains.
 
+
 :::note
 While quote tokens can be changed, choose carefully as the update process requires careful coordination with the DEX.
 :::
@@ -435,9 +433,9 @@ Roles are assigned and managed through `grantRole`, `revokeRole`, `renounceRole`
 
 
 ## System Functions
-System level functions `systemTransferFrom`, `transferFeePreTx`, and `transferFeePostTx` are only callalbe by other Tempo protocol precompiles. These entrypoints power transaction fee collection, refunds, and internal accounting within the Fee AMM and StablecoinExchange. They must not be callable by general contracts or users.
+System level functions `systemTransferFrom`, `transferFeePreTx`, and `transferFeePostTx` are only callable by other Tempo protocol precompiles. These entrypoints power transaction fee collection, refunds, and internal accounting within the Fee AMM and StablecoinExchange. They must not be callable by general contracts or users.
 
-## Token Rewards Distribution
+## Token Rewards Distribtion
 See [rewards distribution](/documentation/protocol/tip20-rewards/spec) for more information.
 
 ## TIP20Factory
