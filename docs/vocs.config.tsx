@@ -53,11 +53,11 @@ export default defineConfig({
     const sidebar = {
       '/': [
         {
-          text: 'Overview',
+          text: 'Docs Home',
           link: '/guide/',
         },
         {
-          text: 'Quickstart',
+          text: 'Tempo Overview',
           items: [
             {
               text: 'Integrate Tempo',
@@ -448,6 +448,54 @@ export default defineConfig({
                   link: 'https://github.com/tempoxyz/tempo/tree/main/crates/precompiles/src/stablecoin_exchange',
                 },
               ],
+            },
+          ],
+        },
+      ],
+      '/learn': [
+        {
+          text: 'Overview',
+          link: '/learn',
+        },
+        {
+          text: 'Get Started',
+          items: [
+            {
+              text: 'About Stablecoins',
+              link: '/learn/stablecoins',
+            },
+            {
+              text: 'Stablecoins on Tempo',
+              link: '/learn/stablecoins-on-tempo',
+            },
+          ],
+        },
+        {
+          text: 'Stablecoin Use Cases',
+          items: [
+            {
+              text: 'Remittances',
+              link: '/learn/remittances',
+            },
+            {
+              text: 'Global Payouts',
+              link: '/learn/global-payouts',
+            },
+            {
+              text: 'Embedded Finance',
+              link: '/learn/embedded-finance',
+            },
+            {
+              text: 'Tokenized Deposits',
+              link: '/learn/tokenized-deposits',
+            },
+            {
+              text: 'Microtransactions',
+              link: '/learn/microtransactions',
+            },
+            {
+              text: 'Agentic Commerce',
+              link: '/learn/agentic-commerce',
             },
           ],
         },
@@ -1465,8 +1513,15 @@ export default defineConfig({
       '/': combinedSidebar,
       '/documentation': combinedSidebar,
       '/sdk/typescript': combinedSidebar,
+      '/learn': sidebar['/learn'],
     }
   })(),
+  topNav: [
+    { text: 'Learn', link: '/learn' },
+    { text: 'Docs', link: '/guide' },
+    { text: 'Ecosystem', link: 'https://tempo.xyz/ecosystem' },
+    { text: 'Blog', link: 'https://tempo.xyz/blog' },
+  ],
   twoslash:
     // biome-ignore lint/style/noNonNullAssertion: _
     process.env['DISABLE_TWOSLASH']! === 'true'

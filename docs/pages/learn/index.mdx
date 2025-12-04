@@ -1,0 +1,71 @@
+import LucideCoins from '~icons/lucide/coins'
+import LucideGlobe from '~icons/lucide/globe'
+import LucideSend from '~icons/lucide/send'
+import LucideWallet from '~icons/lucide/wallet'
+import LucideLandmark from '~icons/lucide/landmark'
+import LucideZap from '~icons/lucide/zap'
+import LucideActivity from '~icons/lucide/activity'
+import LucideBot from '~icons/lucide/bot'
+import * as Card from "../../components/Card.tsx"
+
+# Learn
+
+If you're new to stablecoins or want to learn more about how Tempo works, this page offers a clear starting point. Discover what stablecoins are, the use cases they unlock, and the way Tempo is purpose-built for stablecoin payments.
+
+## Get Started
+
+<Card.Container>
+  <Card.Link
+    description="Learn about stablecoins and why they matter."
+    href="/learn/stablecoins"
+    icon={LucideCoins}
+    title="About Stablecoins"
+  />
+  <Card.Link
+    description="Learn how Tempo enables real-time, low-cost stablecoin payments at scale."
+    href="/learn/stablecoins-on-tempo"
+    icon={LucideZap}
+    title="Stablecoins on Tempo"
+  />
+</Card.Container>
+
+## Stablecoin Use Cases
+
+<Card.Container>
+  <Card.Link
+    description="Stablecoins enable fast, cheap, and predictable cross-border transfers"
+    href="/learn/remittances"
+    icon={LucideSend}
+    title="Remittances"
+  />
+  <Card.Link
+    description="Stablecoins provide a reliable, low-cost rail for high-volume global payouts"
+    href="/learn/global-payouts"
+    icon={LucideGlobe}
+    title="Global Payouts"
+  />
+  <Card.Link
+    description="Stablecoins let platforms and marketplaces embed payment flows without building new financial infrastructure"
+    href="/learn/embedded-finance"
+    icon={LucideWallet}
+    title="Embedded Finance"
+  />
+  <Card.Link
+    description="Tokenized deposits let treasury teams move liquidity instantly across borders and gain real-time visibility into global cash positions"
+    href="/learn/tokenized-deposits"
+    icon={LucideLandmark}
+    title="Tokenized Deposits"
+  />
+  <Card.Link
+    description="Stablecoins make tiny, high-frequency payments viable, enabling use cases like usage-based APIs, content streaming, and IoT services"
+    href="/learn/microtransactions"
+    icon={LucideActivity}
+    title="Microtransactions"
+  />
+  <Card.Link
+    description="Stablecoins give autonomous agents a predictable, programmable payment method with near-instant, onchain finality"
+    href="/learn/agentic-commerce"
+    icon={LucideBot}
+    title="Agentic Commerce"
+  />
+</Card.Container>
