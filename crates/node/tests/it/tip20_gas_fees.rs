@@ -14,6 +14,8 @@ use tempo_contracts::precompiles::{IFeeManager, ITIP20};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_primitives::transaction::calc_gas_balance_spending;
 
+use crate::utils::TestNodeBuilder;
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_fee_in_stable() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -69,14 +71,11 @@ async fn test_fee_in_stable() -> eyre::Result<()> {
 async fn test_default_fee_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(
-            include_str!("../assets/test-genesis-allegretto.json").to_string(),
-        )
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
