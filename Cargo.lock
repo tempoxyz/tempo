@@ -11507,6 +11507,7 @@ dependencies = [
  "clap",
  "jsonrpsee",
  "reth-rpc-server-types",
+ "tempo-alloy",
  "tempo-precompiles",
 ]
 
