@@ -105,7 +105,7 @@ At this step, the protocol does one more check:
 
 ### TIP-20 contracts
 
-If the top-level call of a transaction is to a TIP-20 contract for which the currency is USD, or _all_ of the top-level calls of a native-AA transaction are to the same TIP-20 contract for which the currency is USD, that token is used as the user's fee token for that transaction (unless there is a preference specified at the [transaction](#transaction-level) or [account](#account-level) level).
+If the top-level call of a transaction is to a TIP-20 contract for which the currency is USD, or _all_ of the top-level calls of a TempoTransaction are to the same TIP-20 contract for which the currency is USD, that token is used as the user's fee token for that transaction (unless there is a preference specified at the [transaction](#transaction-level) or [account](#account-level) level).
 
 ### pathUSD
 

@@ -99,8 +99,8 @@ pub enum TempoInvalidTransaction {
     #[error("value transfer not allowed")]
     ValueTransferNotAllowed,
 
-    /// Value transfer in AA transaction not allowed.
-    #[error("value transfer in AA transaction not allowed")]
+    /// Value transfer in Tempo Transaction not allowed.
+    #[error("value transfer in Tempo Transaction not allowed")]
     ValueTransferNotAllowedInAATx,
 
     /// Access key authorization failed.

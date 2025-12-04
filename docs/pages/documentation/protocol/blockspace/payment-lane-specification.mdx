@@ -29,7 +29,7 @@ Non-payment transactions in the proposer's lane can only fill up to `general_gas
 A transaction is classified as a **payment transaction** when:
 
   1.  the recipient address (`tx.to`) starts with the TIP-20 payment prefix `0x20c0000000000000000000000000`, or,
-  2. for AA transactions, every entry in `tx.calls` targets an address starting with the TIP-20 payment prefix `0x20c0000000000000000000000000`.
+  2. for TempoTransactions, every entry in `tx.calls` targets an address starting with the TIP-20 payment prefix `0x20c0000000000000000000000000`.
 
 This classification is performed entirely on the transaction payload, no account state is consulted.
 

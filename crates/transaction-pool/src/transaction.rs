@@ -130,8 +130,8 @@ pub enum TempoPoolTransactionError {
     )]
     NonZeroValue,
 
-    /// Thrown if a AA transaction with a nonce key prefixed with the sub-block prefix marker added to the pool
-    #[error("AA transaction with subblock nonce key prefix aren't supported in the pool")]
+    /// Thrown if a Tempo Transaction with a nonce key prefixed with the sub-block prefix marker added to the pool
+    #[error("Tempo Transaction with subblock nonce key prefix aren't supported in the pool")]
     SubblockNonceKey,
 
     /// Thrown if the fee payer of a transaction cannot transfer (is blacklisted) the fee token, thus making the payment impossible.

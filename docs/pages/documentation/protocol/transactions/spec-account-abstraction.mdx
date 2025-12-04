@@ -545,7 +545,7 @@ Since authenticatorData has variable length, finding the split point requires:
 3. If set, need to parse CBOR credential data (complex, see implementation)
 4. Everything after authenticatorData is clientDataJSON (valid UTF-8 JSON)
 
-**Simplified approach:** For AA transactions, wallets should send minimal authenticatorData (37 bytes, no AT/ED flags) to minimize gas costs and simplify parsing.
+**Simplified approach:** For TempoTransactions, wallets should send minimal authenticatorData (37 bytes, no AT/ED flags) to minimize gas costs and simplify parsing.
 
 ### Access Keys
 
@@ -926,12 +926,12 @@ def calculate_calldata_gas(data: bytes) -> uint256:
 
     return gas
 
-def calculate_aa_tx_base_gas(tx):
+def calculate_tempo_tx_base_gas(tx):
     """
-    Calculate the base gas cost for an AA transaction
+    Calculate the base gas cost for a TempoTransaction
 
     Args:
-        tx: AA transaction object with fields:
+        tx: TempoTransaction object with fields:
             - signature: bytes (variable length)
             - nonce_key: uint192
             - nonce: uint64
