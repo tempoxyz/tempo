@@ -1,5 +1,5 @@
 import { QueryClient } from '@tanstack/react-query'
-import { tempoAndantino, tempoLocal, tempoTestnet } from 'tempo.ts/chains'
+import { tempoDevnet, tempoLocal, tempoTestnet } from 'tempo.ts/chains'
 import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 import {
   type CreateConfigParameters,
@@ -35,7 +35,7 @@ export function getConfig(options: getConfig.Options = {}) {
         typeof window !== 'undefined' ? window.localStorage : noopStorage,
     }),
     transports: {
-      [tempoAndantino.id]: webSocket(
+      [tempoDevnet.id]: webSocket(
         'wss://rpc-orchestra.testnet.tempo.xyz/zealous-mayer',
         {
           keepAlive: { interval: 1_000 },
