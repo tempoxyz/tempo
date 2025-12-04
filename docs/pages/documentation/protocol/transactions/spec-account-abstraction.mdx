@@ -605,14 +605,14 @@ The protocol enforces Access Key authorization and spending limits natively.
 
 ##### Transaction Validation
 
-When an AA transaction is received, the protocol:
+When a TempoTransaction is received, the protocol:
 
 1. **Identifies the signing key** from the transaction signature
    - If signature is a `Keychain` variant: extracts the `keyId` (address) of the Access Key
    - Otherwise: treats it as the Root Key (keyId = address(0))
 
 2. **Validates KeyAuthorization** (if present in transaction)
-   - The `key_authorization` field in `TxAA` provisions a NEW Access Key
+   - The `key_authorization` field in `TempoTransaction` provisions a NEW Access Key
    - Root Key MUST sign:
      - The `key_authorization` digest: `keccak256(rlp([key_type, key_id, expiry, limits]))`
    - Access Key (being authorized) CAN sign the same tx which it is authorized in.
@@ -711,7 +711,7 @@ The protocol tracks and enforces spending limits for TIP20 token transfers:
    const rootSignature = await signWithRootKey(authDigest);
    ```
 
-4. **Build AA Transaction**
+4. **Build TempoTransaction**
    ```typescript
    const tx = {
      chain_id: 1,
