@@ -137,7 +137,7 @@ jobs:
         working-directory: tempo/docs/specs
         run: |
           echo "Running forge test with tempo-foundry (isTempo=true)"
-          ../../tempo-foundry/target/debug/forge test -vvv
+          ../../../tempo-foundry/target/debug/forge test -vvv
 
   docs-specs-success:
     name: docs-specs success
