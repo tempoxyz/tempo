@@ -14,6 +14,7 @@ alloy = { workspace = true, features = [
   "signer-local",
   "signer-mnemonic",
 ] }
+alloy-evm.workspace = true
 alloy-genesis.workspace = true
 alloy-primitives.workspace = true
 

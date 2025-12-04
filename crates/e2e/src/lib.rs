@@ -27,17 +27,13 @@ use commonware_utils::{SystemTimeExt as _, quorum, set::OrderedAssociated};
 use futures::future::join_all;
 use itertools::Itertools as _;
 use reth_node_metrics::recorder::PrometheusRecorder;
-use tempo_chainspec::TempoChainSpec;
 use tempo_commonware_node::consensus;
 use tracing::debug;
 
 pub mod execution_runtime;
 pub use execution_runtime::ExecutionRuntime;
 
-use crate::execution_runtime::{
-    ExecutionNode, insert_allegretto, insert_epoch_length, insert_public_polynomial,
-    insert_validators,
-};
+use crate::execution_runtime::ExecutionNode;
 
 #[cfg(test)]
 mod tests;
@@ -329,20 +325,15 @@ pub async fn setup_validators(
         .collect::<Vec<_>>()
         .into();
 
-    let mut genesis = crate::execution_runtime::genesis();
-    if let Some(allegretto_in_seconds) = allegretto_in_seconds {
-        genesis = insert_allegretto(
-            genesis,
-            context.current().epoch().as_secs() + allegretto_in_seconds,
-        );
-    }
-    genesis = insert_epoch_length(genesis, epoch_length);
-    genesis = insert_public_polynomial(genesis, polynomial.into());
-    genesis = insert_validators(genesis, peers.into());
-
-    let chain_spec = TempoChainSpec::from_genesis(genesis);
-
-    let execution_runtime = ExecutionRuntime::with_chain_spec(chain_spec);
+    let execution_runtime = ExecutionRuntime::builder()
+        .with_epoch_length(epoch_length)
+        .with_public_polynomial(polynomial)
+        .with_validators(peers)
+        .set_allegretto_time(
+            allegretto_in_seconds.map(|secs| context.current().epoch().as_secs() + secs),
+        )
+        .launch()
+        .unwrap();
 
     let mut execution_nodes: Vec<ExecutionNode> =
         Vec::with_capacity((how_many_signers + how_many_verifiers) as usize);

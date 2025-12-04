@@ -11423,6 +11423,7 @@ name = "tempo-e2e"
 version = "0.7.0"
 dependencies = [
  "alloy",
+ "alloy-evm",
  "alloy-genesis",
  "alloy-network",
  "alloy-primitives",

@@ -7,16 +7,25 @@ use alloy::{
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
     transports::http::reqwest::Url,
 };
+use alloy_evm::EvmFactory as _;
 use alloy_genesis::Genesis;
 use alloy_primitives::Address;
 use commonware_codec::Encode;
-use commonware_cryptography::ed25519::PublicKey;
-use eyre::WrapErr as _;
+use commonware_cryptography::{
+    bls12381::primitives::{poly::Public, variant::MinSig},
+    ed25519::PublicKey,
+};
+use commonware_utils::set::OrderedAssociated;
+use eyre::{OptionExt as _, WrapErr as _};
 use futures::StreamExt;
 use reth_db::mdbx::DatabaseArguments;
 use reth_ethereum::{
+    evm::{
+        primitives::EvmEnv,
+        revm::db::{CacheDB, EmptyDB},
+    },
     network::{
-        Peers,
+        Peers as _,
         api::{
             NetworkEventListenerProvider, PeersInfo,
             events::{NetworkEvent, PeerEvent},
@@ -32,8 +41,12 @@ use reth_node_core::{
 use reth_rpc_builder::RpcModuleSelection;
 use tempfile::TempDir;
 use tempo_chainspec::TempoChainSpec;
-use tempo_commonware_node_config::PublicPolynomial;
-use tempo_node::{TempoFullNode, node::TempoNode};
+use tempo_commonware_node_config::{Peers, PublicPolynomial};
+use tempo_node::{
+    TempoFullNode,
+    evm::{TempoEvmFactory, evm::TempoEvm},
+    node::TempoNode,
+};
 use tempo_precompiles::{VALIDATOR_CONFIG_ADDRESS, validator_config::IValidatorConfig};
 
 const ADMIN_INDEX: u32 = 0;
@@ -41,6 +54,96 @@ const VALIDATOR_START_INDEX: u32 = 1;
 
 /// Same mnemonic as used in the imported test-genesis and in the `tempo-node` integration tests.
 pub const TEST_MNEMONIC: &str = "test test test test test test test test test test test junk";
+
+#[derive(Default, Debug)]
+pub struct Builder {
+    allegretto_time: Option<u64>,
+    epoch_length: Option<u64>,
+    public_polynomial: Option<PublicPolynomial>,
+    validators: Option<Peers>,
+}
+
+impl Builder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_allegretto_time(self, allegretto_time: u64) -> Self {
+        Self {
+            allegretto_time: Some(allegretto_time),
+            ..self
+        }
+    }
+
+    pub fn set_allegretto_time(self, allegretto_time: Option<u64>) -> Self {
+        Self {
+            allegretto_time,
+            ..self
+        }
+    }
+
+    pub fn with_epoch_length(self, epoch_length: u64) -> Self {
+        Self {
+            epoch_length: Some(epoch_length),
+            ..self
+        }
+    }
+
+    pub fn with_public_polynomial(self, public_polynomial: Public<MinSig>) -> Self {
+        Self {
+            public_polynomial: Some(public_polynomial.into()),
+            ..self
+        }
+    }
+
+    pub fn with_validators(self, validators: OrderedAssociated<PublicKey, SocketAddr>) -> Self {
+        Self {
+            validators: Some(validators.into()),
+            ..self
+        }
+    }
+
+    pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
+        let Self {
+            allegretto_time,
+            epoch_length,
+            public_polynomial,
+            validators,
+        } = self;
+
+        let epoch_length = epoch_length.ok_or_eyre("must specify epoch length")?;
+        let public_polynomial = public_polynomial.ok_or_eyre("must specify a public polynomial")?;
+        let validators = validators.ok_or_eyre("must specify validators")?;
+
+        let mut genesis = genesis();
+        genesis
+            .config
+            .extra_fields
+            .insert_value("epochLength".to_string(), epoch_length)
+            .wrap_err("failed to insert epoch length into genesis")?;
+        genesis
+            .config
+            .extra_fields
+            .insert_value("publicPolynomial".to_string(), public_polynomial)
+            .wrap_err("failed to insert public polynomial into genesis")?;
+        genesis
+            .config
+            .extra_fields
+            .insert_value("validators".to_string(), validators)
+            .wrap_err("failed to insert validators into genesis")?;
+
+        if let Some(allegretto_time) = allegretto_time {
+            genesis
+                .config
+                .extra_fields
+                .insert_value("allegrettoTime".to_string(), allegretto_time)
+                .wrap_err("failed to insert allegretto timestamp into genesis")?;
+        }
+
+        let chain_spec = TempoChainSpec::from_genesis(genesis);
+        Ok(ExecutionRuntime::with_chain_spec(chain_spec))
+    }
+}
 
 /// An execution runtime wrapping a thread running a [`tokio::runtime::Runtime`].
 ///
@@ -60,6 +163,10 @@ pub struct ExecutionRuntime {
 }
 
 impl ExecutionRuntime {
+    pub fn builder() -> Builder {
+        Builder::new()
+    }
+
     /// Constructs a new execution runtime to launch execution nodes.
     pub fn with_chain_spec(chain_spec: TempoChainSpec) -> Self {
         let tempdir = tempfile::Builder::new()
@@ -317,48 +424,6 @@ pub fn genesis() -> Genesis {
 // TODO(janis): allow configuring this.
 pub fn chainspec() -> TempoChainSpec {
     TempoChainSpec::from_genesis(genesis())
-}
-
-pub fn insert_allegretto(mut genesis: Genesis, timestamp: u64) -> Genesis {
-    genesis
-        .config
-        .extra_fields
-        .insert_value("allegrettoTime".to_string(), timestamp)
-        .unwrap();
-    genesis
-}
-
-pub fn insert_epoch_length(mut genesis: Genesis, epoch_length: u64) -> Genesis {
-    genesis
-        .config
-        .extra_fields
-        .insert_value("epochLength".to_string(), epoch_length)
-        .unwrap();
-    genesis
-}
-
-pub fn insert_validators(
-    mut genesis: Genesis,
-    validators: tempo_commonware_node_config::Peers,
-) -> Genesis {
-    genesis
-        .config
-        .extra_fields
-        .insert_value("validators".to_string(), validators)
-        .unwrap();
-    genesis
-}
-
-pub fn insert_public_polynomial(
-    mut genesis: Genesis,
-    public_polynomial: PublicPolynomial,
-) -> Genesis {
-    genesis
-        .config
-        .extra_fields
-        .insert_value("publicPolynomial".to_string(), public_polynomial)
-        .unwrap();
-    genesis
 }
 
 /// Launches a tempo execution node.
