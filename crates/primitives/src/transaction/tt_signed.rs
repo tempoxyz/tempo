@@ -1,6 +1,6 @@
 use super::{
-    aa_signature::AASignature,
-    account_abstraction::{AA_TX_TYPE_ID, TempoTransaction},
+    tempo_transaction::{AA_TX_TYPE_ID, TempoTransaction},
+    tt_signature::AASignature,
 };
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eips::{
@@ -412,8 +412,8 @@ mod serde_impl {
     #[cfg(test)]
     mod tests {
         use crate::transaction::{
-            aa_signature::{AASignature, PrimitiveSignature},
-            account_abstraction::{Call, TempoTransaction},
+            tempo_transaction::{Call, TempoTransaction},
+            tt_signature::{AASignature, PrimitiveSignature},
         };
         use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
 

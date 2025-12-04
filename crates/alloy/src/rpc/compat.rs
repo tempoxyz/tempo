@@ -134,7 +134,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
 
 /// Creates a mock AA signature for gas estimation based on key type hints
 fn create_mock_aa_signature(key_type: &SignatureType, key_data: Option<&Bytes>) -> AASignature {
-    use tempo_primitives::transaction::aa_signature::{
+    use tempo_primitives::transaction::tt_signature::{
         AASignature, P256SignatureWithPreHash, PrimitiveSignature, WebAuthnSignature,
     };
 

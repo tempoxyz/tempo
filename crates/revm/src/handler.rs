@@ -1545,7 +1545,7 @@ mod tests {
         use alloy_primitives::{B256, Bytes, TxKind};
         use revm::interpreter::gas::calculate_initial_tx_gas;
         use tempo_primitives::transaction::{
-            AASignature, Call, aa_signature::P256SignatureWithPreHash,
+            AASignature, Call, tt_signature::P256SignatureWithPreHash,
         };
 
         let spec = SpecId::CANCUN;

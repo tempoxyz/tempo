@@ -30,10 +30,10 @@ use tempo_precompiles::{DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, storage::slots, tip_fe
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope, TxFeeToken,
     transaction::{
-        aa_signature::{AASignature, PrimitiveSignature},
-        aa_signed::AASigned,
-        account_abstraction::Call,
         calc_gas_balance_spending,
+        tempo_transaction::Call,
+        tt_signature::{AASignature, PrimitiveSignature},
+        tt_signed::AASigned,
     },
 };
 

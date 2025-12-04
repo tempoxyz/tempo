@@ -1031,7 +1031,7 @@ mod compact {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::aa_signature::{AASignature, PrimitiveSignature, derive_p256_address};
+    use crate::transaction::tt_signature::{AASignature, PrimitiveSignature, derive_p256_address};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, bytes, hex};
     use alloy_rlp::{Decodable, Encodable};
 
@@ -1099,7 +1099,7 @@ mod tests {
 
     #[test]
     fn test_signature_type_detection() {
-        use crate::transaction::aa_signature::{SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN};
+        use crate::transaction::tt_signature::{SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN};
 
         // Secp256k1 (detected by 65-byte length, no type identifier)
         let sig1_bytes = vec![0u8; SECP256K1_SIGNATURE_LENGTH];

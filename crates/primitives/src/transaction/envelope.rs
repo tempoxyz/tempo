@@ -1,4 +1,4 @@
-use super::{aa_signed::AASigned, fee_token::TxFeeToken};
+use super::{fee_token::TxFeeToken, tt_signed::AASigned};
 use crate::{TempoTransaction, subblock::PartialValidatorKey};
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,

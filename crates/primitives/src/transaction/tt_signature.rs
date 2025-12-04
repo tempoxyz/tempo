@@ -1,4 +1,4 @@
-use super::account_abstraction::{
+use super::tempo_transaction::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType,
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, keccak256};

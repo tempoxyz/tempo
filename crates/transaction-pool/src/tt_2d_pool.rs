@@ -1063,9 +1063,9 @@ mod tests {
         TempoTxEnvelope,
         transaction::{
             TempoTransaction,
-            aa_signature::{AASignature, PrimitiveSignature},
-            aa_signed::AASigned,
-            account_abstraction::Call,
+            tempo_transaction::Call,
+            tt_signature::{AASignature, PrimitiveSignature},
+            tt_signed::AASigned,
         },
     };
 

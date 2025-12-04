@@ -1,7 +1,7 @@
 use crate::{
-    aa_2d_pool::AA2dNonceKeys,
     amm::AmmLiquidityCache,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+    tt_2d_pool::AA2dNonceKeys,
 };
 use alloy_consensus::Transaction;
 
@@ -584,9 +584,9 @@ mod tests {
         use alloy_primitives::{Signature, TxKind, address};
         use tempo_primitives::transaction::{
             TempoTransaction,
-            aa_signature::{AASignature, PrimitiveSignature},
-            aa_signed::AASigned,
-            account_abstraction::Call,
+            tempo_transaction::Call,
+            tt_signature::{AASignature, PrimitiveSignature},
+            tt_signed::AASigned,
         };
 
         let tx_aa = TempoTransaction {
@@ -777,9 +777,9 @@ mod tests {
         };
         use tempo_primitives::transaction::{
             TempoTransaction,
-            aa_signature::{AASignature, PrimitiveSignature},
-            aa_signed::AASigned,
-            account_abstraction::Call,
+            tempo_transaction::Call,
+            tt_signature::{AASignature, PrimitiveSignature},
+            tt_signed::AASigned,
         };
 
         // Use a valid TIP20 token address (PATH_USD with token_id=1)

@@ -12,11 +12,11 @@ pub mod tempo_pool;
 // The main Tempo transaction pool type that handles both protocol and 2D nonces
 pub use tempo_pool::TempoTransactionPool;
 
-pub mod aa_2d_pool;
 pub mod amm;
 pub mod best;
 pub mod maintain;
 pub mod metrics;
+pub mod tt_2d_pool;
 
-pub use aa_2d_pool::{AA2dNonceKeys, AA2dPool, AA2dPoolConfig};
 pub use metrics::AA2dPoolMetrics;
+pub use tt_2d_pool::{AA2dNonceKeys, AA2dPool, AA2dPoolConfig};
