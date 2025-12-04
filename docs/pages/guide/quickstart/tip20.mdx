@@ -1,0 +1,24 @@
+# TIP-20 Standard
+
+TIP-20 is Tempo's native token standard for stablecoins and payment tokens. It extends ERC-20 with payment-focused controls and is the foundation for paying transaction fees and routing liquidity on Tempo.
+
+## What is TIP-20?
+
+- **Payment-native**: Fixed 6 decimal precision, optional memos on transfers, and guards that prevent sending tokens to other TIP-20 contracts.
+- **Deterministic addresses**: Deployed through the TIP-20 Factory to vanity addresses with the `0x20c…` prefix, making tokens easy to recognize and index.
+- **Backward compatible**: Standard ERC-20 calls (`transfer`, `approve`, `transferFrom`) work as expected while adding Tempo-specific capabilities.
+
+## Why use TIP-20 on Tempo
+
+- **Pay fees in your own stablecoin**: Any USD TIP-20 can be a fee token; the [Fee AMM](/documentation/protocol/fees/spec-fee-amm) converts to the validator's preferred token automatically.
+- **Compliance by default**: Integrates with the [TIP-403 policy registry](/documentation/protocol/tip403/overview) for allow/deny lists and uses role-based permissions for minting, burning, and administration.
+- **Operational control**: Pause transfers, cap supply, or delegate roles without custom contract changes.
+- **Payment-friendly UX**: Consistent decimals, on-chain memos for invoices or references, and safeguards that reduce accidental loss.
+- **Built-in liquidity paths**: Each token sets a quote token for the [stablecoin exchange](/documentation/protocol/exchange), so routing is deterministic and predictable.
+
+## Build with TIP-20
+
+- Start testing with predeployed stablecoins in [`predeployed-contracts`](/guide/quickstart/predeployed-contracts).
+- Issue your own stablecoin via the [TIP-20 Factory](/documentation/protocol/tip20/spec) using the [Create a stablecoin](/guide/issuance/create-a-stablecoin) guide.
+- Integrate balances and transfers through the SDKs in [Make payments](/guide/payments) or standard RPC calls.
+- Dive deeper in the [TIP-20 overview](/documentation/protocol/tip20/overview) and full [specification](/documentation/protocol/tip20/spec).

@@ -64,6 +64,10 @@ export default defineConfig({
               link: '/guide/quickstart/integrate-tempo',
             },
             {
+              text: 'TIP-20 Standard',
+              link: '/guide/quickstart/tip20',
+            },
+            {
               text: 'Predeployed Contracts',
               link: '/guide/quickstart/predeployed-contracts',
             },
@@ -1450,8 +1454,8 @@ export default defineConfig({
 
     const combinedSidebar = [
       { ...overview, collapsed: false },
-      { ...quickstart, collapsed: true },
-      { ...startBuilding, collapsed: true },
+      { ...quickstart, collapsed: false },
+      { ...startBuilding, collapsed: false },
       { ...runNode, collapsed: true },
       { ...tempoProtocol, collapsed: true },
       { ...sdksWithReference, collapsed: true },
