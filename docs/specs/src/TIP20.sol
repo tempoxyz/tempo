@@ -512,4 +512,5 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
                         REWARD DISTRIBUTION VIEWS
     //////////////////////////////////////////////////////////////*/
 
+
     }

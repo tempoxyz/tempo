@@ -183,17 +183,13 @@ contract TIP20FactoryTest is BaseTest {
 
         // isTIP20 correctly returns false because nextTokenId >= tokenIdCounter
         // This is caught by isTIP20's check: uint64(uint160(token)) < tokenIdCounter
-        assertFalse(factory.isTIP20(nextTokenAddr), "isTIP20 should reject token with id >= tokenIdCounter");
+        assertFalse(
+            factory.isTIP20(nextTokenAddr), "isTIP20 should reject token with id >= tokenIdCounter"
+        );
 
         // The explicit self-reference check provides defense in depth
         // Try to create a token that references itself as the quote token
-        try factory.createToken(
-            "Self Ref",
-            "SELF",
-            "USD",
-            ITIP20(nextTokenAddr),
-            admin
-        ) {
+        try factory.createToken("Self Ref", "SELF", "USD", ITIP20(nextTokenAddr), admin) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(ITIP20Factory.InvalidQuoteToken.selector));

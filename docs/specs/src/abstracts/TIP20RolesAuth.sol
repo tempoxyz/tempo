@@ -12,7 +12,7 @@ abstract contract TIP20RolesAuth is ITIP20RolesAuth {
     bytes32 internal constant UNGRANTABLE_ROLE = bytes32(type(uint256).max); // Can never be granted to anyone.
 
     constructor() {
-        // Prevent granting this role by making it self-adminstered.
+        // Prevent granting this role by making it self-administered.
         roleAdmin[UNGRANTABLE_ROLE] = UNGRANTABLE_ROLE;
     }
 

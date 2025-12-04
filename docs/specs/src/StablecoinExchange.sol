@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
+import { TIP20Factory } from "./TIP20Factory.sol";
 import { IStablecoinExchange } from "./interfaces/IStablecoinExchange.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
-import { TIP20Factory } from "./TIP20Factory.sol";
 
 contract StablecoinExchange is IStablecoinExchange {
 
@@ -697,7 +697,7 @@ contract StablecoinExchange is IStablecoinExchange {
                 uint128 baseNeeded = (remainingOut * PRICE_SCALE) / price;
                 uint128 fillAmount;
 
-                // Calculate how much quote to recieve for fillAmount of base
+                // Calculate how much quote to receive for fillAmount of base
                 if (baseNeeded > currentOrder.remaining) {
                     fillAmount = currentOrder.remaining;
                     remainingOut -= (fillAmount * price) / PRICE_SCALE;

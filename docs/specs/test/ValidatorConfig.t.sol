@@ -106,7 +106,9 @@ contract ValidatorConfigTest is BaseTest {
 
     function test_AddValidator_Unauthorized() public {
         vm.prank(nonOwner);
-        try validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1) {
+        try validatorConfig.addValidator(
+            validator1, publicKey1, true, inboundAddr1, outboundAddr1
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfig.Unauthorized.selector));
@@ -116,7 +118,9 @@ contract ValidatorConfigTest is BaseTest {
     function test_AddValidator_DuplicateValidator() public {
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
 
-        try validatorConfig.addValidator(validator1, publicKey2, true, inboundAddr2, outboundAddr2) {
+        try validatorConfig.addValidator(
+            validator1, publicKey2, true, inboundAddr2, outboundAddr2
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfig.ValidatorAlreadyExists.selector));
@@ -129,7 +133,11 @@ contract ValidatorConfigTest is BaseTest {
         } catch (bytes memory err) {
             // inboundAddress should revert with NotHostPort error
             bytes4 selector = bytes4(err);
-            assertEq(selector, IValidatorConfig.NotHostPort.selector, "Should revert with NotHostPort error");
+            assertEq(
+                selector,
+                IValidatorConfig.NotHostPort.selector,
+                "Should revert with NotHostPort error"
+            );
         }
     }
 
@@ -139,7 +147,9 @@ contract ValidatorConfigTest is BaseTest {
         } catch (bytes memory err) {
             // outboundAddress should revert with NotIpPort error
             bytes4 selector = bytes4(err);
-            assertEq(selector, IValidatorConfig.NotIpPort.selector, "Should revert with NotIpPort error");
+            assertEq(
+                selector, IValidatorConfig.NotIpPort.selector, "Should revert with NotIpPort error"
+            );
         }
     }
 
@@ -291,11 +301,9 @@ contract ValidatorConfigTest is BaseTest {
                            FUZZ TESTS
     //////////////////////////////////////////////////////////////*/
 
-    function testFuzz_AddValidator_Success(
-        address validatorAddr,
-        bytes32 pubKey,
-        bool active
-    ) public {
+    function testFuzz_AddValidator_Success(address validatorAddr, bytes32 pubKey, bool active)
+        public
+    {
         vm.assume(validatorAddr != address(0));
         vm.assume(pubKey != bytes32(0));
 
@@ -312,7 +320,9 @@ contract ValidatorConfigTest is BaseTest {
         vm.assume(caller != admin);
 
         vm.prank(caller);
-        try validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1) {
+        try validatorConfig.addValidator(
+            validator1, publicKey1, true, inboundAddr1, outboundAddr1
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfig.Unauthorized.selector));
@@ -370,16 +380,12 @@ contract ValidatorConfigTest is BaseTest {
             validatorAddrs[i] = address(uint160(0x10000 + i));
             pubKeys[i] = bytes32(uint256(0x20000 + i));
 
-            string memory inbound = string(abi.encodePacked("192.168.1.", _uint8ToString(i + 1), ":8000"));
-            string memory outbound = string(abi.encodePacked("192.168.1.", _uint8ToString(i + 1), ":9000"));
+            string memory inbound =
+                string(abi.encodePacked("192.168.1.", _uint8ToString(i + 1), ":8000"));
+            string memory outbound =
+                string(abi.encodePacked("192.168.1.", _uint8ToString(i + 1), ":9000"));
 
-            validatorConfig.addValidator(
-                validatorAddrs[i],
-                pubKeys[i],
-                true,
-                inbound,
-                outbound
-            );
+            validatorConfig.addValidator(validatorAddrs[i], pubKeys[i], true, inbound, outbound);
         }
 
         IValidatorConfig.Validator[] memory validators = validatorConfig.getValidators();
@@ -440,7 +446,9 @@ contract ValidatorConfigTest is BaseTest {
         validatorConfig.addValidator(validator2, publicKey2, true, inboundAddr2, outboundAddr2);
 
         // Original owner cannot add validators
-        try validatorConfig.addValidator(validator3, publicKey3, true, inboundAddr3, outboundAddr3) {
+        try validatorConfig.addValidator(
+            validator3, publicKey3, true, inboundAddr3, outboundAddr3
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfig.Unauthorized.selector));
@@ -467,8 +475,10 @@ contract ValidatorConfigTest is BaseTest {
         // Validator updates multiple times
         for (uint256 i = 0; i < 5; i++) {
             bytes32 newPubKey = bytes32(uint256(0x5000 + i));
-            string memory newInbound = string(abi.encodePacked("10.0.0.", _uint8ToString(uint8(i + 1)), ":8000"));
-            string memory newOutbound = string(abi.encodePacked("10.0.0.", _uint8ToString(uint8(i + 1)), ":9000"));
+            string memory newInbound =
+                string(abi.encodePacked("10.0.0.", _uint8ToString(uint8(i + 1)), ":8000"));
+            string memory newOutbound =
+                string(abi.encodePacked("10.0.0.", _uint8ToString(uint8(i + 1)), ":9000"));
 
             vm.prank(validator1);
             validatorConfig.updateValidator(validator1, newPubKey, newInbound, newOutbound);

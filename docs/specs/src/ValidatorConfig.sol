@@ -304,7 +304,8 @@ contract ValidatorConfig is IValidatorConfig {
                 bytes1 c = b[i];
 
                 // Validate hex character
-                bool isHex = (c >= "0" && c <= "9") || (c >= "a" && c <= "f") || (c >= "A" && c <= "F");
+                bool isHex =
+                    (c >= "0" && c <= "9") || (c >= "a" && c <= "f") || (c >= "A" && c <= "F");
                 if (!isHex) {
                     revert NotIpPort(field, input, "Invalid hex character");
                 }

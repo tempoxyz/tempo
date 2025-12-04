@@ -38,7 +38,9 @@ contract FeeAMM is IFeeAMM {
         return pools[poolId];
     }
 
-    function reserveLiquidity(address userToken, address validatorToken, uint256 maxAmount) internal {
+    function reserveLiquidity(address userToken, address validatorToken, uint256 maxAmount)
+        internal
+    {
         bytes32 poolId = getPoolId(userToken, validatorToken);
 
         // Calculate output at fixed price m = 0.9970
