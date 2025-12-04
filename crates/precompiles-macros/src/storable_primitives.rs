@@ -12,7 +12,8 @@ pub(crate) const ALLOY_INT_SIZES: &[usize] = &[8, 16, 32, 64, 128, 256];
 #[derive(Debug, Clone)]
 enum StorableConversionStrategy {
     U256, // no conversion needed (identity)
-    Unsigned,
+    UnsignedRust,
+    UnsignedAlloy(proc_macro2::Ident),
     SignedRust(proc_macro2::Ident),
     SignedAlloy(proc_macro2::Ident),
     FixedBytes(usize),
@@ -78,18 +79,54 @@ fn gen_packable_impl(
     strategy: &StorableConversionStrategy,
 ) -> TokenStream {
     match strategy {
-        StorableConversionStrategy::Unsigned | StorableConversionStrategy::U256 => {
+        StorableConversionStrategy::U256 => {
             quote! {
                 impl crate::storage::types::sealed::OnlyPrimitives for #type_path {}
                 impl Packable for #type_path {
                     #[inline]
                     fn to_word(&self) -> U256 {
-                        U256::from(*self)
+                        *self
                     }
 
                     #[inline]
-                    fn from_word(word: U256) -> Self {
-                        word.to::<Self>()
+                    fn from_word(word: U256) -> crate::error::Result<Self> {
+                        Ok(word)
+                    }
+                }
+            }
+        }
+        StorableConversionStrategy::UnsignedRust => {
+            quote! {
+                impl crate::storage::types::sealed::OnlyPrimitives for #type_path {}
+                impl Packable for #type_path {
+                    #[inline]
+                    fn to_word(&self) -> U256 {
+                        ::alloy::primitives::U256::from(*self)
+                    }
+
+                    #[inline]
+                    fn from_word(word: U256) -> crate::error::Result<Self> {
+                        word.try_into().map_err(|_| crate::error::TempoPrecompileError::under_overflow())
+                    }
+                }
+            }
+        }
+        StorableConversionStrategy::UnsignedAlloy(ty) => {
+            quote! {
+                impl crate::storage::types::sealed::OnlyPrimitives for #type_path {}
+                impl Packable for #type_path {
+                    #[inline]
+                    fn to_word(&self) -> ::alloy::primitives::U256 {
+                        ::alloy::primitives::U256::from(*self)
+                    }
+
+                    #[inline]
+                    fn from_word(word: ::alloy::primitives::U256) -> crate::error::Result<Self> {
+                        // Check if value fits in target type
+                        if word > ::alloy::primitives::U256::from(::alloy::primitives::#ty::MAX) {
+                            return Err(crate::error::TempoPrecompileError::under_overflow());
+                        }
+                        Ok(word.to::<Self>())
                     }
                 }
             }
@@ -100,12 +137,16 @@ fn gen_packable_impl(
                 impl Packable for #type_path {
                     #[inline]
                     fn to_word(&self) -> U256 {
-                        U256::from(*self as #unsigned_type)
+                        // Store as right-aligned unsigned representation
+                        ::alloy::primitives::U256::from(*self as #unsigned_type)
                     }
 
                     #[inline]
-                    fn from_word(word: U256) -> Self {
-                        word.to::<#unsigned_type>() as Self
+                    fn from_word(word: U256) -> crate::error::Result<Self> {
+                        // Extract low bytes as unsigned, then interpret as signed
+                        let unsigned: #unsigned_type = word.try_into()
+                            .map_err(|_| crate::error::TempoPrecompileError::under_overflow())?;
+                        Ok(unsigned as Self)
                     }
                 }
             }
@@ -116,14 +157,19 @@ fn gen_packable_impl(
                 impl Packable for #type_path {
                     #[inline]
                     fn to_word(&self) -> ::alloy::primitives::U256 {
-                        let unsigned_val = self.into_raw();
-                        ::alloy::primitives::U256::from(unsigned_val)
+                        // Store as right-aligned unsigned representation
+                        ::alloy::primitives::U256::from(self.into_raw())
                     }
 
                     #[inline]
-                    fn from_word(word: ::alloy::primitives::U256) -> Self {
+                    fn from_word(word: ::alloy::primitives::U256) -> crate::error::Result<Self> {
+                        // Check if value fits in the unsigned backing type
+                        if word > ::alloy::primitives::U256::from(::alloy::primitives::#unsigned_type::MAX) {
+                            return Err(crate::error::TempoPrecompileError::under_overflow());
+                        }
+                        // Extract low bytes as unsigned, then interpret as signed
                         let unsigned_val = word.to::<::alloy::primitives::#unsigned_type>();
-                        Self::from_raw(unsigned_val)
+                        Ok(Self::from_raw(unsigned_val))
                     }
                 }
             }
@@ -140,11 +186,11 @@ fn gen_packable_impl(
                     }
 
                     #[inline]
-                    fn from_word(word: ::alloy::primitives::U256) -> Self {
+                    fn from_word(word: ::alloy::primitives::U256) -> crate::error::Result<Self> {
                         let bytes = word.to_be_bytes::<32>();
                         let mut fixed_bytes = [0u8; #size];
                         fixed_bytes.copy_from_slice(&bytes[..#size]);
-                        Self::from(fixed_bytes)
+                        Ok(Self::from(fixed_bytes))
                     }
                 }
             }
@@ -180,7 +226,7 @@ pub(crate) fn gen_storable_rust_ints() -> TokenStream {
         let unsigned_config = TypeConfig {
             type_path: quote! { #unsigned_type },
             byte_count,
-            storable_strategy: StorableConversionStrategy::Unsigned,
+            storable_strategy: StorableConversionStrategy::UnsignedRust,
             storage_key_strategy: StorageKeyStrategy::Simple,
         };
         impls.push(gen_complete_impl_set(&unsigned_config));
@@ -216,7 +262,7 @@ fn gen_alloy_integers() -> Vec<TokenStream> {
             storable_strategy: if size == 256 {
                 StorableConversionStrategy::U256
             } else {
-                StorableConversionStrategy::Unsigned
+                StorableConversionStrategy::UnsignedAlloy(unsigned_type.clone())
             },
             storage_key_strategy: StorageKeyStrategy::WithSize(byte_count),
         };

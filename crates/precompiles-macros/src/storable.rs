@@ -83,9 +83,10 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         },
     );
 
-    // Generate load/store implementations for scalar fields only
-    let load_impl = gen_storage_op_impl(&direct_fields, &mod_ident, true);
-    let store_impl = gen_storage_op_impl(&direct_fields, &mod_ident, false);
+    // Generate load/store/delete implementations for scalar fields only
+    let load_impl = gen_storage_op_impl(&direct_fields, &mod_ident, StorageOp::Load);
+    let store_impl = gen_storage_op_impl(&direct_fields, &mod_ident, StorageOp::Store);
+    let delete_impl = gen_storage_op_impl(&direct_fields, &mod_ident, StorageOp::Delete);
 
     // Generate handler struct for field access
     let handler_struct = gen_handler_struct(strukt, &layout_fields, &mod_ident);
@@ -138,7 +139,18 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
                 Ok(())
             }
 
-            // delete uses default implementation from trait
+            fn delete<S: crate::storage::StorageOps>(
+                storage: &mut S,
+                base_slot: ::alloy::primitives::U256,
+                ctx: crate::storage::LayoutCtx
+            ) -> crate::error::Result<()> {
+                use crate::storage::Storable;
+                debug_assert_eq!(ctx, crate::storage::LayoutCtx::FULL, "Struct types can only be deleted with LayoutCtx::FULL");
+
+                #delete_impl
+
+                Ok(())
+            }
         }
     };
 
@@ -273,11 +285,15 @@ fn gen_handler_struct(
     }
 }
 
-/// Generate either `fn load()` or `fn store()` implementation.
-///
-/// If `iload` is true, generates load implementation with unpacking logic.
-/// If `iload` is false, generates store implementation with packing logic.
-fn gen_storage_op_impl(fields: &[(&Ident, &Type)], packing: &Ident, iload: bool) -> TokenStream {
+/// The type of storage operation to generate code for.
+enum StorageOp {
+    Load,
+    Store,
+    Delete,
+}
+
+/// Generate `fn load()`, `fn store()`, or `fn delete()` implementation.
+fn gen_storage_op_impl(fields: &[(&Ident, &Type)], packing: &Ident, op: StorageOp) -> TokenStream {
     let field_ops = fields
         .iter()
         .enumerate()
@@ -296,19 +312,22 @@ fn gen_storage_op_impl(fields: &[(&Ident, &Type)], packing: &Ident, iload: bool)
                 next_slot_const_ref,
             );
 
-            if iload {
-                quote! {
+            match op {
+                StorageOp::Load => quote! {
                     let #name = <#ty as crate::storage::Storable>::load(
                         storage,
                         base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots),
                         #layout_ctx
                     )?;
-                }
-            } else {
-                quote! {{
+                },
+                StorageOp::Store => quote! {{
                     let target_slot = base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots);
                     <#ty as crate::storage::Storable>::store(&self.#name, storage, target_slot, #layout_ctx)?;
-                }}
+                }},
+                StorageOp::Delete => quote! {{
+                    let target_slot = base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots);
+                    <#ty as crate::storage::Storable>::delete(storage, target_slot, #layout_ctx)?;
+                }},
             }
         });
 

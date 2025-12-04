@@ -33,8 +33,8 @@ impl Packable for bool {
     }
 
     #[inline]
-    fn from_word(word: U256) -> Self {
-        !word.is_zero()
+    fn from_word(word: U256) -> crate::error::Result<Self> {
+        Ok(!word.is_zero())
     }
 }
 
@@ -62,8 +62,8 @@ impl Packable for Address {
     }
 
     #[inline]
-    fn from_word(word: U256) -> Self {
-        word.into_address()
+    fn from_word(word: U256) -> crate::error::Result<Self> {
+        Ok(word.into_address())
     }
 }
 
@@ -125,7 +125,7 @@ mod tests {
 
                 // EVM word roundtrip
                 let word = addr.to_word();
-                let recovered = Address::from_word(word.into());
+                let recovered = <Address as Packable>::from_word(word).unwrap();
                 assert_eq!(addr, recovered, "Address EVM word roundtrip failed");
             });
         }
@@ -148,7 +148,7 @@ mod tests {
 
                 // EVM word roundtrip
                 let word = b.to_word();
-                let recovered = bool::from_word(word);
+                let recovered = <bool as Packable>::from_word(word).unwrap();
                 assert_eq!(b, recovered, "Bool EVM word roundtrip failed");
             });
         }

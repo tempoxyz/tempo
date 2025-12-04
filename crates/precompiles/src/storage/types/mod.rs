@@ -237,7 +237,9 @@ pub trait Packable: sealed::OnlyPrimitives + StorableType {
     fn to_word(&self) -> U256;
 
     /// Decode this type from a single U256 word.
-    fn from_word(word: U256) -> Self;
+    fn from_word(word: U256) -> Result<Self>
+    where
+        Self: Sized;
 }
 
 /// Blanket implementation of `Storable` for all `Packable` types.
@@ -250,7 +252,7 @@ impl<T: Packable> Storable for T {
         const { assert!(T::IS_PACKABLE, "Packable requires IS_PACKABLE to be true") };
 
         match ctx.packed_offset() {
-            None => storage.load(slot).map(Self::from_word),
+            None => storage.load(slot).and_then(Self::from_word),
             Some(offset) => {
                 let slot_value = storage.load(slot)?;
                 packing::extract_packed_value(slot_value, offset, Self::BYTES)
