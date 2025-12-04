@@ -1036,7 +1036,7 @@ mod tests {
     use alloy_rlp::{Decodable, Encodable};
 
     #[test]
-    fn test_tx_aa_validation() {
+    fn test_tempo_transaction_validation() {
         // Create a dummy call to satisfy validation
         let dummy_call = Call {
             to: TxKind::Create,
@@ -1798,7 +1798,7 @@ mod tests {
     }
 
     #[test]
-    fn test_txaa_envelope_roundtrip_without_key_auth() {
+    fn test_tempo_transaction_envelope_roundtrip_without_key_auth() {
         // Test that TempoTransaction in envelope works without key_authorization
         use crate::TempoTxEnvelope;
         use alloy_eips::eip2718::{Decodable2718, Encodable2718};
@@ -1878,7 +1878,7 @@ mod tests {
     }
 
     #[test]
-    fn test_txaa_decode_rejects_malformed_rlp() {
+    fn test_tempo_transaction_decode_rejects_malformed_rlp() {
         // Test that TempoTransaction decoding rejects RLP with mismatched header length
         let call = Call {
             to: TxKind::Call(address!("0000000000000000000000000000000000000002")),
