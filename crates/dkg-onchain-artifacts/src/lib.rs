@@ -41,6 +41,19 @@ impl Ack {
         Self { player, signature }
     }
 
+    /// Create a self-acknowledgment where the signer is both player and dealer.
+    pub fn self_ack(
+        namespace: &[u8],
+        signer: PrivateKey,
+        epoch: Epoch,
+        commitment: &Public<MinSig>,
+    ) -> Self {
+        let player = signer.public_key();
+        let payload = Self::construct_signature_payload(epoch, &player, commitment);
+        let signature = signer.sign(Some(namespace), &payload);
+        Self { player, signature }
+    }
+
     fn construct_signature_payload(
         epoch: Epoch,
         dealer: &PublicKey,

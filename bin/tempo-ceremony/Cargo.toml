@@ -1,0 +1,46 @@
+[package]
+name = "tempo-ceremony"
+description = "Tempo DKG Ceremony Tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+commonware-cryptography = { workspace = true }
+commonware-codec = { workspace = true }
+commonware-p2p = { workspace = true }
+commonware-runtime = { workspace = true }
+commonware-utils = { workspace = true }
+
+tempo-commonware-node-config = { workspace = true }
+tempo-dkg-onchain-artifacts = { workspace = true }
+
+clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+eyre = { workspace = true }
+thiserror = { workspace = true }
+rand = { workspace = true }
+rand_core = { workspace = true }
+const-hex = { workspace = true }
+indexmap = { workspace = true }
+bytes = { workspace = true }
+governor = { workspace = true }
+crossterm = "0.28"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+futures = { workspace = true }
+
+[[bin]]
+name = "tempo-ceremony"
+path = "src/main.rs"

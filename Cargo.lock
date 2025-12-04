@@ -11300,6 +11300,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-ceremony"
+version = "0.7.1"
+dependencies = [
+ "bytes",
+ "clap",
+ "commonware-codec",
+ "commonware-cryptography",
+ "commonware-p2p",
+ "commonware-runtime",
+ "commonware-utils",
+ "const-hex",
+ "crossterm 0.28.1",
+ "eyre",
+ "futures",
+ "governor",
+ "indexmap 2.12.1",
+ "rand 0.8.5",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tempo-commonware-node-config",
+ "tempo-dkg-onchain-artifacts",
+ "thiserror 2.0.17",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber 0.3.22",
+]
+
+[[package]]
 name = "tempo-chainspec"
 version = "0.7.1"
 dependencies = [
