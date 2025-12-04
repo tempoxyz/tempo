@@ -7,11 +7,13 @@ use std::{fmt::Display, net::SocketAddr, path::Path};
 
 use commonware_codec::{DecodeExt as _, Encode as _, FixedSize, Read};
 use commonware_cryptography::{
-    Signer, bls12381::primitives::{
+    Signer,
+    bls12381::primitives::{
         group::Share,
         poly::Public,
         variant::{MinSig, Variant},
-    }, ed25519::{PrivateKey, PublicKey}
+    },
+    ed25519::{PrivateKey, PublicKey},
 };
 use commonware_utils::set::OrderedAssociated;
 use indexmap::IndexMap;

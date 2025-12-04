@@ -1,9 +1,7 @@
 //! Command line arguments for configuring the consensus layer of a tempo node.
 use std::{net::SocketAddr, path::PathBuf, sync::OnceLock};
 
-use commonware_cryptography::{
-    ed25519::{PublicKey},
-};
+use commonware_cryptography::ed25519::PublicKey;
 use eyre::Context;
 use tempo_commonware_node_config::SigningKey;
 
