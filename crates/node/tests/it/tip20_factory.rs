@@ -68,3 +68,44 @@ async fn test_create_token() -> eyre::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_is_tip20_checks_token_id_counter() -> eyre::Result<()> {
+    let setup = crate::utils::TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
+
+    let token_id_counter: u64 = factory.tokenIdCounter().call().await?.to();
+
+    // Create an address with valid TIP20 prefix but token ID >= tokenIdCounter
+    let non_existent_token_id = token_id_counter + 100;
+    let non_existent_tip20_addr = token_id_to_address(non_existent_token_id);
+
+    // Verify this address has valid TIP20 prefix
+    assert!(
+        non_existent_tip20_addr
+            .as_slice()
+            .starts_with(&[0x20, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        "Address should have valid TIP20 prefix"
+    );
+
+    // isTIP20 should return false because token ID >= tokenIdCounter
+    let is_tip20 = factory.isTIP20(non_existent_tip20_addr).call().await?;
+    assert!(
+        !is_tip20,
+        "isTIP20 should return false for non-existent token ID {non_existent_token_id} (>= counter {token_id_counter})"
+    );
+
+    // Verify that a valid TIP20 (PATH_USD) returns true
+    let path_usd_is_tip20 = factory.isTIP20(PATH_USD_ADDRESS).call().await?;
+    assert!(path_usd_is_tip20, "PATH_USD should be a valid TIP20");
+
+    Ok(())
+}

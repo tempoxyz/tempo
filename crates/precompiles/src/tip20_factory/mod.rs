@@ -48,6 +48,19 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         Ok(info.code.is_some())
     }
 
+    /// Returns true if the address is a valid TIP20 token.
+    ///
+    /// Matches the Solidity implementation which checks both:
+    /// 1. The address has the correct TIP20 prefix
+    /// 2. The token ID (lower 8 bytes) is less than tokenIdCounter
+    pub fn is_tip20(&mut self, token: Address) -> Result<bool> {
+        if !crate::tip20::is_tip20(token) {
+            return Ok(false);
+        }
+        let token_id = U256::from(address_to_token_id_unchecked(token));
+        Ok(token_id < self.token_id_counter()?)
+    }
+
     pub fn create_token(
         &mut self,
         sender: Address,
