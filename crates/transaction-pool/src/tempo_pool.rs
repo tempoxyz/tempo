@@ -94,7 +94,7 @@ where
         if transactions.iter().any(|outcome| {
             outcome
                 .as_valid_transaction()
-                .map(|tx| tx.transaction().has_non_zero_nonce_key())
+                .map(|tx| tx.transaction().is_aa_2d())
                 .unwrap_or(false)
         }) {
             // mixed or 2d only
@@ -124,7 +124,7 @@ where
                 propagate,
                 authorities,
             } => {
-                if transaction.transaction().has_non_zero_nonce_key() {
+                if transaction.transaction().is_aa_2d() {
                     let transaction = transaction.into_transaction();
                     let sender_id = self
                         .protocol_pool

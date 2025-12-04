@@ -115,7 +115,7 @@ impl AA2dPool {
             .expect("Transaction added to AA2D pool must be an AA transaction");
 
         // Cache the nonce key slot for reverse lookup, if this transaction uses 2D nonce.
-        if transaction.transaction.has_non_zero_nonce_key() {
+        if transaction.transaction.is_aa_2d() {
             self.record_2d_slot(transaction.sender(), tx_id.seq_id.nonce_key);
         }
 

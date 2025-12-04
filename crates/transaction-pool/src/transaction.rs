@@ -66,17 +66,21 @@ impl TempoPooledTransaction {
         self.inner.transaction.nonce_key()
     }
 
-    /// Returns true if this is an AA transaction with a non-zero nonce key.
-    pub fn has_non_zero_nonce_key(&self) -> bool {
-        self.nonce_key()
-            .is_some_and(|nonce_key| !nonce_key.is_zero())
-    }
-
     /// Returns whether this is a payment transaction.
     ///
     /// Based on classifier v1: payment if tx.to has TIP20 reserved prefix.
     pub fn is_payment(&self) -> bool {
         self.is_payment
+    }
+
+    /// Returns true if this transaction belongs into the 2D nonce pool:
+    /// - AA transaction with a `nonce key != 0`
+    pub(crate) fn is_aa_2d(&self) -> bool {
+        self.inner
+            .transaction
+            .as_aa()
+            .map(|tx| !tx.tx().nonce_key.is_zero())
+            .unwrap_or(false)
     }
 
     /// Returns the unique identifier for this AA transaction.
