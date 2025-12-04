@@ -381,7 +381,7 @@ export default defineConfig({
                 },
                 {
                   text: 'Specification',
-                  link: '/documentation/protocol/transactions/spec-account-abstraction',
+                  link: '/documentation/protocol/transactions/spec-tempo-transaction',
                 },
                 {
                   text: 'Default Account Abstraction Specification',
