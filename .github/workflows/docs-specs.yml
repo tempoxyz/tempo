@@ -109,12 +109,13 @@ jobs:
           echo "Updating tempo dependencies to commit: $COMMIT_SHA"
 
           # Update all tempo dependencies to point to the current commit
+          # Using # as delimiter since URLs contain /
           sed -i -E \
-            's|(git = "ssh://git@github.com/tempoxyz/tempo"),[[:space:]]*(rev|branch) = "[^"]+"|git = "https://github.com/tempoxyz/tempo", rev = "'"$COMMIT_SHA"'"|g' \
+            "s#(tempo-[a-z]+) = \{ git = \"ssh://git@github.com/tempoxyz/tempo\", (rev|branch) = \"[^\"]+\" \}#\1 = { git = \"https://github.com/tempoxyz/tempo\", rev = \"$COMMIT_SHA\" }#g" \
             Cargo.toml
 
           echo "Updated Cargo.toml:"
-          grep -A1 "tempo-" Cargo.toml | head -20
+          grep "tempo-" Cargo.toml | head -20
 
           # Update Cargo.lock
           CRATES=$(grep "git = \"https://github.com/tempoxyz/tempo\"" Cargo.toml | grep -oP 'tempo-\w+' | sort -u || true)
