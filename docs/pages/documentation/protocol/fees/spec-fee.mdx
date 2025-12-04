@@ -34,11 +34,11 @@ After the execution of each transaction:
 
 ## Fee payer
 
-Tempo supports *sponsored transactions* in which the `fee_payer` is a different address from the `tx.origin` of the transaction. This is supported by Tempo's [new transaction type](/documentation/protocol/transactions/spec-account-abstraction.mdx), which has a `fee_payer_signature` field.
+Tempo supports *sponsored transactions* in which the `fee_payer` is a different address from the `tx.origin` of the transaction. This is supported by Tempo's [new transaction type](/documentation/protocol/transactions/spec-tempo-transaction.mdx), which has a `fee_payer_signature` field.
 
 If no `fee_payer_signature` is provided, then the `fee_payer` of the transaction is its sender (`tx.origin`).
 
-If the `fee_payer_signature` field is set, then it is used to derive the `fee_payer` for the transaction, as described in the [transaction spec](/documentation/protocol/transactions/spec-account-abstraction.mdx).
+If the `fee_payer_signature` field is set, then it is used to derive the `fee_payer` for the transaction, as described in the [transaction spec](/documentation/protocol/transactions/spec-tempo-transaction.mdx).
 
 For purposes of [fee token preferences](#fee-token-preferences), the `fee_payer` is the account that chooses the fee token.
 
@@ -87,7 +87,7 @@ If no preference is specified at the transaction, account, or contract level, th
 
 ### Transaction level
 
-Tempo's [new transaction type](/documentation/protocol/transactions/spec-account-abstraction.mdx), allows transactions to specify a `fee_token` on the transaction. This overrides any preferences set at the account, contract, or validator level.
+Tempo's [new transaction type](/documentation/protocol/transactions/spec-tempo-transaction.mdx), allows transactions to specify a `fee_token` on the transaction. This overrides any preferences set at the account, contract, or validator level.
 
 For [sponsored transactions](#fee-payer), the `tx.origin` address does not sign over the `fee_token` field (allowing the `fee_payer` to choose the fee token).
 
@@ -99,7 +99,7 @@ To set its preference, the account can call the `setUserToken` function on the F
 
 At this step, the protocol does one more check:
 
-* If the transaction is not a [Tempo transaction](/documentation/protocol/transactions/spec-account-abstraction.mdx) *and* the transaction is a top-level call to the `setUserToken` function on the FeeManager, then the protocol checks the `token` argument to the function:
+* If the transaction is not a [Tempo transaction](/documentation/protocol/transactions/spec-tempo-transaction.mdx) *and* the transaction is a top-level call to the `setUserToken` function on the FeeManager, then the protocol checks the `token` argument to the function:
   * If that token is a TIP-20 whose currency is USD, that token is used as the fee token (unless the transaction specifies a `fee_token` at the [transaction level](#transaction-level)).
   * If that token is not a TIP-20 or its currency is not USD, the transaction is invalid.
 

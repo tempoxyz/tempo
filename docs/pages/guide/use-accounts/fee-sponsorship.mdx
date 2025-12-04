@@ -4,11 +4,11 @@ import { Callout } from 'vocs/components'
 
 Fee sponsorship enables gasless transactions where applications can subsidize user costs. Users can interact with the blockchain without holding fee tokens.
 
-This specification describes how one account can pay transaction fees on behalf of another account using Tempo's Account Abstraction transaction type with the `feePayerSignature` field.
+This specification describes how one account can pay transaction fees on behalf of another account using the [Tempo Transaction](/documentation/protocol/transactions/spec-tempo-transaction) type with the `feePayerSignature` field.
 
 ## How It Works
 
-Tempo's Account Abstraction (AA) transaction type includes an optional `feePayerSignature` field. When present, this signature authorizes a third party to pay the transaction's gas costs while the original sender executes the transaction logic.
+The [Tempo Transaction](/documentation/protocol/transactions/spec-tempo-transaction) type includes an optional `feePayerSignature` field. When present, this signature authorizes a third party to pay the transaction's gas costs while the original sender executes the transaction logic.
 
 ::::steps
 ### Sender signs the transaction
