@@ -9,7 +9,7 @@ export type DemoStepProps = {
    * Use this for per-demo prerequisites that vary between flows, NOT for
    * dependencies the component always needs (those should be handled internally).
    *
-   * Example: SendPaymentWithIssuedToken always needs tokenAddress (handled internally),
+   * Example: ClaimReward always needs tokenAddress (handled internally),
    * but in the rewards flow it needs to stay inactive until rewardId is set on a previous step.
    */
   flowDependencies?: (keyof DemoData)[]
