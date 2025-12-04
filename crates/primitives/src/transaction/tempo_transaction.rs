@@ -8,13 +8,13 @@ use reth_primitives_traits::InMemorySize;
 use crate::{
     subblock::{PartialValidatorKey, has_sub_block_nonce_key_prefix},
     transaction::{
-        AASignature, AASigned, AASignedAuthorization, KeyAuthorization,
+        AASigned, KeyAuthorization, TempoSignature, TempoSignedAuthorization,
         key_authorization::SignedKeyAuthorization,
     },
 };
 
-/// Account abstraction transaction type byte (0x76)
-pub const AA_TX_TYPE_ID: u8 = 0x76;
+/// Tempo transaction type byte (0x76)
+pub const TEMPO_TX_TYPE_ID: u8 = 0x76;
 
 /// Magic byte for the fee payer signature
 pub const FEE_PAYER_SIGNATURE_MAGIC_BYTE: u8 = 0x78;
@@ -147,7 +147,7 @@ impl Decodable for Call {
     }
 }
 
-/// Account abstraction transaction following the Tempo spec.
+/// Tempo transaction following the Tempo spec.
 ///
 /// This transaction type supports:
 /// - Multiple signature types (secp256k1, P256, WebAuthn)
@@ -158,8 +158,7 @@ impl Decodable for Call {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
-#[doc(alias = "AATransaction", alias = "TransactionAA")]
-pub struct TxAA {
+pub struct TempoTransaction {
     /// EIP-155: Simple replay attack protection
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub chain_id: ChainId,
@@ -188,7 +187,7 @@ pub struct TxAA {
     /// Access list (EIP-2930)
     pub access_list: AccessList,
 
-    /// AA-specific fields
+    /// TT-specific fields
 
     /// Nonce key for 2D nonce system
     /// Key 0 is the protocol nonce, keys 1-N are user nonces for parallelization
@@ -218,15 +217,16 @@ pub struct TxAA {
     /// The authorization must be signed with the root key, the tx can be signed by the Keychain signature.
     pub key_authorization: Option<SignedKeyAuthorization>,
 
-    /// Authorization list (EIP-7702 style with AA signatures)
-    pub aa_authorization_list: Vec<AASignedAuthorization>,
+    /// Authorization list (EIP-7702 style with Tempo signatures)
+    #[cfg_attr(feature = "serde", serde(rename = "aa_authorization_list"))]
+    pub tempo_authorization_list: Vec<TempoSignedAuthorization>,
 }
 
-impl TxAA {
+impl TempoTransaction {
     /// Get the transaction type
     #[doc(alias = "transaction_type")]
     pub const fn tx_type() -> u8 {
-        AA_TX_TYPE_ID
+        TEMPO_TX_TYPE_ID
     }
 
     /// Validates the transaction according to the spec rules
@@ -246,7 +246,7 @@ impl TxAA {
 
         // Authorization list validation: Cannot have Create in any call when aa_authorization_list is non-empty
         // This follows EIP-7702 semantics - when using delegation
-        if !self.aa_authorization_list.is_empty() {
+        if !self.tempo_authorization_list.is_empty() {
             for call in &self.calls {
                 if call.to.is_create() {
                     return Err(
@@ -278,11 +278,11 @@ impl TxAA {
         mem::size_of::<Option<u64>>() + // valid_after
         // key_authorization (optional)
         self.key_authorization.as_ref().map(|k| k.size()).unwrap_or(mem::size_of::<Option<KeyAuthorization>>()) +
-        self.aa_authorization_list.iter().map(|auth| auth.size()).sum::<usize>() // authorization_list
+        self.tempo_authorization_list.iter().map(|auth| auth.size()).sum::<usize>() // authorization_list
     }
 
     /// Convert the transaction into a signed transaction
-    pub fn into_signed(self, signature: AASignature) -> AASigned {
+    pub fn into_signed(self, signature: TempoSignature) -> AASigned {
         AASigned::new_unhashed(self, signature)
     }
 
@@ -356,7 +356,7 @@ impl TxAA {
             } +
             signature_length(&self.fee_payer_signature) +
             // authorization_list
-            self.aa_authorization_list.length() +
+            self.tempo_authorization_list.length() +
             // key_authorization (only included if present)
             if let Some(key_auth) = &self.key_authorization {
                 key_auth.length()
@@ -401,7 +401,7 @@ impl TxAA {
         encode_signature(&self.fee_payer_signature, out);
 
         // Encode authorization_list
-        self.aa_authorization_list.encode(out);
+        self.tempo_authorization_list.encode(out);
 
         // Encode key_authorization (truly optional - only encoded if present)
         if let Some(key_auth) = &self.key_authorization {
@@ -439,7 +439,7 @@ impl TxAA {
         )
     }
 
-    /// Decodes the inner TxAA fields from RLP bytes
+    /// Decodes the inner TempoTransaction fields from RLP bytes
     pub(crate) fn rlp_decode_fields(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let chain_id = Decodable::decode(buf)?;
         let max_priority_fee_per_gas = Decodable::decode(buf)?;
@@ -501,7 +501,7 @@ impl TxAA {
             return Err(alloy_rlp::Error::InputTooShort);
         };
 
-        let aa_authorization_list = Decodable::decode(buf)?;
+        let tempo_authorization_list = Decodable::decode(buf)?;
 
         // Decode optional key_authorization field at the end
         // Check if the next byte looks like it could be a KeyAuthorization (RLP list)
@@ -535,7 +535,7 @@ impl TxAA {
             valid_before,
             valid_after,
             key_authorization,
-            aa_authorization_list,
+            tempo_authorization_list,
         };
 
         // Validate the transaction
@@ -561,7 +561,7 @@ impl TxAA {
     }
 }
 
-impl Transaction for TxAA {
+impl Transaction for TempoTransaction {
     #[inline]
     fn chain_id(&self) -> Option<ChainId> {
         Some(self.chain_id)
@@ -657,13 +657,13 @@ impl Transaction for TxAA {
     }
 }
 
-impl Typed2718 for TxAA {
+impl Typed2718 for TempoTransaction {
     fn ty(&self) -> u8 {
-        AA_TX_TYPE_ID
+        TEMPO_TX_TYPE_ID
     }
 }
 
-impl SignableTransaction<Signature> for TxAA {
+impl SignableTransaction<Signature> for TempoTransaction {
     fn set_chain_id(&mut self, chain_id: ChainId) {
         self.chain_id = chain_id;
     }
@@ -702,7 +702,7 @@ impl SignableTransaction<Signature> for TxAA {
     }
 }
 
-impl Encodable for TxAA {
+impl Encodable for TempoTransaction {
     fn encode(&self, out: &mut dyn BufMut) {
         // Encode as RLP list of fields
         let payload_length = self.rlp_encoded_fields_length_default();
@@ -716,7 +716,7 @@ impl Encodable for TxAA {
     }
 }
 
-impl Decodable for TxAA {
+impl Decodable for TempoTransaction {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let header = alloy_rlp::Header::decode(buf)?;
         if !header.list {
@@ -740,18 +740,18 @@ impl Decodable for TxAA {
     }
 }
 
-impl reth_primitives_traits::InMemorySize for TxAA {
+impl reth_primitives_traits::InMemorySize for TempoTransaction {
     fn size(&self) -> usize {
         Self::size(self)
     }
 }
 
 #[cfg(feature = "serde-bincode-compat")]
-impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TxAA {}
+impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoTransaction {}
 
 // Custom Arbitrary implementation to ensure calls is never empty
 #[cfg(any(test, feature = "arbitrary"))]
-impl<'a> arbitrary::Arbitrary<'a> for TxAA {
+impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         // Generate all fields using the default Arbitrary implementation
         let chain_id = u.arbitrary()?;
@@ -808,7 +808,7 @@ impl<'a> arbitrary::Arbitrary<'a> for TxAA {
             valid_before,
             valid_after,
             key_authorization: u.arbitrary()?,
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
         })
     }
 }
@@ -861,7 +861,7 @@ mod compact {
 
     #[derive(Compact)]
 
-    struct OldTxAA {
+    struct OldTempoTransaction {
         chain_id: ChainId,
         fee_token: Option<Address>,
         max_priority_fee_per_gas: u128,
@@ -874,12 +874,12 @@ mod compact {
         fee_payer_signature: Option<Signature>,
         valid_before: Option<u64>,
         valid_after: Option<u64>,
-        aa_authorization_list: Vec<AASignedAuthorization>,
+        tempo_authorization_list: Vec<TempoSignedAuthorization>,
     }
 
     #[derive(Compact)]
 
-    struct NewTxAA {
+    struct NewTempoTransaction {
         chain_id: ChainId,
         fee_token: Option<Address>,
         max_priority_fee_per_gas: u128,
@@ -893,16 +893,16 @@ mod compact {
         valid_before: Option<u64>,
         valid_after: Option<u64>,
         key_authorization: Option<SignedKeyAuthorization>,
-        aa_authorization_list: Vec<AASignedAuthorization>,
+        tempo_authorization_list: Vec<TempoSignedAuthorization>,
     }
 
-    impl Compact for TxAA {
+    impl Compact for TempoTransaction {
         fn to_compact<B>(&self, buf: &mut B) -> usize
         where
             B: alloy_rlp::bytes::BufMut + AsMut<[u8]>,
         {
-            // copy-pasted expansion of NewTxAA
-            let mut flags = NewTxAAFlags::default();
+            // copy-pasted expansion of NewTempoTransaction
+            let mut flags = NewTempoTransactionFlags::default();
             let mut total_length = 0;
             let mut buffer = reth_codecs::__private::bytes::BytesMut::new();
             let chain_id_len = self.chain_id.to_compact(&mut buffer);
@@ -930,7 +930,7 @@ mod compact {
             flags.set_valid_after_len(valid_after_len as u8);
             let key_authorization_len = self.key_authorization.to_compact(&mut buffer);
             flags.set_key_authorization_len(key_authorization_len as u8);
-            self.aa_authorization_list.to_compact(&mut buffer);
+            self.tempo_authorization_list.to_compact(&mut buffer);
             let flags = flags.into_bytes();
             total_length += flags.len() + buffer.len();
             buf.put_slice(&flags);
@@ -939,7 +939,7 @@ mod compact {
         }
 
         fn from_compact(buf: &[u8], len: usize) -> (Self, &[u8]) {
-            // HACK: for OldTxAA 5th byte is highest non-zero chainid byte. For NewTxAA its
+            // HACK: for OldTempoTransaction 5th byte is highest non-zero chainid byte. For NewTempoTransaction its
             // either 1 (when keyAuthorization is Some) or 0 (when keyAuthorization is None)
             //
             // We infer the encoding version by checking this byte. The assumption here is that this
@@ -948,7 +948,7 @@ mod compact {
             // This is very hacky and should be removed ASAP.
             if buf[4] <= 1 {
                 let (
-                    NewTxAA {
+                    NewTempoTransaction {
                         chain_id,
                         fee_token,
                         max_priority_fee_per_gas,
@@ -962,10 +962,10 @@ mod compact {
                         valid_before,
                         valid_after,
                         key_authorization,
-                        aa_authorization_list,
+                        tempo_authorization_list,
                     },
                     buf,
-                ) = NewTxAA::from_compact(buf, len);
+                ) = NewTempoTransaction::from_compact(buf, len);
                 (
                     Self {
                         chain_id,
@@ -981,13 +981,13 @@ mod compact {
                         valid_before,
                         valid_after,
                         key_authorization,
-                        aa_authorization_list,
+                        tempo_authorization_list,
                     },
                     buf,
                 )
             } else {
                 let (
-                    OldTxAA {
+                    OldTempoTransaction {
                         chain_id,
                         fee_token,
                         max_priority_fee_per_gas,
@@ -1000,10 +1000,10 @@ mod compact {
                         fee_payer_signature,
                         valid_before,
                         valid_after,
-                        aa_authorization_list,
+                        tempo_authorization_list,
                     },
                     buf,
-                ) = OldTxAA::from_compact(buf, len);
+                ) = OldTempoTransaction::from_compact(buf, len);
 
                 (
                     Self {
@@ -1020,7 +1020,7 @@ mod compact {
                         valid_before,
                         valid_after,
                         key_authorization: None,
-                        aa_authorization_list,
+                        tempo_authorization_list,
                     },
                     buf,
                 )
@@ -1032,12 +1032,14 @@ mod compact {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::aa_signature::{AASignature, PrimitiveSignature, derive_p256_address};
+    use crate::transaction::tt_signature::{
+        PrimitiveSignature, TempoSignature, derive_p256_address,
+    };
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, bytes, hex};
     use alloy_rlp::{Decodable, Encodable};
 
     #[test]
-    fn test_tx_aa_validation() {
+    fn test_tempo_transaction_validation() {
         // Create a dummy call to satisfy validation
         let dummy_call = Call {
             to: TxKind::Create,
@@ -1046,47 +1048,47 @@ mod tests {
         };
 
         // Valid: valid_before > valid_after
-        let tx1 = TxAA {
+        let tx1 = TempoTransaction {
             valid_before: Some(100),
             valid_after: Some(50),
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             calls: vec![dummy_call.clone()],
             ..Default::default()
         };
         assert!(tx1.validate().is_ok());
 
         // Invalid: valid_before <= valid_after
-        let tx2 = TxAA {
+        let tx2 = TempoTransaction {
             valid_before: Some(50),
             valid_after: Some(100),
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             calls: vec![dummy_call.clone()],
             ..Default::default()
         };
         assert!(tx2.validate().is_err());
 
         // Invalid: valid_before == valid_after
-        let tx3 = TxAA {
+        let tx3 = TempoTransaction {
             valid_before: Some(100),
             valid_after: Some(100),
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             calls: vec![dummy_call.clone()],
             ..Default::default()
         };
         assert!(tx3.validate().is_err());
 
         // Valid: no valid_after
-        let tx4 = TxAA {
+        let tx4 = TempoTransaction {
             valid_before: Some(100),
             valid_after: None,
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             calls: vec![dummy_call],
             ..Default::default()
         };
         assert!(tx4.validate().is_ok());
 
         // Invalid: empty calls
-        let tx5 = TxAA {
+        let tx5 = TempoTransaction {
             ..Default::default()
         };
         assert!(tx5.validate().is_err());
@@ -1094,29 +1096,29 @@ mod tests {
 
     #[test]
     fn test_tx_type() {
-        assert_eq!(TxAA::tx_type(), 0x76);
-        assert_eq!(AA_TX_TYPE_ID, 0x76);
+        assert_eq!(TempoTransaction::tx_type(), 0x76);
+        assert_eq!(TEMPO_TX_TYPE_ID, 0x76);
     }
 
     #[test]
     fn test_signature_type_detection() {
-        use crate::transaction::aa_signature::{SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN};
+        use crate::transaction::tt_signature::{SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN};
 
         // Secp256k1 (detected by 65-byte length, no type identifier)
         let sig1_bytes = vec![0u8; SECP256K1_SIGNATURE_LENGTH];
-        let sig1 = AASignature::from_bytes(&sig1_bytes).unwrap();
+        let sig1 = TempoSignature::from_bytes(&sig1_bytes).unwrap();
         assert_eq!(sig1.signature_type(), SignatureType::Secp256k1);
 
         // P256
         let mut sig2_bytes = vec![SIGNATURE_TYPE_P256];
         sig2_bytes.extend_from_slice(&[0u8; P256_SIGNATURE_LENGTH]);
-        let sig2 = AASignature::from_bytes(&sig2_bytes).unwrap();
+        let sig2 = TempoSignature::from_bytes(&sig2_bytes).unwrap();
         assert_eq!(sig2.signature_type(), SignatureType::P256);
 
         // WebAuthn
         let mut sig3_bytes = vec![SIGNATURE_TYPE_WEBAUTHN];
         sig3_bytes.extend_from_slice(&[0u8; 200]);
-        let sig3 = AASignature::from_bytes(&sig3_bytes).unwrap();
+        let sig3 = TempoSignature::from_bytes(&sig3_bytes).unwrap();
         assert_eq!(sig3.signature_type(), SignatureType::WebAuthn);
     }
 
@@ -1128,7 +1130,7 @@ mod tests {
             input: Bytes::from(vec![1, 2, 3, 4]),
         };
 
-        let tx = TxAA {
+        let tx = TempoTransaction {
             chain_id: 1,
             fee_token: Some(address!("0000000000000000000000000000000000000001")),
             max_priority_fee_per_gas: 1000000000,
@@ -1142,7 +1144,7 @@ mod tests {
             valid_before: Some(1000000),
             valid_after: Some(500000),
             key_authorization: None,
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
         };
 
         // Encode
@@ -1150,7 +1152,7 @@ mod tests {
         tx.encode(&mut buf);
 
         // Decode
-        let decoded = TxAA::decode(&mut buf.as_slice()).unwrap();
+        let decoded = TempoTransaction::decode(&mut buf.as_slice()).unwrap();
 
         // Verify fields
         assert_eq!(decoded.chain_id, tx.chain_id);
@@ -1180,7 +1182,7 @@ mod tests {
             input: Bytes::new(),
         };
 
-        let tx = TxAA {
+        let tx = TempoTransaction {
             chain_id: 1,
             fee_token: None,
             max_priority_fee_per_gas: 1000000000,
@@ -1194,7 +1196,7 @@ mod tests {
             valid_before: Some(1000),
             valid_after: None,
             key_authorization: None,
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
         };
 
         // Encode
@@ -1202,7 +1204,7 @@ mod tests {
         tx.encode(&mut buf);
 
         // Decode
-        let decoded = TxAA::decode(&mut buf.as_slice()).unwrap();
+        let decoded = TempoTransaction::decode(&mut buf.as_slice()).unwrap();
 
         // Verify fields
         assert_eq!(decoded.chain_id, tx.chain_id);
@@ -1241,7 +1243,7 @@ mod tests {
         };
 
         // Test 1: Protocol nonce (key 0)
-        let tx1 = TxAA {
+        let tx1 = TempoTransaction {
             nonce_key: U256::ZERO,
             nonce: 1,
             calls: vec![dummy_call.clone()],
@@ -1252,7 +1254,7 @@ mod tests {
         assert_eq!(tx1.nonce_key, U256::ZERO);
 
         // Test 2: User nonce (key 1, nonce 0) - first transaction in parallel sequence
-        let tx2 = TxAA {
+        let tx2 = TempoTransaction {
             nonce_key: U256::from(1),
             nonce: 0,
             calls: vec![dummy_call.clone()],
@@ -1263,7 +1265,7 @@ mod tests {
         assert_eq!(tx2.nonce_key, U256::from(1));
 
         // Test 3: Different nonce key (key 42) - independent parallel sequence
-        let tx3 = TxAA {
+        let tx3 = TempoTransaction {
             nonce_key: U256::from(42),
             nonce: 10,
             calls: vec![dummy_call.clone()],
@@ -1275,13 +1277,13 @@ mod tests {
 
         // Test 4: Verify nonce independence between different keys
         // Transactions with same nonce but different keys are independent
-        let tx4a = TxAA {
+        let tx4a = TempoTransaction {
             nonce_key: U256::from(1),
             nonce: 100,
             calls: vec![dummy_call.clone()],
             ..Default::default()
         };
-        let tx4b = TxAA {
+        let tx4b = TempoTransaction {
             nonce_key: U256::from(2),
             nonce: 100,
             calls: vec![dummy_call],
@@ -1303,7 +1305,7 @@ mod tests {
             input: Bytes::new(),
         };
 
-        let tx = TxAA {
+        let tx = TempoTransaction {
             chain_id: 1,
             max_priority_fee_per_gas: 1000000000,
             max_fee_per_gas: 2000000000,
@@ -1332,7 +1334,7 @@ mod tests {
             input: Bytes::new(),
         };
 
-        let tx = TxAA {
+        let tx = TempoTransaction {
             max_priority_fee_per_gas: 1000000000,
             max_fee_per_gas: 2000000000,
             calls: vec![dummy_call],
@@ -1364,7 +1366,7 @@ mod tests {
         };
 
         // Transaction with fee_token = None
-        let tx_no_token = TxAA {
+        let tx_no_token = TempoTransaction {
             chain_id: 1,
             fee_token: None,
             max_priority_fee_per_gas: 1000000000,
@@ -1380,13 +1382,13 @@ mod tests {
         };
 
         // Transaction with fee_token = token1
-        let tx_token1 = TxAA {
+        let tx_token1 = TempoTransaction {
             fee_token: Some(token1),
             ..tx_no_token.clone()
         };
 
         // Transaction with fee_token = token2
-        let tx_token2 = TxAA {
+        let tx_token2 = TempoTransaction {
             fee_token: Some(token2),
             ..tx_no_token.clone()
         };
@@ -1441,7 +1443,7 @@ mod tests {
             input: Bytes::new(),
         };
 
-        let tx = TxAA {
+        let tx = TempoTransaction {
             chain_id: 1,
             fee_token: None,
             max_priority_fee_per_gas: 1000000000,
@@ -1457,7 +1459,7 @@ mod tests {
 
         // The fee_payer_signature_hash should start with the magic byte
         // We can't directly inspect the hash construction, but we can verify it's different
-        // from the sender signature hash which uses AA_TX_TYPE_ID (0x76)
+        // from the sender signature hash which uses TEMPO_TX_TYPE_ID (0x76)
         let sender_hash = tx.signature_hash();
         let fee_payer_hash = tx.fee_payer_signature_hash(sender);
 
@@ -1482,7 +1484,7 @@ mod tests {
         };
 
         // Transaction WITHOUT fee_payer, fee_token = None
-        let tx_no_payer_no_token = TxAA {
+        let tx_no_payer_no_token = TempoTransaction {
             chain_id: 1,
             fee_token: None,
             max_priority_fee_per_gas: 1000000000,
@@ -1494,19 +1496,19 @@ mod tests {
             fee_payer_signature: None, // No fee payer
             valid_before: Some(1000),
             valid_after: None,
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             access_list: Default::default(),
             key_authorization: None,
         };
 
         // Transaction WITHOUT fee_payer, fee_token = token1
-        let tx_no_payer_token1 = TxAA {
+        let tx_no_payer_token1 = TempoTransaction {
             fee_token: Some(token1),
             ..tx_no_payer_no_token.clone()
         };
 
         // Transaction WITHOUT fee_payer, fee_token = token2
-        let tx_no_payer_token2 = TxAA {
+        let tx_no_payer_token2 = TempoTransaction {
             fee_token: Some(token2),
             ..tx_no_payer_no_token.clone()
         };
@@ -1544,7 +1546,7 @@ mod tests {
         };
 
         // Transaction with fee_token
-        let tx_with_token = TxAA {
+        let tx_with_token = TempoTransaction {
             chain_id: 1,
             fee_token: Some(token),
             max_priority_fee_per_gas: 1000000000,
@@ -1556,13 +1558,13 @@ mod tests {
             fee_payer_signature: Some(Signature::test_signature()),
             valid_before: Some(1000),
             valid_after: None,
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             access_list: Default::default(),
             key_authorization: None,
         };
 
         // Transaction without fee_token
-        let tx_without_token = TxAA {
+        let tx_without_token = TempoTransaction {
             fee_token: None,
             ..tx_with_token.clone()
         };
@@ -1588,8 +1590,8 @@ mod tests {
         );
 
         // Decode and verify
-        let decoded_with = TxAA::decode(&mut buf_with.as_slice()).unwrap();
-        let decoded_without = TxAA::decode(&mut buf_without.as_slice()).unwrap();
+        let decoded_with = TempoTransaction::decode(&mut buf_with.as_slice()).unwrap();
+        let decoded_without = TempoTransaction::decode(&mut buf_without.as_slice()).unwrap();
 
         assert_eq!(decoded_with.fee_token, Some(token));
         assert_eq!(decoded_without.fee_token, None);
@@ -1608,7 +1610,7 @@ mod tests {
         };
 
         // Scenario 1: No fee payer, no token
-        let tx_no_payer_no_token = TxAA {
+        let tx_no_payer_no_token = TempoTransaction {
             chain_id: 1,
             fee_token: None,
             max_priority_fee_per_gas: 1000000000,
@@ -1620,25 +1622,25 @@ mod tests {
             fee_payer_signature: None,
             valid_before: Some(1000),
             valid_after: None,
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             access_list: Default::default(),
             key_authorization: None,
         };
 
         // Scenario 2: No fee payer, with token
-        let tx_no_payer_with_token = TxAA {
+        let tx_no_payer_with_token = TempoTransaction {
             fee_token: Some(token),
             ..tx_no_payer_no_token.clone()
         };
 
         // Scenario 3: With fee payer, no token
-        let tx_with_payer_no_token = TxAA {
+        let tx_with_payer_no_token = TempoTransaction {
             fee_payer_signature: Some(Signature::test_signature()),
             ..tx_no_payer_no_token.clone()
         };
 
         // Scenario 4: With fee payer, with token
-        let tx_with_payer_with_token = TxAA {
+        let tx_with_payer_with_token = TempoTransaction {
             fee_token: Some(token),
             fee_payer_signature: Some(Signature::test_signature()),
             ..tx_no_payer_no_token.clone()
@@ -1679,7 +1681,7 @@ mod tests {
         };
 
         // Create transaction WITHOUT key_authorization (old format)
-        let tx_without = TxAA {
+        let tx_without = TempoTransaction {
             chain_id: 1,
             fee_token: Some(address!("0000000000000000000000000000000000000001")),
             max_priority_fee_per_gas: 1000000000,
@@ -1693,7 +1695,7 @@ mod tests {
             valid_before: Some(1000000),
             valid_after: Some(500000),
             key_authorization: None, // No key authorization
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
         };
 
         // Encode the transaction
@@ -1701,7 +1703,7 @@ mod tests {
         tx_without.encode(&mut buf_without);
 
         // Decode it back
-        let decoded_without = TxAA::decode(&mut buf_without.as_slice()).unwrap();
+        let decoded_without = TempoTransaction::decode(&mut buf_without.as_slice()).unwrap();
 
         // Verify it matches
         assert_eq!(decoded_without.key_authorization, None);
@@ -1721,7 +1723,7 @@ mod tests {
         }
         .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
 
-        let tx_with = TxAA {
+        let tx_with = TempoTransaction {
             key_authorization: Some(key_auth.clone()),
             ..tx_without.clone()
         };
@@ -1731,7 +1733,7 @@ mod tests {
         tx_with.encode(&mut buf_with);
 
         // Decode it back
-        let decoded_with = TxAA::decode(&mut buf_with.as_slice()).unwrap();
+        let decoded_with = TempoTransaction::decode(&mut buf_with.as_slice()).unwrap();
 
         // Verify the key_authorization is preserved
         assert!(decoded_with.key_authorization.is_some());
@@ -1754,7 +1756,7 @@ mod tests {
         // Test that an old decoder (simulated by truncating at the right position)
         // can still decode a transaction without key_authorization
         // This simulates backwards compatibility with old code that doesn't know about key_authorization
-        let decoded_old_format = TxAA::decode(&mut buf_without.as_slice()).unwrap();
+        let decoded_old_format = TempoTransaction::decode(&mut buf_without.as_slice()).unwrap();
         assert_eq!(decoded_old_format.key_authorization, None);
     }
 
@@ -1767,7 +1769,7 @@ mod tests {
             input: Bytes::new(),
         };
 
-        let tx = TxAA {
+        let tx = TempoTransaction {
             chain_id: 0,
             fee_token: None,
             max_priority_fee_per_gas: 0,
@@ -1781,11 +1783,11 @@ mod tests {
             valid_before: None,
             valid_after: None,
             key_authorization: None, // No key_authorization
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
         };
 
         let signature =
-            AASignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
         let signed = AASigned::new_unhashed(tx, signature);
 
         // Test direct RLP encoding/decoding
@@ -1799,8 +1801,8 @@ mod tests {
     }
 
     #[test]
-    fn test_txaa_envelope_roundtrip_without_key_auth() {
-        // Test that TxAA in envelope works without key_authorization
+    fn test_tempo_transaction_envelope_roundtrip_without_key_auth() {
+        // Test that TempoTransaction in envelope works without key_authorization
         use crate::TempoTxEnvelope;
         use alloy_eips::eip2718::{Decodable2718, Encodable2718};
 
@@ -1810,7 +1812,7 @@ mod tests {
             input: Bytes::new(),
         };
 
-        let tx = TxAA {
+        let tx = TempoTransaction {
             chain_id: 0,
             fee_token: None,
             max_priority_fee_per_gas: 0,
@@ -1824,11 +1826,11 @@ mod tests {
             valid_before: None,
             valid_after: None,
             key_authorization: None, // No key_authorization
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
         };
 
         let signature =
-            AASignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
         let signed = AASigned::new_unhashed(tx, signature);
         let envelope = TempoTxEnvelope::AA(signed);
 
@@ -1879,15 +1881,15 @@ mod tests {
     }
 
     #[test]
-    fn test_txaa_decode_rejects_malformed_rlp() {
-        // Test that TxAA decoding rejects RLP with mismatched header length
+    fn test_tempo_transaction_decode_rejects_malformed_rlp() {
+        // Test that TempoTransaction decoding rejects RLP with mismatched header length
         let call = Call {
             to: TxKind::Call(address!("0000000000000000000000000000000000000002")),
             value: U256::from(1000),
             input: Bytes::from(vec![1, 2, 3, 4]),
         };
 
-        let tx = TxAA {
+        let tx = TempoTransaction {
             chain_id: 1,
             fee_token: Some(address!("0000000000000000000000000000000000000001")),
             max_priority_fee_per_gas: 1000000000,
@@ -1901,7 +1903,7 @@ mod tests {
             valid_before: Some(1000000),
             valid_after: Some(500000),
             key_authorization: None,
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
         };
 
         // Encode the transaction normally
@@ -1912,7 +1914,7 @@ mod tests {
         let original_len = buf.len();
         buf.truncate(original_len - 5); // Remove 5 bytes from the end
 
-        let result = TxAA::decode(&mut buf.as_slice());
+        let result = TempoTransaction::decode(&mut buf.as_slice());
         assert!(
             result.is_err(),
             "Decoding should fail when data is truncated"

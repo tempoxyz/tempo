@@ -1,7 +1,7 @@
 use crate::{
-    aa_2d_pool::AA2dNonceKeys,
     amm::AmmLiquidityCache,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+    tt_2d_pool::AA2dNonceKeys,
 };
 use alloy_consensus::Transaction;
 
@@ -23,7 +23,7 @@ use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, compute_keys_slot,
     nonce::slots, storage::double_mapping_slot,
 };
-use tempo_primitives::{subblock::has_sub_block_nonce_key_prefix, transaction::TxAA};
+use tempo_primitives::{subblock::has_sub_block_nonce_key_prefix, transaction::TempoTransaction};
 use tempo_revm::TempoStateAccess;
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
@@ -192,7 +192,10 @@ where
     }
 
     /// Validates AA transaction time-bound conditionals
-    fn ensure_valid_conditionals(&self, tx: &TxAA) -> Result<(), TempoPoolTransactionError> {
+    fn ensure_valid_conditionals(
+        &self,
+        tx: &TempoTransaction,
+    ) -> Result<(), TempoPoolTransactionError> {
         // Reject AA txs where `valid_before` is too close to current time (or already expired).
         if let Some(valid_before) = tx.valid_before {
             // Uses tip_timestamp, as if the node is lagging lagging, the maintenance task will evict expired txs.
@@ -580,13 +583,13 @@ mod tests {
     ) -> TempoPooledTransaction {
         use alloy_primitives::{Signature, TxKind, address};
         use tempo_primitives::transaction::{
-            TxAA,
-            aa_signature::{AASignature, PrimitiveSignature},
-            aa_signed::AASigned,
-            account_abstraction::Call,
+            TempoTransaction,
+            tempo_transaction::Call,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
         };
 
-        let tx_aa = TxAA {
+        let tx_aa = TempoTransaction {
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 2_000_000_000,
@@ -603,13 +606,13 @@ mod tests {
             valid_after,
             valid_before,
             access_list: Default::default(),
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             key_authorization: None,
         };
 
         let signed_tx = AASigned::new_unhashed(
             tx_aa,
-            AASignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
         );
         let envelope: TempoTxEnvelope = signed_tx.into();
         let recovered = envelope.try_into_recovered().unwrap();
@@ -773,10 +776,10 @@ mod tests {
             tip403_registry::{ITIP403Registry, PolicyData, slots as tip403_slots},
         };
         use tempo_primitives::transaction::{
-            TxAA,
-            aa_signature::{AASignature, PrimitiveSignature},
-            aa_signed::AASigned,
-            account_abstraction::Call,
+            TempoTransaction,
+            tempo_transaction::Call,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
         };
 
         // Use a valid TIP20 token address (PATH_USD with token_id=1)
@@ -784,7 +787,7 @@ mod tests {
         let policy_id: u64 = 2;
 
         // Create AA transaction with valid TIP20 fee_token
-        let tx_aa = TxAA {
+        let tx_aa = TempoTransaction {
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 2_000_000_000,
@@ -801,13 +804,13 @@ mod tests {
             valid_after: None,
             valid_before: None,
             access_list: Default::default(),
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             key_authorization: None,
         };
 
         let signed_tx = AASigned::new_unhashed(
             tx_aa,
-            AASignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
         );
         let envelope: TempoTxEnvelope = signed_tx.into();
         let recovered = envelope.try_into_recovered().unwrap();

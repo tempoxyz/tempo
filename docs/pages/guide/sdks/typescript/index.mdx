@@ -71,7 +71,7 @@ Next, we will configure a [Viem Client](https://viem.sh/get-started/clients/cust
 ### Use Viem Actions
 
 Once we have configured our Viem client with Tempo, we can then use regular Viem actions (e.g. `sendTransactionSync`) 
-that are decorated with [Tempo Transaction](/documentation/protocol/transactions/spec-account-abstraction) properties
+that are decorated with [Tempo Transaction](/documentation/protocol/transactions/spec-tempo-transaction) properties
 like `calls`, `feePayer`, `nonceKey` and more!
 
 :::code-group
@@ -261,7 +261,7 @@ Check out the [TanStack Query docs](https://tanstack.com/query/latest/docs/frame
 ### Use Wagmi Hooks
 
 Now that everything is set up, we can now use regular Wagmi Hooks (e.g. `useSendTransactionSync`) 
-that are decorated with [Tempo properties](/documentation/protocol/transactions/spec-account-abstraction) 
+that are decorated with [Tempo properties](/documentation/protocol/transactions/spec-tempo-transaction) 
 like `calls` (batch transactions), `feePayer` (fee sponsorship), `nonceKey` (concurrent transactions) and more!
 
 :::code-group
