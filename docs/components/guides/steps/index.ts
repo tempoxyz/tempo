@@ -27,6 +27,10 @@ export { SendPaymentWithIssuedToken } from './payments/SendPaymentWithIssuedToke
 export {
   CreateSponsorAccount,
   FundSponsorAccount,
+  SendRelayerSponsoredPayment,
   SendSponsoredPayment,
 } from './payments/SponsorUserFees'
+export { ClaimReward } from './rewards/ClaimReward'
+export { OptInToRewards } from './rewards/OptInToRewards'
+export { StartReward } from './rewards/StartReward'
 export type { DemoStepProps } from './types'
