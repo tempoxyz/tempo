@@ -1,10 +1,12 @@
 import { Callout } from 'vocs/components'
+import LucideFileText from '~icons/lucide/file-text'
+import * as Card from "../../components/Card.tsx"
 
 # Remittances
 
-<Callout type="info" title="Executive Summary">
-Stablecoins can help financial institutions, neobanks, and remittance providers deliver faster, cheaper, and more predictable cross-border payments by removing dependence on correspondent banking networks and pre-funded accounts. This improves the customer experience while creating meaningful operational efficiencies for the organizations that move money across borders.
-</Callout>
+<Card.Notice title="Executive Summary" icon={LucideFileText}>
+  Stablecoins can help financial institutions, neobanks, and remittance providers deliver faster, cheaper, and more predictable cross-border payments by removing dependence on correspondent banking networks and pre-funded accounts. This improves the customer experience while creating meaningful operational efficiencies for the organizations that move money across borders.
+</Card.Notice>
 
 Cross-border payments are notoriously slow, expensive, and unpredictable. A single transfer often passes through multiple intermediaries, each adding cost, introducing delays, and increasing the risk of errors. Newer "instant" cross-border services improve the user experience, but typically require remittance companies to hold liquidity on both sides of a payment corridor, which increases operational and capital costs.
 

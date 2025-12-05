@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Instance } from 'tempo.ts/prool'
-import { ModuleResolutionKind } from 'typescript'
+import { collapseTextChangeRangesAcrossMultipleVersions, ModuleResolutionKind } from 'typescript'
 import autoImport from 'unplugin-auto-import/vite'
 import iconsResolver from 'unplugin-icons/resolver'
 import icons from 'unplugin-icons/vite'
@@ -64,8 +64,12 @@ export default defineConfig({
               link: '/guide/quickstart/integrate-tempo',
             },
             {
-              text: 'Use Tempo Transactions',
-              link: '/guide/tempo-transaction',
+              text: 'Connect to the Network',
+              link: '/guide/quickstart/connection-details',
+            },
+            {
+              text: 'Get Faucet Funds',
+              link: '/guide/quickstart/faucet',
             },
             {
               text: 'EVM Differences',
@@ -74,14 +78,6 @@ export default defineConfig({
             {
               text: 'Predeployed Contracts',
               link: '/guide/quickstart/predeployed-contracts',
-            },
-            {
-              text: 'TIP-20 Standard',
-              link: '/guide/quickstart/tip20',
-            },
-            {
-              text: 'Faucet',
-              link: '/guide/quickstart/faucet',
             },
           ],
         },
@@ -109,6 +105,10 @@ export default defineConfig({
                   link: '/guide/use-accounts/add-funds',
                 },
               ],
+            },
+            {
+              text: 'Use Tempo Transactions',
+              link: '/guide/tempo-transaction',
             },
             {
               text: 'Make Payments',

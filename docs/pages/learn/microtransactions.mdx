@@ -1,10 +1,12 @@
 import { Callout } from 'vocs/components'
+import LucideFileText from '~icons/lucide/file-text'
+import * as Card from "../../components/Card.tsx"
 
 # Microtransactions
 
-<Callout type="info" title="Executive Summary">
-Stablecoins unlock microtransaction-based pricing models that legacy payment rails simply cannot support. With real-time, sub-cent payments and 24/7 global settlement, developers can build usage-based billing, pay-per-use APIs, and machine-to-machine services that settle instantly without the fixed fees or delays of traditional payment systems.
-</Callout>
+<Card.Notice title="Executive Summary" icon={LucideFileText}>
+  Stablecoins unlock microtransaction-based pricing models that legacy payment rails simply cannot support. With real-time, sub-cent payments and 24/7 global settlement, developers can build usage-based billing, pay-per-use APIs, and machine-to-machine services that settle instantly without the fixed fees or delays of traditional payment systems.
+</Card.Notice>
 
 
 Digital services are increasingly shifting toward usage-based models, where users pay only for what they consume. This includes everything from API calls and AI inference requests to streaming content, and IoT services. Yet traditional payment rails were never designed for extremely small, frequent payments, making microtransactions impractical or impossible for most businesses today.

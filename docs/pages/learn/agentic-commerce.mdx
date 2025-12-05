@@ -1,11 +1,12 @@
 import { Callout } from 'vocs/components'
+import LucideFileText from '~icons/lucide/file-text'
+import * as Card from "../../components/Card.tsx"
 
 # Agentic Commerce
 
-<Callout type="info" title="Executive Summary">
-As autonomous agents begin taking on everything from reordering groceries to buying digital services, they need real-time, programmable money. Stablecoins provide instant global settlement and built-in programmability, making stablecoins the natural financial infrastructure for the next generation of autonomous systems.
-</Callout>
-
+<Card.Notice title="Executive Summary" icon={LucideFileText}>
+  As autonomous agents begin taking on everything from reordering groceries to buying digital services, they need real-time, programmable money. Stablecoins provide instant global settlement and built-in programmability, making stablecoins the natural financial infrastructure for the next generation of autonomous systems.
+</Card.Notice>
 
 Autonomous agents are increasingly able to purchase goods and services, negotiate discounts, and manage everyday tasks without human input. An agent might reorder groceries when supplies run low, find better deals on household items, pay for digital services, manage streaming or app subscriptions, or book travel based on preferences and schedules.
 
@@ -37,4 +38,3 @@ As agentic commerce begins to scale, the need for a more native payment rail bec
 Autonomous agents require payment rails that are as programmable and tireless as they are. Tempo offers the throughput and sub-second settlement needed to support agent fleets at scale, without the friction of traditional card networks. If you are architecting payment flows for autonomous systems, we can help you understand how to implement automated wallet provisioning and policy-based spending controls directly into your agent's code.
 
 If you're interested in learning more, please email us at partners@tempo.xyz.
-
