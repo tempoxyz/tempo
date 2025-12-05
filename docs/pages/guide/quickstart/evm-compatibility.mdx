@@ -1,32 +1,31 @@
-# EVM Compatibility
+# EVM Differences
 
-Tempo is fully compatible with the Ethereum Virtual Machine (EVM). Developers can deploy and interact with smart contracts using the same tools, languages, and frameworks they use on Ethereum, such as Solidity, Foundry, and Hardhat.
+Tempo is fully compatible with the Ethereum Virtual Machine (EVM), targeting the **Osaka** EVM hard fork. Developers can deploy and interact with smart contracts using the same tools, languages, and frameworks they use on Ethereum, such as Solidity, Foundry, and Hardhat.
 
 While the execution environment mirrors Ethereum's, Tempo introduces some differences optimized for payments, described below.
 
-## Quick Reference
 
-Tempo targets the **Osaka** EVM hard fork with specific differences in execution behavior.
+### Existing Ethereum Wallet & RPC Compatibility
 
-| Area | Ethereum | Tempo |
-|------|----------|-------|
-| **Native token** | ETH, volatile pricing | USD stablecoins, stable pricing with 6 decimals |
-| **Fee market** | EIP-1559 dynamic base fee | Fixed base fee for predictable costs |
-| **Token standard** | ERC-20 (flexible decimals) | TIP-20 (standardized 6 decimals, enhanced features) |
-| **`PREVRANDAO`** | Randomness from beacon chain | Always `0`; use VRF or oracle for randomness |
-| **Payment features** | Contract-level implementation | Protocol-level payment lanes, memos, policies |
+If you are using a wallet that does not yet support Tempo Transactions, you can integrate with Tempo using standard RPC calls. This is not recommended as it is not as efficient as using Tempo Transactions.
 
-## Consensus & Finality
+<Callout type="warning">
+This integration path is designed for compatibility only and comes with limited functionality. We strongly recommend the native transaction type above for production use.
+</Callout>
 
-Tempo uses **Simplex BFT consensus** with a permissioned validator set at launch, providing deterministic finality in approximately 06 seconds, unlike Ethereum's finality gadget which takes approximately 12 minutes.
+### JSON-RPC
 
-Block times are  targeted at ~0.5 seconds compared to Ethereum's ~12 second slots.
+Tempo supports all Ethereum JSON-RPC methods out of the box. 
 
-## Fee Market & Native Token
+### Handling ETH Balance Checks
 
-### No Native Token
+Many wallets and applications check a user's "native account balance" before letting them complete some action. In this scenario, you might see an error message like "Insufficient balance".
 
-Tempo does not have a native token like ETH. Instead, the protocol uses USD stablecoins for all fees and balances. This has several important implications:
+This stems from the return value of the `eth_getBalance` RPC method. When a wallet calls this method, it expects a hex string representing the "native token balance", hard-coded to be represented as an 18-decimal place number.
+
+On Tempo, the `eth_getBalance` method returns a hex string representing an extremely large number. Specifically it returns: `0x9612084f0316e0ebd5182f398e5195a51b5ca47667d4c9b26c9b26c9b26c9b2` which is represented in decimals as 4.242424242424242e+75.
+
+Our recommendation to wallets and to applications using this method is to remove this balance check, and to not represent any "native balance" in your user's UI. This will allow users to complete actions without being blocked by balance checks.
 
 | Feature | Behavior on Tempo |
 |---------|-------------------|
@@ -34,23 +33,34 @@ Tempo does not have a native token like ETH. Instead, the protocol uses USD stab
 | **`BALANCE` and `SELFBALANCE` opcodes** | Do not return native token balance (use TIP-20 `balanceOf` instead) |
 | **Transaction fees** | Paid in supported USD-denominated TIP-20 tokens |
 
-### Stablecoin Fees
 
-Users can pay transaction fees in any supported USD-denominated TIP-20 token with sufficient liquidity. The protocol's [Fee AMM](/documentation/protocol/fees/spec-fee-amm) automatically converts your chosen stablecoin to the validator's preferred token at the end of each block.
+### Specifying a Native Token Currency Symbol
 
-**Key benefits:**
-- Predictable costs in USD terms (fixed base fee, no volatility)
-- No need to hold a separate gas token
-- Simplified treasury management with single-currency operations
+Sometimes wallets will need to specify the currency symbol for the native token. On Tempo, there is no native token, but fees are denominated in USD. So, we recommend using the currency symbol "USD".
 
-## TIP-20 Token Standard
+### Default Fee Token
 
-Tempo uses [TIP-20](/documentation/protocol/tip20/overview) as its primary token standard, extending ERC-20 with payment-specific features:
+Since there is no native token, Tempo has implemented a cascading system of preferences for what the "default" is when submitting a regular Ethereum transaction type. This preference system is specified [here](/documentation/protocol/fees/spec-fee#fee-token-preferences) in detail, but in this scenario we can focus specifically on how defaults get set for regular Ethereum transaction types where there is no user preference set.
 
-- **6 decimal precision** - All TIP-20 tokens use 6 decimals for consistency
-- **Memo support** - Attach payment references with `transferWithMemo()`
-- **Transfer policies** - Built-in compliance via allowlists/blocklists
-- **Role-based permissions** - Separate mint, burn, pause, and admin roles
-- **Currency awareness** - Tokens declare their currency (e.g., "USD")
+There are two cases to consider.
 
-TIP-20 tokens are fully backward-compatible with ERC-20 interfaces. Standard ERC-20 functions (`transfer`, `approve`, `transferFrom`) work as expected.
+#### **TIP-20 Tokens**
+
+If the user is calling a method on a TIP-20 token (e.g., `transfer`), the default fee token is that token itself. For example, if the user is calling the `transfer` method on a TIP-20 token with a symbol of "USDC", the default fee token would be "USDC".
+
+Importantly, note that the `amount` field in this case is sent in full. So, if the user is calling the `transfer` method on a TIP-20 token with a symbol of "USDC" with the `amount` field set to 1000, the full amount of the token will be transferred **and** the sender's balance will be reduced by the amount spent in fees. So, the recipient will receive 1000 USDC.
+
+#### **Other Contracts**
+
+However, if the user is calling a contract that is not a TIP-20 token, the transaction will fail.
+
+If a wallet wants to submit a non-TIP20 transaction without having to submit the above transaction, we recommend investing in using [Tempo Transactions](/guide/quickstart/integrate-tempo#tempo-transactions) instead.
+
+## Consensus & Finality
+
+Tempo uses **Simplex BFT consensus** with a permissioned validator set at launch, providing deterministic finality in approximately 06 seconds, unlike Ethereum's finality gadget which takes approximately 12 minutes.
+
+Block times are  targeted at ~0.5 seconds compared to Ethereum's ~12 second slots.
+
+
+
