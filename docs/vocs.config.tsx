@@ -613,6 +613,15 @@ export default defineConfig({
                 ],
               },
               {
+                text: 'Faucet',
+                items: [
+                  {
+                    text: 'fund',
+                    link: '/sdk/typescript/viem/faucet.fund',
+                  },
+                ],
+              },
+              {
                 text: 'Policy',
                 items: [
                   {
@@ -661,16 +670,8 @@ export default defineConfig({
                 text: 'Reward',
                 items: [
                   {
-                    text: 'cancel',
-                    link: '/sdk/typescript/viem/reward.cancel',
-                  },
-                  {
                     text: 'claim',
                     link: '/sdk/typescript/viem/reward.claim',
-                  },
-                  {
-                    text: 'getStream',
-                    link: '/sdk/typescript/viem/reward.getStream',
                   },
                   {
                     text: 'getTotalPerSecond',
@@ -975,6 +976,15 @@ export default defineConfig({
                   {
                     text: 'watchSetUserToken',
                     link: '/sdk/typescript/wagmi/actions/fee.watchSetUserToken',
+                  },
+                ],
+              },
+              {
+                text: 'Faucet',
+                items: [
+                  {
+                    text: 'fund',
+                    link: '/sdk/typescript/wagmi/actions/faucet.fund',
                   },
                 ],
               },
@@ -1313,6 +1323,15 @@ export default defineConfig({
                   {
                     text: 'useWatchSetUserToken',
                     link: '/sdk/typescript/wagmi/hooks/fee.useWatchSetUserToken',
+                  },
+                ],
+              },
+              {
+                text: 'Faucet',
+                items: [
+                  {
+                    text: 'useFund',
+                    link: '/sdk/typescript/wagmi/hooks/faucet.useFund',
                   },
                 ],
               },
