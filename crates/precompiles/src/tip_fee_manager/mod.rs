@@ -13,7 +13,7 @@ use crate::{
     storage::{Mapping, PrecompileStorageProvider, Slot, StorageKey, VecSlotExt},
     tip_fee_manager::amm::{Pool, compute_amount_out},
     tip20::{
-        ITIP20, TIP20Token, address_to_token_id_unchecked, is_tip20, token_id_to_address,
+        ITIP20, TIP20Token, address_to_token_id_unchecked, is_tip20_prefix, token_id_to_address,
         validate_usd_currency,
     },
 };
@@ -114,7 +114,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         call: IFeeManager::setValidatorTokenCall,
         beneficiary: Address,
     ) -> Result<()> {
-        if !is_tip20(call.token) {
+        if !is_tip20_prefix(call.token) {
             return Err(FeeManagerError::invalid_token().into());
         }
 
@@ -149,7 +149,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         sender: Address,
         call: IFeeManager::setUserTokenCall,
     ) -> Result<()> {
-        if !is_tip20(call.token) {
+        if !is_tip20_prefix(call.token) {
             return Err(FeeManagerError::invalid_token().into());
         }
 
@@ -726,13 +726,13 @@ mod tests {
     }
 
     #[test]
-    fn test_is_tip20_token() {
+    fn test_is_tip20_prefix() {
         let token_id = rand::random::<u64>();
         let token = token_id_to_address(token_id);
-        assert!(is_tip20(token));
+        assert!(is_tip20_prefix(token));
 
         let token = Address::random();
-        assert!(!is_tip20(token));
+        assert!(!is_tip20_prefix(token));
     }
 
     #[test]

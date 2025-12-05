@@ -4,7 +4,7 @@ use alloy_primitives::Bytes;
 use reth_errors::ProviderError;
 use reth_evm::revm::context::result::EVMError;
 use reth_node_core::rpc::result::rpc_err;
-use reth_rpc_eth_api::{AsEthApiError, TransactionConversionError};
+use reth_rpc_eth_api::AsEthApiError;
 use reth_rpc_eth_types::{
     EthApiError,
     error::api::{FromEvmHalt, FromRevert},
@@ -27,12 +27,6 @@ impl From<TempoEthApiError> for jsonrpsee::types::error::ErrorObject<'static> {
 impl From<Infallible> for TempoEthApiError {
     fn from(_: Infallible) -> Self {
         unreachable!()
-    }
-}
-
-impl From<TransactionConversionError> for TempoEthApiError {
-    fn from(_: TransactionConversionError) -> Self {
-        Self::EthApiError(EthApiError::TransactionConversionError)
     }
 }
 
