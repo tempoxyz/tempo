@@ -236,10 +236,34 @@ mod tests {
     };
 
     #[test]
-    fn path_usd_test_selector_coverage() {
+    fn path_usd_test_selector_coverage_pre_allegretto() {
         use crate::test_util::assert_full_coverage;
 
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut path_usd = PathUSD::new(&mut storage);
+
+        path_usd.initialize(Address::ZERO).unwrap();
+
+        let itip20_unsupported =
+            check_selector_coverage(&mut path_usd, ITIP20Calls::SELECTORS, "ITIP20", |s| {
+                ITIP20Calls::name_by_selector(s)
+            });
+
+        let roles_unsupported = check_selector_coverage(
+            &mut path_usd,
+            IRolesAuthCalls::SELECTORS,
+            "IRolesAuth",
+            IRolesAuthCalls::name_by_selector,
+        );
+
+        assert_full_coverage([itip20_unsupported, roles_unsupported]);
+    }
+
+    #[test]
+    fn path_usd_test_selector_coverage_post_allegretto() {
+        use crate::test_util::assert_full_coverage;
+
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
         let mut path_usd = PathUSD::new(&mut storage);
 
         path_usd.initialize(Address::ZERO).unwrap();
