@@ -158,7 +158,7 @@ mod tests {
 
             assert_eq!(
                 result.unwrap_err(),
-                TempoPrecompileEmut rror::NonceError(NonceError::protocol_nonce_not_supported())
+                TempoPrecompileError::NonceError(NonceError::protocol_nonce_not_supported())
             );
             Ok(())
         })

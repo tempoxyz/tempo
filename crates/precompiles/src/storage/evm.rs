@@ -196,284 +196,308 @@ impl From<EvmInternalsError> for TempoPrecompileError {
     }
 }
 
-// TODO(rusowsky): enable again after migration
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use alloy::primitives::{address, b256, bytes};
-//     use alloy_evm::{EvmEnv, EvmFactory, EvmInternals, revm::context::Host};
-//     use revm::{
-//         database::{CacheDB, EmptyDB},
-//         interpreter::StateLoad,
-//     };
-//     use tempo_evm::TempoEvmFactory;
+#[cfg(test)]
+mod tests {
+    use crate::storage::StorageContext;
 
-//     #[test]
-//     fn test_sstore_sload() -> eyre::Result<()> {
-//         let db = CacheDB::new(EmptyDB::new());
-//         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-//         let ctx = evm.ctx_mut();
-//         let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-//         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+    use super::*;
+    use alloy::primitives::{address, b256, bytes};
+    use alloy_evm::{EvmEnv, EvmFactory, EvmInternals, revm::context::Host};
+    use revm::{
+        database::{CacheDB, EmptyDB},
+        interpreter::StateLoad,
+    };
+    use tempo_evm::TempoEvmFactory;
 
-//         let addr = Address::random();
-//         let key = U256::random();
+    #[test]
+    fn test_sstore_sload() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
-//         let value = U256::random();
+        StorageContext::enter(&mut provider, || {
+            let addr = Address::random();
+            let key = U256::random();
+            let value = U256::random();
 
-//         provider.sstore(addr, key, value)?;
-//         let sload_val = provider.sload(addr, key)?;
+            provider.sstore(addr, key, value)?;
+            let sload_val = provider.sload(addr, key)?;
 
-//         assert_eq!(sload_val, value);
-//         Ok(())
-//     }
+            assert_eq!(sload_val, value);
+            Ok(())
+        })
+    }
 
-//     #[test]
-//     fn test_set_code() -> eyre::Result<()> {
-//         let db = CacheDB::new(EmptyDB::new());
-//         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-//         let ctx = evm.ctx_mut();
-//         let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-//         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+    #[test]
+    fn test_set_code() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
-//         let addr = Address::random();
-//         let code = Bytecode::new_raw(vec![0xff].into());
-//         provider.set_code(addr, code.clone())?;
-//         drop(provider);
+        StorageContext::enter(&mut provider, || {
+            let addr = Address::random();
+            let code = Bytecode::new_raw(vec![0xff].into());
 
-//         let Some(StateLoad { data, is_cold: _ }) = evm.load_account_code(addr) else {
-//             panic!("Failed to load account code")
-//         };
+            provider.set_code(addr, code.clone())?;
+            drop(provider);
 
-//         assert_eq!(data, *code.original_bytes());
-//         Ok(())
-//     }
+            let Some(StateLoad { data, is_cold: _ }) = evm.load_account_code(addr) else {
+                panic!("Failed to load account code")
+            };
 
-// #[test]
-// fn test_with_account_info() -> eyre::Result<()> {
-//     let db = CacheDB::new(EmptyDB::new());
-//     let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-//     let ctx = evm.ctx_mut();
-//     let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-//     let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+            assert_eq!(data, *code.original_bytes());
+            Ok(())
+        })
+    }
 
-//         let address = address!("3000000000000000000000000000000000000003");
+    #[test]
+    fn test_with_account_info() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
-// // Get account info for a new account
-// provider.with_account_info(address, &mut |info| {
-//     // Should be an empty account
-//     assert!(info.balance.is_zero());
-//     assert_eq!(info.nonce, 0);
-//     // Note: load_account_code may return empty bytecode as Some(empty) for new accounts
-//     if let Some(ref code) = info.code {
-//         assert!(code.is_empty(), "New account should have empty code");
-//     }
-// })?;
+        StorageContext::enter(&mut provider, || {
+            let address = Address::random();
 
-//         Ok(())
-//     }
+            // Get account info for a new account
+            provider.with_account_info(address, &mut |info| {
+                // Should be an empty account
+                assert!(info.balance.is_zero());
+                assert_eq!(info.nonce, 0);
+                // Note: load_account_code may return empty bytecode as Some(empty) for new accounts
+                if let Some(ref code) = info.code {
+                    assert!(code.is_empty(), "New account should have empty code");
+                }
+            })?;
 
-//     #[test]
-//     fn test_emit_event() -> eyre::Result<()> {
-//         let db = CacheDB::new(EmptyDB::new());
-//         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-//         let ctx = evm.ctx_mut();
-//         let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-//         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+            Ok(())
+        })
+    }
 
-//         let address = address!("4000000000000000000000000000000000000004");
-//         let topic = b256!("0000000000000000000000000000000000000000000000000000000000000001");
-//         let data = bytes!(
-//             "00000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000001"
-//         );
+    #[test]
+    fn test_emit_event() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
-//         let log_data = LogData::new_unchecked(vec![topic], data);
+        StorageContext::enter(&mut provider, || {
+            let address = Address::random();
+            let topic = b256!("0000000000000000000000000000000000000000000000000000000000000001");
+            let data = bytes!(
+                "00000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000001"
+            );
 
-//         // Should not error even though events can't be emitted from handlers
-//         provider.emit_event(address, log_data)?;
+            let log_data = LogData::new_unchecked(vec![topic], data);
 
-//         Ok(())
-//     }
+            // Should not error even though events can't be emitted from handlers
+            provider.emit_event(address, log_data)?;
 
-//     #[test]
-//     fn test_multiple_storage_operations() -> eyre::Result<()> {
-//         let db = CacheDB::new(EmptyDB::new());
-//         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-//         let ctx = evm.ctx_mut();
-//         let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-//         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+            Ok(())
+        })
+    }
 
-//         let address = address!("5000000000000000000000000000000000000005");
+    #[test]
+    fn test_multiple_storage_operations() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
-//         // Store multiple values
-//         for i in 0..10 {
-//             let key = U256::from(i);
-//             let value = U256::from(i * 100);
-//             provider.sstore(address, key, value)?;
-//         }
+        StorageContext::enter(&mut provider, || {
+            let address = address!("5000000000000000000000000000000000000005");
 
-//         // Verify all values
-//         for i in 0..10 {
-//             let key = U256::from(i);
-//             let expected_value = U256::from(i * 100);
-//             let loaded_value = provider.sload(address, key)?;
-//             assert_eq!(loaded_value, expected_value);
-//         }
+            // Store multiple values
+            for i in 0..10 {
+                let key = U256::from(i);
+                let value = U256::from(i * 100);
+                provider.sstore(address, key, value)?;
+            }
 
-//         Ok(())
-//     }
+            // Verify all values
+            for i in 0..10 {
+                let key = U256::from(i);
+                let expected_value = U256::from(i * 100);
+                let loaded_value = provider.sload(address, key)?;
+                assert_eq!(loaded_value, expected_value);
+            }
 
-//     #[test]
-//     fn test_overwrite_storage() -> eyre::Result<()> {
-//         let db = CacheDB::new(EmptyDB::new());
-//         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-//         let ctx = evm.ctx_mut();
-//         let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-//         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+            Ok(())
+        })
+    }
 
-//         let address = address!("6000000000000000000000000000000000000006");
-//         let key = U256::from(99);
+    #[test]
+    fn test_overwrite_storage() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
-//         // Store initial value
-//         let initial_value = U256::from(111);
-//         provider.sstore(address, key, initial_value)?;
-//         assert_eq!(provider.sload(address, key)?, initial_value);
+        StorageContext::enter(&mut provider, || {
+            let address = Address::random();
+            let key = U256::random();
 
-//         // Overwrite with new value
-//         let new_value = U256::from(999);
-//         provider.sstore(address, key, new_value)?;
-//         assert_eq!(provider.sload(address, key)?, new_value);
+            // Store initial value;
+            let initial_value = U256::random();
+            provider.sstore(address, key, initial_value)?;
+            assert_eq!(provider.sload(address, key)?, initial_value);
 
-//         Ok(())
-//     }
+            // Overwrite with new value;
+            let new_value = U256::random();
+            provider.sstore(address, key, new_value)?;
+            assert_eq!(provider.sload(address, key)?, new_value);
 
-//     #[test]
-//     fn test_different_addresses() -> eyre::Result<()> {
-//         let db = CacheDB::new(EmptyDB::new());
-//         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-//         let ctx = evm.ctx_mut();
-//         let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-//         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+            Ok(())
+        })
+    }
 
-//         let address1 = address!("7000000000000000000000000000000000000001");
-//         let address2 = address!("7000000000000000000000000000000000000002");
-//         let key = U256::from(42);
+    #[test]
+    fn test_different_addresses() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
-//         // Store different values at the same key for different addresses
-//         let value1 = U256::from(100);
-//         let value2 = U256::from(200);
+        StorageContext::enter(&mut provider, || {
+            let address1 = Address::random();
+            let address2 = Address::random();
+            let key = U256::random();
 
-//         provider.sstore(address1, key, value1)?;
-//         provider.sstore(address2, key, value2)?;
+            // Store different values at the same key for different addresses
+            let value1 = U256::random();
+            let value2 = U256::random();
 
-//         // Verify values are independent
-//         assert_eq!(provider.sload(address1, key)?, value1);
-//         assert_eq!(provider.sload(address2, key)?, value2);
+            provider.sstore(address1, key, value1)?;
+            provider.sstore(address2, key, value2)?;
 
-//         Ok(())
-//     }
+            // Verify values are independent
+            assert_eq!(provider.sload(address1, key)?, value1);
+            assert_eq!(provider.sload(address2, key)?, value2);
 
-//     #[test]
-//     fn test_multiple_transient_storage_operations() -> eyre::Result<()> {
-//         let db = CacheDB::new(EmptyDB::new());
-//         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-//         let ctx = evm.ctx_mut();
-//         let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-//         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+            Ok(())
+        })
+    }
 
-//         let address = address!("8000000000000000000000000000000000000001");
+    #[test]
+    fn test_multiple_transient_storage_operations() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
-//         // Store multiple values
-//         for i in 0..10 {
-//             let key = U256::from(i);
-//             let value = U256::from(i * 100);
-//             provider.tstore(address, key, value)?;
-//         }
+        StorageContext::enter(&mut provider, || {
+            let address = address!("8000000000000000000000000000000000000001");
 
-//         // Verify all values
-//         for i in 0..10 {
-//             let key = U256::from(i);
-//             let expected_value = U256::from(i * 100);
-//             let loaded_value = provider.tload(address, key)?;
-//             assert_eq!(loaded_value, expected_value);
-//         }
+            // Store multiple values
+            for i in 0..10 {
+                let key = U256::from(i);
+                let value = U256::from(i * 100);
+                provider.tstore(address, key, value)?;
+            }
 
-//         Ok(())
-//     }
+            // Verify all values
+            for i in 0..10 {
+                let key = U256::from(i);
+                let expected_value = U256::from(i * 100);
+                let loaded_value = provider.tload(address, key)?;
+                assert_eq!(loaded_value, expected_value);
+            }
 
-//     #[test]
-//     fn test_overwrite_transient_storage() -> eyre::Result<()> {
-//         let db = CacheDB::new(EmptyDB::new());
-//         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-//         let ctx = evm.ctx_mut();
-//         let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-//         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+            Ok(())
+        })
+    }
 
-//         let address = address!("9000000000000000000000000000000000000001");
-//         let key = U256::from(99);
+    #[test]
+    fn test_overwrite_transient_storage() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
-//         // Store initial value
-//         let initial_value = U256::from(111);
-//         provider.tstore(address, key, initial_value)?;
-//         assert_eq!(provider.tload(address, key)?, initial_value);
+        StorageContext::enter(&mut provider, || {
+            let address = Address::random();
+            let key = U256::random();
 
-//         // Overwrite with new value
-//         let new_value = U256::from(999);
-//         provider.tstore(address, key, new_value)?;
-//         assert_eq!(provider.tload(address, key)?, new_value);
+            // Store initial value
+            let initial_value = U256::random();
+            provider.tstore(address, key, initial_value)?;
+            assert_eq!(provider.tload(address, key)?, initial_value);
 
-//         Ok(())
-//     }
+            // Overwrite with new value
+            let new_value = U256::random();
+            provider.tstore(address, key, new_value)?;
+            assert_eq!(provider.tload(address, key)?, new_value);
 
-//     #[test]
-//     fn test_transient_storage_different_addresses() -> eyre::Result<()> {
-//         let db = CacheDB::new(EmptyDB::new());
-//         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-//         let ctx = evm.ctx_mut();
-//         let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-//         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+            Ok(())
+        })
+    }
 
-//         let address1 = address!("a000000000000000000000000000000000000001");
-//         let address2 = address!("a000000000000000000000000000000000000002");
-//         let key = U256::from(42);
+    #[test]
+    fn test_transient_storage_different_addresses() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
-//         // Store different values at the same key for different addresses
-//         let value1 = U256::from(100);
-//         let value2 = U256::from(200);
+        StorageContext::enter(&mut provider, || {
+            let address1 = Address::random();
+            let address2 = Address::random();
+            let key = U256::random();
 
-//         provider.tstore(address1, key, value1)?;
-//         provider.tstore(address2, key, value2)?;
+            // Store different values at the same key for different addresses
+            let value1 = U256::random();
+            let value2 = U256::random();
 
-//         // Verify values are independent
-//         assert_eq!(provider.tload(address1, key)?, value1);
-//         assert_eq!(provider.tload(address2, key)?, value2);
+            provider.tstore(address1, key, value1)?;
+            provider.tstore(address2, key, value2)?;
 
-//         Ok(())
-//     }
+            // Verify values are independent
+            assert_eq!(provider.tload(address1, key)?, value1);
+            assert_eq!(provider.tload(address2, key)?, value2);
 
-//     #[test]
-//     fn test_transient_storage_isolation_from_persistent() -> eyre::Result<()> {
-//         let db = CacheDB::new(EmptyDB::new());
-//         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
-//         let ctx = evm.ctx_mut();
-//         let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-//         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+            Ok(())
+        })
+    }
 
-//         let address = address!("b000000000000000000000000000000000000001");
-//         let key = U256::from(123);
-//         let persistent_value = U256::from(456);
-//         let transient_value = U256::from(789);
+    #[test]
+    fn test_transient_storage_isolation_from_persistent() -> eyre::Result<()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
+        let ctx = evm.ctx_mut();
+        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
-//         // Store in persistent storage
-//         provider.sstore(address, key, persistent_value)?;
+        StorageContext::enter(&mut provider, || {
+            let address = Address::random();
+            let key = U256::random();
 
-//         // Store in transient storage with same key
-//         provider.tstore(address, key, transient_value)?;
+            let persistent_value = U256::random();
+            let transient_value = U256::random();
 
-//         // Verify they are independent
-//         assert_eq!(provider.sload(address, key)?, persistent_value);
-//         assert_eq!(provider.tload(address, key)?, transient_value);
+            // Store in persistent storage
+            provider.sstore(address, key, persistent_value)?;
 
-//         Ok(())
-//     }
-// }
+            // Store in transient storage with same key
+            provider.tstore(address, key, transient_value)?;
+
+            // Verify they are independent
+            assert_eq!(provider.sload(address, key)?, persistent_value);
+            assert_eq!(provider.tload(address, key)?, transient_value);
+
+            Ok(())
+        })
+    }
+}
