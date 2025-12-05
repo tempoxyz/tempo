@@ -1038,6 +1038,11 @@ pub(crate) mod tests {
         factory: &mut TIP20Factory<'_, HashMapStorageProvider>,
         admin: Address,
     ) -> Result<Address> {
+        let token_id = factory.token_id_counter()?;
+        if !token_id.is_zero() {
+            return Err(TIP20Error::invalid_quote_token().into());
+        }
+
         factory.create_token(
             admin,
             ITIP20Factory::createTokenCall {
