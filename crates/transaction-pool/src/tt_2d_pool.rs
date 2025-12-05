@@ -234,8 +234,11 @@ impl AA2dPool {
                     let was_pending = existing_tx.is_pending();
                     existing_tx.has_queued_ancestors_or_nonce_gap = queued_ancestors_or_nonce_gap;
 
-                    // if this was previously not pending, record the promotion
-                    if !was_pending && existing_tx.is_pending() {
+                    if was_pending == existing_tx.is_pending() {
+                        // no changes to status, descendants can remain the same
+                        break;
+                    } else if !was_pending {
+                        // record promotion
                         promoted.push(existing_tx.inner.transaction.clone());
                     }
                 }
@@ -2677,7 +2680,12 @@ mod tests {
         let num_txs = ids.len();
         for (seq_id, nonce) in ids {
             let tx = if let Some(valid_after) = rand::random::<Option<u64>>() {
-                create_aa_tx_with_valid_after(seq_id.address, seq_id.nonce_key, nonce, valid_after % 1000)
+                create_aa_tx_with_valid_after(
+                    seq_id.address,
+                    seq_id.nonce_key,
+                    nonce,
+                    valid_after % 1000,
+                )
             } else {
                 create_aa_tx(seq_id.address, seq_id.nonce_key, nonce)
             };
@@ -2710,12 +2718,14 @@ mod tests {
 
             included_txs += ready.len();
 
-            let (pending_before, _) = pool.pending_and_queued_txn_count();
-            let (mut promoted, _) = pool.on_nonce_changes(nonce_changes.clone());
+            let (pending_before, queued_before) = pool.pending_and_queued_txn_count();
+            let (mut promoted, mined) = pool.on_nonce_changes(nonce_changes.clone());
             let promoted_time = pool.on_timestamp_update(time);
             promoted.extend(promoted_time);
-            let (pending_after, _) = pool.pending_and_queued_txn_count();
+            let (pending_after, queued_after) = pool.pending_and_queued_txn_count();
             assert_eq!(pending_after, pending_before - ready.len() + promoted.len());
+            assert_eq!(mined.len(), ready.len());
+            assert_eq!(queued_after, queued_before - promoted.len());
 
             ready = promoted;
 
