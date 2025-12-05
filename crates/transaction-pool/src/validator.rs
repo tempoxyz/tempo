@@ -1,7 +1,6 @@
 use crate::{
     amm::AmmLiquidityCache,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
-    tt_2d_pool::AA2dNonceKeys,
 };
 use alloy_consensus::Transaction;
 
@@ -34,8 +33,6 @@ const AA_VALID_BEFORE_MIN_SECS: u64 = 3;
 pub struct TempoTransactionValidator<Client> {
     /// Inner validator that performs default Ethereum tx validation.
     pub(crate) inner: EthTransactionValidator<Client, TempoPooledTransaction>,
-    /// Keeps tracks of known nonce keys for AA transactions.
-    pub(crate) aa_nonce_keys: AA2dNonceKeys,
     /// Maximum allowed `valid_after` offset for AA txs.
     pub(crate) aa_valid_after_max_secs: u64,
     /// Cache of AMM liquidity for validator tokens.
@@ -48,13 +45,11 @@ where
 {
     pub fn new(
         inner: EthTransactionValidator<Client, TempoPooledTransaction>,
-        aa_nonce_keys: AA2dNonceKeys,
         aa_valid_after_max_secs: u64,
         amm_liquidity_cache: AmmLiquidityCache,
     ) -> Self {
         Self {
             inner,
-            aa_nonce_keys,
             aa_valid_after_max_secs,
             amm_liquidity_cache,
         }
@@ -78,7 +73,7 @@ where
         state_provider: &impl StateProvider,
         address: alloy_primitives::Address,
         nonce_key: U256,
-    ) -> ProviderResult<(U256, u64)> {
+    ) -> ProviderResult<u64> {
         // Compute storage slot for 2D nonce
         // Based on: mapping(address => mapping(uint256 => uint64)) at slot 0
         let slot = double_mapping_slot(
@@ -88,7 +83,7 @@ where
         );
         let nonce_value = state_provider.storage(NONCE_PRECOMPILE_ADDRESS, slot.into())?;
 
-        Ok((slot, nonce_value.unwrap_or_default().saturating_to()))
+        Ok(nonce_value.unwrap_or_default().saturating_to())
     }
 
     /// Check if a transaction requires keychain validation
@@ -377,7 +372,7 @@ where
         match self.inner.validate_one(origin, transaction) {
             TransactionValidationOutcome::Valid {
                 balance,
-                state_nonce,
+                mut state_nonce,
                 bytecode_hash,
                 transaction,
                 propagate,
@@ -399,7 +394,7 @@ where
                     }
 
                     // This is a 2D nonce transaction - validate against 2D nonce
-                    let (nonce_key_slot, on_chain_2d_nonce) = match self.get_2d_nonce(
+                    state_nonce = match self.get_2d_nonce(
                         &state_provider,
                         transaction.transaction().sender(),
                         nonce_key,
@@ -413,24 +408,16 @@ where
                         }
                     };
                     let tx_nonce = transaction.nonce();
-                    if tx_nonce < on_chain_2d_nonce {
+                    if tx_nonce < state_nonce {
                         return TransactionValidationOutcome::Invalid(
                             transaction.into_transaction(),
                             InvalidTransactionError::NonceNotConsistent {
                                 tx: tx_nonce,
-                                state: on_chain_2d_nonce,
+                                state: state_nonce,
                             }
                             .into(),
                         );
                     }
-
-                    // since we've just fetched the most recent on chain nonce for this valid transaction, we can update the tracker.
-                    self.aa_nonce_keys.insert(
-                        transaction.transaction().sender(),
-                        nonce_key,
-                        on_chain_2d_nonce,
-                        nonce_key_slot,
-                    );
                 }
 
                 TransactionValidationOutcome::Valid {
@@ -639,7 +626,7 @@ mod tests {
             .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
-        let validator = TempoTransactionValidator::new(inner, Default::default(), 3600, amm_cache);
+        let validator = TempoTransactionValidator::new(inner, 3600, amm_cache);
 
         // Set the tip timestamp by simulating a new head block
         let mock_block = create_mock_block(tip_timestamp);
@@ -867,12 +854,8 @@ mod tests {
         let inner = EthTransactionValidatorBuilder::new(provider.clone())
             .disable_balance_check()
             .build(InMemoryBlobStore::default());
-        let validator = TempoTransactionValidator::new(
-            inner,
-            Default::default(),
-            3600,
-            AmmLiquidityCache::new(provider).unwrap(),
-        );
+        let validator =
+            TempoTransactionValidator::new(inner, 3600, AmmLiquidityCache::new(provider).unwrap());
 
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, transaction)
