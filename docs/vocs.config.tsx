@@ -271,7 +271,7 @@ export default defineConfig({
       ],
       '/documentation': [
         {
-          text: 'Tempo Protocol',
+          text: 'Read Tempo Protocol Specs',
           items: [
             {
               text: 'Overview',
