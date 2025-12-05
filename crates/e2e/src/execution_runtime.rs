@@ -2,7 +2,6 @@
 use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
-    str::FromStr,
     sync::Arc,
     time::Duration,
 };
@@ -357,48 +356,6 @@ impl ExecutionRuntime {
             .wrap_err("the execution runtime dropped the response channel before sending a receipt")
     }
 
-    /// Requests a new execution node and blocks until its returned.
-    pub async fn spawn_node(
-        &self,
-        name: &str,
-        config: ExecutionNodeConfig,
-        database: Arc<DatabaseEnv>,
-    ) -> eyre::Result<ExecutionNode> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.to_runtime
-            .send(Message::SpawnNode {
-                name: name.to_string(),
-                config,
-                database,
-                response: tx,
-            })
-            .wrap_err("the execution runtime went away")?;
-        rx.await.wrap_err(
-            "the execution runtime dropped the response channel before sending an execution node",
-        )
-    }
-
-    /// Requests a new execution node and blocks until its returned.
-    pub fn spawn_node_blocking(
-        &self,
-        name: &str,
-        config: ExecutionNodeConfig,
-        database: Arc<DatabaseEnv>,
-    ) -> eyre::Result<ExecutionNode> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.to_runtime
-            .send(Message::SpawnNode {
-                name: name.to_string(),
-                config,
-                database,
-                response: tx,
-            })
-            .wrap_err("the execution runtime went away")?;
-        rx.blocking_recv().wrap_err(
-            "the execution runtime dropped the response channel before sending an execution node",
-        )
-    }
-
     /// Instructs the runtime to stop and exit.
     pub fn stop(self) -> eyre::Result<()> {
         self.to_runtime
@@ -449,27 +406,6 @@ impl ExecutionRuntimeHandle {
             })
             .wrap_err("the execution runtime went away")?;
         rx.await.wrap_err(
-            "the execution runtime dropped the response channel before sending an execution node",
-        )
-    }
-
-    /// Requests a new execution node and blocks until its returned.
-    pub fn spawn_node_blocking(
-        &self,
-        name: &str,
-        config: ExecutionNodeConfig,
-        database: Arc<DatabaseEnv>,
-    ) -> eyre::Result<ExecutionNode> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.to_runtime
-            .send(Message::SpawnNode {
-                name: name.to_string(),
-                config,
-                database,
-                response: tx,
-            })
-            .wrap_err("the execution runtime went away")?;
-        rx.blocking_recv().wrap_err(
             "the execution runtime dropped the response channel before sending an execution node",
         )
     }
@@ -636,7 +572,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             c.network.trusted_peers = config
                 .trusted_peers
                 .into_iter()
-                .map(|s| TrustedPeer::from_str(&s).expect("invalid trusted peer enode"))
+                .map(|s| s.parse::<TrustedPeer>().expect("invalid trusted peer enode"))
                 .collect();
             c.network.port = config.port;
             c.network.p2p_secret_key_hex = Some(config.secret_key);
