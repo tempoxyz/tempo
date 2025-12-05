@@ -13,7 +13,6 @@ on:
         type: boolean
         default: false
   workflow_call:
-  pull_request:
   schedule:
     - cron: "5 9 * * *"
     - cron: "30 20 * * *"
