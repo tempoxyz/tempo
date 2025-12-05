@@ -48,6 +48,8 @@ pub struct AA2dPool {
     by_id: BTreeMap<AA2dTransactionId, AA2dInternalTransaction>,
     /// _All_ transactions by hash.
     by_hash: HashMap<TxHash, Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    /// Transactions that are delayed until a configured `valid_after` timestamp.
+    delayed: BTreeMap<u64, HashSet<AA2dTransactionId>>,
     /// Reverse index for the storage slot of an account's nonce
     ///
     /// ```solidity
@@ -56,6 +58,8 @@ pub struct AA2dPool {
     ///
     /// This identifies the account and nonce key based on the slot in the `NonceManager`.
     address_slots: HashMap<U256, (Address, U256)>,
+    /// Timestamp of the last block.
+    tip_timestamp: u64,
     /// Settings for this sub-pool.
     config: AA2dPoolConfig,
     /// Metrics for tracking pool statistics
@@ -79,6 +83,8 @@ impl AA2dPool {
             address_slots: Default::default(),
             config,
             metrics: AA2dPoolMetrics::default(),
+            tip_timestamp: 0,
+            delayed: Default::default(),
         }
     }
 
@@ -110,13 +116,10 @@ impl AA2dPool {
             ));
         }
 
-        let tx_id = transaction
-            .transaction
-            .aa_transaction_id()
-            .expect("Transaction added to AA2D pool must be an AA transaction");
+        let tx_id = transaction.transaction.aa_transaction_id();
 
         // Cache the nonce key slot for reverse lookup, if this transaction uses 2D nonce.
-        if transaction.transaction.is_aa_2d() {
+        if !transaction.transaction.nonce_key().is_zero() {
             self.record_2d_slot(transaction.sender(), tx_id.seq_id.nonce_key);
         }
 
@@ -133,8 +136,13 @@ impl AA2dPool {
             ));
         }
 
+        // Whether this transaction is not valid at current timestamp.
+        let delayed_until = transaction
+            .transaction
+            .valid_after()
+            .filter(|valid_after| *valid_after > self.tip_timestamp);
+
         // assume the transaction is not pending, will get updated later
-        let mut inserted_as_pending = false;
         let tx = AA2dInternalTransaction {
             inner: PendingTransaction {
                 submission_id: self.next_id(),
@@ -142,7 +150,9 @@ impl AA2dPool {
                     .priority(&transaction.transaction, TEMPO_BASE_FEE),
                 transaction: transaction.clone(),
             },
-            is_pending: inserted_as_pending,
+            has_queued_ancestors_or_nonce_gap: false,
+            is_delayed: delayed_until.is_some(),
+            is_next_nonce: transaction.nonce() == on_chain_nonce,
         };
 
         // try to insert the transaction
@@ -180,6 +190,10 @@ impl AA2dPool {
         self.by_hash
             .insert(*tx.inner.transaction.hash(), tx.inner.transaction.clone());
 
+        if let Some(delayed_until) = delayed_until {
+            self.delayed.entry(delayed_until).or_default().insert(tx_id);
+        }
+
         // contains transactions directly impacted by the new transaction (filled nonca gap)
         let mut promoted = Vec::new();
         // now we need to scan the range and mark transactions as pending, if any
@@ -189,29 +203,42 @@ impl AA2dPool {
 
         // scan all the transactions with the same nonce key starting with the on chain nonce
         // to check if our new transaction was inserted as pending and perhaps promoted more transactions
+        let mut queued_ancestors_or_nonce_gap = false;
+        let mut inserted_as_pending = false;
         for (existing_id, existing_tx) in self.descendant_txs_mut(&on_chain_id) {
-            if existing_id.nonce == next_nonce {
-                match existing_id.nonce.cmp(&tx_id.nonce) {
-                    std::cmp::Ordering::Less => {
-                        // unaffected by our transaction
-                    }
-                    std::cmp::Ordering::Equal => {
-                        existing_tx.is_pending = true;
-                        inserted_as_pending = true;
-                    }
-                    std::cmp::Ordering::Greater => {
-                        // if this was previously not pending we need to promote the transaction
-                        let is_promoted = !std::mem::replace(&mut existing_tx.is_pending, true);
-                        if is_promoted {
-                            promoted.push(existing_tx.inner.transaction.clone());
-                        }
-                    }
-                }
+            if existing_id.nonce != next_nonce {
+                // Nonce gap, flip the flag
+                queued_ancestors_or_nonce_gap = true;
+            } else {
                 // continue ungapped sequence
                 next_nonce = existing_id.nonce.saturating_add(1);
-            } else {
-                // can exit early here because we hit a nonce gap
-                break;
+            }
+
+            match existing_id.nonce.cmp(&tx_id.nonce) {
+                std::cmp::Ordering::Less => {
+                    // If this is an ancestor and it's not pending, flip the flag
+                    if !existing_tx.is_pending() {
+                        queued_ancestors_or_nonce_gap = true;
+                    }
+                }
+                std::cmp::Ordering::Equal => {
+                    existing_tx.has_queued_ancestors_or_nonce_gap = queued_ancestors_or_nonce_gap;
+                    inserted_as_pending = existing_tx.is_pending();
+
+                    if !inserted_as_pending {
+                        // Flip the flag for all descendants if this is not pending yet
+                        queued_ancestors_or_nonce_gap = true;
+                    }
+                }
+                std::cmp::Ordering::Greater => {
+                    let was_pending = existing_tx.is_pending();
+                    existing_tx.has_queued_ancestors_or_nonce_gap = queued_ancestors_or_nonce_gap;
+
+                    // if this was previously not pending, record the promotion
+                    if !was_pending && existing_tx.is_pending() {
+                        promoted.push(existing_tx.inner.transaction.clone());
+                    }
+                }
             }
         }
 
@@ -247,7 +274,7 @@ impl AA2dPool {
     /// Returns how many pending and queued transactions are in the pool.
     pub(crate) fn pending_and_queued_txn_count(&self) -> (usize, usize) {
         self.by_id.values().fold((0, 0), |mut acc, tx| {
-            if tx.is_pending {
+            if tx.is_pending() {
                 acc.0 += 1;
             } else {
                 acc.1 += 1;
@@ -274,7 +301,7 @@ impl AA2dPool {
     ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         self.by_id
             .values()
-            .filter(move |tx| tx.is_pending && tx.inner.transaction.origin == origin)
+            .filter(move |tx| tx.is_pending() && tx.inner.transaction.origin == origin)
             .map(|tx| tx.inner.transaction.clone())
     }
 
@@ -300,7 +327,7 @@ impl AA2dPool {
     ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         self.by_id
             .values()
-            .filter(|tx| !tx.is_pending)
+            .filter(|tx| !tx.is_pending())
             .map(|tx| tx.inner.transaction.clone())
     }
 
@@ -310,7 +337,7 @@ impl AA2dPool {
     ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         self.by_id
             .values()
-            .filter(|tx| tx.is_pending)
+            .filter(|tx| tx.is_pending())
             .map(|tx| tx.inner.transaction.clone())
     }
 
@@ -321,7 +348,7 @@ impl AA2dPool {
             by_id: self
                 .by_id
                 .iter()
-                .filter(|(_, tx)| tx.is_pending)
+                .filter(|(_, tx)| tx.is_pending())
                 .map(|(id, tx)| (*id, tx.inner.clone()))
                 .collect(),
             invalid: Default::default(),
@@ -408,6 +435,9 @@ impl AA2dPool {
         let tx = self.by_id.remove(id)?;
         self.remove_independent(id);
         self.by_hash.remove(tx.inner.transaction.hash());
+        if let Some(valid_after) = tx.inner.transaction.transaction.valid_after() {
+            self.delayed.entry(valid_after).or_default().remove(id);
+        }
         Some(tx.inner.transaction)
     }
 
@@ -454,12 +484,7 @@ impl AA2dPool {
         tx_hash: &B256,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let tx = self.by_hash.remove(tx_hash)?;
-        let id = tx
-            .transaction
-            .aa_transaction_id()
-            .expect("is AA transaction");
-        self.by_id.remove(&id)?;
-        self.remove_independent(&id);
+        self.remove_transaction_by_id(&tx.transaction.aa_transaction_id())?;
         Some(tx)
     }
 
@@ -477,9 +502,7 @@ impl AA2dPool {
             if let Some(tx) = self.remove_transaction_by_hash(hash) {
                 let id = tx.transaction.aa_transaction_id();
                 removed.push(tx);
-                if let Some(id) = id {
-                    self.remove_descendants(&id, &mut removed);
-                }
+                self.remove_descendants(&id, &mut removed);
             }
         }
         removed
@@ -495,11 +518,7 @@ impl AA2dPool {
             .get_transactions_by_sender_iter(sender_id)
             .collect::<Vec<_>>();
         for tx in txs {
-            if let Some(tx) = tx
-                .transaction
-                .aa_transaction_id()
-                .and_then(|id| self.remove_transaction_by_id(&id))
-            {
+            if let Some(tx) = self.remove_transaction_by_id(&tx.transaction.aa_transaction_id()) {
                 removed.push(tx);
             }
         }
@@ -576,9 +595,19 @@ impl AA2dPool {
             // Process remaining transactions starting from `current` (which is >= on_chain_nonce)
             let mut next_nonce = on_chain_nonce;
             for (existing_id, existing_tx) in std::iter::once(current).chain(iter) {
-                if existing_id.nonce == next_nonce {
-                    // Promote if transaction was previously queued (not pending)
-                    if !std::mem::replace(&mut existing_tx.is_pending, true) {
+                // Gap detected: this gap must've been here before the state update so we can just exit.
+                if existing_id.nonce != next_nonce {
+                    break;
+                }
+
+                let was_pending = existing_tx.is_pending();
+
+                existing_tx.has_queued_ancestors_or_nonce_gap = false;
+                existing_tx.is_next_nonce = existing_id.nonce == on_chain_nonce;
+
+                if existing_tx.is_pending() {
+                    if !was_pending {
+                        // Record promotion if this was not pending
                         promoted.push(existing_tx.inner.transaction.clone());
                     }
 
@@ -587,13 +616,13 @@ impl AA2dPool {
                         self.independent_transactions
                             .insert(existing_id.seq_id, existing_tx.inner.clone());
                     }
-
-                    next_nonce = next_nonce.saturating_add(1);
                 } else {
-                    // Gap detected - remaining transactions should not be pending
-                    existing_tx.is_pending = false;
+                    // If this tx is not pending it means it wasn't pending before the state update either.
+                    // Which means all its descendats are already aware of this transaction blocking them, thus we can exit.
                     break;
                 }
+
+                next_nonce = next_nonce.saturating_add(1);
             }
         }
 
@@ -615,6 +644,60 @@ impl AA2dPool {
         self.update_metrics();
 
         (promoted, mined)
+    }
+
+    pub(crate) fn on_timestamp_update(
+        &mut self,
+        timestamp: u64,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let mut promoted = Vec::new();
+        self.tip_timestamp = timestamp;
+
+        let resumed = {
+            let new_delayed = self.delayed.split_off(&(timestamp + 1));
+            core::mem::replace(&mut self.delayed, new_delayed)
+        }
+        .into_values()
+        .flatten();
+
+        for resumed_id in resumed {
+            let mut next_nonce = resumed_id.nonce;
+            for (id, tx) in self.by_id.range_mut(resumed_id.descenants_range()) {
+                if id.nonce != next_nonce {
+                    // Exit on nonce gap without flipping `queued_ancestors_or_nonce_gap` flag as it should remain true for all descendants.
+                    break;
+                }
+
+                next_nonce = next_nonce.saturating_add(1);
+
+                let was_pending = tx.is_pending();
+
+                if id.nonce == resumed_id.nonce {
+                    // The actual resumed tx, update its state.
+                    tx.is_delayed = false;
+                } else {
+                    // For all descendats, set the flag to false as we ensure no nonce gaps.
+                    tx.has_queued_ancestors_or_nonce_gap = false;
+                }
+
+                if tx.is_independent() {
+                    // Record transactions in independent set if they are independent.
+                    self.independent_transactions
+                        .insert(id.seq_id, tx.inner.clone());
+                }
+
+                if tx.is_pending() {
+                    if !was_pending {
+                        promoted.push(tx.inner.transaction.clone());
+                    }
+                } else {
+                    // Once we hit a non-pending transaction, exit the loop as all descendants are already non-pending anyway.
+                    break;
+                }
+            }
+        }
+
+        promoted
     }
 
     /// Removes stale transactions if the pool is above capacity.
@@ -687,9 +770,10 @@ impl AA2dPool {
 
     /// Processes state updates and updates internal state accordingly.
     #[expect(clippy::type_complexity)]
-    pub(crate) fn on_state_updates(
+    pub(crate) fn on_new_state_and_timestamp(
         &mut self,
         state: &HashMap<Address, BundleAccount>,
+        timestamp: u64,
     ) -> (
         Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
         Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
@@ -715,7 +799,11 @@ impl AA2dPool {
             changes.insert(AASequenceId::new(*account, U256::ZERO), nonce);
         }
 
-        self.on_nonce_changes(changes)
+        let (mut promoted, mined) = self.on_nonce_changes(changes);
+        let promoted_on_timestamp = self.on_timestamp_update(timestamp);
+        promoted.extend(promoted_on_timestamp);
+
+        (promoted, mined)
     }
 
     /// Asserts that all assumptions are valid.
@@ -738,11 +826,7 @@ impl AA2dPool {
 
         // All independent transactions must exist in by_id
         for (seq_id, independent_tx) in &self.independent_transactions {
-            let tx_id = independent_tx
-                .transaction
-                .transaction
-                .aa_transaction_id()
-                .expect("Independent transaction must have AA transaction ID");
+            let tx_id = independent_tx.transaction.transaction.aa_transaction_id();
             assert!(
                 self.by_id.contains_key(&tx_id),
                 "Independent transaction {tx_id:?} not in by_id"
@@ -755,7 +839,7 @@ impl AA2dPool {
             // Independent transactions must be pending
             let tx_in_pool = self.by_id.get(&tx_id).unwrap();
             assert!(
-                tx_in_pool.is_pending,
+                tx_in_pool.is_pending(),
                 "Independent transaction {tx_id:?} is not pending"
             );
 
@@ -788,10 +872,7 @@ impl AA2dPool {
             );
 
             // Transaction in by_hash should exist in by_id
-            let id = tx
-                .transaction
-                .aa_transaction_id()
-                .expect("Transaction in pool should be AA transaction");
+            let id = tx.transaction.aa_transaction_id();
             assert!(
                 self.by_id.contains_key(&id),
                 "Transaction with hash {hash:?} in by_hash but not in by_id"
@@ -816,12 +897,7 @@ impl AA2dPool {
             );
 
             // The transaction should have the correct AA ID
-            let tx_id = tx
-                .inner
-                .transaction
-                .transaction
-                .aa_transaction_id()
-                .expect("Transaction in pool should be AA transaction");
+            let tx_id = tx.inner.transaction.transaction.aa_transaction_id();
             assert_eq!(
                 &tx_id, id,
                 "Transaction ID mismatch: expected {id:?}, got {tx_id:?}"
@@ -832,7 +908,7 @@ impl AA2dPool {
                 && independent_tx.transaction.hash() == tx.inner.transaction.hash()
             {
                 assert!(
-                    tx.is_pending,
+                    tx.is_pending(),
                     "Transaction {id:?} is in independent set but not pending"
                 );
             }
@@ -866,10 +942,29 @@ struct AA2dInternalTransaction {
     ///
     /// We can use [`PendingTransaction`] here because the priority remains unchanged.
     inner: PendingTransaction<CoinbaseTipOrdering<TempoPooledTransaction>>,
-    /// Whether this transaction is pending/executable.
+    /// Whether this transaction has queued ancestors.
+    has_queued_ancestors_or_nonce_gap: bool,
+    /// Whether this transaction is delayed until a configured `valid_after` timestamp.
+    is_delayed: bool,
+    /// WHether this transaction's nonce matches the on-chain nonce of the sequence.
     ///
-    /// If it's not pending, it is queued.
-    is_pending: bool,
+    /// If this is true, and the transaction is pending, it can be added to the independent set.
+    is_next_nonce: bool,
+}
+
+impl AA2dInternalTransaction {
+    /// Returns whether this transaction is pending/executable.
+    ///
+    /// Transaction is pending when it has no nonce gaps
+    /// and all of its ancestors are pending as well.
+    fn is_pending(&self) -> bool {
+        !self.has_queued_ancestors_or_nonce_gap && !self.is_delayed
+    }
+
+    /// Returns whether this transaction can be added to the independent set.
+    fn is_independent(&self) -> bool {
+        self.is_next_nonce && self.is_pending()
+    }
 }
 
 /// A snapshot of the sub-pool containing all executable transactions.
@@ -877,6 +972,7 @@ struct AA2dInternalTransaction {
 pub(crate) struct BestAA2dTransactions {
     /// pending, executable transactions sorted by their priority.
     independent: BTreeSet<PendingTransaction<Ordering>>,
+
     /// _All_ transactions that are currently inside the pool grouped by their unique identifier.
     by_id: BTreeMap<AA2dTransactionId, PendingTransaction<Ordering>>,
 
@@ -888,11 +984,7 @@ impl BestAA2dTransactions {
     /// Removes the best transaction from the set
     fn pop_best(&mut self) -> Option<(AA2dTransactionId, PendingTransaction<Ordering>)> {
         let tx = self.independent.pop_last()?;
-        let id = tx
-            .transaction
-            .transaction
-            .aa_transaction_id()
-            .expect("Transaction in AA2D pool must be an AA transaction with valid nonce key");
+        let id = tx.transaction.transaction.aa_transaction_id();
         self.by_id.remove(&id);
         Some((id, tx))
     }
@@ -928,9 +1020,8 @@ impl Iterator for BestAA2dTransactions {
 
 impl BestTransactions for BestAA2dTransactions {
     fn mark_invalid(&mut self, transaction: &Self::Item, _kind: &InvalidPoolTransactionError) {
-        if let Some(id) = transaction.transaction.aa_transaction_id() {
-            self.invalid.insert(id.seq_id);
-        }
+        self.invalid
+            .insert(transaction.transaction.aa_transaction_id().seq_id);
     }
 
     fn no_updates(&mut self) {}
@@ -978,6 +1069,11 @@ impl AA2dTransactionId {
     /// Returns the next transaction in the sequence.
     pub(crate) fn unlocks(&self) -> Self {
         Self::new(self.seq_id, self.nonce.saturating_add(1))
+    }
+
+    /// Returns the range of descendants of this transaction.
+    pub(crate) fn descenants_range(&self) -> std::ops::Range<Self> {
+        *self..Self::new(self.seq_id, u64::MAX)
     }
 }
 
@@ -1176,11 +1272,11 @@ mod tests {
         // Verify both transactions are now pending
         let tx0_id = AA2dTransactionId::new(seq_id, 0);
         assert!(
-            pool.by_id.get(&tx0_id).unwrap().is_pending,
+            pool.by_id.get(&tx0_id).unwrap().is_pending(),
             "Transaction 0 should be pending"
         );
         assert!(
-            pool.by_id.get(&tx1_id).unwrap().is_pending,
+            pool.by_id.get(&tx1_id).unwrap().is_pending(),
             "Transaction 1 should be pending after promotion"
         );
 
@@ -1326,7 +1422,7 @@ mod tests {
             &tx_high_hash,
             "Transaction in by_id should be tx_high"
         );
-        assert!(tx_in_pool.is_pending, "Transaction should be pending");
+        assert!(tx_in_pool.is_pending(), "Transaction should be pending");
 
         pool.assert_invariants();
     }
@@ -1441,15 +1537,15 @@ mod tests {
         let tx6_id = AA2dTransactionId::new(seq_id, 6);
 
         assert!(
-            !pool.by_id.get(&tx3_id).unwrap().is_pending,
+            !pool.by_id.get(&tx3_id).unwrap().is_pending(),
             "Transaction 3 should be queued (gap at nonce 2)"
         );
         assert!(
-            !pool.by_id.get(&tx4_id).unwrap().is_pending,
+            !pool.by_id.get(&tx4_id).unwrap().is_pending(),
             "Transaction 4 should be queued"
         );
         assert!(
-            !pool.by_id.get(&tx6_id).unwrap().is_pending,
+            !pool.by_id.get(&tx6_id).unwrap().is_pending(),
             "Transaction 6 should be queued"
         );
 
@@ -1497,17 +1593,17 @@ mod tests {
 
         // Verify transactions 3 and 4 are now pending
         assert!(
-            pool.by_id.get(&tx3_id).unwrap().is_pending,
+            pool.by_id.get(&tx3_id).unwrap().is_pending(),
             "Transaction 3 should be pending"
         );
         assert!(
-            pool.by_id.get(&tx4_id).unwrap().is_pending,
+            pool.by_id.get(&tx4_id).unwrap().is_pending(),
             "Transaction 4 should be pending"
         );
 
         // Verify transaction 6 is still queued
         assert!(
-            !pool.by_id.get(&tx6_id).unwrap().is_pending,
+            !pool.by_id.get(&tx6_id).unwrap().is_pending(),
             "Transaction 6 should still be queued (gap at nonce 5)"
         );
 
@@ -1693,7 +1789,7 @@ mod tests {
 
         // Verify tx2 is pending before removal
         assert!(
-            pool.by_id.get(&tx2_id).unwrap().is_pending,
+            pool.by_id.get(&tx2_id).unwrap().is_pending(),
             "tx2 should be pending before removal"
         );
 
@@ -1911,27 +2007,27 @@ mod tests {
 
         // Only tx0 should be pending, rest should be queued
         let tx0_id = AA2dTransactionId::new(seq_id, 0);
-        assert!(pool.by_id.get(&tx0_id).unwrap().is_pending);
+        assert!(pool.by_id.get(&tx0_id).unwrap().is_pending());
         assert!(
             !pool
                 .by_id
                 .get(&AA2dTransactionId::new(seq_id, 5))
                 .unwrap()
-                .is_pending
+                .is_pending()
         );
         assert!(
             !pool
                 .by_id
                 .get(&AA2dTransactionId::new(seq_id, 10))
                 .unwrap()
-                .is_pending
+                .is_pending()
         );
         assert!(
             !pool
                 .by_id
                 .get(&AA2dTransactionId::new(seq_id, 15))
                 .unwrap()
-                .is_pending
+                .is_pending()
         );
         assert_eq!(pool.independent_transactions.len(), 1);
 
@@ -1949,7 +2045,7 @@ mod tests {
         for nonce in 0..=5 {
             let id = AA2dTransactionId::new(seq_id, nonce);
             assert!(
-                pool.by_id.get(&id).unwrap().is_pending,
+                pool.by_id.get(&id).unwrap().is_pending(),
                 "Nonce {nonce} should be pending"
             );
         }
@@ -1959,14 +2055,14 @@ mod tests {
                 .by_id
                 .get(&AA2dTransactionId::new(seq_id, 10))
                 .unwrap()
-                .is_pending
+                .is_pending()
         );
         assert!(
             !pool
                 .by_id
                 .get(&AA2dTransactionId::new(seq_id, 15))
                 .unwrap()
-                .is_pending
+                .is_pending()
         );
 
         // Fill gap [6,7,8,9]
@@ -1983,7 +2079,7 @@ mod tests {
         for nonce in 0..=10 {
             let id = AA2dTransactionId::new(seq_id, nonce);
             assert!(
-                pool.by_id.get(&id).unwrap().is_pending,
+                pool.by_id.get(&id).unwrap().is_pending(),
                 "Nonce {nonce} should be pending"
             );
         }
@@ -1993,7 +2089,7 @@ mod tests {
                 .by_id
                 .get(&AA2dTransactionId::new(seq_id, 15))
                 .unwrap()
-                .is_pending
+                .is_pending()
         );
 
         // Fill final gap [11,12,13,14]
@@ -2010,7 +2106,7 @@ mod tests {
         for nonce in 0..=15 {
             let id = AA2dTransactionId::new(seq_id, nonce);
             assert!(
-                pool.by_id.get(&id).unwrap().is_pending,
+                pool.by_id.get(&id).unwrap().is_pending(),
                 "Nonce {nonce} should be pending"
             );
         }
@@ -2044,7 +2140,7 @@ mod tests {
                 pool.by_id
                     .get(&AA2dTransactionId::new(seq_id, nonce))
                     .unwrap()
-                    .is_pending
+                    .is_pending()
             );
         }
 
@@ -2178,7 +2274,7 @@ mod tests {
             };
             for nonce in 0..TXS_PER_SENDER {
                 let id = AA2dTransactionId::new(seq_id, nonce);
-                assert!(pool.by_id.get(&id).unwrap().is_pending);
+                assert!(pool.by_id.get(&id).unwrap().is_pending());
             }
         }
 

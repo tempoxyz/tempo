@@ -73,8 +73,15 @@ where
     }
 
     /// Updates the 2d nonce pool with the given state changes.
-    pub(crate) fn notify_aa_pool_on_state_updates(&self, state: &HashMap<Address, BundleAccount>) {
-        let (promoted, _mined) = self.aa_2d_pool.write().on_state_updates(state);
+    pub(crate) fn notify_aa_pool_on_state_and_timestamp(
+        &self,
+        state: &HashMap<Address, BundleAccount>,
+        timestamp: u64,
+    ) {
+        let (promoted, _mined) = self
+            .aa_2d_pool
+            .write()
+            .on_new_state_and_timestamp(state, timestamp);
         // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
             .inner()

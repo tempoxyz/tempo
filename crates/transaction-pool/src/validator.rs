@@ -378,11 +378,10 @@ where
                 propagate,
                 authorities,
             } => {
+                let nonce_key = transaction.transaction().nonce_key();
                 // Additional 2D nonce validations
                 // Check for 2D nonce validation (nonce_key > 0)
-                if let Some(nonce_key) = transaction.transaction().nonce_key()
-                    && !nonce_key.is_zero()
-                {
+                if !nonce_key.is_zero() {
                     // ensure the nonce key isn't prefixed with the sub-block prefix
                     if has_sub_block_nonce_key_prefix(&nonce_key) {
                         return TransactionValidationOutcome::Invalid(

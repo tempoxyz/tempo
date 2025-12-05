@@ -62,8 +62,17 @@ impl TempoPooledTransaction {
     }
 
     /// Returns the nonce key of this transaction if it's an [`AASigned`](tempo_primitives::AASigned) transaction.
-    pub fn nonce_key(&self) -> Option<U256> {
-        self.inner.transaction.nonce_key()
+    pub fn nonce_key(&self) -> U256 {
+        self.inner.transaction.nonce_key().unwrap_or_default()
+    }
+
+    /// Returns the `valid_after` timestamp of this transaction if it's an [`AASigned`](tempo_primitives::AASigned) transaction.
+    pub fn valid_after(&self) -> Option<u64> {
+        self.inner
+            .transaction
+            .inner()
+            .as_aa()
+            .and_then(|tx| tx.tx().valid_after)
     }
 
     /// Returns whether this is a payment transaction.
@@ -76,24 +85,18 @@ impl TempoPooledTransaction {
     /// Returns true if this transaction belongs into the 2D nonce pool:
     /// - AA transaction with a `nonce key != 0`
     pub(crate) fn is_aa_2d(&self) -> bool {
-        self.inner
-            .transaction
-            .as_aa()
-            .map(|tx| !tx.tx().nonce_key.is_zero())
-            .unwrap_or(false)
+        !self.nonce_key().is_zero()
     }
 
     /// Returns the unique identifier for this AA transaction.
-    pub(crate) fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
-        let nonce_key = self.nonce_key()?;
-        let sender = AASequenceId {
-            address: self.sender(),
-            nonce_key,
-        };
-        Some(AA2dTransactionId {
-            seq_id: sender,
+    pub(crate) fn aa_transaction_id(&self) -> AA2dTransactionId {
+        AA2dTransactionId {
+            seq_id: AASequenceId {
+                address: self.sender(),
+                nonce_key: self.nonce_key(),
+            },
             nonce: self.nonce(),
-        })
+        }
     }
 }
 
