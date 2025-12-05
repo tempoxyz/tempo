@@ -2839,8 +2839,6 @@ pub(crate) mod tests {
             .expect("could not create TIP20");
         assert_eq!(path_usd.currency().unwrap(), "USD");
         assert_eq!(path_usd.quote_token().unwrap(), Address::ZERO);
-
-        Ok(())
     }
 
     #[test]
