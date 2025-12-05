@@ -71,17 +71,12 @@ async fn test_fee_in_stable() -> eyre::Result<()> {
 async fn test_default_fee_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(http_url.clone());
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url.clone());
 
     // Create new random wallet
     let new_wallet = PrivateKeySigner::random();
@@ -90,17 +85,10 @@ async fn test_default_fee_token() -> eyre::Result<()> {
     // Transfer pathUSD to the new wallet
     let path_usd = ITIP20::new(PATH_USD_ADDRESS, provider.clone());
     let transfer_amount = U256::from(1_000_000u64);
-    path_usd
-        .transfer(new_address, transfer_amount)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    path_usd.transfer(new_address, transfer_amount).send().await?.get_receipt().await?;
 
     // Create provider with the new wallet
-    let new_provider = ProviderBuilder::new()
-        .wallet(new_wallet)
-        .connect_http(http_url);
+    let new_provider = ProviderBuilder::new().wallet(new_wallet).connect_http(http_url);
 
     // Ensure the native account balance is 0
     let balance = new_provider.get_account_info(new_address).await?.balance;

@@ -82,10 +82,7 @@ fn many_bad_links() {
     //
     // for seed in 0..5 {
     for seed in 0..1 {
-        let setup = Setup::new()
-            .seed(seed)
-            .linkage(link.clone())
-            .epoch_length(100);
+        let setup = Setup::new().seed(seed).linkage(link.clone()).epoch_length(100);
 
         let _first = run(setup.clone(), |metric, value| {
             // // TODO(janis): commonware calls this marshal, we call this sync.
@@ -122,10 +119,7 @@ fn reach_height_20_with_a_few_bad_links() {
         success_rate: 0.98,
     };
 
-    let setup = Setup::new()
-        .how_many_signers(10)
-        .epoch_length(100)
-        .linkage(link);
+    let setup = Setup::new().how_many_signers(10).epoch_length(100).linkage(link);
 
     let _first = run(setup, |metric, value| {
         // // TODO(janis): commonware calls this marshal, we call this sync.

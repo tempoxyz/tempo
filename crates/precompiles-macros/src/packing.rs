@@ -103,21 +103,12 @@ pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<LayoutFiel
         } else if let Some(new_base) = field.base_slot {
             // Explicit base slot, resets auto-assignment chain
             current_base_slot = new_base;
-            SlotAssignment::Auto {
-                base_slot: new_base,
-            }
+            SlotAssignment::Auto { base_slot: new_base }
         } else {
-            SlotAssignment::Auto {
-                base_slot: current_base_slot,
-            }
+            SlotAssignment::Auto { base_slot: current_base_slot }
         };
 
-        result.push(LayoutField {
-            name: &field.name,
-            ty: &field.ty,
-            kind,
-            assigned_slot,
-        });
+        result.push(LayoutField { name: &field.name, ty: &field.ty, kind, assigned_slot });
     }
 
     Ok(result)
@@ -126,8 +117,9 @@ pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<LayoutFiel
 /// Generate packing constants from layout IR.
 ///
 /// This function generates compile-time constants (`<FIELD>`, `<FIELD>_OFFSET`, `<FIELD>_BYTES`)
-/// for slot assignments, offsets, and byte sizes based on the layout IR using field-name-based naming.
-/// Slot constants (`<FIELD>`) are generated as `U256` types, while offset and bytes constants use `usize`.
+/// for slot assignments, offsets, and byte sizes based on the layout IR using field-name-based
+/// naming. Slot constants (`<FIELD>`) are generated as `U256` types, while offset and bytes
+/// constants use `usize`.
 pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bool) -> TokenStream {
     let mut constants = TokenStream::new();
     let mut current_base_slot: Option<&LayoutField<'_>> = None;
@@ -152,7 +144,8 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
             // Auto-assignment computes slot/offset using const expressions
             SlotAssignment::Auto { base_slot, .. } => {
                 let output = if let Some(current_base) = current_base_slot {
-                    // Fields that share the same base compute their slots based on the previous field
+                    // Fields that share the same base compute their slots based on the previous
+                    // field
                     if current_base.assigned_slot.ref_slot() == field.assigned_slot.ref_slot() {
                         let (prev_slot, prev_offset) =
                             PackingConstants::new(current_base.name).into_tuple();
@@ -189,8 +182,9 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
         });
 
         // For the `Storable` macro, also generate the location constant
-        // NOTE: `slot_const` refers to the slot offset of the struct field relative to the struct's base slot.
-        // Because of that it is safe to use the usize -> U256 conversion (a struct will never have 2**64 fields).
+        // NOTE: `slot_const` refers to the slot offset of the struct field relative to the struct's
+        // base slot. Because of that it is safe to use the usize -> U256 conversion (a
+        // struct will never have 2**64 fields).
         if gen_location {
             constants.extend(quote! {
                 pub const #loc_const: crate::storage::packing::FieldLocation =
@@ -218,16 +212,9 @@ pub(crate) fn classify_field_type(ty: &Type) -> syn::Result<FieldKind<'_>> {
     // Check if it's a mapping (mappings have fundamentally different API)
     if let Some((key_ty, value_ty)) = extract_mapping_types(ty) {
         if let Some((key2_ty, value2_ty)) = extract_mapping_types(value_ty) {
-            return Ok(FieldKind::NestedMapping {
-                key1: key_ty,
-                key2: key2_ty,
-                value: value2_ty,
-            });
+            return Ok(FieldKind::NestedMapping { key1: key_ty, key2: key2_ty, value: value2_ty });
         } else {
-            return Ok(FieldKind::Mapping {
-                key: key_ty,
-                value: value_ty,
-            });
+            return Ok(FieldKind::Mapping { key: key_ty, value: value_ty });
         }
     }
 

@@ -34,11 +34,7 @@ impl FieldLocation {
     /// Create a new field location
     #[inline]
     pub const fn new(offset_slots: usize, offset_bytes: usize, size: usize) -> Self {
-        Self {
-            offset_slots,
-            offset_bytes,
-            size,
-        }
+        Self { offset_slots, offset_bytes, size }
     }
 }
 
@@ -54,11 +50,7 @@ pub fn is_packable(bytes: usize) -> bool {
 /// For 32-byte values, returns U256::MAX.
 #[inline]
 pub fn create_element_mask(byte_count: usize) -> U256 {
-    if byte_count >= 32 {
-        U256::MAX
-    } else {
-        (U256::ONE << (byte_count * 8)) - U256::ONE
-    }
+    if byte_count >= 32 { U256::MAX } else { (U256::ONE << (byte_count * 8)) - U256::ONE }
 }
 
 /// Extract a packed value from a storage slot at a given byte offset.
@@ -87,11 +79,7 @@ pub fn extract_packed_value<const SLOTS: usize, T: Storable<SLOTS>>(
     let shift_bits = offset * 8;
 
     // Create mask for the value's bit width
-    let mask = if bytes == 32 {
-        U256::MAX
-    } else {
-        (U256::ONE << (bytes * 8)) - U256::ONE
-    };
+    let mask = if bytes == 32 { U256::MAX } else { (U256::ONE << (bytes * 8)) - U256::ONE };
 
     // Extract and right-align the value
     T::from_evm_words(std::array::from_fn(|_| (slot_value >> shift_bits) & mask))
@@ -125,11 +113,7 @@ pub fn insert_packed_value<const SLOTS: usize, T: Storable<SLOTS>>(
 
     // Calculate shift and mask
     let shift_bits = offset * 8;
-    let mask = if bytes == 32 {
-        U256::MAX
-    } else {
-        (U256::ONE << (bytes * 8)) - U256::ONE
-    };
+    let mask = if bytes == 32 { U256::MAX } else { (U256::ONE << (bytes * 8)) - U256::ONE };
 
     // Clear the bits for this field in the current slot value
     let clear_mask = !(mask << shift_bits);
@@ -208,10 +192,7 @@ pub fn gen_slot_from(values: &[&str]) -> U256 {
         let hex_str = value.strip_prefix("0x").unwrap_or(value);
 
         // Parse hex string to bytes
-        assert!(
-            hex_str.len() % 2 == 0,
-            "Hex string '{value}' has odd length"
-        );
+        assert!(hex_str.len() % 2 == 0, "Hex string '{value}' has odd length");
 
         for i in (0..hex_str.len()).step_by(2) {
             let byte_str = &hex_str[i..i + 2];
@@ -221,11 +202,7 @@ pub fn gen_slot_from(values: &[&str]) -> U256 {
         }
     }
 
-    assert!(
-        bytes.len() <= 32,
-        "Total bytes ({}) exceed 32-byte slot limit",
-        bytes.len()
-    );
+    assert!(bytes.len() <= 32, "Total bytes ({}) exceed 32-byte slot limit", bytes.len());
 
     // Left-pad with zeros to 32 bytes
     let mut slot_bytes = [0u8; 32];
@@ -374,33 +351,21 @@ mod tests {
         // Address (20 bytes) at offset 13 would span slot boundary (13 + 20 = 33 > 32)
         let addr = Address::random();
         let result = insert_packed_value(U256::ZERO, &addr, 13, 20);
-        assert!(
-            result.is_err(),
-            "Should reject address at offset 13 (would span slot)"
-        );
+        assert!(result.is_err(), "Should reject address at offset 13 (would span slot)");
 
         // u16 (2 bytes) at offset 31 would span slot boundary (31 + 2 = 33 > 32)
         let val: u16 = 42;
         let result = insert_packed_value(U256::ZERO, &val, 31, 2);
-        assert!(
-            result.is_err(),
-            "Should reject u16 at offset 31 (would span slot)"
-        );
+        assert!(result.is_err(), "Should reject u16 at offset 31 (would span slot)");
 
         // u32 (4 bytes) at offset 29 would span slot boundary (29 + 4 = 33 > 32)
         let val: u32 = 42;
         let result = insert_packed_value(U256::ZERO, &val, 29, 4);
-        assert!(
-            result.is_err(),
-            "Should reject u32 at offset 29 (would span slot)"
-        );
+        assert!(result.is_err(), "Should reject u32 at offset 29 (would span slot)");
 
         // Test extract as well
         let result = extract_packed_value::<1, Address>(U256::ZERO, 13, 20);
-        assert!(
-            result.is_err(),
-            "Should reject extracting address from offset 13"
-        );
+        assert!(result.is_err(), "Should reject extracting address from offset 13");
     }
 
     #[test]
@@ -436,10 +401,7 @@ mod tests {
         ]);
 
         let slot = insert_packed_value(U256::ZERO, &true, 0, 1).unwrap();
-        assert_eq!(
-            slot, expected,
-            "Single bool [true] should match Solidity layout"
-        );
+        assert_eq!(slot, expected, "Single bool [true] should match Solidity layout");
         assert!(extract_packed_value::<1, bool>(slot, 0, 1).unwrap());
 
         // two bools
@@ -586,10 +548,7 @@ mod tests {
 
         // Test U256::MAX
         let slot = insert_packed_value(U256::ZERO, &U256::MAX, 0, 32).unwrap();
-        assert_eq!(
-            extract_packed_value::<1, U256>(slot, 0, 32).unwrap(),
-            U256::MAX
-        );
+        assert_eq!(extract_packed_value::<1, U256>(slot, 0, 32).unwrap(), U256::MAX);
     }
 
     #[test]
@@ -725,10 +684,7 @@ mod tests {
         slot = insert_packed_value(slot, &v3, 3, 4).unwrap();
         slot = insert_packed_value(slot, &v4, 7, 8).unwrap();
 
-        assert_eq!(
-            slot, expected,
-            "Mixed types packing should match Solidity layout"
-        );
+        assert_eq!(slot, expected, "Mixed types packing should match Solidity layout");
         assert_eq!(extract_packed_value::<1, u8>(slot, 0, 1).unwrap(), v1);
         assert_eq!(extract_packed_value::<1, u16>(slot, 1, 2).unwrap(), v2);
         assert_eq!(extract_packed_value::<1, u32>(slot, 3, 4).unwrap(), v3);
@@ -750,15 +706,9 @@ mod tests {
         slot = insert_packed_value(slot, &true, 0, 1).unwrap();
         slot = insert_packed_value(slot, &addr, 1, 20).unwrap();
         slot = insert_packed_value(slot, &number, 21, 1).unwrap();
-        assert_eq!(
-            slot, expected,
-            "[bool, address, u8] should match Solidity layout"
-        );
+        assert_eq!(slot, expected, "[bool, address, u8] should match Solidity layout");
         assert!(extract_packed_value::<1, bool>(slot, 0, 1).unwrap());
-        assert_eq!(
-            extract_packed_value::<1, Address>(slot, 1, 20).unwrap(),
-            addr
-        );
+        assert_eq!(extract_packed_value::<1, Address>(slot, 1, 20).unwrap(), addr);
         assert_eq!(extract_packed_value::<1, u8>(slot, 21, 1).unwrap(), number);
     }
 
@@ -814,10 +764,7 @@ mod tests {
     fn setup_test_contract<'a>(
         storage: &'a mut HashMapStorageProvider,
     ) -> TestContract<'a, HashMapStorageProvider> {
-        TestContract {
-            address: Address::random(),
-            storage,
-        }
+        TestContract { address: Address::random(), storage }
     }
 
     #[test]

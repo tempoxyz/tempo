@@ -29,10 +29,7 @@ async fn test_base_fee() -> eyre::Result<()> {
         .await?
         .expect("Could not get latest block");
 
-    let base_fee = block
-        .header
-        .base_fee_per_gas
-        .expect("Could not get basefee");
+    let base_fee = block.header.base_fee_per_gas.expect("Could not get basefee");
     assert_eq!(base_fee, TEMPO_BASE_FEE as u128 as u64);
 
     // Use the pre-deployed token from genesis (token 1)
@@ -58,11 +55,7 @@ async fn test_base_fee() -> eyre::Result<()> {
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
 
-    let final_block = receipts
-        .iter()
-        .filter_map(|r| r.block_number)
-        .max()
-        .unwrap();
+    let final_block = receipts.iter().filter_map(|r| r.block_number).max().unwrap();
 
     stream::iter(0..=final_block)
         .for_each(|block_num| {
@@ -74,24 +67,18 @@ async fn test_base_fee() -> eyre::Result<()> {
                     .unwrap()
                     .expect("Could not get block");
 
-                let base_fee = block
-                    .header
-                    .base_fee_per_gas
-                    .expect("Could not get basefee");
+                let base_fee = block.header.base_fee_per_gas.expect("Could not get basefee");
                 assert_eq!(base_fee, TEMPO_BASE_FEE as u128 as u64);
             }
         })
         .await;
 
     // Check fee history and ensure fee stays at 0
-    let fee_history = provider
-        .get_fee_history(final_block, BlockNumberOrTag::Number(final_block), &[])
-        .await?;
+    let fee_history =
+        provider.get_fee_history(final_block, BlockNumberOrTag::Number(final_block), &[]).await?;
 
-    for (base_fee, gas_used_ratio) in fee_history
-        .base_fee_per_gas
-        .iter()
-        .zip(fee_history.gas_used_ratio)
+    for (base_fee, gas_used_ratio) in
+        fee_history.base_fee_per_gas.iter().zip(fee_history.gas_used_ratio)
     {
         assert_eq!(*base_fee, TEMPO_BASE_FEE as u128);
         println!("Gas used ratio: {gas_used_ratio}");

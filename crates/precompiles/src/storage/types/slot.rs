@@ -44,11 +44,7 @@ impl<T> Slot<T> {
     /// Creates a full-slot accessor. For packed fields, use `new_at_loc` instead.
     #[inline]
     pub const fn new(slot: U256) -> Self {
-        Self {
-            slot,
-            ctx: crate::storage::types::LayoutCtx::FULL,
-            _ty: PhantomData,
-        }
+        Self { slot, ctx: crate::storage::types::LayoutCtx::FULL, _ty: PhantomData }
     }
 
     /// Creates a new `Slot` with the given base slot number with the given offset.
@@ -75,10 +71,7 @@ impl<T> Slot<T> {
     where
         T: Storable<N>,
     {
-        debug_assert!(
-            T::IS_PACKABLE,
-            "`fn new_at_loc` can only be used with packable types"
-        );
+        debug_assert!(T::IS_PACKABLE, "`fn new_at_loc` can only be used with packable types");
         Self {
             slot: base_slot.saturating_add(U256::from_limbs([loc.offset_slots as u64, 0, 0, 0])),
             ctx: crate::storage::types::LayoutCtx::packed(loc.offset_bytes),
@@ -187,10 +180,7 @@ mod tests {
     fn setup_test_contract<'a>(
         storage: &'a mut HashMapStorageProvider,
     ) -> TestContract<'a, HashMapStorageProvider> {
-        TestContract {
-            address: Address::random(),
-            storage,
-        }
+        TestContract { address: Address::random(), storage }
     }
 
     // Test slot constants

@@ -48,27 +48,24 @@ where
     ///
     /// Some block heights are special cased:
     ///
-    /// + first height of an epoch: notify the epoch manager that the previous
-    ///   epoch can be shut down.
-    /// + pre-to-last height of an epoch: finalize the ceremony and generate the
-    ///   the state for the next ceremony.
+    /// + first height of an epoch: notify the epoch manager that the previous epoch can be shut
+    ///   down.
+    /// + pre-to-last height of an epoch: finalize the ceremony and generate the the state for the
+    ///   next ceremony.
     /// + last height of an epoch:
     ///     1. notify the epoch manager that a new epoch can be entered;
-    ///     2. start a new ceremony by reading the validator config smart
-    ///        contract
+    ///     2. start a new ceremony by reading the validator config smart contract
     ///
     /// The processing of all other blocks depends on which part of the epoch
     /// they fall in:
     ///
-    /// + first half: if we are a dealer, distribute the generated DKG shares
-    ///   to the players and collect their acks. If we are a player, receive
-    ///   DKG shares and respond with an ack.
-    /// + exact middle of an epoch: if we are a dealer, generate the dealing
-    ///   (the intermediate outcome) of the ceremony.
-    /// + second half of an epoch: if we are a dealer, send it to the application
-    ///   if a request comes in (the application is supposed to add this to the
-    ///   block it is proposing). Always attempt to read dealings from the blocks
-    ///   and track them (if a dealer or player both).
+    /// + first half: if we are a dealer, distribute the generated DKG shares to the players and
+    ///   collect their acks. If we are a player, receive DKG shares and respond with an ack.
+    /// + exact middle of an epoch: if we are a dealer, generate the dealing (the intermediate
+    ///   outcome) of the ceremony.
+    /// + second half of an epoch: if we are a dealer, send it to the application if a request comes
+    ///   in (the application is supposed to add this to the block it is proposing). Always attempt
+    ///   to read dealings from the blocks and track them (if a dealer or player both).
     #[instrument(
         parent = &cause,
         skip_all,
@@ -131,10 +128,7 @@ where
             // and last two epochs.
             if let Some(epoch) = self.current_epoch_state().epoch().checked_sub(3) {
                 self.validators_metadata.remove(&epoch.into());
-                self.validators_metadata
-                    .sync()
-                    .await
-                    .expect("metadata must always be writable");
+                self.validators_metadata.sync().await.expect("metadata must always be writable");
             }
         }
 
@@ -152,9 +146,8 @@ where
             }
             epoch::RelativePosition::Middle => {
                 let _ = ceremony.process_messages().await;
-                let _ = ceremony
-                    .construct_intermediate_outcome(HardforkRegime::PostAllegretto)
-                    .await;
+                let _ =
+                    ceremony.construct_intermediate_outcome(HardforkRegime::PostAllegretto).await;
             }
             epoch::RelativePosition::SecondHalf => {
                 let _ = ceremony
@@ -395,14 +388,9 @@ where
 
         self.post_allegretto_metadatas.epoch_metadata.put(
             CURRENT_EPOCH_KEY,
-            EpochState {
-                dkg_outcome,
-                validator_state: new_validator_state.clone(),
-            },
+            EpochState { dkg_outcome, validator_state: new_validator_state.clone() },
         );
-        self.post_allegretto_metadatas
-            .epoch_metadata
-            .put(PREVIOUS_EPOCH_KEY, old_epoch_state);
+        self.post_allegretto_metadatas.epoch_metadata.put(PREVIOUS_EPOCH_KEY, old_epoch_state);
 
         self.post_allegretto_metadatas
             .epoch_metadata
@@ -415,10 +403,8 @@ where
 
     /// Reports that a new epoch was fully entered, that the previous epoch can be ended.
     async fn enter_current_epoch_and_remove_old_state(&mut self) {
-        let epoch_to_shutdown = if let Some(old_epoch_state) = self
-            .post_allegretto_metadatas
-            .epoch_metadata
-            .remove(&PREVIOUS_EPOCH_KEY)
+        let epoch_to_shutdown = if let Some(old_epoch_state) =
+            self.post_allegretto_metadatas.epoch_metadata.remove(&PREVIOUS_EPOCH_KEY)
         {
             self.post_allegretto_metadatas
                 .epoch_metadata
@@ -434,18 +420,12 @@ where
         };
 
         if let Some(epoch) = epoch_to_shutdown {
-            self.config
-                .epoch_manager
-                .report(epoch::Exit { epoch }.into())
-                .await;
+            self.config.epoch_manager.report(epoch::Exit { epoch }.into()).await;
         }
 
         if let Some(epoch) = epoch_to_shutdown.and_then(|epoch| epoch.checked_sub(2)) {
             self.validators_metadata.remove(&epoch.into());
-            self.validators_metadata
-                .sync()
-                .await
-                .expect("must always be able to persist data");
+            self.validators_metadata.sync().await.expect("must always be able to persist data");
         }
     }
 }
@@ -491,10 +471,7 @@ where
         .await
         .expect("must be able to initialize metadata on disk to function");
 
-        Self {
-            epoch_metadata,
-            dkg_outcome_metadata,
-        }
+        Self { epoch_metadata, dkg_outcome_metadata }
     }
 
     pub(super) fn current_epoch_state(&self) -> Option<&EpochState> {
@@ -513,13 +490,11 @@ where
                 public: dkg_outcome.public.clone(),
             })
         } else {
-            self.epoch_metadata
-                .get(&CURRENT_EPOCH_KEY)
-                .map(|epoch_state| PublicOutcome {
-                    epoch: epoch_state.dkg_outcome.epoch,
-                    participants: epoch_state.dkg_outcome.participants.clone(),
-                    public: epoch_state.dkg_outcome.public.clone(),
-                })
+            self.epoch_metadata.get(&CURRENT_EPOCH_KEY).map(|epoch_state| PublicOutcome {
+                epoch: epoch_state.dkg_outcome.epoch,
+                participants: epoch_state.dkg_outcome.participants.clone(),
+                public: epoch_state.dkg_outcome.public.clone(),
+            })
         }
     }
 
@@ -530,11 +505,11 @@ where
 
 /// All state for an epoch:
 ///
-/// + the DKG outcome containing the public key, the private key share, and the
-///   participants for the epoch
-/// + the validator state, containing the dealers of the epoch (corresponds to
-///   the participants in the DKG outcome), the players of the next ceremony,
-///   and the syncing players, who will be players in the ceremony thereafter.
+/// + the DKG outcome containing the public key, the private key share, and the participants for the
+///   epoch
+/// + the validator state, containing the dealers of the epoch (corresponds to the participants in
+///   the DKG outcome), the players of the next ceremony, and the syncing players, who will be
+///   players in the ceremony thereafter.
 #[derive(Clone, Debug)]
 pub(super) struct EpochState {
     pub(super) dkg_outcome: DkgOutcome,
@@ -589,9 +564,6 @@ impl Read for EpochState {
     ) -> Result<Self, commonware_codec::Error> {
         let dkg_outcome = DkgOutcome::read_cfg(buf, &())?;
         let validator_state = ValidatorState::read_cfg(buf, &())?;
-        Ok(Self {
-            dkg_outcome,
-            validator_state,
-        })
+        Ok(Self { dkg_outcome, validator_state })
     }
 }

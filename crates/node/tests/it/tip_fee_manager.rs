@@ -27,10 +27,7 @@ use tempo_primitives::{TxFeeToken, transaction::calc_gas_balance_spending};
 async fn test_set_user_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegro_moderato_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().allegro_moderato_activated().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -42,25 +39,12 @@ async fn test_set_user_token() -> eyre::Result<()> {
     let validator_token = ITIP20::new(PATH_USD_ADDRESS, &provider);
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
-    user_token
-        .mint(user_address, U256::from(1e10))
-        .send()
-        .await?
-        .watch()
-        .await?;
+    user_token.mint(user_address, U256::from(1e10)).send().await?.watch().await?;
 
     // Initial token should be predeployed token
-    assert_eq!(
-        fee_manager.userTokens(user_address).call().await?,
-        token_id_to_address(1)
-    );
+    assert_eq!(fee_manager.userTokens(user_address).call().await?, token_id_to_address(1));
 
-    let validator = provider
-        .get_block(BlockId::latest())
-        .await?
-        .unwrap()
-        .header
-        .beneficiary;
+    let validator = provider.get_block(BlockId::latest()).await?.unwrap().header.beneficiary;
 
     let validator_balance_before = validator_token.balanceOf(validator).call().await?;
 
@@ -87,12 +71,8 @@ async fn test_set_user_token() -> eyre::Result<()> {
         validator_balance_before + expected_cost * U256::from(9970) / U256::from(10000)
     );
 
-    let set_receipt = fee_manager
-        .setUserToken(*user_token.address())
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    let set_receipt =
+        fee_manager.setUserToken(*user_token.address()).send().await?.get_receipt().await?;
     assert!(set_receipt.status());
 
     let current_token = fee_manager.userTokens(user_address).call().await?;
@@ -121,12 +101,8 @@ async fn test_set_user_token() -> eyre::Result<()> {
     assert!(validator_balance_after > validator_balance_before);
 
     // Ensure that the user can set the fee token back to pathUSD post allegro moderato
-    let set_receipt = fee_manager
-        .setUserToken(PATH_USD_ADDRESS)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
+    let set_receipt =
+        fee_manager.setUserToken(PATH_USD_ADDRESS).send().await?.get_receipt().await?;
     assert!(set_receipt.status());
 
     let current_token = fee_manager.userTokens(user_address).call().await?;
@@ -139,10 +115,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
 async fn test_set_validator_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -152,10 +125,7 @@ async fn test_set_validator_token() -> eyre::Result<()> {
     let validator_token = setup_test_token(provider.clone(), validator_address).await?;
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider);
 
-    let initial_token = fee_manager
-        .validatorTokens(validator_address)
-        .call()
-        .await?;
+    let initial_token = fee_manager.validatorTokens(validator_address).call().await?;
     // Initial token should be PathUSD (token_id 0)
     assert_eq!(initial_token, token_id_to_address(0));
 
@@ -167,10 +137,7 @@ async fn test_set_validator_token() -> eyre::Result<()> {
         .await?;
     assert!(set_receipt.status());
 
-    let current_token = fee_manager
-        .validatorTokens(validator_address)
-        .call()
-        .await?;
+    let current_token = fee_manager.validatorTokens(validator_address).call().await?;
     assert_eq!(current_token, *validator_token.address());
 
     Ok(())
@@ -180,10 +147,7 @@ async fn test_set_validator_token() -> eyre::Result<()> {
 async fn test_fee_token_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
     let http_url = setup.http_url;
 
     let signers = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
@@ -222,10 +186,7 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
     };
 
     let res = send_fee_token_tx().await;
-    assert!(
-        res.err()
-            .is_some_and(|e| e.to_string().contains("insufficient funds"))
-    );
+    assert!(res.err().is_some_and(|e| e.to_string().contains("insufficient funds")));
 
     for signer in &signers {
         assert!(
@@ -271,10 +232,7 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
 async fn test_fee_payer_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
     let http_url = setup.http_url;
 
     let fee_payer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -290,24 +248,16 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
         max_fee_per_gas: fees.max_fee_per_gas,
         gas_limit: 21000,
         to: Address::ZERO.into(),
-        fee_payer_signature: Some(Signature::new(
-            Default::default(),
-            Default::default(),
-            false,
-        )),
+        fee_payer_signature: Some(Signature::new(Default::default(), Default::default(), false)),
         ..Default::default()
     };
 
     let signature = user.sign_transaction_sync(&mut tx).unwrap();
     assert!(
-        signature
-            .recover_address_from_prehash(&tx.signature_hash())
-            .unwrap()
-            == user.address()
+        signature.recover_address_from_prehash(&tx.signature_hash()).unwrap() == user.address()
     );
-    let fee_payer_signature = fee_payer
-        .sign_hash_sync(&tx.fee_payer_signature_hash(user.address()))
-        .unwrap();
+    let fee_payer_signature =
+        fee_payer.sign_hash_sync(&tx.fee_payer_signature_hash(user.address())).unwrap();
 
     tx.fee_payer_signature = Some(fee_payer_signature);
     let tx = tx.into_signed(signature);
@@ -325,11 +275,7 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
         .call()
         .await?;
 
-    let tx_hash = provider
-        .send_raw_transaction(&tx.encoded_2718())
-        .await?
-        .watch()
-        .await?;
+    let tx_hash = provider.send_raw_transaction(&tx.encoded_2718()).await?.watch().await?;
 
     let receipt = provider
         .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))

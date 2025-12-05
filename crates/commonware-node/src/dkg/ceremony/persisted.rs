@@ -40,11 +40,11 @@ impl Write for State {
 
 impl EncodeSize for State {
     fn encode_size(&self) -> usize {
-        UInt(self.num_players).encode_size()
-            + self.dealing.encode_size()
-            + self.received_shares.encode_size()
-            + self.dealing_outcome.encode_size()
-            + self.outcomes.encode_size()
+        UInt(self.num_players).encode_size() +
+            self.dealing.encode_size() +
+            self.received_shares.encode_size() +
+            self.dealing_outcome.encode_size() +
+            self.outcomes.encode_size()
     }
 }
 
@@ -60,21 +60,12 @@ impl Read for State {
         let dealing = Option::<Dealing>::read_cfg(buf, &(quorum(num_players as u32) as usize))?;
         let received_shares = Vec::<(PublicKey, Public<MinSig>, group::Share)>::read_cfg(
             buf,
-            &(
-                RangeCfg::from(0..usize::MAX),
-                ((), quorum(num_players as u32) as usize, ()),
-            ),
+            &(RangeCfg::from(0..usize::MAX), ((), quorum(num_players as u32) as usize, ())),
         )?;
         let dealing_outcome = Option::<IntermediateOutcome>::read_cfg(buf, &())?;
         let outcomes =
             Vec::<IntermediateOutcome>::read_cfg(buf, &(RangeCfg::from(0..usize::MAX), ()))?;
-        Ok(Self {
-            num_players,
-            dealing,
-            received_shares,
-            dealing_outcome,
-            outcomes,
-        })
+        Ok(Self { num_players, dealing, received_shares, dealing_outcome, outcomes })
     }
 }
 
@@ -102,11 +93,7 @@ impl Read for Dealing {
         let commitment = Public::<MinSig>::read_cfg(buf, cfg)?;
         let shares = BTreeMap::read_cfg(buf, &(RangeCfg::from(0..usize::MAX), ((), ())))?;
         let acks = BTreeMap::read_cfg(buf, &(RangeCfg::from(0..usize::MAX), ((), ())))?;
-        Ok(Self {
-            commitment,
-            shares,
-            acks,
-        })
+        Ok(Self { commitment, shares, acks })
     }
 }
 
@@ -208,11 +195,7 @@ mod tests {
                 &commitment,
             ),
         );
-        Dealing {
-            commitment,
-            shares,
-            acks,
-        }
+        Dealing { commitment, shares, acks }
     }
 
     fn dealing_outcome(dealer_index: usize) -> IntermediateOutcome {

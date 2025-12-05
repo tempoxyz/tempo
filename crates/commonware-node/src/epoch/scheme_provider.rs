@@ -18,17 +18,11 @@ pub(crate) struct SchemeProvider {
 
 impl SchemeProvider {
     pub(crate) fn new() -> Self {
-        Self {
-            inner: Default::default(),
-        }
+        Self { inner: Default::default() }
     }
 
     pub(crate) fn register(&self, epoch: Epoch, scheme: Scheme<PublicKey, MinSig>) -> bool {
-        self.inner
-            .lock()
-            .unwrap()
-            .insert(epoch, Arc::new(scheme))
-            .is_none()
+        self.inner.lock().unwrap().insert(epoch, Arc::new(scheme)).is_none()
     }
 
     pub(crate) fn delete(&self, epoch: &Epoch) -> bool {

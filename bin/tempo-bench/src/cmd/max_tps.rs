@@ -213,10 +213,7 @@ impl MaxTpsArgs {
         if self.faucet {
             fund_accounts(
                 &provider,
-                &signer_providers
-                    .iter()
-                    .map(|(signer, _)| signer.address())
-                    .collect::<Vec<_>>(),
+                &signer_providers.iter().map(|(signer, _)| signer.address()).collect::<Vec<_>>(),
                 self.max_concurrent_requests,
                 self.max_concurrent_transactions,
             )
@@ -286,10 +283,8 @@ impl MaxTpsArgs {
         let start_block_number = loop {
             if let Some(first_tx) = pending_txs.pop_front() {
                 debug!(hash = %first_tx.tx_hash(), "Retrieving transaction receipt for first block number");
-                if let Ok(first_tx_receipt) = first_tx
-                    .with_timeout(Some(Duration::from_secs(5)))
-                    .get_receipt()
-                    .await
+                if let Ok(first_tx_receipt) =
+                    first_tx.with_timeout(Some(Duration::from_secs(5))).get_receipt().await
                 {
                     break first_tx_receipt.block_number;
                 }
@@ -359,9 +354,9 @@ impl FromStr for MnemonicArg {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "random" => Ok(MnemonicArg::Random),
-            mnemonic => Ok(MnemonicArg::Mnemonic(
-                Mnemonic::<English>::from_str(mnemonic)?.to_phrase(),
-            )),
+            mnemonic => {
+                Ok(MnemonicArg::Mnemonic(Mnemonic::<English>::from_str(mnemonic)?.to_phrase()))
+            }
         }
     }
 }
@@ -375,7 +370,8 @@ impl MnemonicArg {
     }
 }
 
-/// Awaits pending transactions with up to `tps` per second and `max_concurrent_requests` simultaneous in-flight requests. Stops when `deadline` future resolves.
+/// Awaits pending transactions with up to `tps` per second and `max_concurrent_requests`
+/// simultaneous in-flight requests. Stops when `deadline` future resolves.
 async fn send_transactions<F: TxFiller<TempoNetwork> + 'static>(
     transactions: Vec<Vec<u8>>,
     signer_provider_manager: SignerProviderManager<F>,
@@ -383,10 +379,7 @@ async fn send_transactions<F: TxFiller<TempoNetwork> + 'static>(
     tps: u64,
     deadline: Sleep,
 ) -> VecDeque<PendingTransactionBuilder<TempoNetwork>> {
-    info!(
-        transactions = transactions.len(),
-        max_concurrent_requests, tps, "Sending transactions"
-    );
+    info!(transactions = transactions.len(), max_concurrent_requests, tps, "Sending transactions");
 
     // Create shared transaction counter and monitoring
     let tx_counter = Arc::new(AtomicUsize::new(0));
@@ -394,11 +387,7 @@ async fn send_transactions<F: TxFiller<TempoNetwork> + 'static>(
     // Spawn monitoring task for TPS reporting
     let cancel = CancellationToken::new();
     let _drop_guard = cancel.clone().drop_guard();
-    tokio::spawn(monitor_tps(
-        tx_counter.clone(),
-        transactions.len(),
-        cancel.clone(),
-    ));
+    tokio::spawn(monitor_tps(tx_counter.clone(), transactions.len(), cancel.clone()));
 
     // Create a rate limiter
     let rate_limiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(tps as u32).unwrap()));
@@ -407,15 +396,10 @@ async fn send_transactions<F: TxFiller<TempoNetwork> + 'static>(
     let timeout = Arc::new(AtomicUsize::new(0));
     let transactions = stream::iter(transactions)
         .ratelimit_stream(&rate_limiter)
-        .zip(stream::repeat_with(|| {
-            signer_provider_manager.random_unsigned_provider()
-        }))
+        .zip(stream::repeat_with(|| signer_provider_manager.random_unsigned_provider()))
         .map(|(bytes, provider)| async move {
-            tokio::time::timeout(
-                Duration::from_secs(1),
-                provider.send_raw_transaction(&bytes),
-            )
-            .await
+            tokio::time::timeout(Duration::from_secs(1), provider.send_raw_transaction(&bytes))
+                .await
         })
         .buffer_unordered(max_concurrent_requests)
         .filter_map(|result| async {
@@ -466,10 +450,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
     } = input;
 
     let txs_per_sender = total_txs / accounts;
-    ensure!(
-        txs_per_sender > 0,
-        "txs per sender is 0, increase tps or decrease senders"
-    );
+    ensure!(txs_per_sender > 0, "txs per sender is 0, increase tps or decrease senders");
 
     info!(transactions = total_txs, "Generating transactions");
 
@@ -506,9 +487,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                     let token = ITIP20Instance::new(token, provider.clone());
 
                     // Transfer minimum possible amount
-                    token
-                        .transfer(Address::random(), U256::ONE)
-                        .into_transaction_request()
+                    token.transfer(Address::random(), U256::ONE).into_transaction_request()
                 }
                 1 => {
                     swaps.fetch_add(1, Ordering::Relaxed);
@@ -531,11 +510,9 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
 
                     // Place an order at a random tick that's a multiple of `TICK_SPACING`
                     let tick =
-                        rand::random_range(MIN_TICK / TICK_SPACING..=MAX_TICK / TICK_SPACING)
-                            * TICK_SPACING;
-                    exchange
-                        .place(token, MIN_ORDER_AMOUNT, true, tick)
-                        .into_transaction_request()
+                        rand::random_range(MIN_TICK / TICK_SPACING..=MAX_TICK / TICK_SPACING) *
+                            TICK_SPACING;
+                    exchange.place(token, MIN_ORDER_AMOUNT, true, tick).into_transaction_request()
                 }
                 _ => unreachable!("Only {TX_TYPES} transaction types are supported"),
             };
@@ -549,8 +526,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
             // This will skip the gas filler.
             if let Some((max_fee_per_gas, max_priority_fee_per_gas, gas_limit)) = gas.get() {
                 tx.inner.set_max_fee_per_gas(*max_fee_per_gas);
-                tx.inner
-                    .set_max_priority_fee_per_gas(*max_priority_fee_per_gas);
+                tx.inner.set_max_priority_fee_per_gas(*max_priority_fee_per_gas);
                 tx.inner.set_gas_limit(*gas_limit);
             }
 
@@ -564,15 +540,11 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
             if gas.get().is_none() {
                 let _ = gas.set(match &tx {
                     SendableTx::Builder(builder) => (
-                        builder
-                            .max_fee_per_gas()
-                            .ok_or_eyre("max fee per gas should be filled")?,
+                        builder.max_fee_per_gas().ok_or_eyre("max fee per gas should be filled")?,
                         builder
                             .max_priority_fee_per_gas()
                             .ok_or_eyre("max priority fee per gas should be filled")?,
-                        builder
-                            .gas_limit()
-                            .ok_or_eyre("gas limit should be filled")?,
+                        builder.gas_limit().ok_or_eyre("gas limit should be filled")?,
                     ),
                     SendableTx::Envelope(envelope) => (
                         envelope.max_fee_per_gas(),
@@ -640,15 +612,11 @@ async fn fund_accounts(
             .inspect(|_| progress.inc(1))
             .flatten()
             .map(async |hash| {
-                Ok(
-                    PendingTransactionBuilder::new(provider.root().clone(), hash)
-                        .get_receipt()
-                        .await?,
-                )
+                Ok(PendingTransactionBuilder::new(provider.root().clone(), hash)
+                    .get_receipt()
+                    .await?)
             });
-        assert_receipts(tx_hashes, max_concurrent_requests)
-            .await
-            .expect("Failed to fund accounts");
+        assert_receipts(tx_hashes, max_concurrent_requests).await.expect("Failed to fund accounts");
     }
     Ok(())
 }
@@ -722,10 +690,8 @@ pub async fn generate_report(
     let mut benchmarked_blocks = Vec::new();
 
     for number in start_block..=end_block {
-        let block = provider
-            .get_block(number.into())
-            .await?
-            .ok_or_eyre("Block {number} not found")?;
+        let block =
+            provider.get_block(number.into()).await?.ok_or_eyre("Block {number} not found")?;
         let receipts = provider
             .get_block_receipts(number.into())
             .await?
@@ -734,15 +700,9 @@ pub async fn generate_report(
 
         let latency_ms = last_block_timestamp.map(|last| timestamp - last);
         let (ok_count, err_count) =
-            receipts
-                .iter()
-                .fold((0, 0), |(successes, failures), receipt| {
-                    if receipt.status() {
-                        (successes + 1, failures)
-                    } else {
-                        (successes, failures + 1)
-                    }
-                });
+            receipts.iter().fold((0, 0), |(successes, failures), receipt| {
+                if receipt.status() { (successes + 1, failures) } else { (successes, failures + 1) }
+            });
 
         benchmarked_blocks.push(BenchmarkedBlock {
             number,
@@ -773,10 +733,7 @@ pub async fn generate_report(
         swap_weight: args.swap_weight,
     };
 
-    let report = BenchmarkReport {
-        metadata,
-        blocks: benchmarked_blocks,
-    };
+    let report = BenchmarkReport { metadata, blocks: benchmarked_blocks };
 
     let path = "report.json";
     let file = File::create(path)?;
@@ -831,9 +788,7 @@ async fn join_all<
 
         // Fetch receipts and assert status
         assert_receipts(
-            pending_txs
-                .into_iter()
-                .map(|tx| async move { Ok(tx.get_receipt().await?) }),
+            pending_txs.into_iter().map(|tx| async move { Ok(tx.get_receipt().await?) }),
             max_concurrent_requests,
         )
         .await?;
@@ -853,11 +808,7 @@ async fn assert_receipts<R: ReceiptResponse, F: Future<Output = eyre::Result<R>>
 }
 
 async fn assert_receipt<R: ReceiptResponse>(receipt: R) -> eyre::Result<()> {
-    eyre::ensure!(
-        receipt.status(),
-        "Transaction {} failed",
-        receipt.transaction_hash()
-    );
+    eyre::ensure!(receipt.status(), "Transaction {} failed", receipt.transaction_hash());
     Ok(())
 }
 

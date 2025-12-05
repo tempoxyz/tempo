@@ -8,9 +8,11 @@ use alloy_provider::{
 use alloy_transport::TransportResult;
 use tempo_primitives::subblock::has_sub_block_nonce_key_prefix;
 
-/// A [`TxFiller`] that populates the [`TempoTransaction`](`tempo_primitives::TempoTransaction`) transaction with a random `nonce_key`, and `nonce` set to `0`.
+/// A [`TxFiller`] that populates the [`TempoTransaction`](`tempo_primitives::TempoTransaction`)
+/// transaction with a random `nonce_key`, and `nonce` set to `0`.
 ///
-/// This filler can be used to avoid nonce gaps by having a random 2D nonce key that doesn't conflict with any other transactions.
+/// This filler can be used to avoid nonce gaps by having a random 2D nonce key that doesn't
+/// conflict with any other transactions.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Random2DNonceFiller;
 
@@ -32,8 +34,8 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for R
     }
 
     fn fill_sync(&self, tx: &mut SendableTx<N>) {
-        if let Some(builder) = tx.as_mut_builder()
-            && !Self::is_filled(builder)
+        if let Some(builder) = tx.as_mut_builder() &&
+            !Self::is_filled(builder)
         {
             let nonce_key = loop {
                 let key = U256::random();
@@ -82,10 +84,8 @@ mod tests {
             .connect_mocked_client(Asserter::default());
 
         // No nonce key, no nonce => nonce key and nonce are filled
-        let filled_request = provider
-            .fill(TempoTransactionRequest::default())
-            .await?
-            .try_into_request()?;
+        let filled_request =
+            provider.fill(TempoTransactionRequest::default()).await?.try_into_request()?;
         assert!(filled_request.nonce_key.is_some());
         assert_eq!(filled_request.nonce(), Some(0));
 

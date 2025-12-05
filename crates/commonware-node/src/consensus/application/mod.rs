@@ -24,9 +24,7 @@ pub(super) async fn init<TContext>(
 where
     TContext: Pacer + governor::clock::Clock + Rng + CryptoRng + Spawner + Storage + Metrics,
 {
-    let actor = Actor::init(config)
-        .await
-        .wrap_err("failed initializing actor")?;
+    let actor = Actor::init(config).await.wrap_err("failed initializing actor")?;
     let mailbox = actor.mailbox().clone();
     Ok((actor, mailbox))
 }

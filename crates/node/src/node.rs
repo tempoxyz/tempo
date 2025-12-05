@@ -61,9 +61,7 @@ pub struct TempoNodeArgs {
 impl TempoNodeArgs {
     /// Returns a [`TempoPoolBuilder`] configured from these args.
     pub fn pool_builder(&self) -> TempoPoolBuilder {
-        TempoPoolBuilder {
-            aa_valid_after_max_secs: self.aa_valid_after_max_secs,
-        }
+        TempoPoolBuilder { aa_valid_after_max_secs: self.aa_valid_after_max_secs }
     }
 }
 
@@ -80,10 +78,7 @@ pub struct TempoNode {
 impl TempoNode {
     /// Create new instance of a Tempo node
     pub fn new(args: &TempoNodeArgs, validator_key: Option<B256>) -> Self {
-        Self {
-            pool_builder: args.pool_builder(),
-            validator_key,
-        }
+        Self { pool_builder: args.pool_builder(), validator_key }
     }
 
     /// Returns a [`ComponentsBuilder`] configured for a regular Tempo node.
@@ -140,10 +135,7 @@ where
 {
     /// Creates a new instance from the inner `RpcAddOns`.
     pub fn new(validator_key: Option<B256>) -> Self {
-        Self {
-            inner: Default::default(),
-            validator_key,
-        }
+        Self { inner: Default::default(), validator_key }
     }
 }
 
@@ -161,9 +153,8 @@ where
     async fn launch_add_ons(self, ctx: AddOnsContext<'_, N>) -> eyre::Result<Self::Handle> {
         self.inner
             .launch_add_ons_with(ctx, move |container| {
-                let reth_node_builder::rpc::RpcModuleContainer {
-                    modules, registry, ..
-                } = container;
+                let reth_node_builder::rpc::RpcModuleContainer { modules, registry, .. } =
+                    container;
 
                 let eth_api = registry.eth_api().clone();
                 let dex = TempoDex::new(eth_api.clone());
@@ -245,9 +236,7 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TempoNode {
         alloy_rpc_types_eth::Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeader>;
 
     fn rpc_to_primitive_block(rpc_block: Self::RpcBlock) -> tempo_primitives::Block {
-        rpc_block
-            .into_consensus_block()
-            .map_transactions(|tx| tx.into_inner())
+        rpc_block.into_consensus_block().map_transactions(|tx| tx.into_inner())
     }
 
     fn local_payload_attributes_builder(
@@ -282,16 +271,12 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
         let mut inner = self.inner.build(parent);
         inner.suggested_fee_recipient = Address::ZERO;
 
-        let timestamp_millis_part = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-            % 1000;
+        let timestamp_millis_part =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
+                as u64 %
+                1000;
 
-        TempoPayloadAttributes {
-            inner,
-            timestamp_millis_part,
-        }
+        TempoPayloadAttributes { inner, timestamp_millis_part }
     }
 }
 
@@ -365,9 +350,7 @@ impl TempoPoolBuilder {
 
 impl Default for TempoPoolBuilder {
     fn default() -> Self {
-        Self {
-            aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
-        }
+        Self { aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS }
     }
 }
 
@@ -387,9 +370,8 @@ where
         } else {
             // get the current blob params for the current timestamp, fallback to default Cancun
             // params
-            let current_timestamp = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)?
-                .as_secs();
+            let current_timestamp =
+                SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_secs();
             let blob_params = ctx
                 .chain_spec()
                 .blob_params_at_timestamp(current_timestamp)
@@ -496,10 +478,6 @@ where
         pool: TempoTransactionPool<Node::Provider>,
         evm_config: TempoEvmConfig,
     ) -> eyre::Result<Self::PayloadBuilder> {
-        Ok(TempoPayloadBuilder::new(
-            pool,
-            ctx.provider().clone(),
-            evm_config,
-        ))
+        Ok(TempoPayloadBuilder::new(pool, ctx.provider().clone(), evm_config))
     }
 }

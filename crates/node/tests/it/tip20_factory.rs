@@ -10,10 +10,8 @@ use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::token_id
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_create_token() -> eyre::Result<()> {
-    let setup = crate::utils::TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup =
+        crate::utils::TestNodeBuilder::new().allegretto_activated().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;

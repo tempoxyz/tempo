@@ -121,10 +121,7 @@ pub(crate) fn gen_getters_and_setters(
                 }
             }
         }
-        FieldKind::Mapping {
-            key: key_ty,
-            value: value_ty,
-        } => {
+        FieldKind::Mapping { key: key_ty, value: value_ty } => {
             quote! {
                 impl<'a, S: crate::storage::PrecompileStorageProvider> #struct_name<'a, S> {
                     #[inline]
@@ -144,11 +141,7 @@ pub(crate) fn gen_getters_and_setters(
                 }
             }
         }
-        FieldKind::NestedMapping {
-            key1: key1_ty,
-            key2: key2_ty,
-            value: value_ty,
-        } => {
+        FieldKind::NestedMapping { key1: key1_ty, key2: key2_ty, value: value_ty } => {
             quote! {
                 impl<'a, S: crate::storage::PrecompileStorageProvider> #struct_name<'a, S> {
                     #[inline]

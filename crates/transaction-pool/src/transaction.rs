@@ -19,7 +19,8 @@ use thiserror::Error;
 
 /// Tempo pooled transaction representation.
 ///
-/// This is a wrapper around the regular ethereum [`EthPooledTransaction`], but with tempo specific implementations.
+/// This is a wrapper around the regular ethereum [`EthPooledTransaction`], but with tempo specific
+/// implementations.
 #[derive(Debug, Clone)]
 pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
@@ -61,7 +62,8 @@ impl TempoPooledTransaction {
         self.inner().is_aa()
     }
 
-    /// Returns the nonce key of this transaction if it's an [`AASigned`](tempo_primitives::AASigned) transaction.
+    /// Returns the nonce key of this transaction if it's an
+    /// [`AASigned`](tempo_primitives::AASigned) transaction.
     pub fn nonce_key(&self) -> Option<U256> {
         self.inner.transaction.nonce_key()
     }
@@ -76,24 +78,14 @@ impl TempoPooledTransaction {
     /// Returns true if this transaction belongs into the 2D nonce pool:
     /// - AA transaction with a `nonce key != 0`
     pub(crate) fn is_aa_2d(&self) -> bool {
-        self.inner
-            .transaction
-            .as_aa()
-            .map(|tx| !tx.tx().nonce_key.is_zero())
-            .unwrap_or(false)
+        self.inner.transaction.as_aa().map(|tx| !tx.tx().nonce_key.is_zero()).unwrap_or(false)
     }
 
     /// Returns the unique identifier for this AA transaction.
     pub(crate) fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
         let nonce_key = self.nonce_key()?;
-        let sender = AASequenceId {
-            address: self.sender(),
-            nonce_key,
-        };
-        Some(AA2dTransactionId {
-            seq_id: sender,
-            nonce: self.nonce(),
-        })
+        let sender = AASequenceId { address: self.sender(), nonce_key };
+        Some(AA2dTransactionId { seq_id: sender, nonce: self.nonce() })
     }
 }
 
@@ -130,16 +122,15 @@ pub enum TempoPoolTransactionError {
     )]
     NonZeroValue,
 
-    /// Thrown if a Tempo Transaction with a nonce key prefixed with the sub-block prefix marker added to the pool
+    /// Thrown if a Tempo Transaction with a nonce key prefixed with the sub-block prefix marker
+    /// added to the pool
     #[error("Tempo Transaction with subblock nonce key prefix aren't supported in the pool")]
     SubblockNonceKey,
 
-    /// Thrown if the fee payer of a transaction cannot transfer (is blacklisted) the fee token, thus making the payment impossible.
+    /// Thrown if the fee payer of a transaction cannot transfer (is blacklisted) the fee token,
+    /// thus making the payment impossible.
     #[error("Fee payer {fee_payer} is blacklisted by fee token: {fee_token}")]
-    BlackListedFeePayer {
-        fee_token: Address,
-        fee_payer: Address,
-    },
+    BlackListedFeePayer { fee_token: Address, fee_payer: Address },
 
     /// Thrown when we couldn't find a recently used validator token that has enough liquidity
     /// in fee AMM pair with the user token this transaction will pay fees in.
@@ -152,14 +143,14 @@ pub enum TempoPoolTransactionError {
 impl PoolTransactionError for TempoPoolTransactionError {
     fn is_bad_transaction(&self) -> bool {
         match self {
-            Self::ExceedsNonPaymentLimit
-            | Self::InvalidFeeToken(_)
-            | Self::MissingFeeToken
-            | Self::BlackListedFeePayer { .. }
-            | Self::InvalidValidBefore { .. }
-            | Self::InvalidValidAfter { .. }
-            | Self::Keychain(_)
-            | Self::InsufficientLiquidity(_) => false,
+            Self::ExceedsNonPaymentLimit |
+            Self::InvalidFeeToken(_) |
+            Self::MissingFeeToken |
+            Self::BlackListedFeePayer { .. } |
+            Self::InvalidValidBefore { .. } |
+            Self::InvalidValidAfter { .. } |
+            Self::Keychain(_) |
+            Self::InsufficientLiquidity(_) => false,
             Self::NonZeroValue | Self::SubblockNonceKey => true,
         }
     }
@@ -338,9 +329,7 @@ impl EthPoolTransaction for TempoPooledTransaction {
         _sidecar: &BlobTransactionSidecarVariant,
         _settings: &KzgSettings,
     ) -> Result<(), BlobTransactionValidationError> {
-        Err(BlobTransactionValidationError::NotBlobTransaction(
-            self.ty(),
-        ))
+        Err(BlobTransactionValidationError::NotBlobTransaction(self.ty()))
     }
 }
 
@@ -354,11 +343,8 @@ mod tests {
     fn test_payment_classification_caching() {
         // Test that payment classification is properly cached in TempoPooledTransaction
         let payment_addr = address!("20c0000000000000000000000000000000000001");
-        let tx = TxFeeToken {
-            to: TxKind::Call(payment_addr),
-            gas_limit: 21000,
-            ..Default::default()
-        };
+        let tx =
+            TxFeeToken { to: TxKind::Call(payment_addr), gas_limit: 21000, ..Default::default() };
 
         let envelope = TempoTxEnvelope::FeeToken(alloy_consensus::Signed::new_unchecked(
             tx,

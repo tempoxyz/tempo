@@ -63,10 +63,7 @@ mod tests {
 
     #[test]
     fn test_invalid_flip_tick_bid() {
-        let err = OrderError::InvalidBidFlipTick {
-            tick: 5,
-            flip_tick: 3,
-        };
+        let err = OrderError::InvalidBidFlipTick { tick: 5, flip_tick: 3 };
         let msg = err.to_string();
         assert!(msg.contains("bid"));
         assert!(msg.contains("greater than"));
@@ -76,10 +73,7 @@ mod tests {
 
     #[test]
     fn test_invalid_flip_tick_ask() {
-        let err = OrderError::InvalidAskFlipTick {
-            tick: 5,
-            flip_tick: 7,
-        };
+        let err = OrderError::InvalidAskFlipTick { tick: 5, flip_tick: 7 };
         let msg = err.to_string();
         assert!(msg.contains("ask"));
         assert!(msg.contains("less than"));
@@ -90,10 +84,7 @@ mod tests {
     #[test]
     fn test_not_a_flip_order() {
         let err = OrderError::NotAFlipOrder;
-        assert_eq!(
-            err.to_string(),
-            "cannot create flipped order from a non-flip order"
-        );
+        assert_eq!(err.to_string(), "cannot create flipped order from a non-flip order");
     }
 
     #[test]
@@ -106,10 +97,7 @@ mod tests {
 
     #[test]
     fn test_fill_amount_exceeds_remaining() {
-        let err = OrderError::FillAmountExceedsRemaining {
-            requested: 1000,
-            available: 600,
-        };
+        let err = OrderError::FillAmountExceedsRemaining { requested: 1000, available: 600 };
         let msg = err.to_string();
         assert!(msg.contains("1000"));
         assert!(msg.contains("600"));
@@ -117,11 +105,7 @@ mod tests {
 
     #[test]
     fn test_invalid_tick() {
-        let err = OrderError::InvalidTick {
-            tick: 3000,
-            min: -2000,
-            max: 2000,
-        };
+        let err = OrderError::InvalidTick { tick: 3000, min: -2000, max: 2000 };
         let msg = err.to_string();
         assert_eq!(msg, "tick 3000 is out of bounds (min: -2000, max: 2000)");
     }

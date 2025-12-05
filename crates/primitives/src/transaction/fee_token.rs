@@ -224,11 +224,7 @@ impl RlpEcdsaEncodableTx for TxFeeToken {
             |signature, out| {
                 if let Some(signature) = signature {
                     let payload_length = signature.rlp_rs_len() + signature.v().length();
-                    alloy_rlp::Header {
-                        list: true,
-                        payload_length,
-                    }
-                    .encode(out);
+                    alloy_rlp::Header { list: true, payload_length }.encode(out);
                     signature.write_rlp_vrs(out, signature.v());
                 } else {
                     out.put_u8(EMPTY_STRING_CODE);
@@ -391,14 +387,11 @@ impl SignableTransaction<Signature> for TxFeeToken {
         // We skip encoding the fee token if the signature is present to ensure that user
         // does not commit to a specific fee token when someone else is paying for the transaction.
         let skip_fee_token = self.fee_payer_signature.is_some();
-        // For signing, we don't encode the signature but only encode a single byte marking the presence of the signature
+        // For signing, we don't encode the signature but only encode a single byte marking the
+        // presence of the signature
         out.put_u8(Self::tx_type());
         let payload_length = self.rlp_encoded_fields_length(|_| 1, skip_fee_token);
-        alloy_rlp::Header {
-            list: true,
-            payload_length,
-        }
-        .encode(out);
+        alloy_rlp::Header { list: true, payload_length }.encode(out);
         self.rlp_encode_fields(
             out,
             |signature, out| {
@@ -415,11 +408,7 @@ impl SignableTransaction<Signature> for TxFeeToken {
     fn payload_len_for_signature(&self) -> usize {
         let payload_length =
             self.rlp_encoded_fields_length(|_| 1, self.fee_payer_signature.is_some());
-        1 + alloy_rlp::Header {
-            list: true,
-            payload_length,
-        }
-        .length_with_payload()
+        1 + alloy_rlp::Header { list: true, payload_length }.length_with_payload()
     }
 }
 
@@ -489,22 +478,15 @@ mod tests {
     #[test]
     fn test_tx_fee_token_validation() {
         // Valid: no authorization list, to can be Create
-        let tx1 = TxFeeToken {
-            to: TxKind::Create,
-            authorization_list: vec![],
-            ..Default::default()
-        };
+        let tx1 =
+            TxFeeToken { to: TxKind::Create, authorization_list: vec![], ..Default::default() };
         assert!(tx1.validate().is_ok());
 
         // Valid: authorization list with to address
         let tx2 = TxFeeToken {
             to: TxKind::Call(Address::ZERO),
             authorization_list: vec![SignedAuthorization::new_unchecked(
-                Authorization {
-                    chain_id: U256::from(1),
-                    address: Address::ZERO,
-                    nonce: 0,
-                },
+                Authorization { chain_id: U256::from(1), address: Address::ZERO, nonce: 0 },
                 0,
                 U256::ZERO,
                 U256::ZERO,
@@ -517,11 +499,7 @@ mod tests {
         let tx3 = TxFeeToken {
             to: TxKind::Create,
             authorization_list: vec![SignedAuthorization::new_unchecked(
-                Authorization {
-                    chain_id: U256::from(1),
-                    address: Address::ZERO,
-                    nonce: 0,
-                },
+                Authorization { chain_id: U256::from(1), address: Address::ZERO, nonce: 0 },
                 0,
                 U256::ZERO,
                 U256::ZERO,

@@ -46,11 +46,7 @@ impl Builder {
     where
         TContext: Spawner,
     {
-        let Self {
-            execution_node,
-            genesis_block,
-            marshal,
-        } = self;
+        let Self { execution_node, genesis_block, marshal } = self;
 
         let (to_me, from_app) = mpsc::unbounded();
 
@@ -184,14 +180,8 @@ where
     async fn handle_message(&mut self, message: Message) {
         let cause = message.cause;
         match message.command {
-            Command::CanonicalizeHead {
-                height,
-                digest,
-                ack,
-            } => {
-                let _ = self
-                    .canonicalize(cause, HeadOrFinalized::Head, height, digest, ack)
-                    .await;
+            Command::CanonicalizeHead { height, digest, ack } => {
+                let _ = self.canonicalize(cause, HeadOrFinalized::Head, height, digest, ack).await;
             }
             Command::Finalize(finalized) => {
                 let _ = self.finalize(cause, *finalized).await;
@@ -283,9 +273,8 @@ where
                     .await;
             }
             Update::Block(block, acknowledgment) => {
-                let _: Result<_, _> = self
-                    .forward_finalized(Span::current(), block, acknowledgment)
-                    .await;
+                let _: Result<_, _> =
+                    self.forward_finalized(Span::current(), block, acknowledgment).await;
             }
         }
     }
@@ -342,20 +331,18 @@ where
             );
         }
 
-        if let Ok(execution_height) = self
-            .execution_node
-            .provider
-            .last_block_number()
-            .map_err(Report::new)
-            .inspect_err(|error| {
-                warn!(
-                    %error,
-                    "failed getting last finalized block from execution layer, will \
-                    finalize forward block to execution layer without extra checks, \
-                    but it might fail"
-                )
-            })
-            && execution_height + 1 < block.height()
+        if let Ok(execution_height) =
+            self.execution_node.provider.last_block_number().map_err(Report::new).inspect_err(
+                |error| {
+                    warn!(
+                        %error,
+                        "failed getting last finalized block from execution layer, will \
+                        finalize forward block to execution layer without extra checks, \
+                        but it might fail"
+                    )
+                },
+            ) &&
+            execution_height + 1 < block.height()
         {
             info!(
                 execution.finalized_height = execution_height,
@@ -473,11 +460,7 @@ impl ExecutorMailbox {
         self.inner
             .unbounded_send(Message {
                 cause: Span::current(),
-                command: Command::CanonicalizeHead {
-                    height,
-                    digest,
-                    ack: tx,
-                },
+                command: Command::CanonicalizeHead { height, digest, ack: tx },
             })
             .wrap_err("failed sending canonicalize request to agent, this means it exited")?;
 
@@ -507,11 +490,7 @@ struct Message {
 #[derive(Debug)]
 enum Command {
     /// Requests the agent to set the head of the canonical chain to `digest`.
-    CanonicalizeHead {
-        height: u64,
-        digest: Digest,
-        ack: oneshot::Sender<()>,
-    },
+    CanonicalizeHead { height: u64, digest: Digest, ack: oneshot::Sender<()> },
     /// Requests the agent to forward a finalization event to the execution layer.
     Finalize(Box<super::ingress::Finalized>),
 }

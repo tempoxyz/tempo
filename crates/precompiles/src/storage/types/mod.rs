@@ -106,11 +106,7 @@ impl LayoutCtx {
     /// Get the packed offset, returns `None` for `Full`
     #[inline]
     pub const fn packed_offset(&self) -> Option<usize> {
-        if self.0 == usize::MAX {
-            None
-        } else {
-            Some(self.0)
-        }
+        if self.0 == usize::MAX { None } else { Some(self.0) }
     }
 }
 
@@ -145,10 +141,10 @@ pub trait StorableType {
 ///
 /// # Type Parameter
 ///
-/// - `SLOTS`: The number of consecutive storage slots this type occupies.
-///   For single-word types (Address, U256, bool), this is `1`.
-///   For fixed-size arrays, this equals the number of elements.
-///   For user-defined structs, this a number between `1` and the number of fields, which depends on slot packing.
+/// - `SLOTS`: The number of consecutive storage slots this type occupies. For single-word types
+///   (Address, U256, bool), this is `1`. For fixed-size arrays, this equals the number of elements.
+///   For user-defined structs, this a number between `1` and the number of fields, which depends on
+///   slot packing.
 ///
 /// # Storage Layout
 ///
@@ -171,7 +167,8 @@ pub trait Storable<const SLOTS: usize>: Sized + StorableType {
     ///
     /// # Context
     ///
-    /// - `LayoutCtx::FULL`: Load the entire value from `base_slot` (and subsequent slots if multi-slot)
+    /// - `LayoutCtx::FULL`: Load the entire value from `base_slot` (and subsequent slots if
+    ///   multi-slot)
     /// - `LayoutCtx::packed(offset)`: Load a packed primitive from byte `offset` within `base_slot`
     ///
     /// # Errors

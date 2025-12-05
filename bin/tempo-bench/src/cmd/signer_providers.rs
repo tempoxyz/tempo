@@ -41,9 +41,10 @@ impl<F: TxFiller<TempoNetwork> + 'static> SignerProviderManager<F> {
     /// Create a new instance of [`SignerProviderManager`].
     ///
     /// 1. Creates `accounts` signers from the `mnemonic` starting with `from_mnemonic_index` index.
-    /// 2. Creates `target_urls` providers without signing capabilities using `unsigned_provider_factory`.
-    /// 3. Creates `accounts` providers with signing capabilities, one per signer,
-    ///    with random target URLs using `signed_provider_factory`.
+    /// 2. Creates `target_urls` providers without signing capabilities using
+    ///    `unsigned_provider_factory`.
+    /// 3. Creates `accounts` providers with signing capabilities, one per signer, with random
+    ///    target URLs using `signed_provider_factory`.
     pub fn new(
         mnemonic: String,
         from_mnemonic_index: u32,
@@ -91,9 +92,7 @@ impl<F: TxFiller<TempoNetwork> + 'static> SignerProviderManager<F> {
             .target_urls
             .iter()
             .map(|target_url| {
-                let provider = ProviderBuilder::default()
-                    .connect_http(target_url.clone())
-                    .erased();
+                let provider = ProviderBuilder::default().connect_http(target_url.clone()).erased();
                 (target_url, provider)
             })
             .collect()
@@ -106,11 +105,7 @@ impl<F: TxFiller<TempoNetwork> + 'static> SignerProviderManager<F> {
 
     /// Returns a random signer without signing capabilities.
     pub fn random_unsigned_provider(&self) -> BenchProvider<F> {
-        self.0
-            .unsigned_providers
-            .choose(&mut rand::rng())
-            .unwrap()
-            .clone()
+        self.0.unsigned_providers.choose(&mut rand::rng()).unwrap().clone()
     }
 
     /// Returns a random signer.

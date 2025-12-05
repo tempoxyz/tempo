@@ -44,20 +44,12 @@ pub struct TickLevel {
 impl TickLevel {
     /// Creates a new empty tick level
     pub fn new() -> Self {
-        Self {
-            head: 0,
-            tail: 0,
-            total_liquidity: 0,
-        }
+        Self { head: 0, tail: 0, total_liquidity: 0 }
     }
 
     /// Creates a tick level with specific values
     pub fn with_values(head: u128, tail: u128, total_liquidity: u128) -> Self {
-        Self {
-            head,
-            tail,
-            total_liquidity,
-        }
+        Self { head, tail, total_liquidity }
     }
 
     /// Returns true if this tick level has no orders
@@ -73,11 +65,7 @@ impl TickLevel {
 
 impl From<TickLevel> for IStablecoinExchange::PriceLevel {
     fn from(value: TickLevel) -> Self {
-        Self {
-            head: value.head,
-            tail: value.tail,
-            totalLiquidity: value.total_liquidity,
-        }
+        Self { head: value.head, tail: value.tail, totalLiquidity: value.total_liquidity }
     }
 }
 
@@ -119,13 +107,7 @@ type BitMaps = Mapping<i16, U256>;
 impl Orderbook {
     /// Creates a new orderbook for a token pair
     pub fn new(base: Address, quote: Address) -> Self {
-        Self {
-            base,
-            quote,
-            best_bid_tick: i16::MIN,
-            best_ask_tick: i16::MAX,
-            ..Default::default()
-        }
+        Self { base, quote, best_bid_tick: i16::MIN, best_ask_tick: i16::MAX, ..Default::default() }
     }
 
     /// Returns true if this orderbook is initialized
@@ -140,15 +122,15 @@ impl Orderbook {
         quote_token: Option<Address>,
     ) -> bool {
         // Check base token filter
-        if let Some(base) = base_token
-            && base != self.base
+        if let Some(base) = base_token &&
+            base != self.base
         {
             return false;
         }
 
         // Check quote token filter
-        if let Some(quote) = quote_token
-            && quote != self.quote
+        if let Some(quote) = quote_token &&
+            quote != self.quote
         {
             return false;
         }
@@ -186,11 +168,9 @@ impl Orderbook {
         contract: &mut S,
     ) -> Result<bool, TempoPrecompileError> {
         let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BOOKS);
-        let base = Tokens::new_at_offset(
-            orderbook_base_slot,
-            __packing_orderbook::BASE_LOC.offset_slots,
-        )
-        .read(contract)?;
+        let base =
+            Tokens::new_at_offset(orderbook_base_slot, __packing_orderbook::BASE_LOC.offset_slots)
+                .read(contract)?;
 
         Ok(base != Address::ZERO)
     }
@@ -204,19 +184,11 @@ impl Orderbook {
     ) -> Result<TickLevel, TempoPrecompileError> {
         let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BOOKS);
         if is_bid {
-            Orders::at_offset(
-                orderbook_base_slot,
-                __packing_orderbook::BIDS_LOC.offset_slots,
-                tick,
-            )
-            .read(storage)
+            Orders::at_offset(orderbook_base_slot, __packing_orderbook::BIDS_LOC.offset_slots, tick)
+                .read(storage)
         } else {
-            Orders::at_offset(
-                orderbook_base_slot,
-                __packing_orderbook::ASKS_LOC.offset_slots,
-                tick,
-            )
-            .read(storage)
+            Orders::at_offset(orderbook_base_slot, __packing_orderbook::ASKS_LOC.offset_slots, tick)
+                .read(storage)
         }
     }
 
@@ -230,19 +202,11 @@ impl Orderbook {
     ) -> Result<(), TempoPrecompileError> {
         let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BOOKS);
         if is_bid {
-            Orders::at_offset(
-                orderbook_base_slot,
-                __packing_orderbook::BIDS_LOC.offset_slots,
-                tick,
-            )
-            .write(storage, tick_level)
+            Orders::at_offset(orderbook_base_slot, __packing_orderbook::BIDS_LOC.offset_slots, tick)
+                .write(storage, tick_level)
         } else {
-            Orders::at_offset(
-                orderbook_base_slot,
-                __packing_orderbook::ASKS_LOC.offset_slots,
-                tick,
-            )
-            .write(storage, tick_level)
+            Orders::at_offset(orderbook_base_slot, __packing_orderbook::ASKS_LOC.offset_slots, tick)
+                .write(storage, tick_level)
         }
     }
 
@@ -255,19 +219,11 @@ impl Orderbook {
     ) -> Result<(), TempoPrecompileError> {
         let orderbook_base_slot = mapping_slot(book_key.as_slice(), super::slots::BOOKS);
         if is_bid {
-            Orders::at_offset(
-                orderbook_base_slot,
-                __packing_orderbook::BIDS_LOC.offset_slots,
-                tick,
-            )
-            .delete(storage)
+            Orders::at_offset(orderbook_base_slot, __packing_orderbook::BIDS_LOC.offset_slots, tick)
+                .delete(storage)
         } else {
-            Orders::at_offset(
-                orderbook_base_slot,
-                __packing_orderbook::ASKS_LOC.offset_slots,
-                tick,
-            )
-            .delete(storage)
+            Orders::at_offset(orderbook_base_slot, __packing_orderbook::ASKS_LOC.offset_slots, tick)
+                .delete(storage)
         }
     }
 
@@ -439,11 +395,8 @@ impl From<Orderbook> for IStablecoinExchange::Orderbook {
 /// Compute deterministic book key from base, quote token pair
 pub fn compute_book_key(token_a: Address, token_b: Address) -> B256 {
     // Sort tokens to ensure deterministic key
-    let (token_a, token_b) = if token_a < token_b {
-        (token_a, token_b)
-    } else {
-        (token_b, token_a)
-    };
+    let (token_a, token_b) =
+        if token_a < token_b { (token_a, token_b) } else { (token_b, token_a) };
 
     // Compute keccak256(abi.encodePacked(tokenA, tokenB))
     let mut buf = [0u8; 40];
@@ -512,10 +465,7 @@ mod tests {
 
         // Test below peg
         assert_eq!(tick_to_price(-100), PRICE_SCALE - 100);
-        assert_eq!(
-            price_to_tick_post_moderato(PRICE_SCALE - 100).unwrap(),
-            -100
-        );
+        assert_eq!(price_to_tick_post_moderato(PRICE_SCALE - 100).unwrap(), -100);
     }
 
     #[test]
@@ -547,10 +497,7 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), i16::MIN);
         // Verify MIN_PRICE = PRICE_SCALE + i16::MIN
-        assert_eq!(
-            MIN_PRICE_PRE_MODERATO,
-            (PRICE_SCALE as i32 + i16::MIN as i32) as u32
-        );
+        assert_eq!(MIN_PRICE_PRE_MODERATO, (PRICE_SCALE as i32 + i16::MIN as i32) as u32);
     }
 
     #[test]
@@ -560,10 +507,7 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), i16::MAX);
         // Verify MAX_PRICE = PRICE_SCALE + i16::MAX
-        assert_eq!(
-            MAX_PRICE_PRE_MODERATO,
-            (PRICE_SCALE as i32 + i16::MAX as i32) as u32
-        );
+        assert_eq!(MAX_PRICE_PRE_MODERATO, (PRICE_SCALE as i32 + i16::MAX as i32) as u32);
     }
 
     #[test]
@@ -571,10 +515,7 @@ mod tests {
         let result = price_to_tick_post_moderato(MIN_PRICE_POST_MODERATO);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), MIN_TICK);
-        assert_eq!(
-            MIN_PRICE_POST_MODERATO,
-            (PRICE_SCALE as i32 + MIN_TICK as i32) as u32
-        );
+        assert_eq!(MIN_PRICE_POST_MODERATO, (PRICE_SCALE as i32 + MIN_TICK as i32) as u32);
     }
 
     #[test]
@@ -582,10 +523,7 @@ mod tests {
         let result = price_to_tick_post_moderato(MAX_PRICE_POST_MODERATO);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), MAX_TICK);
-        assert_eq!(
-            MAX_PRICE_POST_MODERATO,
-            (PRICE_SCALE as i32 + MAX_TICK as i32) as u32
-        );
+        assert_eq!(MAX_PRICE_POST_MODERATO, (PRICE_SCALE as i32 + MAX_TICK as i32) as u32);
     }
 
     #[test]
@@ -607,20 +545,14 @@ mod tests {
         let key_ba = compute_book_key(token_b, token_a);
         assert_eq!(key_ab, key_ba);
 
-        assert_eq!(
-            key_ab, key_ba,
-            "Book key should be the same regardless of address order"
-        );
+        assert_eq!(key_ab, key_ba, "Book key should be the same regardless of address order");
 
         let mut buf = [0u8; 40];
         buf[..20].copy_from_slice(token_a.as_slice());
         buf[20..].copy_from_slice(token_b.as_slice());
         let expected_hash = keccak256(buf);
 
-        assert_eq!(
-            key_ab, expected_hash,
-            "Book key should match manual keccak256 computation"
-        );
+        assert_eq!(key_ab, expected_hash, "Book key should match manual keccak256 computation");
     }
 
     mod bitmap_tests {

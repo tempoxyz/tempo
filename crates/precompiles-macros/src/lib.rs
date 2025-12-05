@@ -30,7 +30,8 @@ const RESERVED: &[&str] = &["address", "storage", "msg_sender"];
 
 /// Transforms a struct that represents a storage layout into a contract with helper methods to
 /// easily interact with the EVM storage.
-/// Its packing and encoding schemes aim to be an exact representation of the storage model used by Solidity.
+/// Its packing and encoding schemes aim to be an exact representation of the storage model used by
+/// Solidity.
 ///
 /// # Input: Storage Layout
 ///
@@ -95,11 +96,7 @@ enum FieldKind<'a> {
     /// Single-level mapping (`Mapping<K, V>`)
     Mapping { key: &'a Type, value: &'a Type },
     /// Nested mapping (`Mapping<K1, Mapping<K2, V>>`)
-    NestedMapping {
-        key1: &'a Type,
-        key2: &'a Type,
-        value: &'a Type,
-    },
+    NestedMapping { key1: &'a Type, key2: &'a Type, value: &'a Type },
 }
 
 fn parse_fields(input: DeriveInput) -> syn::Result<Vec<FieldInfo>> {
@@ -112,8 +109,8 @@ fn parse_fields(input: DeriveInput) -> syn::Result<Vec<FieldInfo>> {
     }
 
     // Ensure struct with named fields
-    let named_fields = if let Data::Struct(data) = input.data
-        && let Fields::Named(fields) = data.fields
+    let named_fields = if let Data::Struct(data) = input.data &&
+        let Fields::Named(fields) = data.fields
     {
         fields.named
     } else {
@@ -140,12 +137,7 @@ fn parse_fields(input: DeriveInput) -> syn::Result<Vec<FieldInfo>> {
             }
 
             let (slot, base_slot) = extract_attributes(&field.attrs)?;
-            Ok(FieldInfo {
-                name: name.to_owned(),
-                ty: field.ty,
-                slot,
-                base_slot,
-            })
+            Ok(FieldInfo { name: name.to_owned(), ty: field.ty, slot, base_slot })
         })
         .collect()
 }
@@ -165,11 +157,7 @@ fn gen_contract_storage(
         .iter()
         .enumerate()
         .map(|(idx, allocated)| {
-            let prev_field = if idx > 0 {
-                Some(&allocated_fields[idx - 1])
-            } else {
-                None
-            };
+            let prev_field = if idx > 0 { Some(&allocated_fields[idx - 1]) } else { None };
             let next_field = if idx + 1 < allocated_fields.len() {
                 Some(&allocated_fields[idx + 1])
             } else {

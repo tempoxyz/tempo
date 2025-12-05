@@ -124,16 +124,16 @@ fn gen_storable_impl(
         //     quote! {
         //         impl Storable<1> for #type_path {
         //             #[inline]
-        //             fn load<S: StorageOps>(storage: &mut S, base_slot: #type_path, ctx: LayoutCtx) -> Result<Self> {
-        //                 debug_assert_eq!(ctx, LayoutCtx::FULL, "U256 takes a full slot and cannot be packed");
-        //                 storage.sload(base_slot)
-        //             }
+        //             fn load<S: StorageOps>(storage: &mut S, base_slot: #type_path, ctx:
+        // LayoutCtx) -> Result<Self> {                 debug_assert_eq!(ctx,
+        // LayoutCtx::FULL, "U256 takes a full slot and cannot be packed");
+        // storage.sload(base_slot)             }
 
         //             #[inline]
-        //             fn store<S: StorageOps>(&self, storage: &mut S, base_slot: #type_path, ctx: LayoutCtx) -> Result<()> {
-        //                 debug_assert_eq!(ctx, LayoutCtx::FULL, "U256 takes a full slot and cannot be packed");
-        //                 storage.sstore(base_slot, *self)
-        //             }
+        //             fn store<S: StorageOps>(&self, storage: &mut S, base_slot: #type_path, ctx:
+        // LayoutCtx) -> Result<()> {                 debug_assert_eq!(ctx, LayoutCtx::FULL,
+        // "U256 takes a full slot and cannot be packed");
+        // storage.sstore(base_slot, *self)             }
 
         //             #[inline]
         //             fn to_evm_words(&self) -> Result<[#type_path; 1]> {
@@ -319,11 +319,8 @@ fn gen_storable_impl(
 /// Generate all storage-related impls for a type
 fn gen_complete_impl_set(config: &TypeConfig) -> TokenStream {
     let storable_type_impl = gen_storable_type_impl(&config.type_path, config.byte_count);
-    let storable_impl = gen_storable_impl(
-        &config.type_path,
-        config.byte_count,
-        &config.storable_strategy,
-    );
+    let storable_impl =
+        gen_storable_impl(&config.type_path, config.byte_count, &config.storable_strategy);
     let storage_key_impl = gen_storage_key_impl(&config.type_path, &config.storage_key_strategy);
 
     quote! {
@@ -456,18 +453,11 @@ fn is_packable(byte_count: usize) -> bool {
 
 /// Generate a complete `Storable` implementation for a fixed-size array
 fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
-    let ArrayConfig {
-        elem_type,
-        array_size,
-        elem_byte_count,
-        elem_is_packable,
-    } = config;
+    let ArrayConfig { elem_type, array_size, elem_byte_count, elem_is_packable } = config;
 
     // Generate a unique module name for this array type
-    let elem_type_str = elem_type
-        .to_string()
-        .replace("::", "_")
-        .replace(['<', '>', ' ', '[', ']', ';'], "_");
+    let elem_type_str =
+        elem_type.to_string().replace("::", "_").replace(['<', '>', ' ', '[', ']', ';'], "_");
     let mod_ident = quote::format_ident!("__array_{}_{}", elem_type_str, array_size);
 
     // Calculate slot count at compile time
@@ -713,22 +703,14 @@ pub(crate) fn gen_storable_arrays() -> TokenStream {
     for &bit_size in RUST_INT_SIZES {
         let type_ident = quote::format_ident!("u{}", bit_size);
         let byte_count = bit_size / 8;
-        all_impls.extend(gen_arrays_for_type(
-            quote! { #type_ident },
-            byte_count,
-            &sizes,
-        ));
+        all_impls.extend(gen_arrays_for_type(quote! { #type_ident }, byte_count, &sizes));
     }
 
     // Rust signed integers
     for &bit_size in RUST_INT_SIZES {
         let type_ident = quote::format_ident!("i{}", bit_size);
         let byte_count = bit_size / 8;
-        all_impls.extend(gen_arrays_for_type(
-            quote! { #type_ident },
-            byte_count,
-            &sizes,
-        ));
+        all_impls.extend(gen_arrays_for_type(quote! { #type_ident }, byte_count, &sizes));
     }
 
     // Alloy unsigned integers
@@ -754,11 +736,7 @@ pub(crate) fn gen_storable_arrays() -> TokenStream {
     }
 
     // Address (20 bytes, not packable since 32 % 20 != 0)
-    all_impls.extend(gen_arrays_for_type(
-        quote! { ::alloy::primitives::Address },
-        20,
-        &sizes,
-    ));
+    all_impls.extend(gen_arrays_for_type(quote! { ::alloy::primitives::Address }, 20, &sizes));
 
     // Common FixedBytes types
     for &byte_size in &[20, 32] {
@@ -830,10 +808,8 @@ pub(crate) fn gen_nested_arrays() -> TokenStream {
 ///
 /// A `TokenStream` containing all the generated array implementations.
 pub(crate) fn gen_struct_arrays(struct_type: TokenStream, array_sizes: &[usize]) -> TokenStream {
-    let impls: Vec<_> = array_sizes
-        .iter()
-        .map(|&size| gen_struct_array_impl(&struct_type, size))
-        .collect();
+    let impls: Vec<_> =
+        array_sizes.iter().map(|&size| gen_struct_array_impl(&struct_type, size)).collect();
 
     quote! {
         #(#impls)*
@@ -843,10 +819,8 @@ pub(crate) fn gen_struct_arrays(struct_type: TokenStream, array_sizes: &[usize])
 /// Generate a single array implementation for a user-defined struct.
 fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenStream {
     // Generate unique module name for this array type
-    let struct_type_str = struct_type
-        .to_string()
-        .replace("::", "_")
-        .replace(['<', '>', ' ', '[', ']', ';'], "_");
+    let struct_type_str =
+        struct_type.to_string().replace("::", "_").replace(['<', '>', ' ', '[', ']', ';'], "_");
     let mod_ident = quote::format_ident!("__array_{}_{}", struct_type_str, array_size);
 
     // Generate implementation methods

@@ -110,39 +110,27 @@ impl Automaton for Mailbox {
 
     async fn genesis(&mut self, epoch: Epoch) -> Self::Digest {
         let (tx, rx) = oneshot::channel();
-        // TODO: panicking here really is not good. there's actually no requirement on `Self::Context` nor `Self::Digest` to fulfill
-        // any invariants, so we could just turn them into `Result<Context, Error>` and be happy.
+        // TODO: panicking here really is not good. there's actually no requirement on
+        // `Self::Context` nor `Self::Digest` to fulfill any invariants, so we could just
+        // turn them into `Result<Context, Error>` and be happy.
         self.inner
-            .send(
-                Genesis {
-                    epoch,
-                    response: tx,
-                }
-                .into(),
-            )
+            .send(Genesis { epoch, response: tx }.into())
             .await
             .expect("application is present and ready to receive genesis");
-        rx.await
-            .expect("application returns the digest of the genesis")
+        rx.await.expect("application returns the digest of the genesis")
     }
 
     async fn propose(&mut self, context: Self::Context) -> oneshot::Receiver<Self::Digest> {
-        // TODO: panicking here really is not good. there's actually no requirement on `Self::Context` nor `Self::Digest` to fulfill
-        // any invariants, so we could just turn them into `Result<Context, Error>` and be happy.
+        // TODO: panicking here really is not good. there's actually no requirement on
+        // `Self::Context` nor `Self::Digest` to fulfill any invariants, so we could just
+        // turn them into `Result<Context, Error>` and be happy.
         //
         // XXX: comment taken from alto - what does this mean? is this relevant to us?
         // > If we linked payloads to their parent, we would verify
         // > the parent included in the payload matches the provided `Context`.
         let (tx, rx) = oneshot::channel();
         self.inner
-            .send(
-                Propose {
-                    parent: context.parent,
-                    response: tx,
-                    round: context.round,
-                }
-                .into(),
-            )
+            .send(Propose { parent: context.parent, response: tx, round: context.round }.into())
             .await
             .expect("application is present and ready to receive proposals");
         rx
@@ -153,8 +141,9 @@ impl Automaton for Mailbox {
         context: Self::Context,
         payload: Self::Digest,
     ) -> oneshot::Receiver<bool> {
-        // TODO: panicking here really is not good. there's actually no requirement on `Self::Context` nor `Self::Digest` to fulfill
-        // any invariants, so we could just turn them into `Result<Context, Error>` and be happy.
+        // TODO: panicking here really is not good. there's actually no requirement on
+        // `Self::Context` nor `Self::Digest` to fulfill any invariants, so we could just
+        // turn them into `Result<Context, Error>` and be happy.
         //
         // XXX: comment taken from alto - what does this mean? is this relevant to us?
         // > If we linked payloads to their parent, we would verify
@@ -181,7 +170,8 @@ impl Relay for Mailbox {
     type Digest = Digest;
 
     async fn broadcast(&mut self, digest: Self::Digest) {
-        // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
+        // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels
+        // instead?
         self.inner
             .send(Broadcast { payload: digest }.into())
             .await
@@ -193,7 +183,8 @@ impl Reporter for Mailbox {
     type Activity = Update<Block>;
 
     async fn report(&mut self, update: Self::Activity) {
-        // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
+        // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels
+        // instead?
         self.inner
             .send(Finalized { inner: update }.into())
             .await

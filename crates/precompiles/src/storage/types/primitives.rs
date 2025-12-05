@@ -141,10 +141,7 @@ mod tests {
 
     /// Helper to create a test contract with fresh storage.
     fn setup_test_contract() -> TestContract {
-        TestContract {
-            address: Address::random(),
-            storage: HashMapStorageProvider::new(1),
-        }
+        TestContract { address: Address::random(), storage: HashMapStorageProvider::new(1) }
     }
 
     // Strategy for generating random U256 slot values that won't overflow
@@ -252,8 +249,10 @@ mod tests {
 
         let loaded_slot = contract.sload(base_slot + U256::from(2)).unwrap();
         let expected = gen_slot_from(&[
-            "0xFF",                                                             // offset 31 (1 byte)
-            "0x00000000000000000000000000000000000000000000000000000000000000", // padding (31 bytes)
+            "0xFF", /* offset 31 (1
+                     * byte) */
+            "0x00000000000000000000000000000000000000000000000000000000000000", /* padding (31
+                                                                                 * bytes) */
         ]);
         assert_eq!(loaded_slot, expected);
     }
@@ -296,7 +295,8 @@ mod tests {
 
         let loaded_slot = contract.sload(base_slot + U256::from(2)).unwrap();
         let expected = gen_slot_from(&[
-            "0xFFEE",                                                         // offset 30 (2 bytes)
+            "0xFFEE",                                                         /* offset 30 (2
+                                                                               * bytes) */
             "0x000000000000000000000000000000000000000000000000000000000000", // padding (30 bytes)
         ]);
         assert_eq!(loaded_slot, expected);
@@ -477,8 +477,10 @@ mod tests {
 
         let loaded_slot = contract.sload(base_slot + U256::ONE).unwrap();
         let expected = gen_slot_from(&[
-            "0x00",                                                             // offset 31 (1 byte)
-            "0x00000000000000000000000000000000000000000000000000000000000000", // padding (31 bytes)
+            "0x00", /* offset 31 (1
+                     * byte) */
+            "0x00000000000000000000000000000000000000000000000000000000000000", /* padding (31
+                                                                                 * bytes) */
         ]);
         assert_eq!(loaded_slot, expected);
     }
@@ -490,8 +492,7 @@ mod tests {
 
         // U256 should always fill entire slot (offset must be 0)
         let val = U256::from(0x123456789ABCDEFu64);
-        val.store(&mut contract, base_slot, LayoutCtx::FULL)
-            .unwrap();
+        val.store(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
 
         let loaded_slot = contract.sload(base_slot).unwrap();
         assert_eq!(loaded_slot, val, "U256 should match slot contents exactly");
@@ -508,16 +509,11 @@ mod tests {
 
         // Store a u64 value
         let val: u64 = 0x123456789ABCDEF0;
-        val.store(&mut contract, base_slot, LayoutCtx::FULL)
-            .unwrap();
+        val.store(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
 
         // Verify slot is non-zero
         let slot_before = contract.sload(base_slot).unwrap();
-        assert_ne!(
-            slot_before,
-            U256::ZERO,
-            "Slot should be non-zero before delete"
-        );
+        assert_ne!(slot_before, U256::ZERO, "Slot should be non-zero before delete");
 
         // Delete the value
         u64::delete(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
@@ -549,8 +545,7 @@ mod tests {
         assert_eq!(<[u8; 32] as StorableType>::LAYOUT, Layout::Slots(1));
 
         // Store and load
-        data.store(&mut contract, base_slot, LayoutCtx::FULL)
-            .unwrap();
+        data.store(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
         let loaded: [u8; 32] = Storable::load(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
         assert_eq!(loaded, data, "[u8; 32] roundtrip failed");
 
@@ -579,8 +574,7 @@ mod tests {
         assert_eq!(<[u64; 5] as StorableType>::LAYOUT, Layout::Slots(2));
 
         // Store and load
-        data.store(&mut contract, base_slot, LayoutCtx::FULL)
-            .unwrap();
+        data.store(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
         let loaded: [u64; 5] = Storable::load(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
         assert_eq!(loaded, data, "[u64; 5] roundtrip failed");
 
@@ -611,8 +605,7 @@ mod tests {
         assert_eq!(<[u16; 16] as StorableType>::LAYOUT, Layout::Slots(1));
 
         // Store and load
-        data.store(&mut contract, base_slot, LayoutCtx::FULL)
-            .unwrap();
+        data.store(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
         let loaded: [u16; 16] = Storable::load(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
         assert_eq!(loaded, data, "[u16; 16] roundtrip failed");
     }
@@ -630,8 +623,7 @@ mod tests {
         assert_eq!(<[U256; 3] as StorableType>::LAYOUT, Layout::Slots(3));
 
         // Store and load
-        data.store(&mut contract, base_slot, LayoutCtx::FULL)
-            .unwrap();
+        data.store(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
         let loaded: [U256; 3] = Storable::load(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
         assert_eq!(loaded, data, "[U256; 3] roundtrip failed");
 
@@ -648,19 +640,15 @@ mod tests {
         let base_slot = U256::from(400);
 
         // [Address; 3] should use 3 slots (20 bytes doesn't divide 32 evenly)
-        let data: [Address; 3] = [
-            Address::repeat_byte(0x11),
-            Address::repeat_byte(0x22),
-            Address::repeat_byte(0x33),
-        ];
+        let data: [Address; 3] =
+            [Address::repeat_byte(0x11), Address::repeat_byte(0x22), Address::repeat_byte(0x33)];
 
         // Verify slot count
         <[Address; 3] as Storable<3>>::validate_layout();
         assert_eq!(<[Address; 3] as StorableType>::LAYOUT, Layout::Slots(3));
 
         // Store and load
-        data.store(&mut contract, base_slot, LayoutCtx::FULL)
-            .unwrap();
+        data.store(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
         let loaded: [Address; 3] =
             Storable::load(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
         assert_eq!(loaded, data, "[Address; 3] roundtrip failed");
@@ -679,8 +667,7 @@ mod tests {
         assert_eq!(<[u8; 1] as StorableType>::LAYOUT, Layout::Slots(1));
 
         // Store and load
-        data.store(&mut contract, base_slot, LayoutCtx::FULL)
-            .unwrap();
+        data.store(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
         let loaded: [u8; 1] = Storable::load(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
         assert_eq!(loaded, data, "[u8; 1] roundtrip failed");
     }
@@ -709,8 +696,7 @@ mod tests {
         assert_eq!(<[[u8; 4]; 8] as StorableType>::LAYOUT, Layout::Slots(8));
 
         // Store and load
-        data.store(&mut contract, base_slot, LayoutCtx::FULL)
-            .unwrap();
+        data.store(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
         let loaded: [[u8; 4]; 8] =
             Storable::load(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
         assert_eq!(loaded, data, "[[u8; 4]; 8] roundtrip failed");
@@ -754,8 +740,7 @@ mod tests {
         assert_eq!(<[[u16; 2]; 8] as StorableType>::LAYOUT, Layout::Slots(8));
 
         // Store and load
-        data.store(&mut contract, base_slot, LayoutCtx::FULL)
-            .unwrap();
+        data.store(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
         let loaded: [[u16; 2]; 8] =
             Storable::load(&mut contract, base_slot, LayoutCtx::FULL).unwrap();
         assert_eq!(loaded, data, "[[u16; 2]; 8] roundtrip failed");

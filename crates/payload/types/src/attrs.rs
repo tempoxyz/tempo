@@ -98,10 +98,7 @@ impl TempoPayloadBuilderAttributes {
 
     /// Returns the timestamp in milliseconds.
     pub fn timestamp_millis(&self) -> u64 {
-        self.inner
-            .timestamp()
-            .saturating_mul(1000)
-            .saturating_add(self.timestamp_millis_part)
+        self.inner.timestamp().saturating_mul(1000).saturating_add(self.timestamp_millis_part)
     }
 
     /// Returns the subblocks.
@@ -137,10 +134,7 @@ impl PayloadBuilderAttributes for TempoPayloadBuilderAttributes {
     where
         Self: Sized,
     {
-        let TempoPayloadAttributes {
-            inner,
-            timestamp_millis_part,
-        } = rpc_payload_attributes;
+        let TempoPayloadAttributes { inner, timestamp_millis_part } = rpc_payload_attributes;
         Ok(Self {
             inner: EthPayloadBuilderAttributes::try_new(parent, inner, version)?,
             interrupt: InterruptHandle::default(),

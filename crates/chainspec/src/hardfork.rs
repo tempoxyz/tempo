@@ -10,8 +10,10 @@
 //! 1. Add a new variant to `TempoHardfork` enum
 //! 2. Add `is_vivace()` method to `TempoHardfork` impl
 //! 3. Add `is_vivace_active_at_timestamp()` to `TempoHardforks` trait
-//! 4. Update `tempo_hardfork_at()` to check for the new hardfork first (latest hardfork is checked first)
-//! 5. Add `TempoHardfork::Vivace => Self::OSAKA` (or appropriate SpecId) in `From<TempoHardfork> for SpecId`
+//! 4. Update `tempo_hardfork_at()` to check for the new hardfork first (latest hardfork is checked
+//!    first)
+//! 5. Add `TempoHardfork::Vivace => Self::OSAKA` (or appropriate SpecId) in `From<TempoHardfork>
+//!    for SpecId`
 //! 6. Update `From<SpecId> for TempoHardfork` to check for the new hardfork first
 //! 7. Add test `test_is_vivace` and update existing `is_*` tests to include the new variant
 //!
@@ -76,26 +78,22 @@ pub trait TempoHardforks: EthereumHardforks {
 
     /// Convenience method to check if Adagio hardfork is active at a given timestamp
     fn is_adagio_active_at_timestamp(&self, timestamp: u64) -> bool {
-        self.tempo_fork_activation(TempoHardfork::Adagio)
-            .active_at_timestamp(timestamp)
+        self.tempo_fork_activation(TempoHardfork::Adagio).active_at_timestamp(timestamp)
     }
 
     /// Convenience method to check if Andantino hardfork is active at a given timestamp
     fn is_moderato_active_at_timestamp(&self, timestamp: u64) -> bool {
-        self.tempo_fork_activation(TempoHardfork::Moderato)
-            .active_at_timestamp(timestamp)
+        self.tempo_fork_activation(TempoHardfork::Moderato).active_at_timestamp(timestamp)
     }
 
     /// Convenience method to check if Allegretto hardfork is active at a given timestamp
     fn is_allegretto_active_at_timestamp(&self, timestamp: u64) -> bool {
-        self.tempo_fork_activation(TempoHardfork::Allegretto)
-            .active_at_timestamp(timestamp)
+        self.tempo_fork_activation(TempoHardfork::Allegretto).active_at_timestamp(timestamp)
     }
 
     /// Convenience method to check if Allegro-Moderato hardfork is active at a given timestamp
     fn is_allegro_moderato_active_at_timestamp(&self, timestamp: u64) -> bool {
-        self.tempo_fork_activation(TempoHardfork::AllegroModerato)
-            .active_at_timestamp(timestamp)
+        self.tempo_fork_activation(TempoHardfork::AllegroModerato).active_at_timestamp(timestamp)
     }
 
     /// Retrieves the latest Tempo hardfork active at a given timestamp.
