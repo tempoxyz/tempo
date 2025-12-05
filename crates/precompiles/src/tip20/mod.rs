@@ -284,8 +284,26 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
         // Verify the new quote token is a valid TIP20 token that has been deployed
-        if !TIP20Factory::new(self.storage).is_tip20(call.newQuoteToken)? {
-            return Err(TIP20Error::invalid_quote_token().into());
+        if self.storage.spec().is_allegro_moderato() {
+            // Post-AllegroModerato: use factory's is_tip20 which checks both prefix and counter
+            if !TIP20Factory::new(self.storage).is_tip20(call.newQuoteToken)? {
+                return Err(TIP20Error::invalid_quote_token().into());
+            }
+        } else {
+            // Pre-AllegroModerato: use original logic (prefix check + separate counter check)
+            if !is_tip20_prefix(call.newQuoteToken) {
+                return Err(TIP20Error::invalid_quote_token().into());
+            }
+
+            let new_token_id = address_to_token_id_unchecked(call.newQuoteToken);
+            let factory_token_id_counter = TIP20Factory::new(self.storage)
+                .token_id_counter()?
+                .to::<u64>();
+
+            // Ensure the quote token has been deployed (token_id < counter)
+            if new_token_id >= factory_token_id_counter {
+                return Err(TIP20Error::invalid_quote_token().into());
+            }
         }
 
         // Check if the currency is USD, if so then the quote token's currency MUST also be USD
