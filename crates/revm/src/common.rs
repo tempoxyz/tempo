@@ -15,7 +15,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
     storage::{self, Storable, StorableType, double_mapping_slot, slots::mapping_slot},
     tip_fee_manager,
-    tip20::{self, is_tip20},
+    tip20::{self, is_tip20_prefix},
     tip403_registry,
 };
 use tempo_primitives::TempoTxEnvelope;
@@ -186,7 +186,7 @@ pub trait TempoStateAccess<T> {
         spec: TempoHardfork,
     ) -> Result<bool, Self::Error> {
         // Ensure it's a TIP20
-        if !is_tip20(fee_token) {
+        if !is_tip20_prefix(fee_token) {
             return Ok(false);
         }
 
@@ -208,7 +208,7 @@ pub trait TempoStateAccess<T> {
         fee_payer: Address,
     ) -> Result<bool, Self::Error> {
         // Ensure it's a TIP20
-        if !is_tip20(fee_token) {
+        if !is_tip20_prefix(fee_token) {
             return Ok(false);
         }
 
