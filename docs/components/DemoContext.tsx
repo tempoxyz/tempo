@@ -9,19 +9,21 @@ import type { Address, PrivateKeyAccount, TransactionReceipt } from 'viem'
 import { useAccountEffect } from 'wagmi'
 
 // Define your allowed keys and their types here
-interface DemoData {
+export interface DemoData {
   tokenAddress: Address
   tokenReceipt: TransactionReceipt
   sponsorAccount: PrivateKeyAccount
   transferId: string
   policyId: bigint
   orderId: bigint
+  rewardId: bigint
 }
 
 interface DemoContextValue {
   setData: <K extends keyof DemoData>(key: K, value: DemoData[K]) => void
   getData: <K extends keyof DemoData>(key: K) => DemoData[K] | undefined
   clearData: <K extends keyof DemoData>(key?: K) => void
+  checkFlowDependencies: (keys: (keyof DemoData)[]) => boolean
   data: Partial<DemoData>
 }
 
@@ -61,6 +63,13 @@ export function DemoContextProvider({ children }: DemoContextProviderProps) {
     })
   }, [])
 
+  const checkFlowDependencies = useCallback(
+    (keys: (keyof DemoData)[]): boolean => {
+      return keys.every((key) => data[key] !== undefined)
+    },
+    [data],
+  )
+
   // Clear all data when account disconnects
   useAccountEffect({
     onDisconnect() {
@@ -72,6 +81,7 @@ export function DemoContextProvider({ children }: DemoContextProviderProps) {
     setData,
     getData,
     clearData,
+    checkFlowDependencies,
     data,
   }
 

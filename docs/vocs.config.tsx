@@ -162,8 +162,7 @@ export default defineConfig({
                 link: '/guide/issuance/use-for-fees',
               },
               {
-                text: 'Distribute rewards 🚧',
-                disabled: true,
+                text: 'Distribute rewards',
                 link: '/guide/issuance/distribute-rewards',
               },
               {
@@ -418,7 +417,7 @@ export default defineConfig({
               },
               {
                 text: 'Specification',
-                link: '/documentation/protocol/transactions/spec-account-abstraction',
+                link: '/documentation/protocol/transactions/spec-tempo-transaction',
               },
               {
                 text: 'Default Account Abstraction Specification',

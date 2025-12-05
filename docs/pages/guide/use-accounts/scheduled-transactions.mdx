@@ -4,7 +4,7 @@ import { Callout } from 'vocs/components'
 
 Execute transactions only within a specific time window using `validAfter` and `validBefore` timestamps.
 
-Scheduled transactions are enabled by Tempo's [Account Abstraction transaction type](/documentation/protocol/transactions/spec-account-abstraction), which includes optional timestamp fields. These fields are validated by the protocol when the transaction is submitted.
+Scheduled transactions are enabled by the [Tempo Transaction](/documentation/protocol/transactions/spec-tempo-transaction) type, which includes optional timestamp fields. These fields are validated by the protocol when the transaction is submitted.
 
 ## Setting Time Bounds
 
@@ -86,4 +86,4 @@ For example, if you submit a transaction with `validAfter` set to Jan 1, 2026, v
 
 ## Technical Details
 
-For complete specifications on timestamp validation, see the [Account Abstraction](/documentation/protocol/transactions/spec-account-abstraction) transaction type specification.
+For complete specifications on timestamp validation, see the [Tempo Transaction](/documentation/protocol/transactions/spec-tempo-transaction) type specification.

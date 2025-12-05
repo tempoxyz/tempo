@@ -8,14 +8,22 @@ import { Button, ExplorerLink, FAKE_RECIPIENT, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
-export function SendPaymentWithIssuedToken(props: DemoStepProps) {
-  const { stepNumber, last = false } = props
+export function SendPaymentWithIssuedToken(
+  props: DemoStepProps & { amount?: string },
+) {
+  const {
+    stepNumber,
+    last = false,
+    amount = '100',
+    flowDependencies = [],
+  } = props
+  const tokenLabel = amount === '1' ? 'token' : 'tokens'
   const queryClient = useQueryClient()
   const { address } = useAccount()
   const [recipient, setRecipient] = React.useState<string>(FAKE_RECIPIENT)
   const [memo, setMemo] = React.useState<string>('')
   const [expanded, setExpanded] = React.useState(false)
-  const { getData, setData } = useDemoContext()
+  const { getData, setData, checkFlowDependencies } = useDemoContext()
 
   const tokenAddress = getData('tokenAddress')
   const feeToken = alphaUsd
@@ -39,6 +47,7 @@ export function SendPaymentWithIssuedToken(props: DemoStepProps) {
     mutation: {
       onSettled(data) {
         queryClient.refetchQueries({ queryKey: ['getBalance'] })
+        queryClient.refetchQueries({ queryKey: ['getUserRewardInfo'] })
         feeTokenBalanceRefetch()
         setData('transferId', data?.receipt.transactionHash || 'transfer')
       },
@@ -55,9 +64,9 @@ export function SendPaymentWithIssuedToken(props: DemoStepProps) {
   const isValidRecipient = recipient && isAddress(recipient)
 
   const handleTransfer = () => {
-    if (!isValidRecipient || !tokenAddress) return
+    if (!isValidRecipient || !tokenAddress || !tokenMetadata) return
     sendPayment.mutate({
-      amount: parseUnits('100', 6),
+      amount: parseUnits(amount, tokenMetadata.decimals),
       to: recipient as `0x${string}`,
       token: tokenAddress,
       memo: memo ? pad(stringToHex(memo), { size: 32 }) : undefined,
@@ -72,7 +81,8 @@ export function SendPaymentWithIssuedToken(props: DemoStepProps) {
         tokenBalance &&
         tokenBalance > 0n &&
         feeTokenBalance &&
-        feeTokenBalance > 0n,
+        feeTokenBalance > 0n &&
+        checkFlowDependencies(flowDependencies),
     )
   }, [address, tokenAddress, tokenBalance, feeTokenBalance])
 
@@ -109,7 +119,7 @@ export function SendPaymentWithIssuedToken(props: DemoStepProps) {
         )
       }
       number={stepNumber}
-      title={`Send 100 ${tokenMetadata ? tokenMetadata.name : 'tokens'}.`}
+      title={`Send ${amount} ${tokenMetadata ? tokenMetadata.name : tokenLabel}.`}
     >
       {expanded && (
         <div className="flex mx-6 flex-col gap-3 pb-4">
@@ -122,7 +132,11 @@ export function SendPaymentWithIssuedToken(props: DemoStepProps) {
                     {`Payment Token: ${tokenMetadata ? tokenMetadata.name : 'Your Token'}`}
                   </span>
                   <span className="text-gray12">
-                    balance: {formatUnits(tokenBalance ?? 0n, 6)}
+                    balance:{' '}
+                    {formatUnits(
+                      tokenBalance ?? 0n,
+                      tokenMetadata?.decimals ?? 6,
+                    )}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">

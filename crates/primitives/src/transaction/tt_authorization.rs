@@ -4,14 +4,14 @@ use alloy_rlp::{BufMut, Decodable, Encodable, Header, Result as RlpResult, lengt
 use core::ops::Deref;
 use std::sync::OnceLock;
 
-use crate::AASignature;
+use crate::TempoSignature;
 
 /// EIP-7702 authorization magic byte
 pub const MAGIC: u8 = 0x05;
 
 /// A signed EIP-7702 authorization with AA signature support.
 ///
-/// This is a 1:1 parallel to alloy's `SignedAuthorization`, but using `AASignature`
+/// This is a 1:1 parallel to alloy's `SignedAuthorization`, but using `TempoSignature`
 /// instead of hardcoded (y_parity, r, s) components. This allows supporting multiple
 /// signature types: Secp256k1, P256, and WebAuthn.
 ///
@@ -21,26 +21,26 @@ pub const MAGIC: u8 = 0x05;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
-pub struct AASignedAuthorization {
+pub struct TempoSignedAuthorization {
     /// Inner authorization (reuses alloy's Authorization)
     #[cfg_attr(feature = "serde", serde(flatten))]
     inner: Authorization,
     /// The AA signature (Secp256k1, P256, or WebAuthn)
-    signature: AASignature,
+    signature: TempoSignature,
 }
 
-impl AASignedAuthorization {
+impl TempoSignedAuthorization {
     /// Creates a new signed authorization from an authorization and signature.
     ///
     /// This is the unchecked version - signature is not validated.
-    pub const fn new_unchecked(inner: Authorization, signature: AASignature) -> Self {
+    pub const fn new_unchecked(inner: Authorization, signature: TempoSignature) -> Self {
         Self { inner, signature }
     }
 
     /// Gets the `signature` for the authorization.
     ///
     /// Returns a reference to the AA signature, which can be Secp256k1, P256, or WebAuthn.
-    pub const fn signature(&self) -> &AASignature {
+    pub const fn signature(&self) -> &TempoSignature {
         &self.signature
     }
 
@@ -112,7 +112,7 @@ impl AASignedAuthorization {
     }
 }
 
-impl Decodable for AASignedAuthorization {
+impl Decodable for TempoSignedAuthorization {
     fn decode(buf: &mut &[u8]) -> RlpResult<Self> {
         let header = Header::decode(buf)?;
         if !header.list {
@@ -134,7 +134,7 @@ impl Decodable for AASignedAuthorization {
     }
 }
 
-impl Encodable for AASignedAuthorization {
+impl Encodable for TempoSignedAuthorization {
     fn encode(&self, buf: &mut dyn BufMut) {
         Header {
             list: true,
@@ -153,7 +153,7 @@ impl Encodable for AASignedAuthorization {
     }
 }
 
-impl Deref for AASignedAuthorization {
+impl Deref for TempoSignedAuthorization {
     type Target = Authorization;
 
     fn deref(&self) -> &Self::Target {
@@ -163,7 +163,7 @@ impl Deref for AASignedAuthorization {
 
 // Compact implementation for reth storage
 #[cfg(feature = "reth-codec")]
-impl reth_codecs::Compact for AASignedAuthorization {
+impl reth_codecs::Compact for TempoSignedAuthorization {
     fn to_compact<B>(&self, buf: &mut B) -> usize
     where
         B: alloy_rlp::BufMut + AsMut<[u8]>,
@@ -183,24 +183,24 @@ impl reth_codecs::Compact for AASignedAuthorization {
 
 /// A recovered EIP-7702 authorization with AA signature support.
 ///
-/// This wraps an `AASignedAuthorization` with lazy authority recovery.
+/// This wraps an `TempoSignedAuthorization` with lazy authority recovery.
 /// The signature is preserved for gas calculation, and the authority
 /// is recovered on first access and cached.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct RecoveredAAAuthorization {
+pub struct RecoveredTempoAuthorization {
     /// Signed authorization (contains inner auth and signature)
-    signed: AASignedAuthorization,
+    signed: TempoSignedAuthorization,
     /// Lazily recovered authority (cached after first access)
     #[cfg_attr(feature = "serde", serde(skip))]
     authority: OnceLock<RecoveredAuthority>,
 }
 
-impl RecoveredAAAuthorization {
+impl RecoveredTempoAuthorization {
     /// Creates a new authorization from a signed authorization.
     ///
     /// Authority recovery is deferred until first access.
-    pub const fn new(signed: AASignedAuthorization) -> Self {
+    pub const fn new(signed: TempoSignedAuthorization) -> Self {
         Self {
             signed,
             authority: OnceLock::new(),
@@ -211,7 +211,7 @@ impl RecoveredAAAuthorization {
     ///
     /// This is useful when you've already recovered the authority and want
     /// to avoid re-recovery.
-    pub fn new_unchecked(signed: AASignedAuthorization, authority: RecoveredAuthority) -> Self {
+    pub fn new_unchecked(signed: TempoSignedAuthorization, authority: RecoveredAuthority) -> Self {
         Self {
             signed,
             authority: authority.into(),
@@ -221,7 +221,7 @@ impl RecoveredAAAuthorization {
     /// Creates a new authorization and immediately recovers the authority.
     ///
     /// Unlike `new()`, this eagerly recovers the authority upfront and caches it.
-    pub fn recover(signed: AASignedAuthorization) -> Self {
+    pub fn recover(signed: TempoSignedAuthorization) -> Self {
         let authority = signed
             .recover_authority()
             .map_or(RecoveredAuthority::Invalid, RecoveredAuthority::Valid);
@@ -229,7 +229,7 @@ impl RecoveredAAAuthorization {
     }
 
     /// Returns a reference to the signed authorization.
-    pub const fn signed(&self) -> &AASignedAuthorization {
+    pub const fn signed(&self) -> &TempoSignedAuthorization {
         &self.signed
     }
 
@@ -239,7 +239,7 @@ impl RecoveredAAAuthorization {
     }
 
     /// Gets the `signature` for the authorization.
-    pub const fn signature(&self) -> &AASignature {
+    pub const fn signature(&self) -> &TempoSignature {
         self.signed.signature()
     }
 
@@ -271,21 +271,21 @@ impl RecoveredAAAuthorization {
     }
 }
 
-impl PartialEq for RecoveredAAAuthorization {
+impl PartialEq for RecoveredTempoAuthorization {
     fn eq(&self, other: &Self) -> bool {
         self.signed == other.signed
     }
 }
 
-impl Eq for RecoveredAAAuthorization {}
+impl Eq for RecoveredTempoAuthorization {}
 
-impl core::hash::Hash for RecoveredAAAuthorization {
+impl core::hash::Hash for RecoveredTempoAuthorization {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.signed.hash(state);
     }
 }
 
-impl Deref for RecoveredAAAuthorization {
+impl Deref for RecoveredTempoAuthorization {
     type Target = Authorization;
 
     fn deref(&self) -> &Self::Target {
@@ -296,7 +296,7 @@ impl Deref for RecoveredAAAuthorization {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::AASignature;
+    use crate::TempoSignature;
     use alloy_primitives::{U256, address};
 
     #[test]
@@ -307,13 +307,13 @@ mod tests {
             nonce: 1,
         };
 
-        let signature = AASignature::default(); // Use secp256k1 test signature
-        let signed = AASignedAuthorization::new_unchecked(auth, signature);
+        let signature = TempoSignature::default(); // Use secp256k1 test signature
+        let signed = TempoSignedAuthorization::new_unchecked(auth, signature);
 
         let mut buf = Vec::new();
         signed.encode(&mut buf);
 
-        let decoded = AASignedAuthorization::decode(&mut buf.as_slice()).unwrap();
+        let decoded = TempoSignedAuthorization::decode(&mut buf.as_slice()).unwrap();
         assert_eq!(buf.len(), signed.length());
         assert_eq!(decoded, signed);
     }
@@ -326,8 +326,8 @@ mod tests {
             nonce: 1,
         };
 
-        let signature = AASignature::default();
-        let signed = AASignedAuthorization::new_unchecked(auth.clone(), signature);
+        let signature = TempoSignature::default();
+        let signed = TempoSignedAuthorization::new_unchecked(auth.clone(), signature);
 
         // Signature hash should match alloy's calculation
         let expected_hash = {

@@ -27,9 +27,8 @@ use tempo_primitives::{TxFeeToken, transaction::calc_gas_balance_spending};
 async fn test_set_user_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Note: This test uses moderato genesis to test pre-allegretto behavior
     let setup = TestNodeBuilder::new()
-        .with_genesis(include_str!("../assets/test-genesis-moderato.json").to_string())
+        .allegro_moderato_activated()
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -120,6 +119,18 @@ async fn test_set_user_token() -> eyre::Result<()> {
     let validator_balance_after = validator_token.balanceOf(validator).call().await?;
 
     assert!(validator_balance_after > validator_balance_before);
+
+    // Ensure that the user can set the fee token back to pathUSD post allegro moderato
+    let set_receipt = fee_manager
+        .setUserToken(PATH_USD_ADDRESS)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(set_receipt.status());
+
+    let current_token = fee_manager.userTokens(user_address).call().await?;
+    assert_eq!(current_token, PATH_USD_ADDRESS);
 
     Ok(())
 }

@@ -32,8 +32,8 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
 
     /// Initializes the TIP20 factory contract.
     ///
-    /// Sets the initial token counter to 1, reserving token ID 0 for the PathUSD precompile.
-    /// Also ensures the [`TIP20Factory`] account isn't empty and prevents state clear.
+    /// Ensures the [`TIP20Factory`] account isn't empty and prevents state clear by setting
+    /// placeholder bytecode.
     pub fn initialize(&mut self) -> Result<()> {
         // must ensure the account is not empty, by setting some code
         self.storage.set_code(

@@ -1,5 +1,4 @@
 use crate::{
-    aa_2d_pool::AA2dNonceKeys,
     amm::AmmLiquidityCache,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
@@ -23,7 +22,7 @@ use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, compute_keys_slot,
     nonce::slots, storage::double_mapping_slot,
 };
-use tempo_primitives::{subblock::has_sub_block_nonce_key_prefix, transaction::TxAA};
+use tempo_primitives::{subblock::has_sub_block_nonce_key_prefix, transaction::TempoTransaction};
 use tempo_revm::TempoStateAccess;
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
@@ -34,8 +33,6 @@ const AA_VALID_BEFORE_MIN_SECS: u64 = 3;
 pub struct TempoTransactionValidator<Client> {
     /// Inner validator that performs default Ethereum tx validation.
     pub(crate) inner: EthTransactionValidator<Client, TempoPooledTransaction>,
-    /// Keeps tracks of known nonce keys for AA transactions.
-    pub(crate) aa_nonce_keys: AA2dNonceKeys,
     /// Maximum allowed `valid_after` offset for AA txs.
     pub(crate) aa_valid_after_max_secs: u64,
     /// Cache of AMM liquidity for validator tokens.
@@ -48,13 +45,11 @@ where
 {
     pub fn new(
         inner: EthTransactionValidator<Client, TempoPooledTransaction>,
-        aa_nonce_keys: AA2dNonceKeys,
         aa_valid_after_max_secs: u64,
         amm_liquidity_cache: AmmLiquidityCache,
     ) -> Self {
         Self {
             inner,
-            aa_nonce_keys,
             aa_valid_after_max_secs,
             amm_liquidity_cache,
         }
@@ -78,7 +73,7 @@ where
         state_provider: &impl StateProvider,
         address: alloy_primitives::Address,
         nonce_key: U256,
-    ) -> ProviderResult<(U256, u64)> {
+    ) -> ProviderResult<u64> {
         // Compute storage slot for 2D nonce
         // Based on: mapping(address => mapping(uint256 => uint64)) at slot 0
         let slot = double_mapping_slot(
@@ -88,7 +83,7 @@ where
         );
         let nonce_value = state_provider.storage(NONCE_PRECOMPILE_ADDRESS, slot.into())?;
 
-        Ok((slot, nonce_value.unwrap_or_default().saturating_to()))
+        Ok(nonce_value.unwrap_or_default().saturating_to())
     }
 
     /// Check if a transaction requires keychain validation
@@ -192,7 +187,10 @@ where
     }
 
     /// Validates AA transaction time-bound conditionals
-    fn ensure_valid_conditionals(&self, tx: &TxAA) -> Result<(), TempoPoolTransactionError> {
+    fn ensure_valid_conditionals(
+        &self,
+        tx: &TempoTransaction,
+    ) -> Result<(), TempoPoolTransactionError> {
         // Reject AA txs where `valid_before` is too close to current time (or already expired).
         if let Some(valid_before) = tx.valid_before {
             // Uses tip_timestamp, as if the node is lagging lagging, the maintenance task will evict expired txs.
@@ -374,7 +372,7 @@ where
         match self.inner.validate_one(origin, transaction) {
             TransactionValidationOutcome::Valid {
                 balance,
-                state_nonce,
+                mut state_nonce,
                 bytecode_hash,
                 transaction,
                 propagate,
@@ -396,7 +394,7 @@ where
                     }
 
                     // This is a 2D nonce transaction - validate against 2D nonce
-                    let (nonce_key_slot, on_chain_2d_nonce) = match self.get_2d_nonce(
+                    state_nonce = match self.get_2d_nonce(
                         &state_provider,
                         transaction.transaction().sender(),
                         nonce_key,
@@ -410,24 +408,16 @@ where
                         }
                     };
                     let tx_nonce = transaction.nonce();
-                    if tx_nonce < on_chain_2d_nonce {
+                    if tx_nonce < state_nonce {
                         return TransactionValidationOutcome::Invalid(
                             transaction.into_transaction(),
                             InvalidTransactionError::NonceNotConsistent {
                                 tx: tx_nonce,
-                                state: on_chain_2d_nonce,
+                                state: state_nonce,
                             }
                             .into(),
                         );
                     }
-
-                    // since we've just fetched the most recent on chain nonce for this valid transaction, we can update the tracker.
-                    self.aa_nonce_keys.insert(
-                        transaction.transaction().sender(),
-                        nonce_key,
-                        on_chain_2d_nonce,
-                        nonce_key_slot,
-                    );
                 }
 
                 TransactionValidationOutcome::Valid {
@@ -580,13 +570,13 @@ mod tests {
     ) -> TempoPooledTransaction {
         use alloy_primitives::{Signature, TxKind, address};
         use tempo_primitives::transaction::{
-            TxAA,
-            aa_signature::{AASignature, PrimitiveSignature},
-            aa_signed::AASigned,
-            account_abstraction::Call,
+            TempoTransaction,
+            tempo_transaction::Call,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
         };
 
-        let tx_aa = TxAA {
+        let tx_aa = TempoTransaction {
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 2_000_000_000,
@@ -603,13 +593,13 @@ mod tests {
             valid_after,
             valid_before,
             access_list: Default::default(),
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             key_authorization: None,
         };
 
         let signed_tx = AASigned::new_unhashed(
             tx_aa,
-            AASignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
         );
         let envelope: TempoTxEnvelope = signed_tx.into();
         let recovered = envelope.try_into_recovered().unwrap();
@@ -636,7 +626,7 @@ mod tests {
             .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
-        let validator = TempoTransactionValidator::new(inner, Default::default(), 3600, amm_cache);
+        let validator = TempoTransactionValidator::new(inner, 3600, amm_cache);
 
         // Set the tip timestamp by simulating a new head block
         let mock_block = create_mock_block(tip_timestamp);
@@ -773,10 +763,10 @@ mod tests {
             tip403_registry::{ITIP403Registry, PolicyData, slots as tip403_slots},
         };
         use tempo_primitives::transaction::{
-            TxAA,
-            aa_signature::{AASignature, PrimitiveSignature},
-            aa_signed::AASigned,
-            account_abstraction::Call,
+            TempoTransaction,
+            tempo_transaction::Call,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
         };
 
         // Use a valid TIP20 token address (PATH_USD with token_id=1)
@@ -784,7 +774,7 @@ mod tests {
         let policy_id: u64 = 2;
 
         // Create AA transaction with valid TIP20 fee_token
-        let tx_aa = TxAA {
+        let tx_aa = TempoTransaction {
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 2_000_000_000,
@@ -801,13 +791,13 @@ mod tests {
             valid_after: None,
             valid_before: None,
             access_list: Default::default(),
-            aa_authorization_list: vec![],
+            tempo_authorization_list: vec![],
             key_authorization: None,
         };
 
         let signed_tx = AASigned::new_unhashed(
             tx_aa,
-            AASignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
         );
         let envelope: TempoTxEnvelope = signed_tx.into();
         let recovered = envelope.try_into_recovered().unwrap();
@@ -864,12 +854,8 @@ mod tests {
         let inner = EthTransactionValidatorBuilder::new(provider.clone())
             .disable_balance_check()
             .build(InMemoryBlobStore::default());
-        let validator = TempoTransactionValidator::new(
-            inner,
-            Default::default(),
-            3600,
-            AmmLiquidityCache::new(provider).unwrap(),
-        );
+        let validator =
+            TempoTransactionValidator::new(inner, 3600, AmmLiquidityCache::new(provider).unwrap());
 
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, transaction)

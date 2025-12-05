@@ -1,8 +1,8 @@
-# Native AA Transaction 
+# Tempo Transaction
 
 ## Abstract
 
-This spec introduces native protocol support for the following account abstraction features, using a new account abstraction tx type - 
+This spec introduces native protocol support for the following account abstraction features, using a new Tempo transaction type -
 
 * WebAuthn/P256 signature validation - enables passkey accounts
 * Parallelizable nonces - allows higher tx throughput for each account
@@ -22,7 +22,7 @@ Users cannot leverage modern authentication methods like passkeys, applications 
 A new EIP-2718 transaction type is introduced with type byte `0x76`:
 
 ```rust
-pub struct TxAA {
+pub struct TempoTransaction {
     // Standard EIP-1559 fields
     chain_id: ChainId,                          // EIP-155 replay protection
     max_priority_fee_per_gas: u128,
@@ -41,7 +41,7 @@ pub struct TxAA {
     valid_before: Option<u64>,                  // Transaction expiration timestamp
     valid_after: Option<u64>,                   // Transaction can only be included after this timestamp
     key_authorization: Option<SignedKeyAuthorization>, // Access key authorization (optional)
-    aa_authorization_list: Vec<AASignedAuthorization>, // EIP-7702 style authorizations with AA signatures
+    aa_authorization_list: Vec<TempoSignedAuthorization>, // EIP-7702 style authorizations with AA signatures
 }
 
 // Call structure for batching
@@ -150,15 +150,15 @@ function deriveAddressFromP256(bytes32 pubKeyX, bytes32 pubKeyY) public pure ret
 }
 ```
 
-### AA Authorization List
+### Tempo Authorization List
 
 The `aa_authorization_list` field enables EIP-7702 style delegation with support for all three AA signature types (secp256k1, P256, and WebAuthn), not just secp256k1.
 
 #### Structure
 ```rust
-pub struct AASignedAuthorization {
+pub struct TempoSignedAuthorization {
     inner: Authorization,      // Standard EIP-7702 authorization
-    signature: AASignature,    // Can be Secp256k1, P256, or WebAuthn
+    signature: TempoSignature,    // Can be Secp256k1, P256, or WebAuthn
 }
 ```
 
@@ -195,7 +195,7 @@ The nonce precompile implements the following interface for managing 2D nonces:
 
 ```solidity
 /// @title INonce - Nonce Precompile Interface
-/// @notice Interface for managing 2D nonces as per the Account Abstraction spec
+/// @notice Interface for managing 2D nonces as per the Tempo Transaction spec
 /// @dev This precompile manages user nonce keys (1-N) while protocol nonces (key 0)
 ///      are handled directly by account state. Each account can have multiple
 ///      independent nonce sequences identified by a nonce key.
@@ -284,7 +284,7 @@ We specify the complete gas schedule in more detail in the [gas costs section](#
 
 ### Fee Payer Signature Details
 
-The Native AA Transaction Type (0x76) supports **gas sponsorship** where a third party (fee payer) can pay transaction fees on behalf of the sender. This is achieved through dual signature domains—the sender signs with transaction type byte `0x76`, while the fee payer signs with magic byte `0x78` to ensure domain separation and prevent signature reuse attacks.
+The Tempo Transaction Type (0x76) supports **gas sponsorship** where a third party (fee payer) can pay transaction fees on behalf of the sender. This is achieved through dual signature domains—the sender signs with transaction type byte `0x76`, while the fee payer signs with magic byte `0x78` to ensure domain separation and prevent signature reuse attacks.
 
 #### Signing Domains
 
@@ -427,7 +427,7 @@ The transaction is RLP encoded as follows:
     fee_payer_signature,     // 0x80 if None, RLP list [v, r, s] if Some
     aa_authorization_list,   // EIP-7702 style authorization list with AA signatures
     key_authorization?,      // Only encoded if present (backwards compatible)
-    sender_signature         // AASignature bytes (secp256k1, P256, WebAuthn, or Keychain)
+    sender_signature         // TempoSignature bytes (secp256k1, P256, WebAuthn, or Keychain)
 ])
 ```
 
@@ -452,7 +452,7 @@ rlp([
 - Optional fields encode as `0x80` (EMPTY_STRING_CODE) when `None`
 - The `key_authorization` field is truly optional - when `None`, no bytes are encoded (backwards compatible)
 - The `calls` field is a list that must contain at least one Call (empty calls list is invalid)
-- The `sender_signature` field is the final field and contains the AASignature bytes (secp256k1, P256, WebAuthn, or Keychain)
+- The `sender_signature` field is the final field and contains the TempoSignature bytes (secp256k1, P256, WebAuthn, or Keychain)
 - KeyAuthorization uses RLP trailing field semantics for optional `expiry` and `limits`
 
 ### WebAuthn Signature Verification
@@ -545,7 +545,7 @@ Since authenticatorData has variable length, finding the split point requires:
 3. If set, need to parse CBOR credential data (complex, see implementation)
 4. Everything after authenticatorData is clientDataJSON (valid UTF-8 JSON)
 
-**Simplified approach:** For AA transactions, wallets should send minimal authenticatorData (37 bytes, no AT/ED flags) to minimize gas costs and simplify parsing.
+**Simplified approach:** For TempoTransactions, wallets should send minimal authenticatorData (37 bytes, no AT/ED flags) to minimize gas costs and simplify parsing.
 
 ### Access Keys
 
@@ -605,14 +605,14 @@ The protocol enforces Access Key authorization and spending limits natively.
 
 ##### Transaction Validation
 
-When an AA transaction is received, the protocol:
+When a TempoTransaction is received, the protocol:
 
 1. **Identifies the signing key** from the transaction signature
    - If signature is a `Keychain` variant: extracts the `keyId` (address) of the Access Key
    - Otherwise: treats it as the Root Key (keyId = address(0))
 
 2. **Validates KeyAuthorization** (if present in transaction)
-   - The `key_authorization` field in `TxAA` provisions a NEW Access Key
+   - The `key_authorization` field in `TempoTransaction` provisions a NEW Access Key
    - Root Key MUST sign:
      - The `key_authorization` digest: `keccak256(rlp([key_type, key_id, expiry, limits]))`
    - Access Key (being authorized) CAN sign the same tx which it is authorized in.
@@ -711,7 +711,7 @@ The protocol tracks and enforces spending limits for TIP20 token transfers:
    const rootSignature = await signWithRootKey(authDigest);
    ```
 
-4. **Build AA Transaction**
+4. **Build TempoTransaction**
    ```typescript
    const tx = {
      chain_id: 1,
@@ -926,12 +926,12 @@ def calculate_calldata_gas(data: bytes) -> uint256:
 
     return gas
 
-def calculate_aa_tx_base_gas(tx):
+def calculate_tempo_tx_base_gas(tx):
     """
-    Calculate the base gas cost for an AA transaction
+    Calculate the base gas cost for a TempoTransaction
 
     Args:
-        tx: AA transaction object with fields:
+        tx: TempoTransaction object with fields:
             - signature: bytes (variable length)
             - nonce_key: uint192
             - nonce: uint64

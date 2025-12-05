@@ -11,7 +11,6 @@ use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use alloy_primitives::B256;
 use reth_chainspec::EthChainSpec;
 use reth_engine_local::LocalPayloadAttributesBuilder;
-use reth_ethereum::provider::CanonStateSubscriptions;
 use reth_evm::revm::primitives::Address;
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodePrimitives, NodeTypes,
@@ -43,7 +42,7 @@ use tempo_payload_builder::TempoPayloadBuilder;
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
-    AA2dNonceKeys, AA2dPool, AA2dPoolConfig, TempoTransactionPool, amm::AmmLiquidityCache,
+    AA2dPool, AA2dPoolConfig, TempoTransactionPool, amm::AmmLiquidityCache,
     validator::TempoTransactionValidator,
 };
 
@@ -434,14 +433,12 @@ where
             // TODO: configure dedicated limit
             aa_2d_limit: pool_config.pending_limit,
         };
-        let nonce_keys = AA2dNonceKeys::default();
-        let aa_2d_pool = AA2dPool::new(aa_2d_config, nonce_keys.clone());
+        let aa_2d_pool = AA2dPool::new(aa_2d_config);
         let amm_liquidity_cache = AmmLiquidityCache::new(ctx.provider())?;
 
         let validator = validator.map(|v| {
             TempoTransactionValidator::new(
                 v,
-                nonce_keys.clone(),
                 self.aa_valid_after_max_secs,
                 amm_liquidity_cache.clone(),
             )
@@ -466,10 +463,7 @@ where
         // Spawn (AA 2d nonce) mempool maintenance tasks
         ctx.task_executor().spawn_critical(
             "txpool maintenance - 2d nonce AA txs",
-            tempo_transaction_pool::maintain::maintain_2d_nonce_pool(
-                transaction_pool.clone(),
-                ctx.provider().canonical_state_stream(),
-            ),
+            tempo_transaction_pool::maintain::maintain_2d_nonce_pool(transaction_pool.clone()),
         );
 
         // Spawn AMM liquidity cache maintenance task
