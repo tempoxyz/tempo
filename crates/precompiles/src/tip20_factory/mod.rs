@@ -85,7 +85,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
 
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
         // Note that the token Id increments on each deployment.
-        // NOTE: start counter at 0
 
         // Post-Allegretto, require that the first TIP20 deployed has a quote token of address(0)
         if self.storage.spec().is_allegretto() && token_id == 0 {

@@ -1180,7 +1180,7 @@ mod tests {
     fn test_cancel_reward_removes_from_registry_post_moderato() -> eyre::Result<()> {
         // Test with Moderato hardfork - when cancelling the last stream at an end_time,
         // the token should be removed from the registry
-        // NOTE: we start with the hardfork at pre-moderato so that scheduled rewards are still
+        // Note that we start with the hardfork at pre-moderato so that scheduled rewards are still
         // enabled
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let admin = Address::random();

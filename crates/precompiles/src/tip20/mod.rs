@@ -1027,12 +1027,7 @@ pub(crate) mod tests {
         storage: &mut HashMapStorageProvider,
         admin: Address,
     ) -> Result<()> {
-        if storage.spec().is_allegro_moderato() {
-            let mut factory = TIP20Factory::new(storage);
-            factory.initialize()?;
-            deploy_path_usd(&mut factory, admin)?;
-            Ok(())
-        } else {
+        if !storage.spec().is_allegro_moderato() {
             let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, storage);
             path_usd.initialize(
                 "PathUSD",
@@ -1041,8 +1036,13 @@ pub(crate) mod tests {
                 Address::ZERO,
                 admin,
                 Address::ZERO,
-            )
+            )?;
         }
+
+        let mut factory = TIP20Factory::new(storage);
+        factory.initialize()?;
+        deploy_path_usd(&mut factory, admin)?;
+        Ok(())
     }
 
     /// Deploy PathUSD via the factory. Requires AllegroModerato+ spec and no tokens deployed yet.
@@ -1187,7 +1187,6 @@ pub(crate) mod tests {
     ) -> (u64, u64) {
         initialize_path_usd(storage, admin).unwrap();
         let mut factory = TIP20Factory::new(storage);
-        factory.initialize().unwrap();
 
         let token_id =
             create_token_via_factory(&mut factory, admin, "Test", "TST", PATH_USD_ADDRESS);
