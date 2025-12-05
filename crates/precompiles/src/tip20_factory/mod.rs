@@ -8,7 +8,9 @@ use crate::{
     TIP20_FACTORY_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::PrecompileStorageProvider,
-    tip20::{TIP20Error, TIP20Token, address_to_token_id_unchecked, is_tip20, token_id_to_address},
+    tip20::{
+        TIP20Error, TIP20Token, address_to_token_id_unchecked, is_tip20_prefix, token_id_to_address,
+    },
 };
 use alloy::primitives::{Address, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
@@ -56,7 +58,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
     ///
     /// Pre-AllegroModerato: Only checks the address prefix for backwards compatibility.
     pub fn is_tip20(&mut self, token: Address) -> Result<bool> {
-        if !crate::tip20::is_tip20(token) {
+        if !is_tip20_prefix(token) {
             return Ok(false);
         }
         // Post-AllegroModerato: also check that token ID < tokenIdCounter
@@ -92,7 +94,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
             }
         } else if self.storage.spec().is_moderato() {
             // Post-Moderato: Fixed validation - quote token id must be < current token_id (strictly less than).
-            if !is_tip20(call.quoteToken)
+            if !is_tip20_prefix(call.quoteToken)
                 || address_to_token_id_unchecked(call.quoteToken) >= token_id
             {
                 return Err(TIP20Error::invalid_quote_token().into());
@@ -100,7 +102,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
         } else {
             // Pre-Moderato: Original validation with off-by-one bug for consensus compatibility.
             // The buggy check allowed quote_token_id == token_id to pass.
-            if !is_tip20(call.quoteToken)
+            if !is_tip20_prefix(call.quoteToken)
                 || address_to_token_id_unchecked(call.quoteToken) > token_id
             {
                 return Err(TIP20Error::invalid_quote_token().into());

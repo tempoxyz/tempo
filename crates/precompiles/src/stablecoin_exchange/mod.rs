@@ -20,7 +20,7 @@ use crate::{
         MIN_PRICE_PRE_MODERATO, compute_book_key,
     },
     storage::{Mapping, PrecompileStorageProvider, Slot, VecSlotExt},
-    tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
+    tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
@@ -453,7 +453,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     pub fn create_pair(&mut self, base: Address) -> Result<B256> {
         // Validate that base is a TIP20 token (only after Moderato hardfork)
-        if self.storage.spec().is_moderato() && !is_tip20(base) {
+        if self.storage.spec().is_moderato() && !is_tip20_prefix(base) {
             return Err(StablecoinExchangeError::invalid_base_token().into());
         }
 
@@ -1490,7 +1490,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Validate that both tokens are TIP20 tokens
-        if self.storage.spec().is_allegretto() && (!is_tip20(token_in) || !is_tip20(token_out)) {
+        if self.storage.spec().is_allegretto()
+            && (!is_tip20_prefix(token_in) || !is_tip20_prefix(token_out))
+        {
             return Err(StablecoinExchangeError::invalid_token().into());
         }
 

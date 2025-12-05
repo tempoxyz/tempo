@@ -40,7 +40,11 @@ pub const USD_CURRENCY: &str = "USD";
 /// TIP20 token address prefix (12 bytes for token ID encoding)
 const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
 
-pub fn is_tip20(token: Address) -> bool {
+/// Returns true if the address has the TIP20 prefix.
+///
+/// Note: This only checks the prefix, not whether the token was actually created.
+/// Use `TIP20Factory::is_tip20()` for full validation (post-AllegroModerato).
+pub fn is_tip20_prefix(token: Address) -> bool {
     token.as_slice().starts_with(&TIP20_TOKEN_PREFIX)
 }
 
@@ -105,7 +109,7 @@ pub fn validate_usd_currency<S: PrecompileStorageProvider>(
     token: Address,
     storage: &mut S,
 ) -> Result<()> {
-    if storage.spec().is_moderato() && !is_tip20(token) {
+    if storage.spec().is_moderato() && !is_tip20_prefix(token) {
         return Err(FeeManagerError::invalid_token().into());
     }
 
@@ -280,7 +284,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
         // Verify the new quote token is a valid TIP20 token that has been deployed
-        if !is_tip20(call.newQuoteToken) {
+        if !is_tip20_prefix(call.newQuoteToken) {
             return Err(TIP20Error::invalid_quote_token().into());
         }
 
@@ -803,7 +807,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
     fn check_not_token_address(&self, to: Address) -> Result<()> {
         // Don't allow sending to other precompiled tokens
-        if is_tip20(to) {
+        if is_tip20_prefix(to) {
             return Err(TIP20Error::invalid_recipient().into());
         }
         Ok(())
@@ -2318,7 +2322,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_is_tip20() {
+    fn test_is_tip20_prefix() {
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         initialize_path_usd(&mut storage, sender).unwrap();
@@ -2346,9 +2350,9 @@ pub(crate) mod tests {
             .expect("Token creation should succeed");
         let non_tip20 = Address::random();
 
-        assert!(is_tip20(PATH_USD_ADDRESS));
-        assert!(is_tip20(created_tip20));
-        assert!(!is_tip20(non_tip20));
+        assert!(is_tip20_prefix(PATH_USD_ADDRESS));
+        assert!(is_tip20_prefix(created_tip20));
+        assert!(!is_tip20_prefix(non_tip20));
     }
 
     #[test]
