@@ -13,7 +13,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
-    storage::{self, Storable, StorableType, double_mapping_slot, slots::mapping_slot},
+    storage::{self, Mapping, StorableType},
     tip_fee_manager,
     tip20::{self, is_tip20},
     tip403_registry,
@@ -119,7 +119,13 @@ pub trait TempoStateAccess<T> {
             return Ok(call.token);
         }
 
-        let user_slot = mapping_slot(fee_payer, tip_fee_manager::slots::USER_TOKENS);
+        let user_slot = Mapping::<Address, Address>::new(
+            tip_fee_manager::slots::USER_TOKENS,
+            TIP_FEE_MANAGER_ADDRESS,
+        )
+        .at(fee_payer)
+        .slot();
+
         // ensure TIP_FEE_MANAGER_ADDRESS is loaded
         self.basic(TIP_FEE_MANAGER_ADDRESS)?;
         let stored_user_token = self
@@ -166,7 +172,13 @@ pub trait TempoStateAccess<T> {
         } else {
             // Pre-allegretto fall back to the validator fee token preference or the default to the
             // first TIP20 deployed after PathUSD
-            let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
+            let validator_slot = Mapping::<Address, Address>::new(
+                tip_fee_manager::slots::VALIDATOR_TOKENS,
+                TIP_FEE_MANAGER_ADDRESS,
+            )
+            .at(validator)
+            .slot();
+
             let validator_fee_token = self
                 .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
                 .into_address();
@@ -213,7 +225,7 @@ pub trait TempoStateAccess<T> {
         }
 
         // Ensure the fee payer is not blacklisted
-        let Ok(transfer_policy_id) = storage::packing::extract_packed_value::<1, u64>(
+        let Ok(transfer_policy_id) = storage::packing::extract_packed_value::<u64>(
             self.sload(fee_token, tip20::slots::TRANSFER_POLICY_ID)?,
             tip20::slots::TRANSFER_POLICY_ID_OFFSET,
             <u64 as StorableType>::BYTES,
@@ -232,14 +244,15 @@ pub trait TempoStateAccess<T> {
                 return Ok(transfer_policy_id == 1);
             }
 
-            let policy_data_word = self.sload(
+            let policy_data_slot = Mapping::<u64, tip403_registry::PolicyData>::new(
+                tip403_registry::slots::POLICY_DATA,
                 TIP403_REGISTRY_ADDRESS,
-                mapping_slot(
-                    transfer_policy_id.to_be_bytes(),
-                    tip403_registry::slots::POLICY_DATA,
-                ),
-            )?;
-            let Ok(data) = tip403_registry::PolicyData::from_evm_words([policy_data_word]) else {
+            )
+            .at(transfer_policy_id)
+            .base_slot();
+
+            let policy_data_word = self.sload(TIP403_REGISTRY_ADDRESS, policy_data_slot)?;
+            let Ok(data) = tip403_registry::PolicyData::from_word(policy_data_word) else {
                 tracing::warn!(
                     transfer_policy_id,
                     "failed to parse PolicyData from storage"
@@ -251,15 +264,16 @@ pub trait TempoStateAccess<T> {
                 return Ok(false);
             };
 
+            let policy_set_slot = Mapping::<u64, Mapping<Address, bool>>::new(
+                tip403_registry::slots::POLICY_SET,
+                TIP403_REGISTRY_ADDRESS,
+            )
+            .at(transfer_policy_id)
+            .at(fee_payer)
+            .slot();
+
             let is_in_set = self
-                .sload(
-                    TIP403_REGISTRY_ADDRESS,
-                    double_mapping_slot(
-                        transfer_policy_id.to_be_bytes(),
-                        fee_payer,
-                        tip403_registry::slots::POLICY_SET,
-                    ),
-                )?
+                .sload(TIP403_REGISTRY_ADDRESS, policy_set_slot)?
                 .to::<bool>();
 
             match policy_type {
@@ -275,7 +289,9 @@ pub trait TempoStateAccess<T> {
     /// Returns the balance of the given token for the given account.
     fn get_token_balance(&mut self, token: Address, account: Address) -> Result<U256, Self::Error> {
         // Query the user's balance in the determined fee token's TIP20 contract
-        let balance_slot = mapping_slot(account, tip20::slots::BALANCES);
+        let balance_slot = Mapping::<Address, U256>::new(tip20::slots::BALANCES, token)
+            .at(account)
+            .slot();
         // Load fee token account to ensure that we can load storage for it.
         self.basic(token)?;
         self.sload(token, balance_slot)

@@ -26,10 +26,14 @@ sol! {
         event NonceIncremented(address indexed account, uint256 indexed nonceKey, uint64 newNonce);
         event ActiveKeyCountChanged(address indexed account, uint256 newCount);
 
-        // Errors
+        // Precompile Errors
         error ProtocolNonceNotSupported();
         error InvalidNonceKey();
         error NonceOverflow();
+
+        // Errors that can occur while the revm handler validates nonces
+        error NonceTooHigh(uint64 tx, uint64 state);
+        error NonceTooLow(uint64 tx, uint64 state);
     }
 }
 
@@ -47,5 +51,15 @@ impl NonceError {
     /// Creates an error for when nonce overflows
     pub const fn nonce_overflow() -> Self {
         Self::NonceOverflow(INonce::NonceOverflow)
+    }
+
+    /// Creates an error when the given nonce is greater than the one stored in the NonceManger
+    pub const fn nonce_too_high(tx: u64, state: u64) -> Self {
+        Self::NonceTooHigh(INonce::NonceTooHigh { tx, state })
+    }
+
+    /// Creates an error when the given nonce is smaller than the one stored in the NonceManger
+    pub const fn nonce_too_low(tx: u64, state: u64) -> Self {
+        Self::NonceTooLow(INonce::NonceTooLow { tx, state })
     }
 }
