@@ -43,7 +43,7 @@ impl NonceManager {
     }
 
     /// Get the nonce for a specific account and nonce key
-    pub fn get_nonce(&mut self, call: INonce::getNonceCall) -> Result<u64> {
+    pub fn get_nonce(&self, call: INonce::getNonceCall) -> Result<u64> {
         // Protocol nonce (key 0) is stored in account state, not in this precompile
         // Users should query account nonce directly, not through this precompile
         if call.nonceKey == 0 {
@@ -56,7 +56,7 @@ impl NonceManager {
 
     /// Get the number of active user nonce keys for an account
     pub fn get_active_nonce_key_count(
-        &mut self,
+        &self,
         call: INonce::getActiveNonceKeyCountCall,
     ) -> Result<U256> {
         self.active_key_count.at(call.account).read()

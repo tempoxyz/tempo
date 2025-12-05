@@ -74,7 +74,7 @@ impl StablecoinExchange {
     }
 
     /// Read pending order ID
-    fn get_pending_order_id(&mut self) -> Result<u128> {
+    fn get_pending_order_id(&self) -> Result<u128> {
         self.pending_order_id()
     }
 
@@ -84,7 +84,7 @@ impl StablecoinExchange {
     }
 
     /// Read active order ID
-    fn get_active_order_id(&mut self) -> Result<u128> {
+    fn get_active_order_id(&self) -> Result<u128> {
         self.active_order_id.read()
     }
 
@@ -101,7 +101,7 @@ impl StablecoinExchange {
     }
 
     /// Get user's balance for a specific token
-    pub fn balance_of(&mut self, user: Address, token: Address) -> Result<u128> {
+    pub fn balance_of(&self, user: Address, token: Address) -> Result<u128> {
         self.balances.at(user).at(token).read()
     }
 
@@ -138,7 +138,7 @@ impl StablecoinExchange {
 
     /// Fetch order from storage. If the order is currently pending or filled, this function returns
     /// `StablecoinExchangeError::OrderDoesNotExist`
-    pub fn get_order(&mut self, order_id: u128) -> Result<Order> {
+    pub fn get_order(&self, order_id: u128) -> Result<Order> {
         let order = self.orders.at(order_id).read()?;
 
         // If the order is not filled and currently active
@@ -272,7 +272,7 @@ impl StablecoinExchange {
     }
 
     pub fn quote_swap_exact_amount_out(
-        &mut self,
+        &self,
         token_in: Address,
         token_out: Address,
         amount_out: u128,
@@ -290,7 +290,7 @@ impl StablecoinExchange {
     }
 
     pub fn quote_swap_exact_amount_in(
-        &mut self,
+        &self,
         token_in: Address,
         token_out: Address,
         amount_in: u128,
@@ -393,7 +393,7 @@ impl StablecoinExchange {
     }
 
     /// Get price level information
-    pub fn get_price_level(&mut self, base: Address, tick: i16, is_bid: bool) -> Result<TickLevel> {
+    pub fn get_price_level(&self, base: Address, tick: i16, is_bid: bool) -> Result<TickLevel> {
         let quote = TIP20Token::from_address(base).quote_token()?;
         let book_key = compute_book_key(base, quote);
         self.books
@@ -403,17 +403,17 @@ impl StablecoinExchange {
     }
 
     /// Get active order ID
-    pub fn active_order_id(&mut self) -> Result<u128> {
+    pub fn active_order_id(&self) -> Result<u128> {
         self.active_order_id.read()
     }
 
     /// Get pending order ID
-    pub fn pending_order_id(&mut self) -> Result<u128> {
+    pub fn pending_order_id(&self) -> Result<u128> {
         self.pending_order_id.read()
     }
 
     /// Get orderbook by pair key
-    pub fn books(&mut self, pair_key: B256) -> Result<Orderbook> {
+    pub fn books(&self, pair_key: B256) -> Result<Orderbook> {
         self.books.at(pair_key).read()
     }
 
@@ -1350,7 +1350,7 @@ impl StablecoinExchange {
     }
 
     /// Quote exact output amount without executing trades
-    fn quote_exact_out(&mut self, book_key: B256, amount_out: u128, is_bid: bool) -> Result<u128> {
+    fn quote_exact_out(&self, book_key: B256, amount_out: u128, is_bid: bool) -> Result<u128> {
         let mut remaining_out = amount_out;
         let mut amount_in = 0u128;
         let book_handler = self.books.at(book_key);
@@ -1449,11 +1449,7 @@ impl StablecoinExchange {
     /// Find the trade path between two tokens
     /// Returns a vector of (book_key, base_for_quote) tuples for each hop
     /// Also validates that all pairs exist
-    fn find_trade_path(
-        &mut self,
-        token_in: Address,
-        token_out: Address,
-    ) -> Result<Vec<(B256, bool)>> {
+    fn find_trade_path(&self, token_in: Address, token_out: Address) -> Result<Vec<(B256, bool)>> {
         // Cannot trade same token
         if token_in == token_out {
             return Err(StablecoinExchangeError::identical_tokens().into());
@@ -1512,7 +1508,7 @@ impl StablecoinExchange {
     }
 
     /// Validates that all pairs in the path exist and returns book keys with direction info
-    fn validate_and_build_route(&mut self, path: &[Address]) -> Result<Vec<(B256, bool)>> {
+    fn validate_and_build_route(&self, path: &[Address]) -> Result<Vec<(B256, bool)>> {
         let mut route = Vec::new();
 
         for i in 0..path.len() - 1 {
@@ -1538,7 +1534,7 @@ impl StablecoinExchange {
 
     /// Find the path from a token to the root (PathUSD)
     /// Returns a vector of addresses starting with the token and ending with PathUSD
-    fn find_path_to_root(&mut self, mut token: Address) -> Result<Vec<Address>> {
+    fn find_path_to_root(&self, mut token: Address) -> Result<Vec<Address>> {
         let mut path = vec![token];
 
         while token != PATH_USD_ADDRESS {
@@ -1550,7 +1546,7 @@ impl StablecoinExchange {
     }
 
     /// Quote exact input amount without executing trades
-    fn quote_exact_in(&mut self, book_key: B256, amount_in: u128, is_bid: bool) -> Result<u128> {
+    fn quote_exact_in(&self, book_key: B256, amount_in: u128, is_bid: bool) -> Result<u128> {
         let mut remaining_in = amount_in;
         let mut amount_out = 0u128;
         let book_handler = self.books.at(book_key);
@@ -2006,18 +2002,16 @@ mod tests {
             assert_eq!(level.total_liquidity, 0);
 
             // Verify balance was reduced by the escrow amount
-            {
-                let mut quote_tip20 = TIP20Token::from_address(quote_token);
-                let remaining_balance =
-                    quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice })?;
-                assert_eq!(remaining_balance, U256::ZERO);
+            let quote_tip20 = TIP20Token::from_address(quote_token);
+            let remaining_balance =
+                quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice })?;
+            assert_eq!(remaining_balance, U256::ZERO);
 
-                // Verify exchange received the tokens
-                let exchange_balance = quote_tip20.balance_of(ITIP20::balanceOfCall {
-                    account: exchange.address,
-                })?;
-                assert_eq!(exchange_balance, U256::from(expected_escrow));
-            }
+            // Verify exchange received the tokens
+            let exchange_balance = quote_tip20.balance_of(ITIP20::balanceOfCall {
+                account: exchange.address,
+            })?;
+            assert_eq!(exchange_balance, U256::from(expected_escrow));
 
             Ok(())
         })

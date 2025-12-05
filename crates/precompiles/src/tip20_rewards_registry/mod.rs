@@ -24,9 +24,6 @@ pub struct TIP20RewardsRegistry {
     stream_index: Mapping<B256, U256>,
 }
 
-/// Helper type to easily interact with the `stream_ending_at` array
-type StreamEndingAt = Mapping<u128, Vec<Address>>;
-
 impl TIP20RewardsRegistry {
     /// Creates an instance of the precompile.
     ///

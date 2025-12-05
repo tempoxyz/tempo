@@ -277,7 +277,7 @@ mod tests {
             }
             .abi_encode();
 
-            let output = token.call(&Bytes::from(calldata), sender)?;
+            let output = token.call(&calldata, sender)?;
             assert!(output.reverted);
             let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
             assert_eq!(output.bytes, expected);
@@ -296,7 +296,7 @@ mod tests {
             token.initialize(sender)?;
 
             let calldata = ITIP20::setRewardRecipientCall { recipient }.abi_encode();
-            let output = token.call(&Bytes::from(calldata), sender)?;
+            let output = token.call(&calldata, sender)?;
             assert!(output.reverted);
             let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
             assert_eq!(output.bytes, expected);
@@ -315,7 +315,7 @@ mod tests {
 
             let calldata = ITIP20::cancelRewardCall { id: 1 }.abi_encode();
 
-            let output = token.call(&Bytes::from(calldata), sender)?;
+            let output = token.call(&calldata, sender)?;
             assert!(output.reverted);
             let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
             assert_eq!(output.bytes, expected);
@@ -334,7 +334,7 @@ mod tests {
 
             let calldata = ITIP20::claimRewardsCall {}.abi_encode();
 
-            let output = token.call(&Bytes::from(calldata), sender)?;
+            let output = token.call(&calldata, sender)?;
             assert!(output.reverted);
             let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
             assert_eq!(output.bytes, expected);
