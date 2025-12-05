@@ -101,7 +101,7 @@ where
             self.post_allegretto_metadatas
                 .epoch_metadata
                 .put_sync(
-                    CURRENT_EPOCH_KEY.into(),
+                    CURRENT_EPOCH_KEY,
                     EpochState {
                         dkg_outcome: DkgOutcome {
                             dkg_successful: true,
