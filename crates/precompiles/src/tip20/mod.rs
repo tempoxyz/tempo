@@ -743,12 +743,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.sstore_symbol(symbol.to_string())?;
         self.sstore_currency(currency.to_string())?;
 
-        // If the currency is USD, the quote token must also be USD
+        // If the currency is USD, the quote token must also be USD.
+        // Skip this check in AllegroModerato+ when quote_token is Address::ZERO (first token case).
         if currency == USD_CURRENCY {
-            let quote_token_currency =
-                TIP20Token::from_address(quote_token, self.storage).currency()?;
-            if quote_token_currency != USD_CURRENCY {
-                return Err(TIP20Error::invalid_quote_token().into());
+            let skip_check = self.storage.spec().is_allegro_moderato() && quote_token.is_zero();
+            if !skip_check {
+                let quote_token_currency =
+                    TIP20Token::from_address(quote_token, self.storage).currency()?;
+                if quote_token_currency != USD_CURRENCY {
+                    return Err(TIP20Error::invalid_quote_token().into());
+                }
             }
         }
 
@@ -1005,19 +1009,44 @@ pub(crate) mod tests {
     };
     use rand::{Rng, distributions::Alphanumeric, thread_rng};
 
-    /// Initialize PathUSD token
+    /// Initialize PathUSD token. For AllegroModerato+, uses the factory flow.
+    /// For older specs, initializes directly.
     pub(crate) fn initialize_path_usd(
         storage: &mut HashMapStorageProvider,
         admin: Address,
     ) -> Result<()> {
-        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, storage);
-        path_usd.initialize(
-            "PathUSD",
-            "PUSD",
-            "USD",
-            Address::ZERO,
+        if storage.spec().is_allegro_moderato() {
+            let mut factory = TIP20Factory::new(storage);
+            factory.initialize()?;
+            deploy_path_usd(&mut factory, admin)?;
+            Ok(())
+        } else {
+            let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, storage);
+            path_usd.initialize(
+                "PathUSD",
+                "PUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+                Address::ZERO,
+            )
+        }
+    }
+
+    /// Deploy PathUSD via the factory. Requires AllegroModerato+ spec and no tokens deployed yet.
+    pub(crate) fn deploy_path_usd(
+        factory: &mut TIP20Factory<'_, HashMapStorageProvider>,
+        admin: Address,
+    ) -> Result<Address> {
+        factory.create_token(
             admin,
-            Address::ZERO,
+            ITIP20Factory::createTokenCall {
+                name: "PathUSD".to_string(),
+                symbol: "PUSD".to_string(),
+                currency: "USD".to_string(),
+                quoteToken: Address::ZERO,
+                admin,
+            },
         )
     }
 
@@ -2679,5 +2708,120 @@ pub(crate) mod tests {
         assert!(result.is_err());
 
         Ok(())
+    }
+
+    #[test]
+    fn test_initialize_usd_token_with_zero_quote_token_post_allegro_moderato() {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let admin = Address::random();
+
+        let mut token = TIP20Token::new(1, &mut storage);
+
+        let result = token.initialize(
+            "TestToken",
+            "TEST",
+            "USD",
+            Address::ZERO,
+            admin,
+            Address::ZERO,
+        );
+
+        assert!(
+            result.is_ok(),
+            "Initializing USD token with quote_token=Address::ZERO should succeed post-AllegroModerato"
+        );
+    }
+
+    #[test]
+    fn test_initialize_usd_token_with_zero_quote_token_pre_allegro_moderato() {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let admin = Address::random();
+
+        let mut token = TIP20Token::new(1, &mut storage);
+
+        let result = token.initialize(
+            "TestToken",
+            "TEST",
+            "USD",
+            Address::ZERO,
+            admin,
+            Address::ZERO,
+        );
+
+        assert!(
+            result.is_err(),
+            "Initializing USD token with quote_token=Address::ZERO should fail pre-AllegroModerato"
+        );
+    }
+
+    #[test]
+    fn test_initialize_usd_token_with_non_usd_quote_token_fails_post_allegro_moderato() {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let admin = Address::random();
+
+        let mut non_usd_token = TIP20Token::new(1, &mut storage);
+        non_usd_token
+            .initialize(
+                "EuroToken",
+                "EUR",
+                "EUR",
+                Address::ZERO,
+                admin,
+                Address::ZERO,
+            )
+            .expect("Should be able to initialize non-USD token with zero quote token");
+
+        let mut usd_token = TIP20Token::new(2, &mut storage);
+        let eur_token_address = token_id_to_address(1);
+
+        let result = usd_token.initialize(
+            "USDToken",
+            "USD",
+            "USD",
+            eur_token_address,
+            admin,
+            Address::ZERO,
+        );
+
+        assert!(
+            result.is_err(),
+            "USD token should not be allowed to have a non-USD quote token"
+        );
+    }
+
+    #[test]
+    fn test_deploy_path_usd_via_factory_post_allegro_moderato() {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let admin = Address::random();
+
+        let mut factory = TIP20Factory::new(&mut storage);
+        factory.initialize().unwrap();
+
+        let result = deploy_path_usd(&mut factory, admin);
+        assert!(result.is_ok(), "deploy_path_usd should succeed");
+
+        let path_usd_address = result.unwrap();
+        assert_eq!(path_usd_address, PATH_USD_ADDRESS);
+
+        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
+        assert_eq!(path_usd.currency().unwrap(), "USD");
+        assert_eq!(path_usd.quote_token().unwrap(), Address::ZERO);
+    }
+
+    #[test]
+    fn test_deploy_path_usd_fails_if_token_already_deployed_post_allegro_moderato() {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let admin = Address::random();
+
+        let mut factory = TIP20Factory::new(&mut storage);
+        factory.initialize().unwrap();
+
+        deploy_path_usd(&mut factory, admin).unwrap();
+
+        let result = deploy_path_usd(&mut factory, admin);
+        assert!(
+            result.is_err(),
+            "deploy_path_usd should fail if a token has already been deployed"
+        );
     }
 }
