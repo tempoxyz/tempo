@@ -262,8 +262,10 @@ impl TestingNode {
     /// # Panics
     /// Panics if consensus is not running.
     async fn stop_consensus(&mut self) {
-        let handle = self.consensus_handle.take().unwrap_or_else(|| panic!("consensus is not running for {}, cannot stop",
-            self.uid));
+        let handle = self
+            .consensus_handle
+            .take()
+            .unwrap_or_else(|| panic!("consensus is not running for {}, cannot stop", self.uid));
         handle.abort();
 
         // Wait for the consensus handle to actually finish
