@@ -6,7 +6,7 @@ use alloy::{
 use alloy_primitives::Bytes;
 use commonware_codec::Encode as _;
 use commonware_cryptography::ed25519::PublicKey;
-use eyre::{OptionExt as _, WrapErr as _, eyre};
+use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use rayon::prelude::*;
 use reth_evm::{
@@ -103,6 +103,16 @@ pub(crate) struct GenesisArgs {
         required_if_eq("allegretto_time", "0")
     )]
     validators: Vec<SocketAddr>,
+
+    /// Will not write the validators into the validator config contract of
+    /// the genesis block.
+    #[arg(long)]
+    no_validators_in_genesis: bool,
+
+    /// Will not write the initial DKG outcome into the extra_data field of
+    /// the genesis header.
+    #[arg(long)]
+    no_dkg_in_genesis: bool,
 
     /// A fixed seed to generate all signing keys and group shares. This is
     /// intended for use in development and testing. Use at your own peril.
@@ -232,10 +242,10 @@ impl GenesisArgs {
         initialize_validator_config(
             admin,
             &mut evm,
-            self.allegretto_time,
             &consensus_config,
             // Skip admin
             &addresses[1..],
+            self.no_validators_in_genesis,
         )?;
 
         println!("Initializing fee manager");
@@ -386,6 +396,8 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("epochLength".to_string(), self.epoch_length)?;
+        let mut extra_data = Bytes::from_static(b"tempo-genesis");
+
         if let Some(consensus_config) = &consensus_config {
             chain_config
                 .extra_fields
@@ -394,18 +406,18 @@ impl GenesisArgs {
                 "publicPolynomial".to_string(),
                 consensus_config.public_polynomial.clone(),
             )?;
-        }
 
-        let extra_data =
-            consensus_config
-                .as_ref()
-                .map_or(Bytes::from_static(b"tempo-genesis"), |cfg| {
-                    cfg.to_genesis_dkg_outcome()
-                        .encode()
-                        .freeze()
-                        .to_vec()
-                        .into()
-                });
+            if self.no_dkg_in_genesis {
+                println!("no-initial-dkg-in-genesis passed; not writing to header extra_data");
+            } else {
+                extra_data = consensus_config
+                    .to_genesis_dkg_outcome()
+                    .encode()
+                    .freeze()
+                    .to_vec()
+                    .into();
+            }
+        }
 
         let mut genesis = Genesis::default()
             .with_gas_limit(self.gas_limit)
@@ -659,9 +671,9 @@ fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
 fn initialize_validator_config(
     admin: Address,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
-    allegretto_time: Option<u64>,
     consensus_config: &Option<ConsensusConfig>,
     addresses: &[Address],
+    no_validators_in_genesis: bool,
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
@@ -672,10 +684,12 @@ fn initialize_validator_config(
         .initialize(admin)
         .wrap_err("failed to initialize validator config contract")?;
 
-    if allegretto_time.is_some_and(|time| time == 0) {
-        let consensus_config = consensus_config
-            .clone()
-            .ok_or_eyre("allegretto time is 0, but no consensus config was passed")?;
+    if no_validators_in_genesis {
+        println!("no-validators-genesis passed; not writing validators to genesis block");
+        return Ok(());
+    }
+
+    if let Some(consensus_config) = consensus_config.clone() {
         println!(
             "writing {} validators into contract",
             consensus_config.validators.len()
@@ -710,6 +724,8 @@ fn initialize_validator_config(
                 \n\tnet address: {addr}"
             );
         }
+    } else {
+        println!("no consensus config passed; no validators to write to contract");
     }
     Ok(())
 }

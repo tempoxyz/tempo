@@ -66,23 +66,37 @@ pub struct Builder {
     epoch_length: Option<u64>,
     public_polynomial: Option<PublicPolynomial>,
     validators: Option<Peers>,
+    write_validators_into_genesis: bool,
 }
 
 impl Builder {
     pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_allegretto_time(self, allegretto_time: u64) -> Self {
         Self {
-            allegretto_time: Some(allegretto_time),
-            ..self
+            allegretto_time: None,
+            epoch_length: None,
+            public_polynomial: None,
+            validators: None,
+            write_validators_into_genesis: true,
         }
     }
 
     pub fn set_allegretto_time(self, allegretto_time: Option<u64>) -> Self {
         Self {
             allegretto_time,
+            ..self
+        }
+    }
+
+    pub fn set_write_validators_into_genesis(self, write_validators_into_genesis: bool) -> Self {
+        Self {
+            write_validators_into_genesis,
+            ..self
+        }
+    }
+
+    pub fn with_allegretto_time(self, allegretto_time: u64) -> Self {
+        Self {
+            allegretto_time: Some(allegretto_time),
             ..self
         }
     }
@@ -114,6 +128,7 @@ impl Builder {
             epoch_length,
             public_polynomial,
             validators,
+            write_validators_into_genesis,
         } = self;
 
         let epoch_length = epoch_length.ok_or_eyre("must specify epoch length")?;
@@ -154,64 +169,67 @@ impl Builder {
             .to_vec()
             .into();
 
-            let mut evm = setup_tempo_evm();
+            if write_validators_into_genesis {
+                let mut evm = setup_tempo_evm();
 
-            {
-                let ctx = evm.ctx_mut();
-                let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-                let mut provider =
-                    EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
+                {
+                    let ctx = evm.ctx_mut();
+                    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+                    let mut provider =
+                        EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
-                // TODO(janis): figure out the owner of the test-genesis.json
-                let mut validator_config = ValidatorConfig::new(&mut provider);
-                validator_config
-                    .initialize(admin())
-                    .wrap_err("Failed to initialize validator config")
-                    .unwrap();
-
-                for (i, (peer, addr)) in validators.into_inner().iter_pairs().enumerate() {
+                    // TODO(janis): figure out the owner of the test-genesis.json
+                    let mut validator_config = ValidatorConfig::new(&mut provider);
                     validator_config
-                        .add_validator(
-                            admin(),
-                            IValidatorConfig::addValidatorCall {
-                                newValidatorAddress: validator(i as u32),
-                                publicKey: peer.encode().freeze().as_ref().try_into().unwrap(),
-                                active: true,
-                                inboundAddress: addr.to_string(),
-                                outboundAddress: addr.to_string(),
-                            },
-                        )
+                        .initialize(admin())
+                        .wrap_err("Failed to initialize validator config")
                         .unwrap();
-                }
-            }
 
-            let evm_state = evm.ctx_mut().journaled_state.evm_state();
-            for (address, account) in evm_state.iter() {
-                let storage = if !account.storage.is_empty() {
-                    Some(
-                        account
-                            .storage
-                            .iter()
-                            .map(|(key, val)| ((*key).into(), val.present_value.into()))
-                            .collect(),
-                    )
-                } else {
-                    None
-                };
-                genesis.alloc.insert(
-                    *address,
-                    GenesisAccount {
-                        nonce: Some(account.info.nonce),
-                        code: account.info.code.as_ref().map(|c| c.original_bytes()),
-                        storage,
-                        ..Default::default()
-                    },
-                );
+                    for (i, (peer, addr)) in validators.into_inner().iter_pairs().enumerate() {
+                        validator_config
+                            .add_validator(
+                                admin(),
+                                IValidatorConfig::addValidatorCall {
+                                    newValidatorAddress: validator(i as u32),
+                                    publicKey: peer.encode().freeze().as_ref().try_into().unwrap(),
+                                    active: true,
+                                    inboundAddress: addr.to_string(),
+                                    outboundAddress: addr.to_string(),
+                                },
+                            )
+                            .unwrap();
+                    }
+                }
+
+                let evm_state = evm.ctx_mut().journaled_state.evm_state();
+                for (address, account) in evm_state.iter() {
+                    let storage = if !account.storage.is_empty() {
+                        Some(
+                            account
+                                .storage
+                                .iter()
+                                .map(|(key, val)| ((*key).into(), val.present_value.into()))
+                                .collect(),
+                        )
+                    } else {
+                        None
+                    };
+                    genesis.alloc.insert(
+                        *address,
+                        GenesisAccount {
+                            nonce: Some(account.info.nonce),
+                            code: account.info.code.as_ref().map(|c| c.original_bytes()),
+                            storage,
+                            ..Default::default()
+                        },
+                    );
+                }
             }
         }
 
-        let chain_spec = TempoChainSpec::from_genesis(genesis);
-        Ok(ExecutionRuntime::with_chain_spec(chain_spec))
+        Ok(ExecutionRuntime::with_chain_spec(
+            TempoChainSpec::from_genesis(genesis),
+        ))
     }
 }
 

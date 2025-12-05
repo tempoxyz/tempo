@@ -461,7 +461,6 @@ where
         }
 
         let new_validator_state = match &epoch_state {
-            // pre allegretto, the validators are always the ones known passed in at init.
             EpochState::PreModerato(epoch_state) => self
                 .validators_metadata
                 .get(&epoch_state.epoch().saturating_sub(1).into())
