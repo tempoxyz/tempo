@@ -91,7 +91,18 @@ impl ExecutionNodeConfigGenerator {
 
     /// Generate the execution node configurations.
     pub fn generate(self) -> Vec<ExecutionNodeConfig> {
-        // Reserve ports by binding to them
+        if !self.connect_peers {
+            // No peer connections needed, use port 0 (OS will assign)
+            return (0..self.count)
+                .map(|_| ExecutionNodeConfig {
+                    secret_key: B256::random(),
+                    trusted_peers: vec![],
+                    port: 0,
+                })
+                .collect();
+        }
+
+        // Reserve ports by binding to them for peer connections
         let ports: Vec<u16> = (0..self.count)
             .map(|_| {
                 // This should work, but there's a chance that it results in flaky tests
@@ -114,24 +125,22 @@ impl ExecutionNodeConfigGenerator {
             })
             .collect();
 
-        if self.connect_peers {
-            let enode_urls: Vec<String> = configs
-                .iter()
-                .map(|config| {
-                    let secret_key = SecretKey::from_slice(config.secret_key.as_slice())
-                        .expect("valid secret key");
-                    let addr = format!("127.0.0.1:{}", config.port)
-                        .parse()
-                        .expect("valid socket address");
-                    NodeRecord::from_secret_key(addr, &secret_key).to_string()
-                })
-                .collect();
+        let enode_urls: Vec<String> = configs
+            .iter()
+            .map(|config| {
+                let secret_key =
+                    SecretKey::from_slice(config.secret_key.as_slice()).expect("valid secret key");
+                let addr = format!("127.0.0.1:{}", config.port)
+                    .parse()
+                    .expect("valid socket address");
+                NodeRecord::from_secret_key(addr, &secret_key).to_string()
+            })
+            .collect();
 
-            for (i, config) in configs.iter_mut().enumerate() {
-                for (j, enode_url) in enode_urls.iter().enumerate() {
-                    if i != j {
-                        config.trusted_peers.push(enode_url.clone());
-                    }
+        for (i, config) in configs.iter_mut().enumerate() {
+            for (j, enode_url) in enode_urls.iter().enumerate() {
+                if i != j {
+                    config.trusted_peers.push(enode_url.clone());
                 }
             }
         }
