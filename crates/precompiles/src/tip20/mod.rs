@@ -109,7 +109,7 @@ pub fn validate_usd_currency<S: PrecompileStorageProvider>(
         return Err(FeeManagerError::invalid_token().into());
     }
 
-    let mut tip20_token = TIP20Token::from_address(token, storage);
+    let mut tip20_token = TIP20Token::from_address(token, storage)?;
     let currency = tip20_token.currency()?;
     if currency != USD_CURRENCY {
         return Err(TIP20Error::invalid_currency().into());
@@ -288,7 +288,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         let currency = self.currency()?;
         if currency == USD_CURRENCY {
             let quote_token_currency =
-                TIP20Token::from_address(call.newQuoteToken, self.storage).currency()?;
+                TIP20Token::from_address(call.newQuoteToken, self.storage)?.currency()?;
             if quote_token_currency != USD_CURRENCY {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
@@ -333,7 +333,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
 
-            current = TIP20Token::from_address(current, self.storage).quote_token()?;
+            current = TIP20Token::from_address(current, self.storage)?.quote_token()?;
         }
 
         // Update the quote token
@@ -715,10 +715,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         Self::_new(token_address, storage)
     }
 
-    /// Create a TIP20Token from an address
-    pub fn from_address(address: Address, storage: &'a mut S) -> Self {
+    /// Create a TIP20Token from an address.
+    /// Returns an error if the address is not a valid TIP20 token (post-AllegroModerato).
+    pub fn from_address(address: Address, storage: &'a mut S) -> Result<Self> {
+        if storage.spec().is_allegro_moderato() && !is_tip20(address) {
+            return Err(TIP20Error::invalid_token().into());
+        }
         let token_id = address_to_token_id_unchecked(address);
-        Self::new(token_id, storage)
+        Ok(Self::new(token_id, storage))
     }
 
     /// Only called internally from the factory, which won't try to re-initialize a token.
@@ -744,9 +748,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.sstore_currency(currency.to_string())?;
 
         // If the currency is USD, the quote token must also be USD
-        if currency == USD_CURRENCY {
+        // Skip this check if quote_token is Address::ZERO (root USD token)
+        if currency == USD_CURRENCY && quote_token != Address::ZERO {
             let quote_token_currency =
-                TIP20Token::from_address(quote_token, self.storage).currency()?;
+                TIP20Token::from_address(quote_token, self.storage)?.currency()?;
             if quote_token_currency != USD_CURRENCY {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
@@ -1010,7 +1015,7 @@ pub(crate) mod tests {
         storage: &mut HashMapStorageProvider,
         admin: Address,
     ) -> Result<()> {
-        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, storage);
+        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, storage)?;
         path_usd.initialize(
             "PathUSD",
             "PUSD",
@@ -2124,7 +2129,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_from_address() {
+    fn test_from_address() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -2139,7 +2144,7 @@ pub(crate) mod tests {
         };
 
         let addr_via_from_address = {
-            let token = TIP20Token::from_address(token_address, &mut storage);
+            let token = TIP20Token::from_address(token_address, &mut storage)?;
             token.address
         };
 
@@ -2151,6 +2156,8 @@ pub(crate) mod tests {
             addr_via_from_address, token_address,
             "from_address should use the provided address"
         );
+
+        Ok(())
     }
 
     #[test]
@@ -2677,6 +2684,42 @@ pub(crate) mod tests {
 
         let result = token.set_fee_recipient(Address::random(), expected_recipient);
         assert!(result.is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_from_address_validates_tip20() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let admin = Address::random();
+
+        initialize_path_usd(&mut storage, admin)?;
+
+        let valid_tip20_address = PATH_USD_ADDRESS;
+        let result = TIP20Token::from_address(valid_tip20_address, &mut storage);
+        assert!(
+            result.is_ok(),
+            "from_address should succeed for valid TIP20 address"
+        );
+
+        let non_tip20_address = Address::random();
+        let result = TIP20Token::from_address(non_tip20_address, &mut storage);
+        assert!(
+            matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidToken(_)))
+            ),
+            "from_address should return InvalidToken error for non-TIP20 address"
+        );
+
+        let result = TIP20Token::from_address(Address::ZERO, &mut storage);
+        assert!(
+            matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidToken(_)))
+            ),
+            "from_address should return InvalidToken error for Address::ZERO"
+        );
 
         Ok(())
     }
