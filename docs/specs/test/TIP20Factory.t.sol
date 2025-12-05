@@ -172,61 +172,28 @@ contract TIP20FactoryTest is BaseTest {
         assertTrue(factory.isTIP20(_PATH_USD));
     }
 
-    // TODO: Uncomment when Rust precompile is fixed.
-    // Issue: Rust `is_tip20()` in crates/precompiles/src/tip20/mod.rs does not check
-    // if token_id < tokenIdCounter, unlike the Solidity implementation.
-    //
-    // /// @notice Edge case: Token cannot use itself as quote token
-    // function test_EDGE_cannotCreateSelfReferencingToken() public {
-    //     uint256 nextTokenId = factory.tokenIdCounter();
-    //
-    //     // Calculate what the next token's address will be
-    //     // TIP20 addresses have format: 0x20C0 (prefix) + 00...00 (padding) + tokenId (last 8 bytes)
-    //     address nextTokenAddr =
-    //         address(uint160(0x20C0000000000000000000000000000000000000) | uint160(nextTokenId));
-    //
-    //     // isTIP20 correctly returns false because nextTokenId >= tokenIdCounter
-    //     // This is caught by isTIP20's check: uint64(uint160(token)) < tokenIdCounter
-    //     assertFalse(
-    //         factory.isTIP20(nextTokenAddr), "isTIP20 should reject token with id >= tokenIdCounter"
-    //     );
-    //
-    //     // The explicit self-reference check provides defense in depth
-    //     // Try to create a token that references itself as the quote token
-    //     try factory.createToken("Self Ref", "SELF", "USD", ITIP20(nextTokenAddr), admin) {
-    //         revert CallShouldHaveReverted();
-    //     } catch (bytes memory err) {
-    //         assertEq(err, abi.encodeWithSelector(ITIP20Factory.InvalidQuoteToken.selector));
-    //     }
-    // }
+    /// @notice Edge case: Token cannot use itself as quote token
+    function test_EDGE_cannotCreateSelfReferencingToken() public {
+        uint256 nextTokenId = factory.tokenIdCounter();
 
-    /*//////////////////////////////////////////////////////////////
-            NOTE: COMMENTED OUT TESTS FROM fuzz-precompiles
+        // Calculate what the next token's address will be
+        // TIP20 addresses have format: 0x20C0 (prefix) + 00...00 (padding) + tokenId (last 8 bytes)
+        address nextTokenAddr =
+            address(uint160(0x20C0000000000000000000000000000000000000) | uint160(nextTokenId));
 
-        Many tests in the fuzz-precompiles branch are commented out
-        because they require vanity address generation with CREATE2
-        in production. In local Foundry tests, the standard `new`
-        operator doesn't guarantee 0x20c0... prefixes.
+        // isTIP20 correctly returns false because nextTokenId >= tokenIdCounter
+        // This is caught by isTIP20's check: uint64(uint160(token)) < tokenIdCounter
+        assertFalse(
+            factory.isTIP20(nextTokenAddr), "isTIP20 should reject token with id >= tokenIdCounter"
+        );
 
-        These tests can be re-enabled for integration testing on
-        actual Tempo deployment where CREATE2 is used properly.
-
-        Commented tests include:
-        - testFuzz_createToken (vanity address generation)
-        - testFuzz_createMultipleTokens (vanity address generation)
-        - testFuzz_createTokenWithDifferentAdmins (vanity address)
-        - testFuzz_isTIP20WithValidAddresses (vanity address)
-        - testFuzz_isTIP20AfterMultipleCreations (vanity address)
-        - testFuzz_createTokenWithValidQuoteToken (vanity address)
-        - testFuzz_vanityAddressPrefixConsistency (vanity address)
-        - testFuzz_tokenIdEmbeddedInAddress (vanity address)
-        - All invariant tests (require handler contract setup)
-        - test_EDGE_createMaxTokens (vanity address)
-        - test_EDGE_pathUSDQuotesItself (vanity address)
-        - test_EDGE_createTokenQuotingNewerToken (vanity address)
-        - test_EDGE_emptyStringParameters (vanity address)
-        - test_EDGE_veryLongStringParameters (vanity address)
-    //////////////////////////////////////////////////////////////*/
-
+        // The explicit self-reference check provides defense in depth
+        // Try to create a token that references itself as the quote token
+        try factory.createToken("Self Ref", "SELF", "USD", ITIP20(nextTokenAddr), admin) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20Factory.InvalidQuoteToken.selector));
+        }
+    }
 
 }
