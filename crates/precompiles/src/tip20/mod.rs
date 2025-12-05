@@ -2716,81 +2716,90 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_initialize_usd_token_with_zero_quote_token_post_allegro_moderato() {
+    fn test_initialize_usd_token_post_allegro_moderato() {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
         let admin = Address::random();
 
+        // USD token with zero quote token should succeed
         let mut token = TIP20Token::new(1, &mut storage);
-
-        let result = token.initialize(
-            "TestToken",
-            "TEST",
-            "USD",
-            Address::ZERO,
-            admin,
-            Address::ZERO,
+        assert!(
+            token
+                .initialize(
+                    "TestToken",
+                    "TEST",
+                    "USD",
+                    Address::ZERO,
+                    admin,
+                    Address::ZERO
+                )
+                .is_ok()
         );
 
+        // Non-USD token with zero quote token should succeed
+        let mut eur_token = TIP20Token::new(2, &mut storage);
         assert!(
-            result.is_ok(),
-            "Initializing USD token with quote_token=Address::ZERO should succeed post-AllegroModerato"
+            eur_token
+                .initialize(
+                    "EuroToken",
+                    "EUR",
+                    "EUR",
+                    Address::ZERO,
+                    admin,
+                    Address::ZERO
+                )
+                .is_ok()
+        );
+
+        // USD token with non-USD quote token should fail
+        let mut usd_token = TIP20Token::new(3, &mut storage);
+        let eur_token_address = token_id_to_address(2);
+        assert!(
+            usd_token
+                .initialize(
+                    "USDToken",
+                    "USD",
+                    "USD",
+                    eur_token_address,
+                    admin,
+                    Address::ZERO
+                )
+                .is_err()
         );
     }
 
     #[test]
-    fn test_initialize_usd_token_with_zero_quote_token_pre_allegro_moderato() {
+    fn test_initialize_usd_token_pre_allegro_moderato() {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
         let admin = Address::random();
 
+        // USD token with zero quote token should fail (no skip for zero quote token pre-AllegroModerato)
         let mut token = TIP20Token::new(1, &mut storage);
-
-        let result = token.initialize(
-            "TestToken",
-            "TEST",
-            "USD",
-            Address::ZERO,
-            admin,
-            Address::ZERO,
-        );
-
         assert!(
-            result.is_err(),
-            "Initializing USD token with quote_token=Address::ZERO should fail pre-AllegroModerato"
-        );
-    }
-
-    #[test]
-    fn test_initialize_usd_token_with_non_usd_quote_token_fails_post_allegro_moderato() {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
-        let admin = Address::random();
-
-        let mut non_usd_token = TIP20Token::new(1, &mut storage);
-        non_usd_token
-            .initialize(
-                "EuroToken",
-                "EUR",
-                "EUR",
-                Address::ZERO,
-                admin,
-                Address::ZERO,
-            )
-            .expect("Should be able to initialize non-USD token with zero quote token");
-
-        let mut usd_token = TIP20Token::new(2, &mut storage);
-        let eur_token_address = token_id_to_address(1);
-
-        let result = usd_token.initialize(
-            "USDToken",
-            "USD",
-            "USD",
-            eur_token_address,
-            admin,
-            Address::ZERO,
+            token
+                .initialize(
+                    "TestToken",
+                    "TEST",
+                    "USD",
+                    Address::ZERO,
+                    admin,
+                    Address::ZERO
+                )
+                .is_err()
         );
 
+        // Non-USD token with zero quote token should succeed
+        let mut eur_token = TIP20Token::new(1, &mut storage);
         assert!(
-            result.is_err(),
-            "USD token should not be allowed to have a non-USD quote token"
+            eur_token
+                .initialize(
+                    "EuroToken",
+                    "EUR",
+                    "EUR",
+                    Address::ZERO,
+                    admin,
+                    Address::ZERO
+                )
+                .is_ok()
         );
     }
 
