@@ -572,7 +572,10 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             c.network.trusted_peers = config
                 .trusted_peers
                 .into_iter()
-                .map(|s| s.parse::<TrustedPeer>().expect("invalid trusted peer enode"))
+                .map(|s| {
+                    s.parse::<TrustedPeer>()
+                        .expect("invalid trusted peer enode")
+                })
                 .collect();
             c.network.port = config.port;
             c.network.p2p_secret_key_hex = Some(config.secret_key);
