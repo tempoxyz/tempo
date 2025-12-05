@@ -1,4 +1,4 @@
-use crate::aa_2d_pool::{AA2dTransactionId, AASequenceId};
+use crate::tt_2d_pool::{AA2dTransactionId, AASequenceId};
 use alloy_consensus::{BlobTransactionValidationError, Transaction, transaction::TxHashRef};
 use alloy_eips::{
     eip2718::{Encodable2718, Typed2718},
@@ -130,8 +130,8 @@ pub enum TempoPoolTransactionError {
     )]
     NonZeroValue,
 
-    /// Thrown if a AA transaction with a nonce key prefixed with the sub-block prefix marker added to the pool
-    #[error("AA transaction with subblock nonce key prefix aren't supported in the pool")]
+    /// Thrown if a Tempo Transaction with a nonce key prefixed with the sub-block prefix marker added to the pool
+    #[error("Tempo Transaction with subblock nonce key prefix aren't supported in the pool")]
     SubblockNonceKey,
 
     /// Thrown if the fee payer of a transaction cannot transfer (is blacklisted) the fee token, thus making the payment impossible.

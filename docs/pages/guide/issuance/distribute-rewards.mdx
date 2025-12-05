@@ -1,8 +1,274 @@
+import * as Demo from '../../../components/guides/Demo.tsx'
+import * as Step from '../../../components/guides/steps'
+import * as Card from '../../../components/Card.tsx'
+import LucideFileText from '~icons/lucide/file-text'
+import LucideBookOpen from '~icons/lucide/book-open'
+
 # Distribute Rewards
 
-Distribute rewards to token holders using TIP-20's built-in reward distribution mechanism.
+Distribute rewards to token holders using TIP-20's built-in reward distribution mechanism. Rewards allow parties to incentivize holders of a token by distributing tokens proportionally based on their balance.
 
-## Overview
+Rewards can be distributed by anyone on any TIP-20 token, and claimed by any holder who has opted in. This guide covers both the reward distributor and token holder use cases. While the demo below uses a token you create, the same principles apply to any token.
 
-Coming soon...
+## Demo
 
+Try out the complete rewards flow: create a token, opt in to receive rewards on it, create a reward for yourself, and claim it.
+
+<Demo.Container name="Distribute Rewards" footerVariant="source" src="tempoxyz/tempo-ts/tree/main/examples/issuance">
+  <Step.Connect stepNumber={1} />
+  <Step.AddFunds stepNumber={2} />
+  <Step.CreateOrLoadToken stepNumber={3} />
+  <Step.GrantTokenRoles stepNumber={4} roles={['issuer']} />
+  <Step.MintToken stepNumber={5} />
+  <Step.OptInToRewards stepNumber={6} />
+  <Step.StartReward stepNumber={7} />
+  <Step.ClaimReward stepNumber={8} flowDependencies={['rewardId']} last />
+</Demo.Container>
+
+## Steps
+
+::::steps
+
+### [Optional] Create a Stablecoin
+
+If you would like to distribute rewards on a token you have created, follow the [Create a Stablecoin](/guide/issuance/create-a-stablecoin) guide to deploy your token.
+
+### Tell Your Users to Opt In to Rewards
+
+Token holders must opt in to receive rewards by setting their reward recipient address. This is typically set to their own address.
+
+:::code-group
+
+```tsx twoslash [OptInToRewards.tsx]
+import React from 'react'
+import { Hooks } from 'tempo.ts/wagmi'
+import { useAccount } from 'wagmi'
+
+// @noErrors
+export function OptInToRewards() {
+  const { address } = useAccount()
+  const tokenAddress = '0x...' // Your token address
+
+  const setRecipient = Hooks.reward.useSetRecipientSync()
+
+  const handleOptIn = () => { // [!code hl]
+    if (!address) return // [!code hl]
+    setRecipient.mutate({ // [!code hl]
+      recipient: address, // [!code hl]
+      token: tokenAddress, // [!code hl]
+      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
+    }) // [!code hl]
+  } // [!code hl]
+
+  return (
+    <button 
+      disabled={setRecipient.isPending}
+      onClick={handleOptIn}
+      type="button"
+    >
+      {setRecipient.isPending ? 'Opting in...' : 'Opt In to Rewards'}
+    </button>
+  )
+}
+```
+
+```tsx twoslash [config.ts] filename="config.ts"
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempo } from 'tempo.ts/chains'
+import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+
+export const config = createConfig({
+  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  connectors: [webAuthn({
+    keyManager: KeyManager.localStorage(),
+  })],
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::
+
+### Make a Reward Distribution
+
+Anyone can make a reward distribution that allocates tokens to all opted-in holders proportionally based on their balance.
+
+:::code-group
+
+```tsx twoslash [StartReward.tsx]
+import React from 'react'
+import { Hooks } from 'tempo.ts/wagmi'
+import { parseUnits } from 'viem'
+
+// @noErrors
+export function StartReward() {
+  const tokenAddress = '0x...' // Your token address
+
+  const { data: metadata } = Hooks.token.useGetMetadata({
+    token: tokenAddress,
+  })
+
+  const start = Hooks.reward.useStartSync()
+
+  const handleStart = () => { // [!code hl]
+    if (!metadata) return // [!code hl]
+    start.mutate({ // [!code hl]
+      amount: parseUnits('50', metadata.decimals), // [!code hl]
+      token: tokenAddress, // [!code hl]
+      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
+    }) // [!code hl]
+  } // [!code hl]
+
+  return (
+    <button
+      disabled={start.isPending || !metadata}
+      onClick={handleStart}
+      type="button"
+    >
+      {start.isPending ? 'Starting...' : 'Start Reward'}
+    </button>
+  )
+}
+```
+
+```tsx twoslash [config.ts] filename="config.ts"
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempo } from 'tempo.ts/chains'
+import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+
+export const config = createConfig({
+  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  connectors: [webAuthn({
+    keyManager: KeyManager.localStorage(),
+  })],
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::
+
+### Your Users Can Claim Rewards
+
+Once a reward is distributed, opted-in holders can claim their share.
+
+:::code-group
+
+```tsx twoslash [ClaimReward.tsx]
+import React from 'react'
+import { Hooks } from 'tempo.ts/wagmi'
+
+// @noErrors
+export function ClaimReward() {
+  const tokenAddress = '0x...' // Your token address
+
+  const claim = Hooks.reward.useClaimSync()
+
+  const handleClaim = () => { // [!code hl]
+    claim.mutate({ // [!code hl]
+      token: tokenAddress, // [!code hl]
+      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
+    }) // [!code hl]
+  } // [!code hl]
+
+  return (
+    <button
+      disabled={claim.isPending}
+      onClick={handleClaim}
+      type="button"
+    >
+      {claim.isPending ? 'Claiming...' : 'Claim Rewards'}
+    </button>
+  )
+}
+```
+
+```tsx twoslash [config.ts] filename="config.ts"
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempo } from 'tempo.ts/chains'
+import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+
+export const config = createConfig({
+  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  connectors: [webAuthn({
+    keyManager: KeyManager.localStorage(),
+  })],
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::
+
+::::
+
+## Recipes
+
+### Watch for new reward distributions
+
+Use `useWatchRewardScheduled` to listen for new reward distributions on a token. This is useful for updating your UI when a reward is distributed.
+
+```tsx twoslash
+import { Hooks } from 'tempo.ts/wagmi'
+
+// @noErrors
+function WatchRewards() {
+  const tokenAddress = '0x...' // Your token address
+
+  Hooks.reward.useWatchRewardScheduled({ // [!code hl]
+    token: tokenAddress, // [!code hl]
+    onRewardScheduled(args) { // [!code hl]
+      console.log('New reward scheduled:', args) // [!code hl]
+      // Update UI, refetch balances, show notification, etc. // [!code hl]
+    }, // [!code hl]
+  }) // [!code hl]
+
+  return <div>Watching for reward distributions...</div>
+}
+```
+
+### Watch for reward opt-ins
+
+Use `useWatchRewardRecipientSet` to listen for when users opt in to rewards by setting their recipient address. This is useful for tracking opt-in activity.
+
+```tsx twoslash
+import { Hooks } from 'tempo.ts/wagmi'
+
+// @noErrors
+function WatchOptIns() {
+  const tokenAddress = '0x...' // Your token address
+
+  Hooks.reward.useWatchRewardRecipientSet({ // [!code hl]
+    token: tokenAddress, // [!code hl]
+    onRewardRecipientSet(args) { // [!code hl]
+      console.log('User opted in:', args) // [!code hl]
+      // Update UI, track analytics, etc. // [!code hl]
+    }, // [!code hl]
+  }) // [!code hl]
+
+  return <div>Watching for reward opt-ins...</div>
+}
+```
+
+## Learning Resources
+
+<Card.Container>
+  <Card.Link
+    description="See the TIP-20 rewards spec"
+    href="/documentation/protocol/tip20-rewards/spec"
+    icon={LucideFileText}
+    title="TIP-20 Rewards Spec"
+  />
+  <Card.Link
+    description="Read an overview of TIP-20 rewards"
+    href="/documentation/protocol/tip20-rewards/overview"
+    icon={LucideBookOpen}
+    title="TIP-20 Rewards Overview"
+  />
+</Card.Container>

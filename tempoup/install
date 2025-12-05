@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+set -e
+
+# Tempoup bootstrap installer
+# Downloads tempoup script and sets up PATH
+
+INSTALL_DIR="${TEMPO_DIR:-$HOME/.tempo}"
+BIN_DIR="$INSTALL_DIR/bin"
+TEMPOUP_URL="https://raw.githubusercontent.com/tempoxyz/tempo/main/tempoup/tempoup"
+
+# Color output
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+info() {
+    echo -e "${GREEN}info${NC}: $1"
+}
+
+warn() {
+    echo -e "${YELLOW}warn${NC}: $1"
+}
+
+# Detect shell and config file
+get_shell_config() {
+    local shell_name=$(basename "$SHELL")
+
+    case "$shell_name" in
+        zsh)
+            if [[ -n "$ZDOTDIR" ]]; then
+                echo "$ZDOTDIR/.zshenv"
+            else
+                echo "$HOME/.zshenv"
+            fi
+            ;;
+        bash)
+            echo "$HOME/.bashrc"
+            ;;
+        fish)
+            echo "$HOME/.config/fish/config.fish"
+            ;;
+        *)
+            echo "$HOME/.profile"
+            ;;
+    esac
+}
+
+main() {
+    echo "Installing tempoup..."
+    echo ""
+
+    # Create bin directory
+    mkdir -p "$BIN_DIR"
+
+    # Download tempoup script
+    info "Downloading tempoup script..."
+    if command -v curl >/dev/null 2>&1; then
+        curl -# -L "$TEMPOUP_URL" -o "$BIN_DIR/tempoup"
+    elif command -v wget >/dev/null 2>&1; then
+        wget --show-progress -q -O "$BIN_DIR/tempoup" "$TEMPOUP_URL"
+    else
+        echo "Error: Neither curl nor wget found. Please install one of them."
+        exit 1
+    fi
+
+    chmod +x "$BIN_DIR/tempoup"
+    info "Tempoup installed to $BIN_DIR/tempoup"
+
+    # Add to PATH if not already present
+    if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+        SHELL_CONFIG=$(get_shell_config)
+        SHELL_NAME=$(basename "$SHELL")
+
+        info "Adding $BIN_DIR to PATH in $SHELL_CONFIG"
+
+        mkdir -p "$(dirname "$SHELL_CONFIG")"
+
+        echo "" >> "$SHELL_CONFIG"
+        echo "# Added by tempoup installer" >> "$SHELL_CONFIG"
+
+        if [[ "$SHELL_NAME" == "fish" ]]; then
+            echo "fish_add_path -a \"$BIN_DIR\"" >> "$SHELL_CONFIG"
+        else
+            echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$SHELL_CONFIG"
+        fi
+
+        echo ""
+        warn "Please restart your shell or run:"
+        echo "  source $SHELL_CONFIG"
+        echo ""
+    fi
+
+    # Run tempoup to install tempo binary
+    info "Running tempoup to install tempo..."
+    echo ""
+
+    export PATH="$BIN_DIR:$PATH"
+    "$BIN_DIR/tempoup"
+}
+
+main

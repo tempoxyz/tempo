@@ -28,13 +28,12 @@ use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, storage::slots, tip_fee_manager};
 use tempo_primitives::{
-    TempoTxEnvelope, TxFeeToken,
+    TempoTransaction, TempoTxEnvelope, TxFeeToken,
     transaction::{
-        TxAA,
-        aa_signature::{AASignature, PrimitiveSignature},
-        aa_signed::AASigned,
-        account_abstraction::Call,
         calc_gas_balance_spending,
+        tempo_transaction::Call,
+        tt_signature::{PrimitiveSignature, TempoSignature},
+        tt_signed::AASigned,
     },
 };
 
@@ -168,7 +167,7 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
         .as_secs();
 
     // Create an AA transaction with `valid_before = current_time + 1` second
-    let tx_aa = TxAA {
+    let tx_aa = TempoTransaction {
         chain_id: 1337,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
@@ -186,7 +185,7 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
     // Sign the AA transaction
     let sig_hash = tx_aa.signature_hash();
     let signature = signer_wallet.sign_hash_sync(&sig_hash)?;
-    let aa_signature = AASignature::Primitive(PrimitiveSignature::Secp256k1(signature));
+    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature));
     let signed_tx = AASigned::new_unhashed(tx_aa, aa_signature);
 
     let envelope: TempoTxEnvelope = signed_tx.into();

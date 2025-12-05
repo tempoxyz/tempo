@@ -17,7 +17,10 @@ use commonware_macros::select;
 use commonware_runtime::{ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _, ensure, eyre};
-use futures::{StreamExt as _, channel::mpsc};
+use futures::{
+    StreamExt as _,
+    channel::{mpsc, oneshot},
+};
 use reth_provider::BlockNumReader as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tracing::{Level, Span, debug, info, instrument, warn};
@@ -181,9 +184,13 @@ where
     async fn handle_message(&mut self, message: Message) {
         let cause = message.cause;
         match message.command {
-            Command::CanonicalizeHead { height, digest } => {
+            Command::CanonicalizeHead {
+                height,
+                digest,
+                ack,
+            } => {
                 let _ = self
-                    .canonicalize(cause, HeadOrFinalized::Head, height, digest)
+                    .canonicalize(cause, HeadOrFinalized::Head, height, digest, ack)
                     .await;
             }
             Command::Finalize(finalized) => {
@@ -209,6 +216,7 @@ where
         head_or_finalized: HeadOrFinalized,
         height: u64,
         digest: Digest,
+        ack: oneshot::Sender<()>,
     ) -> eyre::Result<()> {
         let new_canonicalized = match head_or_finalized {
             HeadOrFinalized::Head => self.last_canonicalized.update_head(height, digest.0),
@@ -219,6 +227,7 @@ where
 
         if new_canonicalized == self.last_canonicalized {
             info!("would not change forkchoice state; not sending it to the execution layer");
+            let _ = ack.send(());
             return Ok(());
         }
 
@@ -252,6 +261,7 @@ where
                 .wrap_err("execution layer responded with error for forkchoice-update"));
         }
 
+        let _ = ack.send(());
         self.last_canonicalized = new_canonicalized;
 
         Ok(())
@@ -263,7 +273,13 @@ where
         match finalized.inner {
             Update::Tip(height, digest) => {
                 let _: Result<_, _> = self
-                    .canonicalize(Span::current(), HeadOrFinalized::Finalized, height, digest)
+                    .canonicalize(
+                        Span::current(),
+                        HeadOrFinalized::Finalized,
+                        height,
+                        digest,
+                        oneshot::channel().0,
+                    )
                     .await;
             }
             Update::Block(block, acknowledgment) => {
@@ -315,6 +331,7 @@ where
                 HeadOrFinalized::Finalized,
                 block.height(),
                 block.digest(),
+                oneshot::channel().0,
             )
             .await
         {
@@ -447,13 +464,24 @@ pub(super) struct ExecutorMailbox {
 
 impl ExecutorMailbox {
     /// Requests the agent to update the head of the canonical chain to `digest`.
-    pub(super) fn canonicalize_head(&self, height: u64, digest: Digest) -> eyre::Result<()> {
+    pub(super) fn canonicalize_head(
+        &self,
+        height: u64,
+        digest: Digest,
+    ) -> eyre::Result<oneshot::Receiver<()>> {
+        let (tx, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message {
                 cause: Span::current(),
-                command: Command::CanonicalizeHead { height, digest },
+                command: Command::CanonicalizeHead {
+                    height,
+                    digest,
+                    ack: tx,
+                },
             })
-            .wrap_err("failed sending canonicalize request to agent, this means it exited")
+            .wrap_err("failed sending canonicalize request to agent, this means it exited")?;
+
+        Ok(rx)
     }
 
     /// Requests the agent to forward a `finalized` block to the execution layer.
@@ -479,7 +507,11 @@ struct Message {
 #[derive(Debug)]
 enum Command {
     /// Requests the agent to set the head of the canonical chain to `digest`.
-    CanonicalizeHead { height: u64, digest: Digest },
+    CanonicalizeHead {
+        height: u64,
+        digest: Digest,
+        ack: oneshot::Sender<()>,
+    },
     /// Requests the agent to forward a finalization event to the execution layer.
     Finalize(Box<super::ingress::Finalized>),
 }

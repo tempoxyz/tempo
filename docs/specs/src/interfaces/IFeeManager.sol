@@ -8,21 +8,9 @@ interface IFeeManager is IFeeAMM {
     event UserTokenSet(address indexed user, address indexed token);
     event ValidatorTokenSet(address indexed validator, address indexed token);
 
-    function collectFeePostTx(
-        address user,
-        uint256 maxAmount,
-        uint256 actualUsed,
-        address userToken,
-        address validatorToken,
-        address feeRecipient
-    ) external;
-
-    function collectFeePreTx(
-        address user,
-        address txToAddress,
-        uint256 maxAmount,
-        address feeRecipient
-    ) external returns (address userToken);
+    // NOTE: collectFeePreTx and collectFeePostTx are protocol-internal functions
+    // called directly by the execution handler, not exposed via the public interface.
+    // TODO: Design fuzz tests for collectFeePreTx/collectFeePostTx to test against the precompile implementation.
 
     function executeBlock() external;
 
