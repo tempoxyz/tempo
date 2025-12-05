@@ -190,10 +190,6 @@ impl SigningKey {
         self.inner
     }
 
-    pub fn public_key(&self) -> PublicKey {
-        self.inner.public_key()
-    }
-
     pub fn read_from_file<P: AsRef<Path>>(path: P) -> Result<Self, SigningKeyError> {
         let hex = std::fs::read_to_string(path).map_err(SigningKeyErrorKind::Read)?;
         Self::try_from_hex(&hex)
