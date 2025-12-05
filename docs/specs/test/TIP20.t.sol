@@ -6,6 +6,7 @@ import { TIP20Factory } from "../src/TIP20Factory.sol";
 import { TIP403Registry } from "../src/TIP403Registry.sol";
 import { ITIP20 } from "../src/interfaces/ITIP20.sol";
 import { ITIP20RolesAuth } from "../src/interfaces/ITIP20RolesAuth.sol";
+import { ITIP403Registry } from "../src/interfaces/ITIP403Registry.sol";
 import { BaseTest } from "./BaseTest.t.sol";
 
 contract TIP20Test is BaseTest {
@@ -418,112 +419,111 @@ contract TIP20Test is BaseTest {
         vm.stopPrank();
     }
 
-    // TODO: Uncomment when Rust precompile is fixed.
-    // Issue: `systemTransferFrom` is not implemented in the Rust TIP20 precompile
-    // (crates/precompiles/src/tip20/dispatch.rs). The precompile returns
-    // UnknownFunctionSelector instead of PolicyForbids.
-    //
-    // function testPolicyForbidsAllCases() public {
-    //     // Setup: approve bob to spend alice's tokens
-    //     vm.prank(alice);
-    //     token.approve(bob, 1000e18);
-    //
-    //     // Change to policy 2 which blocks alice
-    //     vm.prank(admin);
-    //     token.changeTransferPolicyId(2);
-    //
-    //     // 1. mint - blocked recipient
-    //     vm.prank(admin);
-    //     try token.mint(alice, 100e18) {
-    //         revert CallShouldHaveReverted();
-    //     } catch (bytes memory err) {
-    //         assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
-    //     }
-    //
-    //     // 2. transfer - blocked sender
-    //     vm.prank(alice);
-    //     try token.transfer(bob, 100e18) {
-    //         revert CallShouldHaveReverted();
-    //     } catch (bytes memory err) {
-    //         assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
-    //     }
-    //
-    //     // 3. transferWithMemo - blocked sender
-    //     vm.prank(alice);
-    //     try token.transferWithMemo(bob, 100e18, TEST_MEMO) {
-    //         revert CallShouldHaveReverted();
-    //     } catch (bytes memory err) {
-    //         assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
-    //     }
-    //
-    //     // 4. transferFrom - blocked from
-    //     vm.prank(bob);
-    //     try token.transferFrom(alice, charlie, 100e18) {
-    //         revert CallShouldHaveReverted();
-    //     } catch (bytes memory err) {
-    //         assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
-    //     }
-    //
-    //     // 5. transferFromWithMemo - blocked from
-    //     vm.prank(bob);
-    //     try token.transferFromWithMemo(alice, charlie, 100e18, TEST_MEMO) {
-    //         revert CallShouldHaveReverted();
-    //     } catch (bytes memory err) {
-    //         assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
-    //     }
-    //
-    //     // 6. systemTransferFrom - blocked from
-    //     address feeManager = 0xfeEC000000000000000000000000000000000000;
-    //     vm.prank(feeManager);
-    //     try token.systemTransferFrom(alice, bob, 100e18) {
-    //         revert CallShouldHaveReverted();
-    //     } catch (bytes memory err) {
-    //         assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
-    //     }
-    //
-    //     // 7. startReward - blocked sender
-    //     vm.prank(alice);
-    //     try token.startReward(100e18, 0) {
-    //         revert CallShouldHaveReverted();
-    //     } catch (bytes memory err) {
-    //         assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
-    //     }
-    //
-    //     // 8. setRewardRecipient - blocked sender
-    //     vm.prank(alice);
-    //     try token.setRewardRecipient(alice) {
-    //         revert CallShouldHaveReverted();
-    //     } catch (bytes memory err) {
-    //         assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
-    //     }
-    //
-    //     // 9. setRewardRecipient - blocked recipient (bob sets alice as recipient)
-    //     vm.prank(bob);
-    //     try token.setRewardRecipient(alice) {
-    //         revert CallShouldHaveReverted();
-    //     } catch (bytes memory err) {
-    //         assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
-    //     }
-    //
-    //     // 10. claimRewards - blocked sender
-    //     vm.prank(alice);
-    //     try token.claimRewards() {
-    //         revert CallShouldHaveReverted();
-    //     } catch (bytes memory err) {
-    //         assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
-    //     }
-    //
-    //     // 11. burnBlocked - reverts if from IS authorized (opposite logic)
-    //     vm.startPrank(admin);
-    //     token.grantRole(token.BURN_BLOCKED_ROLE(), admin);
-    //     token.changeTransferPolicyId(1); // back to default where bob is authorized
-    //     try token.burnBlocked(bob, 100e18) {
-    //         revert CallShouldHaveReverted();
-    //     } catch (bytes memory err) {
-    //         assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
-    //     }
-    //     vm.stopPrank();
-    // }
+    function testPolicyForbidsAllCases() public {
+        // Setup: approve bob to spend alice's tokens
+        vm.prank(alice);
+        token.approve(bob, 1000e18);
+
+        // Change to policy 2 which blocks alice
+        vm.prank(admin);
+        token.changeTransferPolicyId(2);
+
+        // 1. mint - blocked recipient
+        vm.prank(admin);
+        try token.mint(alice, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 2. transfer - blocked sender
+        vm.prank(alice);
+        try token.transfer(bob, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 3. transferWithMemo - blocked sender
+        vm.prank(alice);
+        try token.transferWithMemo(bob, 100e18, TEST_MEMO) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 4. transferFrom - blocked from
+        vm.prank(bob);
+        try token.transferFrom(alice, charlie, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 5. transferFromWithMemo - blocked from
+        vm.prank(bob);
+        try token.transferFromWithMemo(alice, charlie, 100e18, TEST_MEMO) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 6. systemTransferFrom - blocked from
+        // We skip this test on Tempo, as the systemTransferFrom function is not exposed via the TIP20 interface
+        // it is just an internal function that is called by the fee manager precompile directly.
+        if (!isTempo) {
+            address feeManager = 0xfeEC000000000000000000000000000000000000;
+            vm.prank(feeManager);
+            try token.systemTransferFrom(alice, bob, 100e18) {
+                revert CallShouldHaveReverted();
+            } catch (bytes memory err) {
+                assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+            }
+        }
+
+        // 7. startReward - blocked sender
+        vm.prank(alice);
+        try token.startReward(100e18, 0) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 8. setRewardRecipient - blocked sender
+        vm.prank(alice);
+        try token.setRewardRecipient(alice) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 9. setRewardRecipient - blocked recipient (bob sets alice as recipient)
+        vm.prank(bob);
+        try token.setRewardRecipient(alice) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 10. claimRewards - blocked sender
+        vm.prank(alice);
+        try token.claimRewards() {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // 11. burnBlocked - reverts if from IS authorized (opposite logic)
+        vm.startPrank(admin);
+        token.grantRole(token.BURN_BLOCKED_ROLE(), admin);
+        token.changeTransferPolicyId(1); // back to default where bob is authorized
+        try token.burnBlocked(bob, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+        vm.stopPrank();
+    }
 
     function testBurnWithMemoRequiresIssuerRole() public {
         // Try to burn without _ISSUER_ROLE
