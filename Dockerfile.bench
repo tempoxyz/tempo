@@ -13,7 +13,9 @@ COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
-COPY --from=planner /app/recipe.json recipe.json
+
+ARG RUST_PROFILE=release
+ARG RUST_FEATURES=""
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
@@ -27,32 +29,29 @@ RUN apt-get update \
 ENV RUSTC_WRAPPER=sccache \
     SCCACHE_DIR=/sccache
 
+COPY --from=planner /app/recipe.json recipe.json
 COPY Cargo.toml Cargo.lock ./
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
-    cargo chef cook --release --recipe-path recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache \
+    cargo chef cook --profile ${RUST_PROFILE} --features "${RUST_FEATURES}" --recipe-path recipe.json
 
 COPY . .
 
 ARG RUST_BINARY
-ARG RUST_PROFILE
-ARG RUST_FEATURES
 ARG VERGEN_GIT_SHA
 ARG VERGEN_GIT_SHA_SHORT
 
-# Install nightly Rust and build the tempo binary
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache \
     cargo build --bin ${RUST_BINARY} --profile ${RUST_PROFILE} --features "${RUST_FEATURES}"
 
 FROM debian:bookworm-slim
 
 COPY --from=ghcr.io/nushell/nushell:0.108.0-bookworm /usr/bin/nu /usr/bin/nu
 
-# Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -60,7 +59,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ARG RUST_BINARY
 ARG RUST_PROFILE
 
-# Copy the binary
 COPY --from=builder /app/target/${RUST_PROFILE}/${RUST_BINARY} /usr/local/bin/${RUST_BINARY}
 
 WORKDIR /data
