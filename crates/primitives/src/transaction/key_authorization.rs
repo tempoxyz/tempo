@@ -26,7 +26,7 @@ pub struct TokenLimit {
 
 /// Key authorization for provisioning access keys
 ///
-/// Used in TxAA to add a new key to the AccountKeychain precompile.
+/// Used in TempoTransaction to add a new key to the AccountKeychain precompile.
 /// The transaction must be signed by the root key to authorize adding this access key.
 ///
 /// RLP encoding: `[key_type, key_id, expiry?, limits?]`

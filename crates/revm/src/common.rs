@@ -46,11 +46,11 @@ impl TempoTx for TempoTxEnv {
     }
 
     fn is_aa(&self) -> bool {
-        self.aa_tx_env.is_some()
+        self.tempo_tx_env.is_some()
     }
 
     fn calls(&self) -> impl Iterator<Item = (TxKind, &Bytes)> {
-        if let Some(aa) = self.aa_tx_env.as_ref() {
+        if let Some(aa) = self.tempo_tx_env.as_ref() {
             Either::Left(aa.aa_calls.iter().map(|call| (call.to, &call.input)))
         } else {
             Either::Right(core::iter::once((self.inner.kind, &self.inner.data)))

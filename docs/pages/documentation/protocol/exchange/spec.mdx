@@ -42,6 +42,18 @@ A flip order behaves like a normal resting order until it is fully filled. When 
 
 Pairs are identified deterministically from the two token addresses (the base token is any TIP‑20, and its `quoteToken()` function points to the quote token). Prices are discretized into integer ticks with a tick size of 0.1 bps: with `PRICE_SCALE = 100_000`, `price = PRICE_SCALE + tick`. Orders may only be placed at ticks divisible by `TICK_SPACING = 10` (effectively setting a 1 bp tick size). The orderbook tracks best bid (highest active bid tick) and best ask (lowest active ask tick), and uses bitmaps over tick words for efficient discovery of the next initialized tick.
 
+#### Quote tokens
+
+Each TIP‑20 token specifies a single quote token in its metadata via `quoteToken()`. A trading pair on the stablecoin exchange exists only between a base token and its designated quote token, and prices for the pair are denominated in units of the quote token.
+
+This design reduces liquidity fragmentation by giving every token exactly one paired asset.
+
+It also simplifies routing. The requirement that each token picks a single other stablecoin as its quote token, and that quote token relationships cannot create a cycle, forces liquidity into a tree structure, which means that there is only one path between any two stablecoins.
+
+USD tokens can only choose USD tokens as their quote token. Non-USD TIP-20 tokens can pick any token as their quote token, but currently there is no support for cross-currency trading, or same-currency trading of non-USD tokens, on the built-in stablecoin exchange.
+ 
+The platform offers a neutral USD stablecoin, [`pathUSD`](/documentation/protocol/exchange/pathUSD), as an option for quote token. PathUSD is the first stablecoin deployed on the chain, which means it has no quote token. Use of pathUSD is optional.
+
 #### Swaps
 
 Swaps execute immediately against the active book. Selling base for quote starts at the current best bid and walks downward as ticks are exhausted; selling quote for base starts at the best ask and walks upward. Within a tick, fills are FIFO and decrement the tick’s total liquidity. When a tick empties, it is de‑initialized.

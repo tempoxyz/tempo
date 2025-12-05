@@ -53,8 +53,8 @@ pub enum TempoPrecompileError {
     #[error("TIP account registrar error: {0:?}")]
     TIPAccountRegistrarError(TIPAccountRegistrarError),
 
-    /// Error from native AA nonce manager
-    #[error("Native AA nonce error: {0:?}")]
+    /// Error from Tempo Transaction nonce manager
+    #[error("Tempo Transaction nonce error: {0:?}")]
     NonceError(NonceError),
 
     #[error("Panic({0:?})")]

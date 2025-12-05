@@ -153,8 +153,14 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             return Err(FeeManagerError::invalid_token().into());
         }
 
-        // Forbid setting PathUSD as the user's fee token (only after Moderato hardfork)
-        if self.storage.spec().is_moderato() && call.token == PATH_USD_ADDRESS {
+        // Depending on the hardfork, allow/disallow PathUSD to be set as the fee token
+        // Pre moderato: Allow
+        // Post moderato: Disallow
+        // Post allegro moderato: Allow
+        if self.storage.spec().is_moderato()
+            && !self.storage.spec().is_allegro_moderato()
+            && call.token == PATH_USD_ADDRESS
+        {
             return Err(FeeManagerError::invalid_token().into());
         }
 
@@ -588,6 +594,25 @@ mod tests {
         let result = fee_manager.set_user_token(user, call);
 
         // Pre-Moderato: should be allowed to set PathUSD as user token
+        assert!(result.is_ok());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_user_token_allows_path_usd_post_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let user = Address::random();
+        initialize_path_usd(&mut storage, user).unwrap();
+
+        let mut fee_manager = TipFeeManager::new(&mut storage);
+
+        let call = IFeeManager::setUserTokenCall {
+            token: PATH_USD_ADDRESS,
+        };
+        let result = fee_manager.set_user_token(user, call);
+
+        // Post Allegro Moderato: should be allowed to set PathUSD as user token
         assert!(result.is_ok());
 
         Ok(())

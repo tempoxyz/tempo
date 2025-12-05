@@ -1,5 +1,9 @@
+import * as Card from '../../../components/Card.tsx'
 import * as Demo from '../../../components/guides/Demo.tsx'
 import * as Step from '../../../components/guides/steps'
+import LucideSettings from '~icons/lucide/settings'
+import LucideDroplet from '~icons/lucide/droplet'
+import LucideFileText from '~icons/lucide/file-text'
 
 # Use Your Stablecoin for Fees
 
@@ -218,6 +222,49 @@ feeManager.setTransactionFeeToken(yourToken);
 token.transfer(recipient, 100_000_000);
 ```
 
+```rust [Rust]
+use alloy::{
+    primitives::{U256, address},
+    providers::ProviderBuilder,
+};
+use tempo_alloy::{
+    TempoNetwork,
+    contracts::precompiles::{ITIPFeeAMM, TIP_FEE_MANAGER_ADDRESS},
+};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .connect(&std::env::var("RPC_URL").expect("No RPC URL set"))
+        .await?;
+
+    // Your issued token
+    let your_token = address!("0x20c0000000000000000000000000000000000004"); // [!code focus]
+    // AlphaUSD
+    let validator_token = address!("0x20c0000000000000000000000000000000000001"); // [!code focus]
+
+    let fee_amm = ITIPFeeAMM::new( // [!code focus]
+        TIP_FEE_MANAGER_ADDRESS, // [!code focus]
+        provider,                // [!code focus]
+    ); // [!code focus]
+
+    let recipient = address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"); // [!code focus]
+
+    // Add 100 AlphaUSD of liquidity to the fee pool
+    fee_amm // [!code focus]
+        .mintWithValidatorToken( // [!code focus]
+            your_token,              // [!code focus]
+            validator_token,         // [!code focus]
+            U256::from(100_000_000), // [!code focus]
+            recipient,               // [!code focus]
+        ) // [!code focus]
+        .send() // [!code focus]
+        .await?; // [!code focus]
+
+    Ok(())
+}
+```
+
 :::
 
 Users can set your stablecoin as their default fee token at the account level, or specify it for individual transactions. Learn more about [how users pay fees in different stablecoins](/guide/payments/pay-fees-in-any-stablecoin).
@@ -261,5 +308,23 @@ Before promoting fee payments with your token, thoroughly test the flow on testn
 
 ## Next Steps
 
-- **[Manage your stablecoin](/guide/issuance/manage-stablecoin)** with roles, supply caps, and transfer policies
-- Learn more about [Transaction Fee Tokens](/documentation/protocol/fees/spec-fee)
+<Card.Container>
+  <Card.Link
+    description="Manage roles, supply caps, and transfer policies"
+    href="/guide/issuance/manage-stablecoin"
+    icon={LucideSettings}
+    title="Manage Your Stablecoin"
+  />
+  <Card.Link
+    description="Add and remove liquidity to enable fee conversions"
+    href="/guide/stablecoin-exchange/managing-fee-liquidity"
+    icon={LucideDroplet}
+    title="Managing Fee Liquidity"
+  />
+  <Card.Link
+    description="Complete fee token specification"
+    href="/documentation/protocol/fees/spec-fee"
+    icon={LucideFileText}
+    title="Fee Tokens"
+  />
+</Card.Container>

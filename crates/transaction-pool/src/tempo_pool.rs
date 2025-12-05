@@ -3,14 +3,11 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    aa_2d_pool::{AA2dNonceKeys, AA2dPool, AASequenceId},
-    amm::AmmLiquidityCache,
-    best::MergeBestTransactions,
-    transaction::TempoPooledTransaction,
-    validator::TempoTransactionValidator,
+    amm::AmmLiquidityCache, best::MergeBestTransactions, transaction::TempoPooledTransaction,
+    tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, map::HashMap};
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
 use reth_eth_wire_types::HandleMempoolData;
@@ -27,11 +24,8 @@ use reth_transaction_pool::{
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
 };
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-    time::Instant,
-};
+use revm::database::BundleAccount;
+use std::{collections::HashSet, sync::Arc, time::Instant};
 use tempo_chainspec::TempoChainSpec;
 
 /// Tempo transaction pool that routes based on nonce_key
@@ -60,11 +54,6 @@ impl<Client> TempoTransactionPool<Client> {
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
         }
     }
-
-    /// Obtains a clone of the shared [`AA2dNonceKeys`].
-    pub fn aa_2d_nonce_keys(&self) -> AA2dNonceKeys {
-        self.aa_2d_pool.read().aa_2d_nonce_keys().clone()
-    }
 }
 impl<Client> TempoTransactionPool<Client>
 where
@@ -84,11 +73,8 @@ where
     }
 
     /// Updates the 2d nonce pool with the given state changes.
-    pub(crate) fn on_aa_2d_nonce_changes(&self, on_chain_ids: HashMap<AASequenceId, u64>) {
-        if on_chain_ids.is_empty() {
-            return;
-        }
-        let (promoted, _mined) = self.aa_2d_pool.write().on_aa_2d_nonce_changes(on_chain_ids);
+    pub(crate) fn notify_aa_pool_on_state_updates(&self, state: &HashMap<Address, BundleAccount>) {
+        let (promoted, _mined) = self.aa_2d_pool.write().on_state_updates(state);
         // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
             .inner()
@@ -149,7 +135,10 @@ where
                         authority_ids: authorities
                             .map(|auths| self.protocol_pool.inner().get_sender_ids(auths)),
                     };
-                    let added = self.aa_2d_pool.write().add_transaction(Arc::new(tx))?;
+                    let added = self
+                        .aa_2d_pool
+                        .write()
+                        .add_transaction(Arc::new(tx), state_nonce)?;
                     let hash = *added.hash();
                     if let Some(pending) = added.as_pending() {
                         self.protocol_pool

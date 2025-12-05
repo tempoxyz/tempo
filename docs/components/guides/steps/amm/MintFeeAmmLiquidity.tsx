@@ -8,11 +8,12 @@ import { Button, ExplorerLink, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
-// Current validator token on testnet
 const validatorToken = alphaUsd
 
-export function MintFeeAmmLiquidity(props: DemoStepProps) {
-  const { stepNumber, last = false } = props
+export function MintFeeAmmLiquidity(
+  props: DemoStepProps & { waitForBalance: boolean },
+) {
+  const { stepNumber, last = false, waitForBalance = true } = props
   const { address } = useAccount()
   const { getData } = useDemoContext()
   const queryClient = useQueryClient()
@@ -31,6 +32,7 @@ export function MintFeeAmmLiquidity(props: DemoStepProps) {
     mutation: {
       onSettled() {
         queryClient.refetchQueries({ queryKey: ['getPool'] })
+        queryClient.refetchQueries({ queryKey: ['getLiquidityBalance'] })
       },
     },
   })
@@ -41,7 +43,10 @@ export function MintFeeAmmLiquidity(props: DemoStepProps) {
   })
 
   const active = React.useMemo(() => {
-    return Boolean(address && tokenAddress && tokenBalance && tokenBalance > 0n)
+    const balanceCheck = waitForBalance
+      ? Boolean(tokenBalance && tokenBalance > 0n)
+      : true
+    return Boolean(address && tokenAddress && balanceCheck)
   }, [address, tokenAddress, tokenBalance])
 
   return (
@@ -75,7 +80,7 @@ export function MintFeeAmmLiquidity(props: DemoStepProps) {
         </Button>
       }
       number={stepNumber}
-      title={`Mint 100 linkingUSD of Fee Liquidity for ${metadata ? metadata.name : 'your token'}.`}
+      title={`Mint 100 pathUSD of Fee Liquidity for ${metadata ? metadata.name : 'your token'}.`}
     >
       {mintFeeLiquidity.data && (
         <div className="flex mx-6 flex-col gap-3 pb-4">

@@ -8,7 +8,7 @@ use alloy_provider::{
 use alloy_transport::TransportResult;
 use tempo_primitives::subblock::has_sub_block_nonce_key_prefix;
 
-/// A [`TxFiller`] that populates the [`TxAA`](`tempo_primitives::TxAA`) transaction with a random `nonce_key`, and `nonce` set to `0`.
+/// A [`TxFiller`] that populates the [`TempoTransaction`](`tempo_primitives::TempoTransaction`) transaction with a random `nonce_key`, and `nonce` set to `0`.
 ///
 /// This filler can be used to avoid nonce gaps by having a random 2D nonce key that doesn't conflict with any other transactions.
 #[derive(Clone, Copy, Debug, Default)]

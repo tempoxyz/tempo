@@ -4,7 +4,7 @@ pragma solidity ^0.8.13;
 import { INonce } from "./interfaces/INonce.sol";
 
 /// @title Nonce - 2D Nonce Manager Precompile
-/// @notice Manages user nonce keys (1-N) as per the Account Abstraction spec
+/// @notice Manages user nonce keys (1-N) as per the Tempo Transaction spec
 /// @dev Protocol nonce (key 0) is stored directly in account state, not here.
 ///      Only user nonce keys (1-N) are managed by this precompile.
 ///

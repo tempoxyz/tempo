@@ -1,6 +1,7 @@
 import { Editor } from '@monaco-editor/react'
 import type * as Monaco from 'monaco-editor'
 import * as React from 'react'
+import { format } from 'sql-formatter'
 
 // Global flag to ensure completion provider is only registered once
 let completionProviderRegistered = false
@@ -283,6 +284,26 @@ export function SqlEditor(props: SqlEditorProps) {
         }
       })
     }
+
+    // Add Cmd/Ctrl+; shortcut for formatting
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Semicolon, () => {
+      const currentValue = editor.getValue()
+      if (currentValue) {
+        try {
+          const formatted = format(currentValue, {
+            language: 'postgresql',
+            keywordCase: 'lower',
+            indentStyle: 'standard',
+            dataTypeCase: 'lower',
+            functionCase: 'lower',
+          })
+          editor.setValue(formatted)
+          onChange(formatted)
+        } catch (error) {
+          console.error('Failed to format SQL:', error)
+        }
+      }
+    })
   }
 
   // Update map when completions or readOnly props change

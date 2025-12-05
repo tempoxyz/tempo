@@ -17,7 +17,8 @@ contract FeeAMM is IFeeAMM {
     mapping(bytes32 => uint256) public totalSupply; // Total LP tokens for each pool
     mapping(bytes32 => mapping(address => uint256)) public liquidityBalances; // LP token balances
 
-    function _requireUSD(address token) private view {
+    function _requireUSDTIP20(address token) internal view {
+        require(bytes14(bytes20(token)) == 0x20c0000000000000000000000000, "INVALID_TOKEN");
         require(
             keccak256(bytes(ITIP20(token).currency())) == keccak256(bytes("USD")), "ONLY_USD_TOKENS"
         );
@@ -25,7 +26,7 @@ contract FeeAMM is IFeeAMM {
 
     function getPoolId(address userToken, address validatorToken) public pure returns (bytes32) {
         // Each ordered pair has its own pool (userToken→validatorToken is different from validatorToken→userToken)
-        return keccak256(abi.encodePacked(userToken, validatorToken));
+        return keccak256(abi.encode(userToken, validatorToken));
     }
 
     function getPool(address userToken, address validatorToken)
@@ -39,7 +40,6 @@ contract FeeAMM is IFeeAMM {
 
     function reserveLiquidity(address userToken, address validatorToken, uint256 maxAmount)
         internal
-        returns (bool)
     {
         bytes32 poolId = getPoolId(userToken, validatorToken);
 
@@ -86,6 +86,8 @@ contract FeeAMM is IFeeAMM {
         emit RebalanceSwap(userToken, validatorToken, msg.sender, amountIn, amountOut);
     }
 
+    /// @notice Two-sided mint is disabled post-Moderato.
+    /// Use mintWithValidatorToken instead for single-sided liquidity provision.
     function mint(
         address userToken,
         address validatorToken,
@@ -93,52 +95,9 @@ contract FeeAMM is IFeeAMM {
         uint256 amountValidatorToken,
         address to
     ) external returns (uint256 liquidity) {
-        require(userToken != validatorToken, "IDENTICAL_ADDRESSES");
-
-        _requireUSD(userToken);
-        _requireUSD(validatorToken);
-        bytes32 poolId = getPoolId(userToken, validatorToken);
-
-        Pool storage pool = pools[poolId];
-        uint256 _totalSupply = totalSupply[poolId];
-
-        if (pool.reserveUserToken == 0 && pool.reserveValidatorToken == 0) {
-            // First liquidity provider
-            if ((amountUserToken + amountValidatorToken) / 2 <= MIN_LIQUIDITY) {
-                revert InsufficientLiquidity();
-            }
-            liquidity = (amountUserToken + amountValidatorToken) / 2 - MIN_LIQUIDITY;
-            totalSupply[poolId] += MIN_LIQUIDITY; // Permanently lock MIN_LIQUIDITY
-        } else {
-            // Subsequent liquidity providers - must provide proportional amounts
-            uint256 liquidityUser = pool.reserveUserToken > 0
-                ? (amountUserToken * _totalSupply) / pool.reserveUserToken
-                : type(uint256).max;
-            uint256 liquidityValidator = pool.reserveValidatorToken > 0
-                ? (amountValidatorToken * _totalSupply) / pool.reserveValidatorToken
-                : type(uint256).max;
-            liquidity = liquidityUser < liquidityValidator ? liquidityUser : liquidityValidator;
-        }
-
-        if (liquidity == 0) {
-            revert InsufficientLiquidity();
-        }
-
-        // Transfer tokens from user
-        ITIP20(userToken).systemTransferFrom(msg.sender, address(this), amountUserToken);
-        ITIP20(validatorToken).systemTransferFrom(msg.sender, address(this), amountValidatorToken);
-
-        // Update reserves
-        pool.reserveUserToken += uint128(amountUserToken);
-        pool.reserveValidatorToken += uint128(amountValidatorToken);
-
-        // Mint LP tokens
-        totalSupply[poolId] += liquidity;
-        liquidityBalances[poolId][to] += liquidity;
-
-        emit Mint(
-            msg.sender, userToken, validatorToken, amountUserToken, amountValidatorToken, liquidity
-        );
+        // Two-sided mint is disabled post-Moderato
+        // The precompile returns UnknownFunctionSelector for this function
+        revert MintDisabled();
     }
 
     function mintWithValidatorToken(
@@ -149,8 +108,8 @@ contract FeeAMM is IFeeAMM {
     ) external returns (uint256 liquidity) {
         require(userToken != validatorToken, "IDENTICAL_ADDRESSES");
 
-        _requireUSD(userToken);
-        _requireUSD(validatorToken);
+        _requireUSDTIP20(userToken);
+        _requireUSDTIP20(validatorToken);
         bytes32 poolId = getPoolId(userToken, validatorToken);
 
         Pool storage pool = pools[poolId];

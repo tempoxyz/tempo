@@ -2,16 +2,14 @@
 
 use crate::{TempoTransactionPool, transaction::TempoPooledTransaction};
 use alloy_primitives::TxHash;
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
 use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions};
 use reth_storage_api::StateProviderFactory;
-use reth_tracing::tracing::trace;
 use reth_transaction_pool::TransactionPool;
 use std::collections::BTreeMap;
 use tempo_chainspec::TempoChainSpec;
-use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 use tempo_primitives::{AASigned, TempoPrimitives};
 use tracing::{debug, error};
 
@@ -102,36 +100,18 @@ where
 ///
 /// where each slot tracks the current nonce for a nonce key assigned to the transaction.
 /// The next executable nonce is the current value of in the contract's state.
-pub async fn maintain_2d_nonce_pool<Client, St>(pool: TempoTransactionPool<Client>, mut events: St)
+pub async fn maintain_2d_nonce_pool<Client>(pool: TempoTransactionPool<Client>)
 where
-    Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
-    St: Stream<Item = CanonStateNotification<TempoPrimitives>> + Send + Unpin + 'static,
+    Client: StateProviderFactory
+        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + CanonStateSubscriptions<Primitives = TempoPrimitives>
+        + 'static,
 {
-    let nonce_keys = pool.aa_2d_nonce_keys();
+    let mut events = pool.client().canonical_state_stream();
     while let Some(notification) = events.next().await {
-        let tip = notification.committed();
-        let Some(nonce_manager_changes) = tip
-            .execution_outcome()
-            .bundle
-            .account(&NONCE_PRECOMPILE_ADDRESS)
-        else {
-            continue;
-        };
-        // this contains all the nonce manager precompile changes. if any
-        let changed_slots = nonce_manager_changes
-            .storage
-            .iter()
-            .map(|(slot, change)| (*slot, change.present_value))
-            .collect::<Vec<_>>();
-        if changed_slots.is_empty() {
-            continue;
-        }
-
-        // we can now map the slots back to addresses and nonce keys and then update the pool
-        let updates = nonce_keys.update_tracked(changed_slots);
-        trace!(target: "txpool::2d",  ?updates, "update tracked 2d nonce changes");
-
-        pool.on_aa_2d_nonce_changes(updates);
+        pool.notify_aa_pool_on_state_updates(
+            notification.committed().execution_outcome().state().state(),
+        );
     }
 }
 

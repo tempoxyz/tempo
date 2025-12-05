@@ -13,6 +13,7 @@ alloy = { workspace = true, features = [
   "signers",
   "signer-local",
   "signer-mnemonic",
+  "rlp"
 ] }
 alloy-genesis.workspace = true
 alloy-primitives.workspace = true
