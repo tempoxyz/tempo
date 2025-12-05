@@ -284,7 +284,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
         // Verify the new quote token is a valid TIP20 token that has been deployed
-        if !is_tip20_prefix(call.newQuoteToken) {
+        if !TIP20Factory::new(self.storage).is_tip20(call.newQuoteToken)? {
             return Err(TIP20Error::invalid_quote_token().into());
         }
 
@@ -296,16 +296,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
             if quote_token_currency != USD_CURRENCY {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
-        }
-
-        let new_token_id = address_to_token_id_unchecked(call.newQuoteToken);
-        let factory_token_id_counter = TIP20Factory::new(self.storage)
-            .token_id_counter()?
-            .to::<u64>();
-
-        // Ensure the quote token has been deployed (token_id < counter)
-        if new_token_id >= factory_token_id_counter {
-            return Err(TIP20Error::invalid_quote_token().into());
         }
 
         self.sstore_next_quote_token(call.newQuoteToken)?;

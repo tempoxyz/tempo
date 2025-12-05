@@ -21,6 +21,7 @@ use crate::{
     },
     storage::{Mapping, PrecompileStorageProvider, Slot, VecSlotExt},
     tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
+    tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
@@ -453,7 +454,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     pub fn create_pair(&mut self, base: Address) -> Result<B256> {
         // Validate that base is a TIP20 token (only after Moderato hardfork)
-        if self.storage.spec().is_moderato() && !is_tip20_prefix(base) {
+        if self.storage.spec().is_moderato() && !TIP20Factory::new(self.storage).is_tip20(base)? {
             return Err(StablecoinExchangeError::invalid_base_token().into());
         }
 
@@ -4915,6 +4916,9 @@ mod tests {
         let mut quote = PathUSD::new(exchange.storage);
         quote.initialize(admin)?;
         let quote_address = quote.token.address();
+
+        // Set token_id_counter to 2 so that token id 1 is considered valid
+        TIP20Factory::new(quote.token.storage()).set_token_id_counter(U256::from(2))?;
 
         let mut base = TIP20Token::new(1, quote.token.storage());
         base.initialize("BASE", "BASE", "USD", quote_address, admin, Address::ZERO)?;

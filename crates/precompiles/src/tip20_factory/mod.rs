@@ -156,6 +156,14 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
             Ok(counter)
         }
     }
+
+    /// Sets the token ID counter.
+    ///
+    /// This is primarily used in tests to simulate tokens created outside the factory.
+    #[cfg(test)]
+    pub fn set_token_id_counter(&mut self, value: U256) -> Result<()> {
+        self.sstore_token_id_counter(value)
+    }
 }
 
 #[cfg(test)]
