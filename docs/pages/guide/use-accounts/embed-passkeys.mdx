@@ -169,10 +169,10 @@ After the user has signed in, we can display the account information and a sign 
 
 ```tsx twoslash [Example.tsx]
 // @noErrors
-import { useAccount, useConnect, useConnectors, useDisconnect } from 'wagmi'
+import { useConnection, useConnect, useConnectors, useDisconnect } from 'wagmi'
 
 export function Example() {
-  const account = useAccount() // [!code ++]
+  const account = useConnection() // [!code ++]
   const connect = useConnect()
   const [connector] = useConnectors()
   const disconnect = useDisconnect() // [!code ++]
@@ -255,13 +255,13 @@ We can use the `isPending` property from the `useConnect` hook to show pending s
 
 ```tsx twoslash [Example.tsx]
 // @noErrors
-import { useAccount, useConnect, useConnectors, useDisconnect } from 'wagmi'
+import { useConnection, useConnect, useConnectors, useDisconnect } from 'wagmi'
 
 export function Example() {
-  const account = useAccount() 
+  const account = useConnection()
   const connect = useConnect()
   const [connector] = useConnectors()
-  const disconnect = useDisconnect() 
+  const disconnect = useDisconnect()
 
   if (connect.isPending) // [!code ++]
     return <div>Check prompt...</div> // [!code ++]
@@ -283,13 +283,13 @@ We can use the `error` property from the `useConnect` hook to show error state t
 
 ```tsx twoslash [Example.tsx]
 // @noErrors
-import { useAccount, useConnect, useConnectors, useDisconnect } from 'wagmi'
+import { useConnection, useConnect, useConnectors, useDisconnect } from 'wagmi'
 
 export function Example() {
-  const account = useAccount() 
+  const account = useConnection()
   const connect = useConnect()
   const [connector] = useConnectors()
-  const disconnect = useDisconnect() 
+  const disconnect = useDisconnect()
 
   if (connect.error) // [!code ++]
     return <div>Error: {connect.error.message}</div> // [!code ++]

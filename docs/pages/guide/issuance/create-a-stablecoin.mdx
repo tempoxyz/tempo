@@ -49,10 +49,10 @@ Luckily, the built-in Tempo testnet faucet supports funding accounts with `Alpha
 ```tsx twoslash [AddFunds.ts]
 // @noErrors
 import { Hooks } from 'tempo.ts/wagmi'
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 
 export function AddFunds() {
-  const { address } = useAccount()
+  const { address } = useConnection()
   const addFunds = Hooks.faucet.useFund()
 
   return (

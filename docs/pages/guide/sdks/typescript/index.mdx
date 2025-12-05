@@ -267,7 +267,7 @@ like `calls` (batch transactions), `feePayer` (fee sponsorship), `nonceKey` (con
 :::code-group
 
 ```tsx [balance.tsx]
-import { useAccount, useSendTransactionSync } from 'wagmi'
+import { useConnection, useSendTransactionSync } from 'wagmi'
 
 export function TokenMetadata() {
   const { sendTransactionSync } = useSendTransactionSync()
@@ -333,7 +333,7 @@ You can also use [Tempo-specific Hooks](/sdk/typescript/wagmi/hooks):
 :::code-group
 
 ```tsx [balance.tsx]
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 import { Hooks } from 'tempo.ts/wagmi'
 
 const alphaUsd = '0x20c0000000000000000000000000000000000001'

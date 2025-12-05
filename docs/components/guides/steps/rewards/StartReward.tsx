@@ -1,8 +1,8 @@
+import { useQueryClient } from '@tanstack/react-query'
 import * as React from 'react'
 import { Hooks } from 'tempo.ts/wagmi'
-import { useAccount, useAccountEffect } from 'wagmi'
-import { useQueryClient } from '@tanstack/react-query'
 import { parseUnits } from 'viem'
+import { useConnection, useConnectionEffect } from 'wagmi'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
@@ -11,7 +11,7 @@ import { REWARD_AMOUNT, REWARD_RECIPIENT_UNSET } from './Constants'
 
 export function StartReward(props: DemoStepProps) {
   const { stepNumber, last = false } = props
-  const { address } = useAccount()
+  const { address } = useConnection()
   const { getData, setData } = useDemoContext()
   const queryClient = useQueryClient()
   const tokenAddress = getData('tokenAddress')
@@ -44,7 +44,7 @@ export function StartReward(props: DemoStepProps) {
     },
   })
 
-  useAccountEffect({
+  useConnectionEffect({
     onDisconnect() {
       setExpanded(true)
       start.reset()

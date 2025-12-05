@@ -140,10 +140,10 @@ We will create a new `Example.tsx` component to work in.
 
 ```tsx twoslash [Account.tsx]
 // @noErrors
-import { useAccount, useDisconnect } from 'wagmi'
+import { useConnection, useDisconnect } from 'wagmi'
 
 export function Account() {
-  const account = useAccount()
+  const account = useConnection()
   const disconnect = useDisconnect()
 
   return (
@@ -198,11 +198,11 @@ If the wallet is not on the Tempo network, we can display a "Add Tempo" button s
 
 ```tsx twoslash [Account.tsx]
 // @noErrors
-import { useAccount, useDisconnect, useSwitchChain } from 'wagmi'
+import { useConnection, useDisconnect, useSwitchChain } from 'wagmi'
 import { tempo } from 'tempo.ts/chains' // [!code ++]
 
 export function Account() {
-  const account = useAccount()
+  const account = useConnection()
   const disconnect = useDisconnect()
   const switchChain = useSwitchChain() // [!code ++]
 
