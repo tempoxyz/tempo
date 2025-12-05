@@ -27,6 +27,14 @@
 | [`policy.watchBlacklistUpdated`](#TODO) | Watches for blacklist update events |
 | [`policy.watchCreate`](#TODO) | Watches for policy creation events |
 | [`policy.watchWhitelistUpdated`](#TODO) | Watches for whitelist update events |
+| **Reward Actions** | |
+| [`reward.claim`](/sdk/typescript/wagmi/actions/reward.claim) | Claims accumulated rewards for the caller |
+| [`reward.getTotalPerSecond`](/sdk/typescript/wagmi/actions/reward.getTotalPerSecond) | Gets the total reward per second rate for all active streams |
+| [`reward.getUserRewardInfo`](/sdk/typescript/wagmi/actions/reward.getUserRewardInfo) | Gets reward information for a specific account |
+| [`reward.setRecipient`](/sdk/typescript/wagmi/actions/reward.setRecipient) | Sets or changes the reward recipient for a token holder |
+| [`reward.start`](/sdk/typescript/wagmi/actions/reward.start) | Starts a new reward stream that distributes tokens to opted-in holders |
+| [`reward.watchRewardRecipientSet`](/sdk/typescript/wagmi/actions/reward.watchRewardRecipientSet) | Watches for reward recipient set events |
+| [`reward.watchRewardScheduled`](/sdk/typescript/wagmi/actions/reward.watchRewardScheduled) | Watches for reward scheduled events |
 | **Stablecoin Exchange Actions** | |
 | [`dex.buy`](/sdk/typescript/wagmi/actions/dex.buy) | Buys a specific amount of tokens from the Stablecoin Exchange orderbook |
 | [`dex.cancel`](/sdk/typescript/wagmi/actions/dex.cancel) | Cancels an order from the orderbook |
