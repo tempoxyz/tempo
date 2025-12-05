@@ -60,7 +60,6 @@ impl TempoHardfork {
 
     /// Returns `true` if this hardfork is Allegretto or later.
     pub fn is_allegretto(self) -> bool {
-        println!("test");
         self >= Self::Allegretto
     }
 
