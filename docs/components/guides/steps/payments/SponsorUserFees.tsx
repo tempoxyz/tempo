@@ -403,7 +403,7 @@ export function SendRelayerSponsoredPayment(props: DemoStepProps) {
         )
       }
       number={stepNumber}
-      title="Send payment with fees sponsored by the relayer."
+      title="Send 100 AlphaUSD with fees sponsored by the testnet fee payer."
     >
       {expanded && (
         <div className="flex mx-6 flex-col gap-3 pb-4">
@@ -412,15 +412,15 @@ export function SendRelayerSponsoredPayment(props: DemoStepProps) {
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-center justify-between">
                   <span className="text-gray10 font-medium">
-                    Your AlphaUSD Balance:
+                    Payment Token: AlphaUSD
                   </span>
                   <span className="text-gray12">
-                    {formatUnits(userBalance ?? 0n, 6)}
+                    balance: {formatUnits(userBalance ?? 0n, 6)}
                   </span>
                 </div>
               </div>
               <div className="text-gray9 text-[12px] mt-2 pt-2 border-t border-gray4">
-                The fee payer relayer sponsors the transaction fees.
+                  The testnet fee payer at https://sponsor.testnet.tempo.xyz will pay the transaction fees.
               </div>
             </div>
 
