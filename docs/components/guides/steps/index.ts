@@ -1,3 +1,5 @@
+export { BurnFeeAmmLiquidity } from './amm/BurnFeeAmmLiquidity'
+export { CheckFeeAmmPool } from './amm/CheckFeeAmmPool'
 export { MintFeeAmmLiquidity } from './amm/MintFeeAmmLiquidity'
 export { SelectFeeToken } from './amm/SelectFeeToken'
 export { Connect } from './auth/Connect'
@@ -27,4 +29,7 @@ export {
   FundSponsorAccount,
   SendSponsoredPayment,
 } from './payments/SponsorUserFees'
+export { ClaimReward } from './rewards/ClaimReward'
+export { OptInToRewards } from './rewards/OptInToRewards'
+export { StartReward } from './rewards/StartReward'
 export type { DemoStepProps } from './types'

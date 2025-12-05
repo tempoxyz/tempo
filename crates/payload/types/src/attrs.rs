@@ -96,6 +96,14 @@ impl TempoPayloadBuilderAttributes {
         self.timestamp_millis_part
     }
 
+    /// Returns the timestamp in milliseconds.
+    pub fn timestamp_millis(&self) -> u64 {
+        self.inner
+            .timestamp()
+            .saturating_mul(1000)
+            .saturating_add(self.timestamp_millis_part)
+    }
+
     /// Returns the subblocks.
     pub fn subblocks(&self) -> Vec<RecoveredSubBlock> {
         (self.subblocks)()

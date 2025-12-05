@@ -1,0 +1,15 @@
+import TempoTxProperties from '../../../snippets/tempo-tx-properties.mdx'
+
+# Use Tempo Transactions
+
+Tempo Transactions are the recommended way to use Tempo's payment-optimized architecture. They provide the following features:
+* [Configurable fee tokens](#configurable-fee-tokens): Specify the fee token for the transaction, enabling fee payment in any stablecoin.
+* [Fee sponsorship](#fee-sponsorship): Sponsor the gas for a transaction, enabling feeless transaction UX for your users.
+* [Batching](#batch-calls): Batch multiple transactions together, enabling higher throughput and simpler wallet management by skipping multiple confirmation screens, and saving on cost.
+* [Concurrent transactions](#concurrent-transactions): Enable higher throughput and simpler wallet management using parallelizable nonces.
+* [Scheduled transactions](#scheduled-transactions): Schedule transactions, enabling you to specify a time window in which the transaction can be executed.
+
+
+## Properties
+
+<TempoTxProperties />

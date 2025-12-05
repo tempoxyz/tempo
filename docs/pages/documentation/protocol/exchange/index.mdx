@@ -10,7 +10,7 @@ Tempo features an enshrined decentralized exchange (DEX) designed specifically f
 
 The exchange operates as a singleton precompiled contract at address `0xdec0000000000000000000000000000000000000`. It maintains an order book with separate queues for each price tick, using price-time priority for order matching.
 
-Trading pairs are determined by each token's quote token. All TIP-20 tokens specify a quote token for trading on the exchange. Most USD stablecoins use [linkingUSD](/documentation/protocol/exchange/linkingUSD) as their quote token. See the [Stablecoin Exchange Specification](/documentation/protocol/exchange/spec) for detailed information on the exchange structure.
+Trading pairs are determined by each token's quote token. All TIP-20 tokens specify a quote token for trading on the exchange. Tokens can choose [pathUSD](/documentation/protocol/exchange/pathUSD) as their quote token. See the [Stablecoin Exchange Specification](/documentation/protocol/exchange/spec) for detailed information on the exchange structure.
 
 The exchange supports three types of orders, each with different execution behavior:
 

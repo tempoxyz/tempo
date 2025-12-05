@@ -8,14 +8,14 @@ import * as Card from "../../../../components/Card.tsx"
 
 # Tempo Transactions
 
-Tempo includes a new EIP-2718 transaction type (`0x76`), the `AATransaction`, providing features like passkey, call batching, scheduled and parallel transactions, and fee sponsorship natively into the protocol.
+Tempo includes a new EIP-2718 transaction type (`0x76`), the `TempoTransaction`, providing features like passkey, call batching, scheduled and parallel transactions, and fee sponsorship natively into the protocol.
 
 ## Learn more
 
 <Card.Container>
   <Card.Link
     description="Native protocol support for account abstraction features including WebAuthn/P256 signatures, parallelizable nonces, gas sponsorship, call batching, and scheduled transactions"
-    href="/documentation/protocol/transactions/spec-account-abstraction"
+    href="/documentation/protocol/transactions/spec-tempo-transaction"
     icon={LucideFileCode}
     title="Specification"
   />
@@ -39,9 +39,9 @@ Tempo includes a new EIP-2718 transaction type (`0x76`), the `AATransaction`, pr
   />
   <Card.Link
     description="Enable gasless transactions with fee payers"
-    href="/guide/use-accounts/fee-sponsorship"
+    href="/guide/payments/sponsor-user-fees"
     icon={LucideShieldCheck}
-    title="Guide: Specify a Fee Payer"
+    title="Guide: Sponsor Transaction Fees"
   />
   <Card.Link
     description="Sign transactions with WebAuthn, P256, or secp256k1 signatures"

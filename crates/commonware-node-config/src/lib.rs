@@ -179,8 +179,9 @@ impl<'de> Deserialize<'de> for PublicPolynomial {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, derive_more::Debug)]
 pub struct SigningKey {
+    #[debug(skip)]
     inner: PrivateKey,
 }
 
@@ -207,6 +208,10 @@ impl SigningKey {
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), SigningKeyError> {
         std::fs::write(path, self.to_string()).map_err(SigningKeyErrorKind::Write)?;
         Ok(())
+    }
+
+    pub fn public_key(&self) -> PublicKey {
+        self.inner.public_key()
     }
 }
 

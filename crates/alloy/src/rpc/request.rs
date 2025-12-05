@@ -6,8 +6,8 @@ use alloy_provider::Provider;
 use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use tempo_primitives::{
-    AASigned, SignatureType, TempoTxEnvelope, TxAA, TxFeeToken,
-    transaction::{AASignedAuthorization, Call, TempoTypedTransaction},
+    AASigned, SignatureType, TempoTransaction, TempoTxEnvelope, TxFeeToken,
+    transaction::{Call, TempoSignedAuthorization, TempoTypedTransaction},
 };
 
 use crate::TempoNetwork;
@@ -23,15 +23,15 @@ pub struct TempoTransactionRequest {
     /// Optional fee token preference
     pub fee_token: Option<Address>,
 
-    /// Optional nonce key for a 2D [`TxAA`].
+    /// Optional nonce key for a 2D [`TempoTransaction`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nonce_key: Option<U256>,
 
-    /// Optional calls array, for AA transactions.
+    /// Optional calls array, for Tempo transactions.
     #[serde(default)]
     pub calls: Vec<Call>,
 
-    /// Optional key type for gas estimation of AA transactions.
+    /// Optional key type for gas estimation of Tempo transactions.
     /// Specifies the signature verification algorithm to calculate accurate gas costs.
     pub key_type: Option<SignatureType>,
 
@@ -39,9 +39,13 @@ pub struct TempoTransactionRequest {
     /// Required when key_type is WebAuthn to calculate calldata gas costs.
     pub key_data: Option<Bytes>,
 
-    /// Optional AA authorization list for AA transactions (supports multiple signature types)
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub aa_authorization_list: Vec<AASignedAuthorization>,
+    /// Optional authorization list for Tempo transactions (supports multiple signature types)
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        rename = "aaAuthorizationList"
+    )]
+    pub tempo_authorization_list: Vec<TempoSignedAuthorization>,
 }
 
 impl TempoTransactionRequest {
@@ -51,12 +55,12 @@ impl TempoTransactionRequest {
         self
     }
 
-    /// Set the 2D nonce key for the [`TxAA`] transaction.
+    /// Set the 2D nonce key for the [`TempoTransaction`] transaction.
     pub fn set_nonce_key(&mut self, nonce_key: U256) {
         self.nonce_key = Some(nonce_key);
     }
 
-    /// Builder-pattern method for setting a 2D nonce key for a [`TxAA`].
+    /// Builder-pattern method for setting a 2D nonce key for a [`TempoTransaction`].
     pub fn with_nonce_key(mut self, nonce_key: U256) -> Self {
         self.nonce_key = Some(nonce_key);
         self
@@ -110,37 +114,37 @@ impl TempoTransactionRequest {
         })
     }
 
-    /// Attempts to build a [`TxAA`] with the configured fields.
-    pub fn build_aa(self) -> Result<TxAA, ValueError<Self>> {
+    /// Attempts to build a [`TempoTransaction`] with the configured fields.
+    pub fn build_aa(self) -> Result<TempoTransaction, ValueError<Self>> {
         if self.calls.is_empty() && self.inner.to.is_none() {
             return Err(ValueError::new(
                 self,
-                "Missing 'calls' or 'to' field for AA transaction.",
+                "Missing 'calls' or 'to' field for Tempo transaction.",
             ));
         }
 
         let Some(nonce) = self.inner.nonce else {
             return Err(ValueError::new(
                 self,
-                "Missing 'nonce' field for AA transaction.",
+                "Missing 'nonce' field for Tempo transaction.",
             ));
         };
         let Some(gas_limit) = self.inner.gas else {
             return Err(ValueError::new(
                 self,
-                "Missing 'gas_limit' field for AA transaction.",
+                "Missing 'gas_limit' field for Tempo transaction.",
             ));
         };
         let Some(max_fee_per_gas) = self.inner.max_fee_per_gas else {
             return Err(ValueError::new(
                 self,
-                "Missing 'max_fee_per_gas' field for AA transaction.",
+                "Missing 'max_fee_per_gas' field for Tempo transaction.",
             ));
         };
         let Some(max_priority_fee_per_gas) = self.inner.max_priority_fee_per_gas else {
             return Err(ValueError::new(
                 self,
-                "Missing 'max_priority_fee_per_gas' field for AA transaction.",
+                "Missing 'max_priority_fee_per_gas' field for Tempo transaction.",
             ));
         };
 
@@ -153,7 +157,7 @@ impl TempoTransactionRequest {
             });
         }
 
-        Ok(TxAA {
+        Ok(TempoTransaction {
             // TODO: use tempo mainnet chainid once assigned
             chain_id: self.inner.chain_id.unwrap_or(1),
             nonce,
@@ -166,7 +170,7 @@ impl TempoTransactionRequest {
             fee_token: self.fee_token,
             access_list: self.inner.access_list.unwrap_or_default(),
             calls,
-            aa_authorization_list: self.aa_authorization_list,
+            tempo_authorization_list: self.tempo_authorization_list,
             nonce_key: self.nonce_key.unwrap_or_default(),
             key_authorization: None,
         })
@@ -224,7 +228,7 @@ impl FeeToken for TxFeeToken {
     }
 }
 
-impl FeeToken for TxAA {
+impl FeeToken for TempoTransaction {
     fn fee_token(&self) -> Option<Address> {
         self.fee_token
     }
@@ -264,8 +268,8 @@ impl<T: TransactionTrait + FeeToken> From<Signed<T>> for TempoTransactionRequest
     }
 }
 
-impl From<TxAA> for TempoTransactionRequest {
-    fn from(tx: TxAA) -> Self {
+impl From<TempoTransaction> for TempoTransactionRequest {
+    fn from(tx: TempoTransaction) -> Self {
         Self {
             fee_token: tx.fee_token,
             inner: TransactionRequest {
@@ -287,7 +291,7 @@ impl From<TxAA> for TempoTransactionRequest {
                 transaction_type: Some(tx.ty()),
             },
             calls: tx.calls,
-            aa_authorization_list: tx.aa_authorization_list,
+            tempo_authorization_list: tx.tempo_authorization_list,
             key_type: None,
             key_data: None,
             nonce_key: Some(tx.nonce_key),
@@ -336,10 +340,10 @@ impl From<TempoTypedTransaction> for TempoTransactionRequest {
 
 /// Extension trait for [`CallBuilder`]
 pub trait TempoCallBuilderExt {
-    /// Sets the `fee_token` field in the [`TxAA`] or [`TxFeeToken`] transaction to the provided value
+    /// Sets the `fee_token` field in the [`TempoTransaction`] or [`TxFeeToken`] transaction to the provided value
     fn fee_token(self, fee_token: Address) -> Self;
 
-    /// Sets the `nonce_key` field in the [`TxAA`] transaction to the provided value
+    /// Sets the `nonce_key` field in the [`TempoTransaction`] transaction to the provided value
     fn nonce_key(self, nonce_key: U256) -> Self;
 }
 

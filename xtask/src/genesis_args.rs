@@ -91,6 +91,10 @@ pub(crate) struct GenesisArgs {
     #[arg(long)]
     pub allegretto_time: Option<u64>,
 
+    /// Allegro-Moderato hardfork activation timestamp
+    #[arg(long)]
+    pub allegro_moderato_time: Option<u64>,
+
     /// The hard-coded length of an epoch in blocks.
     #[arg(long, default_value_t = 302_400)]
     epoch_length: u64,
@@ -390,6 +394,12 @@ impl GenesisArgs {
             chain_config.extra_fields.insert(
                 "allegrettoTime".to_string(),
                 serde_json::json!(allegretto_time),
+            );
+        }
+        if let Some(allegro_moderato_time) = self.allegro_moderato_time {
+            chain_config.extra_fields.insert(
+                "allegroModeratoTime".to_string(),
+                serde_json::json!(allegro_moderato_time),
             );
         }
 
