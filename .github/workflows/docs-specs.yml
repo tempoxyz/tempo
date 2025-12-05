@@ -5,15 +5,19 @@ on:
     branches: [main]
     paths:
       - 'docs/specs/**'
+      - 'crates/precompiles/**'
       - '.github/workflows/docs-specs.yml'
   pull_request:
     branches: [main]
     paths:
       - 'docs/specs/**'
+      - 'crates/precompiles/**'
       - '.github/workflows/docs-specs.yml'
 
 env:
   FOUNDRY_PROFILE: ci
+  CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: "sccache"
 
 jobs:
   build:
@@ -50,7 +54,7 @@ jobs:
         run: forge fmt --check
 
   test:
-    name: Forge Test
+    name: Forge Test (Solidity)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -63,3 +67,84 @@ jobs:
       - name: Run Forge tests
         working-directory: docs/specs
         run: forge test -vvv
+
+  tempo-foundry-test:
+    name: Forge Test (Rust Precompiles)
+    runs-on: depot-ubuntu-latest-8
+    timeout-minutes: 60
+    steps:
+      - name: Checkout tempo
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          path: tempo
+
+      - name: Checkout tempo-foundry
+        uses: actions/checkout@v4
+        with:
+          repository: tempoxyz/tempo-foundry
+          token: ${{ secrets.TEMPO_GITHUB_PAT }}
+          path: tempo-foundry
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Configure Git for private repos
+        env:
+          TOKEN: ${{ secrets.TEMPO_GITHUB_PAT }}
+        run: |
+          authenticated_url="https://${GITHUB_ACTOR}:${TOKEN}@github.com/"
+          # Rewrite SSH URLs to authenticated HTTPS
+          git config --global url."$authenticated_url".insteadOf "ssh://git@github.com/"
+          # Also rewrite plain HTTPS URLs to authenticated HTTPS
+          git config --global url."$authenticated_url".insteadOf "https://github.com/"
+
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tempo-foundry
+
+      - name: Update tempo-foundry to use current commit
+        working-directory: tempo-foundry
+        run: |
+          COMMIT_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "Updating tempo dependencies to commit: $COMMIT_SHA"
+
+          # Update all tempo dependencies to point to the current commit
+          # Using # as delimiter since URLs contain /
+          sed -i -E \
+            "s#(tempo-[a-z]+) = \{ git = \"ssh://git@github.com/tempoxyz/tempo\", (rev|branch) = \"[^\"]+\" \}#\1 = { git = \"https://github.com/tempoxyz/tempo\", rev = \"$COMMIT_SHA\" }#g" \
+            Cargo.toml
+
+          echo "Updated Cargo.toml:"
+          grep "tempo-" Cargo.toml | head -20
+
+          # Update Cargo.lock to resolve version conflicts
+          cargo update
+
+      - name: Build tempo-foundry forge
+        working-directory: tempo-foundry
+        run: cargo build -p forge --profile dev
+
+      - name: Run Forge tests with Rust precompiles
+        working-directory: tempo/docs/specs
+        run: |
+          echo "Running forge test with tempo-foundry (isTempo=true)"
+          ../../../tempo-foundry/target/debug/forge test -vvv
+
+  docs-specs-success:
+    name: docs-specs success
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - build
+      - lint
+      - test
+      - tempo-foundry-test
+    timeout-minutes: 5
+    steps:
+      - name: Decide whether the needed jobs succeeded or failed
+        uses: re-actors/alls-green@release/v1
+        with:
+          jobs: ${{ toJSON(needs) }}
