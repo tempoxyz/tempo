@@ -79,6 +79,13 @@ impl TestingNode {
         &self.uid
     }
 
+    /// Get a reference to the consensus config.
+    pub fn consensus_config(
+        &self,
+    ) -> &consensus::Builder<Control<PublicKey>, Context, SocketManager<PublicKey>> {
+        &self.consensus_config
+    }
+
     /// Get a mutable reference to the consensus config.
     pub fn consensus_config_mut(
         &mut self,
@@ -389,6 +396,7 @@ mod tests {
             runner.start(|context| async move {
                 let setup = Setup {
                     how_many_signers: 1,
+                    how_many_verifiers: 0,
                     seed: 0,
                     linkage: Link {
                         latency: Duration::from_millis(10),

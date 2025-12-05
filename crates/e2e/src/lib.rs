@@ -17,10 +17,7 @@ use commonware_cryptography::{
     bls12381::{dkg::ops, primitives::variant::MinSig},
     ed25519::{PrivateKey, PublicKey},
 };
-use commonware_p2p::{
-    Manager as _,
-    simulated::{self, Link, Network, Oracle},
-};
+use commonware_p2p::simulated::{self, Link, Network, Oracle};
 
 use commonware_runtime::{
     Clock, Metrics as _, Runner as _,
@@ -54,6 +51,10 @@ pub struct Setup {
     /// How many signing validators to launch.
     pub how_many_signers: u32,
 
+    /// How many non-signing validators (verifiers) to launch.
+    /// These nodes participate in consensus but don't have shares.
+    pub how_many_verifiers: u32,
+
     /// The seed used for setting up the deterministic runtime.
     pub seed: u64,
     /// The linkage between individual validators.
@@ -70,6 +71,7 @@ impl Setup {
     pub fn new() -> Self {
         Self {
             how_many_signers: 4,
+            how_many_verifiers: 0,
             seed: 0,
             linkage: Link {
                 latency: Duration::from_millis(10),
@@ -85,6 +87,13 @@ impl Setup {
     pub fn how_many_signers(self, how_many_signers: u32) -> Self {
         Self {
             how_many_signers,
+            ..self
+        }
+    }
+
+    pub fn how_many_verifiers(self, how_many_verifiers: u32) -> Self {
+        Self {
+            how_many_verifiers,
             ..self
         }
     }
@@ -135,6 +144,7 @@ pub async fn setup_validators(
     mut context: Context,
     Setup {
         how_many_signers,
+        how_many_verifiers,
         seed,
         connect_execution_layer_nodes,
         linkage,
@@ -154,22 +164,11 @@ pub async fn setup_validators(
 
     let mut private_keys = Vec::new();
 
-    for i in 0..how_many_signers {
+    for i in 0..(how_many_signers + how_many_verifiers) {
         let signer = PrivateKey::from_seed(seed + u64::from(i));
         private_keys.push(signer);
     }
     private_keys.sort_by_key(|s| s.public_key());
-
-    link_validators(
-        &mut oracle,
-        &private_keys
-            .iter()
-            .map(|key| key.public_key())
-            .collect::<Vec<_>>(),
-        linkage,
-        None,
-    )
-    .await;
 
     let threshold = quorum(how_many_signers);
     let (polynomial, shares) =
@@ -194,39 +193,41 @@ pub async fn setup_validators(
         .collect::<Vec<_>>()
         .into();
 
-    // Build genesis with proper configuration from Setup parameters
-    let mut genesis_config = genesis();
+    let mut genesis = genesis();
     if let Some(allegretto_secs) = allegretto_in_seconds {
-        genesis_config = insert_allegretto(
-            genesis_config,
+        genesis = insert_allegretto(
+            genesis,
             context.current().epoch().as_secs() + allegretto_secs,
         );
     }
-    genesis_config = insert_epoch_length(genesis_config, epoch_length);
-    genesis_config = insert_public_polynomial(genesis_config, polynomial.into());
-    genesis_config = insert_validators(genesis_config, peers.clone().into());
+    genesis = insert_epoch_length(genesis, epoch_length);
+    genesis = insert_public_polynomial(genesis, polynomial.into());
+    genesis = insert_validators(genesis, peers.clone().into());
 
-    let chain_spec = TempoChainSpec::from_genesis(genesis_config);
+    let chain_spec = TempoChainSpec::from_genesis(genesis);
+
     let execution_runtime = ExecutionRuntime::with_chain_spec(chain_spec);
 
-    let mut private_keys = private_keys.into_iter();
+    // Extend shares with None for verifiers
+    let shares: Vec<_> = shares
+        .into_iter()
+        .map(Some)
+        .chain(std::iter::repeat_n(None, how_many_verifiers as usize))
+        .collect();
+
     let execution_configs = ExecutionNodeConfig::generator()
-        .with_count(how_many_signers)
+        .with_count(how_many_signers + how_many_verifiers)
         .with_peers(connect_execution_layer_nodes)
         .generate();
 
-    // Process the signers
     for ((private_key, share), execution_config) in private_keys
-        .by_ref()
-        .take(how_many_signers as usize)
+        .into_iter()
         .zip_eq(shares)
         .zip_eq(execution_configs)
     {
         let oracle = oracle.clone();
-
         let uid = format!("{CONSENSUS_NODE_PREFIX}-{}", private_key.public_key());
 
-        oracle.socket_manager().update(0, peers.clone()).await;
         let engine_config = tempo_commonware_node::consensus::Builder {
             context: context.with_label(&uid),
             fee_recipient: alloy_primitives::Address::ZERO,
@@ -234,7 +235,7 @@ pub async fn setup_validators(
             blocker: oracle.control(private_key.public_key()),
             peer_manager: oracle.socket_manager(),
             partition_prefix: uid.clone(),
-            share: Some(share),
+            share,
             signer: private_key.clone(),
             mailbox_size: 1024,
             deque_size: 10,
@@ -258,6 +259,8 @@ pub async fn setup_validators(
             execution_config,
         ));
     }
+
+    link_validators(&mut oracle, &nodes, linkage, None).await;
 
     (nodes, execution_runtime)
 }
@@ -309,50 +312,11 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
     })
 }
 
-/// Links (or unlinks) validators using the oracle by public keys.
+/// Links (or unlinks) validators using the oracle.
 ///
 /// The `restrict_to` function can be used to restrict the linking to certain connections,
 /// otherwise all validators will be linked to all other validators.
 pub async fn link_validators(
-    oracle: &mut Oracle<PublicKey>,
-    validators: &[PublicKey],
-    link: Link,
-    restrict_to: Option<fn(usize, usize, usize) -> bool>,
-) {
-    for (i1, v1) in validators.iter().enumerate() {
-        for (i2, v2) in validators.iter().enumerate() {
-            // Ignore self
-            if v1 == v2 {
-                continue;
-            }
-
-            // Restrict to certain connections
-            if let Some(f) = restrict_to
-                && !f(validators.len(), i1, i2)
-            {
-                continue;
-            }
-
-            // Add link
-            match oracle.add_link(v1.clone(), v2.clone(), link.clone()).await {
-                Ok(()) => (),
-                // TODO: it should be possible to remove the below if Commonware simulated network exposes list of registered peers.
-                //
-                // This is fine because some of the peers might be registered later
-                Err(commonware_p2p::simulated::Error::PeerMissing) => (),
-                // This is fine because we might call this multiple times as peers are joining the network.
-                Err(commonware_p2p::simulated::Error::LinkExists) => (),
-                res @ Err(_) => res.unwrap(),
-            }
-        }
-    }
-}
-
-/// Links (or unlinks) validators using the oracle from TestingNode references.
-///
-/// The `restrict_to` function can be used to restrict the linking to certain connections,
-/// otherwise all validators will be linked to all other validators.
-pub async fn link_validators_by_nodes(
     oracle: &mut Oracle<PublicKey>,
     validators: &[TestingNode],
     link: Link,

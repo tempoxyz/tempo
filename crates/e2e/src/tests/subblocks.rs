@@ -48,12 +48,13 @@ fn subblocks_are_included() {
         // Setup and start all nodes.
         let (mut nodes, _execution_runtime) = setup_validators(context.clone(), setup).await;
 
-        // Bump timeout in CI
-        for node in &mut nodes {
+        join_all(nodes.iter_mut().map(|node| {
+            // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
+            // to ensure that payload builder has enough time to accumulate subblocks.
             node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
-        }
-
-        join_all(nodes.iter_mut().map(|node| node.start())).await;
+            node.start()
+        }))
+        .await;
 
         let mut stream = nodes[0].execution_provider().canonical_state_stream();
 
@@ -335,9 +336,11 @@ fn subblocks_are_included_post_allegretto_with_failing_txs() {
                         let tx = submit_subblock_tx_from(node, &PrivateKeySigner::random()).await;
                         failing_transactions.push(tx);
                         expected_transactions.push(tx);
+                        tx
                     } else {
                         let tx = submit_subblock_tx(node).await;
                         expected_transactions.push(tx);
+                        tx
                     };
                 }
             }

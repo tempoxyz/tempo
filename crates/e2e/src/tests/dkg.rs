@@ -10,10 +10,7 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 
-use crate::{
-    CONSENSUS_NODE_PREFIX, Setup, execution_runtime::validator, link_validators_by_nodes, run,
-    setup_validators,
-};
+use crate::{CONSENSUS_NODE_PREFIX, Setup, execution_runtime::validator, run, setup_validators};
 
 #[test_traced]
 fn single_validator_can_transition_once() {
@@ -366,13 +363,11 @@ fn assert_allegretto_transition(how_many: u32, epoch_length: u64) {
 fn assert_validator_is_added_post_allegretto(how_many_initial: u32, epoch_length: u64) {
     let _ = tempo_eyre::install();
 
-    // Create how_many_initial + 1 nodes, but only start the first how_many_initial initially.
-    // The last node will be added later as a new validator.
     let setup = Setup::new()
-        .how_many_signers(how_many_initial + 1)
+        .how_many_signers(how_many_initial)
+        .how_many_verifiers(1)
         .epoch_length(epoch_length)
         .allegretto_in_seconds(10);
-    let linkage = setup.linkage.clone();
 
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
@@ -380,17 +375,21 @@ fn assert_validator_is_added_post_allegretto(how_many_initial: u32, epoch_length
     executor.start(|context| async move {
         let (mut validators, execution_runtime) = setup_validators(context.clone(), setup).await;
 
-        // Remove the last validator to add it later
-        let mut new_validator = validators
-            .pop()
-            .expect("should have at least one validator");
-        // Remove its share so it acts as a new validator without prior participation
-        new_validator.consensus_config_mut().share = None;
+        let mut new_validator = {
+            let idx = validators
+                .iter()
+                .position(|node| node.consensus_config().share.is_none())
+                .expect("at least one node must be a verifier, i.e. not have a share");
+            validators.remove(idx)
+        };
 
-        // Save UIDs of initial validators for later metric filtering
-        let initial_uids: Vec<String> = validators.iter().map(|v| v.uid().to_string()).collect();
+        assert!(
+            validators
+                .iter()
+                .all(|node| node.consensus_config().share.is_some()),
+            "must have removed the one non-signer node; must be left with only signers",
+        );
 
-        // Start only the initial validators
         join_all(validators.iter_mut().map(|n| n.start())).await;
 
         // We will send an arbitrary node of the initial validator set the smart
@@ -465,10 +464,6 @@ fn assert_validator_is_added_post_allegretto(how_many_initial: u32, epoch_length
         );
 
         new_validator.start().await;
-        // Link the new validator to all others
-        validators.push(new_validator);
-        let mut oracle = validators[0].oracle().clone();
-        link_validators_by_nodes(&mut oracle, &validators, linkage, None).await;
         tracing::info!("new validator was started");
 
         // First, all initial validator nodes must observe a ceremony with
@@ -486,7 +481,7 @@ fn assert_validator_is_added_post_allegretto(how_many_initial: u32, epoch_length
                 }
 
                 // Only consider metrics from the initial set of validators.
-                if !initial_uids.iter().any(|uid| line.contains(uid)) {
+                if !validators.iter().any(|val| line.contains(val.uid())) {
                     continue;
                 }
 
@@ -560,9 +555,6 @@ fn assert_validator_is_removed_post_allegretto(how_many_initial: u32, epoch_leng
 
     executor.start(|context| async move {
         let (mut validators, execution_runtime) = setup_validators(context.clone(), setup).await;
-
-        // Save UIDs before starting for later metric filtering
-        let validator_uids: Vec<String> = validators.iter().map(|v| v.uid().to_string()).collect();
 
         join_all(validators.iter_mut().map(|n| n.start())).await;
 
@@ -651,7 +643,7 @@ fn assert_validator_is_removed_post_allegretto(how_many_initial: u32, epoch_leng
                 }
 
                 // Only consider metrics from the initial set of validators.
-                if !validator_uids.iter().any(|uid| line.contains(uid)) {
+                if !validators.iter().any(|val| line.contains(val.uid())) {
                     continue;
                 }
 

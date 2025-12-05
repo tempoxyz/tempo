@@ -11784,7 +11784,6 @@ version = "0.7.1"
 dependencies = [
  "alloy",
  "alloy-primitives",
- "camino",
  "clap",
  "commonware-codec",
  "commonware-cryptography",

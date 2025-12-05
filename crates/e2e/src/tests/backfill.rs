@@ -9,7 +9,7 @@ use futures::future::join_all;
 use reth_ethereum::storage::BlockNumReader;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 
-use crate::{Setup, get_pipeline_runs, link_validators_by_nodes, setup_validators};
+use crate::{Setup, get_pipeline_runs, setup_validators};
 
 async fn run_validator_late_join_test(
     context: &Context,
@@ -20,7 +20,6 @@ async fn run_validator_late_join_test(
     let setup = Setup::new()
         .epoch_length(100)
         .connect_execution_layer_nodes(should_pipeline_sync);
-    let linkage = setup.linkage.clone();
 
     let (mut nodes, _execution_runtime) = setup_validators(context.clone(), setup.clone()).await;
 
@@ -39,12 +38,6 @@ async fn run_validator_late_join_test(
     last.start().await;
     assert_eq!(last.execution_provider().last_block_number().unwrap(), 0);
 
-    nodes.push(last);
-    // Link the late-joining node to the others
-    let mut oracle = nodes[0].oracle().clone();
-    link_validators_by_nodes(&mut oracle, &nodes, linkage.clone(), None).await;
-
-    let last = nodes.last().unwrap();
     // Assert that last node is able to catch up and progress
     while last.execution_provider().last_block_number().unwrap() < blocks_after_join {
         context.sleep(Duration::from_millis(100)).await;

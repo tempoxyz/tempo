@@ -3,8 +3,9 @@
 //! These tests verify that validators can be killed and restarted, and that they
 //! properly catch up to the rest of the network after restart.
 
-use std::time::Duration;
+use std::{net::SocketAddr, time::Duration};
 
+use alloy::transports::http::reqwest::Url;
 use commonware_consensus::utils::is_last_block_in_epoch;
 use commonware_macros::test_traced;
 use commonware_runtime::{
@@ -15,7 +16,7 @@ use futures::future::join_all;
 use rand::Rng;
 use tracing::debug;
 
-use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
+use crate::{CONSENSUS_NODE_PREFIX, Setup, execution_runtime::validator, setup_validators};
 
 /// Test configuration for restart scenarios
 #[derive(Clone)]
@@ -434,9 +435,34 @@ fn assert_node_recovers_after_finalizing_block_post_allegretto(
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
-        let (mut nodes, _execution_runtime) =
-            setup_validators(context.clone(), setup.clone()).await;
+        let (mut nodes, execution_runtime) = setup_validators(context.clone(), setup.clone()).await;
         join_all(nodes.iter_mut().map(|node| node.start())).await;
+
+        // Send an arbitrary node of the initial validator set the smart contract call.
+        let http_url = nodes[0]
+            .execution()
+            .rpc_server_handle()
+            .http_url()
+            .unwrap()
+            .parse::<Url>()
+            .unwrap();
+
+        for (i, node) in nodes.iter().enumerate() {
+            let receipt = execution_runtime
+                .add_validator(
+                    http_url.clone(),
+                    validator(i as u32),
+                    node.public_key().clone(),
+                    SocketAddr::from(([127, 0, 0, 1], (i + 1) as u16)),
+                )
+                .await
+                .unwrap();
+
+            tracing::debug!(
+                block.number = receipt.block_number,
+                "addValidator call returned receipt"
+            );
+        }
 
         // Next, wait until a transition is observed.
         loop {
