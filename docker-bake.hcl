@@ -12,52 +12,66 @@ group "default" {
 
 target "docker-metadata" {}
 
-target "_common" {
+# Base image with all dependencies pre-compiled
+target "chef" {
+  dockerfile = "Dockerfile.chef"
   context = "."
   platforms = ["linux/amd64"]
   args = {
     RUST_PROFILE = "profiling"
+    RUST_FEATURES = "asm-keccak,jemalloc,otlp"
+  }
+}
+
+target "_common" {
+  contexts = {
+    chef = "target:chef"
+  }
+  args = {
+    CHEF_IMAGE = "chef"
+    RUST_PROFILE = "profiling"
     VERGEN_GIT_SHA = "${VERGEN_GIT_SHA}"
     VERGEN_GIT_SHA_SHORT = "${VERGEN_GIT_SHA_SHORT}"
   }
+  platforms = ["linux/amd64"]
 }
 
 target "tempo" {
   inherits = ["_common", "docker-metadata"]
   dockerfile = "Dockerfile"
+  context = "."
   args = {
     RUST_BINARY = "tempo"
     RUST_FEATURES = "asm-keccak,jemalloc,otlp"
   }
-  tags = []
 }
 
 target "tempo-bench" {
   inherits = ["_common", "docker-metadata"]
   dockerfile = "Dockerfile.bench"
+  context = "."
   args = {
     RUST_BINARY = "tempo-bench"
     RUST_FEATURES = ""
   }
-  tags = []
 }
 
 target "tempo-sidecar" {
   inherits = ["_common", "docker-metadata"]
   dockerfile = "Dockerfile"
+  context = "."
   args = {
     RUST_BINARY = "tempo-sidecar"
     RUST_FEATURES = ""
   }
-  tags = []
 }
 
 target "tempo-xtask" {
   inherits = ["_common", "docker-metadata"]
   dockerfile = "Dockerfile"
+  context = "."
   args = {
     RUST_BINARY = "tempo-xtask"
     RUST_FEATURES = ""
   }
-  tags = []
 }
