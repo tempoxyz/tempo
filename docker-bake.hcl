@@ -24,6 +24,8 @@ target "chef" {
 }
 
 target "_common" {
+  dockerfile = "Dockerfile"
+  context = "."
   contexts = {
     chef = "target:chef"
   }
@@ -38,40 +40,20 @@ target "_common" {
 
 target "tempo" {
   inherits = ["_common", "docker-metadata"]
-  dockerfile = "Dockerfile"
-  context = "."
-  args = {
-    RUST_BINARY = "tempo"
-    RUST_FEATURES = "asm-keccak,jemalloc,otlp"
-  }
+  target = "tempo"
 }
 
 target "tempo-bench" {
   inherits = ["_common", "docker-metadata"]
-  dockerfile = "Dockerfile.bench"
-  context = "."
-  args = {
-    RUST_BINARY = "tempo-bench"
-    RUST_FEATURES = ""
-  }
+  target = "tempo-bench"
 }
 
 target "tempo-sidecar" {
   inherits = ["_common", "docker-metadata"]
-  dockerfile = "Dockerfile"
-  context = "."
-  args = {
-    RUST_BINARY = "tempo-sidecar"
-    RUST_FEATURES = ""
-  }
+  target = "tempo-sidecar"
 }
 
 target "tempo-xtask" {
   inherits = ["_common", "docker-metadata"]
-  dockerfile = "Dockerfile"
-  context = "."
-  args = {
-    RUST_BINARY = "tempo-xtask"
-    RUST_FEATURES = ""
-  }
+  target = "tempo-xtask"
 }

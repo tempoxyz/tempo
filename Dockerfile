@@ -1,36 +1,52 @@
 ARG CHEF_IMAGE=chef
 
-FROM ${CHEF_IMAGE} AS chef-base
+FROM ${CHEF_IMAGE} AS builder
 
-FROM chef-base AS builder
-
-ARG RUST_BINARY
 ARG RUST_PROFILE=profiling
-ARG RUST_FEATURES=""
 ARG VERGEN_GIT_SHA
 ARG VERGEN_GIT_SHA_SHORT
 
 COPY . .
 
+# Build ALL binaries in one pass - they share compiled artifacts
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache \
-    cargo build --bin ${RUST_BINARY} --profile ${RUST_PROFILE} --features "${RUST_FEATURES}"
+    cargo build --profile ${RUST_PROFILE} \
+        --bin tempo --features "asm-keccak,jemalloc,otlp" \
+        --bin tempo-bench \
+        --bin tempo-sidecar \
+        --bin tempo-xtask
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim AS base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-ARG RUST_BINARY
-ARG RUST_PROFILE=profiling
-
-COPY --from=builder /app/target/${RUST_PROFILE}/${RUST_BINARY} /usr/local/bin/${RUST_BINARY}
-
 WORKDIR /data
 
-RUN echo "#!/bin/bash\n/usr/local/bin/${RUST_BINARY} \$@" > /usr/local/bin/entrypoint.sh \
-    && chmod +x /usr/local/bin/entrypoint.sh
+# tempo
+FROM base AS tempo
+ARG RUST_PROFILE=profiling
+COPY --from=builder /app/target/${RUST_PROFILE}/tempo /usr/local/bin/tempo
+ENTRYPOINT ["/usr/local/bin/tempo"]
 
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+# tempo-sidecar
+FROM base AS tempo-sidecar
+ARG RUST_PROFILE=profiling
+COPY --from=builder /app/target/${RUST_PROFILE}/tempo-sidecar /usr/local/bin/tempo-sidecar
+ENTRYPOINT ["/usr/local/bin/tempo-sidecar"]
+
+# tempo-xtask
+FROM base AS tempo-xtask
+ARG RUST_PROFILE=profiling
+COPY --from=builder /app/target/${RUST_PROFILE}/tempo-xtask /usr/local/bin/tempo-xtask
+ENTRYPOINT ["/usr/local/bin/tempo-xtask"]
+
+# tempo-bench (needs nushell)
+FROM base AS tempo-bench
+ARG RUST_PROFILE=profiling
+COPY --from=ghcr.io/nushell/nushell:0.108.0-bookworm /usr/bin/nu /usr/bin/nu
+COPY --from=builder /app/target/${RUST_PROFILE}/tempo-bench /usr/local/bin/tempo-bench
+ENTRYPOINT ["/usr/local/bin/tempo-bench"]

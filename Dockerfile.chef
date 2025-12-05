@@ -6,7 +6,49 @@ WORKDIR /app
 
 FROM chef AS planner
 
-COPY . .
+# Copy only Cargo files to ensure cache invalidation only on dep changes
+COPY Cargo.toml Cargo.lock ./
+
+# Copy all workspace member Cargo.toml files with directory structure
+COPY bin/tempo/Cargo.toml bin/tempo/Cargo.toml
+COPY bin/tempo-bench/Cargo.toml bin/tempo-bench/Cargo.toml
+COPY bin/tempo-sidecar/Cargo.toml bin/tempo-sidecar/Cargo.toml
+COPY crates/alloy/Cargo.toml crates/alloy/Cargo.toml
+COPY crates/chainspec/Cargo.toml crates/chainspec/Cargo.toml
+COPY crates/commonware-node/Cargo.toml crates/commonware-node/Cargo.toml
+COPY crates/commonware-node-config/Cargo.toml crates/commonware-node-config/Cargo.toml
+COPY crates/dkg-onchain-artifacts/Cargo.toml crates/dkg-onchain-artifacts/Cargo.toml
+COPY crates/consensus/Cargo.toml crates/consensus/Cargo.toml
+COPY crates/eyre/Cargo.toml crates/eyre/Cargo.toml
+COPY crates/evm/Cargo.toml crates/evm/Cargo.toml
+COPY crates/e2e/Cargo.toml crates/e2e/Cargo.toml
+COPY crates/faucet/Cargo.toml crates/faucet/Cargo.toml
+COPY crates/node/Cargo.toml crates/node/Cargo.toml
+COPY crates/payload/builder/Cargo.toml crates/payload/builder/Cargo.toml
+COPY crates/payload/types/Cargo.toml crates/payload/types/Cargo.toml
+COPY crates/precompiles/Cargo.toml crates/precompiles/Cargo.toml
+COPY crates/precompiles-macros/Cargo.toml crates/precompiles-macros/Cargo.toml
+COPY crates/primitives/Cargo.toml crates/primitives/Cargo.toml
+COPY crates/contracts/Cargo.toml crates/contracts/Cargo.toml
+COPY crates/telemetry-util/Cargo.toml crates/telemetry-util/Cargo.toml
+COPY crates/transaction-pool/Cargo.toml crates/transaction-pool/Cargo.toml
+COPY crates/revm/Cargo.toml crates/revm/Cargo.toml
+COPY xtask/Cargo.toml xtask/Cargo.toml
+
+# Create dummy lib.rs/main.rs files for cargo chef
+RUN find . -name "Cargo.toml" -exec sh -c '\
+    dir=$(dirname "{}"); \
+    if grep -q "\\[lib\\]" "{}"; then \
+        mkdir -p "$dir/src" && touch "$dir/src/lib.rs"; \
+    fi; \
+    if grep -q "\\[\\[bin\\]\\]" "{}" || grep -q "src/main.rs" "{}"; then \
+        mkdir -p "$dir/src" && touch "$dir/src/main.rs"; \
+    fi; \
+    if grep -q "path = \"src/lib.rs\"" "{}"; then \
+        mkdir -p "$dir/src" && touch "$dir/src/lib.rs"; \
+    fi \
+' \;
+
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
@@ -30,10 +72,8 @@ ENV RUSTC_WRAPPER=sccache \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold"
 
 COPY --from=planner /app/recipe.json recipe.json
-COPY Cargo.toml Cargo.lock ./
 
-# Cook ALL dependencies (covers all feature combinations)
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache \
-    cargo chef cook --profile ${RUST_PROFILE} --features "${RUST_FEATURES}" --recipe-path recipe.json
+    cargo chef cook --profile ${RUST_PROFILE} --features "${RUST_FEATURES}" --recipe-json recipe.json
