@@ -121,20 +121,16 @@ reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-codecs = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
-reth-codecs-derive = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
-reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-errors = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
-reth-ethereum-forks = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8", default-features = false }
-reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-node-builder = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-node-core = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
@@ -148,17 +144,12 @@ reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8
 reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
-reth-tasks = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
-reth-trie-db = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-node-api = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-rpc = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
-reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
-reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
-reth-network = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-engine-local = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
@@ -200,8 +191,6 @@ commonware-p2p = "0.0.63"
 commonware-runtime = "0.0.63"
 commonware-storage = "0.0.63"
 commonware-utils = "0.0.63"
-
-anyhow = "1.0.98"
 arbitrary = { version = "1.3", features = ["derive"] }
 async-trait = "0.1"
 auto_impl = "1"
@@ -211,12 +200,10 @@ bytes = "1.8"
 clap = { version = "4.5.45", features = ["derive"] }
 const-hex = { version = "1.15.0" }
 derive_more = { version = "2.0.0" }
-test-fuzz = "7"
 eyre = "0.6.12"
 futures = "0.3.31"
 governor = "0.10.2"
 hex = "0.4"
-humantime-serde = "1.1.1"
 indexmap = "2.11.0"
 indicatif = "0.18"
 itertools = "0.14.0"
@@ -225,10 +212,8 @@ jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 metrics = "0.24.0"
 p256 = "0.13"
 parking_lot = "0.12.4"
-pin-project-lite = "0.2.16"
 prometheus-client = "0.24.0"
 proptest = "1.7"
-proptest-arbitrary-interop = "0.1.0"
 rand = "0.8.5"
 rand_core = "0.6.4"
 serde = { version = "1.0.219", features = ["derive"] }
@@ -239,7 +224,6 @@ thiserror = "2.0.14"
 # TODO: restrict this to only the required features
 tokio = { version = "1.45.1", features = ["full"] }
 tokio-util = "0.7.16"
-toml = "0.8"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 criterion = "0.7.0"
