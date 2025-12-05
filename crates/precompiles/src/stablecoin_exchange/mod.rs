@@ -20,7 +20,8 @@ use crate::{
         MIN_PRICE_PRE_MODERATO, compute_book_key,
     },
     storage::{Mapping, PrecompileStorageProvider, Slot, VecSlotExt},
-    tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
+    tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
+    tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
@@ -274,11 +275,20 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         if user_balance >= amount {
             self.sub_balance(user, token, amount)
         } else {
-            self.set_balance(user, token, 0)?;
             let remaining = amount
                 .checked_sub(user_balance)
                 .ok_or(TempoPrecompileError::under_overflow())?;
-            self.transfer_from(token, user, remaining)
+
+            // Post allegro-moderato hardfork, set balance after transfer from
+            if self.storage.spec().is_allegro_moderato() {
+                self.transfer_from(token, user, remaining)?;
+                self.set_balance(user, token, 0)?;
+
+                Ok(())
+            } else {
+                self.set_balance(user, token, 0)?;
+                self.transfer_from(token, user, remaining)
+            }
         }
     }
 
@@ -444,7 +454,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     pub fn create_pair(&mut self, base: Address) -> Result<B256> {
         // Validate that base is a TIP20 token (only after Moderato hardfork)
-        if self.storage.spec().is_moderato() && !is_tip20(base) {
+        if self.storage.spec().is_moderato() && !TIP20Factory::new(self.storage).is_tip20(base)? {
             return Err(StablecoinExchangeError::invalid_base_token().into());
         }
 
@@ -1481,7 +1491,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Validate that both tokens are TIP20 tokens
-        if self.storage.spec().is_allegretto() && (!is_tip20(token_in) || !is_tip20(token_out)) {
+        if self.storage.spec().is_allegretto()
+            && (!is_tip20_prefix(token_in) || !is_tip20_prefix(token_out))
+        {
             return Err(StablecoinExchangeError::invalid_token().into());
         }
 
@@ -4853,6 +4865,78 @@ mod tests {
             })
             .into_log_data()
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_decrement_balance_zeroes_balance_pre_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+
+        let mut quote = PathUSD::new(exchange.storage);
+        quote.initialize(admin)?;
+        let quote_address = quote.token.address();
+
+        let mut base = TIP20Token::new(1, quote.token.storage());
+        base.initialize("BASE", "BASE", "USD", quote_address, admin, Address::ZERO)?;
+        base.grant_role_internal(admin, *ISSUER_ROLE)?;
+        let base_address = base.address();
+
+        exchange.create_pair(base_address)?;
+
+        let internal_balance = MIN_ORDER_AMOUNT / 2;
+        exchange.sstore_balances(alice, base_address, internal_balance)?;
+
+        assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
+
+        let tick = 0i16;
+        let result = exchange.place(alice, base_address, MIN_ORDER_AMOUNT, false, tick);
+
+        assert!(result.is_err());
+        assert_eq!(exchange.balance_of(alice, base_address)?, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_decrement_balance_preserves_balance_post_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+
+        let mut quote = PathUSD::new(exchange.storage);
+        quote.initialize(admin)?;
+        let quote_address = quote.token.address();
+
+        // Set token_id_counter to 2 so that token id 1 is considered valid
+        TIP20Factory::new(quote.token.storage()).set_token_id_counter(U256::from(2))?;
+
+        let mut base = TIP20Token::new(1, quote.token.storage());
+        base.initialize("BASE", "BASE", "USD", quote_address, admin, Address::ZERO)?;
+        base.grant_role_internal(admin, *ISSUER_ROLE)?;
+        let base_address = base.address();
+
+        exchange.create_pair(base_address)?;
+
+        let internal_balance = MIN_ORDER_AMOUNT / 2;
+        exchange.sstore_balances(alice, base_address, internal_balance)?;
+
+        assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
+
+        let tick = 0i16;
+        let result = exchange.place(alice, base_address, MIN_ORDER_AMOUNT * 2, false, tick);
+
+        assert!(result.is_err());
+        assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
 
         Ok(())
     }

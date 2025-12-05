@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+#
+# Run cast commands using tempo-foundry's custom cast binary.
+#
+# Usage:
+#   ./tempo-cast [cast-args...]
+#
+# Examples:
+#   ./tempo-cast sig "transfer(address,uint256)"
+#   ./tempo-cast 4byte 0xa9059cbb
+#   ./tempo-cast abi-encode "transfer(address,uint256)" 0x... 100
+#
+# Prerequisites:
+#   - Rust toolchain installed
+#   - tempo-foundry repo cloned as a sibling to tempo repo:
+#       Tempo/
+#         tempo/          <- this repo
+#         tempo-foundry/  <- tempo-foundry repo
+#
+# The script will:
+#   1. Locate or build the tempo-foundry cast binary
+#   2. Run cast with the Rust precompiles enabled
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEMPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# Try to find tempo-foundry in common locations
+TEMPO_FOUNDRY_PATHS=(
+    "$TEMPO_ROOT/../tempo-foundry"           # Sibling directory
+    "$TEMPO_ROOT/../../tempo-foundry"        # Parent's sibling
+    "${TEMPO_FOUNDRY_PATH:-}"                # Environment variable override
+)
+
+TEMPO_FOUNDRY_DIR=""
+for path in "${TEMPO_FOUNDRY_PATHS[@]}"; do
+    if [[ -n "$path" && -d "$path" && -f "$path/Cargo.toml" ]]; then
+        TEMPO_FOUNDRY_DIR="$path"
+        break
+    fi
+done
+
+if [[ -z "$TEMPO_FOUNDRY_DIR" ]]; then
+    echo "Error: Could not find tempo-foundry repository."
+    echo ""
+    echo "Please either:"
+    echo "  1. Clone tempo-foundry as a sibling to the tempo repo:"
+    echo "     git clone git@github.com:tempoxyz/tempo-foundry.git ../tempo-foundry"
+    echo ""
+    echo "  2. Set TEMPO_FOUNDRY_PATH environment variable:"
+    echo "     export TEMPO_FOUNDRY_PATH=/path/to/tempo-foundry"
+    exit 1
+fi
+
+CAST_BIN="$TEMPO_FOUNDRY_DIR/target/debug/cast"
+
+# Check if cast binary exists, build if not
+if [[ ! -x "$CAST_BIN" ]]; then
+    echo "Building tempo-foundry cast binary..."
+    echo "(This may take a few minutes on first run)"
+    echo ""
+    (cd "$TEMPO_FOUNDRY_DIR" && cargo build -p cast --profile dev)
+fi
+
+if [[ ! -x "$CAST_BIN" ]]; then
+    echo "Error: Failed to build cast binary at $CAST_BIN"
+    exit 1
+fi
+
+# Run cast
+exec "$CAST_BIN" "$@"

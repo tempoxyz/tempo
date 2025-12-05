@@ -196,33 +196,4 @@ contract TIP20FactoryTest is BaseTest {
         }
     }
 
-    /*//////////////////////////////////////////////////////////////
-            NOTE: COMMENTED OUT TESTS FROM fuzz-precompiles
-
-        Many tests in the fuzz-precompiles branch are commented out
-        because they require vanity address generation with CREATE2
-        in production. In local Foundry tests, the standard `new`
-        operator doesn't guarantee 0x20c0... prefixes.
-
-        These tests can be re-enabled for integration testing on
-        actual Tempo deployment where CREATE2 is used properly.
-
-        Commented tests include:
-        - testFuzz_createToken (vanity address generation)
-        - testFuzz_createMultipleTokens (vanity address generation)
-        - testFuzz_createTokenWithDifferentAdmins (vanity address)
-        - testFuzz_isTIP20WithValidAddresses (vanity address)
-        - testFuzz_isTIP20AfterMultipleCreations (vanity address)
-        - testFuzz_createTokenWithValidQuoteToken (vanity address)
-        - testFuzz_vanityAddressPrefixConsistency (vanity address)
-        - testFuzz_tokenIdEmbeddedInAddress (vanity address)
-        - All invariant tests (require handler contract setup)
-        - test_EDGE_createMaxTokens (vanity address)
-        - test_EDGE_pathUSDQuotesItself (vanity address)
-        - test_EDGE_createTokenQuotingNewerToken (vanity address)
-        - test_EDGE_emptyStringParameters (vanity address)
-        - test_EDGE_veryLongStringParameters (vanity address)
-    //////////////////////////////////////////////////////////////*/
-
-
 }

@@ -43,7 +43,7 @@ pub struct TempoTransactionRequest {
     #[serde(
         default,
         skip_serializing_if = "Vec::is_empty",
-        rename = "aa_authorization_list"
+        rename = "aaAuthorizationList"
     )]
     pub tempo_authorization_list: Vec<TempoSignedAuthorization>,
 }

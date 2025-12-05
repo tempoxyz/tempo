@@ -218,7 +218,7 @@ pub struct TempoTransaction {
     pub key_authorization: Option<SignedKeyAuthorization>,
 
     /// Authorization list (EIP-7702 style with Tempo signatures)
-    #[cfg_attr(feature = "serde", serde(rename = "aa_authorization_list"))]
+    #[cfg_attr(feature = "serde", serde(rename = "aaAuthorizationList"))]
     pub tempo_authorization_list: Vec<TempoSignedAuthorization>,
 }
 
