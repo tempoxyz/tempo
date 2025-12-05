@@ -261,31 +261,35 @@ mod tests {
 
     #[test]
     fn path_usd_test_selector_coverage_post_allegretto() {
-        use crate::test_util::assert_full_coverage;
+        todo!()
 
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
-        let mut path_usd = PathUSD::new(&mut storage);
-
-        path_usd.initialize(Address::ZERO).unwrap();
-
-        let itip20_unsupported =
-            check_selector_coverage(&mut path_usd, ITIP20Calls::SELECTORS, "ITIP20", |s| {
-                ITIP20Calls::name_by_selector(s)
-            });
-
-        let roles_unsupported = check_selector_coverage(
-            &mut path_usd,
-            IRolesAuthCalls::SELECTORS,
-            "IRolesAuth",
-            IRolesAuthCalls::name_by_selector,
-        );
-
-        assert_full_coverage([itip20_unsupported, roles_unsupported]);
+        //TODO: test tip20 dispatch
+        // use crate::test_util::assert_full_coverage;
+        //
+        // let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        // let mut path_usd = PathUSD::new(&mut storage);
+        //
+        // path_usd.initialize(Address::ZERO).unwrap();
+        //
+        // // TODO: only functions post allegretto shoudl be name and symbol
+        // let itip20_unsupported =
+        //     check_selector_coverage(&mut path_usd, ITIP20Calls::SELECTORS, "ITIP20", |s| {
+        //         ITIP20Calls::name_by_selector(s)
+        //     });
+        //
+        // let roles_unsupported = check_selector_coverage(
+        //     &mut path_usd,
+        //     IRolesAuthCalls::SELECTORS,
+        //     "IRolesAuth",
+        //     IRolesAuthCalls::name_by_selector,
+        // );
+        //
+        // assert_full_coverage([itip20_unsupported, roles_unsupported]);
     }
 
     #[test]
-    fn test_start_reward_disabled() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_start_reward_disabled_pre_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
@@ -308,8 +312,8 @@ mod tests {
     }
 
     #[test]
-    fn test_set_reward_recipient_disabled() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_set_reward_recipient_disabled_pre_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
         let recipient = Address::from([2u8; 20]);
@@ -329,8 +333,8 @@ mod tests {
     }
 
     #[test]
-    fn test_cancel_reward_disabled() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_cancel_reward_disabled_pre_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
@@ -349,8 +353,8 @@ mod tests {
     }
 
     #[test]
-    fn test_claim_rewards_disabled() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_claim_rewards_disabled_pre_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
 
