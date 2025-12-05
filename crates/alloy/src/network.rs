@@ -14,7 +14,8 @@ use alloy_provider::fillers::{
 use alloy_rpc_types_eth::{AccessList, Block, Transaction};
 use alloy_signer_local::PrivateKeySigner;
 use tempo_primitives::{
-    TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
+    TempoHeader, TempoReceiptEnvelope, TempoTxEnvelope, TempoTxType,
+    transaction::TempoTypedTransaction,
 };
 
 /// Set of recommended fillers.
@@ -31,7 +32,7 @@ impl Network for TempoNetwork {
     type TxType = TempoTxType;
     type TxEnvelope = TempoTxEnvelope;
     type UnsignedTx = TempoTypedTransaction;
-    type ReceiptEnvelope = TempoReceipt;
+    type ReceiptEnvelope = TempoReceiptEnvelope;
     type Header = TempoHeader;
     type TransactionRequest = TempoTransactionRequest;
     type TransactionResponse = Transaction<TempoTxEnvelope>;
