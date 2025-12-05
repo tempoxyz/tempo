@@ -126,10 +126,7 @@ where
                 propagate,
                 authorities,
             } => {
-                // Route 2D transactions or transactions with valid_after to our custom pool.
-                if transaction.transaction().should_add_to_aa_pool()
-                    || transaction.transaction().valid_after().is_some()
-                {
+                if transaction.transaction().should_add_to_aa_pool() {
                     let transaction = transaction.into_transaction();
                     let sender_id = self
                         .protocol_pool
