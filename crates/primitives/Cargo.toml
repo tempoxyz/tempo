@@ -41,6 +41,10 @@ base64.workspace = true
 [dev-dependencies]
 arbitrary.workspace = true
 reth-codecs.workspace = true
+reth-codecs-derive.workspace = true
+test-fuzz.workspace = true
+proptest.workspace = true
+proptest-arbitrary-interop.workspace = true
 alloy-consensus = { workspace = true, features = ["arbitrary"] }
 rand = "0.9"
 serde_json.workspace = true

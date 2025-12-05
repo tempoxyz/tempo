@@ -122,6 +122,7 @@ reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-codecs = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
+reth-codecs-derive = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "4c17de8" }
@@ -215,12 +216,14 @@ p256 = "0.13"
 parking_lot = "0.12.4"
 prometheus-client = "0.24.0"
 proptest = "1.7"
+proptest-arbitrary-interop = "0.1.0"
 rand = "0.8.5"
 rand_core = "0.6.4"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.142"
 sha2 = "0.10"
 tempfile = "3.20.0"
+test-fuzz = "7"
 thiserror = "2.0.14"
 # TODO: restrict this to only the required features
 tokio = { version = "1.45.1", features = ["full"] }
