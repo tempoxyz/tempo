@@ -898,14 +898,16 @@ where
         )? - tx.value
             - actual_spending;
 
-        
-        // Skip `collectFeePostTx` call if the initial fee collected in 
+        // Skip `collectFeePostTx` call if the initial fee collected in
         // `collectFeePreTx` was zero, but spending is non-zero.
         //
         // This is normally unreachable unless the gas price was increased mid-transaction,
         // which is only possible when there are some EVM customizations involved (e.g Foundry EVM).
-        if evm.collected_fee.is_zero() && !actual_spending.is_zero() {
-            return Ok(())
+        if context.cfg.disable_fee_charge
+            && evm.collected_fee.is_zero()
+            && !actual_spending.is_zero()
+        {
+            return Ok(());
         }
 
         // Create storage provider and fee manager
