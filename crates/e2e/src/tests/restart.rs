@@ -175,7 +175,8 @@ fn network_resumes_after_restart() {
     let setup = Setup::new()
         .how_many_signers(3) // quorum for 3 validators is 3.
         .seed(0)
-        .epoch_length(100);
+        .epoch_length(100)
+        .connect_execution_layer_nodes(true);
 
     let shutdown_height = 5;
     let final_height = 10;
