@@ -120,14 +120,8 @@ jobs:
           echo "Updated Cargo.toml:"
           grep "tempo-" Cargo.toml | head -20
 
-          # Update Cargo.lock
-          CRATES=$(grep "git = \"https://github.com/tempoxyz/tempo\"" Cargo.toml | grep -oP 'tempo-\w+' | sort -u || true)
-          if [[ -n "${CRATES}" ]]; then
-            echo "Updating crates: $CRATES"
-            for crate in $CRATES; do
-              cargo update -p "$crate" || true
-            done
-          fi
+          # Update Cargo.lock to resolve version conflicts
+          cargo update
 
       - name: Build tempo-foundry forge
         working-directory: tempo-foundry
