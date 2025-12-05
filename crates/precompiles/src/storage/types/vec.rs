@@ -926,7 +926,7 @@ mod tests {
             // Also verify each element in slot 1 can be extracted
             let slot1_data = [33u8, 34u8, 35u8];
             for (i, &expected) in slot1_data.iter().enumerate() {
-                let offset = i * u8::BYTES;
+                let offset = i; // equivalent to: `i * u8::BYTES`
                 let actual =
                     Slot::<u8>::new_with_ctx(slot1_addr, LayoutCtx::packed(offset), address)
                         .read()
