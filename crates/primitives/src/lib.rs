@@ -19,9 +19,6 @@ pub use transaction::{
 mod header;
 pub use header::TempoHeader;
 
-mod receipt;
-pub use receipt::TempoReceiptEnvelope;
-
 pub mod subblock;
 pub use subblock::{
     RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockMetadata, SubBlockVersion,

@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use crate::rpc::{TempoHeaderResponse, TempoTransactionReceipt, TempoTransactionRequest};
-use alloy_consensus::{TxType, error::UnsupportedTransactionType};
+use alloy_consensus::{ReceiptWithBloom, TxType, error::UnsupportedTransactionType};
 
 use alloy_network::{
     BuildResult, Ethereum, EthereumWallet, IntoWallet, Network, NetworkWallet, TransactionBuilder,
@@ -14,8 +14,7 @@ use alloy_provider::fillers::{
 use alloy_rpc_types_eth::{AccessList, Block, Transaction};
 use alloy_signer_local::PrivateKeySigner;
 use tempo_primitives::{
-    TempoHeader, TempoReceiptEnvelope, TempoTxEnvelope, TempoTxType,
-    transaction::TempoTypedTransaction,
+    TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
 };
 
 /// Set of recommended fillers.
@@ -32,7 +31,7 @@ impl Network for TempoNetwork {
     type TxType = TempoTxType;
     type TxEnvelope = TempoTxEnvelope;
     type UnsignedTx = TempoTypedTransaction;
-    type ReceiptEnvelope = TempoReceiptEnvelope;
+    type ReceiptEnvelope = ReceiptWithBloom<TempoReceipt>;
     type Header = TempoHeader;
     type TransactionRequest = TempoTransactionRequest;
     type TransactionResponse = Transaction<TempoTxEnvelope>;
