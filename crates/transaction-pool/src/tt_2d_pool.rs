@@ -679,7 +679,7 @@ impl AA2dPool {
 
         for resumed_id in resumed {
             let mut next_nonce = resumed_id.nonce;
-            for (id, tx) in self.by_id.range_mut(resumed_id.descenants_range()) {
+            for (id, tx) in self.by_id.range_mut(resumed_id.descendants_range()) {
                 if id.nonce != next_nonce {
                     // Exit on nonce gap without flipping `queued_ancestors_or_nonce_gap` flag as it should remain true for all descendants.
                     break;
@@ -1089,7 +1089,7 @@ impl AA2dTransactionId {
     }
 
     /// Returns the range of descendants of this transaction.
-    pub(crate) fn descenants_range(&self) -> std::ops::Range<Self> {
+    pub(crate) fn descendants_range(&self) -> std::ops::Range<Self> {
         *self..Self::new(self.seq_id, u64::MAX)
     }
 }
