@@ -99,10 +99,12 @@ provider.multicall().extend_calls(calls).aggregate3().await?;
 ABIs for these contracts are available in the SDK:
 
 ```typescript
-import {
-  tip20Abi,
-  tip20FactoryAbi,
-  stablecoinExchangeAbi,
-  feeManagerAbi
-} from 'tempo.ts/abis'
+import { Abis } from 'tempo.ts/viem'
+
+const tip20Abi = Abis.tip20
+const tip20FactoryAbi = Abis.tip20Factory
+const stablecoinExchangeAbi = Abis.stablecoinExchange
+const feeManagerAbi = Abis.feeManager
+const feeAmmAbi = Abis.feeAmm
+// ...
 ```
