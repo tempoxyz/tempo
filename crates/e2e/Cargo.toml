@@ -50,6 +50,7 @@ serde_json.workspace = true
 commonware-consensus.workspace = true
 commonware-macros.workspace = true
 tempo-eyre.workspace = true
+tracing-subscriber.workspace = true
 
 alloy-network.workspace = true
 
