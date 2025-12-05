@@ -27,6 +27,7 @@ export { SendPaymentWithIssuedToken } from './payments/SendPaymentWithIssuedToke
 export {
   CreateSponsorAccount,
   FundSponsorAccount,
+  SendRelayerSponsoredPayment,
   SendSponsoredPayment,
 } from './payments/SponsorUserFees'
 export { ClaimReward } from './rewards/ClaimReward'
