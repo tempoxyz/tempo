@@ -2,6 +2,7 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
+use alloy_consensus::BlockHeader as _;
 use commonware_codec::{Decode as _, Encode as _};
 use commonware_consensus::{Block as _, types::Epoch};
 use commonware_cryptography::{
@@ -16,29 +17,30 @@ use commonware_p2p::{
     Receiver, Recipients, Sender,
     utils::mux::{MuxHandle, SubReceiver, SubSender},
 };
-use commonware_runtime::{Clock, Metrics, Storage};
+use commonware_runtime::{Clock, Storage};
 use commonware_storage::metadata::Metadata;
 use commonware_utils::{max_faults, sequence::U64, set::Ordered, union};
 use eyre::{WrapErr as _, bail, ensure};
 use futures::{FutureExt as _, lock::Mutex};
 use indexmap::IndexSet;
+use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
 use tracing::{Level, debug, error, info, instrument, warn};
 
-use crate::consensus::block::Block;
+use tempo_dkg_onchain_artifacts::{Ack, IntermediateOutcome};
 
-mod on_chain;
+use crate::{consensus::block::Block, dkg::HardforkRegime};
+
 mod payload;
 mod persisted;
 
-pub(crate) use on_chain::{IntermediateOutcome, PublicOutcome};
 pub(super) use persisted::State;
 
-use payload::{Ack, Message, Payload, Share};
+use payload::{Message, Payload, Share};
 use persisted::Dealing;
 
 const ACK_NAMESPACE: &[u8] = b"_DKG_ACK";
-const OUTCOME_NAMESPACE: &[u8] = b"_DKG_OUTCOME";
+pub(super) const OUTCOME_NAMESPACE: &[u8] = b"_DKG_OUTCOME";
 
 /// Recovering public weights is a heavy operation. For simplicity, we use just
 /// 1 thread for now.
@@ -66,10 +68,9 @@ pub(super) struct Config {
     /// The players in the round.
     pub(super) players: Ordered<PublicKey>,
 }
-
 pub(super) struct Ceremony<TContext, TReceiver, TSender>
 where
-    TContext: Clock + Metrics + Storage,
+    TContext: Clock + commonware_runtime::Metrics + Storage,
     TReceiver: Receiver,
     TSender: Sender,
 {
@@ -101,21 +102,32 @@ where
     ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, State>>>,
     receiver: SubReceiver<TReceiver>,
     sender: SubSender<TSender>,
+    metrics: Metrics,
 }
 
 impl<TContext, TReceiver, TSender> Ceremony<TContext, TReceiver, TSender>
 where
-    TContext: Clock + CryptoRngCore + Metrics + Storage,
+    TContext: Clock + CryptoRngCore + commonware_runtime::Metrics + Storage,
     TReceiver: Receiver<PublicKey = PublicKey>,
     TSender: Sender<PublicKey = PublicKey>,
 {
     /// Initialize a DKG ceremony.
+    #[instrument(skip_all, fields(for_epoch = config.epoch), err)]
     pub(super) async fn init(
         context: &mut TContext,
         mux: &mut MuxHandle<TSender, TReceiver>,
         ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, State>>>,
         config: Config,
+        metrics: Metrics,
     ) -> eyre::Result<Self> {
+        // Reset the cumulants for the current ceremony back to zero instead
+        // of creating fresh metrics: registering new metrics would just push
+        // more and more into the prometheus registry without ever pruning.
+        metrics.reset_per_ceremony_metrics();
+
+        metrics.dealers.set(config.dealers.len() as i64);
+        metrics.players.set(config.players.len() as i64);
+
         let (sender, receiver) = mux
             .register(config.epoch)
             .await
@@ -141,6 +153,7 @@ where
 
         let mut dealer_me = None;
 
+        debug!("attempting to read ceremony state from disk");
         // TODO(janis): move this "recovery" logic to a function.
         // Clone in order to not hold onto the lock too long.
         let recovered = ceremony_metadata
@@ -153,13 +166,13 @@ where
             info!("found a previous ceremony state written to disk; recovering it");
             for outcome in &recovered.outcomes {
                 let ack_indices = outcome
-                    .acks
+                    .acks()
                     .iter()
                     .filter_map(|ack| {
-                        let idx = players_indexed.get_index_of(&ack.player);
+                        let idx = players_indexed.get_index_of(ack.player());
                         if idx.is_none() {
                             warn!(
-                                player = %ack.player,
+                                player = %ack.player(),
                                 "ack for player recovered from disk not among players of this ceremony",
                             );
                         }
@@ -169,10 +182,10 @@ where
 
                 if let Err(error) = arbiter
                     .commitment(
-                        outcome.dealer.clone(),
-                        outcome.commitment.clone(),
+                        outcome.dealer().clone(),
+                        outcome.commitment().clone(),
                         ack_indices,
-                        outcome.reveals.clone(),
+                        outcome.reveals().to_vec(),
                     )
                     .wrap_err("failed to verify and track commitment")
                 {
@@ -197,11 +210,11 @@ where
                     config.players.clone(),
                 );
                 for ack in dealing.acks.values() {
-                    dkg_dealer.ack(ack.player.clone()).wrap_err_with(|| {
+                    dkg_dealer.ack(ack.player().clone()).wrap_err_with(|| {
                         format!(
                             "failed updating dealer information with ack for \
                              player `{player}` recovered from disk",
-                            player = ack.player,
+                            player = ack.player(),
                         )
                     })?;
                 }
@@ -212,39 +225,55 @@ where
                     outcome: recovered.dealing_outcome,
                 });
             }
-        } else if let Some(share) = config.share.clone() {
-            // XXX: It is critical to write the initial ceremony state with the
-            // correct number of players to disk. The upsert operations in the
-            // rest of the ceremony write the default value for the number of
-            // players, with is 0.
+        } else {
+            info!("starting a fresh ceremony");
+
+            if let Some(share) = config.share.clone() {
+                info!("we have a share, so we are a dealer in this ceremony");
+                let (_, commitment, shares) = dkg::Dealer::<PublicKey, MinSig>::new(
+                    context,
+                    Some(share),
+                    config.players.clone(),
+                );
+                let shares = config
+                    .players
+                    .iter()
+                    .zip(&shares)
+                    .map(|(player, share)| (player.clone(), share.clone()))
+                    .collect();
+                dealer_me = Some(Dealer {
+                    commitment,
+                    shares,
+                    acks: BTreeMap::new(),
+                    outcome: None,
+                });
+            }
+
             ceremony_metadata
                 .lock()
                 .await
                 .put_sync(
                     config.epoch.into(),
                     State {
-                        num_players: config.players.len() as u64,
+                        num_players: config
+                            .players
+                            .len()
+                            .try_into()
+                            .expect("there should never be more than u16::MAX players"),
+                        dealing: dealer_me.as_ref().map(|me| Dealing {
+                            commitment: me.commitment.clone(),
+                            shares: me.shares.clone(),
+                            acks: BTreeMap::new(),
+                        }),
                         ..State::default()
                     },
                 )
                 .await
                 .expect("must always be able to initialize the ceremony state to disk");
-
-            let (_, commitment, shares) =
-                dkg::Dealer::<PublicKey, MinSig>::new(context, Some(share), config.players.clone());
-            let shares = config
-                .players
-                .iter()
-                .zip(&shares)
-                .map(|(player, share)| (player.clone(), share.clone()))
-                .collect();
-            dealer_me = Some(Dealer {
-                commitment,
-                shares,
-                acks: BTreeMap::new(),
-                outcome: None,
-            });
         };
+
+        metrics.how_often_player.inc_by(player_me.is_some() as u64);
+        metrics.how_often_dealer.inc_by(dealer_me.is_some() as u64);
 
         let previous = config.share.clone().map_or_else(
             || Role::Verifier {
@@ -265,6 +294,7 @@ where
             ceremony_metadata,
             receiver,
             sender,
+            metrics,
         })
     }
 
@@ -277,7 +307,7 @@ where
     #[instrument(skip_all, fields(epoch = self.config.epoch), err)]
     pub(super) async fn distribute_shares(&mut self) -> eyre::Result<()> {
         let Some(dealer_me) = &mut self.dealer_me else {
-            debug!("not a dealer, not requesting acks");
+            debug!("not a dealer, not distributing shares");
             return Ok(());
         };
         for player in &self.config.players {
@@ -345,6 +375,10 @@ where
                     })
                     .await
                     .expect("must be able to persists acks");
+                // When self-distributing, we also "receive" the share and "send" an ack to ourselves
+                self.metrics.shares_distributed.inc();
+                self.metrics.acks_received.inc();
+                self.metrics.acks_sent.inc();
                 continue;
             }
 
@@ -372,6 +406,7 @@ where
                 warn!(%player, "failed to send share to player");
             } else {
                 info!(%player, "sent share to player");
+                self.metrics.shares_distributed.inc();
             }
         }
         Ok(())
@@ -388,6 +423,7 @@ where
         while let Some(msg) = self.receiver.recv().now_or_never() {
             let (peer, mut msg) = msg.wrap_err("receiver p2p channel was closed")?;
 
+            debug!(%peer, "received message from");
             let msg = Message::decode_cfg(&mut msg, &(self.config.players.len() as u32))
                 .wrap_err("unable to decode message")?;
             if msg.epoch != self.epoch() {
@@ -417,18 +453,19 @@ where
         fields(
             epoch = %self.epoch(),
             %peer,
-            player = %ack.player,
+            player = %ack.player(),
         ),
         err(level = Level::WARN),
         ret,
     )]
     async fn process_ack(&mut self, peer: PublicKey, ack: Ack) -> eyre::Result<&'static str> {
+        self.metrics.acks_received.inc();
         let Some(dealer_me) = &mut self.dealer_me else {
             return Ok("not a dealer, dropping ack");
         };
 
         ensure!(
-            ack.player == peer,
+            ack.player() == &peer,
             "player recorded in ack does not match peer that sent it; dropping ack",
         );
 
@@ -490,6 +527,7 @@ where
         peer: PublicKey,
         Share { commitment, share }: Share,
     ) -> eyre::Result<&'static str> {
+        self.metrics.shares_received.inc();
         let Some(player_me) = &mut self.player_me else {
             return Ok("not a player, dropping share");
         };
@@ -532,6 +570,7 @@ where
             .await
             .wrap_err("failed returning ack to peer")?;
 
+        self.metrics.acks_sent.inc();
         Ok("recorded share and returned signed ack to peer")
     }
 
@@ -540,50 +579,79 @@ where
     /// If the block contains this outcome, the ceremony will verify it and
     /// track it in its arbiter.
     #[instrument(skip_all, fields(epoch = self.epoch(), block.height = block.height()), err)]
-    pub(super) async fn process_dealings_in_block(&mut self, block: &Block) -> eyre::Result<()> {
-        let Some(block_outcome) = block.try_read_ceremony_deal_outcome() else {
-            info!("block contained no usable intermediate deal outcome");
+    pub(super) async fn process_dealings_in_block(
+        &mut self,
+        block: &Block,
+        hardfork_regime: HardforkRegime,
+    ) -> eyre::Result<()> {
+        // Track empty vs failed metrics separately
+        if block.header().extra_data().is_empty() {
+            self.metrics.dealings_empty.inc();
             return Ok(());
+        }
+
+        let block_outcome = match block
+            .try_read_ceremony_deal_outcome()
+            .wrap_err("failed reading intermediate DKG dealings from block")
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.metrics.bad_dealings.inc();
+                return Err(error);
+            }
         };
 
         // Ensure the outcome is for the current round.
         ensure!(
-            block_outcome.epoch == self.epoch(),
+            block_outcome.epoch() == self.epoch(),
             "deal outcome in block was for epoch `{}`, but current dkg ceremony is for epoch `{}`",
-            block_outcome.epoch,
+            block_outcome.epoch(),
             self.epoch(),
         );
 
-        // Verify the dealer's signature before considering processing the outcome.
         ensure!(
-            block_outcome.verify(&union(&self.config.namespace, OUTCOME_NAMESPACE)),
-            "invalid dealer signature; ignoring deal outcome",
+            self.dealers().position(block_outcome.dealer()).is_some(),
+            "dealer `{}` recorded in dealing outcome is not among the dealers of this ceremony",
+            block_outcome.dealer(),
         );
 
+        // Verify the dealer's signature before considering processing the outcome.
+        let is_verified = match hardfork_regime {
+            HardforkRegime::PostAllegretto => {
+                block_outcome.verify(&union(&self.config.namespace, OUTCOME_NAMESPACE))
+            }
+            HardforkRegime::PreAllegretto => block_outcome
+                .verify_pre_allegretto(&union(&self.config.namespace, OUTCOME_NAMESPACE)),
+        };
+        if !is_verified {
+            self.metrics.bad_dealings.inc();
+            bail!("intermediate DKG dealing could not be verified");
+        }
+
         // Verify all ack signatures
-        if !block_outcome.acks.iter().all(|ack| {
-            self.players_indexed.contains(&ack.player)
+        if !block_outcome.acks().iter().all(|ack| {
+            self.players_indexed.contains(ack.player())
                 && ack.verify(
                     &union(&self.config.namespace, ACK_NAMESPACE),
-                    &ack.player,
+                    ack.player(),
                     self.epoch(),
-                    &block_outcome.dealer,
-                    &block_outcome.commitment,
+                    block_outcome.dealer(),
+                    block_outcome.commitment(),
                 )
         }) {
-            self.arbiter.disqualify(block_outcome.dealer.clone());
+            self.arbiter.disqualify(block_outcome.dealer().clone());
             bail!("invalid ack signatures; disqualifying dealer");
         }
 
         // Check dealer commitment
         let ack_indices = block_outcome
-            .acks
+            .acks()
             .iter()
             .filter_map(|ack| {
-                let idx = self.players_indexed.get_index_of(&ack.player);
+                let idx = self.players_indexed.get_index_of(ack.player());
                 if idx.is_none() {
                     warn!(
-                        player = %ack.player,
+                        player = %ack.player(),
                         "ack for player stored on disk not among players of this ceremony",
                     );
                 }
@@ -593,14 +661,14 @@ where
 
         self.arbiter
             .commitment(
-                block_outcome.dealer.clone(),
-                block_outcome.commitment.clone(),
+                block_outcome.dealer().clone(),
+                block_outcome.commitment().clone(),
                 ack_indices,
-                block_outcome.reveals.clone(),
+                block_outcome.reveals().to_vec(),
             )
             .wrap_err("failed to track dealer outcome in arbiter")?;
 
-        let block_dealer = block_outcome.dealer.clone();
+        let block_dealer = block_outcome.dealer().clone();
         self.ceremony_metadata
             .lock()
             .await
@@ -608,7 +676,7 @@ where
                 if let Some(pos) = info
                     .outcomes
                     .iter()
-                    .position(|outcome| outcome.dealer == block_outcome.dealer)
+                    .position(|outcome| outcome.dealer() == block_outcome.dealer())
                 {
                     info.outcomes[pos] = block_outcome;
                 } else {
@@ -638,6 +706,7 @@ where
             );
         }
 
+        self.metrics.dealings_read.inc();
         Ok(())
     }
 
@@ -645,7 +714,10 @@ where
     ///
     /// If the node is not a dealer, then this is a no-op.
     #[instrument(skip_all, fields(epoch = self.epoch()), err)]
-    pub(super) async fn construct_intermediate_outcome(&mut self) -> eyre::Result<()> {
+    pub(super) async fn construct_intermediate_outcome(
+        &mut self,
+        hardfork_regime: HardforkRegime,
+    ) -> eyre::Result<()> {
         let Some(dealer_me) = &mut self.dealer_me else {
             debug!("not a dealer; skipping construction of deal outcome");
             return Ok(());
@@ -666,15 +738,34 @@ where
             "too many reveals; skipping deal outcome construction",
         );
 
-        let dealing_outcome = Some(IntermediateOutcome::new(
-            self.config.players.len() as u64,
-            &self.config.me,
-            &union(&self.config.namespace, OUTCOME_NAMESPACE),
-            self.config.epoch,
-            dealer_me.commitment.clone(),
-            dealer_me.acks.values().cloned().collect(),
-            reveals,
-        ));
+        let dealing_outcome = match hardfork_regime {
+            HardforkRegime::PostAllegretto => Some(IntermediateOutcome::new(
+                self.config
+                    .players
+                    .len()
+                    .try_into()
+                    .expect("we should never have more than u16::MAX validators/players"),
+                &self.config.me,
+                &union(&self.config.namespace, OUTCOME_NAMESPACE),
+                self.config.epoch,
+                dealer_me.commitment.clone(),
+                dealer_me.acks.values().cloned().collect(),
+                reveals,
+            )),
+            HardforkRegime::PreAllegretto => Some(IntermediateOutcome::new_pre_allegretto(
+                self.config
+                    .players
+                    .len()
+                    .try_into()
+                    .expect("we should never have more than u16::MAX validators/players"),
+                &self.config.me,
+                &union(&self.config.namespace, OUTCOME_NAMESPACE),
+                self.config.epoch,
+                dealer_me.commitment.clone(),
+                dealer_me.acks.values().cloned().collect(),
+                reveals,
+            )),
+        };
 
         self.ceremony_metadata
             .lock()
@@ -780,10 +871,6 @@ where
         })
     }
 
-    pub(super) fn config(&self) -> &Config {
-        &self.config
-    }
-
     pub(super) fn epoch(&self) -> Epoch {
         self.config.epoch
     }
@@ -791,6 +878,22 @@ where
     pub(super) fn deal_outcome(&self) -> Option<&IntermediateOutcome> {
         let dealer_me = self.dealer_me.as_ref()?;
         dealer_me.outcome.as_ref()
+    }
+
+    pub(super) fn dealers(&self) -> &Ordered<PublicKey> {
+        &self.config.dealers
+    }
+
+    pub(super) fn players(&self) -> &[PublicKey] {
+        self.config.players.as_ref()
+    }
+
+    pub(super) fn is_dealer(&self) -> bool {
+        self.dealer_me.is_some()
+    }
+
+    pub(super) fn is_player(&self) -> bool {
+        self.player_me.is_some()
     }
 }
 
@@ -844,5 +947,158 @@ impl Role {
             } => (polynomial, Some(share)),
             Self::Verifier { public: polynomial } => (polynomial, None),
         }
+    }
+}
+
+/// Ceremony specific metrics.
+#[derive(Clone)]
+pub(super) struct Metrics {
+    shares_distributed: Gauge,
+    shares_received: Gauge,
+    acks_received: Gauge,
+    acks_sent: Gauge,
+    dealings_read: Gauge,
+    dealings_empty: Gauge,
+    bad_dealings: Gauge,
+
+    failures: Counter,
+    successes: Counter,
+    dealers: Gauge,
+    players: Gauge,
+
+    how_often_dealer: Counter,
+    how_often_player: Counter,
+}
+
+impl Metrics {
+    /// Construct and register the ceremony-related metrics on `context`.
+    ///
+    /// Note: because there exists no long-lived ceremony specific context,
+    /// most of the metrics defined here carry a manual `ceremony` prefix.
+    pub(super) fn register<C: commonware_runtime::Metrics>(context: &C) -> Self {
+        let failures = Counter::default();
+        let successes = Counter::default();
+
+        let dealers = Gauge::default();
+        let players = Gauge::default();
+
+        let how_often_dealer = Counter::default();
+        let how_often_player = Counter::default();
+
+        let shares_distributed = Gauge::default();
+        let shares_received = Gauge::default();
+        let acks_received = Gauge::default();
+        let acks_sent = Gauge::default();
+        let dealings_read = Gauge::default();
+        let dealings_empty = Gauge::default();
+        let bad_dealings = Gauge::default();
+
+        context.register(
+            "ceremony_failures",
+            "the number of failed ceremonies a node participated in",
+            failures.clone(),
+        );
+        context.register(
+            "ceremony_successes",
+            "the number of successful ceremonies a node participated in",
+            successes.clone(),
+        );
+        context.register(
+            "ceremony_dealers",
+            "the number of dealers in the currently running ceremony",
+            dealers.clone(),
+        );
+        context.register(
+            "ceremony_players",
+            "the number of players in the currently running ceremony",
+            players.clone(),
+        );
+
+        // no prefix for legacy reasons
+        context.register(
+            "how_often_dealer",
+            "number of the times as node was active as a dealer",
+            how_often_dealer.clone(),
+        );
+        // no prefix for for legacy reasons
+        context.register(
+            "how_often_player",
+            "number of the times as node was active as a player",
+            how_often_player.clone(),
+        );
+
+        context.register(
+            "ceremony_shares_distributed",
+            "the number of shares distributed by this node as a dealer in the current ceremony",
+            shares_distributed.clone(),
+        );
+        context.register(
+            "ceremony_shares_received",
+            "the number of shares received by this node as a playr in the current ceremony",
+            shares_received.clone(),
+        );
+        context.register(
+            "ceremony_acks_received",
+            "the number of acknowledgments received by this node as a dealer in the current ceremony",
+            acks_received.clone(),
+        );
+        context.register(
+            "ceremony_acks_sent",
+            "the number of acknowledgments sent by this node as a player in the current ceremony",
+            acks_sent.clone(),
+        );
+        context.register(
+            "ceremony_dealings_read",
+            "the number of dealings read from the blockchain in the current ceremony",
+            dealings_read.clone(),
+        );
+        context.register(
+            "ceremony_dealings_empty",
+            "the number of blocks with empty extra_data (no dealing) in the current ceremony",
+            dealings_empty.clone(),
+        );
+        context.register(
+            "ceremony_bad_dealings",
+            "the number of blocks where decoding and verifying dealings failed in the current ceremony",
+            bad_dealings.clone(),
+        );
+
+        Self {
+            shares_distributed,
+            shares_received,
+            acks_received,
+            acks_sent,
+            dealings_read,
+            dealings_empty,
+            bad_dealings,
+            dealers,
+            players,
+            how_often_dealer,
+            how_often_player,
+            failures,
+            successes,
+        }
+    }
+
+    /// Resets per-ceremony gauges to zero. Called when a new ceremony is
+    /// initialized.
+    fn reset_per_ceremony_metrics(&self) {
+        self.shares_distributed.set(0);
+        self.shares_received.set(0);
+        self.acks_received.set(0);
+        self.acks_sent.set(0);
+        self.dealings_read.set(0);
+        self.dealings_empty.set(0);
+        self.bad_dealings.set(0);
+    }
+
+    /// Increments the failed ceremonies counter.
+    pub(super) fn one_more_failure(&self) {
+        self.failures.inc();
+    }
+
+    /// Increments the successful ceremonies counter.
+    pub(super) fn one_more_success(&self) {
+        self.successes.inc();
     }
 }

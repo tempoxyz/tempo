@@ -1,0 +1,40 @@
+import { Callout } from 'vocs/components'
+
+# Batch Transactions
+
+One of the most powerful features of the [Tempo Transaction](/documentation/protocol/transactions/spec-tempo-transaction) type is batching multiple operations into a single transaction. This allows you to execute several actions atomically (i.e., they all succeed or all fail together). This helps reduce gas costs, prevents partial failures, and creates better user experiences by combining multiple steps into one transaction.
+
+<Callout type="info">
+  Batch transactions are a feature of Tempo's [TempoTransaction type](/documentation/protocol/transactions/spec-tempo-transaction). See the TempoTransaction spec for complete details on batching and other features.
+</Callout>
+
+## Example: Sending a Batch of Transactions
+
+:::code-group
+```ts [batchTransactions.ts]
+const { address, hash, id } = await client.sendTransaction({ // [!code focus]
+  calls: [{ // [!code focus]
+    to: tokenAddress, // [!code focus]
+    data: transferCalldata // Transfer tokens // [!code focus]
+  }, // [!code focus]
+  { // [!code focus]
+    to: anotherTokenAddress,  // [!code focus]
+    data: approveCalldata // Approve spending // [!code focus]
+  }, // [!code focus]
+  { // [!code focus]
+    to: dexAddress, // [!code focus]
+    data: swapCalldata // Execute swap // [!code focus]
+  }], // [!code focus]
+}) // [!code focus]
+```
+
+```ts [viem.config.ts]
+// [!include ~/snippets/setup.ts:setup] 
+```
+:::
+
+## How It Works
+
+The account implements the [ERC-7821](https://eips.ethereum.org/EIPS/eip-7821) Executor interface, which provides a standardized way to execute batches of operations with different execution modes and authorization schemes.
+
+When you send a transaction with multiple calls, Tempo's Default Account Abstraction automatically converts your address to a smart contract wallet on first use (using [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702)), enabling batch execution.

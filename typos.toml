@@ -10,7 +10,14 @@ extend-exclude = [
     "**/test/**",
     "**/*_test.*",
     "**/*_tests.*",
+    "docs/specs/lib/**",
 ]
 
 [default.extend-words]
 ba = "ba"
+DAA = "DAA"
+multline = "multline"
+froms = "froms"
+Nam = "Nam"
+prool = "prool"
+Prool = "Prool"

@@ -168,7 +168,14 @@ mod tests {
 
         // Initialize and grant admin
         token
-            .initialize("name", "symbol", "currency", Address::ZERO, admin)
+            .initialize(
+                "name",
+                "symbol",
+                "currency",
+                Address::ZERO,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         // Test hasRole
@@ -216,7 +223,14 @@ mod tests {
 
         // Initialize and grant admin
         token
-            .initialize("name", "symbol", "currency", Address::ZERO, admin)
+            .initialize(
+                "name",
+                "symbol",
+                "currency",
+                Address::ZERO,
+                admin,
+                Address::ZERO,
+            )
             .unwrap();
 
         // Set custom admin for role
@@ -247,7 +261,14 @@ mod tests {
         let custom_role = keccak256(b"CUSTOM_ROLE");
 
         token
-            .initialize("name", "symbol", "currency", Address::ZERO, Address::ZERO)
+            .initialize(
+                "name",
+                "symbol",
+                "currency",
+                Address::ZERO,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
         token.grant_role_internal(user, custom_role).unwrap();
 
@@ -275,7 +296,14 @@ mod tests {
         let custom_role = keccak256(b"CUSTOM_ROLE");
 
         token
-            .initialize("name", "symbol", "currency", Address::ZERO, Address::ZERO)
+            .initialize(
+                "name",
+                "symbol",
+                "currency",
+                Address::ZERO,
+                Address::ZERO,
+                Address::ZERO,
+            )
             .unwrap();
 
         // Try to grant role without permission

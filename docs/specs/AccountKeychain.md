@@ -1,0 +1,303 @@
+# Account Keychain Precompile
+
+**Address:** `0xAAAAAAAA00000000000000000000000000000000`
+
+## Overview
+
+The Account Keychain precompile manages authorized Access Keys for accounts, enabling Root Keys (e.g., passkeys) to provision scoped "secondary" Access Keys with expiry timestamps and per-TIP20 token spending limits. 
+
+## Motivation
+
+The Tempo Transaction type unlocks a number of new signature schemes, including WebAuthn (Passkeys). However, for an Account using a Passkey as its Root Key, the sender will subsequently be prompted with passkey prompts for every signature request. This can be a poor user experience for highly interactive or multi-step flows. Additionally, users would also see "Sign In" copy in prompts for signing transactions which is confusing. This proposal introduces the concept of the Root Key being able to provision a (scoped) Access Key that can be used for subsequent transactions, without the need for repetitive end-user prompting.
+
+## Concepts
+
+### Access Keys
+
+Access Keys are secondary signing keys authorized by an account's Root Key. They can sign transactions on behalf of the account with the following restrictions:
+
+- **Expiry**: Unix timestamp when the key becomes invalid (0 = never expires)
+- **Spending Limits**: Per-TIP20 token limits that deplete as tokens are spent
+  - Limits deplete as tokens are spent and can be updated by the Root Key via `updateSpendingLimit()`
+  - Spending limits only apply to TIP20 token transfers, not ETH or other assets
+- **Privilege Restrictions**: Cannot authorize new keys or modify their own limits
+
+### Authorization Hierarchy
+
+The protocol enforces a strict hierarchy at validation time:
+
+1. **Root Key**: The account's main key (derived from the account address)
+   - Can call all precompile functions
+   - Has no spending limits
+   
+2. **Access Keys**: Secondary authorized keys
+   - Cannot call mutable precompile functions (only view functions are allowed)
+   - Subject to per-TIP20 token spending limits
+   - Can have expiry timestamps
+
+## Storage
+
+The precompile uses a `keyId` (address) to uniquely identify each access key for an account.
+
+**Storage Mappings:**
+- `keys[account][keyId]` → Packed `AuthorizedKey` struct (signature type, expiry, enforce_limits, is_revoked)
+- `spendingLimits[keccak256(account || keyId)][token]` → Remaining spending amount for a specific token (uint256)
+- `transactionKey` → Transient storage for the key ID that signed the current transaction (slot 0)
+
+**AuthorizedKey Storage Layout (packed into single slot):**
+- byte 0: signature_type (u8)
+- bytes 1-8: expiry (u64, little-endian)
+- byte 9: enforce_limits (bool)
+- byte 10: is_revoked (bool)
+
+## Interface
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.13;
+
+interface IAccountKeychain {
+    /*//////////////////////////////////////////////////////////////
+                                STRUCTS
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Signature type
+    enum SignatureType {
+        Secp256k1,
+        P256,
+        WebAuthn,
+    }
+
+    /// @notice Token spending limit structure
+    struct TokenLimit {
+        address token;   // TIP20 token address
+        uint256 amount;  // Spending limit amount
+    }
+
+    /// @notice Key information structure
+    struct KeyInfo {
+        SignatureType signatureType; // Signature type of the key
+        address keyId;               // The key identifier
+        uint64 expiry;               // Unix timestamp when key expires (0 = never)
+        bool enforceLimits;          // Whether spending limits are enforced for this key
+        bool isRevoked;              // Whether this key has been revoked
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                                EVENTS
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Emitted when a new key is authorized
+    event KeyAuthorized(
+        address indexed account,
+        bytes32 indexed publicKey,
+        uint8 signatureType,
+        uint64 expiry
+    );
+
+    /// @notice Emitted when a key is revoked
+    event KeyRevoked(address indexed account, bytes32 indexed publicKey);
+
+    /// @notice Emitted when a spending limit is updated
+    event SpendingLimitUpdated(
+        address indexed account,
+        bytes32 indexed publicKey,
+        address indexed token,
+        uint256 newLimit
+    );
+
+    /*//////////////////////////////////////////////////////////////
+                                ERRORS
+    //////////////////////////////////////////////////////////////*/
+
+    error KeyAlreadyExists();
+    error KeyNotFound();
+    error KeyInactive();
+    error KeyExpired();
+    error KeyAlreadyRevoked();
+    error SpendingLimitExceeded();
+    error InvalidSignatureType();
+    error ZeroPublicKey();
+    error UnauthorizedCaller();
+
+    /*//////////////////////////////////////////////////////////////
+                        MANAGEMENT FUNCTIONS
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     * @notice Authorize a new key for the caller's account
+     * @dev MUST only be called in transactions signed by the Root Key
+     *      The protocol enforces this restriction by checking transactionKey[msg.sender]
+     * @param keyId The key identifier (address) to authorize
+     * @param signatureType Signature type of the key (0: Secp256k1, 1: P256, 2: WebAuthn)
+     * @param expiry Unix timestamp when key expires (0 = never expires)
+     * @param enforceLimits Whether to enforce spending limits for this key
+     * @param limits Initial spending limits for tokens (only used if enforceLimits is true)
+     */
+    function authorizeKey(
+        address keyId,
+        SignatureType signatureType,
+        uint64 expiry,
+        bool enforceLimits,
+        TokenLimit[] calldata limits
+    ) external;
+
+    /**
+     * @notice Revoke an authorized key
+     * @dev MUST only be called in transactions signed by the Root Key
+     *      The protocol enforces this restriction by checking transactionKey[msg.sender]
+     * @param keyId The key ID to revoke
+     */
+    function revokeKey(address keyId) external;
+
+    /**
+     * @notice Update spending limit for a specific token on an authorized key
+     * @dev MUST only be called in transactions signed by the Root Key
+     *      The protocol enforces this restriction by checking transactionKey[msg.sender]
+     * @param keyId The key ID to update
+     * @param token The token address
+     * @param newLimit The new spending limit
+     */
+    function updateSpendingLimit(
+        address keyId,
+        address token,
+        uint256 newLimit
+    ) external;
+
+    /*//////////////////////////////////////////////////////////////
+                        VIEW FUNCTIONS
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     * @notice Get key information
+     * @param account The account address
+     * @param keyId The key ID
+     * @return Key information (returns default values if key doesn't exist)
+     */
+    function getKey(
+        address account,
+        address keyId
+    ) external view returns (KeyInfo memory);
+
+    /**
+     * @notice Get remaining spending limit for a key-token pair
+     * @param account The account address
+     * @param keyId The key ID
+     * @param token The token address
+     * @return Remaining spending amount
+     */
+    function getRemainingLimit(
+        address account,
+        address keyId,
+        address token
+    ) external view returns (uint256);
+
+    /**
+     * @notice Get the transaction key used in the current transaction
+     * @dev Returns Address::ZERO if the Root Key is being used
+     * @return The key ID that signed the transaction
+     */
+    function getTransactionKey() external view returns (address);
+}
+```
+
+## Behavior
+
+### Key Authorization
+
+- Creates a new key entry with the specified `signatureType`, `expiry`, `enforceLimits`, and `isRevoked` set to `false`
+- If `enforceLimits` is `true`, initializes spending limits for each specified token
+- Emits `KeyAuthorized` event
+
+**Requirements:**
+- MUST be called by Root Key only (verified by checking `transactionKey[msg.sender] == 0`)
+- `keyId` MUST NOT be `address(0)` (reverts with `ZeroPublicKey`)
+- `keyId` MUST NOT already be authorized with `expiry > 0` (reverts with `KeyAlreadyExists`)
+- `keyId` MUST NOT have been previously revoked (reverts with `KeyAlreadyRevoked` - prevents replay attacks)
+- `signatureType` MUST be `0` (Secp256k1), `1` (P256), or `2` (WebAuthn) (reverts with `InvalidSignatureType`)
+- `expiry` CAN be any value (0 means never expires, stored as-is)
+- `enforceLimits` determines whether spending limits are enforced for this key
+- `limits` are only processed if `enforceLimits` is `true`
+
+### Key Revocation
+
+- Marks the key as revoked by setting `isRevoked` to `true` and `expiry` to `0`
+- Once revoked, a `keyId` can NEVER be re-authorized for this account (prevents replay attacks)
+- Key can no longer be used for transactions
+- Emits `KeyRevoked` event
+
+**Requirements:**
+- MUST be called by Root Key only (verified by checking `transactionKey[msg.sender] == 0`)
+- `keyId` MUST exist (key with `expiry > 0`) (reverts with `KeyNotFound` if not found)
+
+### Spending Limit Update
+
+- Updates the spending limit for a specific token on an authorized key
+- Allows Root Key to modify limits without revoking and re-authorizing the key
+- If the key had unlimited spending (`enforceLimits == false`), enables limits
+- Sets the new remaining limit to `newLimit`
+- Emits `SpendingLimitUpdated` event
+
+**Requirements:**
+- MUST be called by Root Key only (verified by checking `transactionKey[msg.sender] == 0`)
+- `keyId` MUST exist and not be revoked (reverts with `KeyNotFound` or `KeyAlreadyRevoked`)
+- `keyId` MUST not be expired (reverts with `KeyExpired`)
+
+## Security Considerations
+
+### Access Key Storage
+
+Access Keys should be securely stored to prevent unauthorized access:
+
+- **Device and Application Scoping**: Access Keys SHOULD be scoped to a specific client device AND application combination. Access Keys SHOULD NOT be shared between devices or applications, even if they belong to the same user.
+- **Non-Extractable Keys**: Access Keys SHOULD be generated and stored in a non-extractable format to prevent theft. For example, use WebCrypto API with `extractable: false` when generating Keys in web browsers.
+- **Secure Storage**: Private Keys MUST never be stored in plaintext. Private Keys SHOULD be encrypted and stored in a secure manner. For web applications, use browser-native secure storage mechanisms like IndexedDB with non-extractable WebCrypto keys rather than storing raw key material.
+
+### Privilege Escalation Prevention
+
+Access Keys cannot escalate their own privileges because:
+1. Management functions (`authorizeKey`, `revokeKey`, `updateSpendingLimit`) are restricted to Root Key transactions
+2. The protocol sets `transactionKey[account]` during transaction validation to indicate which key signed the transaction
+3. These management functions check that `transactionKey[msg.sender] == 0` (Root Key) before executing
+4. Access Keys cannot bypass this check - transactions will revert with `UnauthorizedCaller`
+
+### Spending Limit Enforcement
+
+- Spending limits are only enforced if `enforceLimits == true` for the key
+- Keys with `enforceLimits == false` have unlimited spending (no limits checked)
+- Spending limits are enforced by the protocol internally calling `verify_and_update_spending()` during execution
+- Limits are per-TIP20 token and deplete as TIP20 tokens are spent
+- Spending limits only track TIP20 token transfers (via `transfer` and `transferFrom`) and approvals
+- For approvals: only increases in approval amount count against the spending limit
+- Non-TIP20 asset movements (ETH, NFTs) are not subject to spending limits
+- Root keys (`keyId == address(0)`) have no spending limits - the function returns immediately
+- Failed limit checks revert the entire transaction with `SpendingLimitExceeded`
+
+### Key Expiry
+
+- Keys with `expiry > 0` are checked against the current timestamp during validation
+- Expired keys cause transaction rejection with `KeyExpired` error (checked via `validate_keychain_authorization()`)
+- `expiry == 0` means the key never expires
+- Expiry is checked as: `current_timestamp >= expiry` (key is expired when current time reaches or exceeds expiry)
+
+## Usage Patterns
+
+### First-Time Access Key Authorization
+
+1. User signs Passkey prompt → signs over `key_authorization` for a new Access Key (e.g., WebCrypto P256 key)
+2. User's Access Key signs the transaction
+3. Transaction includes the `key_authorization` AND the Access Key `signature`
+4. Protocol validates Passkey signature on `key_authorization`, sets `transactionKey[account] = 0`, calls `AccountKeychain.authorizeKey()`, then validates Access Key signature
+5. Transaction executes with Access Key's spending limits enforced via internal `verify_and_update_spending()`
+
+### Subsequent Access Key Usage
+
+1. User's Access Key signs the transaction (no `key_authorization` needed)
+2. Protocol validates the Access Key via `validate_keychain_authorization()`, sets `transactionKey[account] = keyId`
+3. Transaction executes with spending limit enforcement via internal `verify_and_update_spending()`
+
+### Root Key Revoking an Access Key
+
+1. User signs Passkey prompt → signs transaction calling `revokeKey(keyId)`
+2. Transaction executes, marking the Access Key as inactive
+3. Future transactions signed by that Access Key will be rejected

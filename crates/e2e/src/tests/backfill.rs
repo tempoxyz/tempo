@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use commonware_macros::test_traced;
-use commonware_p2p::simulated::Link;
 use commonware_runtime::{
     Clock, Runner as _,
     deterministic::{self, Context, Runner},
@@ -10,7 +9,7 @@ use futures::future::join_all;
 use reth_ethereum::storage::BlockNumReader;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 
-use crate::{ExecutionRuntime, Setup, get_pipeline_runs, link_validators, setup_validators};
+use crate::{Setup, get_pipeline_runs, link_validators_by_nodes, setup_validators};
 
 async fn run_validator_late_join_test(
     context: &Context,
@@ -18,30 +17,16 @@ async fn run_validator_late_join_test(
     blocks_after_join: u64,
     should_pipeline_sync: bool,
 ) {
-    let how_many_signers = 5;
+    let setup = Setup::new()
+        .epoch_length(100)
+        .connect_execution_layer_nodes(should_pipeline_sync);
+    let linkage = setup.linkage.clone();
 
-    let linkage = Link {
-        latency: Duration::from_millis(10),
-        jitter: Duration::from_millis(1),
-        success_rate: 1.0,
-    };
-    let setup = Setup {
-        how_many_signers,
-        seed: 0,
-        linkage: linkage.clone(),
-        epoch_length: 100,
-        connect_execution_layer_nodes: should_pipeline_sync,
-    };
-
-    let execution_runtime = ExecutionRuntime::new();
-    let (mut nodes, mut oracle) =
-        setup_validators(context.clone(), &execution_runtime, setup).await;
+    let (mut nodes, _execution_runtime) = setup_validators(context.clone(), setup.clone()).await;
 
     // Start all nodes except the last one
     let mut last = nodes.pop().unwrap();
     join_all(nodes.iter_mut().map(|node| node.start())).await;
-
-    link_validators(&mut oracle, &nodes, linkage.clone(), None).await;
 
     // Wait for chain to advance before starting the last node
     while nodes[0].execution_provider().last_block_number().unwrap() < blocks_before_join {
@@ -55,14 +40,15 @@ async fn run_validator_late_join_test(
     assert_eq!(last.execution_provider().last_block_number().unwrap(), 0);
 
     nodes.push(last);
-    link_validators(&mut oracle, &nodes, linkage.clone(), None).await;
+    // Link the late-joining node to the others
+    let mut oracle = nodes[0].oracle().clone();
+    link_validators_by_nodes(&mut oracle, &nodes, linkage.clone(), None).await;
 
     let last = nodes.last().unwrap();
     // Assert that last node is able to catch up and progress
     while last.execution_provider().last_block_number().unwrap() < blocks_after_join {
         context.sleep(Duration::from_millis(100)).await;
     }
-
     // Verify backfill behavior
     let actual_runs = get_pipeline_runs(metrics_recorder);
     if should_pipeline_sync {

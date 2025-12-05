@@ -2,7 +2,7 @@
 
 use alloy_evm::error::InvalidTxError;
 use alloy_primitives::{Address, U256};
-use revm::context::result::{EVMError, InvalidTransaction};
+use revm::context::result::{EVMError, HaltReason, InvalidTransaction};
 
 /// Tempo-specific invalid transaction errors.
 ///
@@ -22,28 +22,6 @@ pub enum TempoInvalidTransaction {
     #[error("system transaction execution failed")]
     SystemTransactionFailed,
 
-    /// Insufficient liquidity in the FeeAMM pool to perform fee token swap.
-    ///
-    /// This indicates the user's fee token cannot be swapped for the native token
-    /// because there's insufficient liquidity in the AMM pool.
-    #[error("insufficient liquidity in FeeAMM pool to swap fee tokens (required: {fee})")]
-    InsufficientAmmLiquidity {
-        /// The required fee amount that couldn't be swapped.
-        fee: Box<U256>,
-    },
-
-    /// Insufficient fee token balance to pay for transaction fees.
-    ///
-    /// This is distinct from the Ethereum `LackOfFundForMaxFee` error because
-    /// it applies to custom fee tokens, not native balance.
-    #[error("insufficient fee token balance: required {fee}, but only have {balance}")]
-    InsufficientFeeTokenBalance {
-        /// The required fee amount.
-        fee: Box<U256>,
-        /// The actual balance available.
-        balance: Box<U256>,
-    },
-
     /// Fee payer signature recovery failed.
     ///
     /// This error occurs when a transaction specifies a fee payer but the
@@ -51,17 +29,10 @@ pub enum TempoInvalidTransaction {
     #[error("fee payer signature recovery failed")]
     InvalidFeePayerSignature,
 
-    /// Fee collection pre tx execution error
-    ///
-    /// This error occurs if there is an issue while collecting fees
-    /// pre tx execution
-    #[error("fee collection error: {0:?}")]
-    CollectFeePreTxError(String),
-
-    // Account Abstraction (AA) transaction errors
+    // Tempo transaction errors
     /// Transaction cannot be included before validAfter timestamp.
     ///
-    /// AA transactions can specify a validAfter field to restrict when they can be included.
+    /// Tempo transactions can specify a validAfter field to restrict when they can be included.
     #[error(
         "transaction not valid yet: current block timestamp {current} < validAfter {valid_after}"
     )]
@@ -74,7 +45,7 @@ pub enum TempoInvalidTransaction {
 
     /// Transaction cannot be included after validBefore timestamp.
     ///
-    /// AA transactions can specify a validBefore field to restrict when they can be included.
+    /// Tempo transactions can specify a validBefore field to restrict when they can be included.
     #[error("transaction expired: current block timestamp {current} >= validBefore {valid_before}")]
     ValidBefore {
         /// The current block timestamp.
@@ -100,7 +71,7 @@ pub enum TempoInvalidTransaction {
 
     /// Insufficient gas for intrinsic cost.
     ///
-    /// AA transactions have variable intrinsic gas costs based on signature type and nonce usage.
+    /// Tempo transactions have variable intrinsic gas costs based on signature type and nonce usage.
     /// This error occurs when the gas_limit is less than the calculated intrinsic gas.
     #[error(
         "insufficient gas for intrinsic cost: gas_limit {gas_limit} < intrinsic_gas {intrinsic_gas}"
@@ -128,9 +99,40 @@ pub enum TempoInvalidTransaction {
     #[error("value transfer not allowed")]
     ValueTransferNotAllowed,
 
-    /// Value transfer in AA transaction not allowed.
-    #[error("value transfer in AA transaction not allowed")]
+    /// Value transfer in Tempo Transaction not allowed.
+    #[error("value transfer in Tempo Transaction not allowed")]
     ValueTransferNotAllowedInAATx,
+
+    /// Access key authorization failed.
+    ///
+    /// This error occurs when attempting to authorize an access key with the AccountKeychain
+    /// precompile fails (e.g., key already exists, invalid parameters, unauthorized caller).
+    #[error("access key authorization failed: {reason}")]
+    AccessKeyAuthorizationFailed {
+        /// Specific reason for failure.
+        reason: String,
+    },
+
+    /// Keychain operations are only supported after Allegretto.
+    #[error("keychain operations are only supported after Allegretto")]
+    KeychainOpBeforeAllegretto,
+
+    /// KeyAuthorization chain_id does not match the current chain.
+    #[error("KeyAuthorization chain_id mismatch: expected {expected}, got {got}")]
+    KeyAuthorizationChainIdMismatch {
+        /// The expected chain ID (current chain).
+        expected: u64,
+        /// The chain ID from the KeyAuthorization.
+        got: u64,
+    },
+
+    /// Keychain operations are not supported in subblock transactions.
+    #[error("keychain operations are not supported in subblock transactions")]
+    KeychainOpInSubblockTransaction,
+
+    /// Fee payment error.
+    #[error(transparent)]
+    CollectFeePreTx(#[from] FeePaymentError),
 }
 
 impl InvalidTxError for TempoInvalidTransaction {
@@ -155,6 +157,67 @@ impl<DBError> From<TempoInvalidTransaction> for EVMError<DBError, TempoInvalidTr
     }
 }
 
+/// Error type for fee payment errors.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum FeePaymentError {
+    /// Insufficient liquidity in the FeeAMM pool to perform fee token swap.
+    ///
+    /// This indicates the user's fee token cannot be swapped for the native token
+    /// because there's insufficient liquidity in the AMM pool.
+    #[error("insufficient liquidity in FeeAMM pool to swap fee tokens (required: {fee})")]
+    InsufficientAmmLiquidity {
+        /// The required fee amount that couldn't be swapped.
+        fee: U256,
+    },
+
+    /// Insufficient fee token balance to pay for transaction fees.
+    ///
+    /// This is distinct from the Ethereum `LackOfFundForMaxFee` error because
+    /// it applies to custom fee tokens, not native balance.
+    #[error("insufficient fee token balance: required {fee}, but only have {balance}")]
+    InsufficientFeeTokenBalance {
+        /// The required fee amount.
+        fee: U256,
+        /// The actual balance available.
+        balance: U256,
+    },
+
+    /// Other error.
+    #[error("{0}")]
+    Other(String),
+}
+
+impl<DBError> From<FeePaymentError> for EVMError<DBError, TempoInvalidTransaction> {
+    fn from(err: FeePaymentError) -> Self {
+        TempoInvalidTransaction::from(err).into()
+    }
+}
+
+/// Tempo-specific halt reason.
+///
+/// Used to extend basic [`HaltReason`] with an edge case of a subblock transaction fee payment error.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::From)]
+pub enum TempoHaltReason {
+    /// Basic Ethereum halt reason.
+    #[from]
+    Ethereum(HaltReason),
+    /// Subblock transaction failed to pay fees.
+    SubblockTxFeePayment,
+}
+
+#[cfg(feature = "rpc")]
+impl reth_rpc_eth_types::error::api::FromEvmHalt<TempoHaltReason>
+    for reth_rpc_eth_types::EthApiError
+{
+    fn from_evm_halt(halt_reason: TempoHaltReason, gas_limit: u64) -> Self {
+        match halt_reason {
+            TempoHaltReason::Ethereum(halt_reason) => Self::from_evm_halt(halt_reason, gas_limit),
+            TempoHaltReason::SubblockTxFeePayment => {
+                Self::EvmCustom("subblock transaction failed to pay fees".to_string())
+            }
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,17 +230,17 @@ mod tests {
             "system transaction must be a call, not a create"
         );
 
-        let err = TempoInvalidTransaction::InsufficientAmmLiquidity {
-            fee: Box::new(U256::from(1000)),
+        let err = FeePaymentError::InsufficientAmmLiquidity {
+            fee: U256::from(1000),
         };
         assert!(
             err.to_string()
                 .contains("insufficient liquidity in FeeAMM pool")
         );
 
-        let err = TempoInvalidTransaction::InsufficientFeeTokenBalance {
-            fee: Box::new(U256::from(1000)),
-            balance: Box::new(U256::from(500)),
+        let err = FeePaymentError::InsufficientFeeTokenBalance {
+            fee: U256::from(1000),
+            balance: U256::from(500),
         };
         assert!(err.to_string().contains("insufficient fee token balance"));
     }

@@ -20,6 +20,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
   RUSTC_WRAPPER: "sccache"
 
 jobs:

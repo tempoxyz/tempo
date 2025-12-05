@@ -1,12 +1,22 @@
 //! The environment to launch tempo execution nodes in.
 use std::{
+    net::SocketAddr,
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
     time::Duration,
 };
 
-use alloy_primitives::B256;
+use alloy::{
+    providers::ProviderBuilder,
+    rpc::types::TransactionReceipt,
+    signers::{local::MnemonicBuilder, utils::secret_key_to_address},
+    transports::http::reqwest::Url,
+};
+use alloy_genesis::Genesis;
+use alloy_primitives::{Address, B256};
+use commonware_codec::Encode;
+use commonware_cryptography::ed25519::PublicKey;
 use eyre::WrapErr as _;
 use futures::StreamExt;
 use reth_db::mdbx::DatabaseEnv;
@@ -31,7 +41,15 @@ use secp256k1::SecretKey;
 use std::net::TcpListener;
 use tempfile::TempDir;
 use tempo_chainspec::TempoChainSpec;
+use tempo_commonware_node_config::PublicPolynomial;
 use tempo_node::{TempoFullNode, node::TempoNode};
+use tempo_precompiles::{VALIDATOR_CONFIG_ADDRESS, validator_config::IValidatorConfig};
+
+const ADMIN_INDEX: u32 = 0;
+const VALIDATOR_START_INDEX: u32 = 1;
+
+/// Same mnemonic as used in the imported test-genesis and in the `tempo-node` integration tests.
+pub const TEST_MNEMONIC: &str = "test test test test test test test test test test test junk";
 
 /// Configuration for launching an execution node.
 #[derive(Clone, Debug)]
@@ -140,8 +158,13 @@ pub struct ExecutionRuntime {
 }
 
 impl ExecutionRuntime {
-    /// Constructs a new execution runtime to launch execution nodes.
+    /// Constructs a new execution runtime to launch execution nodes using the default chainspec.
     pub fn new() -> Self {
+        Self::with_chain_spec(chainspec())
+    }
+
+    /// Constructs a new execution runtime to launch execution nodes.
+    pub fn with_chain_spec(chain_spec: TempoChainSpec) -> Self {
         let tempdir = tempfile::Builder::new()
             // TODO(janis): cargo manifest prefix?
             .prefix("tempo_e2e_test")
@@ -151,14 +174,68 @@ impl ExecutionRuntime {
         let (to_runtime, mut from_handle) = tokio::sync::mpsc::unbounded_channel();
 
         let datadir = tempdir.path().to_path_buf();
-        let rt = std::thread::spawn(|| {
+        let rt = std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new()
                 .expect("must be able to initialize a runtime to run execution/reth nodes");
+            let wallet = MnemonicBuilder::from_phrase(crate::execution_runtime::TEST_MNEMONIC)
+                .build()
+                .unwrap();
             rt.block_on(async move {
                 while let Some(msg) = from_handle.recv().await {
                     // create a new task manager for the new node instance
                     let task_manager = TaskManager::current();
                     match msg {
+                        Message::AddValidator(add_validator) => {
+                            let AddValidator {
+                                http_url,
+                                address,
+                                public_key,
+                                addr,
+                                response,
+                            } = *add_validator;
+                            let provider = ProviderBuilder::new()
+                                .wallet(wallet.clone())
+                                .connect_http(http_url);
+                            let validator_config =
+                                IValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, provider);
+                            let receipt = validator_config
+                                .addValidator(
+                                    address,
+                                    public_key.encode().as_ref().try_into().unwrap(),
+                                    true,
+                                    addr.to_string(),
+                                    addr.to_string(),
+                                )
+                                .send()
+                                .await
+                                .unwrap()
+                                .get_receipt()
+                                .await
+                                .unwrap();
+                            let _ = response.send(receipt);
+                        }
+                        Message::ChangeValidatorStatus(change_validator_status) => {
+                            let ChangeValidatorStatus {
+                                http_url,
+                                active,
+                                address,
+                                response,
+                            } = *change_validator_status;
+                            let provider = ProviderBuilder::new()
+                                .wallet(wallet.clone())
+                                .connect_http(http_url);
+                            let validator_config =
+                                IValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, provider);
+                            let receipt = validator_config
+                                .changeValidatorStatus(address, active)
+                                .send()
+                                .await
+                                .unwrap()
+                                .get_receipt()
+                                .await
+                                .unwrap();
+                            let _ = response.send(receipt);
+                        }
                         Message::SpawnNode {
                             name,
                             config,
@@ -167,6 +244,7 @@ impl ExecutionRuntime {
                         } => {
                             let node = launch_execution_node(
                                 task_manager,
+                                chain_spec.clone(),
                                 datadir.join(name),
                                 config,
                                 database,
@@ -200,6 +278,76 @@ impl ExecutionRuntime {
             to_runtime: self.to_runtime.clone(),
             nodes_dir: self._tempdir.path().to_path_buf(),
         }
+    }
+
+    pub async fn add_validator(
+        &self,
+        http_url: Url,
+        address: Address,
+        public_key: PublicKey,
+        addr: SocketAddr,
+    ) -> eyre::Result<TransactionReceipt> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.to_runtime
+            .send(
+                AddValidator {
+                    http_url,
+                    address,
+                    public_key,
+                    addr,
+                    response: tx,
+                }
+                .into(),
+            )
+            .wrap_err("the execution runtime went away")?;
+        rx.await
+            .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
+    pub async fn change_validator_status(
+        &self,
+        http_url: Url,
+        address: Address,
+        active: bool,
+    ) -> eyre::Result<TransactionReceipt> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.to_runtime
+            .send(
+                ChangeValidatorStatus {
+                    address,
+                    active,
+                    http_url,
+                    response: tx,
+                }
+                .into(),
+            )
+            .wrap_err("the execution runtime went away")?;
+        rx.await
+            .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
+    pub async fn remove_validator(
+        &self,
+        http_url: Url,
+        address: Address,
+        public_key: PublicKey,
+        addr: SocketAddr,
+    ) -> eyre::Result<TransactionReceipt> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.to_runtime
+            .send(
+                AddValidator {
+                    http_url,
+                    address,
+                    public_key,
+                    addr,
+                    response: tx,
+                }
+                .into(),
+            )
+            .wrap_err("the execution runtime went away")?;
+        rx.await
+            .wrap_err("the execution runtime dropped the response channel before sending a receipt")
     }
 
     /// Requests a new execution node and blocks until its returned.
@@ -373,16 +521,17 @@ impl ExecutionNode {
 /// Returns the chainspec used for e2e tests.
 ///
 /// TODO(janis): allow configuring this.
-pub(crate) fn chainspec() -> Arc<TempoChainSpec> {
-    Arc::new(TempoChainSpec::from_genesis(
-        serde_json::from_str(include_str!("../../node/tests/assets/test-genesis.json")).unwrap(),
-    ))
+pub fn chainspec() -> TempoChainSpec {
+    TempoChainSpec::from_genesis(genesis())
+}
+
+/// Returns the chainspec used for e2e tests as Arc.
+pub fn chainspec_arc() -> Arc<TempoChainSpec> {
+    Arc::new(chainspec())
 }
 
 /// Generate execution node name from public key.
-pub(crate) fn execution_node_name(
-    public_key: &commonware_cryptography::ed25519::PublicKey,
-) -> String {
+pub fn execution_node_name(public_key: &PublicKey) -> String {
     format!("{}-{}", crate::EXECUTION_NODE_PREFIX, public_key)
 }
 
@@ -396,6 +545,55 @@ impl std::fmt::Debug for ExecutionNode {
     }
 }
 
+pub fn genesis() -> Genesis {
+    serde_json::from_str(include_str!(
+        "../../node/tests/assets/test-genesis-moderato.json"
+    ))
+    .unwrap()
+}
+
+pub fn insert_allegretto(mut genesis: Genesis, timestamp: u64) -> Genesis {
+    genesis
+        .config
+        .extra_fields
+        .insert_value("allegrettoTime".to_string(), timestamp)
+        .unwrap();
+    genesis
+}
+
+pub fn insert_epoch_length(mut genesis: Genesis, epoch_length: u64) -> Genesis {
+    genesis
+        .config
+        .extra_fields
+        .insert_value("epochLength".to_string(), epoch_length)
+        .unwrap();
+    genesis
+}
+
+pub fn insert_validators(
+    mut genesis: Genesis,
+    validators: tempo_commonware_node_config::Peers,
+) -> Genesis {
+    genesis
+        .config
+        .extra_fields
+        .insert_value("validators".to_string(), validators)
+        .unwrap();
+    genesis
+}
+
+pub fn insert_public_polynomial(
+    mut genesis: Genesis,
+    public_polynomial: PublicPolynomial,
+) -> Genesis {
+    genesis
+        .config
+        .extra_fields
+        .insert_value("publicPolynomial".to_string(), public_polynomial)
+        .unwrap();
+    genesis
+}
+
 /// Launches a tempo execution node.
 ///
 /// Difference compared to starting the node through the binary:
@@ -406,11 +604,12 @@ impl std::fmt::Debug for ExecutionNode {
 /// 3. consensus config is not necessary
 pub async fn launch_execution_node<P: AsRef<Path>>(
     task_manager: TaskManager,
+    chain_spec: TempoChainSpec,
     datadir: P,
     config: ExecutionNodeConfig,
     database: Arc<DatabaseEnv>,
 ) -> eyre::Result<ExecutionNode> {
-    let node_config = NodeConfig::new(chainspec())
+    let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_rpc(
             RpcServerArgs::default()
                 .with_unused_ports()
@@ -454,6 +653,8 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
 
 #[derive(Debug)]
 enum Message {
+    AddValidator(Box<AddValidator>),
+    ChangeValidatorStatus(Box<ChangeValidatorStatus>),
     SpawnNode {
         name: String,
         config: ExecutionNodeConfig,
@@ -461,4 +662,47 @@ enum Message {
         response: tokio::sync::oneshot::Sender<ExecutionNode>,
     },
     Stop,
+}
+
+impl From<AddValidator> for Message {
+    fn from(value: AddValidator) -> Self {
+        Self::AddValidator(value.into())
+    }
+}
+
+impl From<ChangeValidatorStatus> for Message {
+    fn from(value: ChangeValidatorStatus) -> Self {
+        Self::ChangeValidatorStatus(value.into())
+    }
+}
+
+#[derive(Debug)]
+struct AddValidator {
+    /// URL of the node to send this to.
+    http_url: Url,
+    address: Address,
+    public_key: PublicKey,
+    addr: SocketAddr,
+    response: tokio::sync::oneshot::Sender<TransactionReceipt>,
+}
+
+#[derive(Debug)]
+struct ChangeValidatorStatus {
+    /// URL of the node to send this to.
+    http_url: Url,
+    address: Address,
+    active: bool,
+    response: tokio::sync::oneshot::Sender<TransactionReceipt>,
+}
+
+pub fn admin() -> Address {
+    address(ADMIN_INDEX)
+}
+
+pub fn validator(idx: u32) -> Address {
+    address(VALIDATOR_START_INDEX + idx)
+}
+
+pub fn address(index: u32) -> Address {
+    secret_key_to_address(MnemonicBuilder::from_phrase_nth(TEST_MNEMONIC, index).credential())
 }

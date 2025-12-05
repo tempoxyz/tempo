@@ -17,12 +17,16 @@ tempo-evm = { workspace = true, optional = true }
 tempo-revm = { workspace = true, optional = true }
 
 alloy-consensus.workspace = true
+alloy-contract.workspace = true
 alloy-eips.workspace = true
 alloy-network.workspace = true
-alloy-primitives.workspace = true
+alloy-primitives = { workspace = true, features = ["rand"] }
 alloy-provider.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-serde.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
+alloy-transport.workspace = true
 
 reth-evm = { workspace = true, optional = true }
 reth-primitives-traits = { workspace = true, optional = true }
@@ -33,7 +37,9 @@ derive_more.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+eyre.workspace = true
 test-case.workspace = true
+tokio.workspace = true
 
 [features]
 default = []

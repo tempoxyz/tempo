@@ -1,5 +1,5 @@
 use alloy_consensus::{BlockHeader, Header, Sealable};
-use alloy_primitives::{Address, B64, B256, BlockNumber, Bloom, Bytes, U256, keccak256};
+use alloy_primitives::{Address, B64, B256, BlockHash, BlockNumber, Bloom, Bytes, U256, keccak256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use reth_primitives_traits::InMemorySize;
 
@@ -162,6 +162,28 @@ impl Sealable for TempoHeader {
 
 impl reth_primitives_traits::BlockHeader for TempoHeader {}
 
+impl reth_primitives_traits::header::HeaderMut for TempoHeader {
+    fn set_parent_hash(&mut self, hash: BlockHash) {
+        self.inner.set_parent_hash(hash);
+    }
+
+    fn set_block_number(&mut self, number: BlockNumber) {
+        self.inner.set_block_number(number);
+    }
+
+    fn set_timestamp(&mut self, timestamp: u64) {
+        self.inner.set_timestamp(timestamp);
+    }
+
+    fn set_state_root(&mut self, state_root: B256) {
+        self.inner.set_state_root(state_root);
+    }
+
+    fn set_difficulty(&mut self, difficulty: U256) {
+        self.inner.set_difficulty(difficulty);
+    }
+}
+
 #[cfg(feature = "reth-codec")]
 impl reth_db_api::table::Compress for TempoHeader {
     type Compressed = Vec<u8>;
@@ -176,12 +198,5 @@ impl reth_db_api::table::Decompress for TempoHeader {
     fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
         let (obj, _) = reth_codecs::Compact::from_compact(value, value.len());
         Ok(obj)
-    }
-}
-
-#[cfg(feature = "cli")]
-impl reth_cli_commands::common::CliHeader for TempoHeader {
-    fn set_number(&mut self, number: u64) {
-        self.inner.set_number(number);
     }
 }

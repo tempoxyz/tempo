@@ -6,12 +6,11 @@ use tempo_chainspec::hardfork::TempoHardfork;
 pub use types::*;
 
 pub mod packing;
-
-// TODO(rusowsky): remove once precompiles don't rely it (directly) anymore
+pub use packing::FieldLocation;
 pub use types::mapping as slots;
 
 // Re-export extension traits for convenience
-pub use types::vec::{VecMappingExt, VecSlotExt};
+pub use types::vec::VecSlotExt;
 
 use alloy::primitives::{Address, LogData, U256};
 use revm::state::{AccountInfo, Bytecode};
@@ -47,8 +46,14 @@ pub trait PrecompileStorageProvider {
     /// Deducts gas from the remaining gas and return an error if the gas is insufficient.
     fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError>;
 
+    /// Add refund to the refund gas counter.
+    fn refund_gas(&mut self, gas: i64);
+
     /// Returns the gas used so far.
     fn gas_used(&self) -> u64;
+
+    /// Returns the gas refunded so far.
+    fn gas_refunded(&self) -> i64;
 
     /// Currently active hardfork.
     fn spec(&self) -> TempoHardfork;

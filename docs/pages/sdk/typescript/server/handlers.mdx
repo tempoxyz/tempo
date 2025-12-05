@@ -1,0 +1,62 @@
+import LucideBadgeDollarSign from '~icons/lucide/badge-dollar-sign'
+import LucideKeyRound from '~icons/lucide/key-round'
+import LucideBlocks from '~icons/lucide/blocks'
+import * as Card from "../../../../components/Card.tsx"
+
+# Overview
+
+Server handlers are framework-agnostic handlers that run on your backend to manage protocol operations that require server-side logic. 
+
+Handlers are compatible with any server framework that supports the:
+- [Fetch API](https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API), and is exposed via the `Handler#fetch` function
+- [Node.js `RequestListener` API](https://nodejs.org/api/http.html#http_class_http_serverrequestlistener), and is exposed via the `Handler#listener` function
+
+```ts
+import { Handler } from 'tempo.ts/server'
+import { account, client } from './config'
+
+const handler = Handler.feePayer({
+  account,
+  client,
+  feeToken: '0x20c0…0001'
+  path: '/fee-payer',
+})
+
+createServer(handler.listener) // Node.js
+
+Bun.serve(handler) // Bun
+
+Deno.serve(handler) // Deno
+
+app.all('*', c => handler.fetch(c.request)) // Elysia
+
+app.use(handler.listener) // Express
+
+app.use(c => handler.fetch(c.req.raw)) // Hono
+
+export const GET = handler.fetch // Next.js
+export const POST = handler.fetch // Next.js
+```
+
+## Handlers
+
+<Card.Container>
+  <Card.Link
+    description="Server handler to handle transactions that require a fee payer"
+    href="/sdk/typescript/server/handler.feePayer"
+    icon={LucideBadgeDollarSign}
+    title="feePayer"
+  />
+  <Card.Link
+    description="Server handler to manage public key registrations"
+    href="/sdk/typescript/server/handler.keyManager"
+    icon={LucideKeyRound}
+    title="keyManager"
+  />
+  <Card.Link
+    description="Compose multiple handlers into a single handler"
+    href="/sdk/typescript/server/handler.compose"
+    icon={LucideBlocks}
+    title="compose"
+  />
+</Card.Container>

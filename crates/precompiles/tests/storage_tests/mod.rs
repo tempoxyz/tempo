@@ -1,7 +1,7 @@
 //! Shared test utilities for storage testing.
 
 use crate::storage::{
-    ContractStorage, PrecompileStorageProvider, Storable, StorableType,
+    ContractStorage, LayoutCtx, PrecompileStorageProvider, Storable, StorableType,
     hashmap::HashMapStorageProvider, packing::extract_field,
 };
 use alloy::primitives::{Address, U256, keccak256};
@@ -77,8 +77,8 @@ where
     T: Storable<N> + PartialEq + std::fmt::Debug,
     S: ContractStorage,
 {
-    original.store(storage, base_slot)?;
-    let loaded = T::load(storage, base_slot)?;
+    original.store(storage, base_slot, LayoutCtx::FULL)?;
+    let loaded = T::load(storage, base_slot, LayoutCtx::FULL)?;
     assert_eq!(&loaded, original, "Store/load roundtrip failed");
     Ok(())
 }
@@ -94,12 +94,12 @@ where
     T: Storable<N> + PartialEq + std::fmt::Debug,
     S: ContractStorage,
 {
-    initial.store(storage, base_slot)?;
-    let loaded1 = T::load(storage, base_slot)?;
+    initial.store(storage, base_slot, LayoutCtx::FULL)?;
+    let loaded1 = T::load(storage, base_slot, LayoutCtx::FULL)?;
     assert_eq!(&loaded1, initial, "Initial store/load failed");
 
-    updated.store(storage, base_slot)?;
-    let loaded2 = T::load(storage, base_slot)?;
+    updated.store(storage, base_slot, LayoutCtx::FULL)?;
+    let loaded2 = T::load(storage, base_slot, LayoutCtx::FULL)?;
     assert_eq!(&loaded2, updated, "Update failed");
     Ok(())
 }
@@ -114,12 +114,12 @@ where
     T: Storable<N> + PartialEq + std::fmt::Debug + Default,
     S: ContractStorage,
 {
-    data.store(storage, base_slot)?;
-    let loaded = T::load(storage, base_slot)?;
+    data.store(storage, base_slot, LayoutCtx::FULL)?;
+    let loaded = T::load(storage, base_slot, LayoutCtx::FULL)?;
     assert_eq!(&loaded, data, "Initial store/load failed");
 
-    T::delete(storage, base_slot)?;
-    let after_delete = T::load(storage, base_slot)?;
+    T::delete(storage, base_slot, LayoutCtx::FULL)?;
+    let after_delete = T::load(storage, base_slot, LayoutCtx::FULL)?;
     let expected_zero = T::default();
     assert_eq!(&after_delete, &expected_zero, "Delete did not zero values");
     Ok(())

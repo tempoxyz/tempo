@@ -1,6 +1,7 @@
-use crate::utils::{setup_test_node, setup_test_token};
+use crate::utils::{TestNodeBuilder, setup_test_token, setup_test_token_pre_allegretto};
 use alloy::{
     consensus::SignableTransaction,
+    network::ReceiptResponse,
     providers::{Provider, ProviderBuilder, WalletProvider},
     signers::{
         SignerSync,
@@ -10,34 +11,35 @@ use alloy::{
 use alloy_eips::{BlockId, Encodable2718};
 use alloy_network::{AnyReceiptEnvelope, EthereumWallet, TxSignerSync};
 use alloy_primitives::{Address, Signature, U256};
-use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
-use std::env;
+use alloy_rpc_types_eth::TransactionRequest;
+use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
     IFeeManager, ITIP20,
     ITIPFeeAMM::{self},
 };
-use tempo_precompiles::{DEFAULT_FEE_TOKEN, LINKING_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
+use tempo_precompiles::{
+    DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    tip20::token_id_to_address,
+};
 use tempo_primitives::{TxFeeToken, transaction::calc_gas_balance_spending};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_set_user_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(
-            include_str!("../assets/test-genesis-moderato.json").to_string(),
-        )
-    };
-    let (http_url, _local_node) = setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegro_moderato_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let user_address = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
-    let user_token = setup_test_token(provider.clone(), user_address).await?;
-    let validator_token = ITIP20::new(LINKING_USD_ADDRESS, &provider);
+    // Use pre-allegretto token creation since test uses moderato genesis
+    let user_token = setup_test_token_pre_allegretto(provider.clone(), user_address).await?;
+    let validator_token = ITIP20::new(PATH_USD_ADDRESS, &provider);
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     user_token
@@ -50,7 +52,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
     // Initial token should be predeployed token
     assert_eq!(
         fee_manager.userTokens(user_address).call().await?,
-        DEFAULT_FEE_TOKEN
+        token_id_to_address(1)
     );
 
     let validator = provider
@@ -118,6 +120,18 @@ async fn test_set_user_token() -> eyre::Result<()> {
 
     assert!(validator_balance_after > validator_balance_before);
 
+    // Ensure that the user can set the fee token back to pathUSD post allegro moderato
+    let set_receipt = fee_manager
+        .setUserToken(PATH_USD_ADDRESS)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(set_receipt.status());
+
+    let current_token = fee_manager.userTokens(user_address).call().await?;
+    assert_eq!(current_token, PATH_USD_ADDRESS);
+
     Ok(())
 }
 
@@ -125,12 +139,11 @@ async fn test_set_user_token() -> eyre::Result<()> {
 async fn test_set_validator_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let validator_address = wallet.address();
@@ -143,8 +156,8 @@ async fn test_set_validator_token() -> eyre::Result<()> {
         .validatorTokens(validator_address)
         .call()
         .await?;
-    // Initial token should be predeployed token
-    assert_eq!(initial_token, DEFAULT_FEE_TOKEN);
+    // Initial token should be PathUSD (token_id 0)
+    assert_eq!(initial_token, token_id_to_address(0));
 
     let set_receipt = fee_manager
         .setValidatorToken(*validator_token.address())
@@ -167,12 +180,11 @@ async fn test_set_validator_token() -> eyre::Result<()> {
 async fn test_fee_token_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let signers = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
         .into_iter()
@@ -227,13 +239,12 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
         );
     }
 
-    // Mint liquidity
+    // Mint liquidity (use mintWithValidatorToken as mint is disabled post-Moderato)
     assert!(
         fee_amm
-            .mint(
+            .mintWithValidatorToken(
                 *user_token.address(),
-                LINKING_USD_ADDRESS,
-                U256::from(1e18),
+                PATH_USD_ADDRESS,
                 U256::from(1e18),
                 signers[1].address(),
             )
@@ -260,12 +271,11 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
 async fn test_fee_payer_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let fee_payer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let user = PrivateKeySigner::random();
@@ -303,14 +313,14 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
     let tx = tx.into_signed(signature);
 
     assert!(
-        ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
             .balanceOf(user.address())
             .call()
             .await?
             .is_zero()
     );
 
-    let balance_before = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+    let balance_before = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, provider.clone())
         .balanceOf(fee_payer.address())
         .call()
         .await?;
@@ -322,20 +332,19 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
         .await?;
 
     let receipt = provider
-        .client()
-        .request::<_, AnyReceiptEnvelope>("eth_getTransactionReceipt", (tx_hash,))
+        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
         .await?;
 
     assert!(receipt.status());
 
-    let balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+    let balance_after = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
         .balanceOf(fee_payer.address())
         .call()
         .await?;
 
     assert_eq!(
         balance_after,
-        balance_before - calc_gas_balance_spending(tx.gas_limit(), fees.max_fee_per_gas)
+        balance_before - calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price())
     );
 
     Ok(())

@@ -2,31 +2,26 @@ use alloy::{
     primitives::U256, providers::ProviderBuilder, signers::local::MnemonicBuilder,
     sol_types::SolError,
 };
-use rand::Rng;
-use std::env;
 use tempo_contracts::precompiles::{
     IStablecoinExchange,
     ITIP20::{self, ITIP20Instance},
 };
 use tempo_precompiles::{
-    STABLECOIN_EXCHANGE_ADDRESS,
-    stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK},
-    tip20::token_id_to_address,
+    STABLECOIN_EXCHANGE_ADDRESS, stablecoin_exchange::MIN_ORDER_AMOUNT, tip20::token_id_to_address,
 };
 
-use crate::utils::{await_receipts, setup_test_token};
+use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_bids() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
@@ -65,10 +60,8 @@ async fn test_bids() -> eyre::Result<()> {
     }
     await_receipts(&mut pending).await?;
 
-    // Create pair
+    // Post-Allegretto: pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
-    let tx = exchange.createPair(*base.address()).send().await?;
-    tx.get_receipt().await?;
 
     let order_amount = 1000000000;
 
@@ -91,7 +84,7 @@ async fn test_bids() -> eyre::Result<()> {
     let num_orders = account_data.len() as u128;
     // Place bid orders for each account
     let mut pending_orders = vec![];
-    let tick = 1;
+    let tick = 10;
     for (_, signer) in &account_data {
         let account_provider = ProviderBuilder::new()
             .wallet(signer.clone())
@@ -179,12 +172,11 @@ async fn test_asks() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
@@ -217,10 +209,8 @@ async fn test_asks() -> eyre::Result<()> {
     }
     await_receipts(&mut pending).await?;
 
-    // Create pair
+    // Post-Allegretto: pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
-    let tx = exchange.createPair(*base.address()).send().await?;
-    tx.get_receipt().await?;
 
     let order_amount = 1000000000;
 
@@ -241,7 +231,7 @@ async fn test_asks() -> eyre::Result<()> {
     let num_orders = account_data.len() as u128;
     // Place ask orders for each account
     let mut pending_orders = vec![];
-    let tick = 1;
+    let tick = 10;
     for (_, signer) in &account_data {
         let account_provider = ProviderBuilder::new()
             .wallet(signer.clone())
@@ -345,12 +335,11 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
@@ -382,10 +371,8 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     }
     await_receipts(&mut pending).await?;
 
-    // Create pair
+    // Post-Allegretto: pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
-    let tx = exchange.createPair(*base.address()).send().await?;
-    tx.get_receipt().await?;
 
     let order_amount = 1000000000;
 
@@ -405,12 +392,10 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     await_receipts(&mut pending).await?;
 
     let mut order_ids = vec![];
-    let mut rng = rand::rng();
-
     // Place bid orders for each account
     let mut pending = vec![];
     for (account, signer) in &account_data {
-        let tick = rng.random_range(MIN_TICK..=MAX_TICK);
+        let tick = 20;
         let account_provider = ProviderBuilder::new()
             .wallet(signer.clone())
             .connect_http(http_url.clone());
@@ -454,12 +439,11 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
@@ -467,7 +451,7 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
         .wallet(wallet)
         .connect_http(http_url.clone());
 
-    // Setup tokens: LinkingUSD (token_id=0) <- USDC (token_id=2) and LinkingUSD <- EURC (token_id=3)
+    // Setup tokens: PathUSD (token_id=0) <- USDC (token_id=2) and PathUSD <- EURC (token_id=3)
     let linking_usd = ITIP20Instance::new(token_id_to_address(0), provider.clone());
     let usdc = setup_test_token(provider.clone(), caller).await?; // This will be token_id=2
     let eurc = setup_test_token(provider.clone(), caller).await?; // This will be token_id=3
@@ -499,13 +483,6 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
     pending.push(usdc.mint(bob, mint_amount).send().await?);
 
     await_receipts(&mut pending).await?;
-
-    // Create pairs on the exchange
-    let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
-    let tx = exchange.createPair(*usdc.address()).send().await?;
-    tx.get_receipt().await?;
-    let tx = exchange.createPair(*eurc.address()).send().await?;
-    tx.get_receipt().await?;
 
     // Alice approves exchange to spend her tokens
     let alice_provider = ProviderBuilder::new()
@@ -540,14 +517,14 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
     let alice_exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, alice_provider);
     let liquidity_amount = 5_000_000_000u128;
 
-    // For USDC -> LinkingUSD: need bid on USDC (buying USDC with LinkingUSD)
+    // For USDC -> PathUSD: need bid on USDC (buying USDC with PathUSD)
     let tx = alice_exchange
         .place(*usdc.address(), liquidity_amount, true, 0)
         .send()
         .await?;
     tx.get_receipt().await?;
 
-    // For LinkingUSD -> EURC: need ask on EURC (selling EURC for LinkingUSD)
+    // For PathUSD -> EURC: need ask on EURC (selling EURC for PathUSD)
     let tx = alice_exchange
         .place(*eurc.address(), liquidity_amount, false, 0)
         .send()
@@ -577,7 +554,7 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
         .call()
         .await?;
 
-    // Execute multi-hop swap: USDC -> LinkingUSD -> EURC
+    // Execute multi-hop swap: USDC -> PathUSD -> EURC
     let amount_in = 1_000_000_000u128;
     let amount_out = bob_exchange
         .quoteSwapExactAmountIn(*usdc.address(), *eurc.address(), amount_in)
@@ -616,22 +593,22 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
     // Verify Bob's linking USD balance has not changed
     assert_eq!(
         bob_linking_usd_wallet_before, bob_linking_usd_wallet_after,
-        "Bob's LinkingUSD wallet balance should not change (transitory)"
+        "Bob's PathUSD wallet balance should not change (transitory)"
     );
 
     assert_eq!(
         bob_linking_usd_wallet_before - bob_linking_usd_wallet_after,
         U256::ZERO,
-        "Bob should have ZERO LinkingUSD in wallet (transitory)"
+        "Bob should have ZERO PathUSD in wallet (transitory)"
     );
 
     assert_eq!(
         bob_linking_usd_exchange_before, bob_linking_usd_exchange_after,
-        "Bob's LinkingUSD exchange balance should not change (transitory)"
+        "Bob's PathUSD exchange balance should not change (transitory)"
     );
     assert_eq!(
         bob_linking_usd_exchange_after, 0,
-        "Bob should have ZERO LinkingUSD on exchange (transitory)"
+        "Bob should have ZERO PathUSD on exchange (transitory)"
     );
 
     Ok(())
@@ -642,12 +619,11 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
@@ -658,10 +634,8 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
     let base = setup_test_token(provider.clone(), caller).await?;
     let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
 
-    // Create pair
+    // Post-Allegretto: pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
-    let tx = exchange.createPair(*base.address()).send().await?;
-    tx.get_receipt().await?;
 
     // Mint and approve tokens
     let mint_amount = U256::from(1000000000u128);
@@ -740,12 +714,11 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node
-    let source = if let Ok(rpc_url) = env::var("RPC_URL") {
-        crate::utils::NodeSource::ExternalRpc(rpc_url.parse()?)
-    } else {
-        crate::utils::NodeSource::LocalNode(include_str!("../assets/test-genesis.json").to_string())
-    };
-    let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
+    let setup = TestNodeBuilder::new()
+        .allegretto_activated()
+        .build_http_only()
+        .await?;
+    let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let caller = wallet.address();
@@ -756,10 +729,8 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
     let base = setup_test_token(provider.clone(), caller).await?;
     let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
 
-    // Create pair
+    // Post-Allegretto: pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
-    let tx = exchange.createPair(*base.address()).send().await?;
-    tx.get_receipt().await?;
 
     // Mint and approve tokens
     let mint_amount = U256::from(1000000000u128);

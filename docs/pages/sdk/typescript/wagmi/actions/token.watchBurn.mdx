@@ -1,0 +1,67 @@
+# `token.watchBurn`
+
+Watches for token burn events on TIP20 tokens.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { Actions } from 'tempo.ts/wagmi'
+import { config } from './wagmi.config'
+
+const unwatch = Actions.token.watchBurnSync(config, {
+  onBurn: (args, log) => {
+    console.log('Amount:', args.amount)
+    console.log('Burner:', args.burner)
+    console.log('From:', args.from)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onBurn
+
+- **Type:**
+
+```ts
+declare function onBurn(args: Args, log: Log): void
+
+type Args = {
+  /** Amount burned */
+  amount: bigint
+  /** Address that initiated the burn */
+  burner: Address
+  /** Address whose tokens were burned */
+  from: Address
+}
+```
+
+Callback to invoke when tokens are burned.
+
+### token
+
+- **Type:** `Address | bigint`
+
+Address or ID of the TIP20 token to watch.
+
+

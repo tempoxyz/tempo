@@ -12,6 +12,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tempo-commonware-node-config.workspace = true
 tempo-primitives = { workspace = true, features = ["default"] }
 
 reth-cli.workspace = true

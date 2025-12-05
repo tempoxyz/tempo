@@ -15,12 +15,14 @@ alloy = { workspace = true, default-features = false, features = [
     "rpc-types",
     "transports",
     "providers",
+    "provider-ws",
     "reqwest-rustls-tls",
     "signers",
     "signer-local",
     "signer-mnemonic",
     "rand",
 ] }
+tempo-alloy.workspace = true
 dashmap = "6.1"
 eyre.workspace = true
 futures.workspace = true

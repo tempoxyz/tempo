@@ -6,16 +6,21 @@ use alloy::{
 };
 use alloy_eips::Encodable2718;
 use alloy_network::TxSignerSync;
-use tempo_contracts::precompiles::IFeeManager::setUserTokenCall;
-use tempo_precompiles::DEFAULT_FEE_TOKEN;
+use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20};
+use tempo_precompiles::DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO;
 use tempo_primitives::TxFeeToken;
 
+use crate::utils::setup_test_token_pre_allegretto;
+
 /// Test block building when FeeAMM pool has insufficient liquidity for payment transactions
+/// Note: This test runs without Moderato to use the balanced `mint` function
 #[tokio::test(flavor = "multi_thread")]
 async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
+    // Run without Moderato to use the balanced `mint` function
     let setup = crate::utils::TestNodeBuilder::new()
+        .with_genesis(include_str!("../assets/test-genesis-pre-moderato.json").to_string())
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -28,18 +33,17 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         .wallet(wallet.clone())
         .connect_http(http_url);
 
-    // Setup payment token
-    let payment_token = crate::utils::setup_test_token(provider.clone(), sender_address).await?;
+    // Setup payment token using pre-allegretto createToken_0
+    let payment_token = setup_test_token_pre_allegretto(provider.clone(), sender_address).await?;
     let payment_token_addr = *payment_token.address();
 
-    // Get validator token address (USDC from genesis)
+    // Get validator token address (default fee token from genesis)
     use tempo_contracts::precompiles::ITIPFeeAMM;
     use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
-    let validator_token_addr = DEFAULT_FEE_TOKEN;
+    let validator_token_addr = DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO;
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-    let validator_token =
-        tempo_contracts::precompiles::ITIP20::new(validator_token_addr, provider.clone());
+    let validator_token = ITIP20::new(validator_token_addr, provider.clone());
 
     let liquidity_amount = U256::from(10_000_000);
 
@@ -61,7 +65,8 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         .get_receipt()
         .await?;
 
-    // Create pool by minting liquidity
+    // Create pool by minting liquidity with both tokens (balanced pool)
+    // This requires pre-Moderato spec since mint is disabled post-Moderato
     fee_amm
         .mint(
             payment_token_addr,
@@ -122,7 +127,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     // This ensures subsequent transactions will require a swap through the drained FeeAMM
     println!("Setting user's fee token preference...");
     let mut tx = TxFeeToken {
-        fee_token: Some(DEFAULT_FEE_TOKEN),
+        fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
         to: TIP_FEE_MANAGER_ADDRESS.into(),
         input: setUserTokenCall {
             token: payment_token_addr,
@@ -150,43 +155,31 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     println!("Sending {num_payment_txs} payment transactions that require fee swaps...");
 
     let mut transactions_included = 0;
-    let mut transactions_timed_out = 0;
+    let mut transactions_rejected = 0;
+
+    let mut nonce = provider.get_transaction_count(sender_address).await?;
 
     for i in 0..num_payment_txs {
         let transfer = payment_token.transfer(sender_address, U256::from((i + 1) as u64));
-        match transfer.send().await {
+        match transfer.nonce(nonce).send().await {
             Ok(pending_tx) => {
                 let tx_num = i + 1;
                 println!("Transaction {tx_num} sent, waiting for receipt...");
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
-                    pending_tx.get_receipt(),
-                )
-                .await
-                {
-                    Ok(Ok(receipt)) => {
-                        let status = receipt.status();
-                        println!("Transaction {tx_num} included with status: {status:?}");
-                        transactions_included += 1;
-                    }
-                    Ok(Err(e)) => {
-                        println!("Transaction {tx_num} receipt error: {e}");
-                    }
-                    Err(_) => {
-                        println!("Transaction {tx_num} timed out waiting for receipt");
-                        transactions_timed_out += 1;
-                        break; // Stop trying if we timeout
-                    }
-                }
+                pending_tx.get_receipt().await.unwrap();
+                transactions_included += 1;
+                nonce += 1;
             }
-            Err(e) => {
-                let tx_num = i + 1;
-                println!("Transaction {tx_num} failed to send: {e}");
+            Err(err) => {
+                if err.to_string().contains("Insufficient liquidity") {
+                    transactions_rejected += 1;
+                } else {
+                    panic!("Transaction {i} rejected with unexpected error: {err}");
+                }
             }
         }
     }
 
-    println!("Transactions included: {transactions_included}, timed out: {transactions_timed_out}");
+    println!("Transactions included: {transactions_included}, rejected: {transactions_rejected}");
 
     // Verify that transactions requiring unavailable liquidity were NOT included
     assert_eq!(
@@ -194,8 +187,8 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         "Transactions requiring unavailable liquidity should be excluded from blocks"
     );
     assert!(
-        transactions_timed_out > 0,
-        "At least one transaction should have timed out (indicating it was excluded)"
+        transactions_rejected > 0,
+        "At least one transaction should have benn rejected due to insufficient liquidity"
     );
 
     println!("Test completed: block building continued without stalling");

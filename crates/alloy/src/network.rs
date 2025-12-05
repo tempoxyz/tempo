@@ -1,18 +1,26 @@
+use std::fmt::Debug;
+
 use crate::rpc::{TempoHeaderResponse, TempoTransactionReceipt, TempoTransactionRequest};
-use alloy_consensus::{TxType, error::UnsupportedTransactionType};
+use alloy_consensus::{ReceiptWithBloom, TxType, error::UnsupportedTransactionType};
 
 use alloy_network::{
-    BuildResult, Network, NetworkWallet, TransactionBuilder, TransactionBuilderError,
-    UnbuiltTransactionError,
+    BuildResult, Ethereum, EthereumWallet, IntoWallet, Network, NetworkWallet, TransactionBuilder,
+    TransactionBuilderError, UnbuiltTransactionError,
 };
 use alloy_primitives::{Address, Bytes, ChainId, TxKind, U256};
 use alloy_provider::fillers::{
     ChainIdFiller, GasFiller, JoinFill, NonceFiller, RecommendedFillers,
 };
-use alloy_rpc_types_eth::AccessList;
+use alloy_rpc_types_eth::{AccessList, Block, Transaction};
+use alloy_signer_local::PrivateKeySigner;
 use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
 };
+
+/// Set of recommended fillers.
+///
+/// `N` is a nonce filler.
+pub(crate) type TempoFillers<N> = JoinFill<GasFiller, JoinFill<N, ChainIdFiller>>;
 
 /// The Tempo specific configuration of [`Network`] schema and consensus primitives.
 #[derive(Default, Debug, Clone, Copy)]
@@ -23,16 +31,13 @@ impl Network for TempoNetwork {
     type TxType = TempoTxType;
     type TxEnvelope = TempoTxEnvelope;
     type UnsignedTx = TempoTypedTransaction;
-    type ReceiptEnvelope = TempoReceipt;
+    type ReceiptEnvelope = ReceiptWithBloom<TempoReceipt>;
     type Header = TempoHeader;
     type TransactionRequest = TempoTransactionRequest;
-    type TransactionResponse = alloy_rpc_types_eth::Transaction<TempoTxEnvelope>;
+    type TransactionResponse = Transaction<TempoTxEnvelope>;
     type ReceiptResponse = TempoTransactionReceipt;
     type HeaderResponse = TempoHeaderResponse;
-    type BlockResponse = alloy_rpc_types_eth::Block<
-        alloy_rpc_types_eth::Transaction<TempoTxEnvelope>,
-        Self::HeaderResponse,
-    >;
+    type BlockResponse = Block<Transaction<TempoTxEnvelope>, Self::HeaderResponse>;
 }
 
 impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
@@ -135,10 +140,13 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     fn complete_type(&self, ty: TempoTxType) -> Result<(), Vec<&'static str>> {
         match ty {
             TempoTxType::FeeToken => self.complete_fee_token(),
-            ty => self.inner.complete_type(
-                ty.try_into()
-                    .expect("should not be reachable with fee token tx"),
-            ),
+            TempoTxType::AA => self.complete_aa(),
+            TempoTxType::Legacy
+            | TempoTxType::Eip2930
+            | TempoTxType::Eip1559
+            | TempoTxType::Eip7702 => self
+                .inner
+                .complete_type(ty.try_into().expect("tempo tx types checked")),
         }
     }
 
@@ -151,37 +159,51 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn output_tx_type(&self) -> TempoTxType {
-        if self.fee_token.is_some() {
+        if !self.calls.is_empty() || self.nonce_key.is_some() {
+            TempoTxType::AA
+        } else if self.fee_token.is_some() {
             TempoTxType::FeeToken
-        } else if self.inner.authorization_list.is_some() {
-            TempoTxType::Eip7702
-        } else if self.inner.access_list.is_some() && self.inner.gas_price.is_some() {
-            TempoTxType::Eip2930
-        } else if self.inner.gas_price.is_some() {
-            TempoTxType::Legacy
         } else {
-            TempoTxType::Eip1559
+            match self.inner.output_tx_type() {
+                TxType::Legacy => TempoTxType::Legacy,
+                TxType::Eip2930 => TempoTxType::Eip2930,
+                TxType::Eip1559 => TempoTxType::Eip1559,
+                // EIP-4844 transactions are not supported on Tempo
+                TxType::Eip4844 => TempoTxType::Legacy,
+                TxType::Eip7702 => TempoTxType::Eip7702,
+            }
         }
     }
 
     fn output_tx_type_checked(&self) -> Option<TempoTxType> {
-        if self.fee_token.is_some() {
-            return if self.can_build_fee_token() {
-                Some(TempoTxType::FeeToken)
-            } else {
-                None
-            };
+        match self.output_tx_type() {
+            TempoTxType::AA => Some(TempoTxType::AA).filter(|_| self.can_build_aa()),
+            TempoTxType::FeeToken => {
+                Some(TempoTxType::FeeToken).filter(|_| self.can_build_fee_token())
+            }
+            TempoTxType::Legacy
+            | TempoTxType::Eip2930
+            | TempoTxType::Eip1559
+            | TempoTxType::Eip7702 => self.inner.output_tx_type_checked()?.try_into().ok(),
         }
-
-        self.inner.output_tx_type_checked()?.try_into().ok()
     }
 
     fn prep_for_submission(&mut self) {
-        self.inner.prep_for_submission()
+        self.inner.transaction_type = Some(self.output_tx_type() as u8);
+        self.inner.trim_conflicting_keys();
+        self.inner.populate_blob_hashes();
     }
 
     fn build_unsigned(self) -> BuildResult<TempoTypedTransaction, TempoNetwork> {
         match self.output_tx_type() {
+            TempoTxType::AA => match self.complete_aa() {
+                Ok(..) => Ok(self.build_aa().expect("checked by above condition").into()),
+                Err(missing) => Err(TransactionBuilderError::InvalidTransactionRequest(
+                    TempoTxType::AA,
+                    missing,
+                )
+                .into_unbuilt(self)),
+            },
             TempoTxType::FeeToken => match self.complete_fee_token() {
                 Ok(..) => Ok(self
                     .build_fee_token()
@@ -232,8 +254,18 @@ impl TransactionBuilder<TempoNetwork> for TempoTransactionRequest {
 }
 
 impl TempoTransactionRequest {
+    fn can_build_aa(&self) -> bool {
+        (!self.calls.is_empty() || self.inner.to.is_some())
+            && self.inner.nonce.is_some()
+            && self.inner.gas.is_some()
+            && self.inner.max_fee_per_gas.is_some()
+            && self.inner.max_priority_fee_per_gas.is_some()
+    }
+
     fn can_build_fee_token(&self) -> bool {
         self.fee_token.is_some()
+            && self.inner.nonce.is_some()
+            && self.inner.gas.is_some()
             && self.inner.max_fee_per_gas.is_some()
             && self.inner.max_priority_fee_per_gas.is_some()
             && (self
@@ -245,11 +277,40 @@ impl TempoTransactionRequest {
                 || matches!(self.inner.to, Some(TxKind::Call(..))))
     }
 
+    fn complete_aa(&self) -> Result<(), Vec<&'static str>> {
+        let mut fields = Vec::new();
+
+        if self.calls.is_empty() && self.inner.to.is_none() {
+            fields.push("calls or to");
+        }
+        if self.inner.nonce.is_none() {
+            fields.push("nonce");
+        }
+        if self.inner.gas.is_none() {
+            fields.push("gas");
+        }
+        if self.inner.max_fee_per_gas.is_none() {
+            fields.push("max_fee_per_gas");
+        }
+        if self.inner.max_priority_fee_per_gas.is_none() {
+            fields.push("max_priority_fee_per_gas");
+        }
+
+        if fields.is_empty() {
+            Ok(())
+        } else {
+            Err(fields)
+        }
+    }
+
     fn complete_fee_token(&self) -> Result<(), Vec<&'static str>> {
         let mut fields = Vec::new();
 
         if self.fee_token.is_none() {
             fields.push("fee_token");
+        }
+        if self.inner.gas.is_none() {
+            fields.push("gas");
         }
         if self.inner.max_fee_per_gas.is_none() {
             fields.push("max_fee_per_gas");
@@ -277,10 +338,45 @@ impl TempoTransactionRequest {
 }
 
 impl RecommendedFillers for TempoNetwork {
-    type RecommendedFillers = JoinFill<GasFiller, JoinFill<NonceFiller, ChainIdFiller>>;
+    type RecommendedFillers = TempoFillers<NonceFiller>;
 
     fn recommended_fillers() -> Self::RecommendedFillers {
         Default::default()
+    }
+}
+
+impl NetworkWallet<TempoNetwork> for EthereumWallet {
+    fn default_signer_address(&self) -> Address {
+        NetworkWallet::<Ethereum>::default_signer_address(self)
+    }
+
+    fn has_signer_for(&self, address: &Address) -> bool {
+        NetworkWallet::<Ethereum>::has_signer_for(self, address)
+    }
+
+    fn signer_addresses(&self) -> impl Iterator<Item = Address> {
+        NetworkWallet::<Ethereum>::signer_addresses(self)
+    }
+
+    #[doc(alias = "sign_tx_from")]
+    async fn sign_transaction_from(
+        &self,
+        sender: Address,
+        mut tx: TempoTypedTransaction,
+    ) -> alloy_signer::Result<TempoTxEnvelope> {
+        let signer = self.signer_by_address(sender).ok_or_else(|| {
+            alloy_signer::Error::other(format!("Missing signing credential for {sender}"))
+        })?;
+        let sig = signer.sign_transaction(tx.as_dyn_signable_mut()).await?;
+        Ok(tx.into_envelope(sig))
+    }
+}
+
+impl IntoWallet<TempoNetwork> for PrivateKeySigner {
+    type NetworkWallet = EthereumWallet;
+
+    fn into_wallet(self) -> Self::NetworkWallet {
+        self.into()
     }
 }
 

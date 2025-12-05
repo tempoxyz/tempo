@@ -1,0 +1,77 @@
+# `amm.watchFeeSwap`
+
+Watches for fee swap events on the Fee AMM.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { client } from './viem.config'
+
+const unwatch = client.amm.watchFeeSwap({
+  onFeeSwap: (args, log) => {
+    console.log('Amount in:', args.amountIn)
+    console.log('Amount out:', args.amountOut)
+    console.log('Recipient:', args.to)
+    console.log('User token:', args.userToken)
+    console.log('Validator token:', args.validatorToken)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [viem.config.ts] filename="viem.config.ts"
+// [!include ~/snippets/viem.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onFeeSwap
+
+- **Type:**
+
+```ts
+declare function onFeeSwap(args: Args, log: Log): void
+
+type Args = {
+  /** Amount of user token swapped in */
+  amountIn: bigint
+  /** Amount of validator token received */
+  amountOut: bigint
+  /** Address that received the validator token */
+  to: Address
+  /** Address of the user token */
+  userToken: Address
+  /** Address of the validator token */
+  validatorToken: Address
+}
+```
+
+Callback to invoke when a fee swap occurs.
+
+### userToken (optional)
+
+- **Type:** `Address | undefined`
+
+Filter events by user token address.
+
+### validatorToken (optional)
+
+- **Type:** `Address | undefined`
+
+Filter events by validator token address.
+
+

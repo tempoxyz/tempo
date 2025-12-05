@@ -1,0 +1,62 @@
+# `policy.watchWhitelistUpdated`
+
+Watches for whitelist update events on the TIP403 Registry.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { client } from './viem.config'
+
+const unwatch = client.policy.watchWhitelistUpdated({
+  onWhitelistUpdated: (args, log) => {
+    console.log('Account:', args.account)
+    console.log('Allowed:', args.allowed)
+    console.log('Policy ID:', args.policyId)
+    console.log('Updater:', args.updater)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [viem.config.ts] filename="viem.config.ts"
+// [!include ~/snippets/viem.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onWhitelistUpdated
+
+- **Type:**
+
+```ts
+declare function onWhitelistUpdated(args: Args, log: Log): void
+
+type Args = {
+  /** Address of the account */
+  account: Address
+  /** Whether the account is allowed */
+  allowed: boolean
+  /** ID of the policy */
+  policyId: bigint
+  /** Address that updated the whitelist */
+  updater: Address
+}
+```
+
+Callback to invoke when a whitelist is updated.
+
+

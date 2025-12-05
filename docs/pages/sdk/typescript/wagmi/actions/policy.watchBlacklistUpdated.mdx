@@ -1,0 +1,64 @@
+# `policy.watchBlacklistUpdated`
+
+Watches for blacklist update events on the TIP403 Registry.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { Actions } from 'tempo.ts/wagmi'
+import { config } from './wagmi.config'
+
+const unwatch = Actions.policy.watchBlacklistUpdated(config, {
+  onBlacklistUpdated: (args, log) => {
+    console.log('Account:', args.account)
+    console.log('Policy ID:', args.policyId)
+    console.log('Restricted:', args.restricted)
+    console.log('Updater:', args.updater)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onBlacklistUpdated
+
+- **Type:**
+
+```ts
+declare function onBlacklistUpdated(args: Args, log: Log): void
+
+type Args = {
+  /** Address of the account */
+  account: Address
+  /** ID of the policy */
+  policyId: bigint
+  /** Whether the account is restricted */
+  restricted: boolean
+  /** Address that updated the blacklist */
+  updater: Address
+}
+```
+
+Callback to invoke when a blacklist is updated.
+
+

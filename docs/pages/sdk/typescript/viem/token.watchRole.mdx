@@ -1,0 +1,71 @@
+# `token.watchRole`
+
+Watches for role membership update events on TIP20 tokens.  
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { client } from './viem.config'
+
+const unwatch = client.token.watchRole({
+  onRoleUpdated: (args, log) => {
+    console.log('Account:', args.account)
+    console.log('Has role:', args.hasRole)
+    console.log('Role:', args.role)
+    console.log('Type:', args.type) // 'granted' or 'revoked'
+    console.log('Updater:', args.updater)
+  },
+})
+
+// Later, stop watching
+unwatch()
+```
+
+```ts twoslash [viem.config.ts] filename="viem.config.ts"
+// [!include ~/snippets/viem.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = () => void
+```
+
+Returns a function to unsubscribe from the event.
+
+## Parameters
+
+### onRoleUpdated
+
+- **Type:**
+
+```ts
+declare function onRoleUpdated(args: Args, log: Log): void
+
+type Args = {
+  /** Account receiving or losing the role */
+  account: Address
+  /** Whether the account has the role */
+  hasRole: boolean
+  /** Role being updated */
+  role: bigint
+  /** Type of update */
+  type: 'granted' | 'revoked'
+  /** Address that updated the role */
+  updater: Address
+}
+```
+
+Callback to invoke when a role membership is updated.
+
+### token
+
+- **Type:** `Address | bigint`
+
+Address or ID of the TIP20 token to watch.
+
+

@@ -1,35 +1,48 @@
-name: Deploy Alloy docs
+name: Docs
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
 
 jobs:
-  build:
+  check:
+    name: Check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@nightly
-      - run: RUSTDOCFLAGS="--cfg docsrs --show-type-layout --generate-link-to-definition --enable-index-page -Zunstable-options" cargo docs
-      - uses: actions/upload-pages-artifact@v3
-        id: deployment
+      - name: Clone repository
+        uses: actions/checkout@v4
         with:
-          path: ./target/doc/
+          submodules: 'recursive'
 
-  # Disabled until public
-  #deploy:
-  #  environment:
-  #    name: github-pages
-  #    url: ${{ steps.deployment.outputs.page_url }}
-  #  runs-on: ubuntu-latest
-  #  needs: build
-  #  # Grant GITHUB_TOKEN the permissions required to make a Pages deployment
-  #  permissions:
-  #    pages: write
-  #    id-token: write
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
-  #  steps:
-  #    - name: Deploy to GitHub Pages
-  #      id: deployment
-  #      uses: actions/deploy-pages@v4
+      - name: Setup bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        working-directory: docs
+        run: bun install
+
+      - name: Check
+        working-directory: docs
+        run: bun run check
+
+      - name: Check types
+        working-directory: docs
+        run: bun run check:types

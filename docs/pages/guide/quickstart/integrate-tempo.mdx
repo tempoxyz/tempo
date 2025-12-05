@@ -1,0 +1,123 @@
+import LucideZap from '~icons/lucide/zap'
+import LucideLandmark from '~icons/lucide/landmark'
+import TempoTxProperties from '../../../snippets/tempo-tx-properties.mdx'
+import { Callout } from 'vocs/components'
+import * as Card from "../../../components/Card.tsx"
+
+# Integrate Tempo
+
+Tempo targets the **Osaka** EVM hard fork with support for new payments-specific [protocols](/documentation/protocol/) and [smart contracts](/guide/quickstart/predeployed-contracts).
+
+See below for how to integrate Tempo into your application, wallet or infrastructure.
+
+<Callout type="info">
+  **Tempo Mainnet (Presto)**: Tempo's mainnet is not yet available and is scheduled for launch in 2026.
+
+  If you'd like to be a design partner, please send us an email at [partners@tempo.xyz](mailto:partners@tempo.xyz). If you'd like to join the team and help us with the launch, check out our job posting [here](https://tempo.xyz/careers).
+</Callout>
+
+
+<Card.Container>
+  <Card.Link
+    icon={LucideZap}
+    title="Tempo Transaction (Recommended)"
+    description={
+    "Optimized for payments, any fee token, gas sponsorship, batching, and faster inclusion"
+    }
+    href="#tempo-transactions"
+  />
+
+  <Card.Link
+    icon={LucideLandmark}
+    title="Existing Ethereum Transactions"
+    description={
+        "For backwards compatibility only"
+    }
+    href="#existing-ethereum-wallet--rpc-compatibility"
+    variant="danger"
+  />
+</Card.Container>
+
+
+## Tempo Transactions
+
+We recommend using Tempo Transactions for all projects as it is the most effective way to fully leverage Tempo's payment-optimized architecture:
+* [Configurable fee tokens](#configurable-fee-tokens): Specify the fee token for the transaction, enabling fee payment in any stablecoin.
+* [Fee sponsorship](#fee-sponsorship): Sponsor the gas for a transaction, enabling feeless transaction UX for your users.
+* [Batching](#batch-calls): Batch multiple transactions together, enabling higher throughput and simpler wallet management by skipping multiple confirmation screens, and saving on cost.
+* [Concurrent transactions](#concurrent-transactions): Enable higher throughput and simpler wallet management using parallelizable nonces.
+* [Scheduled transactions](#scheduled-transactions): Schedule transactions, enabling you to specify a time window in which the transaction can be executed.
+* **Faster inclusion time**: Tempo Transactions get included faster through validator [sub-blocks](/documentation/protocol/blockspace/sub-block-specification).
+
+:::note
+
+Once integrated with Tempo Transactions, wallets and applications should modify their transaction submission logic to check the user's fee token balance instead of the native token balance.
+
+:::
+
+|Language|Source|Integration Time|Guide|Notes|
+|--------|--------|--------|--------|--------|
+| **TypeScript**   | [tempoxyz/tempo-ts](https://github.com/tempoxyz/tempo-ts)                            | < 1 hour         | [Here](/guide/sdks/typescript) | We recommend Viem for new projects. Prefer Viem over ethers.js.  |
+| **Rust**         | [tempo-alloy](https://github.com/tempoxyz/tempo/tree/main/crates/alloy)              | < 1 hour         | [Here](/guide/sdks/rust) |      |
+| **Golang**       | [tempo-go](https://github.com/tempoxyz/tempo-go)                                | < 1 hour         | [Here](/guide/sdks/go)                        |
+| **Python**       | [pytempo](https://github.com/tempoxyz/pytempo)                                | < 1 hour         | _Soon_                      | 
+| **Other Languages** | Reach out to us!                                                                  | 1-3 days         | [Native tx spec](/documentation/protocol/transactions/spec-tempo-transaction) | We will help you integrate Tempo Transactions in other languages. |
+
+If you are an EVM smart contract developer, see the [Tempo extension for Foundry](/guide/sdks/foundry).
+
+<TempoTxProperties />
+
+## Existing Ethereum Wallet & RPC Compatibility
+
+If you are using a wallet that does not yet support Tempo Transactions, you can integrate with Tempo using standard RPC calls. This is not recommended as it is not as efficient as using Tempo Transactions.
+
+<Callout type="warning">
+This integration path is designed for compatibility only and comes with limited functionality. We strongly recommend the native transaction type above for production use.
+</Callout>
+
+### JSON-RPC
+
+Tempo supports all Ethereum JSON-RPC methods out of the box. Connect to the Tempo Testnet below:
+
+| | |
+|-------------------|-------|
+| **Network Name** | Tempo Testnet (Andantino) |
+| **Currency** | `USD` |
+| **Chain ID** | `42429` |
+| **HTTP URL** | `https://rpc.testnet.tempo.xyz` |
+| **WebSocket URL** | `wss://rpc.testnet.tempo.xyz` |
+| **Block Explorer** | [`https://scout.tempo.xyz`](https://scout.tempo.xyz) |
+
+Note that the RPC URL is authenticated with a username and password. You can get these credentials from the Tempo team directly if you're currently an infrastructure partner.
+
+### Handling ETH Balance Checks
+
+Many wallets and applications check a user's "native account balance" before letting them complete some action. In this scenario, you might see an error message like "Insufficient balance".
+
+This stems from the return value of the `eth_getBalance` RPC method. When a wallet calls this method, it expects a hex string representing the "native token balance", hard-coded to be represented as an 18-decimal place number.
+
+On Tempo, the `eth_getBalance` method returns a hex string representing an extremely large number. Specifically it returns: `0x9612084f0316e0ebd5182f398e5195a51b5ca47667d4c9b26c9b26c9b26c9b2` which is represented in decimals as 4.242424242424242e+75.
+
+Our recommendation to wallets and to applications using this method is to remove this balance check, and to not represent any "native balance" in your user's UI. This will allow users to complete actions without being blocked by balance checks.
+
+### Specifying a Native Token Currency Symbol
+
+Sometimes wallets will need to specify the currency symbol for the native token. On Tempo, there is no native token, but fees are denominated in USD. So, we recommend using the currency symbol "USD".
+
+### Default Fee Token
+
+Since there is no native token, Tempo has implemented a cascading system of preferences for what the "default" is when submitting a regular Ethereum transaction type. This preference system is specified [here](/documentation/protocol/fees/spec-fee#fee-token-preferences) in detail, but in this scenario we can focus specifically on how defaults get set for regular Ethereum transaction types where there is no user preference set.
+
+There are two cases to consider.
+
+#### **TIP-20 Tokens**
+
+If the user is calling a method on a TIP-20 token (e.g., `transfer`), the default fee token is that token itself. For example, if the user is calling the `transfer` method on a TIP-20 token with a symbol of "USDC", the default fee token would be "USDC".
+
+Importantly, note that the `amount` field in this case is sent in full. So, if the user is calling the `transfer` method on a TIP-20 token with a symbol of "USDC" with the `amount` field set to 1000, the full amount of the token will be transferred **and** the sender's balance will be reduced by the amount spent in fees. So, the recipient will receive 1000 USDC.
+
+#### **Other Contracts**
+
+However, if the user is calling a contract that is not a TIP-20 token, the transaction will fail.
+
+If a wallet wants to submit a non-TIP20 transaction without having to submit the above transaction, we recommend investing in using [Tempo Transactions](/guide/quickstart/integrate-tempo#tempo-transactions) instead.

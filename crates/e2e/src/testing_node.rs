@@ -74,6 +74,23 @@ impl TestingNode {
         &self.public_key
     }
 
+    /// Get the unique identifier of this node.
+    pub fn uid(&self) -> &str {
+        &self.uid
+    }
+
+    /// Get a mutable reference to the consensus config.
+    pub fn consensus_config_mut(
+        &mut self,
+    ) -> &mut consensus::Builder<Control<PublicKey>, Context, SocketManager<PublicKey>> {
+        &mut self.consensus_config
+    }
+
+    /// Get a reference to the oracle.
+    pub fn oracle(&self) -> &Oracle<PublicKey> {
+        &self.oracle
+    }
+
     /// Start both consensus and execution layers.
     ///
     ///
@@ -319,7 +336,7 @@ impl TestingNode {
 
         let provider_factory = ProviderFactory::<NodeTypesWithDBAdapter<TempoNode, _>>::new(
             database,
-            execution_runtime::chainspec(),
+            execution_runtime::chainspec_arc(),
             static_file_provider,
         )
         .expect("failed to create provider factory");
@@ -330,7 +347,7 @@ impl TestingNode {
 
 #[cfg(test)]
 mod tests {
-    use crate::{ExecutionRuntime, Setup, setup_validators};
+    use crate::{Setup, setup_validators};
     use alloy::providers::{Provider, ProviderBuilder};
     use commonware_p2p::simulated::Link;
     use commonware_runtime::{
@@ -370,8 +387,6 @@ mod tests {
 
         std::thread::spawn(move || {
             runner.start(|context| async move {
-                let execution_runtime = ExecutionRuntime::new();
-
                 let setup = Setup {
                     how_many_signers: 1,
                     seed: 0,
@@ -382,10 +397,11 @@ mod tests {
                     },
                     epoch_length: 100,
                     connect_execution_layer_nodes: false,
+                    allegretto_in_seconds: None,
                 };
 
-                let (mut nodes, _oracle) =
-                    setup_validators(context.clone(), &execution_runtime, setup).await;
+                let (mut nodes, _execution_runtime) =
+                    setup_validators(context.clone(), setup).await;
 
                 let mut node = nodes.pop().unwrap();
 

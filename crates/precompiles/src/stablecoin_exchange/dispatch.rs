@@ -5,7 +5,7 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::{
-    Precompile, input_cost, mutate, mutate_void,
+    Precompile, fill_precompile_output, input_cost, mutate, mutate_void,
     stablecoin_exchange::{IStablecoinExchange, StablecoinExchange},
     storage::PrecompileStorageProvider,
     unknown_selector, view,
@@ -158,6 +158,11 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                     Ok(crate::stablecoin_exchange::MAX_TICK)
                 })
             }
+            IStablecoinExchange::TICK_SPACINGCall::SELECTOR => {
+                view::<IStablecoinExchange::TICK_SPACINGCall>(calldata, |_call| {
+                    Ok(crate::stablecoin_exchange::TICK_SPACING)
+                })
+            }
             IStablecoinExchange::PRICE_SCALECall::SELECTOR => {
                 view::<IStablecoinExchange::PRICE_SCALECall>(calldata, |_call| {
                     Ok(crate::stablecoin_exchange::PRICE_SCALE)
@@ -183,10 +188,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
             _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
-        result.map(|mut res| {
-            res.gas_used = self.storage.gas_used();
-            res
-        })
+        result.map(|res| fill_precompile_output(res, self.storage))
     }
 }
 
@@ -196,7 +198,7 @@ mod tests {
     use super::*;
     use crate::{
         Precompile,
-        linking_usd::{LinkingUSD, TRANSFER_ROLE},
+        path_usd::{PathUSD, TRANSFER_ROLE},
         stablecoin_exchange::{IStablecoinExchange, MIN_ORDER_AMOUNT, StablecoinExchange},
         storage::{ContractStorage, PrecompileStorageProvider, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
@@ -220,8 +222,8 @@ mod tests {
         let user = Address::random();
         let amount = 200_000_000u128;
 
-        // Initialize quote token (LinkingUSD)
-        let mut quote = LinkingUSD::new(exchange.storage);
+        // Initialize quote token (PathUSD)
+        let mut quote = PathUSD::new(exchange.storage);
         quote.initialize(admin).unwrap();
 
         quote
@@ -256,7 +258,7 @@ mod tests {
         // Initialize base token
         let quote_address = quote.token.address();
         let mut base = TIP20Token::new(1, quote.token.storage());
-        base.initialize("BASE", "BASE", "USD", quote_address, admin)
+        base.initialize("BASE", "BASE", "USD", quote_address, admin, Address::ZERO)
             .unwrap();
 
         base.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
@@ -402,6 +404,29 @@ mod tests {
         assert_eq!(
             returned_value, 98_000,
             "Post-moderato MIN_PRICE should be 98_000"
+        );
+    }
+
+    #[test]
+    fn test_tick_spacing() {
+        let mut storage = HashMapStorageProvider::new(1);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize().unwrap();
+
+        let sender = Address::ZERO;
+        let call = IStablecoinExchange::TICK_SPACINGCall {};
+        let calldata = call.abi_encode();
+
+        let result = exchange.call(&Bytes::from(calldata), sender);
+        assert!(result.is_ok());
+
+        let output = result.unwrap().bytes;
+        let returned_value = i16::abi_decode(&output).unwrap();
+
+        let expected = crate::stablecoin_exchange::TICK_SPACING;
+        assert_eq!(
+            returned_value, expected,
+            "TICK_SPACING should be {expected}"
         );
     }
 

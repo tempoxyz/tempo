@@ -4,7 +4,7 @@ pub mod dispatch;
 use crate::{
     TIP20_REWARDS_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::{Mapping, PrecompileStorageProvider, VecMappingExt},
+    storage::{Mapping, PrecompileStorageProvider, VecSlotExt},
     tip20::{TIP20Token, address_to_token_id_unchecked},
 };
 use alloy::{
@@ -26,7 +26,7 @@ pub struct TIP20RewardsRegistry {
 }
 
 /// Helper type to easily interact with the `stream_ending_at` array
-type StreamEndingAt = Mapping<u128, Vec<Address>, StreamsEndingAtSlot>;
+type StreamEndingAt = Mapping<u128, Vec<Address>>;
 
 impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     /// Creates an instance of the precompile.
@@ -49,10 +49,11 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     /// Add a token to the registry for a given stream end time
     pub fn add_stream(&mut self, token: Address, end_time: u128) -> Result<()> {
         let stream_key = keccak256((token, end_time).abi_encode());
-        let length = StreamEndingAt::len(self, end_time)?;
+        let stream_ending_at = StreamEndingAt::new(slots::STREAMS_ENDING_AT).at(end_time);
+        let length = stream_ending_at.len(self)?;
 
         self.sstore_stream_index(stream_key, U256::from(length))?;
-        StreamEndingAt::push(self, end_time, token)
+        stream_ending_at.push(self, token)
     }
 
     /// Remove stream before it is finalized
@@ -60,15 +61,16 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         let stream_key = keccak256((token, end_time).abi_encode());
         let index = self.sload_stream_index(stream_key)?.to::<usize>();
 
-        let length = StreamEndingAt::len(self, end_time)?;
+        let stream_ending_at = StreamEndingAt::new(slots::STREAMS_ENDING_AT).at(end_time);
+        let length = stream_ending_at.len(self)?;
         let last_index = length
             .checked_sub(1)
             .ok_or(TempoPrecompileError::under_overflow())?;
 
         // If removing element that's not the last, swap with last element
         if index != last_index {
-            let last_token = StreamEndingAt::read_at(self, end_time, last_index)?;
-            StreamEndingAt::write_at(self, end_time, index, last_token)?;
+            let last_token = stream_ending_at.read_at(self, last_index)?;
+            stream_ending_at.write_at(self, index, last_token)?;
 
             // Update stream_index for the moved element
             let last_stream_key = keccak256((last_token, end_time).abi_encode());
@@ -76,7 +78,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
         }
 
         // Remove last element and clear its index
-        StreamEndingAt::pop(self, end_time)?;
+        stream_ending_at.pop(self)?;
         self.clear_stream_index(stream_key)?;
 
         Ok(())
@@ -131,7 +133,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
     /// Helper method to get the count of streams at a given end time (for testing)
     #[cfg(test)]
     pub(crate) fn get_stream_count_at(&mut self, end_time: u128) -> Result<usize> {
-        StreamEndingAt::len(self, end_time)
+        StreamEndingAt::new(slots::STREAMS_ENDING_AT)
+            .at(end_time)
+            .len(self)
     }
 }
 
@@ -139,10 +143,10 @@ impl<'a, S: PrecompileStorageProvider> TIP20RewardsRegistry<'a, S> {
 mod tests {
     use super::*;
     use crate::{
-        LINKING_USD_ADDRESS,
+        PATH_USD_ADDRESS,
         error::TempoPrecompileError,
         storage::{ContractStorage, hashmap::HashMapStorageProvider},
-        tip20::{ISSUER_ROLE, TIP20Token, tests::initialize_linking_usd},
+        tip20::{ISSUER_ROLE, TIP20Token, tests::initialize_path_usd},
         tip20_rewards_registry::TIP20RewardsRegistry,
     };
     use tempo_contracts::precompiles::ITIP20;
@@ -150,7 +154,7 @@ mod tests {
     fn setup_registry(timestamp: u64) -> (HashMapStorageProvider, Address) {
         let mut storage = HashMapStorageProvider::new(timestamp);
         let admin = Address::random();
-        initialize_linking_usd(&mut storage, admin).unwrap();
+        initialize_path_usd(&mut storage, admin).unwrap();
         (storage, admin)
     }
 
@@ -296,7 +300,7 @@ mod tests {
 
         // Create a TIP20 token and start a reward stream
         let mut token = TIP20Token::new(1, &mut storage);
-        token.initialize("Test", "TST", "USD", LINKING_USD_ADDRESS, admin)?;
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
         let token_addr = token.address();
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
