@@ -57,23 +57,27 @@ export default defineConfig({
           link: '/guide/',
         },
         {
-          text: 'Tempo Overview',
+          text: 'Integrate Tempo Testnet',
           items: [
             {
-              text: 'Integrate Tempo',
+              text: 'Overview',
               link: '/guide/quickstart/integrate-tempo',
             },
             {
-              text: 'TIP-20 Standard',
-              link: '/guide/quickstart/tip20',
+              text: 'Use Tempo Transactions',
+              link: '/guide/tempo-transaction',
+            },
+            {
+              text: 'EVM Differences',
+              link: '/guide/quickstart/evm-compatibility',
             },
             {
               text: 'Predeployed Contracts',
               link: '/guide/quickstart/predeployed-contracts',
             },
             {
-              text: 'EVM Compatibility',
-              link: '/guide/quickstart/evm-compatibility',
+              text: 'TIP-20 Standard',
+              link: '/guide/quickstart/tip20',
             },
             {
               text: 'Faucet',
@@ -82,7 +86,7 @@ export default defineConfig({
           ],
         },
         {
-          text: 'Start Building',
+          text: 'Start Building on Tempo',
           items: [
             {
               text: 'Create & Use Accounts',
@@ -105,10 +109,6 @@ export default defineConfig({
                   link: '/guide/use-accounts/add-funds',
                 },
               ],
-            },
-            {
-              text: 'Use Tempo Transactions',
-              link: '/guide/tempo-transaction',
             },
             {
               text: 'Make Payments',
@@ -206,7 +206,7 @@ export default defineConfig({
           ],
         },
         {
-          text: 'SDKs',
+          text: 'Build on Tempo SDKs',
           items: [
             {
               text: 'Overview',
