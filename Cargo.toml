@@ -81,8 +81,9 @@ codegen-units = 16
 # e.g. `cargo build --profile profiling`
 [profile.profiling]
 inherits = "release"
-debug = "full"
+debug = "line-tables-only"
 strip = "none"
+incremental = true
 
 # Include debug info in benchmarks too.
 [profile.bench]
