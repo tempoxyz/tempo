@@ -27,6 +27,14 @@
 | [`policy.useWatchBlacklistUpdated`](#TODO) | Hook for watching blacklist update events |
 | [`policy.useWatchCreate`](#TODO) | Hook for watching policy creation events |
 | [`policy.useWatchWhitelistUpdated`](#TODO) | Hook for watching whitelist update events |
+| **Reward Hooks** | |
+| [`reward.useClaim`](/sdk/typescript/wagmi/hooks/reward.useClaim) | Hook for claiming accumulated rewards |
+| [`reward.useGetTotalPerSecond`](/sdk/typescript/wagmi/hooks/reward.useGetTotalPerSecond) | Hook for getting the total reward per second rate for all active streams |
+| [`reward.useSetRecipient`](/sdk/typescript/wagmi/hooks/reward.useSetRecipient) | Hook for setting or changing the reward recipient for a token holder |
+| [`reward.useStart`](/sdk/typescript/wagmi/hooks/reward.useStart) | Hook for starting a new reward stream that distributes tokens to opted-in holders |
+| [`reward.useUserRewardInfo`](/sdk/typescript/wagmi/hooks/reward.useUserRewardInfo) | Hook for getting reward information for a specific account |
+| [`reward.useWatchRewardRecipientSet`](/sdk/typescript/wagmi/hooks/reward.useWatchRewardRecipientSet) | Hook for watching reward recipient set events |
+| [`reward.useWatchRewardScheduled`](/sdk/typescript/wagmi/hooks/reward.useWatchRewardScheduled) | Hook for watching reward scheduled events |
 | **Stablecoin Exchange Hooks** | |
 | [`dex.useBalance`](/sdk/typescript/wagmi/hooks/dex.useBalance) | Hook for getting a user's token balance on the Stablecoin Exchange |
 | [`dex.useBuy`](/sdk/typescript/wagmi/hooks/dex.useBuy) | Hook for buying a specific amount of tokens from the Stablecoin Exchange orderbook |
