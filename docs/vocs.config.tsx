@@ -53,7 +53,7 @@ export default defineConfig({
     const sidebar = {
       '/': [
         {
-          text: 'Docs Home',
+          text: 'Home',
           link: '/guide/',
         },
         {
