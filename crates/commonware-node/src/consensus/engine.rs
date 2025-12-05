@@ -114,7 +114,7 @@ where
         let execution_node = self
             .execution_node
             .clone()
-            .ok_or_else(|| eyre::eyre!("execution_node must be set using with_execution_node()"))?;
+            .ok_or_eyre("execution_node must be set using with_execution_node()")?;
 
         let epoch_length = execution_node
             .chain_spec()
