@@ -130,9 +130,7 @@ impl ExecutionNodeConfigGenerator {
             .map(|config| {
                 let secret_key =
                     SecretKey::from_slice(config.secret_key.as_slice()).expect("valid secret key");
-                let addr = format!("127.0.0.1:{}", config.port)
-                    .parse()
-                    .expect("valid socket address");
+                let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
                 NodeRecord::from_secret_key(addr, &secret_key).to_string()
             })
             .collect();
