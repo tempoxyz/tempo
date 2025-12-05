@@ -162,8 +162,7 @@ export default defineConfig({
                 link: '/guide/issuance/use-for-fees',
               },
               {
-                text: 'Distribute rewards 🚧',
-                disabled: true,
+                text: 'Distribute rewards',
                 link: '/guide/issuance/distribute-rewards',
               },
               {
@@ -662,12 +661,40 @@ export default defineConfig({
                 text: 'Reward',
                 items: [
                   {
+                    text: 'cancel',
+                    link: '/sdk/typescript/viem/reward.cancel',
+                  },
+                  {
+                    text: 'claim',
+                    link: '/sdk/typescript/viem/reward.claim',
+                  },
+                  {
+                    text: 'getStream',
+                    link: '/sdk/typescript/viem/reward.getStream',
+                  },
+                  {
+                    text: 'getTotalPerSecond',
+                    link: '/sdk/typescript/viem/reward.getTotalPerSecond',
+                  },
+                  {
+                    text: 'getUserRewardInfo',
+                    link: '/sdk/typescript/viem/reward.getUserRewardInfo',
+                  },
+                  {
                     text: 'setRecipient',
                     link: '/sdk/typescript/viem/reward.setRecipient',
                   },
                   {
                     text: 'start',
                     link: '/sdk/typescript/viem/reward.start',
+                  },
+                  {
+                    text: 'watchRewardRecipientSet',
+                    link: '/sdk/typescript/viem/reward.watchRewardRecipientSet',
+                  },
+                  {
+                    text: 'watchRewardScheduled',
+                    link: '/sdk/typescript/viem/reward.watchRewardScheduled',
                   },
                 ],
               },
@@ -997,6 +1024,39 @@ export default defineConfig({
                 ],
               },
               {
+                text: 'Reward',
+                items: [
+                  {
+                    text: 'claim',
+                    link: '/sdk/typescript/wagmi/actions/reward.claim',
+                  },
+                  {
+                    text: 'getTotalPerSecond',
+                    link: '/sdk/typescript/wagmi/actions/reward.getTotalPerSecond',
+                  },
+                  {
+                    text: 'getUserRewardInfo',
+                    link: '/sdk/typescript/wagmi/actions/reward.getUserRewardInfo',
+                  },
+                  {
+                    text: 'setRecipient',
+                    link: '/sdk/typescript/wagmi/actions/reward.setRecipient',
+                  },
+                  {
+                    text: 'start',
+                    link: '/sdk/typescript/wagmi/actions/reward.start',
+                  },
+                  {
+                    text: 'watchRewardRecipientSet',
+                    link: '/sdk/typescript/wagmi/actions/reward.watchRewardRecipientSet',
+                  },
+                  {
+                    text: 'watchRewardScheduled',
+                    link: '/sdk/typescript/wagmi/actions/reward.watchRewardScheduled',
+                  },
+                ],
+              },
+              {
                 text: 'Stablecoin Exchange',
                 items: [
                   {
@@ -1298,6 +1358,39 @@ export default defineConfig({
                   {
                     text: 'useWatchWhitelistUpdated',
                     link: '/sdk/typescript/wagmi/hooks/policy.useWatchWhitelistUpdated',
+                  },
+                ],
+              },
+              {
+                text: 'Reward',
+                items: [
+                  {
+                    text: 'useClaim',
+                    link: '/sdk/typescript/wagmi/hooks/reward.useClaim',
+                  },
+                  {
+                    text: 'useGetTotalPerSecond',
+                    link: '/sdk/typescript/wagmi/hooks/reward.useGetTotalPerSecond',
+                  },
+                  {
+                    text: 'useSetRecipient',
+                    link: '/sdk/typescript/wagmi/hooks/reward.useSetRecipient',
+                  },
+                  {
+                    text: 'useStart',
+                    link: '/sdk/typescript/wagmi/hooks/reward.useStart',
+                  },
+                  {
+                    text: 'useUserRewardInfo',
+                    link: '/sdk/typescript/wagmi/hooks/reward.useUserRewardInfo',
+                  },
+                  {
+                    text: 'useWatchRewardRecipientSet',
+                    link: '/sdk/typescript/wagmi/hooks/reward.useWatchRewardRecipientSet',
+                  },
+                  {
+                    text: 'useWatchRewardScheduled',
+                    link: '/sdk/typescript/wagmi/hooks/reward.useWatchRewardScheduled',
                   },
                 ],
               },
