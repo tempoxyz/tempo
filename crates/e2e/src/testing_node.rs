@@ -5,9 +5,12 @@ use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::simulated::{Control, Oracle, SocketManager};
 use commonware_runtime::{Handle, deterministic::Context};
 use reth_db::{DatabaseEnv, mdbx::DatabaseArguments, open_db_read_only};
-use reth_ethereum::provider::{
-    ProviderFactory,
-    providers::{BlockchainProvider, StaticFileProvider},
+use reth_ethereum::{
+    provider::{
+        DatabaseProviderFactory, ProviderFactory,
+        providers::{BlockchainProvider, StaticFileProvider},
+    },
+    storage::BlockNumReader,
 };
 use reth_node_builder::NodeTypesWithDBAdapter;
 use std::{path::PathBuf, sync::Arc};
@@ -37,6 +40,8 @@ pub struct TestingNode {
     execution_config: ExecutionNodeConfig,
     /// Database instance for the execution node
     execution_database: Option<Arc<DatabaseEnv>>,
+    /// Last block number in database when stopped (used for restart verification)
+    last_db_block_on_stop: Option<u64>,
 }
 
 impl TestingNode {
@@ -66,6 +71,7 @@ impl TestingNode {
             execution_runtime,
             execution_config,
             execution_database: None,
+            last_db_block_on_stop: None,
         }
     }
 
@@ -138,6 +144,19 @@ impl TestingNode {
             )
             .await
             .expect("must be able to spawn execution node");
+
+        // verify database persistence on restart
+        if let Some(expected_block) = self.last_db_block_on_stop {
+            let current_db_block = execution_node
+                .node
+                .provider
+                .database_provider_ro()
+                .expect("failed to get database provider")
+                .last_block_number()
+                .expect("failed to get last block number from database");
+
+            assert!(current_db_block >= expected_block,);
+        }
 
         // Update consensus config to point to the new execution node
         self.consensus_config = self
@@ -269,6 +288,16 @@ impl TestingNode {
                 self.uid
             )
         });
+
+        let last_db_block = execution_node
+            .node
+            .provider
+            .database_provider_ro()
+            .expect("failed to get database provider")
+            .last_block_number()
+            .expect("failed to get last block number from database");
+        self.last_db_block_on_stop = Some(last_db_block);
+
         execution_node.shutdown().await
     }
 
