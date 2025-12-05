@@ -19,6 +19,8 @@ Using tempo-foundry, will run tests against the rust precompiles.
 
 ## Running Tests
 
+**Prerequisite:** Clone the `tempo-foundry` github repo, and update the tempo deps to your branch before running the tests.
+
 ### Option 1: Solidity Only (Standard Foundry)
 
 Run tests against the Solidity reference implementations:
