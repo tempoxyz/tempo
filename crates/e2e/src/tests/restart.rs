@@ -251,7 +251,7 @@ fn validator_catches_up_across_epochs() {
 fn node_recovers_after_finalizing_ceremony_pre_allegretto_one_validator() {
     assert_node_recovers_after_finalizing_block_pre_allegretto(
         1,
-        10,
+        20,
         ShutdownAfterFinalizing::Ceremony,
     );
 }
