@@ -17,6 +17,8 @@ async fn run_validator_late_join_test(
     blocks_after_join: u64,
     should_pipeline_sync: bool,
 ) {
+    let metrics_recorder = install_prometheus_recorder();
+
     let setup = Setup::new()
         .epoch_length(100)
         .connect_execution_layer_nodes(should_pipeline_sync);
@@ -31,8 +33,6 @@ async fn run_validator_late_join_test(
     while nodes[0].execution_provider().last_block_number().unwrap() < blocks_before_join {
         context.sleep(Duration::from_secs(1)).await;
     }
-
-    let metrics_recorder = install_prometheus_recorder();
 
     // Start the last node
     last.start().await;
