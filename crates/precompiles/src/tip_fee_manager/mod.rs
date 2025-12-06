@@ -476,7 +476,7 @@ mod tests {
         tip20::{ISSUER_ROLE, ITIP20, TIP20Token, tests::initialize_path_usd, token_id_to_address},
     };
 
-    fn setup_token_with_balance(
+    fn deploy_token_with_balance(
         storage: &mut HashMapStorageProvider,
         token: Address,
         user: Address,
@@ -744,7 +744,7 @@ mod tests {
         let max_amount = U256::from(10000);
 
         // Setup token with balance and approval
-        setup_token_with_balance(&mut storage, token, user, U256::from(u64::MAX));
+        deploy_token_with_balance(&mut storage, token, user, U256::from(u64::MAX));
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
 
