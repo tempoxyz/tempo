@@ -260,6 +260,7 @@ mod tests {
     use super::*;
     use crate::{
         PATH_USD_ADDRESS,
+        error::TempoPrecompileError,
         storage::hashmap::HashMapStorageProvider,
         tip20::{TIP20Token, tests::initialize_path_usd},
     };
@@ -1038,9 +1039,13 @@ mod tests {
 
         let call = ITIP20::feeRecipientCall {};
         let calldata = call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), admin)?;
+        let result = token.call(&Bytes::from(calldata), admin);
 
-        assert!(result.reverted);
+        assert!(matches!(
+            result,
+            Err(revm::precompile::PrecompileError::Other(ref msg)) if msg.contains("Unknown function selector")
+        ));
+
         Ok(())
     }
 
@@ -1075,9 +1080,13 @@ mod tests {
             newRecipient: Address::from([0x33; 20]),
         };
         let calldata = call.abi_encode();
-        let result = token.call(&Bytes::from(calldata), admin)?;
+        let result = token.call(&Bytes::from(calldata), admin);
 
-        assert!(result.reverted);
+        assert!(matches!(
+            result,
+            Err(revm::precompile::PrecompileError::Other(ref msg)) if msg.contains("Unknown function selector")
+        ));
+
         Ok(())
     }
 
