@@ -1,13 +1,13 @@
 import { Actions, Addresses } from 'tempo.ts/viem'
 import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits, parseUnits } from 'viem'
-import { useAccount, useAccountEffect, useSendCallsSync } from 'wagmi'
+import { useConnection, useConnectionEffect, useSendCallsSync } from 'wagmi'
 
 import { Button, ExplorerLink } from '../../Demo'
 import { alphaUsd, betaUsd } from '../../tokens'
 
 export function SellSwap({ onSuccess }: { onSuccess?: () => void }) {
-  const { address } = useAccount()
+  const { address } = useConnection()
 
   const { data: tokenInMetadata } = Hooks.token.useGetMetadata({
     token: alphaUsd,
@@ -42,7 +42,7 @@ export function SellSwap({ onSuccess }: { onSuccess?: () => void }) {
     },
   })
 
-  useAccountEffect({
+  useConnectionEffect({
     onDisconnect() {
       sendCalls.reset()
     },

@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { Hooks } from 'tempo.ts/wagmi'
-import { useAccount, useAccountEffect } from 'wagmi'
+import { useConnection, useConnectionEffect } from 'wagmi'
 import { cx } from '../../../../cva.config'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Login, Step } from '../../Demo'
@@ -9,7 +9,7 @@ import type { DemoStepProps } from '../types'
 
 export function CreateToken(props: DemoStepProps) {
   const { stepNumber, last = false } = props
-  const { address } = useAccount()
+  const { address } = useConnection()
   const { setData } = useDemoContext()
   const { data: balance, refetch: balanceRefetch } = Hooks.token.useGetBalance({
     account: address,
@@ -26,7 +26,7 @@ export function CreateToken(props: DemoStepProps) {
       },
     },
   })
-  useAccountEffect({
+  useConnectionEffect({
     onDisconnect() {
       create.reset()
     },
