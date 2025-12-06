@@ -152,6 +152,7 @@ sol! {
         error RewardsDisabled();
         error ScheduledRewardsDisabled();
         error ProtectedAddress();
+        error InvalidToken();
     }
 }
 
@@ -265,5 +266,10 @@ impl TIP20Error {
     /// Error for operations on protected addresses (like burning `FeeManager` tokens)
     pub const fn protected_address() -> Self {
         Self::ProtectedAddress(ITIP20::ProtectedAddress {})
+    }
+
+    /// Error when an address is not a valid TIP20 token
+    pub const fn invalid_token() -> Self {
+        Self::InvalidToken(ITIP20::InvalidToken {})
     }
 }

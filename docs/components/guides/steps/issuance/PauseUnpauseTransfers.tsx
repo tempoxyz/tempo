@@ -1,5 +1,5 @@
 import { Hooks } from 'tempo.ts/wagmi'
-import { useAccount, useAccountEffect } from 'wagmi'
+import { useConnection, useConnectionEffect } from 'wagmi'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
@@ -7,7 +7,7 @@ import type { DemoStepProps } from '../types'
 
 export function PauseUnpauseTransfers(props: DemoStepProps) {
   const { stepNumber, last = false } = props
-  const { address } = useAccount()
+  const { address } = useConnection()
   const { getData } = useDemoContext()
 
   // Get the address of the token created in a previous step
@@ -47,7 +47,7 @@ export function PauseUnpauseTransfers(props: DemoStepProps) {
     },
   })
 
-  useAccountEffect({
+  useConnectionEffect({
     onDisconnect() {
       pause.reset()
       unpause.reset()

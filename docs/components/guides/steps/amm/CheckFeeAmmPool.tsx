@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits } from 'viem'
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 import { useDemoContext } from '../../../DemoContext'
 import { Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
@@ -11,7 +11,7 @@ const validatorToken = alphaUsd
 
 export function CheckFeeAmmPool(props: DemoStepProps) {
   const { stepNumber } = props
-  const { address } = useAccount()
+  const { address } = useConnection()
   const { getData } = useDemoContext()
 
   const tokenAddress = getData('tokenAddress')

@@ -1,7 +1,6 @@
 export { BurnFeeAmmLiquidity } from './amm/BurnFeeAmmLiquidity'
 export { CheckFeeAmmPool } from './amm/CheckFeeAmmPool'
 export { MintFeeAmmLiquidity } from './amm/MintFeeAmmLiquidity'
-export { SelectFeeToken } from './amm/SelectFeeToken'
 export { Connect } from './auth/Connect'
 export { ApproveSpend } from './exchange/ApproveSpend'
 export { CancelOrder } from './exchange/CancelOrder'
@@ -23,13 +22,7 @@ export { AddFunds } from './payments/AddFunds'
 export { PayWithFeeToken } from './payments/PayWithFeeToken'
 export { PayWithIssuedToken } from './payments/PayWithIssuedToken'
 export { SendPayment } from './payments/SendPayment'
-export { SendPaymentWithIssuedToken } from './payments/SendPaymentWithIssuedToken'
-export {
-  CreateSponsorAccount,
-  FundSponsorAccount,
-  SendRelayerSponsoredPayment,
-  SendSponsoredPayment,
-} from './payments/SponsorUserFees'
+export { SendRelayerSponsoredPayment } from './payments/SponsorUserFees'
 export { ClaimReward } from './rewards/ClaimReward'
 export { OptInToRewards } from './rewards/OptInToRewards'
 export { StartReward } from './rewards/StartReward'
