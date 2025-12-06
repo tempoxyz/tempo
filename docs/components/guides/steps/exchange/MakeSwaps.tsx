@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { Hooks } from 'tempo.ts/wagmi'
 import { parseUnits } from 'viem'
-import { useAccount, useAccountEffect } from 'wagmi'
+import { useConnection, useConnectionEffect } from 'wagmi'
 
 import { Step } from '../../Demo'
 import { alphaUsd, betaUsd } from '../../tokens'
@@ -10,7 +10,7 @@ import { BuySwap } from './BuySwap'
 import { SellSwap } from './SellSwap'
 
 export function MakeSwaps({ stepNumber, last = false }: DemoStepProps) {
-  const { address } = useAccount()
+  const { address } = useConnection()
   const [buyCompleted, setBuyCompleted] = React.useState(false)
   const [sellCompleted, setSellCompleted] = React.useState(false)
 
@@ -46,7 +46,7 @@ export function MakeSwaps({ stepNumber, last = false }: DemoStepProps) {
 
   const completed = buyCompleted && sellCompleted
 
-  useAccountEffect({
+  useConnectionEffect({
     onDisconnect() {
       setBuyCompleted(false)
       setSellCompleted(false)

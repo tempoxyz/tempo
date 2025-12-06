@@ -2,7 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import * as React from 'react'
 import type { TokenRole } from 'tempo.ts/ox'
 import { Hooks } from 'tempo.ts/wagmi'
-import { useAccount, useAccountEffect } from 'wagmi'
+import { useConnection, useConnectionEffect } from 'wagmi'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
@@ -15,7 +15,7 @@ export function GrantTokenRoles(
   },
 ) {
   const { stepNumber, roles, last = false } = props
-  const { address } = useAccount()
+  const { address } = useConnection()
   const { getData } = useDemoContext()
   const queryClient = useQueryClient()
 
@@ -47,7 +47,7 @@ export function GrantTokenRoles(
       },
     },
   })
-  useAccountEffect({
+  useConnectionEffect({
     onDisconnect() {
       setExpanded(false)
       grant.reset()
