@@ -244,6 +244,7 @@ tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 criterion = "0.7.0"
 test-case = "3"
+secp256k1 = "0.30.0"
 
 # build deps
 vergen = "9"
