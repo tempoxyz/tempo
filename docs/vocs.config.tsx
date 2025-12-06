@@ -1,12 +1,12 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Instance } from 'tempo.ts/prool'
-import { collapseTextChangeRangesAcrossMultipleVersions, ModuleResolutionKind } from 'typescript'
+import { ModuleResolutionKind } from 'typescript'
 import autoImport from 'unplugin-auto-import/vite'
 import iconsResolver from 'unplugin-icons/resolver'
 import icons from 'unplugin-icons/vite'
 import { loadEnv } from 'vite'
-import { defineConfig } from 'vocs'
+import { defineConfig, type SidebarItem } from 'vocs'
 
 const twoslashSupportFile = readFileSync(
   join(process.cwd(), 'snippets', 'twoslash-env.d.ts'),
@@ -50,7 +50,7 @@ export default defineConfig({
     },
   ],
   sidebar: (() => {
-    const sidebar = {
+    const rawSidebar: Record<string, SidebarItem[]> = {
       '/': [
         {
           text: 'Home',
@@ -1491,30 +1491,27 @@ export default defineConfig({
       ],
     }
 
-    // Use the same combined nav on every section (Build + Learn + SDKs)
-    const [overview, quickstart, startBuilding, sdks, runNode] = sidebar['/']
-    const [tempoProtocol] = sidebar['/documentation']
-
-    const sdksItems = sdks?.items || []
-    const sdksWithReference = {
-      ...sdks,
-      items: [
-        sdksItems[0], // Overview
-        {
-          text: 'TypeScript',
-          collapsed: true,
-          items: sidebar['/sdk/typescript'],
-        },
-        ...sdksItems.slice(1), // Go, Foundry, Rust
-      ],
-    }
+    const [
+      overview,
+      quickstart,
+      startBuilding,
+      runNode,
+      tempoProtocol,
+      sdksWithReference
+    ] = rawSidebar['/'] as SidebarItem[]
 
     const combinedSidebar = [
+      // Home
       { ...overview, collapsed: false },
+      // Integrate Tempo
       { ...quickstart, collapsed: false },
+      // Start Building
       { ...startBuilding, collapsed: false },
+      // Run Node
       { ...runNode, collapsed: true },
+      // Protocol specs
       { ...tempoProtocol, collapsed: true },
+      // Build on Tempo SDKs + TypeScript docs
       { ...sdksWithReference, collapsed: true },
     ]
 
@@ -1522,8 +1519,9 @@ export default defineConfig({
       '/': combinedSidebar,
       '/documentation': combinedSidebar,
       '/sdk/typescript': combinedSidebar,
-      '/learn': sidebar['/learn'],
-    }
+      '/learn': rawSidebar['/learn'],
+      } as {[key: string]: SidebarItem[]}
+
   })(),
   topNav: [
     { text: 'Learn', link: '/learn' },
