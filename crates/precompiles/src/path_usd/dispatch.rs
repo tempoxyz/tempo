@@ -225,7 +225,10 @@ impl<S: PrecompileStorageProvider> Precompile for PathUSD<'_, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{storage::hashmap::HashMapStorageProvider, test_util::check_selector_coverage};
+    use crate::{
+        storage::hashmap::HashMapStorageProvider, test_util::check_selector_coverage,
+        tip20::tests::initialize_path_usd,
+    };
     use alloy::{
         primitives::{Bytes, U256},
         sol_types::SolInterface,
@@ -235,15 +238,13 @@ mod tests {
         IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error,
     };
 
-    #[test]
-    fn path_usd_test_selector_coverage_pre_allegretto() {
+    fn path_usd_test_selector_coverage_pre_allegretto() -> eyre::Result<()> {
         use crate::test_util::assert_full_coverage;
 
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        initialize_path_usd(&mut storage, Address::random())?;
+
         let mut path_usd = PathUSD::new(&mut storage);
-
-        path_usd.initialize(Address::ZERO).unwrap();
-
         let itip20_unsupported =
             check_selector_coverage(&mut path_usd, ITIP20Calls::SELECTORS, "ITIP20", |s| {
                 ITIP20Calls::name_by_selector(s)
@@ -257,34 +258,33 @@ mod tests {
         );
 
         assert_full_coverage([itip20_unsupported, roles_unsupported]);
+
+        Ok(())
     }
 
     #[test]
-    fn path_usd_test_selector_coverage_post_allegretto() {
-        todo!()
+    fn path_usd_test_selector_coverage_post_allegretto() -> eyre::Result<()> {
+        use crate::test_util::assert_full_coverage;
 
-        //TODO: test tip20 dispatch
-        // use crate::test_util::assert_full_coverage;
-        //
-        // let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
-        // let mut path_usd = PathUSD::new(&mut storage);
-        //
-        // path_usd.initialize(Address::ZERO).unwrap();
-        //
-        // // TODO: only functions post allegretto shoudl be name and symbol
-        // let itip20_unsupported =
-        //     check_selector_coverage(&mut path_usd, ITIP20Calls::SELECTORS, "ITIP20", |s| {
-        //         ITIP20Calls::name_by_selector(s)
-        //     });
-        //
-        // let roles_unsupported = check_selector_coverage(
-        //     &mut path_usd,
-        //     IRolesAuthCalls::SELECTORS,
-        //     "IRolesAuth",
-        //     IRolesAuthCalls::name_by_selector,
-        // );
-        //
-        // assert_full_coverage([itip20_unsupported, roles_unsupported]);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        initialize_path_usd(&mut storage, Address::random())?;
+
+        let mut path_usd = PathUSD::new(&mut storage);
+        let itip20_unsupported =
+            check_selector_coverage(&mut path_usd, ITIP20Calls::SELECTORS, "ITIP20", |s| {
+                ITIP20Calls::name_by_selector(s)
+            });
+
+        let roles_unsupported = check_selector_coverage(
+            &mut path_usd,
+            IRolesAuthCalls::SELECTORS,
+            "IRolesAuth",
+            IRolesAuthCalls::name_by_selector,
+        );
+
+        assert_full_coverage([itip20_unsupported, roles_unsupported]);
+
+        Ok(())
     }
 
     #[test]
