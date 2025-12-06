@@ -102,10 +102,10 @@ The built-in Tempo testnet faucet includes `AlphaUSD` and `BetaUSD` when funding
 ```tsx twoslash [AddFunds.ts]
 // @noErrors
 import { Hooks } from 'tempo.ts/wagmi'
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 
 function AddFunds() {
-  const { address } = useAccount()
+  const { address } = useConnection()
   const { mutate, isPending } = Hooks.faucet.useFundSync()
 
   return (

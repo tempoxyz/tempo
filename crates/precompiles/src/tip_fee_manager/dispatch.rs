@@ -245,7 +245,7 @@ mod tests {
 
         // Create a USD token to use as fee token
         let token = token_id_to_address(1);
-        let mut tip20_token = TIP20Token::from_address(token, &mut storage);
+        let mut tip20_token = TIP20Token::from_address(token, &mut storage).unwrap();
         tip20_token
             .initialize(
                 "TestToken",
@@ -302,7 +302,7 @@ mod tests {
 
         // Create a USD token to use as fee token
         let token = token_id_to_address(1);
-        let mut tip20_token = TIP20Token::from_address(token, &mut storage);
+        let mut tip20_token = TIP20Token::from_address(token, &mut storage).unwrap();
         tip20_token
             .initialize(
                 "TestToken",

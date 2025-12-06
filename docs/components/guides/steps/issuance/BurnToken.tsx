@@ -2,7 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import * as React from 'react'
 import { Hooks } from 'tempo.ts/wagmi'
 import { pad, parseUnits, stringToHex } from 'viem'
-import { useAccount, useAccountEffect } from 'wagmi'
+import { useConnection, useConnectionEffect } from 'wagmi'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
@@ -10,7 +10,7 @@ import type { DemoStepProps } from '../types'
 
 export function BurnToken(props: DemoStepProps) {
   const { stepNumber, last = false } = props
-  const { address } = useAccount()
+  const { address } = useConnection()
   const { getData } = useDemoContext()
   const queryClient = useQueryClient()
 
@@ -41,7 +41,7 @@ export function BurnToken(props: DemoStepProps) {
       },
     },
   })
-  useAccountEffect({
+  useConnectionEffect({
     onDisconnect() {
       setExpanded(false)
       burn.reset()
