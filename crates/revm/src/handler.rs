@@ -1323,7 +1323,9 @@ mod tests {
         state::Account,
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, tip_fee_manager};
+    use tempo_precompiles::{
+        DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager,
+    };
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
         let db = CacheDB::new(EmptyDB::default());
@@ -1384,7 +1386,7 @@ mod tests {
             user,
             TempoHardfork::default(),
         )?;
-        assert_eq!(validator_fee_token, fee_token);
+        assert_eq!(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, fee_token);
 
         // Set user token
         let user_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);

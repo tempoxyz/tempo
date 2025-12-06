@@ -376,18 +376,21 @@ mod tests {
     #[test]
     fn test_get_fee_token_user_token_set() -> eyre::Result<()> {
         let caller = Address::random();
-        let tip20_token = Address::random();
+        let user_token = Address::random();
 
-        // TODO: set token in fee manager
+        // Set user stored token preference in the FeeManager
+        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        let user_slot = mapping_slot(caller, tip_fee_manager::slots::USER_TOKENS);
+        db.insert_account_storage(TIP_FEE_MANAGER_ADDRESS, user_slot, user_token.into_u256())
+            .unwrap();
 
-        let mut db = EmptyDB::default();
         let result_token = db.get_fee_token(
             TempoTxEnv::default(),
             Address::ZERO,
             caller,
-            TempoHardfork::Allegretto,
+            TempoHardfork::default(),
         )?;
-        assert_eq!(result_token, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO);
+        assert_eq!(result_token, user_token);
         Ok(())
     }
 
