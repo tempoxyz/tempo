@@ -1017,9 +1017,11 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::{
-        PATH_USD_ADDRESS, error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
+        PATH_USD_ADDRESS,
+        error::TempoPrecompileError,
+        storage::{ContractStorage, hashmap::HashMapStorageProvider},
     };
-    use rand::{Rng, distributions::Alphanumeric, thread_rng};
+    use rand::{Rng, distributions::Alphanumeric, random, thread_rng};
 
     /// Initialize PathUSD token. For AllegroModerato+, uses the factory flow.
     /// For older specs, initializes directly.
@@ -1027,7 +1029,7 @@ pub(crate) mod tests {
         storage: &mut HashMapStorageProvider,
         admin: Address,
     ) -> Result<()> {
-        if !storage.spec().is_allegro_moderato() {
+        if !storage.spec().is_allegretto() {
             let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, storage);
             path_usd.initialize(
                 "PathUSD",
@@ -1036,13 +1038,14 @@ pub(crate) mod tests {
                 Address::ZERO,
                 admin,
                 Address::ZERO,
-            )?;
-        }
+            )
+        } else {
+            let mut factory = TIP20Factory::new(storage);
+            factory.initialize()?;
+            deploy_path_usd(&mut factory, admin)?;
 
-        let mut factory = TIP20Factory::new(storage);
-        factory.initialize()?;
-        deploy_path_usd(&mut factory, admin)?;
-        Ok(())
+            Ok(())
+        }
     }
 
     /// Deploy PathUSD via the factory. Requires AllegroModerato+ spec and no tokens deployed yet.
@@ -1051,8 +1054,11 @@ pub(crate) mod tests {
         admin: Address,
     ) -> Result<Address> {
         let token_id = factory.token_id_counter()?;
+
         if !token_id.is_zero() {
-            return Err(TIP20Error::invalid_quote_token().into());
+            return Err(TempoPrecompileError::Fatal(
+                "PathUSD is not the first deployed token".to_string(),
+            ));
         }
 
         factory.create_token(
@@ -1188,8 +1194,10 @@ pub(crate) mod tests {
         initialize_path_usd(storage, admin).unwrap();
         let mut factory = TIP20Factory::new(storage);
 
+        dbg!("gotem1");
         let token_id =
             create_token_via_factory(&mut factory, admin, "Test", "TST", PATH_USD_ADDRESS);
+        dbg!("gotem");
         let quote_token_id =
             create_token_via_factory(&mut factory, admin, "Quote", "QUOTE", PATH_USD_ADDRESS);
 
@@ -1326,7 +1334,7 @@ pub(crate) mod tests {
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         let to = Address::random();
-        let amount = U256::random();
+        let amount = U256::from(random::<u128>());
         let memo = FixedBytes::random();
 
         token
@@ -1453,7 +1461,7 @@ pub(crate) mod tests {
 
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
-        let amount = U256::random();
+        let amount = U256::from(random::<u128>());
         let memo = FixedBytes::random();
 
         token
@@ -2019,7 +2027,6 @@ pub(crate) mod tests {
 
         initialize_path_usd(&mut storage, admin)?;
         let mut factory = TIP20Factory::new(&mut storage);
-        factory.initialize().unwrap();
 
         // Create token_b first (links to LINKING_USD)
         let token_b_id =

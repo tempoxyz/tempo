@@ -450,7 +450,7 @@ mod tests {
 
         // Setup token
         let user = Address::random();
-        setup_token_with_balance(&mut storage, token, user, U256::MAX);
+        setup_token_with_balance(&mut storage, token, user, U256::from(u128::MAX));
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
 
