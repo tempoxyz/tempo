@@ -29,7 +29,7 @@ use crate::{
     storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
     tip_account_registrar::TipAccountRegistrar,
     tip_fee_manager::TipFeeManager,
-    tip20::{TIP20Token, address_to_token_id_unchecked, is_tip20},
+    tip20::{TIP20Token, address_to_token_id_unchecked, is_tip20_prefix},
     tip20_factory::TIP20Factory,
     tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
@@ -78,7 +78,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
     let chain_id = cfg.chain_id;
     let spec = cfg.spec;
     precompiles.set_precompile_lookup(move |address: &Address| {
-        if is_tip20(*address) {
+        if is_tip20_prefix(*address) {
             let token_id = address_to_token_id_unchecked(*address);
             if token_id == 0 {
                 Some(PathUSDPrecompile::create(chain_id, spec))

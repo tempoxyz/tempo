@@ -1,14 +1,14 @@
 import * as React from 'react'
 import { Hooks } from 'tempo.ts/wagmi'
 import { isAddress, pad, parseUnits, stringToHex } from 'viem'
-import { useAccount, useAccountEffect } from 'wagmi'
+import { useConnection, useConnectionEffect } from 'wagmi'
 import { Button, ExplorerLink, FAKE_RECIPIENT, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function SendPayment(props: DemoStepProps) {
   const { stepNumber, last = false } = props
-  const { address } = useAccount()
+  const { address } = useConnection()
   const [recipient, setRecipient] = React.useState<string>(FAKE_RECIPIENT)
   const [memo, setMemo] = React.useState<string>('')
   const [expanded, setExpanded] = React.useState(false)
@@ -23,7 +23,7 @@ export function SendPayment(props: DemoStepProps) {
       },
     },
   })
-  useAccountEffect({
+  useConnectionEffect({
     onDisconnect() {
       setExpanded(false)
       sendPayment.reset()
