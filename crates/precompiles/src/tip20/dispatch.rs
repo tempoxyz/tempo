@@ -260,7 +260,6 @@ mod tests {
     use super::*;
     use crate::{
         PATH_USD_ADDRESS,
-        error::TempoPrecompileError,
         storage::hashmap::HashMapStorageProvider,
         tip20::{TIP20Token, tests::initialize_path_usd},
     };

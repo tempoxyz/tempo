@@ -1400,7 +1400,7 @@ mod tests {
             &ctx.tx,
             validator,
             user,
-            TempoHardfork::Allegretto,
+            TempoHardfork::default(),
         )?;
         assert_eq!(user_fee_token, fee_token);
 
@@ -1410,7 +1410,7 @@ mod tests {
             &ctx.tx,
             validator,
             user,
-            TempoHardfork::Allegretto,
+            TempoHardfork::default(),
         )?;
         assert_eq!(tx_fee_token, fee_token);
 
