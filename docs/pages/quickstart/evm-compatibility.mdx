@@ -4,7 +4,7 @@ import LucideSend from '~icons/lucide/send'
 import LucideCode from '~icons/lucide/code'
 import LucideCheckCircle from '~icons/lucide/check-circle'
 import LucideZap from '~icons/lucide/zap'
-import * as Card from "../../../components/Card.tsx"
+import * as Card from "../../components/Card.tsx"
 
 # EVM Differences
 
@@ -68,7 +68,7 @@ Sometimes wallets will need to specify the currency symbol for the native token.
   title="Tempo Transactions."
 >
   <p>
-    We strongly recommend using <a href="/guide/quickstart/integrate-tempo#tempo-transactions">Tempo Transactions</a> over legacy Ethereum transactions if you have control over the transaction submission, in order to leverage features like native gas sponsorship.
+    We strongly recommend using <a href="/quickstart/integrate-tempo#tempo-transactions">Tempo Transactions</a> over legacy Ethereum transactions if you have control over the transaction submission, in order to leverage features like native gas sponsorship.
   </p>
 </Card.Notice>
 
@@ -94,9 +94,9 @@ Importantly, note that the `amount` field in this case is sent in full. So, if t
 
 If the user is calling a contract that is not a TIP-20 token, the EVM transaction will default to the PathUSD token. Thus, in order to send transactions to non-TIP-20 contracts, the wallet must hold some balance of PathUSD.
 
-On the Tempo Testnet, PathUSD is available to be deposited from the [faucet](/guide/quickstart/faucet).
+On the Tempo Testnet, PathUSD is available to be deposited from the [faucet](/quickstart/faucet).
 
-If a wallet wants to submit a non-TIP20 transaction without having to submit the above transaction, we recommend investing in using [Tempo Transactions](/guide/quickstart/integrate-tempo#tempo-transactions) instead.
+If a wallet wants to submit a non-TIP20 transaction without having to submit the above transaction, we recommend investing in using [Tempo Transactions](/quickstart/integrate-tempo#tempo-transactions) instead.
 
 ## VM Layer Differences
 

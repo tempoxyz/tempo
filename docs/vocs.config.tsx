@@ -54,30 +54,30 @@ export default defineConfig({
       '/': [
         {
           text: 'Home',
-          link: '/guide/',
+          link: '/',
         },
         {
           text: 'Integrate Tempo Testnet',
           items: [
             {
               text: 'Overview',
-              link: '/guide/quickstart/integrate-tempo',
+              link: '/quickstart/integrate-tempo',
             },
             {
               text: 'Connect to the Network',
-              link: '/guide/quickstart/connection-details',
+              link: '/quickstart/connection-details',
             },
             {
               text: 'Get Faucet Funds',
-              link: '/guide/quickstart/faucet',
+              link: '/quickstart/faucet',
             },
             {
               text: 'EVM Differences',
-              link: '/guide/quickstart/evm-compatibility',
+              link: '/quickstart/evm-compatibility',
             },
             {
               text: 'Predeployed Contracts',
-              link: '/guide/quickstart/predeployed-contracts',
+              link: '/quickstart/predeployed-contracts',
             },
           ],
         },
@@ -210,19 +210,19 @@ export default defineConfig({
           items: [
             {
               text: 'Overview',
-              link: '/guide/sdks',
+              link: '/sdk',
             },
             {
               text: 'Go',
-              link: '/guide/sdks/go',
+              link: '/sdk/go',
             },
             {
               text: 'Foundry',
-              link: '/guide/sdks/foundry',
+              link: '/sdk/foundry',
             },
             {
               text: 'Rust',
-              link: '/guide/sdks/rust',
+              link: '/sdk/rust',
             },
             {
               text: 'Typescript',
@@ -1438,7 +1438,7 @@ export default defineConfig({
       ],
       '/learn': [
         {
-          text: 'Learn Home',
+          text: 'Home',
           link: '/learn',
         },
         {
@@ -1514,10 +1514,10 @@ export default defineConfig({
       { ...quickstart, collapsed: false },
       // Start Building
       { ...startBuilding, collapsed: false },
+      // Protocol specs
+      { ...tempoProtocol, collapsed: false },
       // Run Node
       { ...runNode, collapsed: true },
-      // Protocol specs
-      { ...tempoProtocol, collapsed: true },
       // Build on Tempo SDKs + TypeScript docs
       { ...sdksWithReference, collapsed: true },
     ]
@@ -1532,7 +1532,7 @@ export default defineConfig({
   })(),
   topNav: [
     { text: 'Learn', link: '/learn' },
-    { text: 'Docs', link: '/guide' },
+    { text: 'Docs', link: '/' },
     { text: 'Ecosystem', link: 'https://tempo.xyz/ecosystem' },
     { text: 'Blog', link: 'https://tempo.xyz/blog' },
   ],
