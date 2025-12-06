@@ -35,6 +35,7 @@ use reth_rpc_eth_api::RpcNodeCore;
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::TransactionValidationTaskExecutor;
 use std::{default::Default, sync::Arc, time::SystemTime};
+use reth_rpc_eth_api::helpers::config::EthConfigHandler;
 use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_consensus::TempoConsensus;
 use tempo_evm::{TempoEvmConfig, evm::TempoEvmFactory};
@@ -179,6 +180,9 @@ where
                 modules.merge_configured(policy.into_rpc())?;
                 modules.merge_configured(eth_ext.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
+
+                let eth_config =
+                    EthConfigHandler::new(ctx.node.provider().clone(), ctx.node.evm_config().clone());
 
                 container
                     .modules
