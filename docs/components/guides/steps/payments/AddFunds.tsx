@@ -6,14 +6,14 @@ import { Hooks } from 'tempo.ts/wagmi'
 import type { Client, Transport } from 'viem'
 import { parseUnits } from 'viem'
 import { mnemonicToAccount } from 'viem/accounts'
-import { useAccount, useBlockNumber, useClient } from 'wagmi'
+import { useBlockNumber, useClient, useConnection } from 'wagmi'
 import { Button, Login, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function AddFunds(props: DemoStepProps) {
   const { stepNumber = 2, last = false } = props
-  const { address } = useAccount()
+  const { address } = useConnection()
   const queryClient = useQueryClient()
   const { data: balance, refetch: balanceRefetch } = Hooks.token.useGetBalance({
     account: address,
