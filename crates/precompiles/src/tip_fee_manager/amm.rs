@@ -723,10 +723,7 @@ mod tests {
         PATH_USD_ADDRESS,
         error::TempoPrecompileError,
         storage::{ContractStorage, hashmap::HashMapStorageProvider},
-        tip20::{
-            TIP20Token, address_to_token_id_unchecked, tests::initialize_path_usd,
-            token_id_to_address,
-        },
+        tip20::{TIP20Token, tests::initialize_path_usd, token_id_to_address},
     };
     use alloy::primitives::{Address, uint};
     use tempo_contracts::precompiles::TIP20Error;

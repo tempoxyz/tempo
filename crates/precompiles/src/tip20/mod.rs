@@ -1196,10 +1196,8 @@ pub(crate) mod tests {
         initialize_path_usd(storage, admin).unwrap();
         let mut factory = TIP20Factory::new(storage);
 
-        dbg!("gotem1");
         let token_id =
             create_token_via_factory(&mut factory, admin, "Test", "TST", PATH_USD_ADDRESS);
-        dbg!("gotem");
         let quote_token_id =
             create_token_via_factory(&mut factory, admin, "Quote", "QUOTE", PATH_USD_ADDRESS);
 
