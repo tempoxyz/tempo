@@ -1,12 +1,7 @@
 ---
-layout: landing
-showLogo: false
-content:
-  horizontalPadding: 0
-  width: 1180px
-  verticalPadding: 0
+layout: default
 ---
 
-import { HomePage } from '../components/HomePage.tsx'
+import { Navigate } from 'react-router'
 
-<HomePage />
+<Navigate to="/guide" replace />

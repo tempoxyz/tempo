@@ -2,7 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import * as React from 'react'
 import { Hooks } from 'tempo.ts/wagmi'
 import { parseUnits } from 'viem'
-import { useAccount, useAccountEffect } from 'wagmi'
+import { useConnection, useConnectionEffect } from 'wagmi'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
@@ -14,7 +14,7 @@ export function MintFeeAmmLiquidity(
   props: DemoStepProps & { waitForBalance: boolean },
 ) {
   const { stepNumber, last = false, waitForBalance = true } = props
-  const { address } = useAccount()
+  const { address } = useConnection()
   const { getData } = useDemoContext()
   const queryClient = useQueryClient()
 
@@ -36,7 +36,7 @@ export function MintFeeAmmLiquidity(
       },
     },
   })
-  useAccountEffect({
+  useConnectionEffect({
     onDisconnect() {
       mintFeeLiquidity.reset()
     },
