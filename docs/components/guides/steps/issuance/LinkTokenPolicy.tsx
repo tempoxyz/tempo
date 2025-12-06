@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { Hooks } from 'tempo.ts/wagmi'
-import { useAccountEffect } from 'wagmi'
+import { useConnectionEffect } from 'wagmi'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
@@ -26,7 +26,7 @@ export function LinkTokenPolicy(props: DemoStepProps) {
     },
   })
 
-  useAccountEffect({
+  useConnectionEffect({
     onDisconnect() {
       setExpanded(false)
       linkPolicy.reset()
