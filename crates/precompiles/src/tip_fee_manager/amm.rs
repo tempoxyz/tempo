@@ -723,7 +723,10 @@ mod tests {
         PATH_USD_ADDRESS,
         error::TempoPrecompileError,
         storage::{ContractStorage, hashmap::HashMapStorageProvider},
-        tip20::{TIP20Token, tests::initialize_path_usd, token_id_to_address},
+        tip20::{
+            TIP20Token, address_to_token_id_unchecked, tests::initialize_path_usd,
+            token_id_to_address,
+        },
     };
     use alloy::primitives::{Address, uint};
     use tempo_contracts::precompiles::TIP20Error;
@@ -1424,4 +1427,152 @@ mod tests {
             ))
         ));
     }
+
+    ///// Tests the mean calculation in add_liquidity for pre-Moderato hardfork
+    //#[test]
+    //fn test_add_liquidity_pre_moderato() -> eyre::Result<()> {
+    //    use crate::tip20_factory::TIP20Factory;
+    //    use tempo_chainspec::hardfork::TempoHardfork;
+    //
+    //    let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+    //    let admin = Address::random();
+    //    initialize_path_usd(&mut storage, admin)?;
+    //
+    //    let mut factory = TIP20Factory::new(&mut storage);
+    //
+    //    let token1 = factory.create_token(
+    //        admin,
+    //        crate::tip20_factory::ITIP20Factory::createTokenCall {
+    //            admin,
+    //            name: "Token1".to_string(),
+    //            symbol: "TK1".to_string(),
+    //            currency: "USD".to_string(),
+    //            quoteToken: PATH_USD_ADDRESS,
+    //        },
+    //    )?;
+    //
+    //    let token2 = factory.create_token(
+    //        admin,
+    //        crate::tip20_factory::ITIP20Factory::createTokenCall {
+    //            admin,
+    //            name: "Token2".to_string(),
+    //            symbol: "TK2".to_string(),
+    //            currency: "USD".to_string(),
+    //            quoteToken: PATH_USD_ADDRESS,
+    //        },
+    //    )?;
+    //
+    //    let mint_amount = uint!(10000_U256);
+    //    let mut token1 = TIP20Token::new(address_to_token_id_unchecked(token1), &mut storage);
+    //    let mut token2 = TIP20Token::new(address_to_token_id_unchecked(token2), &mut storage);
+    //    token1.mint(
+    //        admin,
+    //        crate::tip20::ITIP20::mintCall {
+    //            to: admin,
+    //            amount: mint_amount,
+    //        },
+    //    )?;
+    //    token2.mint(
+    //        admin,
+    //        crate::tip20::ITIP20::mintCall {
+    //            to: admin,
+    //            amount: mint_amount,
+    //        },
+    //    )?;
+    //
+    //    let mut amm = TipFeeManager::new(&mut storage);
+    //
+    //    let amount1 = uint!(2000_U256);
+    //    let amount2 = uint!(3000_U256);
+    //
+    //    let result = amm.mint(admin, token1, token2, amount1, amount2, admin)?;
+    //
+    //    // FIXME: FIX
+    //    // // Pre-Moderato: mean = (2000 * 3000) / 2 = 3,000,000
+    //    // // Expected liquidity = sqrt(3,000,000) - MIN_LIQUIDITY = ~1732 - 1000 = ~732
+    //    // let expected_mean = (amount1 * amount2) / uint!(2_U256); // 3,000,000
+    //    // let expected_liquidity_before_min = isqrt(expected_mean); // ~1732
+    //    // let expected_liquidity = expected_liquidity_before_min.saturating_sub(uint!(1000_U256)); // ~732
+    //
+    //    // assert_eq!(
+    //    //     result, expected_liquidity,
+    //    //     "Pre-Moderato should use multiplication: mean = (a * b) / 2"
+    //    // );
+    //
+    //    Ok(())
+    //}
+    //
+    ///// Tests the mean calculation in add_liquidity for post-Moderato hardfork
+    ///// Post-Moderato: mean = (amount_user_token + amount_validator_token) / 2
+    ///// This tests that the initial liquidity calculation uses addition instead of multiplication
+    //#[test]
+    //fn test_add_liquidity_post_moderato() -> eyre::Result<()> {
+    //    use crate::tip20_factory::TIP20Factory;
+    //    use tempo_chainspec::hardfork::TempoHardfork;
+    //
+    //    let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+    //    let admin = Address::random();
+    //    initialize_path_usd(&mut storage, admin)?;
+    //
+    //    let mut factory = TIP20Factory::new(&mut storage);
+    //
+    //    let token1_id = factory.create_token(
+    //        admin,
+    //        crate::tip20_factory::ITIP20Factory::createTokenCall {
+    //            name: "Token1".to_string(),
+    //            symbol: "TK1".to_string(),
+    //            quote_token: PATH_USD_ADDRESS,
+    //        },
+    //    )?;
+    //
+    //    let token2_id = factory.create_token(
+    //        admin,
+    //        crate::tip20_factory::ITIP20Factory::createTokenCall {
+    //            name: "Token2".to_string(),
+    //            symbol: "TK2".to_string(),
+    //            quote_token: PATH_USD_ADDRESS,
+    //        },
+    //    )?;
+    //
+    //    let token1_addr = token_id_to_address(token1_id);
+    //    let token2_addr = token_id_to_address(token2_id);
+    //
+    //    let mint_amount = uint!(10000_U256);
+    //    let mut token1 = TIP20Token::new(token1_id, &mut storage);
+    //    let mut token2 = TIP20Token::new(token2_id, &mut storage);
+    //    token1.mint(
+    //        admin,
+    //        crate::tip20::ITIP20::mintCall {
+    //            to: admin,
+    //            amount: mint_amount,
+    //        },
+    //    )?;
+    //    token2.mint(
+    //        admin,
+    //        crate::tip20::ITIP20::mintCall {
+    //            to: admin,
+    //            amount: mint_amount,
+    //        },
+    //    )?;
+    //
+    //    let mut amm = TipFeeManager::new(&mut storage);
+    //
+    //    let amount1 = uint!(2000_U256);
+    //    let amount2 = uint!(3000_U256);
+    //
+    //    let result = amm.add_liquidity(admin, token1_addr, token2_addr, amount1, amount2, admin)?;
+    //
+    //    // Post-Moderato: mean = (2000 + 3000) / 2 = 2,500
+    //    // Expected liquidity = sqrt(2,500) - MIN_LIQUIDITY = 50 - 1000 = 0 (saturated)
+    //    let expected_mean = (amount1 + amount2) / uint!(2_U256); // 2,500
+    //    let expected_liquidity_before_min = isqrt(expected_mean); // 50
+    //    let expected_liquidity = expected_liquidity_before_min.saturating_sub(uint!(1000_U256)); // 0
+    //
+    //    assert_eq!(
+    //        result, expected_liquidity,
+    //        "Post-Moderato should use addition: mean = (a + b) / 2"
+    //    );
+    //
+    //    Ok(())
+    //}
 }

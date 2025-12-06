@@ -226,7 +226,8 @@ impl<S: PrecompileStorageProvider> Precompile for PathUSD<'_, S> {
 mod tests {
     use super::*;
     use crate::{
-        storage::hashmap::HashMapStorageProvider, test_util::check_selector_coverage,
+        storage::hashmap::HashMapStorageProvider,
+        test_util::{assert_full_coverage, check_selector_coverage},
         tip20::tests::initialize_path_usd,
     };
     use alloy::{
@@ -238,9 +239,8 @@ mod tests {
         IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error,
     };
 
+    #[test]
     fn path_usd_test_selector_coverage_pre_allegretto() -> eyre::Result<()> {
-        use crate::test_util::assert_full_coverage;
-
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         initialize_path_usd(&mut storage, Address::random())?;
 
@@ -264,8 +264,6 @@ mod tests {
 
     #[test]
     fn path_usd_test_selector_coverage_post_allegretto() -> eyre::Result<()> {
-        use crate::test_util::assert_full_coverage;
-
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
         initialize_path_usd(&mut storage, Address::random())?;
 

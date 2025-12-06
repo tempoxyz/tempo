@@ -257,19 +257,18 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TIP20Token<'a, S> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::{
         PATH_USD_ADDRESS,
         storage::hashmap::HashMapStorageProvider,
         tip20::{TIP20Token, tests::initialize_path_usd},
     };
-
     use alloy::{
         primitives::{Bytes, U256, keccak256},
         sol_types::{SolInterface, SolValue},
     };
-    use tempo_contracts::precompiles::{RolesAuthError, TIP20Error};
-
-    use super::*;
+    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::{ITIP20, RolesAuthError, TIP20Error};
 
     #[test]
     fn test_function_selector_dispatch() {
@@ -1020,5 +1019,92 @@ mod tests {
             });
 
         assert_full_coverage([itip20_unsupported, roles_unsupported]);
+    }
+
+    #[test]
+    fn test_fee_recipient_pre_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::from([0x01; 20]);
+        initialize_path_usd(&mut storage, admin)?;
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize(
+            "Test",
+            "TST",
+            "USD",
+            PATH_USD_ADDRESS,
+            admin,
+            Address::from([0x11; 20]),
+        )?;
+
+        let call = ITIP20::feeRecipientCall {};
+        let calldata = call.abi_encode();
+        let result = token.call(&Bytes::from(calldata), admin)?;
+
+        assert!(result.reverted);
+        Ok(())
+    }
+
+    #[test]
+    fn test_fee_recipient_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let admin = Address::from([0x01; 20]);
+        let fee_recipient = Address::from([0x11; 20]);
+        initialize_path_usd(&mut storage, admin)?;
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, fee_recipient)?;
+
+        let call = ITIP20::feeRecipientCall {};
+        let calldata = call.abi_encode();
+        let result = token.call(&Bytes::from(calldata), admin)?;
+
+        assert!(!result.reverted);
+        let recipient = ITIP20::feeRecipientCall::abi_decode_returns(&result.bytes)?;
+        assert_eq!(recipient, fee_recipient);
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_fee_recipient_pre_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::from([0x01; 20]);
+        initialize_path_usd(&mut storage, admin)?;
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, admin)?;
+
+        let call = ITIP20::setFeeRecipientCall {
+            newRecipient: Address::from([0x33; 20]),
+        };
+        let calldata = call.abi_encode();
+        let result = token.call(&Bytes::from(calldata), admin)?;
+
+        assert!(result.reverted);
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_fee_recipient_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let admin = Address::from([0x01; 20]);
+        let new_recipient = Address::from([0x33; 20]);
+        initialize_path_usd(&mut storage, admin)?;
+        let mut token = TIP20Token::new(1, &mut storage);
+        token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, admin)?;
+
+        let call = ITIP20::setFeeRecipientCall {
+            newRecipient: new_recipient,
+        };
+        let calldata = call.abi_encode();
+        let result = token.call(&Bytes::from(calldata), admin)?;
+
+        assert!(!result.reverted);
+
+        let call = ITIP20::feeRecipientCall {};
+        let calldata = call.abi_encode();
+        let result = token.call(&Bytes::from(calldata), admin)?;
+
+        let recipient = ITIP20::feeRecipientCall::abi_decode_returns(&result.bytes)?;
+        assert_eq!(recipient, new_recipient);
+
+        Ok(())
     }
 }
