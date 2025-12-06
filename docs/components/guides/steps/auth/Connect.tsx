@@ -1,10 +1,10 @@
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 import { Login, Logout, Step } from '../../Demo'
 import type { DemoStepProps } from '../types'
 
 export function Connect(props: DemoStepProps) {
   const { stepNumber = 1 } = props
-  const { address } = useAccount()
+  const { address } = useConnection()
   return (
     <Step
       active={!address}

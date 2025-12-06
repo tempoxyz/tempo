@@ -1,19 +1,19 @@
 import * as React from 'react'
 import { Hooks } from 'tempo.ts/wagmi'
-import { useAccount, useAccountEffect } from 'wagmi'
+import { useConnection, useConnectionEffect } from 'wagmi'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
 import type { DemoStepProps } from '../types'
 
 export function CancelOrder(props: DemoStepProps) {
   const { stepNumber, last = false } = props
-  const { address } = useAccount()
+  const { address } = useConnection()
   const { getData, clearData } = useDemoContext()
 
   const orderId = getData('orderId')
   const cancelOrder = Hooks.dex.useCancelSync()
 
-  useAccountEffect({
+  useConnectionEffect({
     onDisconnect() {
       cancelOrder.reset()
     },

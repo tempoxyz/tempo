@@ -53,7 +53,6 @@ export function GrantRoles() {
       token: tokenAddress, // [!code hl]
       roles: ['issuer'], // [!code hl]
       to: treasuryAddress, // [!code hl]
-      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
     }) // [!code hl]
   } // [!code hl]
 
@@ -119,7 +118,6 @@ export function GrantRoles() {
       token: tokenAddress,
       roles: ['issuer'],
       to: treasuryAddress,
-      feeToken: '0x20c0000000000000000000000000000000000001',
     })
   }
 
@@ -207,7 +205,6 @@ export function RevokeRoles() {
       token: tokenAddress,
       roles: ['issuer'],
       to: treasuryAddress,
-      feeToken: '0x20c0000000000000000000000000000000000001',
     })
   }
 
@@ -232,7 +229,6 @@ export function RevokeRoles() {
       token: tokenAddress, // [!code ++]
       roles: ['issuer'], // [!code ++]
       from: treasuryAddress, // [!code ++]
-      feeToken: '0x20c0000000000000000000000000000000000001', // [!code ++]
     }) // [!code ++]
   } // [!code ++]
 
@@ -320,7 +316,6 @@ export function SetSupplyCap() {
     setSupplyCap.mutate({ // [!code hl]
       token: tokenAddress, // [!code hl]
       supplyCap: parseUnits('1000', metadata?.decimals || 6), // [!code hl]
-      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
     }) // [!code hl]
   } // [!code hl]
 
@@ -400,7 +395,6 @@ export function CreateTokenPolicy() {
         '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb', // [!code hl]
       ], // [!code hl]
       type: 'blacklist', // [!code hl]
-      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
     }) // [!code hl]
   } // [!code hl]
 
@@ -411,7 +405,7 @@ export function CreateTokenPolicy() {
       type="button" // [!code hl]
     > {/* [!code hl] */}
       {createPolicy.isPending ? 'Creating...' : 'Create Policy'} {/* [!code hl] */}
-    </button> {/* [!code hl] */}
+    </button> // [!code hl]
   )
 }
 ```
@@ -431,7 +425,6 @@ export function LinkTokenPolicy() {
     await linkPolicy.mutateAsync({ // [!code hl]
       policyId, // [!code hl]
       token: tokenAddress, // [!code hl]
-      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
     }) // [!code hl]
   } // [!code hl]
 
@@ -442,7 +435,7 @@ export function LinkTokenPolicy() {
       type="button" // [!code hl]
     > {/* [!code hl] */}
       {linkPolicy.isPending ? 'Linking...' : 'Link Policy'} {/* [!code hl] */}
-    </button> {/* [!code hl] */}
+    </button> // [!code hl]
   )
 }
 ```
@@ -505,12 +498,10 @@ export function PauseUnpauseTransfers() {
     if (paused) { // [!code hl]
       unpause.mutate({ // [!code hl]
         token: tokenAddress, // [!code hl]
-        feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
       }) // [!code hl]
     } else { // [!code hl]
       pause.mutate({ // [!code hl]
         token: tokenAddress, // [!code hl]
-        feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
       }) // [!code hl]
     } // [!code hl]
   } // [!code hl]
@@ -524,7 +515,7 @@ export function PauseUnpauseTransfers() {
       type="button" // [!code hl]
     > {/* [!code hl] */}
       {isProcessing ? 'Processing...' : paused ? 'Unpause' : 'Pause'} {/* [!code hl] */}
-    </button> {/* [!code hl] */}
+    </button> // [!code hl]
   )
 }
 ```
@@ -558,7 +549,7 @@ The Burn Blocked role allows your team to burn tokens from blocked or frozen add
   <Step.CreateOrLoadToken stepNumber={3} />
   <Step.GrantTokenRoles stepNumber={4} roles={['issuer', 'burnBlocked']} />
   <Step.MintToken stepNumber={5} recipient={Demo.FAKE_RECIPIENT} />
-  <Step.CreateTokenPolicy stepNumber={6} waitForTransfer />
+  <Step.CreateTokenPolicy stepNumber={6} flowDependencies={['transferId']} />
   <Step.LinkTokenPolicy stepNumber={7} />
   <Step.BurnTokenBlocked stepNumber={8} last />
 </Demo.Container>
@@ -588,7 +579,6 @@ export function BurnBlocked() {
       token: tokenAddress, // [!code hl]
       from: blockedAddress, // [!code hl]
       amount: parseUnits('100', metadata.decimals), // [!code hl]
-      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
     }) // [!code hl]
   } // [!code hl]
 
@@ -599,7 +589,7 @@ export function BurnBlocked() {
       type="button" // [!code hl]
     > {/* [!code hl] */}
       {burnBlocked.isPending ? 'Burning...' : 'Burn Blocked Tokens'} {/* [!code hl] */}
-    </button> {/* [!code hl] */}
+    </button> // [!code hl]
   )
 }
 ```

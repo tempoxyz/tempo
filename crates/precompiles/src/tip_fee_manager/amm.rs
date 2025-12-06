@@ -204,13 +204,13 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
 
         let amount_in = U256::from(amount_in);
         let amount_out = U256::from(amount_out);
-        TIP20Token::from_address(validator_token, self.storage).system_transfer_from(
+        TIP20Token::from_address(validator_token, self.storage)?.system_transfer_from(
             msg_sender,
             self.address,
             amount_in,
         )?;
 
-        TIP20Token::from_address(user_token, self.storage).transfer(
+        TIP20Token::from_address(user_token, self.storage)?.transfer(
             self.address,
             ITIP20::transferCall {
                 to,
@@ -305,13 +305,13 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         }
 
         // Transfer tokens from user to contract
-        let _ = TIP20Token::from_address(user_token, self.storage).system_transfer_from(
+        let _ = TIP20Token::from_address(user_token, self.storage)?.system_transfer_from(
             msg_sender,
             self.address,
             amount_user_token,
         )?;
 
-        let _ = TIP20Token::from_address(validator_token, self.storage).system_transfer_from(
+        let _ = TIP20Token::from_address(validator_token, self.storage)?.system_transfer_from(
             msg_sender,
             self.address,
             amount_validator_token,
@@ -435,7 +435,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         }
 
         // Transfer validator tokens from user
-        let _ = TIP20Token::from_address(validator_token, self.storage).system_transfer_from(
+        let _ = TIP20Token::from_address(validator_token, self.storage)?.system_transfer_from(
             msg_sender,
             self.address,
             amount_validator_token,
@@ -551,7 +551,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         self.sstore_pools(pool_id, pool)?;
 
         // Transfer tokens to user
-        let _ = TIP20Token::from_address(user_token, self.storage).transfer(
+        let _ = TIP20Token::from_address(user_token, self.storage)?.transfer(
             self.address,
             ITIP20::transferCall {
                 to,
@@ -559,7 +559,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
             },
         )?;
 
-        let _ = TIP20Token::from_address(validator_token, self.storage).transfer(
+        let _ = TIP20Token::from_address(validator_token, self.storage)?.transfer(
             self.address,
             ITIP20::transferCall {
                 to,
@@ -782,7 +782,7 @@ mod tests {
 
         // Create USD tokens for user and validator
         let user_token = token_id_to_address(1);
-        let mut user_tip20 = TIP20Token::from_address(user_token, storage);
+        let mut user_tip20 = TIP20Token::from_address(user_token, storage).unwrap();
         user_tip20
             .initialize(
                 "UserToken",
@@ -795,7 +795,7 @@ mod tests {
             .unwrap();
 
         let validator_token = token_id_to_address(2);
-        let mut validator_tip20 = TIP20Token::from_address(validator_token, storage);
+        let mut validator_tip20 = TIP20Token::from_address(validator_token, storage).unwrap();
         validator_tip20
             .initialize(
                 "ValidatorToken",
@@ -1156,7 +1156,7 @@ mod tests {
         let to = Address::random();
 
         // Init Linking USD, user token and validator tokens
-        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
+        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage).unwrap();
         path_usd
             .initialize(
                 "PathUSD",
@@ -1234,7 +1234,7 @@ mod tests {
         let to = Address::random();
 
         // Init Linking USD, user token and validator tokens
-        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
+        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage).unwrap();
         path_usd
             .initialize(
                 "PathUSD",
@@ -1310,7 +1310,7 @@ mod tests {
         let to = Address::random();
 
         // Init Linking USD, user token and validator tokens
-        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
+        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage).unwrap();
         path_usd
             .initialize(
                 "PathUSD",

@@ -2,7 +2,7 @@ import * as React from 'react'
 import { Actions, Addresses } from 'tempo.ts/viem'
 import { Hooks } from 'tempo.ts/wagmi'
 import { type Log, parseUnits } from 'viem'
-import { useAccount, useAccountEffect, useSendCallsSync } from 'wagmi'
+import { useConnection, useConnectionEffect, useSendCallsSync } from 'wagmi'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
 import { alphaUsd, pathUsd } from '../../tokens'
@@ -10,7 +10,7 @@ import type { DemoStepProps } from '../types'
 
 export function PlaceOrder(props: DemoStepProps) {
   const { stepNumber, last = false } = props
-  const { address } = useAccount()
+  const { address } = useConnection()
   const { setData, clearData, getData } = useDemoContext()
 
   const orderId = getData('orderId')
@@ -21,7 +21,7 @@ export function PlaceOrder(props: DemoStepProps) {
 
   const sendCalls = useSendCallsSync()
 
-  useAccountEffect({
+  useConnectionEffect({
     onDisconnect() {
       sendCalls.reset()
       clearData('orderId')

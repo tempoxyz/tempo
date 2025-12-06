@@ -10,9 +10,7 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 
-use crate::{
-    CONSENSUS_NODE_PREFIX, PreparedNode, Setup, execution_runtime::validator, run, setup_validators,
-};
+use crate::{CONSENSUS_NODE_PREFIX, Setup, execution_runtime::validator, run, setup_validators};
 
 #[test_traced]
 fn single_validator_can_transition_once() {
@@ -141,8 +139,8 @@ fn assert_allegretto_transition_refused_without_contract_validators(
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
-        let (validators, _execution_runtime) = setup_validators(context.clone(), setup).await;
-        let _validators = join_all(validators.into_iter().map(PreparedNode::start)).await;
+        let (mut validators, _execution_runtime) = setup_validators(context.clone(), setup).await;
+        join_all(validators.iter_mut().map(|n| n.start())).await;
 
         loop {
             context.sleep(Duration::from_secs(1)).await;
@@ -208,14 +206,13 @@ fn assert_allegretto_transition_refused_with_wrong_socket_addr(how_many: u32, ep
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
-        let (validators, execution_runtime) = setup_validators(context.clone(), setup).await;
-        let validators = join_all(validators.into_iter().map(PreparedNode::start)).await;
+        let (mut validators, execution_runtime) = setup_validators(context.clone(), setup).await;
+        join_all(validators.iter_mut().map(|n| n.start())).await;
 
         // We will send an arbitrary node of the initial validator set the smart
         // contract call.
         let http_url = validators[0]
-            .execution_node
-            .node
+            .execution()
             .rpc_server_handle()
             .http_url()
             .unwrap()
@@ -227,7 +224,7 @@ fn assert_allegretto_transition_refused_with_wrong_socket_addr(how_many: u32, ep
                 .add_validator(
                     http_url.clone(),
                     validator(i as u32),
-                    node.public_key.clone(),
+                    node.public_key().clone(),
                     // Shift ports by 1 to misalign the ports.
                     // TODO: put the addresses into the test validators to not
                     // rely on known implementation behavior.
@@ -306,14 +303,13 @@ fn assert_allegretto_transition(how_many: u32, epoch_length: u64) {
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
-        let (validators, execution_runtime) = setup_validators(context.clone(), setup).await;
-        let validators = join_all(validators.into_iter().map(PreparedNode::start)).await;
+        let (mut validators, execution_runtime) = setup_validators(context.clone(), setup).await;
+        join_all(validators.iter_mut().map(|n| n.start())).await;
 
         // We will send an arbitrary node of the initial validator set the smart
         // contract call.
         let http_url = validators[0]
-            .execution_node
-            .node
+            .execution()
             .rpc_server_handle()
             .http_url()
             .unwrap()
@@ -325,7 +321,7 @@ fn assert_allegretto_transition(how_many: u32, epoch_length: u64) {
                 .add_validator(
                     http_url.clone(),
                     validator(i as u32),
-                    node.public_key.clone(),
+                    node.public_key().clone(),
                     SocketAddr::from(([127, 0, 0, 1], (i + 1) as u16)),
                 )
                 .await
@@ -379,10 +375,10 @@ fn assert_validator_is_added_post_allegretto(how_many_initial: u32, epoch_length
     executor.start(|context| async move {
         let (mut validators, execution_runtime) = setup_validators(context.clone(), setup).await;
 
-        let new_validator = {
+        let mut new_validator = {
             let idx = validators
                 .iter()
-                .position(|node| node.consensus_config.share.is_none())
+                .position(|node| node.consensus_config().share.is_none())
                 .expect("at least one node must be a verifier, i.e. not have a share");
             validators.remove(idx)
         };
@@ -390,17 +386,16 @@ fn assert_validator_is_added_post_allegretto(how_many_initial: u32, epoch_length
         assert!(
             validators
                 .iter()
-                .all(|node| node.consensus_config.share.is_some()),
+                .all(|node| node.consensus_config().share.is_some()),
             "must have removed the one non-signer node; must be left with only signers",
         );
 
-        let validators = join_all(validators.into_iter().map(PreparedNode::start)).await;
+        join_all(validators.iter_mut().map(|n| n.start())).await;
 
         // We will send an arbitrary node of the initial validator set the smart
         // contract call.
         let http_url = validators[0]
-            .execution_node
-            .node
+            .execution()
             .rpc_server_handle()
             .http_url()
             .unwrap()
@@ -412,7 +407,7 @@ fn assert_validator_is_added_post_allegretto(how_many_initial: u32, epoch_length
                 .add_validator(
                     http_url.clone(),
                     validator(i as u32),
-                    node.public_key.clone(),
+                    node.public_key().clone(),
                     SocketAddr::from(([127, 0, 0, 1], (i + 1) as u16)),
                 )
                 .await
@@ -457,7 +452,7 @@ fn assert_validator_is_added_post_allegretto(how_many_initial: u32, epoch_length
                 // XXX: The addValidator call above adding the initial set
                 // adds validators 0..validators.len() (i.e. exclusive validators.len())
                 validator(validators.len() as u32),
-                new_validator.public_key.clone(),
+                new_validator.public_key().clone(),
                 SocketAddr::from(([127, 0, 0, 1], (validators.len() + 1) as u16)),
             )
             .await
@@ -468,7 +463,7 @@ fn assert_validator_is_added_post_allegretto(how_many_initial: u32, epoch_length
             "addValidator call returned receipt"
         );
 
-        let _new_validator = new_validator.start().await;
+        new_validator.start().await;
         tracing::info!("new validator was started");
 
         // First, all initial validator nodes must observe a ceremony with
@@ -486,7 +481,7 @@ fn assert_validator_is_added_post_allegretto(how_many_initial: u32, epoch_length
                 }
 
                 // Only consider metrics from the initial set of validators.
-                if !validators.iter().any(|val| line.contains(&val.uid)) {
+                if !validators.iter().any(|val| line.contains(val.uid())) {
                     continue;
                 }
 
@@ -559,15 +554,14 @@ fn assert_validator_is_removed_post_allegretto(how_many_initial: u32, epoch_leng
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
-        let (validators, execution_runtime) = setup_validators(context.clone(), setup).await;
+        let (mut validators, execution_runtime) = setup_validators(context.clone(), setup).await;
 
-        let validators = join_all(validators.into_iter().map(|node| node.start())).await;
+        join_all(validators.iter_mut().map(|n| n.start())).await;
 
         // We will send an arbitrary node of the initial validator set the smart
         // contract call.
         let http_url = validators[0]
-            .execution_node
-            .node
+            .execution()
             .rpc_server_handle()
             .http_url()
             .unwrap()
@@ -579,7 +573,7 @@ fn assert_validator_is_removed_post_allegretto(how_many_initial: u32, epoch_leng
                 .add_validator(
                     http_url.clone(),
                     validator(i as u32),
-                    node.public_key.clone(),
+                    node.public_key().clone(),
                     SocketAddr::from(([127, 0, 0, 1], (i + 1) as u16)),
                 )
                 .await
@@ -649,7 +643,7 @@ fn assert_validator_is_removed_post_allegretto(how_many_initial: u32, epoch_leng
                 }
 
                 // Only consider metrics from the initial set of validators.
-                if !validators.iter().any(|val| line.contains(&val.uid)) {
+                if !validators.iter().any(|val| line.contains(val.uid())) {
                     continue;
                 }
 
@@ -906,14 +900,14 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
                 .last_mut()
                 .expect("we just asked for a couple of validators");
             last_node
-                .consensus_config
+                .consensus_config_mut()
                 .share
                 .take()
                 .expect("the node must have had a share");
-            last_node.uid.clone()
+            last_node.uid().to_string()
         };
 
-        let _running = join_all(nodes.into_iter().map(PreparedNode::start)).await;
+        join_all(nodes.iter_mut().map(|n| n.start())).await;
 
         let mut epoch_reached = false;
         let mut height_reached = false;

@@ -40,7 +40,7 @@ impl TempoFaucetExtApiServer for TempoFaucetExt {
         let mut tx_hashes = Vec::new();
         for token in &self.faucet_token_addresses {
             let tx_hash = *ITIP20::new(*token, &self.provider)
-                .transfer(address, self.funding_amount)
+                .mint(address, self.funding_amount)
                 .send()
                 .await
                 .map_err(|err| rpc_err(INTERNAL_ERROR_CODE, err.to_string(), None))?
