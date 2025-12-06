@@ -1034,7 +1034,7 @@ pub(crate) mod tests {
         admin: Address,
     ) -> Result<()> {
         if !storage.spec().is_allegretto() {
-            let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, storage);
+            let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, storage)?;
             path_usd.initialize(
                 "PathUSD",
                 "PUSD",

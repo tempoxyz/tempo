@@ -211,7 +211,8 @@ mod tests {
             )
             .unwrap();
 
-        let mut tip20_token = TIP20Token::from_address(token_address, storage);
+        let mut tip20_token =
+            TIP20Token::from_address(token_address, storage).expect("Could not create token");
 
         // Grant issuer role to user and mint tokens
         tip20_token.grant_role_internal(user, *ISSUER_ROLE).unwrap();
