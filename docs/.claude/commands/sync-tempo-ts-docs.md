@@ -2,6 +2,14 @@
 
 This skill documents the process for adding missing documentation for tempo.ts SDK functions. Use this when new functions are added to the SDK or when documentation gaps are discovered.
 
+## First: Review Previously Skipped Functions
+
+Before searching for new undocumented functions, display the "Undocumented Functions" list at the bottom of this document to the user and ask:
+
+> "The following functions were previously marked as 'not ready to document'. Would you like to document any of them now?"
+
+Use the AskUserQuestion tool to let the user select which (if any) they want to document. If they select any, document those first following the templates below. If they want to keep skipping all of them, proceed to Step 1.
+
 ## Overview
 
 The tempo.ts SDK has three layers that need documentation:
@@ -36,6 +44,26 @@ pages/sdk/typescript/wagmi/hooks/index.mdx
 ```
 
 List all exported functions from each source file and compare against existing `.mdx` files.
+
+### Handling New SDK Functions (not in docs)
+
+For each function that exists in the SDK but has no documentation (and is not in the "Undocumented Functions" list), use the AskUserQuestion tool to ask:
+
+> "Found new SDK function `{module}.{functionName}`: {brief description}. What would you like to do?"
+
+Options:
+- **Document it** - Create documentation following the templates below
+- **Skip for now** - Add to the "Undocumented Functions" list at the bottom of this file
+
+### Handling Stale Documentation (in docs but not in SDK)
+
+For each function that has documentation but no longer exists in the SDK, use the AskUserQuestion tool to ask:
+
+> "Found stale documentation for `{module}.{functionName}` - this function no longer exists in the SDK. What would you like to do?"
+
+Options:
+- **Keep docs** - The function may be coming back or exists elsewhere
+- **Remove docs** - Delete the .mdx file and remove from index files and sidebar
 
 ## Step 2: Create Viem Action Documentation
 
@@ -745,7 +773,34 @@ For each new function, ensure:
 Common module categories used in the SDK:
 - `amm` - Fee AMM liquidity operations
 - `dex` - Stablecoin Exchange operations
+- `faucet` - Testnet faucet operations
 - `fee` - Fee token preference operations
 - `policy` - Transfer policy operations
 - `reward` - Reward distribution operations
 - `token` - TIP-20 token operations
+
+## Undocumented Functions
+
+The following functions exist in the SDK but are intentionally not documented yet. Skip these when comparing SDK source files to documentation:
+
+### Viem Actions
+- `account.verifyHash` - Verifies signature validity for hash/address (supports Secp256k1, P256, WebAuthn)
+- `dex.getOrders` - Paginated orders query via RPC
+- `dex.getOrderbook` - Orderbook info query
+- `token.getRoleAdmin` - Gets admin role for a specific role
+- `token.prepareUpdateQuoteToken` - Prepares quote token update (two-step process)
+- `token.updateQuoteToken` - Completes quote token update (two-step process)
+- `token.watchUpdateQuoteToken` - Watches for quote token update events
+
+### Wagmi Actions
+- `dex.getOrders` - Paginated orders query via RPC
+- `dex.getOrderbook` - Orderbook info query
+- `token.getRoleAdmin` - Gets admin role for a specific role
+- `token.updateQuoteToken` - Completes quote token update
+
+### Wagmi Hooks
+- `dex.useGetOrders` - Hook for paginated orders query
+- `dex.useOrderbook` - Hook for orderbook info query
+- `dex.usePriceLevel` - Hook for price level info (maps to getTickLevel)
+- `token.useGetRoleAdmin` - Hook for getting admin role
+- `token.useUpdateQuoteToken` - Hook for completing quote token update
