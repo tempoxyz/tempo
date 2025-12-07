@@ -32,7 +32,9 @@ use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_evm::{Evm, revm::database::State};
 use reth_node_builder::ConfigureEvm;
 use reth_primitives_traits::Recovered;
-use reth_provider::{HeaderProvider, ProviderError, StateProviderBox, StateProviderFactory};
+use reth_provider::{
+    BlockReader, BlockSource, ProviderError, StateProviderBox, StateProviderFactory,
+};
 use reth_revm::database::StateProviderDatabase;
 use std::{
     pin::Pin,
@@ -221,6 +223,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         }
     }
 
+    #[instrument(skip_all, fields(transaction.tx_hash = %transaction.tx_hash()))]
     fn on_new_subblock_transaction(&self, transaction: Recovered<TempoTxEnvelope>) {
         if !transaction
             .subblock_proposer()
@@ -273,7 +276,11 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             return;
         };
 
-        let Ok(Some(header)) = self.node.provider.header(*tip) else {
+        let Ok(Some(header)) = self
+            .node
+            .provider
+            .find_block_by_hash(*tip, BlockSource::Any)
+        else {
             debug!(?tip, "missing header for the tip block at {tip}");
             return;
         };
@@ -659,7 +666,7 @@ fn evm_at_block(
         .build();
     let header = node
         .provider
-        .header(hash)?
+        .find_block_by_hash(hash, BlockSource::Any)?
         .ok_or(ProviderError::BestBlockNotFound)?;
 
     Ok(node.evm_config.evm_for_block(db, &header)?)
