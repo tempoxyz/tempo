@@ -1,6 +1,5 @@
 {
   "cleanUrls": true,
-  "ignoreCommand": "git diff HEAD^ HEAD --quiet .",
   "redirects": [
     {
       "source": "/sdk/typescript/api",
