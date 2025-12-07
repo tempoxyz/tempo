@@ -745,7 +745,10 @@ mod tests {
         storage::{ContractStorage, hashmap::HashMapStorageProvider},
         tip20::{TIP20Token, tests::initialize_path_usd, token_id_to_address},
     };
-    use alloy::primitives::{Address, uint};
+    use alloy::{
+        primitives::{Address, uint},
+        sol_types::PanicKind,
+    };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
@@ -1495,9 +1498,7 @@ mod tests {
         let result = amm.execute_pending_fee_swaps(user_token, validator_token);
         assert!(matches!(
             result,
-            Err(TempoPrecompileError::Panic(
-                alloy::sol_types::PanicKind::UnderOverflow
-            ))
+            Err(TempoPrecompileError::Panic(PanicKind::UnderOverflow))
         ));
 
         Ok(())
