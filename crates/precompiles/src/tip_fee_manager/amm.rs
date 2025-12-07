@@ -1430,61 +1430,6 @@ mod tests {
     }
 
     #[test]
-    fn test_reserve_liquidity_pre_allegro_moderato() -> eyre::Result<()> {
-        let reserve_validator_token = 627;
-
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Allegretto);
-        let admin = Address::random();
-        initialize_path_usd(&mut storage, admin)?;
-
-        let user_token = token_id_to_address(1);
-        {
-            let mut user_tip20 = TIP20Token::from_address(user_token, &mut storage)?;
-            user_tip20.initialize(
-                "UserToken",
-                "Test",
-                "USD",
-                PATH_USD_ADDRESS,
-                admin,
-                Address::ZERO,
-            )?;
-        }
-
-        let validator_token = token_id_to_address(2);
-        {
-            let mut validator_tip20 = TIP20Token::from_address(validator_token, &mut storage)?;
-            validator_tip20.initialize(
-                "ValidatorToken",
-                "Test",
-                "USD",
-                PATH_USD_ADDRESS,
-                admin,
-                Address::ZERO,
-            )?;
-        }
-
-        let mut amm = TipFeeManager::new(&mut storage);
-        let pool_id = amm.pool_id(user_token, validator_token);
-        let pool = Pool {
-            reserve_user_token: 1000,
-            reserve_validator_token,
-        };
-        amm.sstore_pools(pool_id, pool)?;
-        amm.reserve_liquidity(user_token, validator_token, U256::from(210))?;
-        amm.reserve_liquidity(user_token, validator_token, U256::from(210))?;
-        amm.reserve_liquidity(user_token, validator_token, U256::from(210))?;
-        assert_eq!(amm.get_pending_fee_swap_in(pool_id)?, 630);
-
-        let result = amm.execute_pending_fee_swaps(user_token, validator_token);
-        assert!(matches!(
-            result,
-            Err(TempoPrecompileError::Panic(PanicKind::UnderOverflow))
-        ));
-
-        Ok(())
-    }
-
-    #[test]
     fn test_reserve_liquidity_post_allegro_moderato() -> eyre::Result<()> {
         let reserve_validator_token = 627;
 
