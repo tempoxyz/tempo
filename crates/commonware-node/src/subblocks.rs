@@ -318,6 +318,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         if self.our_subblock.parent_hash() != Some(*tip)
             || self.our_subblock.target_proposer() != Some(&next_proposer)
         {
+            debug!(%tip, %next_proposer, "building new subblock");
             self.build_new_subblock(*tip, next_proposer, scheme);
         }
     }
