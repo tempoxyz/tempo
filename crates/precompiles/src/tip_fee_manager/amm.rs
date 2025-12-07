@@ -95,42 +95,22 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         let pool_id = PoolKey::new(user_token, validator_token).get_id();
         let current_pending_fee_swap_in = self.get_pending_fee_swap_in(pool_id)?;
 
-        if self.storage.spec().is_allegro_moderato() {
-            let new_total_pending = current_pending_fee_swap_in
-                .checked_add(
-                    max_amount
-                        .try_into()
-                        .map_err(|_| TempoPrecompileError::under_overflow())?,
-                )
-                .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_total_pending = current_pending_fee_swap_in
+            .checked_add(
+                max_amount
+                    .try_into()
+                    .map_err(|_| TempoPrecompileError::under_overflow())?,
+            )
+            .ok_or(TempoPrecompileError::under_overflow())?;
 
-            let total_out_needed = compute_amount_out(U256::from(new_total_pending))?;
+        let total_out_needed = compute_amount_out(U256::from(new_total_pending))?;
 
-            let pool = self.sload_pools(pool_id)?;
-            if total_out_needed > U256::from(pool.reserve_validator_token) {
-                return Err(TIPFeeAMMError::insufficient_liquidity().into());
-            }
-
-            self.set_pending_fee_swap_in(pool_id, new_total_pending)?;
-        } else {
-            let amount_out = compute_amount_out(max_amount)?;
-            let available_validator_token = self.get_effective_validator_reserve(pool_id)?;
-
-            if amount_out > available_validator_token {
-                return Err(TIPFeeAMMError::insufficient_liquidity().into());
-            }
-
-            self.set_pending_fee_swap_in(
-                pool_id,
-                current_pending_fee_swap_in
-                    .checked_add(
-                        max_amount
-                            .try_into()
-                            .map_err(|_| TempoPrecompileError::under_overflow())?,
-                    )
-                    .ok_or(TempoPrecompileError::under_overflow())?,
-            )?;
+        let pool = self.sload_pools(pool_id)?;
+        if total_out_needed > U256::from(pool.reserve_validator_token) {
+            return Err(TIPFeeAMMError::insufficient_liquidity().into());
         }
+
+        self.set_pending_fee_swap_in(pool_id, new_total_pending)?;
 
         Ok(())
     }
