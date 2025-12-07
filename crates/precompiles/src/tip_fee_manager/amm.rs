@@ -95,6 +95,8 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         let pool_id = PoolKey::new(user_token, validator_token).get_id();
         let current_pending_fee_swap_in = self.get_pending_fee_swap_in(pool_id)?;
 
+        // Add the `max_amount` to the pending amount in and check that the resulting
+        // total output is within the pools current reserves
         let new_total_pending = current_pending_fee_swap_in
             .checked_add(
                 max_amount
@@ -1427,7 +1429,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reserve_liquidity_post_allegro_moderato() -> eyre::Result<()> {
+    fn test_reserve_liquidity_checks_total_pending() -> eyre::Result<()> {
         let reserve_validator_token = 627;
 
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::AllegroModerato);
