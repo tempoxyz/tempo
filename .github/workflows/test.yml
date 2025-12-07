@@ -101,3 +101,4 @@ jobs:
         uses: re-actors/alls-green@release/v1
         with:
           jobs: ${{ toJSON(needs) }}
+          allowed-skips: test,msrv,genesis,snapshot-re-execute
