@@ -41,23 +41,24 @@ pub(super) async fn read_from_contract(
 ) -> eyre::Result<OrderedAssociated<PublicKey, DecodedValidator>> {
     let last_height = last_height_before_epoch(for_epoch, epoch_length);
 
-    let block_hash = if let Some(num_hash) = node
+    // Try mapping the block height to a hash tracked by reth.
+    //
+    // Firstly check the canonical chain and fallback to pending block state.
+    let block_hash = if let Some(hash) = node
+        .provider
+        .block_hash(last_height)
+        .wrap_err_with(|| format!("failed reading block hash at height `{last_height}`"))?
+    {
+        hash
+    } else if let Some(pending) = node
         .provider
         .pending_block_num_hash()
         .wrap_err("failed reading pending block state")?
-        && num_hash.number == last_height
+        && pending.number == last_height
     {
-        num_hash.hash
+        pending.hash
     } else {
-        if let Some(hash) = node
-            .provider
-            .block_hash(last_height)
-            .wrap_err_with(|| format!("failed reading block hash at height `{last_height}`"))?
-        {
-            hash
-        } else {
-            return Err(eyre::eyre!("block not found at height `{last_height}`"));
-        }
+        return Err(eyre::eyre!("block not found at height `{last_height}`"));
     };
 
     let block = node
