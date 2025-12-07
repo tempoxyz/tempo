@@ -31,16 +31,12 @@ commonware-cryptography.workspace = true
 commonware-utils.workspace = true
 const-hex.workspace = true
 eyre.workspace = true
-indexmap.workspace = true
 indicatif = { workspace = true, features = ["rayon"] }
-itertools.workspace = true
 rand.workspace = true
 rayon = "1.10"
 reth-evm.workspace = true
 reth-network-peers.workspace = true
-secp256k1 = "0.30.0"
+secp256k1.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
-toml.workspace = true

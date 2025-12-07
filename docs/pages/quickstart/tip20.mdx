@@ -1,0 +1,131 @@
+import { Callout } from 'vocs/components'
+import LucideCircleHelp from '~icons/lucide/circle-help'
+import LucideRoute from '~icons/lucide/route'
+import LucideBanknote from '~icons/lucide/banknote'
+import LucideWallet from '~icons/lucide/wallet'
+import LucideShield from '~icons/lucide/shield'
+import LucideFileCheck from '~icons/lucide/file-check'
+import LucideSettings from '~icons/lucide/settings'
+import LucideGift from '~icons/lucide/gift'
+import LucideMessageSquare from '~icons/lucide/message-square'
+import * as Card from "../../components/Card.tsx"
+
+# Use the TIP-20 Standard
+
+TIP-20 is Tempo's native token standard for stablecoins and payment tokens. TIP-20 is designed for stablecoin payments, and is the foundation for many token-related functions on Tempo including transaction fees, payment lanes, and optimized routing for DEX liquidity on Tempo. 
+
+<Card.Notice
+  icon={LucideCircleHelp}
+  title="TIP-20 extends ERC-20."
+  inline
+>
+  <p>
+      This means <a href="https://eips.ethereum.org/EIPS/eip-20">ERC-20</a> functions works with TIP-20 out of the box.
+  </p>
+</Card.Notice>
+
+All TIP-20 tokens are created by interacting with the [TIP-20 Factory contract](/documentation/protocol/tip20/spec#tip20factory), calling the `createToken` function. If you're issuing a stablecoin on Tempo, we **strongly recommend** using the TIP-20 standard. Learn more about the benefits, or follow the guide on issuance [here](/guide/issuance).
+
+## Benefits & Features of TIP-20 Tokens
+
+Below are some of the key benefits and features of TIP-20 tokens:
+
+<Card.Container>
+  <Card.Link
+    description="Only TIP-20 tokens can be used to pay for transaction fees on Tempo."
+    href="#pay-fees-in-any-stablecoin"
+    icon={LucideWallet}
+    title="Pay for Blockchain Transaction Fees"
+  />
+  <Card.Link
+    description="TIP-20 tokens have dedicated blockspace from all other transactions, ensuring predictable payment fees."
+    href="#payments-lane"
+    icon={LucideRoute}
+    title="Get Predictable Payment Fees"
+  />
+  <Card.Link
+    description="Set access control roles for minting, burning, pausing, and administrative operations."
+    href="#role-based-access-control-rbac"
+    icon={LucideShield}
+    title="Built-in Role-Based Access Control"
+  />
+  <Card.Link
+    description="Enforce compliance with whitelist and blacklist policies via the TIP-403 Policy Registry."
+    href="#tip-403-transfer-policies"
+    icon={LucideFileCheck}
+    title="Enforce Transfer Policies"
+  />
+  <Card.Link
+    description="Supply caps, pause/unpause controls, and 32-byte transfer memos for payment references."
+    href="#operational-controls"
+    icon={LucideSettings}
+    title="Operational Controls"
+  />
+  <Card.Link
+    description="Opt-in reward distribution system for issuing rewards to token holders."
+    href="#reward-distribution"
+    icon={LucideGift}
+    title="Reward Distribution"
+  />
+  <Card.Link
+    description="Attach 32-byte memos to transfers for payment references, invoice IDs, or transaction notes."
+    href="#transfer-memos"
+    icon={LucideMessageSquare}
+    title="Transfer Memos"
+  />
+  <Card.Link
+    description="Declare currency identifiers (e.g., USD, EUR) for proper routing and pricing in the stablecoin exchange."
+    href="#currency-declaration"
+    icon={LucideBanknote}
+    title="Currency Declaration"
+  />
+</Card.Container>
+
+### Pay Fees in Any Stablecoin
+
+Any USD-denominated TIP-20 token can be used to pay transaction fees on Tempo.
+
+The [Fee AMM](/documentation/protocol/fees/spec-fee-amm) automatically converts your token to the validator's preferred fee token, eliminating the need for users to hold a separate gas token. This feature works natively: no additional infrastructure or integration required.
+
+Full specification of this feature can be found in the [Payment Lanes Specification](/documentation/protocol/blockspace/payment-lane-specification).
+
+### Get Predictable Payment Fees
+
+Tempo has dedicated payment lanes: reserved blockspace for payment TIP-20 transactions that other applications cannot consume. Even if there are extremely popular applications on the chain competing for blockspace, payroll runs or customer disbursements execute predictably. Learn more about the [payments lane](/documentation/protocol/blockspace/payment-lane-specification).
+
+### Role-Based Access Control (RBAC)
+
+TIP-20 includes a built-in [RBAC system](/documentation/protocol/tip403/spec#tip-20-token-roles) that separates administrative responsibilities:
+
+- **ISSUER_ROLE**: Grants permission to mint and burn tokens, enabling controlled token issuance
+- **PAUSE_ROLE** / **UNPAUSE_ROLE**: Allows pausing and unpausing token transfers for emergency controls
+- **BURN_BLOCKED_ROLE**: Permits burning tokens from blocked addresses (e.g., for compliance actions)
+
+Roles can be granted, revoked, and delegated without custom contract changes. This enables issuers to separate operational roles (e.g., who can mint) from administrative roles (e.g., who can pause). Learn more in the [TIP-20 specification](/documentation/protocol/tip20/spec#roles).
+
+### TIP-403 Transfer Policies
+
+TIP-20 tokens integrate with the [TIP-403 Policy Registry](/documentation/protocol/tip403/overview) to enforce compliance policies. Each token can reference a policy that controls who can send and receive tokens:
+
+- **Whitelist policies**: Only addresses in the whitelist can transfer tokens
+- **Blacklist policies**: Addresses in the blacklist are blocked from transferring tokens
+
+Policies can be shared across multiple tokens, enabling consistent compliance enforcement across your token ecosystem. See the [TIP-403 specification](/documentation/protocol/tip403/spec) for details.
+
+### Operational Controls
+
+TIP-20 tokens can set **supply caps**, which allow you to set a maximum token supply to control issuance. 
+
+TIP-20 tokens also have **pause/unpause** commands, which provide emergency controls to halt transfers when needed. 
+
+### Transfer Memos
+
+**Transfer memos** enable you to attach 32-byte memos to transfers for payment references, invoice IDs, or transaction notes.
+
+### Reward Distribution
+
+TIP-20 supports an opt-in [reward distribution system](/documentation/protocol/tip20-rewards/overview) that allows issuers to distribute rewards to token holders. Rewards can be claimed by holders or automatically forwarded to designated recipient addresses.
+
+### Currency Declaration
+
+A TIP-20 token can declare a currency identifier (e.g., `"USD"`, `"EUR"`) that identifies the real-world asset backing the token. This enables proper routing and pricing in Tempo's [stablecoin exchange](/documentation/protocol/exchange). USD-denominated TIP-20 tokens can be used to pay transaction fees.
