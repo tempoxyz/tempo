@@ -1508,7 +1508,7 @@ mod tests {
     fn test_reserve_liquidity_post_allegro_moderato() -> eyre::Result<()> {
         let reserve_validator_token = 627;
 
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::AllegroModerato);
         let admin = Address::random();
         initialize_path_usd(&mut storage, admin)?;
 
