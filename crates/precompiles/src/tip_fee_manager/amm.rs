@@ -725,10 +725,7 @@ mod tests {
         storage::{ContractStorage, hashmap::HashMapStorageProvider},
         tip20::{TIP20Token, tests::initialize_path_usd, token_id_to_address},
     };
-    use alloy::{
-        primitives::{Address, uint},
-        sol_types::PanicKind,
-    };
+    use alloy::primitives::{Address, uint};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
