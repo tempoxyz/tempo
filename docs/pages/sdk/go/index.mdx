@@ -1,0 +1,184 @@
+# Go
+
+Tempo distributes a Go SDK for building application clients. The SDK provides packages for RPC communication, transaction signing, and key management.
+
+The Tempo Go SDK can be used to perform common operations with the chain, such as: sending Tempo transactions, batching multiple calls, fee sponsorship, and more.
+
+
+::::steps
+
+## Install
+
+To install the Tempo Go SDK:
+
+```bash [go]
+go get github.com/tempo/tempo-go
+```
+
+:::tip
+The SDK requires Go 1.21 or higher.
+:::
+
+## Create an RPC Client
+
+To interact with Tempo, first create an RPC client connected to a Tempo node:
+
+```go [main.go]
+package main
+
+import (
+    "fmt"
+
+    "github.com/tempo/tempo-go/pkg/client"
+)
+
+func main() {
+    c, err := client.New("https://rpc.testnet.tempo.xyz") // [!code focus]
+    if err != nil { // [!code focus]
+        panic(err) // [!code focus]
+    } // [!code focus]
+
+    fmt.Println("Connected to Tempo")
+}
+```
+
+## Create a Signer
+
+Create a signer to sign transactions. The signer manages your private key and generates signatures:
+
+```go [main.go]
+package main
+
+import (
+    "fmt"
+
+    "github.com/tempo/tempo-go/pkg/client"
+    "github.com/tempo/tempo-go/pkg/signer" // [!code focus]
+)
+
+func main() {
+    c, _ := client.New("https://rpc.testnet.tempo.xyz")
+
+    s, err := signer.NewSigner("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80") // [!code focus]
+    if err != nil { // [!code focus]
+        panic(err) // [!code focus]
+    } // [!code focus]
+
+    fmt.Printf("Address: %s\n", s.Address().Hex())
+}
+```
+
+## Send a Transaction
+
+Now we can build and send a transaction. Tempo transactions support batching multiple calls in a single transaction:
+
+```go [main.go]
+package main
+
+import (
+    "fmt"
+    "math/big"
+
+    "github.com/ethereum/go-ethereum/common"
+    "github.com/tempo/tempo-go/pkg/client"
+    "github.com/tempo/tempo-go/pkg/signer"
+    "github.com/tempo/tempo-go/pkg/transaction"
+)
+
+func main() {
+    c, _ := client.New("https://rpc.testnet.tempo.xyz")
+    s, _ := signer.NewSigner("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")
+
+    recipient := common.HexToAddress("0x70997970C51812dc3A010C7d01b50e0d17dc79C8")
+    amount := new(big.Int).Mul(big.NewInt(10), big.NewInt(1e18))
+    transferData := buildERC20TransferData(recipient, amount)
+
+    // [!code focus:13]
+    tx := transaction.New()
+    tx.ChainID = big.NewInt(42429) // Tempo testnet
+    tx.MaxFeePerGas = big.NewInt(2000000000)
+    tx.MaxPriorityFeePerGas = big.NewInt(1000000000)
+    tx.Gas = 100000
+    tx.Calls = []transaction.Call{{
+        To:    &transaction.AlphaUSDAddress,
+        Value: big.NewInt(0),
+        Data:  transferData,
+    }}
+
+    transaction.SignTransaction(tx, s)
+    hash, _ := c.SendTransaction(tx)
+    fmt.Printf("Transaction hash: %s\n", hash.Hex())
+}
+
+func buildERC20TransferData(to common.Address, amount *big.Int) []byte {
+    data := make([]byte, 68)
+    data[0], data[1], data[2], data[3] = 0xa9, 0x05, 0x9c, 0xbb
+    copy(data[16:36], to.Bytes())
+    amount.FillBytes(data[36:68])
+    return data
+}
+```
+
+::::
+
+## Examples
+
+### Batch Multiple Calls
+
+Tempo transactions can batch multiple calls into a single transaction:
+
+```go [batch.go]
+tx := transaction.NewDefault(42429) // Tempo testnet
+tx.Gas = 150000
+tx.Calls = []transaction.Call{
+    {To: &addr1, Value: big.NewInt(0), Data: transfer1Data},
+    {To: &addr2, Value: big.NewInt(0), Data: transfer2Data},
+    {To: &addr3, Value: big.NewInt(0), Data: contractCallData},
+}
+
+transaction.SignTransaction(tx, signer)
+client.SendTransaction(tx)
+```
+
+### Fee Sponsorship
+
+Have another account pay for transaction fees using a fee payer:
+
+```go [feepayer.go]
+tx := transaction.NewDefault(42429)
+transaction.SignTransaction(tx, userSigner)
+
+transaction.AddFeePayerSignature(tx, feePayerSigner)
+
+client.SendTransaction(tx)
+```
+
+### Transaction Validity Window
+
+Set a time window during which the transaction is valid:
+
+```go [validity.go]
+import "time"
+
+tx := transaction.NewDefault(42429)
+tx.ValidAfter = uint64(time.Now().Unix())
+tx.ValidBefore = uint64(time.Now().Add(1 * time.Hour).Unix())
+
+transaction.SignTransaction(tx, signer)
+client.SendTransaction(tx)
+```
+
+## Packages
+
+| Package | Description |
+| --- | --- |
+| `transaction` | TempoTransaction encoding, signing, and validation |
+| `client` | RPC client for interacting with Tempo nodes |
+| `signer` | Key management and signature generation |
+
+## Next Steps
+
+After setting up the Go SDK, you can:
+
+- Follow a guide on how to [use accounts](/guide/use-accounts), [make payments](/guide/payments), [issue stablecoins](/guide/issuance), [exchange stablecoins](/guide/stablecoin-exchange), and [more](/).
+- View the [examples on GitHub](https://github.com/tempoxyz/tempo-go/tree/main/examples)

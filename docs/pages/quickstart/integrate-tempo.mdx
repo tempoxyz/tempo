@@ -1,0 +1,81 @@
+import * as Demo from '../../components/guides/Demo.tsx'
+import { Faucet } from '../../components/Faucet.tsx'
+import { ConnectWallet } from '../../components/ConnectWallet.tsx'
+import LucideZap from '~icons/lucide/zap'
+import LucideLandmark from '~icons/lucide/landmark'
+import LucidePackage from '~icons/lucide/package'
+import LucideCoins from '~icons/lucide/coins'
+import LucideNetwork from '~icons/lucide/network'
+import LucideDroplet from '~icons/lucide/droplet'
+import TempoTxProperties from '../../snippets/tempo-tx-properties.mdx'
+import { Callout } from 'vocs/components'
+import * as Card from "../../components/Card.tsx"
+
+## Integrate Tempo Testnet
+
+Tempo is fully compatible with the Ethereum Virtual Machine (EVM), targeting the **Osaka** EVM hard fork. So, everything you'd expect to work with Ethereum works on Tempo, with only a few exceptions which we detail in the [EVM Differences](/quickstart/evm-compatibility) section.
+
+<Card.Notice
+  icon={LucideDroplet}
+  title="Looking for the faucet?"
+  inline
+>
+  <p><a href="/quickstart/faucet">Click here</a> to deposit testnet funds directly into your wallet.</p>
+</Card.Notice>
+
+<Card.Container>
+  <Card.Link
+    icon={LucideNetwork}
+    title="Connect to the Network"
+    description={
+    "Learn how to connect to the Tempo Testnet with your wallet or programmatically"
+    }
+    href="/quickstart/connection-details"
+  />
+  <Card.Link
+    icon={LucideDroplet}
+    title="Get Faucet Funds"
+    description={
+        "Get stablecoins funded to your account on Tempo Testnet for testing purposes"
+    }
+    href="/quickstart/faucet"
+  />  
+  <Card.Link
+    icon={LucideZap}
+    title="Use Tempo Transactions"
+    description={
+    <p>Tempo Transactions are a <i>new transaction type</i> on Tempo, separate from EVM transactions.</p>
+    }
+    href="/guide/tempo-transaction"
+  />
+   <Card.Link
+    icon={LucideCoins}
+    title="Use the TIP-20 Standard"
+    description={
+        "Tempo's native token standard for stablecoins with payment-focused features"
+    }
+    href="/documentation/protocol/tip20/overview"
+  />
+  <Card.Link
+    icon={LucideLandmark}
+    title="See EVM Differences"
+    description={
+        "Understand the differences between Tempo and other EVM-compatible networks"
+    }
+    href="/quickstart/evm-compatibility"
+    variant="danger"
+  />
+
+  <Card.Link
+    icon={LucidePackage}
+    title="Predeployed Contracts"
+    description={
+        "System contracts, testnet stablecoins, and standard utilities ready to use"
+    }
+    href="/quickstart/predeployed-contracts"
+  />
+
+
+
+
+</Card.Container>

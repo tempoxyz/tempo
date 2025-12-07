@@ -29,10 +29,23 @@ fn spawning_execution_node_works() {
     // <rest>
 
     let runtime = ExecutionRuntime::with_chain_spec(chainspec());
+    let handle = runtime.handle();
 
-    let runtime = futures::executor::block_on(async move {
-        let node = runtime
-            .spawn_node("node-1")
+    futures::executor::block_on(async move {
+        let config = crate::ExecutionNodeConfig {
+            secret_key: alloy_primitives::B256::random(),
+            trusted_peers: vec![],
+            port: 0,
+        };
+        let db_path = handle.nodes_dir().join("node-1").join("db");
+        std::fs::create_dir_all(&db_path).expect("failed to create database directory");
+        let database = std::sync::Arc::new(
+            reth_db::init_db(db_path, reth_db::mdbx::DatabaseArguments::default())
+                .expect("failed to init database")
+                .with_metrics(),
+        );
+        let node = handle
+            .spawn_node("node-1", config, database)
             .await
             .expect("a running execution runtime must be able to spawn nodes");
 
@@ -58,7 +71,6 @@ fn spawning_execution_node_works() {
             updated.is_valid(),
             "setting the forkchoice state to genesis should always work; response\n{updated:?}"
         );
-        runtime
     });
 
     runtime.stop().expect("runtime must stop");
