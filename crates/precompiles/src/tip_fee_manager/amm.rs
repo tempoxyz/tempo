@@ -93,24 +93,44 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
         max_amount: U256,
     ) -> Result<()> {
         let pool_id = PoolKey::new(user_token, validator_token).get_id();
-        let amount_out = compute_amount_out(max_amount)?;
-        let available_validator_token = self.get_effective_validator_reserve(pool_id)?;
-
-        if amount_out > available_validator_token {
-            return Err(TIPFeeAMMError::insufficient_liquidity().into());
-        }
-
         let current_pending_fee_swap_in = self.get_pending_fee_swap_in(pool_id)?;
-        self.set_pending_fee_swap_in(
-            pool_id,
-            current_pending_fee_swap_in
+
+        if self.storage.spec().is_allegro_moderato() {
+            let new_total_pending = current_pending_fee_swap_in
                 .checked_add(
                     max_amount
                         .try_into()
                         .map_err(|_| TempoPrecompileError::under_overflow())?,
                 )
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
+                .ok_or(TempoPrecompileError::under_overflow())?;
+
+            let total_out_needed = compute_amount_out(U256::from(new_total_pending))?;
+
+            let pool = self.sload_pools(pool_id)?;
+            if total_out_needed > U256::from(pool.reserve_validator_token) {
+                return Err(TIPFeeAMMError::insufficient_liquidity().into());
+            }
+
+            self.set_pending_fee_swap_in(pool_id, new_total_pending)?;
+        } else {
+            let amount_out = compute_amount_out(max_amount)?;
+            let available_validator_token = self.get_effective_validator_reserve(pool_id)?;
+
+            if amount_out > available_validator_token {
+                return Err(TIPFeeAMMError::insufficient_liquidity().into());
+            }
+
+            self.set_pending_fee_swap_in(
+                pool_id,
+                current_pending_fee_swap_in
+                    .checked_add(
+                        max_amount
+                            .try_into()
+                            .map_err(|_| TempoPrecompileError::under_overflow())?,
+                    )
+                    .ok_or(TempoPrecompileError::under_overflow())?,
+            )?;
+        }
 
         Ok(())
     }
@@ -726,6 +746,7 @@ mod tests {
         tip20::{TIP20Token, tests::initialize_path_usd, token_id_to_address},
     };
     use alloy::primitives::{Address, uint};
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
     #[test]
@@ -1423,5 +1444,131 @@ mod tests {
                 TIPFeeAMMError::InsufficientLiquidity(_)
             ))
         ));
+    }
+
+    #[test]
+    fn test_reserve_liquidity_pre_allegro_moderato() -> eyre::Result<()> {
+        let reserve_validator_token = 627;
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Allegretto);
+        let admin = Address::random();
+        initialize_path_usd(&mut storage, admin)?;
+
+        let user_token = token_id_to_address(1);
+        {
+            let mut user_tip20 = TIP20Token::from_address(user_token, &mut storage)?;
+            user_tip20.initialize(
+                "UserToken",
+                "Test",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )?;
+        }
+
+        let validator_token = token_id_to_address(2);
+        {
+            let mut validator_tip20 = TIP20Token::from_address(validator_token, &mut storage)?;
+            validator_tip20.initialize(
+                "ValidatorToken",
+                "Test",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )?;
+        }
+
+        let mut amm = TipFeeManager::new(&mut storage);
+        let pool_id = amm.pool_id(user_token, validator_token);
+        let pool = Pool {
+            reserve_user_token: 1000,
+            reserve_validator_token,
+        };
+        amm.sstore_pools(pool_id, pool)?;
+        amm.reserve_liquidity(user_token, validator_token, U256::from(210))?;
+        amm.reserve_liquidity(user_token, validator_token, U256::from(210))?;
+        amm.reserve_liquidity(user_token, validator_token, U256::from(210))?;
+        assert_eq!(amm.get_pending_fee_swap_in(pool_id)?, 630);
+
+        let result = amm.execute_pending_fee_swaps(user_token, validator_token);
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::Panic(
+                alloy::sol_types::PanicKind::UnderOverflow
+            ))
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_reserve_liquidity_post_allegro_moderato() -> eyre::Result<()> {
+        let reserve_validator_token = 627;
+
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        initialize_path_usd(&mut storage, admin)?;
+
+        let user_token = token_id_to_address(3);
+        {
+            let mut user_tip20 = TIP20Token::from_address(user_token, &mut storage)?;
+            user_tip20.initialize(
+                "UserToken",
+                "UTK",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )?;
+        }
+
+        let validator_token = token_id_to_address(4);
+        {
+            let mut validator_tip20 = TIP20Token::from_address(validator_token, &mut storage)?;
+            validator_tip20.initialize(
+                "ValidatorToken",
+                "VTK",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::ZERO,
+            )?;
+        }
+
+        let mut amm = TipFeeManager::new(&mut storage);
+
+        let pool_id = amm.pool_id(user_token, validator_token);
+        let pool = Pool {
+            reserve_user_token: 1000,
+            reserve_validator_token,
+        };
+        amm.sstore_pools(pool_id, pool)?;
+
+        amm.reserve_liquidity(user_token, validator_token, U256::from(210))?;
+        amm.reserve_liquidity(user_token, validator_token, U256::from(210))?;
+
+        let result = amm.reserve_liquidity(user_token, validator_token, U256::from(210));
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIPFeeAMMError(
+                TIPFeeAMMError::InsufficientLiquidity(_)
+            ))
+        ));
+
+        assert_eq!(amm.get_pending_fee_swap_in(pool_id)?, 420);
+
+        let amount_out = amm.execute_pending_fee_swaps(user_token, validator_token)?;
+        assert_eq!(amount_out, U256::from(418));
+
+        let pool_after = amm.sload_pools(pool_id)?;
+        assert_eq!(
+            pool_after.reserve_validator_token,
+            reserve_validator_token - 418
+        );
+        assert_eq!(pool_after.reserve_user_token, 1000 + 420);
+
+        Ok(())
     }
 }
