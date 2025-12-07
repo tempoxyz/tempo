@@ -51,7 +51,6 @@ secp256k1.workspace = true
 [dev-dependencies]
 commonware-consensus.workspace = true
 commonware-macros.workspace = true
-tempo-contracts.workspace = true
 tempo-eyre.workspace = true
 tracing-subscriber.workspace = true
 
