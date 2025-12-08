@@ -2,7 +2,7 @@
 
 use alloy_evm::error::InvalidTxError;
 use alloy_primitives::{Address, U256};
-use revm::context::result::{EVMError, HaltReason, InvalidTransaction};
+use revm::context::result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction};
 
 /// Tempo-specific invalid transaction errors.
 ///
@@ -19,8 +19,8 @@ pub enum TempoInvalidTransaction {
     SystemTransactionMustBeCall,
 
     /// System transaction execution failed.
-    #[error("system transaction execution failed")]
-    SystemTransactionFailed,
+    #[error("system transaction execution failed, result: {_0:?}")]
+    SystemTransactionFailed(ExecutionResult<TempoHaltReason>),
 
     /// Fee payer signature recovery failed.
     ///

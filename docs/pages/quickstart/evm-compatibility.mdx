@@ -45,7 +45,7 @@ By default, all existing functionality will work for EVM-compatible wallets, wit
 
 ### Handling ETH (native token) Balance Checks
 
-Remember, that on Tempo there is no native gas token.
+Remember that on Tempo, there is no native gas token.
 
 Many wallets and applications check a user's "native account balance" before letting them complete some action. In this scenario, you might see an error message like "Insufficient balance".
 
@@ -94,7 +94,7 @@ Importantly, note that the `amount` field in this case is sent in full. So, if t
 
 If the user is calling a contract that is not a TIP-20 token, the EVM transaction will default to the PathUSD token. Thus, in order to send transactions to non-TIP-20 contracts, the wallet must hold some balance of PathUSD.
 
-On the Tempo Testnet, PathUSD is available to be deposited from the [faucet](/quickstart/faucet).
+On the Tempo Testnet, PathUSD is available from the [faucet](/quickstart/faucet).
 
 If a wallet wants to submit a non-TIP20 transaction without having to submit the above transaction, we recommend investing in using [Tempo Transactions](/quickstart/integrate-tempo#tempo-transactions) instead.
 

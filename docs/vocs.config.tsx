@@ -351,8 +351,29 @@ export default defineConfig({
                           ],
                         },
                         {
+                          text: 'Faucet',
+                          items: [
+                            {
+                              text: 'fund',
+                              link: '/sdk/typescript/viem/faucet.fund',
+                            },
+                          ],
+                        },
+                        {
                           text: 'Reward',
                           items: [
+                            {
+                              text: 'claim',
+                              link: '/sdk/typescript/viem/reward.claim',
+                            },
+                            {
+                              text: 'getTotalPerSecond',
+                              link: '/sdk/typescript/viem/reward.getTotalPerSecond',
+                            },
+                            {
+                              text: 'getUserRewardInfo',
+                              link: '/sdk/typescript/viem/reward.getUserRewardInfo',
+                            },
                             {
                               text: 'setRecipient',
                               link: '/sdk/typescript/viem/reward.setRecipient',
@@ -361,12 +382,23 @@ export default defineConfig({
                               text: 'start',
                               link: '/sdk/typescript/viem/reward.start',
                             },
+                            {
+                              text: 'watchRewardRecipientSet',
+                              link: '/sdk/typescript/viem/reward.watchRewardRecipientSet',
+                            },
+                            {
+                              text: 'watchRewardScheduled',
+                              link: '/sdk/typescript/viem/reward.watchRewardScheduled',
+                            },
                           ],
                         },
                         {
                           text: 'Stablecoin Exchange',
                           items: [
-                            { text: 'buy', link: '/sdk/typescript/viem/dex.buy' },
+                            {
+                              text: 'buy',
+                              link: '/sdk/typescript/viem/dex.buy',
+                            },
                             {
                               text: 'cancel',
                               link: '/sdk/typescript/viem/dex.cancel',
@@ -689,6 +721,48 @@ export default defineConfig({
                           ],
                         },
                         {
+                          text: 'Faucet',
+                          items: [
+                            {
+                              text: 'fund',
+                              link: '/sdk/typescript/wagmi/actions/faucet.fund',
+                            },
+                          ],
+                        },
+                        {
+                          text: 'Reward',
+                          items: [
+                            {
+                              text: 'claim',
+                              link: '/sdk/typescript/wagmi/actions/reward.claim',
+                            },
+                            {
+                              text: 'getTotalPerSecond',
+                              link: '/sdk/typescript/wagmi/actions/reward.getTotalPerSecond',
+                            },
+                            {
+                              text: 'getUserRewardInfo',
+                              link: '/sdk/typescript/wagmi/actions/reward.getUserRewardInfo',
+                            },
+                            {
+                              text: 'setRecipient',
+                              link: '/sdk/typescript/wagmi/actions/reward.setRecipient',
+                            },
+                            {
+                              text: 'start',
+                              link: '/sdk/typescript/wagmi/actions/reward.start',
+                            },
+                            {
+                              text: 'watchRewardRecipientSet',
+                              link: '/sdk/typescript/wagmi/actions/reward.watchRewardRecipientSet',
+                            },
+                            {
+                              text: 'watchRewardScheduled',
+                              link: '/sdk/typescript/wagmi/actions/reward.watchRewardScheduled',
+                            },
+                          ],
+                        },
+                        {
                           text: 'Stablecoin Exchange',
                           items: [
                             {
@@ -994,6 +1068,48 @@ export default defineConfig({
                           ],
                         },
                         {
+                          text: 'Faucet',
+                          items: [
+                            {
+                              text: 'useFund',
+                              link: '/sdk/typescript/wagmi/hooks/faucet.useFund',
+                            },
+                          ],
+                        },
+                        {
+                          text: 'Reward',
+                          items: [
+                            {
+                              text: 'useClaim',
+                              link: '/sdk/typescript/wagmi/hooks/reward.useClaim',
+                            },
+                            {
+                              text: 'useGetTotalPerSecond',
+                              link: '/sdk/typescript/wagmi/hooks/reward.useGetTotalPerSecond',
+                            },
+                            {
+                              text: 'useSetRecipient',
+                              link: '/sdk/typescript/wagmi/hooks/reward.useSetRecipient',
+                            },
+                            {
+                              text: 'useStart',
+                              link: '/sdk/typescript/wagmi/hooks/reward.useStart',
+                            },
+                            {
+                              text: 'useUserRewardInfo',
+                              link: '/sdk/typescript/wagmi/hooks/reward.useUserRewardInfo',
+                            },
+                            {
+                              text: 'useWatchRewardRecipientSet',
+                              link: '/sdk/typescript/wagmi/hooks/reward.useWatchRewardRecipientSet',
+                            },
+                            {
+                              text: 'useWatchRewardScheduled',
+                              link: '/sdk/typescript/wagmi/hooks/reward.useWatchRewardScheduled',
+                            },
+                          ],
+                        },
+                        {
                           text: 'Stablecoin Exchange',
                           items: [
                             {
@@ -1206,8 +1322,8 @@ export default defineConfig({
                     },
                   ],
                 },
-              ]
-            }
+              ],
+            },
           ],
         },
         {
@@ -1491,21 +1607,14 @@ export default defineConfig({
               link: '/learn/tempo-overview',
             },
           ],
-        }
+        },
       ],
     }
 
-    const [
-      overview,
-      quickstart,
-      startBuilding,
-      runNode,
-      sdksWithReference
-    ] = rawSidebar['/'] as SidebarItem[]
+    const [overview, quickstart, startBuilding, runNode, sdksWithReference] =
+      rawSidebar['/'] as SidebarItem[]
 
-    const [
-      tempoProtocol
-    ] = rawSidebar['/documentation'] as SidebarItem[]
+    const [tempoProtocol] = rawSidebar['/documentation'] as SidebarItem[]
 
     const combinedSidebar = [
       // Home
@@ -1527,12 +1636,18 @@ export default defineConfig({
       '/documentation': combinedSidebar,
       '/sdk/typescript': combinedSidebar,
       '/learn': rawSidebar['/learn'],
-      } as {[key: string]: SidebarItem[]}
-
+    } as { [key: string]: SidebarItem[] }
   })(),
   topNav: [
     { text: 'Learn', link: '/learn' },
-    { text: 'Docs', link: '/' },
+    {
+      text: 'Docs',
+      link: '/',
+      match(path) {
+        if (path.startsWith('/learn')) return false
+        return true
+      },
+    },
     { text: 'Ecosystem', link: 'https://tempo.xyz/ecosystem' },
     { text: 'Blog', link: 'https://tempo.xyz/blog' },
   ],
