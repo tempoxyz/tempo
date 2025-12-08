@@ -630,6 +630,57 @@ mod tests {
     }
 
     #[test]
+    fn test_mint_pre_moderato() -> Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
+        let user = Address::random();
+        let admin = Address::random();
+        initialize_path_usd(&mut storage, admin)?;
+
+        let user_token = deploy_token_with_balance(&mut storage, user, U256::from(1000000u64));
+        let validator_token = deploy_token_with_balance(&mut storage, user, U256::from(1000000u64));
+
+        let mut fee_manager = TipFeeManager::new(&mut storage);
+
+        let pool_id_call = ITIPFeeAMM::getPoolIdCall {
+            userToken: user_token,
+            validatorToken: validator_token,
+        };
+        let pool_id_result = fee_manager.call(&Bytes::from(pool_id_call.abi_encode()), user)?;
+        let pool_id = B256::abi_decode(&pool_id_result.bytes)?;
+
+        let initial_total_supply_call = ITIPFeeAMM::totalSupplyCall { poolId: pool_id };
+        let initial_total_supply_result =
+            fee_manager.call(&Bytes::from(initial_total_supply_call.abi_encode()), user)?;
+        let initial_total_supply = U256::abi_decode(&initial_total_supply_result.bytes)?;
+        assert_eq!(initial_total_supply, U256::ZERO);
+
+        // Test mint() works pre-Moderato
+        let call = ITIPFeeAMM::mintCall {
+            userToken: user_token,
+            validatorToken: validator_token,
+            amountUserToken: U256::from(1000u64),
+            amountValidatorToken: U256::from(1000u64),
+            to: user,
+        };
+
+        let calldata = call.abi_encode();
+        let result = fee_manager.call(&Bytes::from(calldata), user)?;
+        assert!(!result.reverted);
+
+        let shares = U256::abi_decode(&result.bytes)?;
+        assert!(shares > U256::ZERO, "Should mint LP shares");
+
+        // Verify total supply increased
+        let final_total_supply_result =
+            fee_manager.call(&Bytes::from(initial_total_supply_call.abi_encode()), user)?;
+        let final_total_supply = U256::abi_decode(&final_total_supply_result.bytes)?;
+        // Note that upon first mint, MIN_LIQUIDITY is burnt
+        assert_eq!(final_total_supply, shares - MIN_LIQUIDITY);
+
+        Ok(())
+    }
+
+    #[test]
     fn test_mint_deprecated_post_moderato() {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
         let user = Address::random();

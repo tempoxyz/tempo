@@ -989,11 +989,9 @@ mod tests {
     #[test]
     fn tip20_test_selector_coverage() {
         use crate::test_util::{assert_full_coverage, check_selector_coverage};
-        use tempo_chainspec::hardfork::TempoHardfork;
         use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
 
-        // Use allegretto to cover hardfork-gated selectors (feeRecipient, setFeeRecipient)
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut storage = HashMapStorageProvider::new(1);
 
         initialize_path_usd(&mut storage, Address::ZERO).unwrap();
         let mut token = TIP20Token::new(1, &mut storage);
