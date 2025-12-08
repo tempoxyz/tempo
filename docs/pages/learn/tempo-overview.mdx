@@ -1,6 +1,6 @@
 # Tempo, The Payments-First Blockchain
 
-Tempo is a general-purpose blockchain optimized for payments. Tempo is architected to be a low-cost, high-throughput blockchain with user and developer features that we believe should be core to a modern payment system. The general-purpose programmability of the blockchain  provides functionality directly in support of our global payments mission: stablecoin interoperability, on-chain FX, compliant privacy, and more. 
+Tempo is a general-purpose blockchain optimized for payments. Tempo is designed to be a low-cost, high-throughput blockchain with user and developer features that we believe should be core to a modern payment system. The general-purpose programmability of the blockchain  provides functionality directly in support of our global payments mission: stablecoin interoperability, on-chain FX, compliant privacy, and more. 
 
 ## Optimizing Tokens for Payments
 
@@ -41,7 +41,7 @@ Tempo supports passkey authentication through WebAuthn/P256 signature validation
 
 ## High Throughput, Fast Finality
 
-So far we’ve described the payments-first features of Tempo. All of these features are built on a foundation of a highly performant blockchain. We will detail some of the research and engineering behind Tempo in more detail. For now, we focus on the headlines:
+So far we've described the payments-first features of Tempo. All of these features are built on a foundation of a highly performant blockchain. We will detail some of the research and engineering behind Tempo in more detail. For now, we focus on the headlines:
 
 ### Throughput 
 
@@ -49,7 +49,7 @@ Tempo builds on and extends the most performant EVM (Ethereum Virtual Machine) e
 
 ### Finality
 
-Public blockchains that support financial activity need to balance two contradictory demands. On the one hand, the blockchain needs fast finality: e.g., a payment made on the blockchain should be quickly confirmed as final, with no risk of being “re-orged” out as can happen on many blockchains today. On the other hand, the blockchain also needs to degrade gracefully under suboptimal network conditions. Simple solutions to the former problem involve making network assumptions and then simply halting the network when those assumptions aren’t satisfied. Tempo uses Commonware’s implementation of the Simplex Consensus Algorithm. This cutting-edge algorithm optimally trades off these two contradictory desiderata: fast (sub-second)  finality in “normal” network conditions, while still being able to make progress and process transactions when network conditions degrade. 
+Public blockchains that support financial activity need to balance two contradictory demands. On the one hand, the blockchain needs fast finality: e.g., a payment made on the blockchain should be quickly confirmed as final, with no risk of being “re-orged” out as can happen on many blockchains today. On the other hand, the blockchain also needs to degrade gracefully under suboptimal network conditions. Tempo uses Commonware's implementation of the Simplex Consensus Algorithm. This cutting-edge algorithm optimally trades off these two contradictory desiderata: fast (sub-second)  finality in “normal” network conditions, while still being able to make progress and process transactions when network conditions degrade. 
 
 ## Coming Soon
 
@@ -62,4 +62,4 @@ An overwhelming majority of cross-border payments facilitated by stablecoins use
 Tempo is developing opt-in privacy features designed to coexist with issuer compliance requirements. This functionality will enable private balances and transfers while maintaining the auditability and reporting capabilities that regulated issuers need. When available, private tokens will enable sensitive business transactions, confidential consumer balances, and privacy-preserving payment flows—all while preserving the compliance features that make stablecoins viable in regulated markets.
 
 
-Want to learn more about Tempo? Head over the [Docs](/) to get started, or contact us at [partners@tempo.xyz](mailto:partners@tempo.xyz).
+Want to learn more about Tempo? Head over the [Docs](https://docs.tempo.xyz/) to get started, or contact us at [partners@tempo.xyz](mailto:partners@tempo.xyz).
