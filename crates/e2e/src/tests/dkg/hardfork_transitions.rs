@@ -10,9 +10,7 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 
-use crate::{
-    CONSENSUS_NODE_PREFIX, PreparedNode, Setup, execution_runtime::validator, setup_validators,
-};
+use crate::{CONSENSUS_NODE_PREFIX, Setup, execution_runtime::validator, setup_validators};
 
 #[test_traced]
 fn single_validator_does_allegretto_transition_with_validator_in_contract() {
@@ -57,14 +55,13 @@ fn assert_allegretto_transition(how_many: u32, epoch_length: u64) {
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
-        let (validators, execution_runtime) = setup_validators(context.clone(), setup).await;
-        let validators = join_all(validators.into_iter().map(PreparedNode::start)).await;
+        let (mut validators, execution_runtime) = setup_validators(context.clone(), setup).await;
+        join_all(validators.iter_mut().map(|v| v.start())).await;
 
         // We will send an arbitrary node of the initial validator set the smart
         // contract call.
         let http_url = validators[0]
-            .execution_node
-            .node
+            .execution()
             .rpc_server_handle()
             .http_url()
             .unwrap()
@@ -76,7 +73,7 @@ fn assert_allegretto_transition(how_many: u32, epoch_length: u64) {
                 .add_validator(
                     http_url.clone(),
                     validator(i as u32),
-                    node.public_key.clone(),
+                    node.public_key().clone(),
                     SocketAddr::from(([127, 0, 0, 1], (i + 1) as u16)),
                 )
                 .await
@@ -127,14 +124,13 @@ fn assert_allegretto_transition_refused_with_wrong_socket_addr(how_many: u32, ep
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
-        let (validators, execution_runtime) = setup_validators(context.clone(), setup).await;
-        let validators = join_all(validators.into_iter().map(PreparedNode::start)).await;
+        let (mut validators, execution_runtime) = setup_validators(context.clone(), setup).await;
+        join_all(validators.iter_mut().map(|v| v.start())).await;
 
         // We will send an arbitrary node of the initial validator set the smart
         // contract call.
         let http_url = validators[0]
-            .execution_node
-            .node
+            .execution()
             .rpc_server_handle()
             .http_url()
             .unwrap()
@@ -146,7 +142,7 @@ fn assert_allegretto_transition_refused_with_wrong_socket_addr(how_many: u32, ep
                 .add_validator(
                     http_url.clone(),
                     validator(i as u32),
-                    node.public_key.clone(),
+                    node.public_key().clone(),
                     // Shift ports by 1 to misalign the ports.
                     // TODO: put the addresses into the test validators to not
                     // rely on known implementation behavior.
@@ -230,8 +226,8 @@ fn assert_allegretto_transition_refused_without_contract_validators(
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
-        let (validators, _execution_runtime) = setup_validators(context.clone(), setup).await;
-        let _validators = join_all(validators.into_iter().map(PreparedNode::start)).await;
+        let (mut validators, _execution_runtime) = setup_validators(context.clone(), setup).await;
+        join_all(validators.iter_mut().map(|v| v.start())).await;
 
         loop {
             context.sleep(Duration::from_secs(1)).await;

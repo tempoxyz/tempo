@@ -295,8 +295,8 @@ mod tests {
     }
 
     #[test]
-    fn test_metadata() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_metadata_pre_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let (mut path_usd, _admin) = transfer_test_setup(&mut storage);
 
         assert_eq!(path_usd.name()?, NAME_PRE_ALLEGRETTO);
@@ -317,8 +317,8 @@ mod tests {
     }
 
     #[test]
-    fn test_transfer_reverts() {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_transfer_reverts_pre_allegretto() {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let (mut path_usd, _admin) = transfer_test_setup(&mut storage);
 
         let result = path_usd.transfer(
@@ -336,8 +336,8 @@ mod tests {
     }
 
     #[test]
-    fn test_transfer_from_reverts() {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_transfer_from_reverts_pre_allegretto() {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let (mut path_usd, _admin) = transfer_test_setup(&mut storage);
 
         let result = path_usd.transfer_from(
@@ -355,8 +355,8 @@ mod tests {
     }
 
     #[test]
-    fn test_transfer_with_memo_reverts() {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_transfer_with_memo_reverts_pre_allegretto() {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let (mut path_usd, _admin) = transfer_test_setup(&mut storage);
 
         let result = path_usd.transfer_with_memo(
@@ -374,8 +374,8 @@ mod tests {
     }
 
     #[test]
-    fn test_transfer_from_with_memo_reverts() {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_transfer_from_with_memo_reverts_pre_allegretto() {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let (mut path_usd, _admin) = transfer_test_setup(&mut storage);
 
         let result = path_usd.transfer_from_with_memo(
@@ -598,8 +598,8 @@ mod tests {
     }
 
     #[test]
-    fn test_transfer_with_receive_role_reverts() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_transfer_with_receive_role_reverts_pre_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let sender = Address::random();
@@ -677,8 +677,8 @@ mod tests {
     }
 
     #[test]
-    fn test_transfer_from_with_receive_role_reverts() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn test_transfer_from_with_receive_role_reverts_pre_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut path_usd = PathUSD::new(&mut storage);
         let admin = Address::random();
         let from = Address::random();

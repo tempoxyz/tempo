@@ -7,7 +7,7 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 
-use crate::{PreparedNode, Setup, setup_validators};
+use crate::{Setup, setup_validators};
 
 #[test_traced]
 fn pre_hardfork_validator_lost_key_but_gets_key_in_next_epoch() {
@@ -36,21 +36,21 @@ fn assert_validator_lost_key_but_gets_key_in_next_epoch(allegretto_at_genesis: b
             setup
         };
 
-        let (mut nodes, _execution_runtime) =
+        let (mut validators, _execution_runtime) =
             setup_validators(context.clone(), setup.clone()).await;
         let last_node = {
-            let last_node = nodes
+            let last_node = validators
                 .last_mut()
                 .expect("we just asked for a couple of validators");
             last_node
-                .consensus_config
+                .consensus_config_mut()
                 .share
                 .take()
                 .expect("the node must have had a share");
-            last_node.uid.clone()
+            last_node.uid().to_string()
         };
 
-        let _running = join_all(nodes.into_iter().map(PreparedNode::start)).await;
+        join_all(validators.iter_mut().map(|v| v.start())).await;
 
         let mut epoch_reached = false;
         let mut height_reached = false;

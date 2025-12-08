@@ -872,6 +872,7 @@ where
             })
         } else {
             journal.checkpoint_commit();
+            evm.collected_fee = gas_balance_spending;
 
             Ok(())
         }
@@ -883,7 +884,7 @@ where
         exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
     ) -> Result<(), Self::Error> {
         // Call collectFeePostTx on TipFeeManager precompile
-        let context = evm.ctx();
+        let context = &mut evm.inner.ctx;
         let tx = context.tx();
         let basefee = context.block().basefee() as u128;
         let effective_gas_price = tx.effective_gas_price(basefee);
@@ -896,6 +897,18 @@ where
             context.block.blob_gasprice().unwrap_or_default(),
         )? - tx.value
             - actual_spending;
+
+        // Skip `collectFeePostTx` call if the initial fee collected in
+        // `collectFeePreTx` was zero, but spending is non-zero.
+        //
+        // This is normally unreachable unless the gas price was increased mid-transaction,
+        // which is only possible when there are some EVM customizations involved (e.g Foundry EVM).
+        if context.cfg.disable_fee_charge
+            && evm.collected_fee.is_zero()
+            && !actual_spending.is_zero()
+        {
+            return Ok(());
+        }
 
         // Create storage provider and fee manager
         let (journal, block) = (&mut context.journaled_state, &context.block);
@@ -1323,7 +1336,9 @@ mod tests {
         state::Account,
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, tip_fee_manager};
+    use tempo_precompiles::{
+        DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager,
+    };
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
         let db = CacheDB::new(EmptyDB::default());
@@ -1384,7 +1399,7 @@ mod tests {
             user,
             TempoHardfork::default(),
         )?;
-        assert_eq!(validator_fee_token, fee_token);
+        assert_eq!(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, fee_token);
 
         // Set user token
         let user_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);
@@ -1400,7 +1415,7 @@ mod tests {
             &ctx.tx,
             validator,
             user,
-            TempoHardfork::Allegretto,
+            TempoHardfork::default(),
         )?;
         assert_eq!(user_fee_token, fee_token);
 
@@ -1410,7 +1425,7 @@ mod tests {
             &ctx.tx,
             validator,
             user,
-            TempoHardfork::Allegretto,
+            TempoHardfork::default(),
         )?;
         assert_eq!(tx_fee_token, fee_token);
 

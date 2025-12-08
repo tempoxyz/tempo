@@ -6,6 +6,7 @@ import { TIP20Factory } from "../src/TIP20Factory.sol";
 import { TIP403Registry } from "../src/TIP403Registry.sol";
 import { ITIP20 } from "../src/interfaces/ITIP20.sol";
 import { ITIP20RolesAuth } from "../src/interfaces/ITIP20RolesAuth.sol";
+import { ITIP403Registry } from "../src/interfaces/ITIP403Registry.sol";
 import { BaseTest } from "./BaseTest.t.sol";
 
 contract TIP20Test is BaseTest {
@@ -468,12 +469,16 @@ contract TIP20Test is BaseTest {
         }
 
         // 6. systemTransferFrom - blocked from
-        address feeManager = 0xfeEC000000000000000000000000000000000000;
-        vm.prank(feeManager);
-        try token.systemTransferFrom(alice, bob, 100e18) {
-            revert CallShouldHaveReverted();
-        } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        // We skip this test on Tempo, as the systemTransferFrom function is not exposed via the TIP20 interface
+        // it is just an internal function that is called by the fee manager precompile directly.
+        if (!isTempo) {
+            address feeManager = 0xfeEC000000000000000000000000000000000000;
+            vm.prank(feeManager);
+            try token.systemTransferFrom(alice, bob, 100e18) {
+                revert CallShouldHaveReverted();
+            } catch (bytes memory err) {
+                assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+            }
         }
 
         // 7. startReward - blocked sender

@@ -14,6 +14,8 @@
 | [`amm.watchFeeSwap`](/sdk/typescript/viem/amm.watchFeeSwap) | Watches for fee swap events |
 | [`amm.watchMint`](/sdk/typescript/viem/amm.watchMint) | Watches for liquidity mint events |
 | [`amm.watchRebalanceSwap`](/sdk/typescript/viem/amm.watchRebalanceSwap) | Watches for rebalance swap events |
+| **Faucet Actions** | |
+| [`faucet.fund`](/sdk/typescript/viem/faucet.fund) | Funds an account with testnet tokens |
 | **Fee Actions** | |
 | [`fee.getUserToken`](/sdk/typescript/viem/fee.getUserToken) | Gets the user's default fee token preference |
 | [`fee.setUserToken`](/sdk/typescript/viem/fee.setUserToken) | Sets the user's default fee token preference |
@@ -30,11 +32,13 @@
 | [`policy.watchCreate`](/sdk/typescript/viem/policy.watchCreate) | Watches for policy creation events |
 | [`policy.watchWhitelistUpdated`](/sdk/typescript/viem/policy.watchWhitelistUpdated) | Watches for whitelist update events |
 | **Reward Actions** | |
-| [`reward.cancel`](/sdk/typescript/viem/reward.cancel) | Cancels an active reward stream and refunds remaining tokens |
-| [`reward.getStream`](/sdk/typescript/viem/reward.getStream) | Gets a reward stream by its ID |
+| [`reward.claim`](/sdk/typescript/viem/reward.claim) | Claims accumulated rewards for the caller |
 | [`reward.getTotalPerSecond`](/sdk/typescript/viem/reward.getTotalPerSecond) | Gets the total reward per second rate for all active streams |
+| [`reward.getUserRewardInfo`](/sdk/typescript/viem/reward.getUserRewardInfo) | Gets reward information for a specific account |
 | [`reward.setRecipient`](/sdk/typescript/viem/reward.setRecipient) | Sets or changes the reward recipient for a token holder |
 | [`reward.start`](/sdk/typescript/viem/reward.start) | Starts a new reward stream that distributes tokens to opted-in holders |
+| [`reward.watchRewardRecipientSet`](/sdk/typescript/viem/reward.watchRewardRecipientSet) | Watches for reward recipient set events |
+| [`reward.watchRewardScheduled`](/sdk/typescript/viem/reward.watchRewardScheduled) | Watches for reward scheduled events |
 | **Stablecoin Exchange Actions** | |
 | [`dex.buy`](/sdk/typescript/viem/dex.buy) | Buys a specific amount of tokens from the Stablecoin Exchange orderbook |
 | [`dex.cancel`](/sdk/typescript/viem/dex.cancel) | Cancels an order from the orderbook |

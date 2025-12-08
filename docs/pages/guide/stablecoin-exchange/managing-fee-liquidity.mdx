@@ -84,13 +84,13 @@ Add validator token to the pool to receive LP tokens representing your share. Th
 // @noErrors
 import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits, parseUnits } from 'viem'
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 
 const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
 const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
 
 function ManageFeeLiquidity() {
-  const { address } = useAccount()
+  const { address } = useConnection()
 
   const { data: pool } = Hooks.amm.usePool({
     userToken,
@@ -152,13 +152,13 @@ View your LP token balance to see your share of the pool.
 // @noErrors
 import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits, parseUnits } from 'viem'
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 
 const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
 const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
 
 function ManageFeeLiquidity() {
-  const { address } = useAccount()
+  const { address } = useConnection()
 
   const { data: pool } = Hooks.amm.usePool({
     userToken,
@@ -227,13 +227,13 @@ Burn LP tokens to withdraw your share of pool reserves plus accumulated fees.
 // @noErrors
 import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits, parseUnits } from 'viem'
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 
 const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
 const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
 
 function ManageFeeLiquidity() {
-  const { address } = useAccount()
+  const { address } = useConnection()
 
   const { data: pool } = Hooks.amm.usePool({
     userToken,
@@ -384,13 +384,13 @@ You can rebalance pools by swapping validator tokens for accumulated user tokens
 // @noErrors
 import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits, parseUnits } from 'viem'
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 
 const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
 const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
 
 function RebalancePool() {
-  const { address } = useAccount()
+  const { address } = useConnection()
 
   const { data: pool } = Hooks.amm.usePool({
     userToken,

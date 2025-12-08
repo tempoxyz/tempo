@@ -9,9 +9,7 @@ use commonware_runtime::{
 use futures::future::join_all;
 use tracing::info;
 
-use crate::{
-    CONSENSUS_NODE_PREFIX, PreparedNode, Setup, execution_runtime::validator, setup_validators,
-};
+use crate::{CONSENSUS_NODE_PREFIX, Setup, execution_runtime::validator, setup_validators};
 
 #[test_traced]
 fn after_hardfork_validator_is_added_to_a_set_of_one() {
@@ -126,10 +124,10 @@ impl AssertValidatorIsAdded {
             let (mut validators, execution_runtime) =
                 setup_validators(context.clone(), setup).await;
 
-            let new_validator = {
+            let mut new_validator = {
                 let idx = validators
                     .iter()
-                    .position(|node| node.consensus_config.share.is_none())
+                    .position(|node| node.consensus_config().share.is_none())
                     .expect("at least one node must be a verifier, i.e. not have a share");
                 validators.remove(idx)
             };
@@ -137,17 +135,16 @@ impl AssertValidatorIsAdded {
             assert!(
                 validators
                     .iter()
-                    .all(|node| node.consensus_config.share.is_some()),
+                    .all(|node| node.consensus_config().share.is_some()),
                 "must have removed the one non-signer node; must be left with only signers",
             );
 
-            let validators = join_all(validators.into_iter().map(PreparedNode::start)).await;
+            join_all(validators.iter_mut().map(|v| v.start())).await;
 
             // We will send an arbitrary node of the initial validator set the smart
             // contract call.
             let http_url = validators[0]
-                .execution_node
-                .node
+                .execution()
                 .rpc_server_handle()
                 .http_url()
                 .unwrap()
@@ -164,7 +161,7 @@ impl AssertValidatorIsAdded {
                         .add_validator(
                             http_url.clone(),
                             validator(i as u32),
-                            node.public_key.clone(),
+                            node.public_key().clone(),
                             SocketAddr::from(([127, 0, 0, 1], (i + 1) as u16)),
                         )
                         .await
@@ -210,7 +207,7 @@ impl AssertValidatorIsAdded {
                     // XXX: The addValidator call above adding the initial set
                     // adds validators 0..validators.len() (i.e. exclusive validators.len())
                     validator(validators.len() as u32),
-                    new_validator.public_key.clone(),
+                    new_validator.public_key().clone(),
                     SocketAddr::from(([127, 0, 0, 1], (validators.len() + 1) as u16)),
                 )
                 .await
@@ -239,7 +236,7 @@ impl AssertValidatorIsAdded {
                     }
 
                     // Only consider metrics from the initial set of validators.
-                    if !validators.iter().any(|val| line.contains(&val.uid)) {
+                    if !validators.iter().any(|val| line.contains(&val.uid())) {
                         continue;
                     }
 
@@ -331,15 +328,15 @@ impl AssertValidatorIsRemoved {
         let executor = Runner::from(cfg);
 
         executor.start(|context| async move {
-            let (validators, execution_runtime) = setup_validators(context.clone(), setup).await;
+            let (mut validators, execution_runtime) =
+                setup_validators(context.clone(), setup).await;
 
-            let validators = join_all(validators.into_iter().map(|node| node.start())).await;
+            join_all(validators.iter_mut().map(|v| v.start())).await;
 
             // We will send an arbitrary node of the initial validator set the smart
             // contract call.
             let http_url = validators[0]
-                .execution_node
-                .node
+                .execution()
                 .rpc_server_handle()
                 .http_url()
                 .unwrap()
@@ -356,7 +353,7 @@ impl AssertValidatorIsRemoved {
                         .add_validator(
                             http_url.clone(),
                             validator(i as u32),
-                            node.public_key.clone(),
+                            node.public_key().clone(),
                             SocketAddr::from(([127, 0, 0, 1], (i + 1) as u16)),
                         )
                         .await
@@ -427,7 +424,7 @@ impl AssertValidatorIsRemoved {
                     }
 
                     // Only consider metrics from the initial set of validators.
-                    if !validators.iter().any(|val| line.contains(&val.uid)) {
+                    if !validators.iter().any(|val| line.contains(&val.uid())) {
                         continue;
                     }
 

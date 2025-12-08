@@ -21,8 +21,4 @@ proc-macro2 = "1"
 alloy = { workspace = true }
 
 [dev-dependencies]
-tempo-precompiles = { path = "../precompiles" }
-tempo-contracts = { path = "../contracts" }
 alloy = { workspace = true }
-revm = { workspace = true }
-proptest.workspace = true
