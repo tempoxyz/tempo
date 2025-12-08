@@ -268,7 +268,9 @@ impl StablecoinExchange {
         token: Address,
         amount: u128,
     ) -> Result<()> {
-        self.ensure_transfer_authorized(token, user)?;
+        if self.storage.spec().is_allegro_moderato() {
+            self.ensure_transfer_authorized(token, user)?;
+        }
 
         let user_balance = self.balance_of(user, token)?;
         if user_balance >= amount {
@@ -4303,7 +4305,7 @@ mod tests {
     fn test_blacklisted_user_cannot_use_internal_balance() -> eyre::Result<()> {
         use crate::tip403_registry::{ITIP403Registry, TIP403Registry};
 
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
