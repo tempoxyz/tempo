@@ -2,6 +2,7 @@
 pragma solidity ^0.8.13;
 
 interface IFeeAMM {
+
     error InsufficientLiquidity();
     error IdenticalAddresses();
     error InvalidToken();
@@ -57,27 +58,15 @@ interface IFeeAMM {
 
     function SCALE() external view returns (uint256);
 
-    function burn(
-        address userToken,
-        address validatorToken,
-        uint256 liquidity,
-        address to
-    ) external returns (uint256 amountUserToken, uint256 amountValidatorToken);
+    function burn(address userToken, address validatorToken, uint256 liquidity, address to)
+        external
+        returns (uint256 amountUserToken, uint256 amountValidatorToken);
 
-    function getPool(
-        address userToken,
-        address validatorToken
-    ) external view returns (Pool memory);
+    function getPool(address userToken, address validatorToken) external view returns (Pool memory);
 
-    function getPoolId(
-        address userToken,
-        address validatorToken
-    ) external pure returns (bytes32);
+    function getPoolId(address userToken, address validatorToken) external pure returns (bytes32);
 
-    function liquidityBalances(
-        bytes32,
-        address
-    ) external view returns (uint256);
+    function liquidityBalances(bytes32, address) external view returns (uint256);
 
     function mint(
         address userToken,
@@ -94,19 +83,15 @@ interface IFeeAMM {
         address to
     ) external returns (uint256 liquidity);
 
-    function pools(
-        bytes32
-    )
+    function pools(bytes32)
         external
         view
         returns (uint128 reserveUserToken, uint128 reserveValidatorToken);
 
-    function rebalanceSwap(
-        address userToken,
-        address validatorToken,
-        uint256 amountOut,
-        address to
-    ) external returns (uint256 amountIn);
+    function rebalanceSwap(address userToken, address validatorToken, uint256 amountOut, address to)
+        external
+        returns (uint256 amountIn);
 
     function totalSupply(bytes32) external view returns (uint256);
+
 }
