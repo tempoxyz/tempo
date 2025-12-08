@@ -1,48 +1,17 @@
-name: Docs
+name: Trigger Docs Workflow
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
-      - 'docs/**'
-      - '.github/workflows/docs.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'docs/**'
-      - '.github/workflows/docs.yml'
-  workflow_dispatch:
+      - 'specs/**'
 
 jobs:
-  check:
-    name: Check
+  trigger-docs:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-
     steps:
-      - name: Clone repository
-        uses: actions/checkout@v4
-        with:
-          submodules: 'recursive'
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Setup bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Install dependencies
-        working-directory: docs
-        run: bun install
-
-      - name: Check
-        working-directory: docs
-        run: bun run check
-
-      - name: Check types
-        working-directory: docs
-        run: bun run check:types
+      - name: Trigger docs workflow
+        env:
+          GH_TOKEN: ${{ secrets.TEMPO_GITHUB_PAT }}
+        run: gh workflow run specs.yml --repo tempoxyz/docs

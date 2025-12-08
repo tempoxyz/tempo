@@ -1,0 +1,76 @@
+# pathUSD
+
+## Abstract
+
+pathUSD is a USD stablecoin that can be used as a quote token on Tempo's decentralized exchange. It is the first stablecoin deployed to the chain, and is used as a fallback gas token when the user does not specify a gas token. Use of pathUSD is optional.
+
+## Motivation
+
+Each USD TIP-20 on Tempo can choose any other USD TIP-20 as its [quote token](/protocol/specs/stablecoin-exchange#quote-tokens)—the token it is paired against on the [native decentralized exchange](/protocol/specs/stablecoin-exchange). This guarantees that there is one unique path between any two tokens, which reduces fragmentation of liquidity and simplifies routing.
+
+While this structure is formally neutral, there is some risk that it could lead to a natural monopoly. If most liquidity accrues to a few stablecoins, it could give those stablecoins a competitive advantage.
+
+To encourage an even playing field, Tempo offers a neutral USD stablecoin, pathUSD, that other stablecoins can choose as their quote token. PathUSD is not meant to compete as a user-facing stablecoin, and will not be issued on any other chain. Use of pathUSD is optional, and tokens are able to list any other token as their quote token if they choose.
+
+PathUSD can also be accepted as a fee token by validators.
+
+## Specification
+
+### Contract
+
+PathUSD is a predeployed [TIP-20](/protocol/specs/tip20) at genesis. Note that since it is the first TIP-20 contract deployed, its quote token is the zero address.
+
+| Property      | Value                                                                 |
+| ------------- | --------------------------------------------------------------------- |
+| address       | `0x20c0000000000000000000000000000000000000`                          |
+| `name()`        | "pathUSD"                                                             |
+| `symbol()`      | "pathUSD"                                                             |
+| `currency()`    | "USD"                                                                 |
+| `decimals()`    | 6                                                                     |
+| `quoteToken()`  | `address(0)`                                        |
+
+## How It Works
+
+When you create a USD stablecoin on Tempo, you can set pathUSD as its quote token:
+
+```solidity
+TIP20 token = factory.createToken(
+  "My Company USD",
+  "MCUSD",
+  "USD",
+  TIP20(0x20c0000000000000000000000000000000000000), // pathUSD
+  msg.sender
+);
+```
+
+This means:
+- Your token trades against pathUSD on the exchange
+- Users can swap between your token and other USD stablecoins that also use pathUSD, or ones that are connected to it by a multi-hop path.
+
+##### Tree Structure
+
+This creates a tree structure where all USD stablecoins are connected via multi-hop paths.
+
+```
+               USDX
+                |
+             pathUSD -- USDY -- USDZ
+                |
+               USDA
+```
+
+The tree structure guarantees that there is a single path between any two USD stablecoins, ensuring simple routing, concentrated liquidity, and efficient pricing, even for thinly-traded pairs.
+
+##### Example: Cross-Stablecoin Payment
+
+1. Market makers provide liquidity for USDC/pathUSD and USDP/pathUSD pairs
+2. User wants to send USDC to a merchant who prefers USDP
+3. DEX atomically routes: User's USDC → pathUSD → Merchant's USDP
+4. Single action, no manual swaps
+
+This is critical for payments between parties with different stablecoin preferences. The user and merchant never touch pathUSD; it exists only as routing infrastructure.
+
+
+
+
+
