@@ -286,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn test_start_reward_disabled_pre_allegretto() -> eyre::Result<()> {
+    fn test_start_reward_disabled_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn test_set_reward_recipient_disabled_pre_allegretto() -> eyre::Result<()> {
+    fn test_set_reward_recipient_disabled_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
@@ -331,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cancel_reward_disabled_pre_allegretto() -> eyre::Result<()> {
+    fn test_cancel_reward_disabled_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
@@ -351,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn test_claim_rewards_disabled_pre_allegretto() -> eyre::Result<()> {
+    fn test_claim_rewards_disabled_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let mut token = PathUSD::new(&mut storage);
         let sender = Address::from([1u8; 20]);
