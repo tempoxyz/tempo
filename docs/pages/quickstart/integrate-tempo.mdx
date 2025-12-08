@@ -4,6 +4,11 @@ import { ConnectWallet } from '../../components/ConnectWallet.tsx'
 import LucideZap from '~icons/lucide/zap'
 import LucideLandmark from '~icons/lucide/landmark'
 import LucidePackage from '~icons/lucide/package'
+import LucideRocket from '~icons/lucide/rocket'
+import LucideHammer from '~icons/lucide/hammer'
+import LucideServer from '~icons/lucide/server'
+import LucideBookOpen from '~icons/lucide/book-open'
+import LucideMail from '~icons/lucide/mail'
 import LucideCoins from '~icons/lucide/coins'
 import LucideNetwork from '~icons/lucide/network'
 import LucideDroplet from '~icons/lucide/droplet'
@@ -33,49 +38,34 @@ Tempo is fully compatible with the Ethereum Virtual Machine (EVM), targeting the
     href="/quickstart/connection-details"
   />
   <Card.Link
-    icon={LucideDroplet}
-    title="Get Faucet Funds"
-    description={
-        "Get stablecoins funded to your account on Tempo Testnet for testing purposes"
-    }
-    href="/quickstart/faucet"
-  />  
-  <Card.Link
-    icon={LucideZap}
-    title="Use Tempo Transactions"
-    description={
-    <p>Tempo Transactions are a <i>new transaction type</i> on Tempo, separate from EVM transactions.</p>
-    }
-    href="/guide/tempo-transaction"
-  />
-   <Card.Link
-    icon={LucideCoins}
-    title="Use the TIP-20 Standard"
-    description={
-        "Tempo's native token standard for stablecoins with payment-focused features"
-    }
-    href="/documentation/protocol/tip20/overview"
+    description="Guides and sample code for accounts, payments, issuance, and exchange."
+    href="/guide/use-accounts"
+    icon={LucideHammer}
+    title="Start Building on Tempo"
   />
   <Card.Link
-    icon={LucideLandmark}
-    title="See EVM Differences"
-    description={
-        "Understand the differences between Tempo and other EVM-compatible networks"
-    }
-    href="/quickstart/evm-compatibility"
-    variant="danger"
+    description="System requirements, installation and usage instructions for running a Tempo node."
+    href="/guide/node"
+    icon={LucideServer}
+    title="Run a Tempo Node"
   />
-
   <Card.Link
+    description="Technical specifications for tokens, fees, transactions, and protocol components."
+    href="/documentation/protocol"
+    icon={LucideBookOpen}
+    title="Read Tempo Protocol Specs"
+  />
+  <Card.Link
+    description="Language-specific SDKs for building on Tempo with TypeScript, Go, Foundry, and Rust."
+    href="/sdk"
     icon={LucidePackage}
-    title="Predeployed Contracts"
-    description={
-        "System contracts, testnet stablecoins, and standard utilities ready to use"
-    }
-    href="/quickstart/predeployed-contracts"
+    title="Build on Tempo SDKs"
   />
-
-
-
+  <Card.Link
+    description="Send us an email on how you'd like to partner with or connect to the Tempo team."
+    href="mailto:partners@tempo.xyz"
+    icon={LucideMail}
+    title="Get in Touch"
+  />
 
 </Card.Container>

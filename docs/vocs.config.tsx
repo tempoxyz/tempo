@@ -57,6 +57,10 @@ export default defineConfig({
           link: '/',
         },
         {
+          text: 'Ecosystem',
+          link: '/ecosystem',
+        },
+        {
           text: 'Integrate Tempo Testnet',
           items: [
             {
@@ -78,6 +82,10 @@ export default defineConfig({
             {
               text: 'Predeployed Contracts',
               link: '/quickstart/predeployed-contracts',
+            },
+            {
+              text: 'Developer Tools',
+              link: '/quickstart/developer-tools',
             },
           ],
         },

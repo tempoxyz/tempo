@@ -1,10 +1,7 @@
-import LucidePackage from '~icons/lucide/package'
-import LucideServer from '~icons/lucide/server'
-import LucideBookOpen from '~icons/lucide/book-open'
 import LucideRocket from '~icons/lucide/rocket'
+import LucideBookOpen from '~icons/lucide/book-open'
+import LucideUsers from '~icons/lucide/users'
 import LucideMail from '~icons/lucide/mail'
-import LucideHammer from '~icons/lucide/hammer'
-import LucideHelpCircle from '~icons/lucide/help-circle'
 import * as Card from "../components/Card.tsx"
 import { Callout } from 'vocs/components'
 
@@ -12,58 +9,33 @@ import { Callout } from 'vocs/components'
 
 Tempo is a general-purpose blockchain optimized for payments. Tempo is architected to be a low-cost, high-throughput blockchain with user and developer features that we believe should be core to a modern payment system.
 
-Tempo was designed in close collaboration with an exceptional group of design partners, including Anthropic, Coupang, Deutsche Bank, DoorDash, Lead Bank, Mercury, Nubank, OpenAI, Revolut, Shopify, Standard Chartered, and Visa, who are helping to validate the system against real payment workloads.
-
+Tempo was designed in close collaboration with an [exceptional group of design partners](https://tempo.xyz/ecosystem) who are helping to validate the system against real payment workloads.
 
 In these docs, you'll find guides and resources to help you get started with Tempo. 
 
-<Card.Notice
-  icon={LucideHelpCircle}
-  title="Not sure where to start?"
-  inline
->
-  <p><a href="/learn">Learn more</a> about Tempo or <a href="mailto:partners@tempo.xyz">get in touch</a> with our team.</p>
-</Card.Notice>
-
-As of today, Tempo is still in its early phases of development; the first testnet release intended for developers and infra partners is available as of December 9th.
-
-You can get started today by integrating with the Tempo testnet, building on Tempo, running a Tempo node, reading the Tempo protocol specs or by building with Tempo SDKs.
-
 <Card.Container>
   <Card.Link
-    description="Quickly get up to speed on integrating Tempo testnet and get test funds."
+    description="Get started by connecting to the testnet, getting faucet funds, sending transactions, and using our SDKs to build on Tempo."
     href="/quickstart/integrate-tempo"
     icon={LucideRocket}
     title="Integrate Tempo Testnet"
   />
   <Card.Link
-    description="Guides and sample code for accounts, payments, issuance, and exchange."
-    href="/guide/use-accounts"
-    icon={LucideHammer}
-    title="Start Building on Tempo"
-  />
-  <Card.Link
-    description="System requirements, installation and usage instructions for running a Tempo node."
-    href="/guide/node"
-    icon={LucideServer}
-    title="Run a Tempo Node"
-  />
-  <Card.Link
-    description="Technical specifications for tokens, fees, transactions, and protocol components."
-    href="/documentation/protocol"
+    description="Learn more about what stablecoins are, how they work, and the real-world payment use cases Tempo is designed to support."
+    href="/learn"
     icon={LucideBookOpen}
-    title="Read Tempo Protocol Specs"
+    title="Learn About Stablecoins"
   />
   <Card.Link
-    description="Language-specific SDKs for building on Tempo with TypeScript, Go, Foundry, and Rust."
-    href="/sdk"
-    icon={LucidePackage}
-    title="Build on Tempo SDKs"
+    description="Discover partners building on Tempo to work with for asset custody, stablecoins orchestration & issuance, compliance, and more."
+    href="/ecosystem"
+    icon={LucideUsers}
+    title="Build With Partners"
   />
   <Card.Link
-    description="Send us an email on how you'd like to partner with or connect to the Tempo team."
+    description="Connect with the Tempo team to discuss partnerships, integration opportunities, or opportunities to collaborate."
     href="mailto:partners@tempo.xyz"
     icon={LucideMail}
-    title="Get in Touch"
+    title="Get In Touch"
   />
 </Card.Container>
