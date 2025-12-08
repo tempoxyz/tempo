@@ -1,0 +1,115 @@
+# Storage Creation Pricing
+
+## Overview
+
+Tempo implements increased pricing for new storage creation to better reflect the cost of state growth on the network. This pricing applies when new storage elements are created, as opposed to updating existing storage.
+
+## Pricing Structure
+
+### Constants
+
+The storage creation pricing uses two constants that will be determined through benchmarking:
+
+- `NEW_STORAGE_ELEMENT_COST = 250_000`: Base cost for creating a new storage element
+- `STORAGE_ADDITIONAL_BYTE_COST = 4_000`: Cost per additional byte beyond the first 32 bytes
+
+These constants will be set based on benchmark results to accurately reflect the cost of state growth on the network.
+
+### New Storage Element Creation
+
+When a new storage slot is created (i.e., writing a non-zero value to a previously zero storage slot), an additional cost of `NEW_STORAGE_ELEMENT_COST` gas is applied.
+
+### Additional Bytes in Storage Elements
+
+For variable length storage elements (primarily relevant for contract code), an additional cost of `STORAGE_ADDITIONAL_BYTE_COST` gas per byte is applied for bytes beyond the first 32 bytes.
+
+This per-byte pricing is calculated as:
+```
+additional_bytes_cost = STORAGE_ADDITIONAL_BYTE_COST * additional_bytes
+```
+
+Where `additional_bytes` is the number of bytes beyond the first 32 bytes (one storage slot) of the storage element.
+
+## When Pricing Applies
+
+### SSTORE Operations
+
+The increased pricing applies to `SSTORE` operations when:
+- The storage slot was previously zero (uninitialized)
+- A non-zero value is being written to that slot
+
+If a storage slot already contains a non-zero value and is being updated, only the standard SSTORE gas costs apply.
+
+### Contract Code Storage
+
+When contract code is deployed via `CREATE` or `CREATE2`:
+- The base cost for creating a new storage element (`NEW_STORAGE_ELEMENT_COST`) applies
+- For contract code bytes beyond the first 32 bytes, the per-byte cost (`STORAGE_ADDITIONAL_BYTE_COST` per byte) applies
+
+### Account Nonce Initialization
+
+When an account that has been sent a TIP-20 balance is first used and its nonce is incremented from 0 to 1, this creates new storage for the account's nonce state. The increased pricing applies in this case:
+- The base cost for creating a new storage element (`NEW_STORAGE_ELEMENT_COST`) applies when the account's nonce transitions from 0 to 1
+
+### Future: Native Token Transfers
+
+**Note:** Tempo currently does not have a native token. However, if a native token is introduced in the future, transfers to accounts with zero balance will need to apply the new storage creation pricing:
+- When a `CALL` operation transfers native tokens to an account with zero balance, creating the account's balance storage, `NEW_STORAGE_ELEMENT_COST` should apply
+- When a `SELFDESTRUCT` operation sends native tokens to an empty account, creating the account's balance storage, `NEW_STORAGE_ELEMENT_COST` should apply
+
+## Examples
+
+### Example 1: Creating a New Storage Slot
+
+```solidity
+contract MyContract {
+    uint256 public myValue;  // Storage variable, initially zero
+    
+    function setValue(uint256 value) external {
+        // First write to myValue (slot was previously zero)
+        myValue = value;  // Costs: standard SSTORE + NEW_STORAGE_ELEMENT_COST
+    }
+}
+```
+
+### Example 2: Updating Existing Storage
+
+```solidity
+contract MyContract {
+    uint256 public myValue;  // Storage variable
+    
+    function updateValue(uint256 value) external {
+        // Subsequent write to myValue (slot already contains non-zero value)
+        myValue = value;  // Costs: standard SSTORE only (no additional fee)
+    }
+}
+```
+
+### Example 3: Contract Creation
+
+When deploying a contract via `CREATE` or `CREATE2`, the contract code is stored on-chain. For a contract with 100 bytes of code, the storage creation costs are:
+- Base cost: `NEW_STORAGE_ELEMENT_COST` (covers the first 32 bytes)
+- Additional bytes: `(100 - 32) * STORAGE_ADDITIONAL_BYTE_COST` (for the remaining 68 bytes)
+- Total: `CREATE` base cost + `NEW_STORAGE_ELEMENT_COST` + `(100 - 32) * STORAGE_ADDITIONAL_BYTE_COST`
+
+### Example 4: Account Nonce Initialization
+
+When an account that has received a TIP-20 balance (but hasn't been used yet) sends its first transaction, the account's nonce transitions from 0 to 1. This creates new storage for the account's nonce state. The costs include:
+- Standard transaction costs (signature verification, calldata, etc.)
+- `NEW_STORAGE_ELEMENT_COST` for creating the new nonce storage
+
+Note that receiving TIP-20 tokens doesn't create account storage—the balance is stored in the TIP-20 contract's storage, not the account's storage. Only when the account first sends a transaction does the nonce storage get created.
+
+## Rationale
+
+This pricing structure:
+
+1. **Makes State Bloat Attacks expensive**: Creating significant amounts of state that can negatively impact the network will come at a high cost to the attacker
+2. **Discourages State Bloat**: Higher costs for creating new storage incentivizes efficient use of existing storage slots
+3. **Fair Cost Allocation**: Users who create new state pay proportionally more than those who update existing state
+4. **Network Sustainability**: Helps maintain network performance by making state growth more expensive
+
+## Implementation Details
+
+The pricing is implemented at the EVM level and applies automatically to all storage creation operations. No changes are required to smart contracts or applications—the costs are handled transparently by the protocol.
+
