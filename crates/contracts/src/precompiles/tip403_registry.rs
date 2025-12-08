@@ -35,7 +35,6 @@ sol! {
         // Errors
         error Unauthorized();
         error IncompatiblePolicyType();
-        error SelfOwnedPolicyMustBeWhitelist();
     }
 }
 
@@ -48,10 +47,5 @@ impl TIP403RegistryError {
     /// Creates an error for incompatible policy types
     pub const fn incompatible_policy_type() -> Self {
         Self::IncompatiblePolicyType(ITIP403Registry::IncompatiblePolicyType {})
-    }
-
-    /// Creates an error for incompatible policy types
-    pub const fn self_owned_policy_must_be_whitelist() -> Self {
-        Self::SelfOwnedPolicyMustBeWhitelist(ITIP403Registry::SelfOwnedPolicyMustBeWhitelist {})
     }
 }
