@@ -17,13 +17,62 @@
 
 The blockchain for payments at scale.
 
-[Tempo](https://docs.tempo.xyz/) is designed to be low-cost, fast, and secure. By dedicating capacity to payments, it delivers on the uptime and throughput demands of the real world.
+[Tempo](https://docs.tempo.xyz/) is a blockchain designed specifically for stablecoin payments. Its architecture focuses on high throughput, low cost, and features that financial institutions, payment service providers, and fintech platforms expect from modern payment infrastructure.
 
-## For Operators
+## Overview
 
-See the [Tempo documentation](https://docs.tempo.xyz/get-started/node#tempo-node) for instructions on how to install and run Tempo.
+Tempo is fully compatible with the Ethereum Virtual Machine (EVM), targeting the Osaka EVM hard fork. So, everything you'd expect to work with Ethereum works on Tempo, with only a few exceptions which we detail in the [EVM Differences](https://docs.tempo.xyz/quickstart/evm-compatibility#handling-eth-balance-checks) section of the documentation.
 
-## For Developers
+Key characteristics:
+
+- Payments‑first policy and execution
+  - 500ms block interval engineered for low perceived latency in payment flows
+  - Deterministic, low‑variance fee behavior
+  - Mempool prioritization for transfer‑shaped transactions, fairness windows, and nonce continuity
+- Stablecoin‑native UX
+  - Pay gas in supported stablecoins via protocol‑level conversion
+  - Dedicated payments lane, memos, and access lists to streamline payer/merchant flows
+  - Opt‑in privacy modes with reconcilable indexing
+- EVM compatibility
+  - Standard JSON‑RPC and EVM semantics
+  - Built on the Rust‑based Reth SDK with high‑performance execution
+
+## Specification
+
+## Getting Started
+
+### As a user
+
+You can connect to Tempo Testnet using the following details:
+
+| Network Name | Tempo Testnet (Andantino)
+| Currency |`USD`
+| Chain ID | `42429`
+| HTTP URL | https://rpc.testnet.tempo.xyz
+| WebSocket URL | wss://rpc.testnet.tempo.xyz
+| Block Explorer | https://explore.tempo.xyz
+
+Next, grab some stablecoins to test with on from the [Faucet](https://docs.tempo.xyz/quickstart/faucet#faucet)
+
+Alternatively, use [`cast`](https://github.com/tempoxyz/tempo-foundry):
+
+```bash
+cast rpc tempo_fundAddress <ADDRESS> --rpc-url https://rpc.testnet.tempo.xyz
+```
+
+### As an operator
+
+See the [Tempo documentation](https://docs.tempo.xyz/guide/node) for instructions on how to install and run Tempo.
+
+### As a developer
+
+We provide three different installation paths - installing a pre-built binary, building from source or using our provided Docker image.
+
+- [Pre-built Binary](https://docs.tempo.xyz/guide/node/installation#pre-built-binary)
+- [Build from Source](https://docs.tempo.xyz/guide/node/installation#build-from-source)
+- [Docker](https://docs.tempo.xyz/guide/node/installation#docker)
+
+Additionally, if you would like to contribute to Tempo:
 
 Prerequisites: [`just`](https://github.com/casey/just?tab=readme-ov-file#packages)
 
@@ -32,6 +81,13 @@ just
 just build-all
 just localnet
 ```
+
+Tempo has several SDKs to help you get started building on Tempo:
+
+- [TypeScript](https://docs.tempo.xyz/sdk/typescript)
+- [Rust](https://docs.tempo.xyz/sdk/rust)
+- [Go](https://docs.tempo.xyz/sdk/go)
+- [Foundry](https://docs.tempo.xyz/sdk/foundry)
 
 ## Contributing
 
