@@ -109,8 +109,6 @@ Tempo has several SDKs to help you get started building on Tempo:
 
 Want to contribute?
 
-Prerequisites: [`just`](https://github.com/casey/just?tab=readme-ov-file#packages)
-
 First, clone the repository:
 
 ```
@@ -118,14 +116,21 @@ git clone https://github.com/tempoxyz/tempo
 cd tempo
 ```
 
-Build Tempo:
+Next, install [`just`](https://github.com/casey/just?tab=readme-ov-file#packages).
+
+Install the dependencies:
 
 ```bash
 just
+```
+
+Build Tempo:
+
+```bash
 just build-all
 ```
 
-Next, run the tests:
+Run the tests:
 
 ```bash
 cargo nextest run
