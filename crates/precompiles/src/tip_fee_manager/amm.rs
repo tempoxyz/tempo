@@ -410,7 +410,7 @@ impl<'a, S: PrecompileStorageProvider> TipFeeManager<'a, S> {
                 .ok_or(TIPFeeAMMError::insufficient_liquidity())?
         } else {
             // Subsequent deposits: mint as if user called rebalanceSwap then minted with both
-            //  liquidity = amountValidatorToken * _totalSupply / (V + n * U), with n = N / SCALE
+            // liquidity = amountValidatorToken * _totalSupply / (V + n * U), with n = N / SCALE
             let product = N
                 .checked_mul(U256::from(pool.reserve_user_token))
                 .and_then(|product| product.checked_div(SCALE))
@@ -723,9 +723,10 @@ mod tests {
         PATH_USD_ADDRESS,
         error::TempoPrecompileError,
         storage::{ContractStorage, hashmap::HashMapStorageProvider},
-        tip20::{TIP20Token, tests::initialize_path_usd, token_id_to_address},
+        tip20::{ISSUER_ROLE, TIP20Token, tests::initialize_path_usd, token_id_to_address},
     };
     use alloy::primitives::{Address, uint};
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
     #[test]
@@ -1423,5 +1424,364 @@ mod tests {
                 TIPFeeAMMError::InsufficientLiquidity(_)
             ))
         ));
+    }
+
+    #[test]
+    fn test_mint_with_validator_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        initialize_path_usd(&mut storage, admin)?;
+
+        let mut user_token_tip20 = TIP20Token::new(1, &mut storage);
+        user_token_tip20.initialize(
+            "UserToken",
+            "UTK",
+            "USD",
+            PATH_USD_ADDRESS,
+            admin,
+            Address::ZERO,
+        )?;
+        let user_token = user_token_tip20.address();
+
+        let mut validator_token_tip20 = TIP20Token::new(2, &mut storage);
+        validator_token_tip20.initialize(
+            "ValidatorToken",
+            "VTK",
+            "USD",
+            PATH_USD_ADDRESS,
+            admin,
+            Address::ZERO,
+        )?;
+        validator_token_tip20.grant_role_internal(admin, *ISSUER_ROLE)?;
+        let validator_token = validator_token_tip20.address();
+
+        // Mint tokens to user
+        validator_token_tip20.mint(
+            admin,
+            ITIP20::mintCall {
+                to: user,
+                amount: uint!(1000000_U256),
+            },
+        )?;
+
+        // Test subsequent liquidity with a different user
+        let user2 = Address::random();
+        validator_token_tip20.mint(
+            admin,
+            ITIP20::mintCall {
+                to: user2,
+                amount: uint!(1000000_U256),
+            },
+        )?;
+
+        let mut amm = TipFeeManager::new(&mut storage);
+        let pool_id = amm.pool_id(user_token, validator_token);
+
+        // Test initial liquidity
+        let amount_validator_1 = uint!(10000_U256);
+        let liquidity_1 = amm.mint_with_validator_token(
+            user,
+            user_token,
+            validator_token,
+            amount_validator_1,
+            user,
+        )?;
+
+        // For first mint iquidity = (amount / 2) - MIN_LIQUIDITY = 5000 - 1000 = 4000
+        assert_eq!(liquidity_1, uint!(4000_U256));
+
+        // Verify pool state after first mint
+        let pool_1 = amm.sload_pools(pool_id)?;
+        assert_eq!(pool_1.reserve_user_token, 0);
+        assert_eq!(pool_1.reserve_validator_token, 10000);
+
+        // Verify total supply after first mint
+        let total_supply_1 = amm.get_total_supply(pool_id)?;
+        assert_eq!(
+            total_supply_1,
+            uint!(5000_U256),
+            "Total supply should be liquidity + MIN_LIQUIDITY"
+        );
+
+        // Verify LP balance after first mint
+        let lp_balance_1 = amm.sload_liquidity_balances(pool_id, user)?;
+        assert_eq!(lp_balance_1, liquidity_1);
+
+        // Verify validator token balance transferred
+        let validator_balance = TIP20Token::from_address(validator_token, amm.storage())?
+            .balance_of(ITIP20::balanceOfCall { account: user })?;
+        assert_eq!(
+            validator_balance,
+            uint!(990000_U256),
+            "Validator tokens should be transferred"
+        );
+
+        let amount_validator_2 = uint!(5000_U256);
+        let liquidity_2 = amm.mint_with_validator_token(
+            user2,
+            user_token,
+            validator_token,
+            amount_validator_2,
+            user2,
+        )?;
+
+        // For second mint:
+        // liquidity = amountValidatorToken * totalSupply / (reserveValidatorToken + N * reserveUserToken / SCALE)
+        // reserveUserToken = 0, so term N*U/SCALE = 0
+        // liquidity = 5000 * 5000 / 10000 = 2500
+        assert_eq!(liquidity_2, uint!(2500_U256));
+
+        // Verify pool state after second mint
+        let pool_2 = amm.sload_pools(pool_id)?;
+        assert_eq!(pool_2.reserve_user_token, 0,);
+        assert_eq!(
+            pool_2.reserve_validator_token, 15000,
+            "Validator reserve should be 10000 + 5000"
+        );
+
+        // Verify total supply increased
+        let total_supply_2 = amm.get_total_supply(pool_id)?;
+        assert_eq!(
+            total_supply_2,
+            total_supply_1 + liquidity_2,
+            "Total supply should increase by liquidity"
+        );
+
+        // Verify first user's LP balance unchanged
+        let lp_balance_1_after = amm.sload_liquidity_balances(pool_id, user)?;
+        assert_eq!(lp_balance_1_after, liquidity_1,);
+
+        // Verify second user's LP balance
+        let lp_balance_2 = amm.sload_liquidity_balances(pool_id, user2)?;
+        assert_eq!(lp_balance_2, liquidity_2);
+
+        // Verify events emitted
+        let events = amm.storage.events.get(&amm.address()).unwrap();
+        assert_eq!(events.len(), 2);
+        // First mint event
+        assert_eq!(
+            events[0],
+            TIPFeeAMMEvent::Mint(ITIPFeeAMM::Mint {
+                sender: user,
+                userToken: user_token,
+                validatorToken: validator_token,
+                amountUserToken: U256::ZERO,
+                amountValidatorToken: amount_validator_1,
+                liquidity: lp_balance_1
+            })
+            .into_log_data()
+        );
+
+        // Second mint event
+        assert_eq!(
+            events[1],
+            TIPFeeAMMEvent::Mint(ITIPFeeAMM::Mint {
+                sender: user2,
+                userToken: user_token,
+                validatorToken: validator_token,
+                amountUserToken: U256::ZERO,
+                amountValidatorToken: amount_validator_2,
+                liquidity: lp_balance_2
+            })
+            .into_log_data()
+        );
+
+        Ok(())
+    }
+
+    /// Tests the mean calculation in add_liquidity for pre-Moderato hardfork
+    /// Pre-Moderato: mean = (amount_user_token * amount_validator_token) / 2
+    #[test]
+    fn test_add_liquidity_pre_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::random();
+        initialize_path_usd(&mut storage, admin)?;
+
+        let mint_amount = uint!(10000000_U256);
+        let token1 = token_id_to_address(1);
+        let mut token1_tip20 = TIP20Token::from_address(token1, &mut storage)?;
+        token1_tip20.initialize(
+            "Token1",
+            "TK1",
+            "USD",
+            PATH_USD_ADDRESS,
+            admin,
+            Address::ZERO,
+        )?;
+        token1_tip20.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        token1_tip20.mint(
+            admin,
+            crate::tip20::ITIP20::mintCall {
+                to: admin,
+                amount: mint_amount,
+            },
+        )?;
+
+        let token2 = token_id_to_address(2);
+        let mut token2_tip20 = TIP20Token::from_address(token2, &mut storage)?;
+        token2_tip20.initialize(
+            "Token2",
+            "TK2",
+            "USD",
+            PATH_USD_ADDRESS,
+            admin,
+            Address::ZERO,
+        )?;
+        token2_tip20.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        token2_tip20.mint(
+            admin,
+            crate::tip20::ITIP20::mintCall {
+                to: admin,
+                amount: mint_amount,
+            },
+        )?;
+
+        let mut amm = TipFeeManager::new(&mut storage);
+
+        let amount1 = uint!(2000_U256);
+        let amount2 = uint!(3000_U256);
+
+        let result = amm.mint(admin, token1, token2, amount1, amount2, admin)?;
+
+        // Pre-Moderato: mean = (2000 * 3000) / 2 = 3,000,000
+        // Expected liquidity = mean - MIN_LIQUIDITY = 3,000,000 - 1000 = 2,999,000
+        let expected_mean = (amount1 * amount2) / uint!(2_U256);
+        let expected_liquidity = expected_mean - MIN_LIQUIDITY;
+
+        assert_eq!(
+            result, expected_liquidity,
+            "Pre-Moderato should use multiplication: mean = (a * b) / 2"
+        );
+
+        Ok(())
+    }
+
+    /// Tests the mean calculation in add_liquidity for post-Moderato hardfork
+    /// Post-Moderato: mean = (amount_user_token + amount_validator_token) / 2
+    #[test]
+    fn test_add_liquidity_post_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let admin = Address::random();
+        initialize_path_usd(&mut storage, admin)?;
+
+        let mint_amount = uint!(10000_U256);
+
+        let token1 = token_id_to_address(1);
+        let mut token1_tip20 = TIP20Token::from_address(token1, &mut storage)?;
+        token1_tip20.initialize(
+            "Token1",
+            "TK1",
+            "USD",
+            PATH_USD_ADDRESS,
+            admin,
+            Address::ZERO,
+        )?;
+        token1_tip20.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        // Mint tokens to admin
+        token1_tip20.mint(
+            admin,
+            crate::tip20::ITIP20::mintCall {
+                to: admin,
+                amount: mint_amount,
+            },
+        )?;
+
+        let token2 = token_id_to_address(2);
+        let mut token2_tip20 = TIP20Token::from_address(token2, &mut storage)?;
+        token2_tip20.initialize(
+            "Token2",
+            "TK2",
+            "USD",
+            PATH_USD_ADDRESS,
+            admin,
+            Address::ZERO,
+        )?;
+        token2_tip20.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+        token2_tip20.mint(
+            admin,
+            crate::tip20::ITIP20::mintCall {
+                to: admin,
+                amount: mint_amount,
+            },
+        )?;
+
+        let mut amm = TipFeeManager::new(&mut storage);
+
+        let amount1 = uint!(2000_U256);
+        let amount2 = uint!(3000_U256);
+
+        let result = amm.mint(admin, token1, token2, amount1, amount2, admin)?;
+
+        // Post-Moderato: mean = (2000 + 3000) / 2 = 2,500
+        // Expected liquidity = mean - MIN_LIQUIDITY = 2,500 - 1000 = 1,500
+        let expected_mean = (amount1 + amount2) / uint!(2_U256);
+        let expected_liquidity = expected_mean - MIN_LIQUIDITY;
+
+        assert_eq!(
+            result, expected_liquidity,
+            "Post-Moderato should use addition: mean = (a + b) / 2"
+        );
+
+        Ok(())
+    }
+
+    /// Tests calculate_burn_amounts pre-Allegretto rejects zero amounts
+    #[test]
+    fn test_calculate_burn_amounts_pre_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut amm = TipFeeManager::new(&mut storage);
+
+        // Create a pool with very large total supply to make burn amounts round to zero
+        let pool = Pool {
+            reserve_user_token: 1000,
+            reserve_validator_token: 1000,
+        };
+        let pool_id = B256::ZERO;
+        amm.set_total_supply(pool_id, uint!(1000000000000000_U256))?;
+
+        // Burning tiny liquidity should result in zero amounts
+        let liquidity = uint!(1_U256);
+        let result = amm.calculate_burn_amounts(&pool, pool_id, liquidity);
+
+        // Pre-Allegretto: should reject if amounts are zero
+        assert!(result.is_err(),);
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIPFeeAMMError(
+                TIPFeeAMMError::InsufficientLiquidity(_)
+            ))
+        ),);
+
+        Ok(())
+    }
+
+    /// Tests calculate_burn_amounts post-Allegretto allows zero amounts
+    #[test]
+    fn test_calculate_burn_amounts_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut amm = TipFeeManager::new(&mut storage);
+
+        let pool = Pool {
+            reserve_user_token: 1000,
+            reserve_validator_token: 1000,
+        };
+        let pool_id = B256::ZERO;
+        amm.set_total_supply(pool_id, uint!(1000000000000000_U256))?;
+
+        let liquidity = uint!(1_U256);
+        let result = amm.calculate_burn_amounts(&pool, pool_id, liquidity);
+
+        // Post-Allegretto should allow zero amounts
+        assert!(result.is_ok(), "Post-Allegretto should allow zero amounts");
+        let (amount_user, amount_validator) = result?;
+        assert_eq!(amount_user, U256::ZERO);
+        assert_eq!(amount_validator, U256::ZERO);
+
+        Ok(())
     }
 }
