@@ -6,7 +6,7 @@ This spec lays out how fees work on Tempo, including how fees are calculated, wh
 
 ## Motivation
 
-On Tempo, users can pay gas fees in any [TIP-20](/documentation/protocol/tip20/spec) token whose currency is USD, as long as that stablecoin has sufficient liquidity on the enshrined [fee AMM](/documentation/protocol/fees/spec-fee-amm.mdx) against the token that the current validator wants to receive.
+On Tempo, users can pay gas fees in any [TIP-20](/protocol/tip20/spec) token whose currency is USD, as long as that stablecoin has sufficient liquidity on the enshrined [fee AMM](/protocol/fees/spec-fee-amm.mdx) against the token that the current validator wants to receive.
 
 In determining *which* token a user pays fees in, we want to maximize customizability (so that wallets or users can implement more sophisticated UX than is possible at the protocol layer), minimize surprise (particularly surprises in which a user pays fees in a stablecoin they did not expect to), and have sane default behavior so that users can begin using basic functions like payments even using wallets that are not customized for Tempo support.
 
@@ -24,21 +24,21 @@ Before the execution of each transaction, the protocol takes the following steps
 * Determine the `fee_token` of the transaction, according to the [rules for fee token preferences](#fee-token-preferences). If the fee token cannot be determined, the transaction is invalid.
 * Compute the `max_fee` of the transaction as `gas_limit * gas_price`.
 * Deduct `max_fee` from the `fee_payer`'s balance of `fee_token`. If `fee_payer` does not have sufficient balance in `fee_token`, the transaction is invalid.
-* Reserve `max_fee` of liquidity on the [fee AMM](/documentation/protocol/fees/spec-fee-amm) between the `fee_token` and the validator's preferred fee token. If there is insufficient liquidity, the transaction is invalid.
+* Reserve `max_fee` of liquidity on the [fee AMM](/protocol/fees/spec-fee-amm) between the `fee_token` and the validator's preferred fee token. If there is insufficient liquidity, the transaction is invalid.
 
 After the execution of each transaction:
 
 * Compute the `refund_amount` as `(gas_limit - gas_used) * gas_price`.
 * Credit the `fee_payer`'s address with `refund_amount` of `fee_token`.
-* Log a `Transfer` event from the user to the [fee manager contract](/documentation/protocol/fees/spec-fee-amm) for the net amount of the fee payment.
+* Log a `Transfer` event from the user to the [fee manager contract](/protocol/fees/spec-fee-amm) for the net amount of the fee payment.
 
 ## Fee payer
 
-Tempo supports *sponsored transactions* in which the `fee_payer` is a different address from the `tx.origin` of the transaction. This is supported by Tempo's [new transaction type](/documentation/protocol/transactions/spec-tempo-transaction.mdx), which has a `fee_payer_signature` field.
+Tempo supports *sponsored transactions* in which the `fee_payer` is a different address from the `tx.origin` of the transaction. This is supported by Tempo's [new transaction type](/protocol/transactions/spec-tempo-transaction.mdx), which has a `fee_payer_signature` field.
 
 If no `fee_payer_signature` is provided, then the `fee_payer` of the transaction is its sender (`tx.origin`).
 
-If the `fee_payer_signature` field is set, then it is used to derive the `fee_payer` for the transaction, as described in the [transaction spec](/documentation/protocol/transactions/spec-tempo-transaction.mdx).
+If the `fee_payer_signature` field is set, then it is used to derive the `fee_payer` for the transaction, as described in the [transaction spec](/protocol/transactions/spec-tempo-transaction.mdx).
 
 For purposes of [fee token preferences](#fee-token-preferences), the `fee_payer` is the account that chooses the fee token.
 
@@ -81,13 +81,13 @@ The protocol checks preferences at each of these levels, stopping at the first o
 
 * The token must be a TIP-20 token whose currency is USD.
 * The user must have sufficient balance in that token to pay the `gasLimit` on the transaction at the transaction's `gasPrice`.
-* There must be sufficient liquidity on the [fee AMM](/documentation/protocol/fees/spec-fee-amm.mdx), as discussed in that specification.
+* There must be sufficient liquidity on the [fee AMM](/protocol/fees/spec-fee-amm.mdx), as discussed in that specification.
 
 If no preference is specified at the transaction, account, or contract level, the protocol falls back to [pathUSD](#pathusd).
 
 ### Transaction level
 
-Tempo's [new transaction type](/documentation/protocol/transactions/spec-tempo-transaction.mdx), allows transactions to specify a `fee_token` on the transaction. This overrides any preferences set at the account, contract, or validator level.
+Tempo's [new transaction type](/protocol/transactions/spec-tempo-transaction.mdx), allows transactions to specify a `fee_token` on the transaction. This overrides any preferences set at the account, contract, or validator level.
 
 For [sponsored transactions](#fee-payer), the `tx.origin` address does not sign over the `fee_token` field (allowing the `fee_payer` to choose the fee token).
 
@@ -99,7 +99,7 @@ To set its preference, the account can call the `setUserToken` function on the F
 
 At this step, the protocol does one more check:
 
-* If the transaction is not a [Tempo transaction](/documentation/protocol/transactions/spec-tempo-transaction.mdx) *and* the transaction is a top-level call to the `setUserToken` function on the FeeManager, then the protocol checks the `token` argument to the function:
+* If the transaction is not a [Tempo transaction](/protocol/transactions/spec-tempo-transaction.mdx) *and* the transaction is a top-level call to the `setUserToken` function on the FeeManager, then the protocol checks the `token` argument to the function:
   * If that token is a TIP-20 whose currency is USD, that token is used as the fee token (unless the transaction specifies a `fee_token` at the [transaction level](#transaction-level)).
   * If that token is not a TIP-20 or its currency is not USD, the transaction is invalid.
 
@@ -109,7 +109,7 @@ If the top-level call of a transaction is to a TIP-20 contract for which the cur
 
 ### pathUSD
 
-If no fee preference is set at the transaction, account, or contract level, the protocol falls back to [pathUSD](/documentation/protocol/exchange/pathUSD.mdx) as the user's fee token preference. 
+If no fee preference is set at the transaction, account, or contract level, the protocol falls back to [pathUSD](/protocol/exchange/pathUSD.mdx) as the user's fee token preference. 
 
 ## Validator preferences
 
@@ -226,4 +226,4 @@ The fee conversion process adds minimal overhead to transactions:
 - **Post-transaction**: ~3,000 gas for refund and queue operations
 - **Block settlement**: Amortized across all transactions in the block
 
-For complete technical specifications on the Fee AMM mechanism, see the [Fee AMM Protocol Specification](/documentation/protocol/fees/spec-fee-amm).
+For complete technical specifications on the Fee AMM mechanism, see the [Fee AMM Protocol Specification](/protocol/fees/spec-fee-amm).

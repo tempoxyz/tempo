@@ -8,7 +8,7 @@ import LucideFileText from '~icons/lucide/file-text'
 
 Configure your stablecoin's permissions, supply limits, and compliance policies after deployment. This guide covers granting roles to manage token operations, setting supply caps, configuring transfer policies, and controlling token transfers through pause/unpause functionality.
 
-TIP-20 tokens use a role-based access control system that allows you to delegate different administrative functions to different addresses. For detailed information about the role system, see the [TIP-20 specification](/documentation/protocol/tip20/spec#role-based-access-control).
+TIP-20 tokens use a role-based access control system that allows you to delegate different administrative functions to different addresses. For detailed information about the role system, see the [TIP-20 specification](/protocol/tip20/spec#role-based-access-control).
 
 ## Steps
 
@@ -360,7 +360,7 @@ Transfer policies can be:
 - **Whitelist**: Only authorized addresses can send/receive
 - **Blacklist**: Blocked addresses cannot send/receive
 
-Learn more about configuring transfer policies in the [TIP-403 specification](/documentation/protocol/tip403/spec).
+Learn more about configuring transfer policies in the [TIP-403 specification](/protocol/tip403/spec).
 
 <Demo.Container name="Create and Link Transfer Policy" footerVariant="source" src="tempoxyz/tempo-ts/tree/main/examples/issuance">
   <Step.Connect stepNumber={1} />
@@ -632,13 +632,13 @@ Ensure pause and unpause roles are assigned to trusted addresses and that your t
 <Card.Container>
   <Card.Link
     description="Learn about the role-based access control system and all available roles"
-    href="/documentation/protocol/tip20/spec#role-based-access-control"
+    href="/protocol/tip20/spec#role-based-access-control"
     icon={LucideShield}
     title="Role-Based Access Control"
   />
   <Card.Link
     description="Learn how to configure transfer policies for compliance requirements"
-    href="/documentation/protocol/tip403/spec"
+    href="/protocol/tip403/spec"
     icon={LucideFileText}
     title="Transfer Policies (TIP-403)"
   />

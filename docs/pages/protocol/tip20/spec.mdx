@@ -9,7 +9,7 @@ TIP-20 extends ERC-20, building these features into precompiled contracts that a
 It also enables deeper integration with token-specific Tempo features like paying gas in stablecoins and payment lanes.
 
 ## Specification
-TIP-20 tokens support standard fungible token operations such as transfers, mints, and burns. They also support transfers, mints, and burns with an attached 32-byte memo; a role-based access control system for token administrative operations; and a system for opt-in [reward distribution](/documentation/protocol/tip20-rewards/spec).
+TIP-20 tokens support standard fungible token operations such as transfers, mints, and burns. They also support transfers, mints, and burns with an attached 32-byte memo; a role-based access control system for token administrative operations; and a system for opt-in [reward distribution](/protocol/tip20-rewards/spec).
 
 
 ## TIP20
@@ -436,7 +436,7 @@ Roles are assigned and managed through `grantRole`, `revokeRole`, `renounceRole`
 System level functions `systemTransferFrom`, `transferFeePreTx`, and `transferFeePostTx` are only callable by other Tempo protocol precompiles. These entrypoints power transaction fee collection, refunds, and internal accounting within the Fee AMM and StablecoinExchange. They must not be callable by general contracts or users.
 
 ## Token Rewards Distribution
-See [rewards distribution](/documentation/protocol/tip20-rewards/spec) for more information.
+See [rewards distribution](/protocol/tip20-rewards/spec) for more information.
 
 ## TIP20Factory
 The `TIP20Factory` contract is the canonical entrypoint for creating new TIP-20 tokens on Tempo. The factory maintains an internal `tokenIdCounter` that increments with each deployment, and uses this counter to derive deterministic “vanity” deployment addresses under a fixed 12-byte TIP-20 prefix. This ensures that every TIP-20 token exists at a predictable, collision-free address, and that integrators can infer a token’s identifier directly from its address. The `TIP20Factory` precompile is deployed at 0x20Fc000000000000000000000000000000000000`.

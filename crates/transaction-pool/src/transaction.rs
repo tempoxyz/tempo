@@ -166,7 +166,7 @@ pub enum TempoPoolTransactionError {
     /// Thrown when we couldn't find a recently used validator token that has enough liquidity
     /// in fee AMM pair with the user token this transaction will pay fees in.
     #[error(
-        "Insufficient liquidity for fee token: {0}, please see https://docs.tempo.xyz/documentation/protocol/fees for more"
+        "Insufficient liquidity for fee token: {0}, please see https://docs.tempo.xyz/protocol/fees for more"
     )]
     InsufficientLiquidity(Address),
 }

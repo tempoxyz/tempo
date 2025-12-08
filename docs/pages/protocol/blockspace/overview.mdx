@@ -21,7 +21,7 @@ pub struct Header {
 }
 ```
 - `inner` is the canonical Ethereum header (parent_hash, state_root, gas_limit, etc.).
-- `general_gas_limit` and `shared_gas_limit` carve up the canonical `gas_limit` for payment and sub-block gas (see [payment lane specification](/documentation/protocol/blockspace/payment-lane-specification) and [sub-block specification](/documentation/protocol/blockspace/sub-block-specification)).
+- `general_gas_limit` and `shared_gas_limit` carve up the canonical `gas_limit` for payment and sub-block gas (see [payment lane specification](/protocol/blockspace/payment-lane-specification) and [sub-block specification](/protocol/blockspace/sub-block-specification)).
 - `timestamp_millis_part` stores the sub‑second component; the full timestamp is `inner.timestamp * 1000 + timestamp_millis_part` .
 
 ### Block body
@@ -36,7 +36,7 @@ The block body in Tempo retains the canonical Ethereum block body structure, wit
 ### System transactions
 
 A valid tempo block must contain the following new system transactions
-  - **Rewards Registry (start-of-block)** — must be the first transaction in the block body; refreshes validator rewards metadata before user transactions begin.  Detailed specification [here](/documentation/protocol/tip20-rewards/spec).
- - **Fee Manager (end-of-block 1/3)** — settles block fee accounting.  Detailed specification [here](/documentation/protocol/fees/spec-fee-amm).
- - **Stablecoin Exchange (end-of-block 2/3)** — settles stablecoin exchange balances. Detailed specification [here](/documentation/protocol/exchange/spec).
-  - **Subblock Metadata (end-of-block 3/3)** — contains metadata about the sub-blocks included in the block. Detailed specification [here](/documentation/protocol/blockspace/sub-block-specification).
+  - **Rewards Registry (start-of-block)** — must be the first transaction in the block body; refreshes validator rewards metadata before user transactions begin.  Detailed specification [here](/protocol/tip20-rewards/spec).
+ - **Fee Manager (end-of-block 1/3)** — settles block fee accounting.  Detailed specification [here](/protocol/fees/spec-fee-amm).
+ - **Stablecoin Exchange (end-of-block 2/3)** — settles stablecoin exchange balances. Detailed specification [here](/protocol/exchange/spec).
+  - **Subblock Metadata (end-of-block 3/3)** — contains metadata about the sub-blocks included in the block. Detailed specification [here](/protocol/blockspace/sub-block-specification).
