@@ -54,7 +54,7 @@ You can connect to Tempo Testnet using the following details:
 | **WebSocket URL**  | `wss://rpc.testnet.tempo.xyz`   |
 | **Block Explorer** | `https://explore.tempo.xyz`     |
 
-Next, grab some stablecoins to test with on from the [faucet](https://docs.tempo.xyz/quickstart/faucet#faucet).
+Next, grab some stablecoins to test with on from Tempo's [Faucet](https://docs.tempo.xyz/quickstart/faucet#faucet).
 
 Alternatively, use [`cast`](https://github.com/tempoxyz/tempo-foundry):
 
@@ -74,16 +74,6 @@ We provide three different installation paths - installing a pre-built binary, b
 - [Build from Source](https://docs.tempo.xyz/guide/node/installation#build-from-source)
 - [Docker](https://docs.tempo.xyz/guide/node/installation#docker)
 
-Additionally, if you would like to contribute to Tempo:
-
-Prerequisites: [`just`](https://github.com/casey/just?tab=readme-ov-file#packages)
-
-```bash
-just
-just build-all
-just localnet
-```
-
 Tempo has several SDKs to help you get started building on Tempo:
 
 - [TypeScript](https://docs.tempo.xyz/sdk/typescript)
@@ -94,6 +84,14 @@ Tempo has several SDKs to help you get started building on Tempo:
 ## Contributing
 
 Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.com/tempoxyz/tempo?tab=contributing-ov-file).
+
+Prerequisites: [`just`](https://github.com/casey/just?tab=readme-ov-file#packages)
+
+```bash
+just
+just build-all
+just localnet
+```
 
 ## Security
 
