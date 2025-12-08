@@ -55,10 +55,12 @@ export function Faucet() {
   const setUserToken = Hooks.fee.useSetUserTokenSync()
 
   const fund = Hooks.faucet.useFundSync()
-  const selectedOption = React.useMemo(
-    () => FEE_TOKEN_OPTIONS.find((option) => option.value === selectedFeeToken) ?? FEE_TOKEN_OPTIONS[3],
-    [selectedFeeToken],
-  )
+  const selectedOption = React.useMemo<FeeTokenOption>(() => {
+    const option = FEE_TOKEN_OPTIONS.find(
+      (candidate) => candidate.value === selectedFeeToken,
+    )
+    return option ?? FEE_TOKEN_OPTIONS[0]!
+  }, [selectedFeeToken])
   const resolvedFeeToken =
     selectedOption.value === 'other' ? customFeeToken : selectedOption.address
   const isFeeTokenValid =
@@ -68,15 +70,16 @@ export function Faucet() {
     isConnected && resolvedFeeToken && isFeeTokenValid && !setUserToken.isPending,
   )
   const currentFeeTokenLabel = React.useMemo(() => {
-    if (!userToken.data?.address) return undefined
+    const userTokenAddress = userToken.data?.address ?? undefined
+    if (!userTokenAddress) return undefined
     const match = FEE_TOKEN_OPTIONS.find(
       (option) =>
         'address' in option &&
-        option.address.toLowerCase() === userToken.data.address.toLowerCase(),
+        option.address.toLowerCase() === userTokenAddress.toLowerCase(),
     )
     return match && match.value !== 'other'
       ? match.label
-      : StringFormatter.truncate(userToken.data.address, {
+      : StringFormatter.truncate(userTokenAddress, {
           start: 6,
           end: 4,
         })
@@ -141,7 +144,7 @@ export function Faucet() {
                 ? error.shortMessage
                 : (error as Error).message,
             ),
-          onSettled: (data, error) => {
+          onSettled: (_data, error) => {
             if (error) setFeeTxHash(undefined)
           },
         },
@@ -159,18 +162,19 @@ export function Faucet() {
   )
 
   React.useEffect(() => {
-    if (!userToken.data?.address) return
+    const userTokenAddress = userToken.data?.address ?? undefined
+    if (!userTokenAddress) return
     const match = FEE_TOKEN_OPTIONS.find(
       (option) =>
         'address' in option &&
-        option.address.toLowerCase() === userToken.data.address.toLowerCase(),
+        option.address.toLowerCase() === userTokenAddress.toLowerCase(),
     )
     if (match && match.value !== 'other') {
       setSelectedFeeToken(match.value)
       setCustomFeeToken('')
     } else {
       setSelectedFeeToken('other')
-      setCustomFeeToken(userToken.data.address)
+      setCustomFeeToken(userTokenAddress)
     }
   }, [userToken.data?.address])
 
