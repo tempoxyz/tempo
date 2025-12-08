@@ -10,7 +10,6 @@ publish.workspace = true
 [dependencies]
 # Tempo
 tempo-alloy.workspace = true
-tempo-chainspec.workspace = true
 tempo-precompiles.workspace = true
 tempo-contracts.workspace = true
 
@@ -30,25 +29,14 @@ alloy-consensus = { workspace = true, features = ["secp256k1"] }
 clap = { workspace = true, features = ["derive", "env"] }
 eyre.workspace = true
 futures.workspace = true
-hex.workspace = true
 itertools.workspace = true
-parking_lot.workspace = true
 reth-tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 tokio-util.workspace = true
 tokio.workspace = true
-toml.workspace = true
 
 # Bespoke dependencies
-crossbeam-utils = "0.8.21"
-dashmap = "6.1"
-fastrand = "2.1"
-http = "1"
-http-body-util = "0.1"
-hyper = { version = "1", features = ["full"] }
-hyper-util = { version = "0.1", features = ["full"] }
 indicatif = { workspace = true, features = ["rayon", "futures"] }
 mimalloc = "0.1.47"
 rayon = "1.10"

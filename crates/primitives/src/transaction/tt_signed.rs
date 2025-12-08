@@ -385,6 +385,10 @@ mod serde_impl {
         where
             S: Serializer,
         {
+            if let TempoSignature::Keychain(keychain_sig) = &self.signature {
+                // Initialize the `key_id` field for keychain signatures so that it's serialized.
+                let _ = keychain_sig.key_id(&self.signature_hash());
+            }
             AASignedHelper {
                 tx: Cow::Borrowed(&self.tx),
                 signature: Cow::Borrowed(&self.signature),
