@@ -249,6 +249,18 @@ impl StablecoinExchange {
         Ok(())
     }
 
+    fn ensure_transfer_authorized(&mut self, token: Address, user: Address) -> Result<()> {
+        if token == PATH_USD_ADDRESS {
+            PathUSD::new(self.storage)
+                .token
+                .ensure_transfer_authorized(user, self.address)?;
+        } else {
+            TIP20Token::from_address(token, self.storage)?
+                .ensure_transfer_authorized(user, self.address)?;
+        }
+        Ok(())
+    }
+
     /// Decrement user's internal balance or transfer from external wallet
     fn decrement_balance_or_transfer_from(
         &mut self,
@@ -256,6 +268,8 @@ impl StablecoinExchange {
         token: Address,
         amount: u128,
     ) -> Result<()> {
+        self.ensure_transfer_authorized(token, user)?;
+
         let user_balance = self.balance_of(user, token)?;
         if user_balance >= amount {
             self.sub_balance(user, token, amount)
@@ -4283,5 +4297,94 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_blacklisted_user_cannot_use_internal_balance() -> eyre::Result<()> {
+        use crate::tip403_registry::{ITIP403Registry, TIP403Registry};
+
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+
+        let policy_id = {
+            let mut registry = TIP403Registry::new(exchange.storage);
+            registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?
+        };
+
+        let mut quote = PathUSD::new(exchange.storage);
+        quote.initialize(admin)?;
+        let quote_address = quote.token.address();
+        quote.token.grant_role_internal(admin, *ISSUER_ROLE)?;
+        quote.token.grant_role_internal(alice, *TRANSFER_ROLE)?;
+        quote.token.change_transfer_policy_id(
+            admin,
+            ITIP20::changeTransferPolicyIdCall {
+                newPolicyId: policy_id,
+            },
+        )?;
+
+        TIP20Factory::new(quote.token.storage()).set_token_id_counter(U256::from(2))?;
+
+        let mut base = TIP20Token::new(1, quote.token.storage());
+        base.initialize("BASE", "BASE", "USD", quote_address, admin, Address::ZERO)?;
+        base.grant_role_internal(admin, *ISSUER_ROLE)?;
+        let base_address = base.address();
+        base.change_transfer_policy_id(
+            admin,
+            ITIP20::changeTransferPolicyIdCall {
+                newPolicyId: policy_id,
+            },
+        )?;
+
+        exchange.create_pair(base_address)?;
+
+        let internal_balance = MIN_ORDER_AMOUNT * 2;
+        exchange.sstore_balances(alice, base_address, internal_balance)?;
+        assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
+
+        {
+            let mut registry = TIP403Registry::new(exchange.storage);
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: alice,
+                    restricted: true,
+                },
+            )?;
+            assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+                policyId: policy_id,
+                user: alice,
+            })?);
+        }
+
+        let tick = 0i16;
+        let result = exchange.place(alice, base_address, MIN_ORDER_AMOUNT, false, tick);
+
+        assert!(
+            result.is_err(),
+            "Blacklisted user should not be able to place orders using internal balance"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+            ),
+            "Expected PolicyForbids error, got: {err:?}"
+        );
+        assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
+
+        Ok(())
     }
 }
