@@ -19,27 +19,43 @@ The blockchain for payments at scale.
 
 [Tempo](https://docs.tempo.xyz/) is a blockchain designed specifically for stablecoin payments. Its architecture focuses on high throughput, low cost, and features that financial institutions, payment service providers, and fintech platforms expect from modern payment infrastructure.
 
-## Overview
+You can get started today by integrating with the Tempo testnet, building on Tempo, running a Tempo node, reading the Tempo protocol specs or by building with Tempo SDKs.
 
-Why it matters:
+- [Integrate Tempo Testnet](https://docs.tempo.xyz/quickstart/integrate-tempo)
+- [Start Building on Tempo](https://docs.tempo.xyz/guide/use-accounts)
+- [Run a Tempo Node](https://docs.tempo.xyz/guide/node)
+- [Read Tempo Protocol Specs](https://docs.tempo.xyz/documentation/protocol)
+- [Build on Tempo SDKs](https://docs.tempo.xyz/sdk)
 
-Tempo is fully compatible with the Ethereum Virtual Machine (EVM), targeting the Osaka EVM hard fork. So, everything you'd expect to work with Ethereum works on Tempo, with only a few exceptions which we detail in the [EVM Differences](https://docs.tempo.xyz/quickstart/evm-compatibility#handling-eth-balance-checks) section of the documentation.
+## What makes Tempo different
 
-Key characteristics:
+- [TIP‑20 token standard](https://docs.tempo.xyz/documentation/protocol/tip20/overview) (enshrined ERC‑20 extensions)
 
-- Payments‑first policy and execution
-  - 500ms block interval engineered for low perceived latency in payment flows
-  - Deterministic, low‑variance fee behavior
-  - Mempool prioritization for transfer‑shaped transactions, fairness windows, and nonce continuity
-- Stablecoin‑native UX
-  - Pay gas in supported stablecoins via protocol‑level conversion
-  - Dedicated payments lane, memos, and access lists to streamline payer/merchant flows
-  - Opt‑in privacy modes with reconcilable indexing
-- EVM compatibility
-  - Standard JSON‑RPC and EVM semantics
-  - Built on the Rust‑based Reth SDK with high‑performance execution
+  - Predictable payment throughput via dedicated payment lanes reserved for TIP‑20 transfers—eliminates noisy‑neighbor contention.
+  - Native reconciliation with on‑transfer memos and commitment patterns (hash/locator) for off‑chain PII and large data.
+  - Built‑in compliance through [TIP‑403 Policy Registry](https://docs.tempo.xyz/documentation/protocol/tip403/overview): single policy shared across multiple tokens, updated once and enforced everywhere.
 
-## Specification
+- Low, predictable fees in [stablecoins](https://docs.tempo.xyz/learn/stablecoins)
+
+  - Users pay gas directly in USD-stablecoins at launch; the [Fee AMM](https://docs.tempo.xyz/documentation/protocol/fees/fee-amm#fee-amm-overview) automatically converts to the validator’s preferred stablecoin.
+  - TIP‑20 transfers target sub‑millidollar costs (<$0.001).
+
+- [Tempo Transactions](https://docs.tempo.xyz/guide/tempo-transaction) (native `smart account` features)
+
+  - Batched payments: atomic multi‑operation payouts (payroll, settlements, refunds).
+  - Fee sponsorship: apps can pay users' gas to streamline onboarding and flows.
+  - Scheduled payments: protocol‑level time windows for recurring and timed disbursements.
+  - Modern authentication: passkeys via WebAuthn/P256 (biometric sign‑in, secure enclave, cross‑device sync).
+
+- Performance and finality
+
+  - Built on the [Reth SDK](https://github.com/paradigmxyz/reth), a highly performant EVM execution client.
+  - Simplex Consensus (via [Commonware](https://commonware.xyz/)): fast, sub‑second finality in normal conditions; graceful degradation under adverse networks.
+
+- Coming soon
+
+  - On‑chain FX and non‑USD stablecoin support for direct on‑chain liquidity; pay fees in more currencies.
+  - Native private token standard: opt‑in privacy for balances/transfers coexisting with issuer compliance and auditability.
 
 ## Getting Started
 
