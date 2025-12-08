@@ -3,11 +3,7 @@ name: Test
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
   pull_request:
-    paths-ignore:
-      - 'docs/**'
   merge_group:
 
 concurrency:
@@ -101,4 +97,3 @@ jobs:
         uses: re-actors/alls-green@release/v1
         with:
           jobs: ${{ toJSON(needs) }}
-          allowed-skips: test,msrv,genesis,snapshot-re-execute
