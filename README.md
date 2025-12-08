@@ -19,13 +19,7 @@ The blockchain for payments at scale.
 
 [Tempo](https://docs.tempo.xyz/) is a blockchain designed specifically for stablecoin payments. Its architecture focuses on high throughput, low cost, and features that financial institutions, payment service providers, and fintech platforms expect from modern payment infrastructure.
 
-You can get started today by integrating with the Tempo testnet, building on Tempo, running a Tempo node, reading the Tempo protocol specs or by building with Tempo SDKs.
-
-- [Integrate Tempo Testnet](https://docs.tempo.xyz/quickstart/integrate-tempo)
-- [Start Building on Tempo](https://docs.tempo.xyz/guide/use-accounts)
-- [Run a Tempo Node](https://docs.tempo.xyz/guide/node)
-- [Read Tempo Protocol Specs](https://docs.tempo.xyz/documentation/protocol)
-- [Build on Tempo SDKs](https://docs.tempo.xyz/sdk)
+You can get started today by integrating with the [Tempo testnet](https://docs.tempo.xyz/quickstart/integrate-tempo), [building on Tempo](https://docs.tempo.xyz/guide/use-accounts), [running a Tempo node](https://docs.tempo.xyz/guide/node), reading the [Tempo protocol specs](https://docs.tempo.xyz/documentation/protocol) or by [building with Tempo SDKs](https://docs.tempo.xyz/sdk).
 
 ## What makes Tempo different
 
@@ -60,7 +54,7 @@ You can get started today by integrating with the Tempo testnet, building on Tem
 ## What makes Tempo familiar
 
 - Fully compatible with the Ethereum Virtual Machine (EVM), targeting the Osaka EVM hard fork.
-- Deploy and interact with smart contracts using the same tools, languages, and frameworks they use on Ethereum, such as Solidity, Foundry, and Hardhat.
+- Deploy and interact with smart contracts using the same tools, languages, and frameworks used on Ethereum, such as Solidity, Foundry, and Hardhat.
 - All Ethereum JSON-RPC methods work out of the box.
 
 While the execution environment mirrors Ethereum's, Tempo introduces some differences optimized for payments, described [here](https://docs.tempo.xyz/quickstart/evm-compatibility).
@@ -69,7 +63,7 @@ While the execution environment mirrors Ethereum's, Tempo introduces some differ
 
 ### As a user
 
-You can connect to Tempo Testnet using the following details:
+You can connect to Tempo's public testnet using the following details:
 
 | Property           | Value                           |
 | ------------------ | ------------------------------- |
