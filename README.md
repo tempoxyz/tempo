@@ -57,6 +57,14 @@ You can get started today by integrating with the Tempo testnet, building on Tem
   - On‑chain FX and non‑USD stablecoin support for direct on‑chain liquidity; pay fees in more currencies.
   - Native private token standard: opt‑in privacy for balances/transfers coexisting with issuer compliance and auditability.
 
+## What makes Tempo familiar
+
+- Fully compatible with the Ethereum Virtual Machine (EVM), targeting the Osaka EVM hard fork.
+- Deploy and interact with smart contracts using the same tools, languages, and frameworks they use on Ethereum, such as Solidity, Foundry, and Hardhat.
+- All Ethereum JSON-RPC methods work out of the box.
+
+While the execution environment mirrors Ethereum's, Tempo introduces some differences optimized for payments, described [here](https://docs.tempo.xyz/quickstart/evm-compatibility).
+
 ## Getting Started
 
 ### As a user
