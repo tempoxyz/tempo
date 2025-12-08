@@ -92,6 +92,10 @@ interface ITIP20 {
         address indexed from, address indexed to, uint256 amount, bytes32 indexed memo
     );
 
+    /// @notice Returns the role identifier for claiming issuer fees from the FeeManager.
+    /// @return The fee claim role identifier.
+    function FEE_CLAIM_ROLE() external view returns (bytes32);
+
     /// @notice Returns the role identifier for burning tokens from blocked accounts.
     /// @return The burn blocked role identifier.
     function BURN_BLOCKED_ROLE() external view returns (bytes32);

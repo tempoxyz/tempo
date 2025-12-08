@@ -428,6 +428,7 @@ TIP-20 uses a role-based authorization system. The main roles are:
 - `ISSUER_ROLE`: controls minting and burning.  
 - `PAUSE_ROLE` / `UNPAUSE_ROLE`: controls the token’s paused state.  
 - `BURN_BLOCKED_ROLE`: allows burning balances belonging to addresses that fail TIP-403 authorization.  
+- `FEE_CLAIM_ROLE`: allows the holder to claim issuer fee balances for this token from the `FeeManager` precompile via `claimTokenFees(token, recipient)`.  
 
 Roles are assigned and managed through `grantRole`, `revokeRole`, `renounceRole`, and `setRoleAdmin`, via the contract admin.
 

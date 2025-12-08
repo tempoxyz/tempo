@@ -173,11 +173,11 @@ After execution, the `FeeManager`:
 - Refunds any unused tokens to the user
 - Queues the actual fee amount for conversion (if needed)
 
-#### 5. Fee swap queuing
+#### 5. Fee swap queuing and issuer fees
 
 If the user's fee token differs from the validator's preferred token, the fee is added to a pending fee swap queue for that token pair. The swap doesn't execute immediately—it's batched with all other fees collected during the block.
 
-If the user's fee token matches the validator's preference, no conversion is needed and the fee goes directly to the validator.
+If the user's fee token matches the validator's preference, no conversion is needed on the Fee AMM. In this case, the user pays the fee directly in the validator's preferred TIP-20 token, **99.7%** of the actual fee amount is credited to the validator, and the remaining **0.3% (30 bps)** of the fee is recorded as **issuer fees** for that TIP-20 token on the `FeeManager`. An address holding the token’s `FEE_CLAIM_ROLE` can later withdraw these issuer fees via `claimTokenFees(token, recipient)` on the `FeeManager` precompile.
 
 #### 6. End-of-block settlement
 

@@ -284,9 +284,13 @@ Learn more about [how users pay fees in different stablecoins](/guide/payments/p
 
 ## Benefits
 
-- **User convenience**: Users can pay fees with the same token they're using
-- **Liquidity**: Encourages users to hold your stablecoin
-- **Flexibility**: Works seamlessly with Tempo's fee system
+Tempo’s fee system provides several benefits for issuers:
+
+- **User convenience**: Users can pay fees with the same token they're using.
+- **Liquidity**: Encourages users to hold your stablecoin.
+- **Flexibility**: Works seamlessly with Tempo's fee system.
+
+In addition, when validators accept your token directly as their preferred fee token (so no AMM swap is required), your token earns **30 bps of each fee payment** as issuer fees. These issuer fees accumulate on the `FeeManager` and can be withdrawn by an address holding the token’s `FEE_CLAIM_ROLE` via the `FeeManager.claimTokenFees` function.
 
 ## Best Practices
 

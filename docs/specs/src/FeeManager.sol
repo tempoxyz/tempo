@@ -6,6 +6,7 @@ import { TIP20Factory } from "./TIP20Factory.sol";
 import { IERC20 } from "./interfaces/IERC20.sol";
 import { IFeeManager } from "./interfaces/IFeeManager.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
+import { ITIP20RolesAuth } from "./interfaces/ITIP20RolesAuth.sol";
 
 contract FeeManager is IFeeManager, FeeAMM {
 
@@ -16,6 +17,9 @@ contract FeeManager is IFeeManager, FeeAMM {
 
     // User token preferences
     mapping(address => address) public userTokens;
+
+    // Issuer fee tracking per token (amount in that token)
+    mapping(address => uint256) public collectedFeesByToken;
 
     // Fee collection tracking per validator (amount in validator's preferred token)
     mapping(address => uint256) private collectedFeesByValidator;
@@ -113,8 +117,15 @@ contract FeeManager is IFeeManager, FeeAMM {
             }
 
             if (userToken == validatorToken) {
-                // Direct fee in validator's preferred token
-                collectedFeesByValidator[feeRecipient] += actualUsed;
+                // Direct fee in validator's preferred token.
+                // Split the actual fee between validator and issuer:
+                // - Validator receives ~99.7% of the fee.
+                // - The remaining ~0.3% accumulates as issuer fees for this token.
+                uint256 issuerCut = (actualUsed * 30) / 10_000; // 30 bps
+                if (issuerCut > 0) {
+                    collectedFeesByToken[userToken] += issuerCut;
+                }
+                collectedFeesByValidator[feeRecipient] += (actualUsed - issuerCut);
             } else {
                 // Compute expected output immediately (simplified approach)
                 uint256 expectedOut = (actualUsed * M) / SCALE;
@@ -175,6 +186,23 @@ contract FeeManager is IFeeManager, FeeAMM {
             validatorInFeesArray[validator] = false;
         }
         delete validatorsWithFees;
+    }
+
+    /// @notice Claims all accumulated issuer fees for `token`, sending them to `recipient`.
+    /// @dev Caller must hold `FEE_CLAIM_ROLE` on the given TIP-20 token.
+    function claimTokenFees(address token, address recipient) external {
+        // Ensure this is a valid USD-denominated TIP-20 token.
+        _requireUSDTIP20(token);
+
+        // Authorization: caller must have the token's FEE_CLAIM_ROLE.
+        bytes32 feeClaimRole = ITIP20(token).FEE_CLAIM_ROLE();
+        require(ITIP20RolesAuth(token).hasRole(msg.sender, feeClaimRole), "UNAUTHORIZED_FEE_CLAIM");
+
+        uint256 amount = collectedFeesByToken[token];
+        require(amount > 0, "NO_FEES");
+
+        collectedFeesByToken[token] = 0;
+        IERC20(token).transfer(recipient, amount);
     }
 
 }

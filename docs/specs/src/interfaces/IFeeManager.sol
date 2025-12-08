@@ -22,4 +22,12 @@ interface IFeeManager is IFeeAMM {
 
     function validatorTokens(address) external view returns (address);
 
+    /// @notice Total uncollected issuer fees for a given token currently held by the FeeManager.
+    /// @dev Denominated in the token itself. Increased on same-token fee payments, decreased on claims.
+    function collectedFeesByToken(address token) external view returns (uint256);
+
+    /// @notice Claims all uncollected issuer fees for `token`, sending them to `recipient`.
+    /// @dev Caller must hold `FEE_CLAIM_ROLE` on the given token.
+    function claimTokenFees(address token, address recipient) external;
+
 }

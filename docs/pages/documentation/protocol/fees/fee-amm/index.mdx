@@ -17,6 +17,8 @@ When a user pays fees in a stablecoin that differs from the validator's preferen
 
 This conversion happens automatically at the end of each block through batched swaps, preventing MEV attacks like sandwiching.
 
+When a user pays fees in the same stablecoin that the validator prefers, no AMM swap is needed. In that case, the validator still receives **99.7%** of the actual fee amount, the remaining **0.3% (30 bps)** of the fee is recorded on the `FeeManager` as **issuer fees** for that token, and an address holding the token’s `FEE_CLAIM_ROLE` can later withdraw those issuer fees via `claimTokenFees(token, recipient)`.
+
 ## Learn More
 
 <Card.Container>

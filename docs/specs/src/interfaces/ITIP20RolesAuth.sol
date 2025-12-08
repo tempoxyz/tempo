@@ -12,6 +12,10 @@ interface ITIP20RolesAuth {
         bytes32 indexed role, bytes32 indexed newAdminRole, address indexed sender
     );
 
+    /// @notice Returns true if `account` currently has `role`
+    /// @dev Implemented automatically by the public `hasRole` mapping in {TIP20RolesAuth}
+    function hasRole(address account, bytes32 role) external view returns (bool);
+
     function grantRole(bytes32 role, address account) external;
 
     function revokeRole(bytes32 role, address account) external;

@@ -216,6 +216,99 @@ contract FeeManagerTest is BaseTest {
         }
     }
 
+    /// @notice When userToken == validatorToken, 30 bps of the used fee should accrue to the issuer
+    ///         (tracked per token in collectedFeesByToken), and the remaining ~99.7% should be paid
+    ///         to the validator at end of block.
+    function test_collectFeePostTx_SameToken_SplitsValidatorAndIssuer() public {
+        // Validator prefers the same token the user pays with
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(userToken));
+
+        // Give userToken balances and approvals
+        vm.startPrank(user);
+        userToken.approve(address(amm), type(uint256).max);
+        vm.stopPrank();
+
+        uint256 maxAmount = 100e18;
+        uint256 actualUsed = 80e18;
+
+        uint256 validatorBalanceBefore = userToken.balanceOf(validator);
+
+        vm.startPrank(address(0));
+        vm.coinbase(validator);
+
+        try amm.collectFeePreTx(user, address(userToken), maxAmount) {
+            amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
+            // End of block settlement
+            amm.executeBlock();
+            vm.stopPrank();
+
+            // Issuer fee should be 30 bps of actualUsed
+            uint256 expectedIssuerCut = (actualUsed * 30) / 10_000;
+            uint256 issuerFees = amm.collectedFeesByToken(address(userToken));
+            assertEq(issuerFees, expectedIssuerCut);
+
+            // Validator should receive the remainder
+            uint256 validatorBalanceAfter = userToken.balanceOf(validator);
+            uint256 expectedValidatorGain = actualUsed - expectedIssuerCut;
+            assertEq(validatorBalanceAfter, validatorBalanceBefore + expectedValidatorGain);
+        } catch (bytes memory err) {
+            vm.stopPrank();
+            // On Tempo, the reference FeeManager precompile may not implement this spec yet.
+            // In that case, we only assert that the call failed with the unknown selector code.
+            bytes4 errorSelector = bytes4(err);
+            assertTrue(errorSelector == 0xaa4bc69a);
+        }
+    }
+
+    /// @notice Holder of FEE_CLAIM_ROLE on a token can claim all accumulated issuer fees
+    ///         for that token via claimTokenFees.
+    function test_claimTokenFees_TransfersAccumulatedIssuerFees() public {
+        // Validator prefers the same token the user pays with
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(userToken));
+
+        // Grant FEE_CLAIM_ROLE to admin on userToken
+        vm.startPrank(admin);
+        userToken.grantRole(_FEE_CLAIM_ROLE, admin);
+        vm.stopPrank();
+
+        // User pays fees in userToken
+        vm.startPrank(user);
+        userToken.approve(address(amm), type(uint256).max);
+        vm.stopPrank();
+
+        uint256 maxAmount = 100e18;
+        uint256 actualUsed = 80e18;
+
+        vm.startPrank(address(0));
+        vm.coinbase(validator);
+
+        try amm.collectFeePreTx(user, address(userToken), maxAmount) {
+            amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
+            amm.executeBlock();
+            vm.stopPrank();
+        } catch (bytes memory err) {
+            vm.stopPrank();
+            bytes4 errorSelector = bytes4(err);
+            assertTrue(errorSelector == 0xaa4bc69a);
+            return;
+        }
+
+        uint256 issuerFees = amm.collectedFeesByToken(address(userToken));
+        assertGt(issuerFees, 0);
+
+        uint256 adminBalanceBefore = userToken.balanceOf(admin);
+
+        // Claim the accumulated issuer fees to admin
+        vm.startPrank(admin);
+        amm.claimTokenFees(address(userToken), admin);
+        vm.stopPrank();
+
+        assertEq(amm.collectedFeesByToken(address(userToken)), 0);
+        assertEq(userToken.balanceOf(admin), adminBalanceBefore + issuerFees);
+    }
+
     function test_collectFeePostTx_RevertsIf_NotProtocol() public {
         vm.prank(user);
 

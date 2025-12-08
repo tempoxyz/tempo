@@ -40,6 +40,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     bytes32 public constant UNPAUSE_ROLE = keccak256("UNPAUSE_ROLE");
     bytes32 public constant ISSUER_ROLE = keccak256("ISSUER_ROLE");
     bytes32 public constant BURN_BLOCKED_ROLE = keccak256("BURN_BLOCKED_ROLE");
+    bytes32 public constant FEE_CLAIM_ROLE = keccak256("FEE_CLAIM_ROLE");
 
     uint64 public transferPolicyId = 1; // "Always-allow" policy by default.
 
