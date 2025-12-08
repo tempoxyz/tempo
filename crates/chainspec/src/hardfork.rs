@@ -40,11 +40,11 @@ hardfork!(
     #[derive(Default)]
     TempoHardfork {
         /// Placeholder representing the baseline (pre-hardfork) state.
-        #[default]
         Adagio,
         /// Testnet hardforks for Andantino. To be removed before mainnet launch.
         Moderato,
         /// Allegretto hardfork.
+        #[default]
         Allegretto,
         /// Allegro-Moderato hardfork.
         AllegroModerato,
