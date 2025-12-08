@@ -23,7 +23,6 @@ alloy = { workspace = true, default-features = false, features = [
     "rand",
 ] }
 tempo-alloy.workspace = true
-dashmap = "6.1"
 eyre.workspace = true
 futures.workspace = true
 hex = "0.4"

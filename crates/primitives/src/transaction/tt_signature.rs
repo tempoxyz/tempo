@@ -336,7 +336,14 @@ pub struct KeychainSignature {
     /// This is an implementation detail - use `key_id()` to access.
     /// Uses OnceLock for thread-safe interior mutability.
     /// Note: Excluded from PartialEq, Eq, Hash, and Compact as it's a cache.
-    #[cfg_attr(feature = "serde", serde(skip))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            serialize_with = "serialize_once_lock",
+            rename = "keyId",
+            skip_deserializing,
+        )
+    )]
     cached_key_id: OnceLock<Address>,
 }
 
@@ -751,6 +758,15 @@ fn verify_webauthn_data_internal(
     let message_hash = final_hasher.finalize();
 
     Ok(B256::from_slice(&message_hash))
+}
+
+#[cfg(feature = "serde")]
+/// Helper function to serialize a [`OnceLock`] as an [`Option`] if it's initialized.
+fn serialize_once_lock<S>(value: &OnceLock<Address>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serde::Serialize::serialize(&value.get(), serializer)
 }
 
 #[cfg(test)]
