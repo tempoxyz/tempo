@@ -79,7 +79,7 @@ contract StablecoinExchangeTest is BaseTest {
     }
 
     function test_PriceToTick(uint32 price) public view {
-        vm.assume(price >= exchange.MIN_PRICE() && price <= exchange.MAX_PRICE());
+        price = uint32(bound(price, exchange.MIN_PRICE(), exchange.MAX_PRICE()));
         int16 tick = exchange.priceToTick(price);
         int16 expectedTick = int16(int32(price) - int32(exchange.PRICE_SCALE()));
         assertEq(tick, expectedTick);

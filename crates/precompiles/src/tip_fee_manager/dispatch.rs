@@ -170,13 +170,14 @@ mod tests {
     use super::*;
     use crate::{
         PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, expect_precompile_revert,
-        storage::hashmap::HashMapStorageProvider,
+        storage::{ContractStorage, hashmap::HashMapStorageProvider},
         test_util::check_selector_coverage,
         tip_fee_manager::{
             TIPFeeAMMError, TipFeeManager,
             amm::{MIN_LIQUIDITY, PoolKey},
         },
         tip20::{ISSUER_ROLE, ITIP20, TIP20Token, tests::initialize_path_usd, token_id_to_address},
+        tip20_factory::TIP20Factory,
     };
     use alloy::{
         primitives::{Address, B256, Bytes, U256},
@@ -185,29 +186,33 @@ mod tests {
     use eyre::Result;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls, UnknownFunctionSelector,
+        IFeeManager::IFeeManagerCalls, ITIP20Factory, ITIPFeeAMM::ITIPFeeAMMCalls,
+        UnknownFunctionSelector,
     };
 
-    fn setup_token_with_balance(
+    fn deploy_token_with_balance(
         storage: &mut HashMapStorageProvider,
-        token: Address,
         user: Address,
         amount: U256,
-    ) {
-        initialize_path_usd(storage, user).unwrap();
-        let mut tip20_token = TIP20Token::from_address(token, storage);
+    ) -> Address {
+        let mut factory = TIP20Factory::new(storage);
 
-        // Initialize token
-        tip20_token
-            .initialize(
-                "TestToken",
-                "TEST",
-                "USD",
-                PATH_USD_ADDRESS,
+        // Create token via factory
+        let token_address = factory
+            .create_token(
                 user,
-                Address::ZERO,
+                ITIP20Factory::createTokenCall {
+                    name: "TestToken".to_string(),
+                    symbol: "TEST".to_string(),
+                    currency: "USD".to_string(),
+                    quoteToken: PATH_USD_ADDRESS,
+                    admin: user,
+                },
             )
             .unwrap();
+
+        let mut tip20_token =
+            TIP20Token::from_address(token_address, storage).expect("Could not create token");
 
         // Grant issuer role to user and mint tokens
         tip20_token.grant_role_internal(user, *ISSUER_ROLE).unwrap();
@@ -226,6 +231,8 @@ mod tests {
                 },
             )
             .unwrap();
+
+        tip20_token.address()
     }
 
     #[test]
@@ -239,7 +246,7 @@ mod tests {
 
         // Create a USD token to use as fee token
         let token = token_id_to_address(1);
-        let mut tip20_token = TIP20Token::from_address(token, &mut storage);
+        let mut tip20_token = TIP20Token::from_address(token, &mut storage).unwrap();
         tip20_token
             .initialize(
                 "TestToken",
@@ -296,7 +303,7 @@ mod tests {
 
         // Create a USD token to use as fee token
         let token = token_id_to_address(1);
-        let mut tip20_token = TIP20Token::from_address(token, &mut storage);
+        let mut tip20_token = TIP20Token::from_address(token, &mut storage).unwrap();
         tip20_token
             .initialize(
                 "TestToken",
@@ -446,11 +453,12 @@ mod tests {
     #[test]
     fn test_execute_block() -> Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let token = Address::random();
+
+        let user = Address::random();
+        initialize_path_usd(&mut storage, user)?;
 
         // Setup token
-        let user = Address::random();
-        setup_token_with_balance(&mut storage, token, user, U256::MAX);
+        deploy_token_with_balance(&mut storage, user, U256::from(u128::MAX));
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
 
@@ -496,13 +504,9 @@ mod tests {
         // Initialize PathUSD first
         initialize_path_usd(&mut storage, admin)?;
 
-        // Create two USD tokens
-        let user_token = token_id_to_address(1);
-        let validator_token = token_id_to_address(2);
-
         // Setup both tokens
-        setup_token_with_balance(&mut storage, user_token, user, U256::from(1000000u64));
-        setup_token_with_balance(&mut storage, validator_token, user, U256::from(1000000u64));
+        let user_token = deploy_token_with_balance(&mut storage, user, U256::from(1000000u64));
+        let validator_token = deploy_token_with_balance(&mut storage, user, U256::from(1000000u64));
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
 
@@ -626,17 +630,66 @@ mod tests {
     }
 
     #[test]
+    fn test_mint_pre_moderato() -> Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
+        let user = Address::random();
+        let admin = Address::random();
+        initialize_path_usd(&mut storage, admin)?;
+
+        let user_token = deploy_token_with_balance(&mut storage, user, U256::from(1000000u64));
+        let validator_token = deploy_token_with_balance(&mut storage, user, U256::from(1000000u64));
+
+        let mut fee_manager = TipFeeManager::new(&mut storage);
+
+        let pool_id_call = ITIPFeeAMM::getPoolIdCall {
+            userToken: user_token,
+            validatorToken: validator_token,
+        };
+        let pool_id_result = fee_manager.call(&Bytes::from(pool_id_call.abi_encode()), user)?;
+        let pool_id = B256::abi_decode(&pool_id_result.bytes)?;
+
+        let initial_total_supply_call = ITIPFeeAMM::totalSupplyCall { poolId: pool_id };
+        let initial_total_supply_result =
+            fee_manager.call(&Bytes::from(initial_total_supply_call.abi_encode()), user)?;
+        let initial_total_supply = U256::abi_decode(&initial_total_supply_result.bytes)?;
+        assert_eq!(initial_total_supply, U256::ZERO);
+
+        // Test mint() works pre-Moderato
+        let amount = U256::from(1000);
+        let call = ITIPFeeAMM::mintCall {
+            userToken: user_token,
+            validatorToken: validator_token,
+            amountUserToken: amount,
+            amountValidatorToken: amount,
+            to: user,
+        };
+
+        let calldata = call.abi_encode();
+        let result = fee_manager.call(&Bytes::from(calldata), user)?;
+        assert!(!result.reverted);
+
+        let shares = U256::abi_decode(&result.bytes)?;
+        assert_eq!(shares, (amount * amount) / U256::from(2) - MIN_LIQUIDITY);
+
+        // Verify total supply increased
+        let final_total_supply_result =
+            fee_manager.call(&Bytes::from(initial_total_supply_call.abi_encode()), user)?;
+        let final_total_supply = U256::abi_decode(&final_total_supply_result.bytes)?;
+        // Note that upon first mint, MIN_LIQUIDITY is burnt
+        assert_eq!(final_total_supply, shares + MIN_LIQUIDITY);
+
+        Ok(())
+    }
+
+    #[test]
     fn test_mint_deprecated_post_moderato() {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
         let user = Address::random();
         let admin = Address::random();
         initialize_path_usd(&mut storage, admin).unwrap();
 
-        let user_token = token_id_to_address(1);
-        let validator_token = token_id_to_address(2);
-
-        setup_token_with_balance(&mut storage, user_token, user, U256::from(1000000u64));
-        setup_token_with_balance(&mut storage, validator_token, user, U256::from(1000000u64));
+        let user_token = deploy_token_with_balance(&mut storage, user, U256::from(1000000u64));
+        let validator_token = deploy_token_with_balance(&mut storage, user, U256::from(1000000u64));
 
         let mut fee_manager = TipFeeManager::new(&mut storage);
 

@@ -1,6 +1,6 @@
 use crate::{TempoBlockEnv, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
-use alloy_primitives::Log;
+use alloy_primitives::{Log, U256};
 use revm::{
     Context, Inspector,
     context::{CfgEnv, ContextError, Evm, FrameStack},
@@ -33,6 +33,8 @@ pub struct TempoEvm<DB: Database, I> {
     >,
     /// Preserved logs from the last transaction
     pub logs: Vec<Log>,
+    /// The fee collected in `collectFeePreTx` call.
+    pub(crate) collected_fee: U256,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -65,6 +67,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         Self {
             inner,
             logs: Vec::new(),
+            collected_fee: U256::ZERO,
         }
     }
 }

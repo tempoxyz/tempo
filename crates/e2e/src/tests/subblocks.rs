@@ -32,7 +32,7 @@ use tempo_precompiles::{
     tip20::slots,
 };
 
-use crate::{RunningNode, Setup, setup_validators};
+use crate::{Setup, TestingNode, setup_validators};
 
 #[test_traced]
 fn subblocks_are_included() {
@@ -46,26 +46,17 @@ fn subblocks_are_included() {
             .epoch_length(10);
 
         // Setup and start all nodes.
-        let (nodes, _execution_runtime) = setup_validators(context.clone(), setup.clone()).await;
+        let (mut nodes, _execution_runtime) = setup_validators(context.clone(), setup).await;
 
-        let running = join_all(
-            nodes
-                .into_iter()
-                .map(|mut node| {
-                    // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
-                    // to ensure that payload builder has enough time to accumulate subblocks.
-                    node.consensus_config.new_payload_wait_time = Duration::from_millis(500);
-                    node.start()
-                })
-                .collect::<Vec<_>>(),
-        )
+        join_all(nodes.iter_mut().map(|node| {
+            // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
+            // to ensure that payload builder has enough time to accumulate subblocks.
+            node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
+            node.start()
+        }))
         .await;
 
-        let mut stream = running[0]
-            .execution_node
-            .node
-            .provider
-            .canonical_state_stream();
+        let mut stream = nodes[0].execution_provider().canonical_state_stream();
 
         let mut expected_transactions: Vec<TxHash> = Vec::new();
         while let Some(update) = stream.next().await {
@@ -93,7 +84,7 @@ fn subblocks_are_included() {
             }
 
             // Send subblock transactions to all nodes.
-            for node in running.iter() {
+            for node in nodes.iter() {
                 for _ in 0..5 {
                     expected_transactions.push(submit_subblock_tx(node).await);
                 }
@@ -123,26 +114,16 @@ fn subblocks_are_included_post_allegretto() {
         for node in &mut nodes {
             // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
             // to ensure that payload builder has enough time to accumulate subblocks.
-            node.consensus_config.new_payload_wait_time = Duration::from_millis(500);
+            node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
 
             let fee_recipient = Address::random();
-            node.consensus_config.fee_recipient = fee_recipient;
+            node.consensus_config_mut().fee_recipient = fee_recipient;
             fee_recipients.push(fee_recipient);
         }
 
-        let running = join_all(
-            nodes
-                .into_iter()
-                .map(|node| node.start())
-                .collect::<Vec<_>>(),
-        )
-        .await;
+        join_all(nodes.iter_mut().map(|node| node.start())).await;
 
-        let mut stream = running[0]
-            .execution_node
-            .node
-            .provider
-            .canonical_state_stream();
+        let mut stream = nodes[0].execution_provider().canonical_state_stream();
 
         let mut expected_transactions: Vec<TxHash> = Vec::new();
         while let Some(update) = stream.next().await {
@@ -200,7 +181,7 @@ fn subblocks_are_included_post_allegretto() {
             }
 
             // Send subblock transactions to all nodes.
-            for node in running.iter() {
+            for node in nodes.iter() {
                 for _ in 0..5 {
                     expected_transactions.push(submit_subblock_tx(node).await);
                 }
@@ -230,26 +211,16 @@ fn subblocks_are_included_post_allegretto_with_failing_txs() {
         for node in &mut nodes {
             // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
             // to ensure that payload builder has enough time to accumulate subblocks.
-            node.consensus_config.new_payload_wait_time = Duration::from_millis(500);
+            node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
 
             let fee_recipient = Address::random();
-            node.consensus_config.fee_recipient = fee_recipient;
+            node.consensus_config_mut().fee_recipient = fee_recipient;
             fee_recipients.push(fee_recipient);
         }
 
-        let running = join_all(
-            nodes
-                .into_iter()
-                .map(|node| node.start())
-                .collect::<Vec<_>>(),
-        )
-        .await;
+        join_all(nodes.iter_mut().map(|node| node.start())).await;
 
-        let mut stream = running[0]
-            .execution_node
-            .node
-            .provider
-            .canonical_state_stream();
+        let mut stream = nodes[0].execution_provider().canonical_state_stream();
 
         let mut expected_transactions: Vec<TxHash> = Vec::new();
         let mut failing_transactions: Vec<TxHash> = Vec::new();
@@ -358,7 +329,7 @@ fn subblocks_are_included_post_allegretto_with_failing_txs() {
             }
 
             // Send subblock transactions to all nodes.
-            for node in running.iter() {
+            for node in nodes.iter() {
                 for _ in 0..5 {
                     // Randomly submit some of the transactions from a new signer that doesn't have any funds
                     if rand::random::<bool>() {
@@ -377,7 +348,7 @@ fn subblocks_are_included_post_allegretto_with_failing_txs() {
     });
 }
 
-async fn submit_subblock_tx(node: &RunningNode) -> TxHash {
+async fn submit_subblock_tx(node: &TestingNode) -> TxHash {
     // First signer of the test mnemonic
     let wallet = PrivateKeySigner::from_bytes(&b256!(
         "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
@@ -387,24 +358,21 @@ async fn submit_subblock_tx(node: &RunningNode) -> TxHash {
     submit_subblock_tx_from(node, &wallet).await
 }
 
-async fn submit_subblock_tx_from(node: &RunningNode, wallet: &PrivateKeySigner) -> TxHash {
+async fn submit_subblock_tx_from(node: &TestingNode, wallet: &PrivateKeySigner) -> TxHash {
     let mut nonce_bytes = rand::random::<[u8; 32]>();
     nonce_bytes[0] = TEMPO_SUBBLOCK_NONCE_KEY_PREFIX;
-    nonce_bytes[1..16].copy_from_slice(&node.public_key.as_ref()[..15]);
+    nonce_bytes[1..16].copy_from_slice(&node.public_key().as_ref()[..15]);
 
-    let gas_price = if node
-        .execution_node
-        .node
-        .chain_spec()
-        .is_allegretto_active_at_timestamp(0)
-    {
+    let provider = node.execution_provider();
+
+    let gas_price = if provider.chain_spec().is_allegretto_active_at_timestamp(0) {
         TEMPO_BASE_FEE as u128
     } else {
         0
     };
 
     let mut tx = TempoTransaction {
-        chain_id: node.execution_node.node.provider.chain_spec().chain_id(),
+        chain_id: provider.chain_spec().chain_id(),
         calls: vec![Call {
             to: Address::ZERO.into(),
             input: Default::default(),
@@ -416,13 +384,12 @@ async fn submit_subblock_tx_from(node: &RunningNode, wallet: &PrivateKeySigner) 
         max_priority_fee_per_gas: gas_price,
         ..Default::default()
     };
-    assert!(tx.subblock_proposer().unwrap().matches(&node.public_key));
+    assert!(tx.subblock_proposer().unwrap().matches(node.public_key()));
     let signature = wallet.sign_transaction_sync(&mut tx).unwrap();
 
     let tx = TempoTxEnvelope::AA(tx.into_signed(signature.into()));
     let tx_hash = *tx.tx_hash();
-    node.execution_node
-        .node
+    node.execution()
         .eth_api()
         .send_raw_transaction(tx.encoded_2718().into())
         .await

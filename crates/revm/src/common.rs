@@ -15,7 +15,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
     storage::{self, Storable, StorableType, double_mapping_slot, slots::mapping_slot},
     tip_fee_manager,
-    tip20::{self, is_tip20},
+    tip20::{self, is_tip20_prefix},
     tip403_registry,
 };
 use tempo_primitives::TempoTxEnvelope;
@@ -186,7 +186,7 @@ pub trait TempoStateAccess<T> {
         spec: TempoHardfork,
     ) -> Result<bool, Self::Error> {
         // Ensure it's a TIP20
-        if !is_tip20(fee_token) {
+        if !is_tip20_prefix(fee_token) {
             return Ok(false);
         }
 
@@ -208,7 +208,7 @@ pub trait TempoStateAccess<T> {
         fee_payer: Address,
     ) -> Result<bool, Self::Error> {
         // Ensure it's a TIP20
-        if !is_tip20(fee_token) {
+        if !is_tip20_prefix(fee_token) {
             return Ok(false);
         }
 
@@ -325,7 +325,7 @@ impl<T: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for T {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use revm::{context::TxEnv, database::EmptyDB};
+    use revm::{context::TxEnv, database::EmptyDB, interpreter::instructions::utility::IntoU256};
 
     #[test]
     fn test_get_fee_token_fee_token_set() -> eyre::Result<()> {
@@ -374,6 +374,27 @@ mod tests {
     }
 
     #[test]
+    fn test_get_fee_token_user_token_set() -> eyre::Result<()> {
+        let caller = Address::random();
+        let user_token = Address::random();
+
+        // Set user stored token preference in the FeeManager
+        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        let user_slot = mapping_slot(caller, tip_fee_manager::slots::USER_TOKENS);
+        db.insert_account_storage(TIP_FEE_MANAGER_ADDRESS, user_slot, user_token.into_u256())
+            .unwrap();
+
+        let result_token = db.get_fee_token(
+            TempoTxEnv::default(),
+            Address::ZERO,
+            caller,
+            TempoHardfork::default(),
+        )?;
+        assert_eq!(result_token, user_token);
+        Ok(())
+    }
+
+    #[test]
     fn test_get_fee_token_tip20() -> eyre::Result<()> {
         let caller = Address::random();
         let tip20_token = Address::random();
@@ -397,7 +418,44 @@ mod tests {
     }
 
     #[test]
-    fn test_get_fee_token_fallback() -> eyre::Result<()> {
+    fn test_get_fee_token_fallback_pre_allegretto() -> eyre::Result<()> {
+        let caller = Address::random();
+        let validator = Address::random();
+        let validator_token = Address::random();
+
+        let tx_env = TxEnv {
+            caller,
+            ..Default::default()
+        };
+        let tx = TempoTxEnv {
+            inner: tx_env,
+            ..Default::default()
+        };
+
+        // Validator has a token preference set
+        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
+        db.insert_account_storage(
+            TIP_FEE_MANAGER_ADDRESS,
+            validator_slot,
+            validator_token.into_u256(),
+        )
+        .unwrap();
+
+        let result_token =
+            db.get_fee_token(tx.clone(), validator, caller, TempoHardfork::Adagio)?;
+        assert_eq!(result_token, validator_token);
+
+        // Validator token is not set
+        let mut db2 = EmptyDB::default();
+        let result_token2 = db2.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Adagio)?;
+        assert_eq!(result_token2, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_fee_token_fallback_post_allegretto() -> eyre::Result<()> {
         let caller = Address::random();
         let tx_env = TxEnv {
             caller,
@@ -417,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_fee_token_stablecoin_exchange() -> eyre::Result<()> {
+    fn test_get_fee_token_stablecoin_exchange_post_allegretto() -> eyre::Result<()> {
         let caller = Address::random();
         // Use PathUSD as token_in since it's a known valid USD fee token
         let token_in = DEFAULT_FEE_TOKEN_POST_ALLEGRETTO;

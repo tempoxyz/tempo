@@ -1,19 +1,17 @@
 import * as React from 'react'
 import { Hooks } from 'tempo.ts/wagmi'
-import { useAccountEffect } from 'wagmi'
+import { useConnectionEffect } from 'wagmi'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, FAKE_RECIPIENT, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
-export function CreateTokenPolicy(
-  props: DemoStepProps & { waitForTransfer: boolean },
-) {
-  const { stepNumber, waitForTransfer } = props
-  const { data, setData } = useDemoContext()
+export function CreateTokenPolicy(props: DemoStepProps) {
+  const { stepNumber, flowDependencies = [] } = props
+  const { data, setData, checkFlowDependencies } = useDemoContext()
   const [expanded, setExpanded] = React.useState(false)
 
-  const { tokenAddress, transferId } = data
+  const { tokenAddress } = data
 
   const createPolicy = Hooks.policy.useCreateSync({
     mutation: {
@@ -23,7 +21,7 @@ export function CreateTokenPolicy(
     },
   })
 
-  useAccountEffect({
+  useConnectionEffect({
     onDisconnect() {
       setExpanded(false)
       createPolicy.reset()
@@ -45,7 +43,7 @@ export function CreateTokenPolicy(
   const hasError = createPolicy.isError
 
   const active =
-    !!tokenAddress && !isComplete && (waitForTransfer ? !!transferId : true)
+    !!tokenAddress && !isComplete && checkFlowDependencies(flowDependencies)
 
   return (
     <Step

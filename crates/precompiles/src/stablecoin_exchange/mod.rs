@@ -20,7 +20,8 @@ use crate::{
         MIN_PRICE_PRE_MODERATO, compute_book_key,
     },
     storage::{Mapping, PrecompileStorageProvider, Slot, VecSlotExt},
-    tip20::{ITIP20, TIP20Token, is_tip20, validate_usd_currency},
+    tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
+    tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
@@ -228,7 +229,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 },
             )?;
         } else {
-            TIP20Token::from_address(token, self.storage).transfer(
+            TIP20Token::from_address(token, self.storage)?.transfer(
                 self.address,
                 ITIP20::transferCall {
                     to,
@@ -251,7 +252,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 },
             )?;
         } else {
-            TIP20Token::from_address(token, self.storage).transfer_from(
+            TIP20Token::from_address(token, self.storage)?.transfer_from(
                 self.address,
                 ITIP20::transferFromCall {
                     from,
@@ -274,11 +275,20 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         if user_balance >= amount {
             self.sub_balance(user, token, amount)
         } else {
-            self.set_balance(user, token, 0)?;
             let remaining = amount
                 .checked_sub(user_balance)
                 .ok_or(TempoPrecompileError::under_overflow())?;
-            self.transfer_from(token, user, remaining)
+
+            // Post allegro-moderato hardfork, set balance after transfer from
+            if self.storage.spec().is_allegro_moderato() {
+                self.transfer_from(token, user, remaining)?;
+                self.set_balance(user, token, 0)?;
+
+                Ok(())
+            } else {
+                self.set_balance(user, token, 0)?;
+                self.transfer_from(token, user, remaining)
+            }
         }
     }
 
@@ -405,7 +415,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     /// Get price level information
     pub fn get_price_level(&mut self, base: Address, tick: i16, is_bid: bool) -> Result<TickLevel> {
-        let quote = TIP20Token::from_address(base, self.storage).quote_token()?;
+        let quote = TIP20Token::from_address(base, self.storage)?.quote_token()?;
         let key = compute_book_key(base, quote);
         Orderbook::read_tick_level(self, key, is_bid, tick)
     }
@@ -444,11 +454,11 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
 
     pub fn create_pair(&mut self, base: Address) -> Result<B256> {
         // Validate that base is a TIP20 token (only after Moderato hardfork)
-        if self.storage.spec().is_moderato() && !is_tip20(base) {
+        if self.storage.spec().is_moderato() && !TIP20Factory::new(self.storage).is_tip20(base)? {
             return Err(StablecoinExchangeError::invalid_base_token().into());
         }
 
-        let quote = TIP20Token::from_address(base, self.storage).quote_token()?;
+        let quote = TIP20Token::from_address(base, self.storage)?.quote_token()?;
         validate_usd_currency(base, self.storage)?;
         validate_usd_currency(quote, self.storage)?;
 
@@ -497,7 +507,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         is_bid: bool,
         tick: i16,
     ) -> Result<u128> {
-        let quote_token = TIP20Token::from_address(token, self.storage).quote_token()?;
+        let quote_token = TIP20Token::from_address(token, self.storage)?.quote_token()?;
 
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
@@ -582,7 +592,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         tick: i16,
         flip_tick: i16,
     ) -> Result<u128> {
-        let quote_token = TIP20Token::from_address(token, self.storage).quote_token()?;
+        let quote_token = TIP20Token::from_address(token, self.storage)?.quote_token()?;
 
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
@@ -1481,13 +1491,15 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         // Validate that both tokens are TIP20 tokens
-        if self.storage.spec().is_allegretto() && (!is_tip20(token_in) || !is_tip20(token_out)) {
+        if self.storage.spec().is_allegretto()
+            && (!is_tip20_prefix(token_in) || !is_tip20_prefix(token_out))
+        {
             return Err(StablecoinExchangeError::invalid_token().into());
         }
 
         // Check if direct or reverse pair exists
-        let in_quote = TIP20Token::from_address(token_in, self.storage).quote_token()?;
-        let out_quote = TIP20Token::from_address(token_out, self.storage).quote_token()?;
+        let in_quote = TIP20Token::from_address(token_in, self.storage)?.quote_token()?;
+        let out_quote = TIP20Token::from_address(token_out, self.storage)?.quote_token()?;
 
         if in_quote == token_out || out_quote == token_in {
             return self.validate_and_build_route(&[token_in, token_out]);
@@ -1563,7 +1575,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let mut path = vec![token];
 
         while token != PATH_USD_ADDRESS {
-            token = TIP20Token::from_address(token, self.storage).quote_token()?;
+            token = TIP20Token::from_address(token, self.storage)?.quote_token()?;
             path.push(token);
         }
 
@@ -2079,7 +2091,7 @@ mod tests {
 
         // Verify balance was reduced by the escrow amount
         {
-            let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage);
+            let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage).unwrap();
             let remaining_balance =
                 quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice })?;
             assert_eq!(remaining_balance, U256::ZERO);
@@ -2145,7 +2157,7 @@ mod tests {
 
         // Verify balance was reduced by the escrow amount
         {
-            let mut base_tip20 = TIP20Token::from_address(base_token, exchange.storage);
+            let mut base_tip20 = TIP20Token::from_address(base_token, exchange.storage).unwrap();
             let remaining_balance =
                 base_tip20.balance_of(ITIP20::balanceOfCall { account: alice })?;
             assert_eq!(remaining_balance, U256::ZERO); // All tokens should be escrowed
@@ -2327,7 +2339,7 @@ mod tests {
 
         // Verify balance was reduced by the escrow amount
         {
-            let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage);
+            let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage).unwrap();
             let remaining_balance =
                 quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice })?;
             assert_eq!(remaining_balance, U256::ZERO);
@@ -2379,7 +2391,7 @@ mod tests {
         assert_eq!(exchange.balance_of(alice, quote_token)?, 0);
 
         let (alice_balance_before, exchange_balance_before) = {
-            let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage);
+            let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage).unwrap();
 
             (
                 quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice })?,
@@ -2544,7 +2556,7 @@ mod tests {
         assert_eq!(exchange.balance_of(alice, quote_token)?, 0);
 
         // Verify wallet balances changed correctly
-        let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage);
+        let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage).unwrap();
 
         assert_eq!(
             quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice })?,
@@ -2602,7 +2614,7 @@ mod tests {
         let admin = Address::random();
         let min_order_amount = MIN_ORDER_AMOUNT;
         let amount_out = 500_000u128;
-        let tick = 1;
+        let tick = 10;
 
         let (base_token, quote_token) = setup_test_tokens(
             exchange.storage,
@@ -2643,7 +2655,7 @@ mod tests {
         let admin = Address::random();
         let min_order_amount = MIN_ORDER_AMOUNT;
         let amount_in = 500_000u128;
-        let tick = 1;
+        let tick = 10;
 
         let (base_token, quote_token) = setup_test_tokens(
             exchange.storage,
@@ -2730,7 +2742,7 @@ mod tests {
         let admin = Address::random();
         let min_order_amount = MIN_ORDER_AMOUNT;
         let amount_out = 500_000u128;
-        let tick = 1;
+        let tick = 10;
 
         let (base_token, quote_token) = setup_test_tokens(
             exchange.storage,
@@ -2763,7 +2775,7 @@ mod tests {
             .swap_exact_amount_out(bob, quote_token, base_token, amount_out, max_amount_in)
             .expect("Swap should succeed");
 
-        let mut base_tip20 = TIP20Token::from_address(base_token, exchange.storage);
+        let mut base_tip20 = TIP20Token::from_address(base_token, exchange.storage).unwrap();
         let bob_base_balance = base_tip20.balance_of(ITIP20::balanceOfCall { account: bob })?;
         assert_eq!(bob_base_balance, U256::from(amount_out));
 
@@ -2784,7 +2796,7 @@ mod tests {
         let admin = Address::random();
         let min_order_amount = MIN_ORDER_AMOUNT;
         let amount_in = 500_000u128;
-        let tick = 1;
+        let tick = 10;
 
         let (base_token, quote_token) = setup_test_tokens(
             exchange.storage,
@@ -2817,7 +2829,7 @@ mod tests {
             .swap_exact_amount_in(bob, base_token, quote_token, amount_in, min_amount_out)
             .expect("Swap should succeed");
 
-        let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage);
+        let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage).unwrap();
         let bob_quote_balance = quote_tip20.balance_of(ITIP20::balanceOfCall { account: bob })?;
         assert_eq!(bob_quote_balance, U256::from(amount_out));
 
@@ -3908,7 +3920,7 @@ mod tests {
 
         let admin = Address::random();
         // Init path USD
-        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
+        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage).unwrap();
         path_usd
             .initialize(
                 "PathUSD",
@@ -3999,7 +4011,7 @@ mod tests {
 
         let admin = Address::random();
         // Init PATH USD
-        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
+        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage).unwrap();
         path_usd
             .initialize(
                 "PathUSD",
@@ -4081,7 +4093,7 @@ mod tests {
 
         let admin = Address::random();
         // Init Linking USD
-        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage);
+        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS, &mut storage).unwrap();
         path_usd
             .initialize(
                 "PathUSD",
@@ -4117,7 +4129,7 @@ mod tests {
     #[test]
     fn test_exact_out_bid_side_pre_moderato() -> eyre::Result<()> {
         // Pre-Moderato: old behavior with unit mismatch causes MaxInputExceeded
-        let mut storage = HashMapStorageProvider::new(1); // Default is Adagio
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -4211,7 +4223,7 @@ mod tests {
         )?;
 
         // Verify Bob got exactly the quote amount requested
-        let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage);
+        let mut quote_tip20 = TIP20Token::from_address(quote_token, exchange.storage).unwrap();
         let bob_quote_balance = quote_tip20.balance_of(ITIP20::balanceOfCall { account: bob })?;
         assert_eq!(bob_quote_balance, U256::from(amount_out_quote));
 
@@ -4221,7 +4233,7 @@ mod tests {
     #[test]
     fn test_exact_in_ask_side_pre_moderato() -> eyre::Result<()> {
         // Pre-Moderato: old behavior treats quote amount as base amount
-        let mut storage = HashMapStorageProvider::new(1); // Default is Adagio
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -4853,6 +4865,78 @@ mod tests {
             })
             .into_log_data()
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_decrement_balance_zeroes_balance_pre_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+
+        let mut quote = PathUSD::new(exchange.storage);
+        quote.initialize(admin)?;
+        let quote_address = quote.token.address();
+
+        let mut base = TIP20Token::new(1, quote.token.storage());
+        base.initialize("BASE", "BASE", "USD", quote_address, admin, Address::ZERO)?;
+        base.grant_role_internal(admin, *ISSUER_ROLE)?;
+        let base_address = base.address();
+
+        exchange.create_pair(base_address)?;
+
+        let internal_balance = MIN_ORDER_AMOUNT / 2;
+        exchange.sstore_balances(alice, base_address, internal_balance)?;
+
+        assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
+
+        let tick = 0i16;
+        let result = exchange.place(alice, base_address, MIN_ORDER_AMOUNT, false, tick);
+
+        assert!(result.is_err());
+        assert_eq!(exchange.balance_of(alice, base_address)?, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_decrement_balance_preserves_balance_post_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let mut exchange = StablecoinExchange::new(&mut storage);
+        exchange.initialize()?;
+
+        let alice = Address::random();
+        let admin = Address::random();
+
+        let mut quote = PathUSD::new(exchange.storage);
+        quote.initialize(admin)?;
+        let quote_address = quote.token.address();
+
+        // Set token_id_counter to 2 so that token id 1 is considered valid
+        TIP20Factory::new(quote.token.storage()).set_token_id_counter(U256::from(2))?;
+
+        let mut base = TIP20Token::new(1, quote.token.storage());
+        base.initialize("BASE", "BASE", "USD", quote_address, admin, Address::ZERO)?;
+        base.grant_role_internal(admin, *ISSUER_ROLE)?;
+        let base_address = base.address();
+
+        exchange.create_pair(base_address)?;
+
+        let internal_balance = MIN_ORDER_AMOUNT / 2;
+        exchange.sstore_balances(alice, base_address, internal_balance)?;
+
+        assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
+
+        let tick = 0i16;
+        let result = exchange.place(alice, base_address, MIN_ORDER_AMOUNT * 2, false, tick);
+
+        assert!(result.is_err());
+        assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
 
         Ok(())
     }
