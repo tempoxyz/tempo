@@ -2614,7 +2614,7 @@ mod tests {
         let admin = Address::random();
         let min_order_amount = MIN_ORDER_AMOUNT;
         let amount_out = 500_000u128;
-        let tick = 1;
+        let tick = 10;
 
         let (base_token, quote_token) = setup_test_tokens(
             exchange.storage,
@@ -2655,7 +2655,7 @@ mod tests {
         let admin = Address::random();
         let min_order_amount = MIN_ORDER_AMOUNT;
         let amount_in = 500_000u128;
-        let tick = 1;
+        let tick = 10;
 
         let (base_token, quote_token) = setup_test_tokens(
             exchange.storage,
@@ -2742,7 +2742,7 @@ mod tests {
         let admin = Address::random();
         let min_order_amount = MIN_ORDER_AMOUNT;
         let amount_out = 500_000u128;
-        let tick = 1;
+        let tick = 10;
 
         let (base_token, quote_token) = setup_test_tokens(
             exchange.storage,
@@ -2796,7 +2796,7 @@ mod tests {
         let admin = Address::random();
         let min_order_amount = MIN_ORDER_AMOUNT;
         let amount_in = 500_000u128;
-        let tick = 1;
+        let tick = 10;
 
         let (base_token, quote_token) = setup_test_tokens(
             exchange.storage,
@@ -4129,7 +4129,7 @@ mod tests {
     #[test]
     fn test_exact_out_bid_side_pre_moderato() -> eyre::Result<()> {
         // Pre-Moderato: old behavior with unit mismatch causes MaxInputExceeded
-        let mut storage = HashMapStorageProvider::new(1); // Default is Adagio
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 
@@ -4233,7 +4233,7 @@ mod tests {
     #[test]
     fn test_exact_in_ask_side_pre_moderato() -> eyre::Result<()> {
         // Pre-Moderato: old behavior treats quote amount as base amount
-        let mut storage = HashMapStorageProvider::new(1); // Default is Adagio
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let mut exchange = StablecoinExchange::new(&mut storage);
         exchange.initialize()?;
 

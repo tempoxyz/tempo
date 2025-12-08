@@ -21,6 +21,7 @@ use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_evm::TempoStateAccess;
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce, storage::double_mapping_slot};
 pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::{node::TempoNode, rpc::error::TempoEthApiError};
@@ -267,6 +268,31 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
             // This will be 0 if gas price is 0. It is fine, because we check it before.
             .unwrap_or_default()
             .saturating_to())
+    }
+
+    fn create_txn_env(
+        &self,
+        evm_env: &EvmEnvFor<Self::Evm>,
+        mut request: TempoTransactionRequest,
+        mut db: impl Database<Error: Into<EthApiError>>,
+    ) -> Result<TxEnvFor<Self::Evm>, Self::Error> {
+        // if nonce key is provided, fetch nonce from nonce manager's storage.
+        if let Some(nonce_key) = request.nonce_key
+            && request.nonce.is_none()
+        {
+            let slot = double_mapping_slot(
+                request.from.unwrap_or_default().as_slice(),
+                nonce_key.to_be_bytes::<32>(),
+                nonce::slots::NONCES,
+            );
+            request.nonce = Some(
+                db.storage(NONCE_PRECOMPILE_ADDRESS, slot)
+                    .map_err(Into::into)?
+                    .saturating_to(),
+            );
+        }
+
+        Ok(self.inner.create_txn_env(evm_env, request, db)?)
     }
 }
 
