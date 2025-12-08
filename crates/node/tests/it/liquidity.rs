@@ -1,14 +1,21 @@
 use alloy::{
     primitives::U256,
     providers::{Provider, ProviderBuilder},
-    signers::local::MnemonicBuilder,
+    signers::{SignerSync, local::MnemonicBuilder},
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
-use alloy_network::TxSignerSync;
+use alloy_primitives::TxKind;
 use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20};
 use tempo_precompiles::DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO;
-use tempo_primitives::TxFeeToken;
+use tempo_primitives::{
+    TempoTransaction,
+    transaction::{
+        tempo_transaction::Call,
+        tt_signature::{PrimitiveSignature, TempoSignature},
+        tt_signed::AASigned,
+    },
+};
 
 use crate::utils::setup_test_token_pre_allegretto;
 
@@ -126,14 +133,17 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     // Now set the user's fee token to our custom payment token (not USDC)
     // This ensures subsequent transactions will require a swap through the drained FeeAMM
     println!("Setting user's fee token preference...");
-    let mut tx = TxFeeToken {
+    let tx_aa = TempoTransaction {
         fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
-        to: TIP_FEE_MANAGER_ADDRESS.into(),
-        input: setUserTokenCall {
-            token: payment_token_addr,
-        }
-        .abi_encode()
-        .into(),
+        calls: vec![Call {
+            to: TxKind::Call(TIP_FEE_MANAGER_ADDRESS),
+            value: U256::ZERO,
+            input: setUserTokenCall {
+                token: payment_token_addr,
+            }
+            .abi_encode()
+            .into(),
+        }],
         chain_id: provider.get_chain_id().await?,
         max_fee_per_gas: provider.get_gas_price().await?,
         max_priority_fee_per_gas: provider.get_gas_price().await?,
@@ -141,10 +151,12 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         gas_limit: 100000,
         ..Default::default()
     };
-    let signature = wallet.sign_transaction_sync(&mut tx).unwrap();
-    let tx = tx.into_signed(signature);
+    let sig_hash = tx_aa.signature_hash();
+    let signature = wallet.sign_hash_sync(&sig_hash)?;
+    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature));
+    let signed_tx = AASigned::new_unhashed(tx_aa, aa_signature);
     provider
-        .send_raw_transaction(&tx.encoded_2718())
+        .send_raw_transaction(&signed_tx.encoded_2718())
         .await?
         .watch()
         .await?;

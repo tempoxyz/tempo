@@ -532,7 +532,6 @@ mod tests {
                         first_call.value = value;
                     }
                 }
-                TempoTxEnvelope::FeeToken(tx) => tx.tx_mut().value = value,
             }
         }
 

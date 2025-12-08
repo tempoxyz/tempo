@@ -1,5 +1,5 @@
 use crate::TempoInvalidTransaction;
-use alloy_consensus::{EthereumTxEnvelope, TxEip4844, Typed2718, crypto::secp256k1};
+use alloy_consensus::{EthereumTxEnvelope, TxEip4844, Typed2718};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use reth_evm::TransactionEnv;
@@ -12,7 +12,7 @@ use revm::context::{
     },
 };
 use tempo_primitives::{
-    AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope, TxFeeToken,
+    AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope,
     transaction::{
         Call, RecoveredTempoAuthorization, SignedKeyAuthorization, calc_gas_balance_spending,
     },
@@ -246,63 +246,6 @@ impl FromRecoveredTx<EthereumTxEnvelope<TxEip4844>> for TempoTxEnv {
     }
 }
 
-impl FromRecoveredTx<TxFeeToken> for TempoTxEnv {
-    fn from_recovered_tx(tx: &TxFeeToken, caller: Address) -> Self {
-        let TxFeeToken {
-            chain_id,
-            nonce,
-            gas_limit,
-            to,
-            value,
-            input,
-            max_fee_per_gas,
-            max_priority_fee_per_gas,
-            access_list,
-            authorization_list,
-            fee_token,
-            fee_payer_signature,
-        } = tx;
-        Self {
-            inner: TxEnv {
-                tx_type: tx.ty(),
-                caller,
-                gas_limit: *gas_limit,
-                gas_price: *max_fee_per_gas,
-                kind: *to,
-                value: *value,
-                data: input.clone(),
-                nonce: *nonce,
-                chain_id: Some(*chain_id),
-                gas_priority_fee: Some(*max_priority_fee_per_gas),
-                access_list: access_list.clone(),
-                authorization_list: authorization_list
-                    .iter()
-                    .map(|auth| {
-                        Either::Right(RecoveredAuthorization::new_unchecked(
-                            auth.inner().clone(),
-                            auth.signature()
-                                .ok()
-                                .and_then(|signature| {
-                                    secp256k1::recover_signer(&signature, auth.signature_hash())
-                                        .ok()
-                                })
-                                .map_or(RecoveredAuthority::Invalid, RecoveredAuthority::Valid),
-                        ))
-                    })
-                    .collect(),
-                ..Default::default()
-            },
-            fee_token: *fee_token,
-            is_system_tx: false,
-            fee_payer: fee_payer_signature.map(|sig| {
-                sig.recover_address_from_prehash(&tx.fee_payer_signature_hash(caller))
-                    .ok()
-            }),
-            tempo_tx_env: None, // Non-AA transaction
-        }
-    }
-}
-
 impl FromRecoveredTx<AASigned> for TempoTxEnv {
     fn from_recovered_tx(aa_signed: &AASigned, caller: Address) -> Self {
         let tx = aa_signed.tx();
@@ -410,7 +353,6 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
             TempoTxEnvelope::Eip1559(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
             TempoTxEnvelope::Eip7702(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
             TempoTxEnvelope::AA(tx) => Self::from_recovered_tx(tx, sender),
-            TempoTxEnvelope::FeeToken(tx) => Self::from_recovered_tx(tx.tx(), sender),
         }
     }
 }
@@ -421,12 +363,6 @@ impl FromTxWithEncoded<EthereumTxEnvelope<TxEip4844>> for TempoTxEnv {
         sender: Address,
         _encoded: Bytes,
     ) -> Self {
-        Self::from_recovered_tx(tx, sender)
-    }
-}
-
-impl FromTxWithEncoded<TxFeeToken> for TempoTxEnv {
-    fn from_encoded_tx(tx: &TxFeeToken, sender: Address, _encoded: Bytes) -> Self {
         Self::from_recovered_tx(tx, sender)
     }
 }

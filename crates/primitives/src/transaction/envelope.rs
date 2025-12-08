@@ -1,4 +1,4 @@
-use super::{fee_token::TxFeeToken, tt_signed::AASigned};
+use super::tt_signed::AASigned;
 use crate::{TempoTransaction, subblock::PartialValidatorKey};
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
@@ -27,7 +27,7 @@ pub const TEMPO_SYSTEM_TX_SENDER: Address = Address::ZERO;
 /// - EIP-2930 access list transactions
 /// - EIP-1559 dynamic fee transactions
 /// - EIP-7702 authorization list transactions
-/// - Tempo fee token transactions (0x77)
+/// - Tempo AA transactions (0x76)
 #[derive(Clone, Debug, alloy_consensus::TransactionEnvelope)]
 #[envelope(
     tx_type_name = TempoTxType,
@@ -57,10 +57,6 @@ pub enum TempoTxEnvelope {
     /// Tempo transaction (type 0x76)
     #[envelope(ty = 0x76, typed = TempoTransaction)]
     AA(AASigned),
-
-    /// Tempo fee token transaction (type 0x77)
-    #[envelope(ty = 0x77)]
-    FeeToken(Signed<TxFeeToken>),
 }
 
 impl TryFrom<TxType> for TempoTxType {
@@ -86,9 +82,6 @@ impl TryFrom<TempoTxType> for TxType {
             TempoTxType::Eip2930 => Self::Eip2930,
             TempoTxType::Eip1559 => Self::Eip1559,
             TempoTxType::Eip7702 => Self::Eip7702,
-            TempoTxType::FeeToken => {
-                return Err(UnsupportedTransactionType::new(TempoTxType::FeeToken));
-            }
             TempoTxType::AA => {
                 return Err(UnsupportedTransactionType::new(TempoTxType::AA));
             }
@@ -100,7 +93,6 @@ impl TempoTxEnvelope {
     /// Returns the fee token preference if this is a fee token transaction
     pub fn fee_token(&self) -> Option<Address> {
         match self {
-            Self::FeeToken(tx) => tx.tx().fee_token,
             Self::AA(tx) => tx.tx().fee_token,
             _ => None,
         }
@@ -109,14 +101,6 @@ impl TempoTxEnvelope {
     /// Resolves fee payer for the transaction.
     pub fn fee_payer(&self, sender: Address) -> Result<Address, SignatureError> {
         match self {
-            Self::FeeToken(tx) => {
-                if let Some(fee_payer_signature) = tx.tx().fee_payer_signature {
-                    fee_payer_signature
-                        .recover_address_from_prehash(&tx.tx().fee_payer_signature_hash(sender))
-                } else {
-                    Ok(sender)
-                }
-            }
             Self::AA(tx) => {
                 if let Some(fee_payer_signature) = tx.tx().fee_payer_signature {
                     fee_payer_signature
@@ -137,20 +121,18 @@ impl TempoTxEnvelope {
             Self::Eip1559(_) => TempoTxType::Eip1559,
             Self::Eip7702(_) => TempoTxType::Eip7702,
             Self::AA(_) => TempoTxType::AA,
-            Self::FeeToken(_) => TempoTxType::FeeToken,
         }
     }
 
     /// Returns true if this is a fee token transaction
     pub fn is_fee_token(&self) -> bool {
-        matches!(self, Self::FeeToken(_) | Self::AA(_))
+        matches!(self, Self::AA(_))
     }
 
-    /// Returns the authorization list if present (for EIP-7702 and FeeToken transactions)
+    /// Returns the authorization list if present (for EIP-7702 transactions)
     pub fn authorization_list(&self) -> Option<&[alloy_eips::eip7702::SignedAuthorization]> {
         match self {
             Self::Eip7702(tx) => Some(&tx.tx().authorization_list),
-            Self::FeeToken(tx) => Some(&tx.tx().authorization_list),
             _ => None,
         }
     }
@@ -200,11 +182,6 @@ impl TempoTxEnvelope {
                 .to()
                 .is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX)),
             Self::Eip7702(tx) => tx.tx().to.starts_with(&TIP20_PAYMENT_PREFIX),
-            Self::FeeToken(tx) => tx
-                .tx()
-                .to
-                .to()
-                .is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX)),
             Self::AA(tx) => tx.tx().calls.iter().all(|call| {
                 call.to
                     .to()
@@ -263,9 +240,6 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
             Self::Eip7702(tx) => {
                 alloy_consensus::transaction::SignerRecoverable::recover_signer(tx)
             }
-            Self::FeeToken(tx) => {
-                alloy_consensus::transaction::SignerRecoverable::recover_signer(tx)
-            }
             Self::AA(tx) => alloy_consensus::transaction::SignerRecoverable::recover_signer(tx),
         }
     }
@@ -287,9 +261,6 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
             Self::Eip7702(tx) => {
                 alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx)
             }
-            Self::FeeToken(tx) => {
-                alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx)
-            }
             Self::AA(tx) => {
                 alloy_consensus::transaction::SignerRecoverable::recover_signer_unchecked(tx)
             }
@@ -305,7 +276,6 @@ impl reth_primitives_traits::InMemorySize for TempoTxEnvelope {
             Self::Eip1559(tx) => reth_primitives_traits::InMemorySize::size(tx),
             Self::Eip7702(tx) => reth_primitives_traits::InMemorySize::size(tx),
             Self::AA(tx) => reth_primitives_traits::InMemorySize::size(tx),
-            Self::FeeToken(tx) => reth_primitives_traits::InMemorySize::size(tx),
         }
     }
 }
@@ -318,7 +288,6 @@ impl alloy_consensus::transaction::TxHashRef for TempoTxEnvelope {
             Self::Eip1559(tx) => tx.hash(),
             Self::Eip7702(tx) => tx.hash(),
             Self::AA(tx) => tx.hash(),
-            Self::FeeToken(tx) => tx.hash(),
         }
     }
 }
@@ -339,7 +308,6 @@ impl fmt::Display for TempoTxType {
             Self::Eip1559 => write!(f, "EIP-1559"),
             Self::Eip7702 => write!(f, "EIP-7702"),
             Self::AA => write!(f, "AA"),
-            Self::FeeToken => write!(f, "FeeToken"),
         }
     }
 }
@@ -385,12 +353,6 @@ impl From<Signed<TxEip7702>> for TempoTxEnvelope {
     }
 }
 
-impl From<Signed<TxFeeToken>> for TempoTxEnvelope {
-    fn from(value: Signed<TxFeeToken>) -> Self {
-        Self::FeeToken(value)
-    }
-}
-
 impl From<AASigned> for TempoTxEnvelope {
     fn from(value: AASigned) -> Self {
         Self::AA(value)
@@ -406,7 +368,6 @@ impl TempoTypedTransaction {
             Self::Eip1559(tx) => tx.into_signed(sig).into(),
             Self::Eip7702(tx) => tx.into_signed(sig).into(),
             Self::AA(tx) => tx.into_signed(sig.into()).into(),
-            Self::FeeToken(tx) => tx.into_signed(sig).into(),
         }
     }
 
@@ -418,7 +379,6 @@ impl TempoTypedTransaction {
             Self::Eip1559(tx) => tx,
             Self::Eip7702(tx) => tx,
             Self::AA(tx) => tx,
-            Self::FeeToken(tx) => tx,
         }
     }
 }
@@ -446,15 +406,8 @@ impl From<TempoTxEnvelope> for TempoTypedTransaction {
             TempoTxEnvelope::Eip2930(tx) => Self::Eip2930(tx.into_parts().0),
             TempoTxEnvelope::Eip1559(tx) => Self::Eip1559(tx.into_parts().0),
             TempoTxEnvelope::Eip7702(tx) => Self::Eip7702(tx.into_parts().0),
-            TempoTxEnvelope::FeeToken(tx) => Self::FeeToken(tx.into_parts().0),
             TempoTxEnvelope::AA(tx) => Self::AA(tx.into_parts().0),
         }
-    }
-}
-
-impl From<TxFeeToken> for TempoTypedTransaction {
-    fn from(value: TxFeeToken) -> Self {
-        Self::FeeToken(value)
     }
 }
 
@@ -556,11 +509,6 @@ mod codec {
                     let tx = AASigned::new_unhashed(tx, aa_sig);
                     (Self::AA(tx), buf)
                 }
-                TempoTxType::FeeToken => {
-                    let (tx, buf) = TxFeeToken::from_compact(buf, buf.len());
-                    let tx = Signed::new_unhashed(tx, signature);
-                    (Self::FeeToken(tx), buf)
-                }
             }
         }
     }
@@ -578,7 +526,6 @@ mod codec {
                     len += tx.signature().to_bytes().to_compact(buf);
                     len
                 }
-                Self::FeeToken(tx) => tx.tx().to_compact(buf),
             };
         }
     }
@@ -594,7 +541,6 @@ mod codec {
                     // TODO: Will this work?
                     &TEMPO_SYSTEM_TX_SIGNATURE
                 }
-                Self::FeeToken(tx) => tx.signature(),
             }
         }
 
@@ -620,10 +566,6 @@ mod codec {
                     buf.put_u8(crate::transaction::TEMPO_TX_TYPE_ID);
                     COMPACT_EXTENDED_IDENTIFIER_FLAG
                 }
-                Self::FeeToken => {
-                    buf.put_u8(crate::transaction::FEE_TOKEN_TX_TYPE_ID);
-                    COMPACT_EXTENDED_IDENTIFIER_FLAG
-                }
             }
         }
 
@@ -642,7 +584,6 @@ mod codec {
                         match extended_identifier {
                             EIP7702_TX_TYPE_ID => Self::Eip7702,
                             crate::transaction::TEMPO_TX_TYPE_ID => Self::AA,
-                            crate::transaction::FEE_TOKEN_TX_TYPE_ID => Self::FeeToken,
                             _ => panic!("Unsupported TxType identifier: {extended_identifier}"),
                         }
                     }
@@ -688,24 +629,6 @@ mod tests {
     use alloy_primitives::{Signature, TxKind, address};
 
     #[test]
-    fn test_fee_token_access() {
-        let fee_token_tx = TxFeeToken {
-            fee_token: Some(Address::ZERO),
-            ..Default::default()
-        };
-        let signature = Signature::new(
-            alloy_primitives::U256::ZERO,
-            alloy_primitives::U256::ZERO,
-            false,
-        );
-        let signed = Signed::new_unhashed(fee_token_tx, signature);
-        let envelope = TempoTxEnvelope::FeeToken(signed);
-
-        assert!(envelope.is_fee_token());
-        assert_eq!(envelope.fee_token(), Some(Address::ZERO));
-    }
-
-    #[test]
     fn test_non_fee_token_access() {
         let legacy_tx = TxLegacy::default();
         let signature = Signature::new(
@@ -724,81 +647,6 @@ mod tests {
     fn test_payment_classification_with_tip20_prefix() {
         // Create an address with TIP20 prefix
         let payment_addr = address!("20c0000000000000000000000000000000000001");
-        let tx = TxFeeToken {
-            to: TxKind::Call(payment_addr),
-            gas_limit: 21000,
-            ..Default::default()
-        };
-        let signed = Signed::new_unhashed(tx, Signature::test_signature());
-        let envelope = TempoTxEnvelope::FeeToken(signed);
-
-        assert!(envelope.is_payment());
-    }
-
-    #[test]
-    fn test_payment_classification_without_tip20_prefix() {
-        // Create an address without TIP20 prefix
-        let non_payment_addr = address!("1234567890123456789012345678901234567890");
-        let tx = TxFeeToken {
-            to: TxKind::Call(non_payment_addr),
-            gas_limit: 21000,
-            ..Default::default()
-        };
-        let signed = Signed::new_unhashed(tx, Signature::test_signature());
-        let envelope = TempoTxEnvelope::FeeToken(signed);
-
-        assert!(!envelope.is_payment());
-    }
-
-    #[test]
-    fn test_payment_classification_no_to_address() {
-        // Create a transaction with no `to` address (contract creation)
-        let tx = TxFeeToken {
-            to: TxKind::Create,
-            gas_limit: 21000,
-            ..Default::default()
-        };
-        let signed = Signed::new_unhashed(tx, Signature::test_signature());
-        let envelope = TempoTxEnvelope::FeeToken(signed);
-
-        assert!(!envelope.is_payment());
-    }
-
-    #[test]
-    fn test_payment_classification_partial_match() {
-        // Create an address that partially matches but not completely
-        let partial_match_addr = address!("20c0000000000000000000000000000100000000");
-        let tx = TxFeeToken {
-            to: TxKind::Call(partial_match_addr),
-            gas_limit: 21000,
-            ..Default::default()
-        };
-        let signed = Signed::new_unhashed(tx, Signature::test_signature());
-        let envelope = TempoTxEnvelope::FeeToken(signed);
-
-        // This should still be classified as payment since first 14 bytes match
-        assert!(envelope.is_payment());
-    }
-
-    #[test]
-    fn test_payment_classification_different_prefix() {
-        // Create an address with a different prefix
-        let different_prefix_addr = address!("30c0000000000000000000000000000000000001");
-        let tx = TxFeeToken {
-            to: TxKind::Call(different_prefix_addr),
-            gas_limit: 21000,
-            ..Default::default()
-        };
-        let signed = Signed::new_unhashed(tx, Signature::test_signature());
-        let envelope = TempoTxEnvelope::FeeToken(signed);
-
-        assert!(!envelope.is_payment());
-    }
-
-    #[test]
-    fn test_payment_classification_legacy_tx() {
-        // Test with legacy transaction type
-        let payment_addr = address!("20c0000000000000000000000000000000000001");
         let tx = TxLegacy {
             to: TxKind::Call(payment_addr),
             gas_limit: 21000,
@@ -808,5 +656,65 @@ mod tests {
         let envelope = TempoTxEnvelope::Legacy(signed);
 
         assert!(envelope.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_without_tip20_prefix() {
+        // Create an address without TIP20 prefix
+        let non_payment_addr = address!("1234567890123456789012345678901234567890");
+        let tx = TxLegacy {
+            to: TxKind::Call(non_payment_addr),
+            gas_limit: 21000,
+            ..Default::default()
+        };
+        let signed = Signed::new_unhashed(tx, Signature::test_signature());
+        let envelope = TempoTxEnvelope::Legacy(signed);
+
+        assert!(!envelope.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_no_to_address() {
+        // Create a transaction with no `to` address (contract creation)
+        let tx = TxLegacy {
+            to: TxKind::Create,
+            gas_limit: 21000,
+            ..Default::default()
+        };
+        let signed = Signed::new_unhashed(tx, Signature::test_signature());
+        let envelope = TempoTxEnvelope::Legacy(signed);
+
+        assert!(!envelope.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_partial_match() {
+        // Create an address that partially matches but not completely
+        let partial_match_addr = address!("20c0000000000000000000000000000100000000");
+        let tx = TxLegacy {
+            to: TxKind::Call(partial_match_addr),
+            gas_limit: 21000,
+            ..Default::default()
+        };
+        let signed = Signed::new_unhashed(tx, Signature::test_signature());
+        let envelope = TempoTxEnvelope::Legacy(signed);
+
+        // This should still be classified as payment since first 14 bytes match
+        assert!(envelope.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_different_prefix() {
+        // Create an address with a different prefix
+        let different_prefix_addr = address!("30c0000000000000000000000000000000000001");
+        let tx = TxLegacy {
+            to: TxKind::Call(different_prefix_addr),
+            gas_limit: 21000,
+            ..Default::default()
+        };
+        let signed = Signed::new_unhashed(tx, Signature::test_signature());
+        let envelope = TempoTxEnvelope::Legacy(signed);
+
+        assert!(!envelope.is_payment());
     }
 }

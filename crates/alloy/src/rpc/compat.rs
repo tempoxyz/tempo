@@ -27,14 +27,6 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
 
                 Ok(tx.into_signed(signature).into())
             }
-            TempoTxType::FeeToken => {
-                let tx = self.build_fee_token()?;
-
-                // Create an empty signature for the transaction.
-                let signature = Signature::new(Default::default(), Default::default(), false);
-
-                Ok(tx.into_signed(signature).into())
-            }
             TempoTxType::Legacy
             | TempoTxType::Eip2930
             | TempoTxType::Eip1559

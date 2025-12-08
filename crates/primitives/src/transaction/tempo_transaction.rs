@@ -302,7 +302,7 @@ impl TempoTransaction {
 
         let mut buf = Vec::with_capacity(1 + rlp_header(payload_length).length_with_payload());
 
-        // Magic byte for fee payer signature (like TxFeeToken)
+        // Magic byte for fee payer signature
         buf.put_u8(FEE_PAYER_SIGNATURE_MAGIC_BYTE);
 
         // RLP header

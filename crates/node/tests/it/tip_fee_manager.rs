@@ -1,27 +1,17 @@
 use crate::utils::{TestNodeBuilder, setup_test_token, setup_test_token_pre_allegretto};
 use alloy::{
-    consensus::SignableTransaction,
-    network::ReceiptResponse,
-    providers::{Provider, ProviderBuilder, WalletProvider},
-    signers::{
-        SignerSync,
-        local::{MnemonicBuilder, PrivateKeySigner},
-    },
+    providers::{Provider, ProviderBuilder},
+    signers::local::MnemonicBuilder,
 };
-use alloy_eips::{BlockId, Encodable2718};
-use alloy_network::{AnyReceiptEnvelope, EthereumWallet, TxSignerSync};
-use alloy_primitives::{Address, Signature, U256};
+use alloy_eips::BlockId;
+use alloy_primitives::{Address, U256};
 use alloy_rpc_types_eth::TransactionRequest;
-use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
     IFeeManager, ITIP20,
     ITIPFeeAMM::{self},
 };
-use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    tip20::token_id_to_address,
-};
-use tempo_primitives::{TxFeeToken, transaction::calc_gas_balance_spending};
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::token_id_to_address};
+use tempo_primitives::transaction::calc_gas_balance_spending;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_set_user_token() -> eyre::Result<()> {
@@ -172,180 +162,6 @@ async fn test_set_validator_token() -> eyre::Result<()> {
         .call()
         .await?;
     assert_eq!(current_token, *validator_token.address());
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_fee_token_tx() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
-    let http_url = setup.http_url;
-
-    let signers = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .into_iter()
-        .take(2)
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let mut wallet = EthereumWallet::new(signers[0].clone());
-    wallet.register_signer(signers[1].clone());
-
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
-    let user_address = provider.default_signer_address();
-
-    let user_token = setup_test_token(provider.clone(), user_address).await?;
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-
-    let fees = provider.estimate_eip1559_fees().await?;
-
-    let send_fee_token_tx = || async {
-        let mut tx = TxFeeToken {
-            chain_id: provider.get_chain_id().await?,
-            nonce: provider.get_transaction_count(user_address).await?,
-            fee_token: Some(*user_token.address()),
-            max_priority_fee_per_gas: fees.max_priority_fee_per_gas,
-            max_fee_per_gas: fees.max_fee_per_gas,
-            gas_limit: 21000,
-            to: Address::ZERO.into(),
-            ..Default::default()
-        };
-
-        let signature = signers[0].sign_transaction_sync(&mut tx).unwrap();
-
-        let tx = tx.into_signed(signature);
-
-        provider.send_raw_transaction(&tx.encoded_2718()).await
-    };
-
-    let res = send_fee_token_tx().await;
-    assert!(
-        res.err()
-            .is_some_and(|e| e.to_string().contains("insufficient funds"))
-    );
-
-    for signer in &signers {
-        assert!(
-            user_token
-                .mint(signer.address(), U256::from(1e18))
-                .send()
-                .await?
-                .get_receipt()
-                .await?
-                .status()
-        );
-    }
-
-    // Mint liquidity (use mintWithValidatorToken as mint is disabled post-Moderato)
-    assert!(
-        fee_amm
-            .mintWithValidatorToken(
-                *user_token.address(),
-                PATH_USD_ADDRESS,
-                U256::from(1e18),
-                signers[1].address(),
-            )
-            .from(signers[1].address())
-            .send()
-            .await?
-            .get_receipt()
-            .await?
-            .status()
-    );
-
-    let tx_hash = send_fee_token_tx().await?.watch().await?;
-    let receipt = provider
-        .client()
-        .request::<_, AnyReceiptEnvelope>("eth_getTransactionReceipt", (tx_hash,))
-        .await?;
-
-    assert!(receipt.status());
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_fee_payer_tx() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
-    let http_url = setup.http_url;
-
-    let fee_payer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
-    let user = PrivateKeySigner::random();
-
-    let provider = ProviderBuilder::new().connect_http(http_url);
-    let fees = provider.estimate_eip1559_fees().await?;
-
-    let mut tx = TxFeeToken {
-        chain_id: provider.get_chain_id().await?,
-        nonce: provider.get_transaction_count(user.address()).await?,
-        max_priority_fee_per_gas: fees.max_fee_per_gas,
-        max_fee_per_gas: fees.max_fee_per_gas,
-        gas_limit: 21000,
-        to: Address::ZERO.into(),
-        fee_payer_signature: Some(Signature::new(
-            Default::default(),
-            Default::default(),
-            false,
-        )),
-        ..Default::default()
-    };
-
-    let signature = user.sign_transaction_sync(&mut tx).unwrap();
-    assert!(
-        signature
-            .recover_address_from_prehash(&tx.signature_hash())
-            .unwrap()
-            == user.address()
-    );
-    let fee_payer_signature = fee_payer
-        .sign_hash_sync(&tx.fee_payer_signature_hash(user.address()))
-        .unwrap();
-
-    tx.fee_payer_signature = Some(fee_payer_signature);
-    let tx = tx.into_signed(signature);
-
-    assert!(
-        ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
-            .balanceOf(user.address())
-            .call()
-            .await?
-            .is_zero()
-    );
-
-    let balance_before = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, provider.clone())
-        .balanceOf(fee_payer.address())
-        .call()
-        .await?;
-
-    let tx_hash = provider
-        .send_raw_transaction(&tx.encoded_2718())
-        .await?
-        .watch()
-        .await?;
-
-    let receipt = provider
-        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
-        .await?;
-
-    assert!(receipt.status());
-
-    let balance_after = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
-        .balanceOf(fee_payer.address())
-        .call()
-        .await?;
-
-    assert_eq!(
-        balance_after,
-        balance_before - calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price())
-    );
 
     Ok(())
 }
