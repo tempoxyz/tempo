@@ -276,9 +276,10 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         mut request: TempoTransactionRequest,
         mut db: impl Database<Error: Into<EthApiError>>,
     ) -> Result<TxEnvFor<Self::Evm>, Self::Error> {
-        // if nonce key is provided, fetch nonce from nonce manager's storage.
+        // if non zero nonce key is provided, fetch nonce from nonce manager's storage.
         if let Some(nonce_key) = request.nonce_key
             && request.nonce.is_none()
+            && !nonce_key.is_zero()
         {
             let slot = double_mapping_slot(
                 request.from.unwrap_or_default().as_slice(),
