@@ -1,69 +1,52 @@
-FROM rust:1.88-bookworm AS chef
+ARG CHEF_IMAGE=chef
 
-RUN cargo install cargo-chef sccache
+FROM ${CHEF_IMAGE} AS builder
 
-ENV RUSTC_WRAPPER=sccache \
-    SCCACHE_DIR=/sccache
-
-WORKDIR /app
-
-FROM chef AS planner
-
-COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
-
-FROM chef AS builder
-COPY --from=planner /app/recipe.json recipe.json
-
-RUN apt-get update \
-    && apt-get install --no-install-recommends -y \
-    pkg-config \
-    libssl-dev \
-    build-essential \
-    clang \
-    libclang-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-ENV RUSTC_WRAPPER=sccache \
-    SCCACHE_DIR=/sccache
-
-COPY Cargo.toml Cargo.lock ./
-
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
-    cargo chef cook --release --recipe-path recipe.json
-
-COPY . .
-
-ARG RUST_BINARY
-ARG RUST_PROFILE
-ARG RUST_FEATURES
+ARG RUST_PROFILE=profiling
 ARG VERGEN_GIT_SHA
 ARG VERGEN_GIT_SHA_SHORT
 
-# Install nightly Rust and build the tempo binary
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
-    cargo build --bin ${RUST_BINARY} --profile ${RUST_PROFILE} --features "${RUST_FEATURES}"
+COPY . .
 
-FROM debian:bookworm-slim
+# Build ALL binaries in one pass - they share compiled artifacts
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache \
+    cargo build --profile ${RUST_PROFILE} \
+        --bin tempo --features "asm-keccak,jemalloc,otlp" \
+        --bin tempo-bench \
+        --bin tempo-sidecar \
+        --bin tempo-xtask
 
-# Install runtime dependencies
+FROM debian:bookworm-slim AS base
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-ARG RUST_BINARY
-ARG RUST_PROFILE
-
-# Copy the binary
-COPY --from=builder /app/target/${RUST_PROFILE}/${RUST_BINARY} /usr/local/bin/${RUST_BINARY}
-
 WORKDIR /data
 
-RUN echo "#!/bin/bash\n/usr/local/bin/${RUST_BINARY} \$@" > /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+# tempo
+FROM base AS tempo
+ARG RUST_PROFILE=profiling
+COPY --from=builder /app/target/${RUST_PROFILE}/tempo /usr/local/bin/tempo
+ENTRYPOINT ["/usr/local/bin/tempo"]
 
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+# tempo-sidecar
+FROM base AS tempo-sidecar
+ARG RUST_PROFILE=profiling
+COPY --from=builder /app/target/${RUST_PROFILE}/tempo-sidecar /usr/local/bin/tempo-sidecar
+ENTRYPOINT ["/usr/local/bin/tempo-sidecar"]
+
+# tempo-xtask
+FROM base AS tempo-xtask
+ARG RUST_PROFILE=profiling
+COPY --from=builder /app/target/${RUST_PROFILE}/tempo-xtask /usr/local/bin/tempo-xtask
+ENTRYPOINT ["/usr/local/bin/tempo-xtask"]
+
+# tempo-bench (needs nushell)
+FROM base AS tempo-bench
+ARG RUST_PROFILE=profiling
+COPY --from=ghcr.io/nushell/nushell:0.108.0-bookworm /usr/bin/nu /usr/bin/nu
+COPY --from=builder /app/target/${RUST_PROFILE}/tempo-bench /usr/local/bin/tempo-bench
+ENTRYPOINT ["/usr/local/bin/tempo-bench"]

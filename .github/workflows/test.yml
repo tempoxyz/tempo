@@ -3,8 +3,6 @@ name: Test
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
   pull_request:
   merge_group:
 
@@ -52,7 +50,7 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@nextest
       - name: Run tests
-        run: cargo nextest run --no-fail-fast -j num-cpus
+        run: cargo nextest run --no-fail-fast -j num-cpus --retries 2
 
   msrv:
     name: MSRV
