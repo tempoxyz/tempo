@@ -361,15 +361,26 @@ contract FeeAMMTest is BaseTest {
             address(validatorToken)
         );
 
+        uint256 reserveValidatorToken = uint256(5000e18);
+        uint256 reserveUserToken = uint256(1000e18);
         // Seed userToken into pool - need to pack both reserves into single slot
         // Pool struct: reserveUserToken (uint128) | reserveValidatorToken (uint128)
         // reserveValidatorToken is 5000e18, reserveUserToken we set to 1000e18
         bytes32 slot = keccak256(abi.encode(poolId, uint256(0))); // pools mapping at slot 0
         bytes32 packedValue = bytes32(
-            (uint256(5000e18) << 128) | uint256(1000e18)
+            (reserveValidatorToken << 128) | reserveUserToken
         );
         vm.store(address(amm), slot, packedValue);
         userToken.mint(address(amm), 1000e18);
+
+        // Validate that the pool reserves are seeded correctly
+        IFeeAMM.Pool memory pool = amm.getPool(
+            address(userToken),
+            address(validatorToken)
+        );
+
+        require(pool.reserveValidatorToken == 5000e18);
+        require(pool.reserveUserToken == 1000e18);
 
         uint256 aliceUserBefore = userToken.balanceOf(alice);
 
