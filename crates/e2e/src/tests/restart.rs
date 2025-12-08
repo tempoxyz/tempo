@@ -579,7 +579,7 @@ impl AssertNodeRecoversAfterFinalizingBlock {
             // Now restart the node for which we found the metric.
             let idx = validators
                 .iter()
-                .position(|node| metric.contains(&node.uid()))
+                .position(|node| metric.contains(node.uid()))
                 .unwrap();
             validators[idx].stop().await;
             validators[idx].start().await;

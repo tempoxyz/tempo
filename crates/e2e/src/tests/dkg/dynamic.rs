@@ -236,7 +236,7 @@ impl AssertValidatorIsAdded {
                     }
 
                     // Only consider metrics from the initial set of validators.
-                    if !validators.iter().any(|val| line.contains(&val.uid())) {
+                    if !validators.iter().any(|val| line.contains(val.uid())) {
                         continue;
                     }
 
@@ -424,7 +424,7 @@ impl AssertValidatorIsRemoved {
                     }
 
                     // Only consider metrics from the initial set of validators.
-                    if !validators.iter().any(|val| line.contains(&val.uid())) {
+                    if !validators.iter().any(|val| line.contains(val.uid())) {
                         continue;
                     }
 
