@@ -26,42 +26,20 @@ async fn run_validator_late_join_test(
     let (mut nodes, _execution_runtime) = setup_validators(context.clone(), setup.clone()).await;
 
     // Start all nodes except the last one
-    let last = nodes.pop().unwrap();
-    let mut running = join_all(nodes.into_iter().map(|node| node.start())).await;
+    let mut last = nodes.pop().unwrap();
+    join_all(nodes.iter_mut().map(|node| node.start())).await;
 
     // Wait for chain to advance before starting the last node
-    while running[0]
-        .execution_node
-        .node
-        .provider
-        .last_block_number()
-        .unwrap()
-        < blocks_before_join
-    {
+    while nodes[0].execution_provider().last_block_number().unwrap() < blocks_before_join {
         context.sleep(Duration::from_secs(1)).await;
     }
-    assert_eq!(
-        last.execution_node
-            .node
-            .provider
-            .last_block_number()
-            .unwrap(),
-        0
-    );
 
     // Start the last node
-    running.push(last.start().await);
+    last.start().await;
+    assert_eq!(last.execution_provider().last_block_number().unwrap(), 0);
 
-    let last = running.last().unwrap();
     // Assert that last node is able to catch up and progress
-    while last
-        .execution_node
-        .node
-        .provider
-        .last_block_number()
-        .unwrap()
-        < blocks_after_join
-    {
+    while last.execution_provider().last_block_number().unwrap() < blocks_after_join {
         context.sleep(Duration::from_millis(100)).await;
     }
     // Verify backfill behavior
@@ -79,20 +57,10 @@ async fn run_validator_late_join_test(
     }
 
     // Verify that the node is still progressing after sync
-    let last_block = last
-        .execution_node
-        .node
-        .provider
-        .last_block_number()
-        .unwrap();
+    let last_block = last.execution_provider().last_block_number().unwrap();
     context.sleep(Duration::from_secs(5)).await;
     assert!(
-        last.execution_node
-            .node
-            .provider
-            .last_block_number()
-            .unwrap()
-            > last_block,
+        last.execution_provider().last_block_number().unwrap() > last_block,
         "Node should still be progressing after sync"
     );
 }

@@ -31,7 +31,10 @@ use reth_node_ethereum::EthereumNetworkBuilder;
 use reth_primitives_traits::SealedHeader;
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::{Identity, RethRpcModule};
-use reth_rpc_eth_api::RpcNodeCore;
+use reth_rpc_eth_api::{
+    RpcNodeCore,
+    helpers::config::{EthConfigApiServer, EthConfigHandler},
+};
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::TransactionValidationTaskExecutor;
 use std::{default::Default, sync::Arc, time::SystemTime};
@@ -159,6 +162,9 @@ where
     type Handle = <RpcAddOns<N, EthB, PVB, NoopEngineApiBuilder, EVB> as NodeAddOns<N>>::Handle;
 
     async fn launch_add_ons(self, ctx: AddOnsContext<'_, N>) -> eyre::Result<Self::Handle> {
+        let eth_config =
+            EthConfigHandler::new(ctx.node.provider().clone(), ctx.node.evm_config().clone());
+
         self.inner
             .launch_add_ons_with(ctx, move |container| {
                 let reth_node_builder::rpc::RpcModuleContainer {
@@ -179,6 +185,7 @@ where
                 modules.merge_configured(policy.into_rpc())?;
                 modules.merge_configured(eth_ext.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
+                modules.merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;
 
                 Ok(())
             })

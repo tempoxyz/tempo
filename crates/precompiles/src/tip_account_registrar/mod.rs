@@ -255,7 +255,7 @@ mod tests {
         // Pre-Moderato: delegateToDefault(bytes,bytes) should be rejected
         use crate::Precompile;
 
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let mut registrar = TipAccountRegistrar::new(&mut storage);
 
         let signer = PrivateKeySigner::random();
