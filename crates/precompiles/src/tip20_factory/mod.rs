@@ -85,7 +85,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Factory<'a, S> {
 
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
         // Note that the token Id increments on each deployment.
-        // NOTE: start counter at 0
 
         // Post-Allegretto, require that the first TIP20 deployed has a quote token of address(0)
         if self.storage.spec().is_allegretto() && token_id == 0 {
@@ -203,7 +202,9 @@ mod tests {
             .expect("Token creation should succeed");
 
         let factory_events = storage.events.get(&TIP20_FACTORY_ADDRESS).unwrap();
-        assert_eq!(factory_events.len(), 2);
+        // Note that we expect 3 events including the initial token creation event when deploying
+        // PathUSD
+        assert_eq!(factory_events.len(), 3);
 
         let token_id_0 = address_to_token_id_unchecked(token_addr_0);
         let expected_event_0 = TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
@@ -215,7 +216,7 @@ mod tests {
             quoteToken: crate::PATH_USD_ADDRESS,
             admin: sender,
         });
-        assert_eq!(factory_events[0], expected_event_0.into_log_data());
+        assert_eq!(factory_events[1], expected_event_0.into_log_data());
 
         let token_id_1 = address_to_token_id_unchecked(token_addr_1);
         let expected_event_1 = TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
@@ -228,7 +229,7 @@ mod tests {
             admin: sender,
         });
 
-        assert_eq!(factory_events[1], expected_event_1.into_log_data());
+        assert_eq!(factory_events[2], expected_event_1.into_log_data());
     }
 
     #[test]

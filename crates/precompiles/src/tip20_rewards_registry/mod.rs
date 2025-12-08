@@ -149,6 +149,7 @@ mod tests {
         tip20::{ISSUER_ROLE, TIP20Token, tests::initialize_path_usd},
         tip20_rewards_registry::TIP20RewardsRegistry,
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ITIP20;
 
     fn setup_registry(timestamp: u64) -> (HashMapStorageProvider, Address) {
@@ -297,6 +298,8 @@ mod tests {
     #[test]
     fn test_finalize_streams() -> eyre::Result<()> {
         let (mut storage, admin) = setup_registry(1500);
+        // The rewards registry was disabled post moderato so init storage with adagio
+        storage.set_spec(TempoHardfork::Adagio);
 
         // Create a TIP20 token and start a reward stream
         let mut token = TIP20Token::new(1, &mut storage);
