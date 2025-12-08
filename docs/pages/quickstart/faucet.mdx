@@ -1,6 +1,11 @@
+---
+mipd: true
+---
+
 import { Faucet } from '../../components/Faucet.tsx'
 import * as Demo from '../../components/guides/Demo.tsx'
 import { ConnectWallet } from '../../components/ConnectWallet.tsx'
+import { AddTokens } from '../../components/AddTokens.tsx'
 
 ## Faucet
 
@@ -12,6 +17,15 @@ If you do not have a browser wallet, see how to use [Passkeys to create a wallet
 <Faucet />
 
 The faucet funds the following assets.
+
+<AddTokens 
+  tokens={[
+    { address: '0x20c0000000000000000000000000000000000000', symbol: 'pathUSD', decimals: 6 },
+    { address: '0x20c0000000000000000000000000000000000001', symbol: 'AlphaUSD', decimals: 6 },
+    { address: '0x20c0000000000000000000000000000000000002', symbol: 'BetaUSD', decimals: 6 },
+    { address: '0x20c0000000000000000000000000000000000003', symbol: 'ThetaUSD', decimals: 6 },
+  ]}
+/>
 
 | Asset | Address |Amount|
 |-------|---------|----:|
