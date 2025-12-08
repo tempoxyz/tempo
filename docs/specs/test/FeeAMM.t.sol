@@ -5,10 +5,13 @@ import { FeeAMM } from "../src/FeeAMM.sol";
 import { TIP20 } from "../src/TIP20.sol";
 import { IFeeAMM } from "../src/interfaces/IFeeAMM.sol";
 import { BaseTest } from "./BaseTest.t.sol";
+import { StdStorage, stdStorage } from "forge-std/Test.sol";
 
 /// @notice FeeAMM tests - post-Moderato behavior
 /// Post-Moderato, two-sided mint is disabled. Only mintWithValidatorToken is available.
 contract FeeAMMTest is BaseTest {
+
+    using stdStorage for StdStorage;
 
     TIP20 userToken;
     TIP20 validatorToken;
@@ -93,11 +96,57 @@ contract FeeAMMTest is BaseTest {
             address(userToken), address(validatorToken), amountV, alice
         ) {
             revert CallShouldHaveReverted();
+        } catch (bytes memory revertData) {
+            assertEq(bytes4(revertData), IFeeAMM.InsufficientLiquidity.selector);
+        }
+    }
+
+    function test_MintWithValidatorToken_RevertsIf_InvalidInputs() public {
+        vm.startPrank(alice);
+
+        // IDENTICAL_ADDRESSES
+        try amm.mintWithValidatorToken(address(userToken), address(userToken), 1e18, alice) {
+            revert CallShouldHaveReverted();
+        } catch Error(string memory reason) {
+            assertEq(reason, "IDENTICAL_ADDRESSES");
+        }
+
+        // INVALID_TOKEN - userToken
+        try amm.mintWithValidatorToken(address(0x1234), address(validatorToken), 1e18, alice) {
+            revert CallShouldHaveReverted();
+        } catch Error(string memory reason) {
+            assertEq(reason, "INVALID_TOKEN");
+        }
+
+        // INVALID_TOKEN - validatorToken
+        try amm.mintWithValidatorToken(address(userToken), address(0x1234), 1e18, alice) {
+            revert CallShouldHaveReverted();
+        } catch Error(string memory reason) {
+            assertEq(reason, "INVALID_TOKEN");
+        }
+
+        // ONLY_USD_TOKENS (valid TIP20 but non-USD currency)
+        TIP20 eurToken = TIP20(factory.createToken("Euro", "EUR", "EUR", pathUSD, admin));
+        try amm.mintWithValidatorToken(address(eurToken), address(validatorToken), 1e18, alice) {
+            revert CallShouldHaveReverted();
+        } catch Error(string memory reason) {
+            assertEq(reason, "ONLY_USD_TOKENS");
+        }
+
+        vm.stopPrank();
+    }
+
+    function test_MintWithValidatorToken_RevertsIf_ZeroLiquidityOnSubsequent() public {
+        // Initialize pool with large amount
+        vm.prank(alice);
+        amm.mintWithValidatorToken(address(userToken), address(validatorToken), 5000e18, alice);
+
+        // Try tiny subsequent deposit that rounds to 0 liquidity
+        vm.prank(alice);
+        try amm.mintWithValidatorToken(address(userToken), address(validatorToken), 1, alice) {
+            revert CallShouldHaveReverted();
         } catch (bytes memory reason) {
-            bytes4 errorSelector = bytes4(reason);
-            assertTrue(
-                errorSelector == IFeeAMM.InsufficientLiquidity.selector, "Wrong error thrown"
-            );
+            assertEq(bytes4(reason), IFeeAMM.InsufficientLiquidity.selector);
         }
     }
 
@@ -125,6 +174,86 @@ contract FeeAMMTest is BaseTest {
         assertGt(liquidity, 0);
         assertEq(amm.totalSupply(poolId), supplyBefore + liquidity);
         assertEq(amm.liquidityBalances(poolId, alice), aliceBalanceBefore + liquidity);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                                BURN
+    //////////////////////////////////////////////////////////////*/
+
+    function test_Burn_RevertsIf_InsufficientLiquidity() public {
+        vm.prank(alice);
+        amm.mintWithValidatorToken(address(userToken), address(validatorToken), 5000e18, alice);
+
+        bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
+        uint256 aliceLiquidity = amm.liquidityBalances(poolId, alice);
+
+        vm.prank(alice);
+        try amm.burn(address(userToken), address(validatorToken), aliceLiquidity + 1, alice) {
+            revert CallShouldHaveReverted();
+        } catch Error(string memory reason) {
+            assertEq(reason, "INSUFFICIENT_LIQUIDITY");
+        }
+    }
+
+    function test_Burn_Succeeds() public {
+        vm.prank(alice);
+        amm.mintWithValidatorToken(address(userToken), address(validatorToken), 5000e18, alice);
+
+        bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
+        uint256 aliceLiquidity = amm.liquidityBalances(poolId, alice);
+        uint256 aliceValidatorBefore = validatorToken.balanceOf(alice);
+
+        vm.prank(alice);
+        (uint256 amountU, uint256 amountV) =
+            amm.burn(address(userToken), address(validatorToken), aliceLiquidity, alice);
+
+        assertEq(amountU, 0);
+        assertEq(amountV, 4_999_999_999_999_999_998_000);
+        assertEq(amm.liquidityBalances(poolId, alice), 0);
+        assertEq(validatorToken.balanceOf(alice), aliceValidatorBefore + amountV);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                            REBALANCE SWAP
+    //////////////////////////////////////////////////////////////*/
+
+    function test_RebalanceSwap_Succeeds() public {
+        vm.prank(alice);
+        amm.mintWithValidatorToken(address(userToken), address(validatorToken), 5000e18, alice);
+
+        bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
+
+        // Seed userToken into pool - need to pack both reserves into single slot
+        // Pool struct: reserveUserToken (uint128) | reserveValidatorToken (uint128)
+        // reserveValidatorToken is 5000e18, reserveUserToken we set to 1000e18
+        bytes32 slot = keccak256(abi.encode(poolId, uint256(0))); // pools mapping at slot 0
+        bytes32 packedValue = bytes32(uint256(5000e18) << 128 | uint256(1000e18));
+        vm.store(address(amm), slot, packedValue);
+        userToken.mint(address(amm), 1000e18);
+
+        uint256 aliceUserBefore = userToken.balanceOf(alice);
+
+        vm.prank(alice);
+        uint256 amountIn =
+            amm.rebalanceSwap(address(userToken), address(validatorToken), 100e18, alice);
+
+        // amountIn = (100e18 * 9985) / 10000 + 1
+        assertEq(amountIn, 99_850_000_000_000_000_001);
+        assertEq(userToken.balanceOf(alice), aliceUserBefore + 100e18);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                            GET POOL
+    //////////////////////////////////////////////////////////////*/
+
+    function test_GetPool_ReturnsPoolData() public {
+        vm.prank(alice);
+        amm.mintWithValidatorToken(address(userToken), address(validatorToken), 5000e18, alice);
+
+        IFeeAMM.Pool memory pool = amm.getPool(address(userToken), address(validatorToken));
+
+        assertEq(pool.reserveUserToken, 0);
+        assertEq(pool.reserveValidatorToken, 5000e18);
     }
 
     /*//////////////////////////////////////////////////////////////
