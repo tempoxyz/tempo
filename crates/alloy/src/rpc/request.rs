@@ -13,11 +13,24 @@ use tempo_primitives::{
 use crate::TempoNetwork;
 
 /// An Ethereum [`TransactionRequest`] with an optional `fee_token`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    derive_more::Deref,
+    derive_more::DerefMut,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct TempoTransactionRequest {
     /// Inner [`TransactionRequest`]
     #[serde(flatten)]
+    #[deref]
+    #[deref_mut]
     pub inner: TransactionRequest,
 
     /// Optional fee token preference
