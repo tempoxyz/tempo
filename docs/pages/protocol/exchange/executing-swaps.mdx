@@ -117,9 +117,9 @@ if (expectedOut >= 998e6) {
 
 When you call a swap function:
 
-1. **Balance Check**: The exchange first checks your balance on the DEX
+1. **Balance Check**: The contract first checks your balance on the DEX
 2. **Transfer if Needed**: If your DEX balance is insufficient, tokens are transferred from your wallet
-3. **Order Matching**: The exchange walks through orders at each price tick, from best to worst:
+3. **Order Matching**: The DEX walks through orders at each price tick, from best to worst:
    - Orders are consumed in price-time priority order
    - Each filled order credits the maker's balance on the DEX
    - Continues until your swap is complete or limit price is reached
@@ -127,7 +127,7 @@ When you call a swap function:
 5. **Settlement**: Your output tokens are transferred to your wallet
 
 <Callout type="warning">
-  Swaps will revert with an `InsufficientLiquidity` error if there isn't enough liquidity in the order book to satisfy your slippage constraints.
+  Swaps will revert with an `InsufficientLiquidity` error if there isn't enough liquidity in the orderbook to satisfy your slippage constraints.
 </Callout>
 
 ## Gas Costs
@@ -143,6 +143,6 @@ Larger swaps that cross more orders will cost more gas, but the cost per unit of
 
 ## Token Balances on the DEX
 
-The exchange allows you to hold token balances directly on the DEX contract, which saves gas by avoiding ERC-20 transfers on every trade. When you execute a swap, the exchange first checks your DEX balance and only transfers from your wallet if needed.
+The DEX allows you to track token balances directly within the DEX contract, which saves gas by avoiding ERC-20 transfers on every trade. When you execute a swap, the contract first checks your DEX balance and only transfers from your wallet if needed.
 
-For complete details on checking balances, depositing, withdrawing, and managing your exchange balance, see the [Exchange Balance](/protocol/exchange/exchange-balance) page.
+For complete details on checking balances, depositing, withdrawing, and managing your DEX balance, see the [Exchange Balance](/protocol/exchange/exchange-balance) page.

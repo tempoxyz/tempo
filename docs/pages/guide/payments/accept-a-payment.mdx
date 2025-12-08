@@ -7,7 +7,7 @@ Accept stablecoin payments in your application. Learn how to receive payments, v
 
 ## Receiving Payments
 
-Payments are automatically credited to the recipient's address when a transfer is executed. You don't need to do anything special to "accept" a payment—it happens automatically on-chain.
+Payments are automatically credited to the recipient's address when a transfer is executed. You don't need to do anything special to "accept" a payment—it happens automatically onchain.
 
 In this basic receiving demo you can see the balances update after you add funds to your account, using the `getBalance` and `watchEvent` calls documented below.
 
@@ -219,7 +219,7 @@ contract PaymentReceiver {
 
 ## Payment Verification Best Practices
 
-1. **Verify on-chain**: Always verify payments on-chain before marking orders as paid
+1. **Verify onchain**: Always verify payments onchain before marking orders as paid
 2. **Use memos**: Request memos from payers to link payments to invoices or orders
 3. **Check confirmations**: Wait for transaction finality (~1 second on Tempo) before processing
 4. **Handle edge cases**: Account for partial payments, refunds, and failed transactions

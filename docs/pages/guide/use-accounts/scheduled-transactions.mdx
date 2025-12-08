@@ -47,7 +47,7 @@ For example, to create an offer valid for 24 hours, you would set `validAfter` t
 
 You can sign a transaction now that can only be executed at a future time by setting `validAfter` to a timestamp 7 days in the future.
 
-The signed transaction is then stored (in a database, on-chain via a contract, or held by a party). After the 7-day delay period passes, anyone with access to the signed transaction can submit it to the network for execution. The protocol enforces that the transaction cannot be included in a block before the specified time.
+The signed transaction is then stored (in a database, onchain via a contract, or held by a party). After the 7-day delay period passes, anyone with access to the signed transaction can submit it to the network for execution. The protocol enforces that the transaction cannot be included in a block before the specified time.
 
 This is useful for governance proposals with timelock requirements or delayed contract upgrades.
 
@@ -61,7 +61,7 @@ When you create a scheduled transaction, you have several options for storage:
 
 - **Self-custody**: Store the signed transaction in your own database or secure storage until the execution time
 - **Third-party services**: Work with a company that specializes in holding and submitting scheduled transactions at the appropriate time
-- **Smart contracts**: Store the signed transaction on-chain in a contract that can submit it when the time window is valid
+- **Smart contracts**: Store the signed transaction onchain in a contract that can submit it when the time window is valid
 
 The Tempo team is actively exploring the design of a protocol-level scheduled transaction feature that would eliminate the need for off-chain storage. If this capability is valuable to your use case, please contact us to share your requirements and help inform the design.
 
