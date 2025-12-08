@@ -45,14 +45,14 @@ Key characteristics:
 
 You can connect to Tempo Testnet using the following details:
 
-| Network Name | Tempo Testnet (Andantino)
-| Currency |`USD`
-| Chain ID | `42429`
-| HTTP URL | https://rpc.testnet.tempo.xyz
-| WebSocket URL | wss://rpc.testnet.tempo.xyz
-| Block Explorer | https://explore.tempo.xyz
+| **Network Name** | Tempo Testnet (Andantino) |
+| **Currency** |`USD` |
+| **Chain ID** | `42429` |
+| **HTTP URL** | https://rpc.testnet.tempo.xyz |
+| **WebSocket URL** | wss://rpc.testnet.tempo.xyz |
+| **Block Explorer** | https://explore.tempo.xyz |
 
-Next, grab some stablecoins to test with on from the [Faucet](https://docs.tempo.xyz/quickstart/faucet#faucet)
+Next, grab some stablecoins to test with on from the [faucet](https://docs.tempo.xyz/quickstart/faucet#faucet).
 
 Alternatively, use [`cast`](https://github.com/tempoxyz/tempo-foundry):
 
