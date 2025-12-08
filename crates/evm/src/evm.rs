@@ -177,7 +177,7 @@ where
                 ..
             } = &mut result.result
             else {
-                return Err(TempoInvalidTransaction::SystemTransactionFailed.into());
+                return Err(TempoInvalidTransaction::SystemTransactionFailed(result.result).into());
             };
 
             *gas_used = 0;
