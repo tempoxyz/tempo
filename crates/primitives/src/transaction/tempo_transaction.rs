@@ -1975,21 +1975,19 @@ mod tests {
 
         // Calculate expected size by manually summing field sizes
         // This acts as a specification that the size() function must match
-        let expected_size = mem::size_of::<ChainId>() +                    // chain_id: u64
-            mem::size_of::<Option<Address>>() +            // fee_token: Option<Address>
-            mem::size_of::<u128>() +                       // max_priority_fee_per_gas: u128
-            mem::size_of::<u128>() +                       // max_fee_per_gas: u128
-            mem::size_of::<u64>() +                        // gas_limit: u64
-            // calls: Vec<Call> - one call with empty input
-            (mem::size_of::<TxKind>() + mem::size_of::<U256>() + 0) +
-            tx.access_list.size() +                        // access_list: AccessList
-            mem::size_of::<U256>() +                       // nonce_key: U256
-            mem::size_of::<u64>() +                        // nonce: u64
-            mem::size_of::<Option<Signature>>() +          // fee_payer_signature: Option<Signature>
-            mem::size_of::<Option<u64>>() +                // valid_before: Option<u64>
-            mem::size_of::<Option<u64>>() +                // valid_after: Option<u64>
-            mem::size_of::<Option<KeyAuthorization>>() +   // key_authorization: Option<SignedKeyAuthorization> (None case)
-            0; // tempo_authorization_list: Vec<...> (empty)
+        let expected_size = mem::size_of::<ChainId>() + // chain_id: u64
+            mem::size_of::<Option<Address>>() + // fee_token: Option<Address>
+            mem::size_of::<u128>() + // max_priority_fee_per_gas: u128
+            mem::size_of::<u128>() + // max_fee_per_gas: u128
+            mem::size_of::<u64>() + // gas_limit: u64
+            (mem::size_of::<TxKind>() + mem::size_of::<U256>()) + // calls: one call with empty input
+            tx.access_list.size() + // access_list: AccessList
+            mem::size_of::<U256>() + // nonce_key: U256
+            mem::size_of::<u64>() + // nonce: u64
+            mem::size_of::<Option<Signature>>() + // fee_payer_signature: Option<Signature>
+            mem::size_of::<Option<u64>>() + // valid_before: Option<u64>
+            mem::size_of::<Option<u64>>() + // valid_after: Option<u64>
+            mem::size_of::<Option<KeyAuthorization>>(); // key_authorization + empty tempo_authorization_list
 
         assert_eq!(
             tx.size(),
