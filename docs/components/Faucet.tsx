@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Hex } from 'ox'
 import * as React from 'react'
+import { tempo } from 'tempo.ts/chains'
 import { Abis } from 'tempo.ts/viem'
 import { Actions, Hooks } from 'tempo.ts/wagmi'
 import {
@@ -11,7 +12,6 @@ import {
 } from 'viem'
 import { useAccount, useConfig } from 'wagmi'
 import LucideDollarSign from '~icons/lucide/dollar-sign'
-
 import { Container } from './Container'
 import { Button, StringFormatter } from './guides/Demo'
 
@@ -123,7 +123,7 @@ export function Faucet() {
             <div>
               Address{' '}
               <a
-                href={`https://explore.tempo.xyz/address/${lastAddress}`}
+                href={`${tempo({}).blockExplorers.default.url}/address/${lastAddress}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="dark:text-white text-black hover:underline"
@@ -141,7 +141,7 @@ export function Faucet() {
                   →{' '}
                   {lastTxHashes?.[index] ? (
                     <a
-                      href={`https://explore.tempo.xyz/tx/${lastTxHashes[index]}`}
+                      href={`${tempo({}).blockExplorers.default.url}/${lastTxHashes[index]}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="hover:underline"

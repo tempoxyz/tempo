@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { tempo } from 'tempo.ts/chains'
 import { isAddress, isHash } from 'viem'
 import type * as z from 'zod/mini'
 import LucideExternalLink from '~icons/lucide/external-link'
@@ -69,7 +70,7 @@ function getExplorerHost() {
   if (VITE_LOCAL === 'true' && VITE_LOCAL_EXPLORER !== undefined) {
     return VITE_LOCAL_EXPLORER
   }
-  return 'https://explore.tempo.xyz'
+  return tempo({}).blockExplorers.default.url
 }
 
 function classifyHash(value: string | number | boolean | null): {
