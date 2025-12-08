@@ -1,7 +1,7 @@
 use crate::rpc::{TempoHeaderResponse, TempoTransactionRequest};
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError};
 use alloy_network::{TransactionBuilder, TxSigner};
-use alloy_primitives::{Bytes, Signature};
+use alloy_primitives::{B256, Bytes, Signature};
 use reth_evm::EvmEnv;
 use reth_primitives_traits::SealedHeader;
 use reth_rpc_convert::{
@@ -97,14 +97,17 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             key_type,
             key_data,
             tempo_authorization_list,
-            ..
+            nonce_key,
         } = self;
         Ok(TempoTxEnv {
             inner: inner.try_into_tx_env(evm_env)?,
             fee_token,
             is_system_tx: false,
             fee_payer: None,
-            tempo_tx_env: if !calls.is_empty() || !tempo_authorization_list.is_empty() {
+            tempo_tx_env: if !calls.is_empty()
+                || !tempo_authorization_list.is_empty()
+                || nonce_key.is_some()
+            {
                 // Create mock signature for gas estimation
                 // If key_type is not provided, default to secp256k1
                 let mock_signature = key_type
@@ -125,7 +128,12 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                         .into_iter()
                         .map(RecoveredTempoAuthorization::new)
                         .collect(),
-                    ..Default::default()
+                    nonce_key: nonce_key.unwrap_or_default(),
+                    key_authorization: None,
+                    signature_hash: B256::ZERO,
+                    valid_before: None,
+                    valid_after: None,
+                    subblock_transaction: false,
                 }))
             } else {
                 None
