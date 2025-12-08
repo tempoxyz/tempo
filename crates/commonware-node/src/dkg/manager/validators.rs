@@ -43,7 +43,9 @@ pub(super) async fn read_from_contract(
 
     // Try mapping the block height to a hash tracked by reth.
     //
-    // Firstly check the canonical chain and fallback to pending block state.
+    // First check the canonical chain, then fallback to pending block state.
+    //
+    // Necessary because the DKG and application actors process finalized block concurrently.
     let block_hash = if let Some(hash) = node
         .provider
         .block_hash(last_height)
