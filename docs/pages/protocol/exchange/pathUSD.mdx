@@ -6,7 +6,7 @@ pathUSD is a USD stablecoin that can be used as a quote token on Tempo's decentr
 
 ## Motivation
 
-Each USD TIP-20 on Tempo can choose any other USD TIP-20 as its [quote token](/documentation/protocol/exchange/spec.mdx#quote-tokens)—the token it is paired against on the [native decentralized exchange](/documentation/protocol/exchange/spec.mdx). This guarantees that there is one unique path between any two tokens, which reduces fragmentation of liquidity and simplifies routing.
+Each USD TIP-20 on Tempo can choose any other USD TIP-20 as its [quote token](/protocol/exchange/spec.mdx#quote-tokens)—the token it is paired against on the [native decentralized exchange](/protocol/exchange/spec.mdx). This guarantees that there is one unique path between any two tokens, which reduces fragmentation of liquidity and simplifies routing.
 
 While this structure is formally neutral, there is some risk that it could lead to a natural monopoly. If most liquidity accrues to a few stablecoins, it could give those stablecoins a competitive advantage.
 
@@ -18,7 +18,7 @@ PathUSD can also be accepted as a fee token by validators.
 
 ### Contract
 
-PathUSD is a predeployed [TIP-20](/documentation/protocol/tip20/spec.mdx) at genesis. Note that since it is the first TIP-20 contract deployed, its quote token is the zero address.
+PathUSD is a predeployed [TIP-20](/protocol/tip20/spec.mdx) at genesis. Note that since it is the first TIP-20 contract deployed, its quote token is the zero address.
 
 | Property      | Value                                                                 |
 | ------------- | --------------------------------------------------------------------- |
