@@ -12,7 +12,7 @@ use reth_rpc_eth_types::EthApiError;
 use tempo_evm::TempoBlockEnv;
 use tempo_primitives::{
     SignatureType, TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType,
-    transaction::RecoveredTempoAuthorization,
+    transaction::{Call, RecoveredTempoAuthorization},
 };
 use tempo_revm::{TempoBatchCallEnv, TempoTxEnv};
 
@@ -100,7 +100,6 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             nonce_key,
         } = self;
         Ok(TempoTxEnv {
-            inner: inner.try_into_tx_env(evm_env)?,
             fee_token,
             is_system_tx: false,
             fee_payer: None,
@@ -117,9 +116,17 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                         create_mock_tempo_signature(&SignatureType::Secp256k1, None)
                     });
 
-                if calls.is_empty() {
+                let calls = if !calls.is_empty() {
+                    calls
+                } else if let Some(to) = &inner.to {
+                    vec![Call {
+                        to: *to,
+                        value: inner.value.unwrap_or_default(),
+                        input: inner.input.clone().into_input().unwrap_or_default(),
+                    }]
+                } else {
                     return Err(EthApiError::InvalidParams("empty calls list".to_string()));
-                }
+                };
 
                 Some(Box::new(TempoBatchCallEnv {
                     aa_calls: calls,
@@ -138,6 +145,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             } else {
                 None
             },
+            inner: inner.try_into_tx_env(evm_env)?,
         })
     }
 }
