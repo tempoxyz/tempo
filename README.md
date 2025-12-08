@@ -34,7 +34,7 @@ You can get started today by integrating with the [Tempo testnet](https://docs.t
   - Users pay gas directly in USD-stablecoins at launch; the [Fee AMM](https://docs.tempo.xyz/documentation/protocol/fees/fee-amm#fee-amm-overview) automatically converts to the validator’s preferred stablecoin.
   - TIP‑20 transfers target sub‑millidollar costs (<$0.001).
 
-- [Tempo Transactions](https://docs.tempo.xyz/guide/tempo-transaction) (native `smart account` features)
+- [Tempo Transactions](https://docs.tempo.xyz/guide/tempo-transaction) (native “smart accounts”)
 
   - Batched payments: atomic multi‑operation payouts (payroll, settlements, refunds).
   - Fee sponsorship: apps can pay users' gas to streamline onboarding and flows.
