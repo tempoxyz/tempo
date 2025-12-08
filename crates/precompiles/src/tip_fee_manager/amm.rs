@@ -1609,6 +1609,7 @@ mod tests {
             admin,
             Address::ZERO,
         )?;
+        token1_tip20.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         token1_tip20.mint(
             admin,
@@ -1628,6 +1629,7 @@ mod tests {
             admin,
             Address::ZERO,
         )?;
+        token2_tip20.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         token2_tip20.mint(
             admin,
@@ -1677,6 +1679,7 @@ mod tests {
             admin,
             Address::ZERO,
         )?;
+        token1_tip20.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         // Mint tokens to admin
         token1_tip20.mint(
@@ -1697,6 +1700,7 @@ mod tests {
             admin,
             Address::ZERO,
         )?;
+        token2_tip20.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         token2_tip20.mint(
             admin,

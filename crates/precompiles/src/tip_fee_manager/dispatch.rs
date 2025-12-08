@@ -655,11 +655,12 @@ mod tests {
         assert_eq!(initial_total_supply, U256::ZERO);
 
         // Test mint() works pre-Moderato
+        let amount = U256::from(1000);
         let call = ITIPFeeAMM::mintCall {
             userToken: user_token,
             validatorToken: validator_token,
-            amountUserToken: U256::from(1000u64),
-            amountValidatorToken: U256::from(1000u64),
+            amountUserToken: amount,
+            amountValidatorToken: amount,
             to: user,
         };
 
@@ -668,14 +669,14 @@ mod tests {
         assert!(!result.reverted);
 
         let shares = U256::abi_decode(&result.bytes)?;
-        assert!(shares > U256::ZERO, "Should mint LP shares");
+        assert_eq!(shares, (amount * amount) / U256::from(2) - MIN_LIQUIDITY);
 
         // Verify total supply increased
         let final_total_supply_result =
             fee_manager.call(&Bytes::from(initial_total_supply_call.abi_encode()), user)?;
         let final_total_supply = U256::abi_decode(&final_total_supply_result.bytes)?;
         // Note that upon first mint, MIN_LIQUIDITY is burnt
-        assert_eq!(final_total_supply, shares - MIN_LIQUIDITY);
+        assert_eq!(final_total_supply, shares + MIN_LIQUIDITY);
 
         Ok(())
     }
