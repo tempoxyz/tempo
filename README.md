@@ -43,7 +43,7 @@ You can get started today by integrating with the [Tempo testnet](https://docs.t
 
 - Performance and finality
 
-  - Built on the [Reth SDK](https://github.com/paradigmxyz/reth), a highly performant EVM execution client.
+  - Built on the [Reth SDK](https://github.com/paradigmxyz/reth), the most performant and flexible EVM (Ethereum Virtual Machine) execution client.
   - Simplex Consensus (via [Commonware](https://commonware.xyz/)): fast, sub‑second finality in normal conditions; graceful degradation under adverse networks.
 
 - Coming soon
@@ -53,7 +53,7 @@ You can get started today by integrating with the [Tempo testnet](https://docs.t
 
 ## What makes Tempo familiar
 
-- Fully compatible with the Ethereum Virtual Machine (EVM), targeting the Osaka EVM hard fork.
+- Fully compatible with the Ethereum Virtual Machine (EVM), targeting the Osaka hardfork.
 - Deploy and interact with smart contracts using the same tools, languages, and frameworks used on Ethereum, such as Solidity, Foundry, and Hardhat.
 - All Ethereum JSON-RPC methods work out of the box.
 
