@@ -21,6 +21,8 @@ The blockchain for payments at scale.
 
 ## Overview
 
+Why it matters:
+
 Tempo is fully compatible with the Ethereum Virtual Machine (EVM), targeting the Osaka EVM hard fork. So, everything you'd expect to work with Ethereum works on Tempo, with only a few exceptions which we detail in the [EVM Differences](https://docs.tempo.xyz/quickstart/evm-compatibility#handling-eth-balance-checks) section of the documentation.
 
 Key characteristics:
@@ -64,15 +66,15 @@ cast rpc tempo_fundAddress <ADDRESS> --rpc-url https://rpc.testnet.tempo.xyz
 
 ### As an operator
 
-See the [Tempo documentation](https://docs.tempo.xyz/guide/node) for instructions on how to install and run Tempo.
-
-### As a developer
-
-We provide three different installation paths - installing a pre-built binary, building from source or using our provided Docker image.
+We provide three different installation paths: installing a pre-built binary, building from source or using our provided Docker image.
 
 - [Pre-built Binary](https://docs.tempo.xyz/guide/node/installation#pre-built-binary)
 - [Build from Source](https://docs.tempo.xyz/guide/node/installation#build-from-source)
 - [Docker](https://docs.tempo.xyz/guide/node/installation#docker)
+
+See the [Tempo documentation](https://docs.tempo.xyz/guide/node) for instructions on how to install and run Tempo.
+
+### As a developer
 
 Tempo has several SDKs to help you get started building on Tempo:
 
@@ -81,17 +83,39 @@ Tempo has several SDKs to help you get started building on Tempo:
 - [Go](https://docs.tempo.xyz/sdk/go)
 - [Foundry](https://docs.tempo.xyz/sdk/foundry)
 
-## Contributing
-
-Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.com/tempoxyz/tempo?tab=contributing-ov-file).
+Want to contribute?
 
 Prerequisites: [`just`](https://github.com/casey/just?tab=readme-ov-file#packages)
+
+First, clone the repository:
+
+```
+git clone https://github.com/tempoxyz/tempo
+cd tempo
+```
+
+Build Tempo:
 
 ```bash
 just
 just build-all
+```
+
+Next, run the tests:
+
+```bash
+cargo nextest run
+```
+
+Start a `localnet`:
+
+```bash
 just localnet
 ```
+
+## Contributing
+
+Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.com/tempoxyz/tempo?tab=contributing-ov-file).
 
 ## Security
 
