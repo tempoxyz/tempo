@@ -1,4 +1,3 @@
-import * as React from 'react'
 import { useAccount, useWatchAsset } from 'wagmi'
 import { Button } from './guides/Demo'
 
@@ -16,7 +15,7 @@ export function AddToken({
   token: Token
   requireWallet?: boolean
 }) {
-  const { address, isConnected } = useAccount()
+  const { isConnected } = useAccount()
   const { watchAsset, isSuccess, isPending } = useWatchAsset()
 
   if (requireWallet && !isConnected) {
