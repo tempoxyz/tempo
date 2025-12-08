@@ -48,7 +48,7 @@ struct TempoArgs {
     #[arg(
         long,
         value_name = "URL",
-        default_missing_value = "wss://eng:zealous-mayer@rpc.testnet.tempo.xyz",
+        default_missing_value = "wss://rpc.testnet.tempo.xyz",
         num_args(0..=1)
     )]
     pub follow: Option<String>,
