@@ -1373,7 +1373,7 @@ export default defineConfig({
                 },
                 {
                   text: 'Rust Implementation',
-                  link: 'https://github.com/tempoxyz/tempo/blob/main/crates/primitives/src/transaction/account_abstraction.rs',
+                  link: 'https://github.com/tempoxyz/tempo/blob/main/crates/primitives/src/transaction/tempo_transaction.rs',
                 },
               ],
             },
