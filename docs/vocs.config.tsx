@@ -166,8 +166,7 @@ export default defineConfig({
                 link: '/guide/issuance/use-for-fees',
               },
               {
-                text: 'Distribute rewards 🚧',
-                disabled: true,
+                text: 'Distribute rewards',
                 link: '/guide/issuance/distribute-rewards',
               },
               {

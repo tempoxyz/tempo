@@ -7,13 +7,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 export const client = createClient({
   account: privateKeyToAccount('0x...'),
   chain: tempo({ feeToken: '0x20c0000000000000000000000000000000000001' }),
-  transport: http(undefined, {
-    fetchOptions: {
-      headers: {
-        Authorization: `Basic ${btoa(`${process.env['TEMPO_RPC_USER']}:${process.env['TEMPO_RPC_PASSWORD']}`)}`,
-      },
-    },
-  }),
+  transport: http(),
 })
   .extend(publicActions)
   .extend(walletActions)
