@@ -1,9 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
 
-export function ZoomableImage(props: {
-  src: string
-  alt: string
-}) {
+export function ZoomableImage(props: { src: string; alt: string }) {
   const { src, alt } = props
   const [isZoomed, setIsZoomed] = useState(false)
 
@@ -40,23 +37,25 @@ export function ZoomableImage(props: {
             handleOpen()
           }
         }}
-        tabIndex={0}
-        role="button"
         aria-label={`Click to zoom ${alt}`}
       />
 
       {isZoomed && (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard close handled via Escape in useEffect
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-8"
           onClick={handleClose}
           role="dialog"
           aria-modal="true"
         >
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: only prevents propagation, not interactive */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: only prevents propagation, not interactive */}
           <div
             className="relative w-[90vw] h-[90vh] bg-[#F9F9F9] rounded-lg shadow-2xl border border-gray4 p-8 flex items-center justify-center"
             onClick={(e) => e.stopPropagation()}
           >
             <button
+              type="button"
               className="absolute top-4 right-4 flex items-center justify-center w-10 h-10 rounded-full bg-gray3 text-gray12 hover:bg-gray4 transition-colors border border-gray6 z-10"
               onClick={handleClose}
               aria-label="Close zoomed image"
@@ -71,12 +70,14 @@ export function ZoomableImage(props: {
                 strokeWidth="2"
                 strokeLinecap="round"
                 strokeLinejoin="round"
+                aria-hidden="true"
               >
                 <line x1="18" y1="6" x2="6" y2="18"></line>
                 <line x1="6" y1="6" x2="18" y2="18"></line>
               </svg>
             </button>
 
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: keyboard close handled via Escape in useEffect */}
             <img
               src={src}
               alt={alt}
