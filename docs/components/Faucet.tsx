@@ -25,13 +25,15 @@ type FeeTokenOption =
     }
   | { value: 'other'; label: string }
 
-const FEE_TOKEN_OPTIONS: FeeTokenOption[] = [
+const FEE_TOKEN_OPTIONS = [
   { value: 'alpha', label: 'AlphaUSD', address: alphaUsd },
   { value: 'beta', label: 'BetaUSD', address: betaUsd },
   { value: 'theta', label: 'ThetaUSD', address: thetaUsd },
   { value: 'path', label: 'PathUSD', address: pathUsd },
   { value: 'other', label: 'Other (custom)' },
-]
+] as const satisfies readonly FeeTokenOption[]
+
+const DEFAULT_FEE_TOKEN_OPTION = FEE_TOKEN_OPTIONS[0]
 
 export function Faucet() {
   const { address, isConnected } = useAccount()
@@ -68,7 +70,7 @@ export function Faucet() {
     const option = FEE_TOKEN_OPTIONS.find(
       (candidate) => candidate.value === selectedFeeToken,
     )
-    return option ?? FEE_TOKEN_OPTIONS[0]
+    return option ?? DEFAULT_FEE_TOKEN_OPTION
   }, [selectedFeeToken])
   const resolvedFeeToken =
     selectedOption.value === 'other' ? customFeeToken : selectedOption.address
@@ -139,6 +141,7 @@ export function Faucet() {
       setUserToken.mutate(
         {
           token: resolvedFeeToken as Address,
+          feeToken: alphaUsd,
           chainId: defaultChainId,
           account: address,
         },

@@ -69,7 +69,7 @@ export function PayWithIssuedToken(props: DemoStepProps) {
       to: recipient as `0x${string}`,
       token: alphaUsd,
       memo: memo ? pad(stringToHex(memo), { size: 32 }) : undefined,
-      feeToken,
+      feeToken: feeToken ?? null,
     })
   }
 
