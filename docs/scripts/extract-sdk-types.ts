@@ -80,6 +80,10 @@ const abisPath = path.join(
   process.cwd(),
   'node_modules/tempo.ts/src/viem/Abis.ts',
 )
+const typeHelpersPath = path.join(
+  process.cwd(),
+  'scripts/type-helpers.ts',
+)
 
 // Create TypeScript program
 const configPath = ts.findConfigFile(
@@ -102,6 +106,7 @@ const program = ts.createProgram({
     wagmiActionsPath,
     internalTypesPath,
     abisPath,
+    typeHelpersPath,
   ].filter(fs.existsSync),
   options: {
     ...parsedConfig.options,
@@ -224,6 +229,18 @@ function isObjectType(type: ts.Type): boolean {
 }
 
 /**
+ * Sort object fields: required (alphabetical) then optional (alphabetical)
+ */
+function sortFields<T extends { optional?: boolean }>(
+  fields: Record<string, T>,
+): Record<string, T> {
+  const entries = Object.entries(fields)
+  const required = entries.filter(([, v]) => !v.optional).sort(([a], [b]) => a.localeCompare(b))
+  const optional = entries.filter(([, v]) => v.optional).sort(([a], [b]) => a.localeCompare(b))
+  return Object.fromEntries([...required, ...optional])
+}
+
+/**
  * Expand an object type into its fields (1 level deep)
  */
 function expandObjectType(
@@ -265,7 +282,8 @@ function expandObjectType(
     }
   }
 
-  return Object.keys(fields).length > 0 ? fields : undefined
+  if (Object.keys(fields).length === 0) return undefined
+  return sortFields(fields)
 }
 
 /**
@@ -439,9 +457,14 @@ function extractReturnType(type: ts.Type, statement: ts.Node): ReturnTypeInfo {
     }
   }
 
+  // Sort fields alphabetically
+  const sortedFields = Object.keys(fields).length > 0
+    ? Object.fromEntries(Object.entries(fields).sort(([a], [b]) => a.localeCompare(b)))
+    : undefined
+
   return {
     type: typeString,
-    fields: Object.keys(fields).length > 0 ? fields : undefined,
+    fields: sortedFields,
   }
 }
 
@@ -584,121 +607,68 @@ function extractSyncReturnType(
   return result
 }
 
-function extractWriteParameters(): ParamInfo[] {
-  const sourceFile = program.getSourceFile(internalTypesPath)
-  if (!sourceFile) return []
+/**
+ * Extract parameters from a type alias in the type helpers file.
+ * This uses our concrete type instantiations to get fully resolved types.
+ */
+function extractParametersFromTypeHelper(typeName: string): ParamInfo[] {
+  const sourceFile = program.getSourceFile(typeHelpersPath)
+  if (!sourceFile) {
+    console.warn(`Warning: Could not load type helpers file: ${typeHelpersPath}`)
+    return []
+  }
 
-  // These are the known WriteParameters based on manual inspection
-  // The TypeScript compiler has trouble fully resolving the complex conditional types
-  return [
-    {
-      name: 'account',
-      type: 'Account | Address',
-      optional: true,
-      description: 'Account to use for the transaction',
-    },
-    {
-      name: 'chain',
-      type: 'Chain',
-      optional: true,
-      description: 'Chain to use',
-    },
-    {
-      name: 'gas',
-      type: 'bigint',
-      optional: true,
-      description: 'Gas limit for the transaction',
-    },
-    {
-      name: 'maxFeePerGas',
-      type: 'bigint',
-      optional: true,
-      description: 'Max fee per gas',
-    },
-    {
-      name: 'maxPriorityFeePerGas',
-      type: 'bigint',
-      optional: true,
-      description: 'Max priority fee per gas',
-    },
-    {
-      name: 'nonce',
-      type: 'number',
-      optional: true,
-      description: 'Nonce for the transaction',
-    },
-    {
-      name: 'feeToken',
-      type: 'Address | bigint',
-      optional: true,
-      description: 'Fee token address or ID',
-    },
-    {
-      name: 'feePayer',
-      type: 'Account | true',
-      optional: true,
-      description: 'Fee payer account or true for fee payer service',
-    },
-    {
-      name: 'nonceKey',
-      type: "'random' | bigint",
-      optional: true,
-      description: 'Nonce key for the transaction',
-    },
-    {
-      name: 'validAfter',
-      type: 'number',
-      optional: true,
-      description: 'Unix timestamp after which transaction is valid',
-    },
-    {
-      name: 'validBefore',
-      type: 'number',
-      optional: true,
-      description: 'Unix timestamp before which transaction must be included',
-    },
-    {
-      name: 'throwOnReceiptRevert',
-      type: 'boolean',
-      optional: true,
-      description: 'Whether to throw on receipt revert (Sync only)',
-    },
-  ]
+  const result: ParamInfo[] = []
+
+  function visit(node: ts.Node) {
+    // Look for type alias or interface declaration with the given name
+    if (
+      (ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node)) &&
+      node.name.getText() === typeName
+    ) {
+      const type = checker.getTypeAtLocation(node)
+      const props = type.getProperties()
+
+      for (const prop of props) {
+        if (
+          BUILTIN_METHODS.has(prop.getName()) ||
+          prop.getName().startsWith('__@')
+        ) {
+          continue
+        }
+
+        const propType = checker.getTypeOfSymbolAtLocation(prop, node)
+        const declarations = prop.getDeclarations()
+        const isOptional =
+          declarations?.some(
+            (d) => ts.isPropertySignature(d) && !!d.questionToken,
+          ) || getTypeString(propType).includes('undefined')
+        const jsDocComment = ts.displayPartsToString(
+          prop.getDocumentationComment(checker),
+        )
+
+        result.push({
+          name: prop.getName(),
+          type: getTypeString(propType).replace(' | undefined', ''),
+          optional: isOptional,
+          description: jsDocComment || undefined,
+        })
+      }
+    }
+
+    ts.forEachChild(node, visit)
+  }
+
+  visit(sourceFile)
+  return result
+}
+
+function extractWriteParameters(): ParamInfo[] {
+  return extractParametersFromTypeHelper('WriteParametersExpanded')
 }
 
 function extractReadParameters(): ParamInfo[] {
-  return [
-    {
-      name: 'account',
-      type: 'Account | Address',
-      optional: true,
-      description: 'Account to use for the call',
-    },
-    {
-      name: 'blockNumber',
-      type: 'bigint',
-      optional: true,
-      description: 'Block number to read state from',
-    },
-    {
-      name: 'blockOverrides',
-      type: 'BlockOverrides',
-      optional: true,
-      description: 'Block overrides to apply',
-    },
-    {
-      name: 'blockTag',
-      type: 'BlockTag',
-      optional: true,
-      description: 'Block tag to read state from',
-    },
-    {
-      name: 'stateOverride',
-      type: 'StateOverride',
-      optional: true,
-      description: 'State override to apply',
-    },
-  ]
+  return extractParametersFromTypeHelper('ReadParametersExpanded')
 }
 
 // Main extraction
@@ -742,12 +712,18 @@ if (actionType === 'write') {
 }
 // Watchers don't get base params merged - they have their own structure
 
+// Sort parameters: required (alphabetical) then optional (alphabetical)
+const allParams = [...extracted.args, ...filteredBaseParams]
+const requiredParams = allParams.filter((p) => !p.optional).sort((a, b) => a.name.localeCompare(b.name))
+const optionalParams = allParams.filter((p) => p.optional).sort((a, b) => a.name.localeCompare(b.name))
+const sortedParams = [...requiredParams, ...optionalParams]
+
 const typeInfo: TypeInfo = {
   module: moduleName,
   function: functionName,
   actionType,
   hasSyncVariant,
-  parameters: [...extracted.args, ...filteredBaseParams],
+  parameters: sortedParams,
   returnType: extracted.returnType,
   syncReturnType: syncReturnType || undefined,
   callbackArgs: extracted.callbackArgs,
