@@ -10,6 +10,7 @@ Watches for token approval events on TIP20 tokens.
 import { client } from './viem.config'
 
 const unwatch = client.token.watchApprove({
+  token: 0n,
   onApproval: (args, log) => {
     console.log('Amount:', args.amount)
     console.log('Owner:', args.owner)

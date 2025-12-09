@@ -11,6 +11,7 @@ import { Actions } from 'tempo.ts/wagmi'
 import { config } from './wagmi.config'
 
 const unwatch = Actions.token.watchAdminRole(config, {
+  token: 1n, // Token ID or address
   onRoleAdminUpdated: (args, log) => {
     console.log('Role:', args.role)
     console.log('New admin role:', args.newAdminRole)

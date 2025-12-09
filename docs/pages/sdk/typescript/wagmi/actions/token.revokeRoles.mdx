@@ -59,14 +59,14 @@ type ReturnType = {
   receipt: TransactionReceipt
   /** Array of role membership update events */
   value: readonly {
-    /** Address that had role revoked */
-    account: Address
-    /** Whether the role was granted (true) or revoked (false) */
-    hasRole: boolean
     /** Role identifier */
     role: Hex
+    /** Address that had role revoked */
+    account: Address
     /** Address that revoked the role */
     sender: Address
+    /** Whether the role was granted (true) or revoked (false) */
+    hasRole: boolean
   }[]
 }
 ```

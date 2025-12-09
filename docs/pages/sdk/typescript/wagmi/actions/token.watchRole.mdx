@@ -11,6 +11,7 @@ import { Actions } from 'tempo.ts/wagmi'
 import { config } from './wagmi.config'
 
 const unwatch = Actions.token.watchRole(config, {
+  token: '0x...', // Address or ID of the TIP20 token
   onRoleUpdated: (args, log) => {
     console.log('Account:', args.account)
     console.log('Has role:', args.hasRole)

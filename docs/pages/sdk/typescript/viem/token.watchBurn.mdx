@@ -10,6 +10,7 @@ Watches for token burn events on TIP20 tokens.
 import { client } from './viem.config'
 
 const unwatch = client.token.watchBurn({
+  token: 1n, // or token address
   onBurn: (args, log) => {
     console.log('Amount:', args.amount)
     console.log('From:', args.from)

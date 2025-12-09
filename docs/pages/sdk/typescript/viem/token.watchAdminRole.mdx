@@ -10,6 +10,7 @@ Watches for role admin update events on TIP20 tokens.
 import { client } from './viem.config'
 
 const unwatch = client.token.watchAdminRole({
+  token: 1n, // Token ID or address
   onRoleAdminUpdated: (args, log) => {
     console.log('Role:', args.role)
     console.log('New admin role:', args.newAdminRole)
