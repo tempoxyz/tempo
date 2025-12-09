@@ -30,6 +30,7 @@ contract FeeManager is IFeeManager, FeeAMM {
         address userToken;
         address validatorToken;
     }
+
     TokenPair[] private poolsWithFees;
     mapping(bytes32 => bool) private poolInFeesArray;
 

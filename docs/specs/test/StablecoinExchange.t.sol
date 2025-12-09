@@ -323,9 +323,8 @@ contract StablecoinExchangeTest is BaseTest {
         }
 
         vm.prank(alice);
-        uint128 amountIn = exchange.swapExactAmountOut(
-            address(pathUSD), address(token1), amountOut, maxAmountIn
-        );
+        uint128 amountIn =
+            exchange.swapExactAmountOut(address(pathUSD), address(token1), amountOut, maxAmountIn);
 
         assertEq(amountIn, expectedAmountIn);
         assertEq(token1.balanceOf(alice), initialBaseBalance + amountOut);
@@ -569,9 +568,8 @@ contract StablecoinExchangeTest is BaseTest {
             expectedError = abi.encodeWithSelector(IStablecoinExchange.InvalidTick.selector);
         } else if (amount < MIN_ORDER_AMOUNT) {
             shouldRevert = true;
-            expectedError = abi.encodeWithSelector(
-                IStablecoinExchange.BelowMinimumOrderSize.selector, amount
-            );
+            expectedError =
+                abi.encodeWithSelector(IStablecoinExchange.BelowMinimumOrderSize.selector, amount);
         }
 
         // Execute and verify
@@ -585,9 +583,8 @@ contract StablecoinExchangeTest is BaseTest {
         } else {
             // May fail due to insufficient balance/allowance - that's OK
             try exchange.place(address(token1), amount, true, tick) {
-            // Success is fine
-            }
-                catch {
+                // Success is fine
+            } catch {
                 // Failure due to balance/allowance is also OK for fuzz test
             }
         }
@@ -640,9 +637,8 @@ contract StablecoinExchangeTest is BaseTest {
         } else {
             // May fail due to insufficient balance/allowance - that's OK
             try exchange.placeFlip(address(token1), amount, isBid, tick, flipTick) {
-            // Success is fine
-            }
-                catch {
+                // Success is fine
+            } catch {
                 // Failure due to balance/allowance is also OK for fuzz test
             }
         }
@@ -952,9 +948,8 @@ contract StablecoinExchangeTest is BaseTest {
             exchange.executeBlock();
 
             // Should find direct path
-            uint128 amountOut = exchange.quoteSwapExactAmountIn(
-                address(pathUSD), address(token1), MIN_ORDER_AMOUNT
-            );
+            uint128 amountOut =
+                exchange.quoteSwapExactAmountIn(address(pathUSD), address(token1), MIN_ORDER_AMOUNT);
             assertGt(amountOut, 0);
         } else if (scenario == 1) {
             // Sibling tokens through pathUSD
@@ -978,9 +973,8 @@ contract StablecoinExchangeTest is BaseTest {
             exchange.executeBlock();
 
             // Should route token1 -> pathUSD -> token2
-            uint128 amountOut = exchange.quoteSwapExactAmountIn(
-                address(token1), address(token2), MIN_ORDER_AMOUNT
-            );
+            uint128 amountOut =
+                exchange.quoteSwapExactAmountIn(address(token1), address(token2), MIN_ORDER_AMOUNT);
             assertGt(amountOut, 0);
         } else {
             // Reverse direction
@@ -991,9 +985,8 @@ contract StablecoinExchangeTest is BaseTest {
             exchange.executeBlock();
 
             // Should find path in reverse
-            uint128 amountOut = exchange.quoteSwapExactAmountIn(
-                address(token1), address(pathUSD), MIN_ORDER_AMOUNT
-            );
+            uint128 amountOut =
+                exchange.quoteSwapExactAmountIn(address(token1), address(pathUSD), MIN_ORDER_AMOUNT);
             assertGt(amountOut, 0);
         }
     }
