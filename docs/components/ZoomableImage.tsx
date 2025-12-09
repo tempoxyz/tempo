@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import { cx } from '../cva.config'
 
 export function ZoomableImage(props: {
   src: string
