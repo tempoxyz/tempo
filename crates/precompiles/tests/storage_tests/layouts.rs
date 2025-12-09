@@ -4,7 +4,7 @@
 //! including auto-assignment, explicit slots, base_slot, and string literal slots.
 
 use super::*;
-use tempo_precompiles::storage::Mapping;
+use tempo_precompiles::storage::{Mapping, UserMapping};
 
 #[test]
 fn test_mixed_slot_allocation() {
@@ -275,3 +275,142 @@ fn test_collision_overlapping_slots_auto() {
     let (_, address) = setup_storage();
     let _layout = Layout::__new(address);
 }
+
+// -- USER MAPPING TESTS -------------------------------------------------------
+
+#[test]
+fn test_user_mapping_in_contract() -> eyre::Result<()> {
+    #[contract]
+    pub struct Layout {
+        pub counter: U256,               // slot 0
+        pub balances: UserMapping<U256>, // slot 1 (occupies 1 slot in layout)
+        pub flag: bool,                  // slot 2
+    }
+
+    let (mut storage, address) = setup_storage();
+    let mut layout = Layout::__new(address);
+
+    StorageContext::enter(&mut storage, || {
+        let (counter, user, balance) = (U256::random(), Address::random(), U256::random());
+
+        // Write to regular fields
+        layout.counter.write(counter)?;
+        layout.flag.write(true)?;
+
+        // Write to UserMapping
+        layout.balances.at(user).write(balance)?;
+
+        // Read back
+        assert_eq!(layout.counter.read()?, counter);
+        assert!(layout.flag.read()?);
+        assert_eq!(layout.balances.at(user).read()?, balance);
+
+        // Verify slot assignments
+        assert_eq!(layout.counter.slot(), U256::ZERO);
+        assert_eq!(layout.flag.slot(), U256::from(2));
+
+        // Verify slots module
+        assert_eq!(slots::COUNTER, U256::ZERO);
+        assert_eq!(slots::BALANCES, U256::ONE);
+        assert_eq!(slots::FLAG, U256::from(2));
+
+        Ok(())
+    })
+}
+
+#[test]
+fn test_user_mapping_slot_is_direct() -> eyre::Result<()> {
+    #[contract]
+    pub struct Layout {
+        pub balances: UserMapping<U256>,
+    }
+
+    let (mut storage, address) = setup_storage();
+    let layout = Layout::__new(address);
+
+    StorageContext::enter(&mut storage, || {
+        let (user, balance) = (Address::random(), U256::random());
+        layout.balances.at(user).write(balance)?;
+
+        // Verify the slot is directly derived from address (left-padded, no hash)
+        let handler = layout.balances.at(user);
+        let expected_slot = U256::from_be_slice(user.as_slice()) << 96;
+        assert_eq!(handler.slot(), expected_slot);
+
+        // Verify read works with the direct slot
+        assert_eq!(handler.read()?, balance);
+
+        Ok(())
+    })
+}
+
+#[test]
+fn test_user_mapping_with_struct_value() -> eyre::Result<()> {
+    #[contract]
+    pub struct Layout {
+        pub users: UserMapping<UserProfile>,
+    }
+
+    let (mut storage, address) = setup_storage();
+    let layout = Layout::__new(address);
+
+    StorageContext::enter(&mut storage, || {
+        let (user, owner, balance) = (Address::random(), Address::random(), U256::random());
+
+        // Write struct fields
+        layout.users.at(user).owner.write(owner)?;
+        layout.users.at(user).active.write(true)?;
+        layout.users.at(user).balance.write(balance)?;
+
+        // Read back
+        assert_eq!(layout.users.at(user).owner.read()?, owner);
+        assert!(layout.users.at(user).active.read()?);
+        assert_eq!(layout.users.at(user).balance.read()?, balance);
+
+        // Different user has independent storage
+        let user2 = Address::random();
+        assert_eq!(layout.users.at(user2).owner.read()?, Address::ZERO);
+        assert!(!layout.users.at(user2).active.read()?);
+        assert_eq!(layout.users.at(user2).balance.read()?, U256::ZERO);
+
+        Ok(())
+    })
+}
+
+// -- USER MAPPING COMPILE-TIME CONSTRAINTS ------------------------------------
+//
+// The following tests verify compile-time constraints on UserMapping.
+// They are commented out because they intentionally fail to compile.
+
+// #[test]
+// fn test_multiple_user_mappings_forbidden() {
+//     #[contract]
+//     pub struct Layout {
+//         pub balances: UserMapping<U256>,
+//         pub allowances: UserMapping<U256>, // multiple `UserMapping`
+//     }
+// }
+
+// #[test]
+// fn test_nested_user_mapping_in_user_mapping_forbidden() {
+//     #[contract]
+//     pub struct Layout {
+//         pub nested: UserMapping<UserMapping<U256>>, // nested `UserMapping`
+//     }
+// }
+
+// #[test]
+// fn test_user_mapping_in_mapping_forbidden() {
+//     #[contract]
+//     pub struct Layout {
+//         pub nested: Mapping<Address, UserMapping<U256>>, // `UserMapping` as `Mapping` value
+//     }
+// }
+
+// #[test]
+// fn test_mapping_in_user_mapping_forbidden() {
+//     #[contract]
+//     pub struct Layout {
+//         pub nested: UserMapping<Mapping<Address, U256>>, // `Mapping` as `UserMapping` value
+//     }
+// }

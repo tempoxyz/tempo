@@ -94,6 +94,8 @@ enum FieldKind<'a> {
     Direct(&'a Type),
     /// Mapping fields. Handles all nesting levels via recursive types.
     Mapping { key: &'a Type, value: &'a Type },
+    /// UserMapping fields. Identity slot computation (no keccak hashing).
+    UserMapping { value: &'a Type },
 }
 
 fn parse_fields(input: DeriveInput) -> syn::Result<Vec<FieldInfo>> {
@@ -150,6 +152,24 @@ fn gen_contract_storage(
     vis: &Visibility,
     fields: &[FieldInfo],
 ) -> syn::Result<proc_macro2::TokenStream> {
+    // Validate at most one UserMapping field
+    let user_mapping_count = fields
+        .iter()
+        .filter(|f| {
+            matches!(
+                packing::classify_field_type(&f.ty),
+                Ok(FieldKind::UserMapping { .. })
+            )
+        })
+        .count();
+
+    if user_mapping_count > 1 {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "contract can have at most one `UserMapping` field",
+        ));
+    }
+
     // Generate the complete output
     let allocated_fields = packing::allocate_slots(fields)?;
     let transformed_struct = layout::gen_struct(ident, vis, &allocated_fields);

@@ -15,6 +15,9 @@ pub(crate) fn gen_handler_field_decl(field: &LayoutField<'_>) -> proc_macro2::To
         FieldKind::Mapping { key, value } => {
             quote! { <crate::storage::Mapping<#key, #value> as crate::storage::StorableType>::Handler }
         }
+        FieldKind::UserMapping { value } => {
+            quote! { <crate::storage::UserMapping<#value> as crate::storage::StorableType>::Handler }
+        }
     };
 
     quote! {
@@ -94,6 +97,13 @@ pub(crate) fn gen_handler_field_init(
         FieldKind::Mapping { key, value } => {
             quote! {
                 #field_name: <crate::storage::Mapping<#key, #value> as crate::storage::StorableType>::handle(
+                    #slot_expr, crate::storage::LayoutCtx::FULL, address
+                )
+            }
+        }
+        FieldKind::UserMapping { value } => {
+            quote! {
+                #field_name: <crate::storage::UserMapping<#value> as crate::storage::StorableType>::handle(
                     #slot_expr, crate::storage::LayoutCtx::FULL, address
                 )
             }

@@ -211,13 +211,18 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
 
 /// Classify a field based on its type.
 ///
-/// Determines if a field is a direct value or a mapping.
+/// Determines if a field is a direct value, a mapping, or a user mapping.
 /// Nested mappings like `Mapping<K, Mapping<K2, V>>` are handled automatically
 /// since the value type includes the full nested type.
 pub(crate) fn classify_field_type(ty: &Type) -> syn::Result<FieldKind<'_>> {
-    use crate::utils::extract_mapping_types;
+    use crate::utils::{extract_mapping_types, extract_user_mapping_type};
 
-    // Check if it's a mapping (mappings have fundamentally different API)
+    // Check if it's a user mapping
+    if let Some(value_ty) = extract_user_mapping_type(ty) {
+        return Ok(FieldKind::UserMapping { value: value_ty });
+    }
+
+    // Check if it's a mapping
     if let Some((key_ty, value_ty)) = extract_mapping_types(ty) {
         return Ok(FieldKind::Mapping {
             key: key_ty,

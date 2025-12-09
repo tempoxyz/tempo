@@ -220,9 +220,9 @@ pub(crate) fn extract_storable_array_sizes(attrs: &[Attribute]) -> syn::Result<O
     Ok(None)
 }
 
-/// Extracts the type parameters from Mapping<K, V>.
+/// Extracts the type parameters from `Mapping<K, V>`.
 ///
-/// Returns Some((key_type, value_type)) if the type is a Mapping, None otherwise.
+/// Returns `Some((key_type, value_type))` if the type is a `Mapping`, `None` otherwise.
 pub(crate) fn extract_mapping_types(ty: &Type) -> Option<(&Type, &Type)> {
     if let Type::Path(type_path) = ty {
         let last_segment = type_path.path.segments.last()?;
@@ -251,6 +251,28 @@ pub(crate) fn extract_mapping_types(ty: &Type) -> Option<(&Type, &Type)> {
             };
 
             return Some((key_type, value_type));
+        }
+    }
+    None
+}
+
+/// Extracts the value type from `UserMapping<V>`.
+///
+/// Returns `Some(value_type)` if the type is a `UserMapping`, `None` otherwise.
+pub(crate) fn extract_user_mapping_type(ty: &Type) -> Option<&Type> {
+    if let Type::Path(type_path) = ty {
+        let last_segment = type_path.path.segments.last()?;
+
+        // Check if the type is named "UserMapping"
+        if last_segment.ident != "UserMapping" {
+            return None;
+        }
+
+        // Extract single generic argument (value type)
+        if let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments {
+            if let Some(syn::GenericArgument::Type(ty)) = args.args.first() {
+                return Some(ty);
+            }
         }
     }
     None
