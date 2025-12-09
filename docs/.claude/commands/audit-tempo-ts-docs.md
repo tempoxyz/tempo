@@ -1,3 +1,7 @@
+---
+description: "Audit a single SDK action's docs. Usage: /audit-tempo-ts-docs <module> <function> (e.g., token transfer)"
+---
+
 # Audit tempo.ts SDK Documentation
 
 Audit an existing documentation page against the underlying TypeScript source code to ensure parameters and return values are accurate. Can also generate documentation from the extracted types.
@@ -400,7 +404,7 @@ Address or ID of the TIP20 token to watch.
 
 For `pages/sdk/typescript/viem/token.watchTransfer.mdx`:
 
-1. Run: `pnpm extract-sdk-types token watchTransfer`
+1. Run: `bun extract-sdk-types token watchTransfer`
 2. Read `.claude/sdk-types/token.watchTransfer.json`
 3. Note: `actionType: "watch"`, check for:
    - `onTransfer` callback with `functionSignature`
