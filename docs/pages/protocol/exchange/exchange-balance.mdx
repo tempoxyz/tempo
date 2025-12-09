@@ -2,7 +2,15 @@ import { Callout } from 'vocs/components'
 
 # Exchange Balance
 
-The Stablecoin Exchange allows you to hold token balances directly on the DEX contract. This eliminates the need for token transfers on every trade, significantly reducing gas costs for active traders and liquidity providers.
+The Stablecoin DEX allows you to hold token balances directly on the exchange contract. This eliminates the need for token transfers on every trade, significantly reducing gas costs for active traders and liquidity providers.
+
+## Why Exchange Balances?
+
+When you trade or provide liquidity on the exchange, constantly transferring tokens between your wallet and the exchange contract wastes gas. By maintaining a balance on the DEX, you can:
+
+- **Save on gas costs** - Avoid ERC-20 transfer costs for each trade
+- **Trade more efficiently** - Execute multiple swaps without transfers between each trade
+- **Receive maker proceeds automatically** - When your limit orders are filled, proceeds are credited to your DEX balance instead of requiring a transfer for each fill
 
 ## Checking Your Balance
 

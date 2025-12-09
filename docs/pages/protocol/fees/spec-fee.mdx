@@ -70,12 +70,13 @@ When `feePayerSignature` is present:
 
 ## Fee token preferences
 
-The protocol checks for token preferences in four ways, with this order of precedence:
+The protocol checks for token preferences in five ways, with this order of precedence:
 
 1. Transaction (set by the `fee_token` field of the transaction)
 2. Account (set on the FeeManager contract by the `fee_payer` of the transaction)
-3. TIP-20 contract (if transaction is calling any function on a TIP-20 contract, the transaction uses that token as its fee token)
-4. PathUSD (as a fallback)
+3. TIP-20 contract (if the transaction is calling any function on a TIP-20 contract, the transaction uses that token as its fee token)
+4. Stablecoin Exchange (for certain swap calls, the transaction uses the `tokenIn` argument as its fee token)
+5. PathUSD (as a fallback)
 
 The protocol checks preferences at each of these levels, stopping at the first one at which a preference is specified. At that level, the protocol performs the following checks. If any of the checks fail, the transaction is invalid (without looking at any further levels):
 
@@ -106,6 +107,12 @@ At this step, the protocol does one more check:
 ### TIP-20 contracts
 
 If the top-level call of a transaction is to a TIP-20 contract for which the currency is USD, or _all_ of the top-level calls of a TempoTransaction are to the same TIP-20 contract for which the currency is USD, that token is used as the user's fee token for that transaction (unless there is a preference specified at the [transaction](#transaction-level) or [account](#account-level) level).
+
+### Stablecoin Exchange contract
+
+If the top-level call of a transaction is to the [Stablecoin Exchange](/protocol/exchange/spec.mdx) contract, the function being called is either `swapExactAmountIn` or `swapExactAmountOut`, and the `tokenIn` argument to that function is the address of a TIP-20 token for which the currency is USD, then the `tokenIn` argument is used as the user's fee token for the transaction (unless there is a preference specified at the [transaction](#transaction-level) or [account](#account-level) level).
+
+For [Tempo transactions](/protocol/transactions/spec-tempo-transaction.mdx), this rule applies only if there is only one top-level call in the transaction.
 
 ### pathUSD
 

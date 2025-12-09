@@ -10,7 +10,7 @@ Tempo features an enshrined decentralized exchange (DEX) designed specifically f
 
 The exchange operates as a singleton precompiled contract at address `0xdec0000000000000000000000000000000000000`. It maintains an orderbook with separate queues for each price tick, using price-time priority for order matching.
 
-Trading pairs are determined by each token's quote token. All TIP-20 tokens specify a quote token for trading on the exchange. Tokens can choose [pathUSD](/protocol/exchange/pathUSD) as their quote token. See the [Stablecoin Exchange Specification](/protocol/exchange/spec) for detailed information on the exchange structure.
+Trading pairs are determined by each token's quote token. All TIP-20 tokens specify a quote token for trading on the exchange. Tokens can choose [pathUSD](/protocol/exchange/pathUSD) as their quote token. See the [Stablecoin DEX Specification](/protocol/exchange/spec) for detailed information on the exchange structure.
 
 The exchange supports three types of orders, each with different execution behavior:
 
@@ -20,7 +20,7 @@ The exchange supports three types of orders, each with different execution behav
 | [**Flip Orders**](/protocol/exchange/providing-liquidity#flip-orders) | Special orders that automatically reverse to the opposite side when completely filled, acting like a perpetual liquidity pool. Filled flip orders automatically create new orders on the opposite side during end-of-block settlement. |
 | [**Market Orders**](/protocol/exchange/executing-swaps#swap-functions) | Execute immediately against the best available orders in the book (via swap functions). Swaps and cancellations execute immediately within the transaction. |
 
-This execution model prevents MEV by making it impossible to backrun new orders or perform JIT liquidity attacks. For the complete execution mechanics, see the [Stablecoin Exchange Specification](/protocol/exchange/spec).
+This execution model prevents MEV by making it impossible to backrun new orders or perform JIT liquidity attacks. For the complete execution mechanics, see the [Stablecoin DEX Specification](/protocol/exchange/spec).
 
 To get started with the exchange, explore these guides:
 
@@ -47,5 +47,5 @@ To get started with the exchange, explore these guides:
 
 
 <Callout type="info">
-  For a more complete technical specification including design decisions and details of execution semantics, see the [Stablecoin Exchange Specification](/protocol/exchange/spec).
+  For a more complete technical specification including design decisions and details of execution semantics, see the [Stablecoin DEX Specification](/protocol/exchange/spec).
 </Callout>
