@@ -34,7 +34,7 @@ export function ZoomableImage(props: {
       <img
         src={src}
         alt={alt}
-        className="cursor-zoom-in rounded-lg border border-gray4 transition-opacity hover:opacity-80"
+        className="cursor-zoom-in rounded-lg transition-opacity hover:opacity-80"
         onClick={handleOpen}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
@@ -48,41 +48,43 @@ export function ZoomableImage(props: {
 
       {isZoomed && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-8"
           onClick={handleClose}
           role="dialog"
           aria-modal="true"
         >
-          <button
-            className="absolute top-4 right-4 flex items-center justify-center w-10 h-10 rounded-full bg-gray1 text-gray12 hover:bg-gray3 transition-colors border border-gray4"
-            onClick={handleClose}
-            aria-label="Close zoomed image"
+          <div
+            className="relative w-[90vw] h-[90vh] bg-gray1 rounded-lg shadow-2xl border border-gray4 p-8 flex items-center justify-center"
+            onClick={(e) => e.stopPropagation()}
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="24"
-              height="24"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+            <button
+              className="absolute top-4 right-4 flex items-center justify-center w-10 h-10 rounded-full bg-gray3 text-gray12 hover:bg-gray4 transition-colors border border-gray6 z-10"
+              onClick={handleClose}
+              aria-label="Close zoomed image"
             >
-              <line x1="18" y1="6" x2="6" y2="18"></line>
-              <line x1="6" y1="6" x2="18" y2="18"></line>
-            </svg>
-          </button>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
 
-          <img
-            src={src}
-            alt={alt}
-            className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg cursor-zoom-out"
-            onClick={(e) => {
-              e.stopPropagation()
-              handleClose()
-            }}
-          />
+            <img
+              src={src}
+              alt={alt}
+              className="max-w-full max-h-full object-contain rounded cursor-zoom-out"
+              onClick={handleClose}
+            />
+          </div>
         </div>
       )}
     </>
