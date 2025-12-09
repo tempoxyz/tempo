@@ -191,6 +191,7 @@ export namespace Container {
   function BalancesFooterItem(props: { address: Address; token: Address }) {
     const queryClient = useQueryClient()
     const { address, token } = props
+    const [shouldAnimate, setShouldAnimate] = React.useState(false)
     const {
       data: balance,
       isPending: balanceIsPending,
@@ -210,6 +211,8 @@ export namespace Container {
         to: address,
       },
       onTransfer: () => {
+        setShouldAnimate(true)
+        setTimeout(() => setShouldAnimate(false), 600)
         queryClient.invalidateQueries({ queryKey: balancesKey })
       },
       enabled: !!address,
@@ -221,24 +224,48 @@ export namespace Container {
         from: address,
       },
       onTransfer: () => {
+        setShouldAnimate(true)
+        setTimeout(() => setShouldAnimate(false), 50)
         queryClient.invalidateQueries({ queryKey: balancesKey })
       },
       enabled: !!address,
     })
 
+
+
     const isPending = balanceIsPending || metadataIsPending
     const isUndefined = balance === undefined || metadata === undefined
+
+    function getExplorerHost() {
+      const { VITE_LOCAL, VITE_LOCAL_EXPLORER } = import.meta.env
+
+      if (VITE_LOCAL === 'true' && VITE_LOCAL_EXPLORER !== undefined) {
+        return VITE_LOCAL_EXPLORER
+      }
+
+      return 'https://explore.tempo.xyz'
+    }
 
     return (
       <div>
         {isPending || isUndefined ? (
           <span />
         ) : (
-          <span className="flex gap-1">
+          <span 
+            key={balance?.toString()} 
+            className="flex gap-1 animate-[fadeIn_0.5s_ease-in]"
+          >
             <span className="text-gray10">
               {formatUnits(balance ?? 0n, metadata.decimals)}
             </span>
-            {metadata.symbol}
+            <a 
+              href={`${getExplorerHost()}/address/${token}`}
+              target="_blank"
+              rel="noreferrer"
+              className="hover:underline hover:text-accent transition-colors"
+            >
+              {metadata.symbol}
+            </a>
           </span>
         )}
       </div>

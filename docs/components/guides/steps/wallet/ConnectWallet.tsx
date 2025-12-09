@@ -1,5 +1,6 @@
 import * as React from 'react'
 import {
+  useAccount,
   useChains,
   useConnect,
   useConnection,
@@ -17,6 +18,7 @@ import type { DemoStepProps } from '../types'
 export function ConnectWallet(props: DemoStepProps) {
   const { stepNumber = 1 } = props
   const { chain, connector } = useConnection()
+  const { status } = useAccount()
   const connections = useConnections()
   const connect = useConnect()
   const disconnect = useDisconnect()
@@ -36,6 +38,7 @@ export function ConnectWallet(props: DemoStepProps) {
   const walletAddress = walletConnection?.accounts[0]
   const walletConnector = walletConnection?.connector
   const hasNonWebAuthnWallet = Boolean(walletAddress)
+  const isReconnecting = status === 'reconnecting' || status === 'connecting'
   const active = !hasNonWebAuthnWallet || !isSupported
   const completed = hasNonWebAuthnWallet && isSupported
 
@@ -49,9 +52,27 @@ export function ConnectWallet(props: DemoStepProps) {
     }
 
     if (!hasNonWebAuthnWallet) {
+      // Show reconnecting state
+      if (isReconnecting) {
+        return (
+          <div className="text-[14px] -tracking-[2%] flex items-center">
+            Reconnecting...
+          </div>
+        )
+      }
+
+      // Filter out generic "Injected" if there are specific wallet connectors
+      const displayConnectors = injectedConnectors.filter(conn => {
+        // If there are multiple connectors and one is just "Injected", hide it
+        if (injectedConnectors.length > 1 && conn.name === 'Injected') {
+          return false
+        }
+        return true
+      })
+
       return (
-        <div className="flex flex-wrap gap-2 justify-center">
-          {injectedConnectors.map((conn) => (
+        <div className="flex gap-2 flex-wrap">
+          {displayConnectors.map((conn) => (
             <Button
               variant="default"
               className="flex gap-1.5 items-center"
@@ -92,9 +113,7 @@ export function ConnectWallet(props: DemoStepProps) {
           <Button
             variant="destructive"
             className="text-[14px] -tracking-[2%] font-normal"
-            onClick={() =>
-              disconnect.disconnect({ connector: walletConnector })
-            }
+            onClick={() => disconnect.disconnect({ connector: walletConnector })}
             type="button"
           >
             Disconnect

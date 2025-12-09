@@ -4,7 +4,7 @@ import { SpeedInsights } from '@vercel/speed-insights/react'
 import { NuqsAdapter } from 'nuqs/adapters/react-router/v7'
 import { Json } from 'ox'
 import { PostHogProvider as PostHogProviderBase } from 'posthog-js/react'
-import type React from 'react'
+import React from 'react'
 import { Toaster } from 'sonner'
 import { WagmiProvider } from 'wagmi'
 import { DemoContextProvider } from './components/DemoContext'
@@ -20,10 +20,7 @@ const queryClient = new QueryClient({
   },
 })
 
-const config = WagmiConfig.getConfig()
-const mipdConfig = WagmiConfig.getConfig({
-  multiInjectedProviderDiscovery: true,
-})
+const configCache = new Map<boolean, ReturnType<typeof WagmiConfig.getConfig>>()
 
 function PostHogProvider({ children }: React.PropsWithChildren) {
   const posthogKey = import.meta.env.VITE_PUBLIC_POSTHOG_KEY
@@ -54,11 +51,22 @@ export default function Layout(
 ) {
   const posthogKey = import.meta.env.VITE_PUBLIC_POSTHOG_KEY
   const posthogHost = import.meta.env.VITE_PUBLIC_POSTHOG_HOST
+  
+  const mipd = Boolean(props.frontmatter?.mipd)
+  
+  const config = React.useMemo(() => {
+    if (!configCache.has(mipd)) {
+      configCache.set(mipd, WagmiConfig.getConfig({
+        multiInjectedProviderDiscovery: mipd,
+      }))
+    }
+    return configCache.get(mipd)!
+  }, [mipd])
 
   return (
     <>
       <PostHogProvider>
-        <WagmiProvider config={props.frontmatter?.mipd ? mipdConfig : config}>
+        <WagmiProvider config={config} reconnectOnMount>
           <QueryClientProvider client={queryClient}>
             <NuqsAdapter>
               {posthogKey && posthogHost && <PostHogSiteIdentifier />}

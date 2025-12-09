@@ -12,9 +12,10 @@ type FeeTokenOption =
       label: string
       address: Address
     }
-  | { value: 'other'; label: string }
+  | { value: 'other' | 'none'; label: string }
 
 const FEE_TOKEN_OPTIONS = [
+  { value: 'none', label: '-- Select a token --' },
   { value: 'alpha', label: 'AlphaUSD', address: alphaUsd },
   { value: 'beta', label: 'BetaUSD', address: betaUsd },
   { value: 'theta', label: 'ThetaUSD', address: thetaUsd },
@@ -31,7 +32,7 @@ export function SetFeeToken(props: DemoStepProps) {
   const config = useConfig()
 
   const [selectedFeeToken, setSelectedFeeToken] =
-    React.useState<FeeTokenOption['value']>('alpha')
+    React.useState<FeeTokenOption['value']>('none')
   const [customFeeToken, setCustomFeeToken] = React.useState('')
   const [txHash, setTxHash] = React.useState<string | undefined>(undefined)
 
@@ -56,13 +57,22 @@ export function SetFeeToken(props: DemoStepProps) {
   }, [selectedFeeToken])
 
   const resolvedFeeToken =
-    selectedOption.value === 'other' ? customFeeToken : selectedOption.address
+    selectedOption.value === 'other' 
+      ? customFeeToken 
+      : selectedOption.value === 'none'
+        ? undefined
+        : 'address' in selectedOption
+          ? selectedOption.address
+          : undefined
   const isFeeTokenValid =
-    selectedOption.value !== 'other' || isAddress(customFeeToken)
+    selectedOption.value === 'none' ||
+    selectedOption.value !== 'other' || 
+    isAddress(customFeeToken)
   const defaultChainId = chainId ?? config?.chains?.[0]?.id
 
   const hasBalance = Boolean(balance && balance > 0n)
-  const hasUserToken = Boolean(userToken.data?.address)
+  const userTokenAddress = userToken.data?.address
+  const hasUserToken = Boolean(userTokenAddress && userTokenAddress !== '0x0000000000000000000000000000000000000000')
 
   const canSubmit = Boolean(
     hasNonWebAuthnWallet &&
@@ -114,7 +124,11 @@ export function SetFeeToken(props: DemoStepProps) {
   // Sync selected option with current user token
   React.useEffect(() => {
     const userTokenAddress = userToken.data?.address ?? undefined
-    if (!userTokenAddress) return
+    if (!userTokenAddress || userTokenAddress === '0x0000000000000000000000000000000000000000') {
+      setSelectedFeeToken('none')
+      setCustomFeeToken('')
+      return
+    }
     const match = FEE_TOKEN_OPTIONS.find(
       (option) =>
         'address' in option &&
@@ -129,14 +143,14 @@ export function SetFeeToken(props: DemoStepProps) {
     }
   }, [userToken.data?.address])
 
-  const active = hasNonWebAuthnWallet && hasBalance && !hasUserToken
+  const active = hasNonWebAuthnWallet && hasBalance
   const completed = hasNonWebAuthnWallet && hasBalance && hasUserToken
 
   const actions = React.useMemo(() => {
     return (
-      <div className="flex gap-2 items-center flex-wrap">
+      <div className="flex gap-2 items-center">
         <select
-          className="h-[32px] border border-gray4 px-3 rounded-full text-[14px] font-medium -tracking-[2%] bg-white dark:bg-transparent text-black dark:text-white"
+          className="h-[32px] border border-gray4 px-3 rounded-full text-[14px] font-medium -tracking-[2%] bg-white dark:bg-transparent text-black dark:text-white min-w-0 flex-shrink-0"
           value={selectedFeeToken}
           onChange={(event) => {
             const value = event.target.value as FeeTokenOption['value']
@@ -153,11 +167,15 @@ export function SetFeeToken(props: DemoStepProps) {
         </select>
 
         <Button
-          variant={active ? 'accent' : 'default'}
+          variant={active && !hasUserToken ? 'accent' : 'default'}
           onClick={handleSetFeeToken}
-          disabled={!canSubmit}
+          disabled={!canSubmit || selectedFeeToken === 'none'}
         >
-          {setUserToken.isPending ? 'Setting...' : 'Set fee token'}
+          {setUserToken.isPending 
+            ? 'Setting...' 
+            : hasUserToken 
+              ? 'Change fee token' 
+              : 'Set fee token'}
         </Button>
       </div>
     )
@@ -177,7 +195,7 @@ export function SetFeeToken(props: DemoStepProps) {
       actions={actions}
       error={setUserToken.error}
       number={stepNumber}
-      title="Set your fee token for EVM transactions."
+      title={hasUserToken ? "Change your fee token." : "Set your fee token."}
     >
       {(selectedOption.value === 'other' || currentFeeTokenLabel || txHash) && (
         <div className="flex mx-6 flex-col gap-3 pb-4">
@@ -207,9 +225,14 @@ export function SetFeeToken(props: DemoStepProps) {
             {currentFeeTokenLabel && (
               <div className="text-[13px] text-gray9 mt-2">
                 Current fee token:{' '}
-                <span className="text-black dark:text-white">
+                <a 
+                  href={`https://explore.tempo.xyz/address/${userToken.data?.address}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-black dark:text-white hover:underline hover:text-accent transition-colors"
+                >
                   {currentFeeTokenLabel}
-                </span>
+                </a>
               </div>
             )}
             {txHash && <ExplorerLink hash={txHash} />}

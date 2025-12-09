@@ -6,6 +6,8 @@ import {
   createConfig,
   createStorage,
   http,
+  injected,
+  noopStorage,
   webSocket,
 } from 'wagmi'
 import { KeyManager, webAuthn } from 'wagmi/tempo'
@@ -30,6 +32,7 @@ export function getConfig(options: getConfig.Options = {}) {
         grantAccessKey: true,
         keyManager: KeyManager.localStorage(),
       }),
+      ...(multiInjectedProviderDiscovery ? [injected()] : []),
     ],
     multiInjectedProviderDiscovery,
     storage: createStorage({
