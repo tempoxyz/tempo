@@ -16,12 +16,12 @@ where
 {
     /// Get validators state for a specific epoch.
     fn get_validators(
-        &mut self,
+        &self,
         epoch: u64,
     ) -> impl Future<Output = Result<Option<ValidatorState>>> + Send;
 
     /// Set validators state for a specific epoch.
-    fn set_validators(&mut self, epoch: u64, state: ValidatorState) -> Result<()>;
+    fn set_validators(&mut self, epoch: u64, state: ValidatorState);
 
     /// Remove validators state for a specific epoch.
     fn remove_validators(&mut self, epoch: u64);
@@ -31,11 +31,11 @@ impl<TContext> ValidatorsStore<TContext> for Tx<TContext>
 where
     TContext: Clock + Metrics + Storage,
 {
-    async fn get_validators(&mut self, epoch: u64) -> Result<Option<ValidatorState>> {
+    async fn get_validators(&self, epoch: u64) -> Result<Option<ValidatorState>> {
         self.get(validators_key(epoch)).await
     }
 
-    fn set_validators(&mut self, epoch: u64, state: ValidatorState) -> Result<()> {
+    fn set_validators(&mut self, epoch: u64, state: ValidatorState) {
         self.insert(validators_key(epoch), state)
     }
 

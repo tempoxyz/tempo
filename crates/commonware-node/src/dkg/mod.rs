@@ -10,6 +10,8 @@ pub enum HardforkRegime {
 }
 
 /// Trait for epoch state types that are associated with a specific hardfork regime.
-pub trait RegimeEpochState: Read<Cfg = ()> + Write + EncodeSize {
+pub trait RegimeEpochState:
+    Read<Cfg = ()> + Write + EncodeSize + Clone + Send + Sync + 'static
+{
     const REGIME: HardforkRegime;
 }

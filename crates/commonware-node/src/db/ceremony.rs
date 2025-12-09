@@ -16,12 +16,12 @@ where
 {
     /// Get ceremony state for a specific epoch.
     fn get_ceremony(
-        &mut self,
+        &self,
         epoch: u64,
     ) -> impl Future<Output = Result<Option<ceremony::State>>> + Send;
 
     /// Set ceremony state for a specific epoch.
-    fn set_ceremony(&mut self, epoch: u64, state: ceremony::State) -> Result<()>;
+    fn set_ceremony(&mut self, epoch: u64, state: ceremony::State);
 
     /// Remove ceremony state for a specific epoch.
     fn remove_ceremony(&mut self, epoch: u64);
@@ -38,11 +38,11 @@ impl<TContext> CeremonyStore<TContext> for Tx<TContext>
 where
     TContext: Clock + Metrics + Storage,
 {
-    async fn get_ceremony(&mut self, epoch: u64) -> Result<Option<ceremony::State>> {
+    async fn get_ceremony(&self, epoch: u64) -> Result<Option<ceremony::State>> {
         self.get(ceremony_key(epoch)).await
     }
 
-    fn set_ceremony(&mut self, epoch: u64, state: ceremony::State) -> Result<()> {
+    fn set_ceremony(&mut self, epoch: u64, state: ceremony::State) {
         self.insert(ceremony_key(epoch), state)
     }
 

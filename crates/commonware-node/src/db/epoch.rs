@@ -25,18 +25,18 @@ where
     TContext: Clock + Metrics + Storage,
 {
     /// Get the current epoch state for the given hardfork regime.
-    fn get_epoch<S: RegimeEpochState>(&mut self) -> impl Future<Output = Result<Option<S>>> + Send;
+    fn get_epoch<S: RegimeEpochState>(&self) -> impl Future<Output = Result<Option<S>>> + Send;
 
     /// Set the current epoch state for the given hardfork regime.
-    fn set_epoch<S: RegimeEpochState>(&mut self, state: S) -> Result<()>;
+    fn set_epoch<S: RegimeEpochState>(&mut self, state: S);
 
     /// Get the previous epoch state for the given hardfork regime.
     fn get_previous_epoch<S: RegimeEpochState>(
-        &mut self,
+        &self,
     ) -> impl Future<Output = Result<Option<S>>> + Send;
 
     /// Set the previous epoch state for the given hardfork regime.
-    fn set_previous_epoch<S: RegimeEpochState>(&mut self, state: S) -> Result<()>;
+    fn set_previous_epoch<S: RegimeEpochState>(&mut self, state: S);
 
     /// Remove the previous epoch state for the given hardfork regime.
     fn remove_previous_epoch(&mut self, regime: HardforkRegime);
@@ -55,19 +55,19 @@ impl<TContext> DkgEpochStore<TContext> for Tx<TContext>
 where
     TContext: Clock + Metrics + Storage,
 {
-    async fn get_epoch<S: RegimeEpochState>(&mut self) -> Result<Option<S>> {
+    async fn get_epoch<S: RegimeEpochState>(&self) -> Result<Option<S>> {
         self.get(current_epoch_key(S::REGIME)).await
     }
 
-    fn set_epoch<S: RegimeEpochState>(&mut self, state: S) -> Result<()> {
+    fn set_epoch<S: RegimeEpochState>(&mut self, state: S) {
         self.insert(current_epoch_key(S::REGIME), state)
     }
 
-    async fn get_previous_epoch<S: RegimeEpochState>(&mut self) -> Result<Option<S>> {
+    async fn get_previous_epoch<S: RegimeEpochState>(&self) -> Result<Option<S>> {
         self.get(previous_epoch_key(S::REGIME)).await
     }
 
-    fn set_previous_epoch<S: RegimeEpochState>(&mut self, state: S) -> Result<()> {
+    fn set_previous_epoch<S: RegimeEpochState>(&mut self, state: S) {
         self.insert(previous_epoch_key(S::REGIME), state)
     }
 

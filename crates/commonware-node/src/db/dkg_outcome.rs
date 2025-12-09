@@ -20,10 +20,10 @@ where
     TContext: Clock + Metrics + Storage,
 {
     /// Get the current DKG outcome.
-    fn get_dkg_outcome(&mut self) -> impl Future<Output = Result<Option<DkgOutcome>>> + Send;
+    fn get_dkg_outcome(&self) -> impl Future<Output = Result<Option<DkgOutcome>>> + Send;
 
     /// Set the current DKG outcome.
-    fn set_dkg_outcome(&mut self, outcome: DkgOutcome) -> Result<()>;
+    fn set_dkg_outcome(&mut self, outcome: DkgOutcome);
 
     /// Remove the current DKG outcome.
     fn remove_dkg_outcome(&mut self);
@@ -39,11 +39,11 @@ impl<TContext> DkgOutcomeStore<TContext> for Tx<TContext>
 where
     TContext: Clock + Metrics + Storage,
 {
-    async fn get_dkg_outcome(&mut self) -> Result<Option<DkgOutcome>> {
+    async fn get_dkg_outcome(&self) -> Result<Option<DkgOutcome>> {
         self.get(DKG_OUTCOME_KEY).await
     }
 
-    fn set_dkg_outcome(&mut self, outcome: DkgOutcome) -> Result<()> {
+    fn set_dkg_outcome(&mut self, outcome: DkgOutcome) {
         self.insert(DKG_OUTCOME_KEY, outcome)
     }
 
