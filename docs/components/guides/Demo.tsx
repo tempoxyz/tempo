@@ -105,9 +105,6 @@ export function Container(
 
   const balanceAddress = React.useMemo(() => {
     if (props.footerVariant !== 'balances') return address
-    console.log({
-      balanceSource: props.balanceSource,
-    })
 
     const source = props.balanceSource
     if (!source) return address
@@ -123,10 +120,6 @@ export function Container(
       const walletConnection = connections.find(
         (c) => c.connector.id !== 'webAuthn',
       )
-      console.log({
-        connections,
-        walletConnection,
-      })
       return walletConnection?.accounts[0]
     }
 

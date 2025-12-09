@@ -14,7 +14,8 @@ Get test stablecoins funded to your account using the form below after you conne
 <Demo.Container name="Use the Faucet" footerVariant="balances" tokens={[Token.pathUsd, Token.alphaUsd, Token.betaUsd, Token.thetaUsd]} balanceSource="wallet">
   <Step.ConnectWallet stepNumber={1} />
   <Step.AddFundsToWallet stepNumber={2} />
-  <Step.SetFeeToken stepNumber={3} last />
+  <Step.AddTokensToWallet stepNumber={3} />
+  <Step.SetFeeToken stepNumber={4} last />
 </Demo.Container>
 
 
