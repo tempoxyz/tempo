@@ -15,10 +15,9 @@ use commonware_runtime::{
 use futures::{StreamExt, future::join_all};
 use reth_ethereum::{
     chainspec::{ChainSpecProvider, EthChainSpec},
-    primitives::AlloyBlockHeader,
-    provider::{CanonStateNotification, CanonStateSubscriptions},
     rpc::eth::EthApiServer,
 };
+use reth_node_builder::ConsensusEngineEvent;
 use reth_node_core::primitives::transaction::TxHashRef;
 use tempo_chainspec::{hardfork::TempoHardforks, spec::TEMPO_BASE_FEE};
 use tempo_node::primitives::{
@@ -56,30 +55,38 @@ fn subblocks_are_included() {
         }))
         .await;
 
-        let mut stream = nodes[0].execution_provider().canonical_state_stream();
+        let mut stream = nodes[0]
+            .execution()
+            .add_ons_handle
+            .engine_events
+            .new_listener();
 
         let mut expected_transactions: Vec<TxHash> = Vec::new();
         while let Some(update) = stream.next().await {
-            let CanonStateNotification::Commit { new } = update else {
-                unreachable!("unexpected reorg");
+            let block = match update {
+                ConsensusEngineEvent::BlockReceived(_)
+                | ConsensusEngineEvent::ForkchoiceUpdated(_, _)
+                | ConsensusEngineEvent::CanonicalChainCommitted(_, _) => continue,
+                ConsensusEngineEvent::ForkBlockAdded(_, _) => unreachable!("unexpected reorg"),
+                ConsensusEngineEvent::InvalidBlock(_) => unreachable!("unexpected invalid block"),
+                ConsensusEngineEvent::CanonicalBlockAdded(block, _) => block,
             };
 
             // Assert that all expected transactions are included in the block.
             for tx in expected_transactions.drain(..) {
-                if !new.blocks().iter().any(|(_, block)| {
-                    block
-                        .sealed_block()
-                        .body()
-                        .transactions
-                        .iter()
-                        .any(|t| *t.tx_hash() == *tx)
-                }) {
+                if !block
+                    .sealed_block()
+                    .body()
+                    .transactions
+                    .iter()
+                    .any(|t| *t.tx_hash() == *tx)
+                {
                     panic!("transaction {tx} was not included");
                 }
             }
 
             // Exit once we reach height 20.
-            if new.tip().number() == 20 {
+            if block.block_number() == 20 {
                 break;
             }
 
@@ -98,7 +105,7 @@ fn subblocks_are_included_post_allegretto() {
     let _ = tempo_eyre::install();
 
     Runner::from(deterministic::Config::default().with_seed(0)).start(|context| async move {
-        let how_many_signers = 5;
+        let how_many_signers = 4;
 
         let setup = Setup::new()
             .how_many_signers(how_many_signers)
@@ -123,16 +130,24 @@ fn subblocks_are_included_post_allegretto() {
 
         join_all(nodes.iter_mut().map(|node| node.start())).await;
 
-        let mut stream = nodes[0].execution_provider().canonical_state_stream();
+        let mut stream = nodes[0]
+            .execution()
+            .add_ons_handle
+            .engine_events
+            .new_listener();
 
         let mut expected_transactions: Vec<TxHash> = Vec::new();
         while let Some(update) = stream.next().await {
-            let CanonStateNotification::Commit { new } = update else {
-                unreachable!("unexpected reorg");
+            let block = match update {
+                ConsensusEngineEvent::BlockReceived(_)
+                | ConsensusEngineEvent::ForkchoiceUpdated(_, _)
+                | ConsensusEngineEvent::CanonicalChainCommitted(_, _) => continue,
+                ConsensusEngineEvent::ForkBlockAdded(_, _) => unreachable!("unexpected reorg"),
+                ConsensusEngineEvent::InvalidBlock(_) => unreachable!("unexpected invalid block"),
+                ConsensusEngineEvent::CanonicalBlockAdded(block, _) => block,
             };
 
-            let block = new.blocks().iter().next().unwrap().1;
-            let receipts = new.receipts_by_block_hash(block.hash()).unwrap();
+            let receipts = block.execution_outcome().receipts().first().unwrap();
 
             // Assert that block only contains our subblock transactions and 3 system transactions
             assert_eq!(
@@ -159,7 +174,7 @@ fn subblocks_are_included_post_allegretto() {
             }
 
             if !expected_transactions.is_empty() {
-                let fee_token_storage = &new
+                let fee_token_storage = &block
                     .execution_outcome()
                     .state()
                     .account(&DEFAULT_FEE_TOKEN_POST_ALLEGRETTO)
@@ -176,7 +191,7 @@ fn subblocks_are_included_post_allegretto() {
             }
 
             // Exit once we reach height 20.
-            if new.tip().number() == 20 {
+            if block.block_number() == 20 {
                 break;
             }
 
@@ -220,17 +235,24 @@ fn subblocks_are_included_post_allegretto_with_failing_txs() {
 
         join_all(nodes.iter_mut().map(|node| node.start())).await;
 
-        let mut stream = nodes[0].execution_provider().canonical_state_stream();
+        let mut stream = nodes[0]
+            .execution()
+            .add_ons_handle
+            .engine_events
+            .new_listener();
 
         let mut expected_transactions: Vec<TxHash> = Vec::new();
         let mut failing_transactions: Vec<TxHash> = Vec::new();
         while let Some(update) = stream.next().await {
-            let CanonStateNotification::Commit { new } = update else {
-                unreachable!("unexpected reorg");
+            let block = match update {
+                ConsensusEngineEvent::BlockReceived(_)
+                | ConsensusEngineEvent::ForkchoiceUpdated(_, _)
+                | ConsensusEngineEvent::CanonicalChainCommitted(_, _) => continue,
+                ConsensusEngineEvent::ForkBlockAdded(_, _) => unreachable!("unexpected reorg"),
+                ConsensusEngineEvent::InvalidBlock(_) => unreachable!("unexpected invalid block"),
+                ConsensusEngineEvent::CanonicalBlockAdded(block, _) => block,
             };
-
-            let block = new.blocks().iter().next().unwrap().1;
-            let receipts = new.receipts_by_block_hash(block.hash()).unwrap();
+            let receipts = block.execution_outcome().receipts().first().unwrap();
 
             // Assert that block only contains our subblock transactions and 3 system transactions
             assert_eq!(
@@ -252,7 +274,14 @@ fn subblocks_are_included_post_allegretto_with_failing_txs() {
             }
 
             let fee_recipients = Vec::<SubBlockMetadata>::decode(
-                &mut block.body().transactions.last().unwrap().input().as_ref(),
+                &mut block
+                    .sealed_block()
+                    .body()
+                    .transactions
+                    .last()
+                    .unwrap()
+                    .input()
+                    .as_ref(),
             )
             .unwrap()
             .into_iter()
@@ -267,7 +296,10 @@ fn subblocks_are_included_post_allegretto_with_failing_txs() {
             let mut expected_fees = HashMap::new();
             let mut cumulative_gas_used = 0;
 
-            for (receipt, tx) in receipts.iter().zip(block.transactions_recovered()) {
+            for (receipt, tx) in receipts
+                .iter()
+                .zip(block.recovered_block().transactions_recovered())
+            {
                 if !expected_transactions.contains(tx.tx_hash()) {
                     continue;
                 }
@@ -293,7 +325,7 @@ fn subblocks_are_included_post_allegretto_with_failing_txs() {
                 let nonce_slot =
                     double_mapping_slot(sender, nonce_key.as_storage_bytes(), nonce::slots::NONCES);
 
-                let slot = new
+                let slot = block
                     .execution_outcome()
                     .account_state(&NONCE_PRECOMPILE_ADDRESS)
                     .unwrap()
@@ -309,7 +341,7 @@ fn subblocks_are_included_post_allegretto_with_failing_txs() {
             }
 
             for (fee_recipient, expected_fee) in expected_fees {
-                let fee_token_storage = &new
+                let fee_token_storage = &block
                     .execution_outcome()
                     .state()
                     .account(&DEFAULT_FEE_TOKEN_POST_ALLEGRETTO)
@@ -324,7 +356,7 @@ fn subblocks_are_included_post_allegretto_with_failing_txs() {
             }
 
             // Exit once we reach height 20.
-            if new.tip().number() == 20 {
+            if block.block_number() == 20 {
                 break;
             }
 
