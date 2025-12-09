@@ -217,7 +217,6 @@ impl AA2dPool {
 
         // Record metrics
         self.metrics.inc_inserted();
-        self.update_metrics();
 
         if inserted_as_pending {
             if !promoted.is_empty() {
