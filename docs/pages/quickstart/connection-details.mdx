@@ -3,7 +3,6 @@ mipd: true
 ---
 
 import * as Demo from '../../components/guides/Demo.tsx'
-import { Faucet } from '../../components/Faucet.tsx'
 import { ConnectWallet } from '../../components/ConnectWallet.tsx'
 
 ## Connect to the Network
@@ -26,7 +25,7 @@ To connect via CLI, we recommend using [`cast`](https://getfoundry.sh/cast/overv
 
 ```bash /dev/null/monitor.sh#L1-11
 # Check block height (should be steadily increasing)
-cast block-number --rpc-url http://rpc.testnet.tempo.xyz
+cast block-number --rpc-url https://rpc.testnet.tempo.xyz
 ```
 
 ### Direct Connection Details

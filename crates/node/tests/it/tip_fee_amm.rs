@@ -261,7 +261,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
 
     // Note: This test uses moderato genesis to test pre-allegretto behavior
     let setup = TestNodeBuilder::new()
-        .with_genesis(include_str!("../assets/test-genesis-moderato.json").to_string())
+        .allegretto_activated()
         .build_http_only()
         .await?;
     let http_url = setup.http_url;

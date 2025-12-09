@@ -59,6 +59,12 @@ EOF
     return 1
 }
 
+# Print installer version
+version() {
+    echo "$TEMPOUP_INSTALLER_VERSION"
+    exit 0
+}
+
 # Download release asset
 download_file() {
     local tag="$1"
@@ -69,9 +75,23 @@ download_file() {
     local output_path="$output_dir/$filename"
 
     info "Downloading $filename..."
-    if ! curl -#Lo "$output_path" "$url"; then
+    if ! curl -#fLo "$output_path" "$url"; then
         error "Failed to download $filename from $url"
     fi
+}
+
+# Compute SHA256 hash of a file
+compute_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
+
+# Check if command exists
+check_cmd() {
+    command -v "$1" &>/dev/null
 }
 
 # Check if tempoup installer is up to date
@@ -146,7 +166,10 @@ update_tempoup() {
 VERSION=""
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --version)
+        -v|--version)
+            version
+            ;;
+        -i|--install)
             VERSION="$2"
             shift 2
             ;;
@@ -157,13 +180,15 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: tempoup [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --version <VERSION>    Install specific version (e.g., v1.0.0)"
+            echo "  -v, --version         Print tempoup installer version"
+            echo "  -i, --install <VER>   Install specific tempo version (e.g., v1.0.0)"
             echo "  -U, --update          Update tempoup to the latest version"
             echo "  -h, --help            Show this help message"
             echo ""
             echo "Examples:"
             echo "  tempoup                   # Install latest release"
-            echo "  tempoup --version v1.0.0  # Install specific version"
+            echo "  tempoup -i v1.0.0         # Install specific version"
+            echo "  tempoup -v                # Print installer version"
             echo "  tempoup --update          # Update tempoup itself"
             exit 0
             ;;
@@ -316,7 +341,19 @@ main() {
     info "Verifying checksum..."
     download_file "$VERSION_TAG" "${ARCHIVE_NAME}.sha256" "$TMP_DIR"
 
-    (cd "$TMP_DIR" && shasum -a 256 -c "${ARCHIVE_NAME}.sha256") || error "Checksum verification failed"
+    # Read expected checksum from file (first word on first line)
+    EXPECTED_CHECKSUM=$(head -n1 "$TMP_DIR/${ARCHIVE_NAME}.sha256" | awk '{print $1}')
+
+    # Compute actual checksum of downloaded archive
+    ACTUAL_CHECKSUM=$(compute_sha256 "$ARCHIVE_PATH")
+
+    if [ "$EXPECTED_CHECKSUM" != "$ACTUAL_CHECKSUM" ]; then
+        error "Checksum verification failed
+  Expected: $EXPECTED_CHECKSUM
+  Actual:   $ACTUAL_CHECKSUM"
+    fi
+
+    info "Checksum verified ✓"
 
     # Extract archive
     info "Extracting archive..."

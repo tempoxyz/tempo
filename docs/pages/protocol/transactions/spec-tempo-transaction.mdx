@@ -175,6 +175,7 @@ Each authorization in the list:
 
 - **Protocol nonce (key 0)**: Existing account nonce, incremented for regular txs, 7702 authorization, or `CREATE`
 - **User nonces (keys 1-N)**: Enable parallel execution with special gas schedule
+- **Reserved sequence keys**: Nonce sequence keys with the most significant byte `0x5b` are reserved for [sub-block transactions](/protocol/blockspace/sub-block-specification#11-sub-block-transactions).
 
 #### Account State Changes
 - `nonces: mapping(uint256 => uint64)` - 2D nonce tracking
