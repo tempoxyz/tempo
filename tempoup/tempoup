@@ -59,31 +59,31 @@ EOF
     return 1
 }
 
-# Download release asset using gh CLI
+# Download release asset
 download_file() {
     local tag="$1"
-    local pattern="$2"
+    local filename="$2"
     local output_dir="$3"
 
-    if ! gh release download "$tag" \
-        --repo "$REPO" \
-        --pattern "$pattern" \
-        --dir "$output_dir" \
-        --clobber; then
-        error "Failed to download $pattern from release $tag"
+    local url="https://github.com/${REPO}/releases/download/${tag}/${filename}"
+    local output_path="$output_dir/$filename"
+
+    info "Downloading $filename..."
+    if ! curl -#Lo "$output_path" "$url"; then
+        error "Failed to download $filename from $url"
     fi
 }
 
 # Check if tempoup installer is up to date
 check_installer_up_to_date() {
-    # Skip check if gh CLI not available
-    if ! command -v gh >/dev/null 2>&1; then
+    # Skip check if curl not available
+    if ! command -v curl >/dev/null 2>&1; then
         return
     fi
 
-    # Fetch the remote version using gh CLI
-    local remote_version=$(gh api "repos/$REPO/contents/tempoup/tempoup?ref=main" \
-        --jq '.content' 2>/dev/null | base64 -d 2>/dev/null | grep '^TEMPOUP_INSTALLER_VERSION=' | sed -E 's/TEMPOUP_INSTALLER_VERSION="(.+)"/\1/')
+    # Fetch the remote version
+    local remote_version=$(curl -fsSL "$TEMPOUP_BIN_URL" 2>/dev/null | \
+        grep '^TEMPOUP_INSTALLER_VERSION=' | sed -E 's/TEMPOUP_INSTALLER_VERSION="(.+)"/\1/')
 
     if [[ -z "$remote_version" ]]; then
         return
@@ -103,19 +103,18 @@ check_installer_up_to_date() {
 update_tempoup() {
     info "Updating tempoup..."
 
-    if ! command -v gh >/dev/null 2>&1; then
-        error "gh CLI not found. Install from https://cli.github.com"
+    if ! command -v curl >/dev/null 2>&1; then
+        error "curl not found. Please install curl."
     fi
 
     # Create temporary file
     local tmp_file=$(mktemp)
     trap "rm -f $tmp_file" EXIT
 
-    # Download latest tempoup script using gh CLI
+    # Download latest tempoup script
     info "Downloading latest tempoup..."
 
-    if ! gh api "repos/$REPO/contents/tempoup/tempoup?ref=main" \
-        --jq '.content' 2>/dev/null | base64 -d > "$tmp_file" 2>/dev/null; then
+    if ! curl -fsSL "$TEMPOUP_BIN_URL" -o "$tmp_file" 2>/dev/null; then
         error "Failed to download tempoup update"
     fi
 
@@ -249,17 +248,15 @@ detect_target() {
     esac
 }
 
-# Get latest release tag from GitHub using gh CLI
+# Get latest release tag from GitHub
 get_latest_version() {
-    if ! command -v gh >/dev/null 2>&1; then
-        error "gh CLI not found. Install from https://cli.github.com"
+    if ! command -v curl >/dev/null 2>&1; then
+        error "curl not found. Please install curl."
     fi
 
-    if ! gh auth status >/dev/null 2>&1; then
-        error "gh CLI not authenticated. Run 'gh auth login'"
-    fi
-
-    local version=$(gh release view --repo "$REPO" --json tagName --jq '.tagName' 2>/dev/null)
+    local api_url="https://api.github.com/repos/$REPO/releases/latest"
+    local version=$(curl -sSL "$api_url" 2>/dev/null | \
+        grep '"tag_name":' | head -n 1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
 
     if [[ -z "$version" ]]; then
         error "Failed to fetch latest version from GitHub"

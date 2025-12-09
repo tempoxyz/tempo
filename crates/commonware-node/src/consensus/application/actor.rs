@@ -314,7 +314,12 @@ impl Inner<Init> {
                 ))
            },
 
-            res = self.clone().propose(context.clone(), parent_view, parent_digest, round) => {
+            res = self.clone().propose(
+                context.clone(),
+                parent_view,
+                parent_digest,
+                round
+            ) => {
                 res.wrap_err("failed creating a proposal")
             }
         )?;
@@ -330,7 +335,8 @@ impl Inner<Init> {
 
         response.send(proposal_digest).map_err(|_| {
             eyre!(
-                "failed returning proposal to consensus engine: response channel was already closed"
+                "failed returning proposal to consensus engine: response \
+                channel was already closed"
             )
         })?;
 
@@ -345,7 +351,8 @@ impl Inner<Init> {
             *lock = Some(proposal.clone());
         }
 
-        // Make sure reth sees the new payload so that in the next round we can verify blocks on top of it.
+        // Make sure reth sees the new payload so that in the next round we can
+        // verify blocks on top of it.
         let is_good = verify_block(
             context,
             round.epoch(),
@@ -365,17 +372,6 @@ impl Inner<Init> {
             eyre::bail!("validation reported that that just-proposed block is invalid");
         }
 
-        if let Err(error) = self
-            .state
-            .executor_mailbox
-            .canonicalize_head(proposal_height, proposal_digest)
-        {
-            warn!(
-                %error,
-                %proposal_digest,
-                "failed making the proposal the head of the canonical chain",
-            );
-        }
         Ok(())
     }
 

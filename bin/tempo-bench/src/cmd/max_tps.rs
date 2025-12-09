@@ -156,6 +156,10 @@ pub struct MaxTpsArgs {
     /// Calls admin_clearTxpool.
     #[arg(long)]
     clear_txpool: bool,
+
+    /// Disable 2D nonces
+    #[arg(long)]
+    disable_2d_nonces: bool,
 }
 
 impl MaxTpsArgs {
@@ -171,27 +175,62 @@ impl MaxTpsArgs {
             increase_nofile_limit(fd_limit).context("Failed to increase nofile limit")?;
         }
 
-        info!(accounts = self.accounts, "Creating signers");
-        let signer_provider_manager = SignerProviderManager::new(
-            self.mnemonic.resolve(),
-            self.from_mnemonic_index,
-            accounts,
-            self.target_urls.clone(),
-            Box::new(|target_url, _cached_nonce_manager| {
-                ProviderBuilder::new_with_network::<TempoNetwork>()
-                    .with_random_2d_nonces()
-                    .connect_http(target_url)
-            }),
-            Box::new(|signer, target_url, cached_nonce_manager| {
-                ProviderBuilder::default()
-                    .fetch_chain_id()
-                    .with_gas_estimation()
-                    .with_nonce_management(cached_nonce_manager)
-                    .wallet(signer)
-                    .connect_http(target_url)
-                    .erased()
-            }),
-        );
+        let signer_provider_factory = Box::new(|signer, target_url, cached_nonce_manager| {
+            ProviderBuilder::default()
+                .fetch_chain_id()
+                .with_gas_estimation()
+                .with_nonce_management(cached_nonce_manager)
+                .wallet(signer)
+                .connect_http(target_url)
+                .erased()
+        });
+
+        if self.disable_2d_nonces {
+            info!(
+                accounts = self.accounts,
+                "Creating signers (with standard nonces)"
+            );
+            let signer_provider_manager = SignerProviderManager::new(
+                self.mnemonic.resolve(),
+                self.from_mnemonic_index,
+                accounts,
+                self.target_urls.clone(),
+                Box::new(|target_url, cached_nonce_manager| {
+                    ProviderBuilder::default()
+                        .fetch_chain_id()
+                        .with_gas_estimation()
+                        .with_nonce_management(cached_nonce_manager)
+                        .connect_http(target_url)
+                }),
+                signer_provider_factory,
+            );
+            self.run_with_manager(signer_provider_manager).await
+        } else {
+            info!(
+                accounts = self.accounts,
+                "Creating signers (with 2D nonces)"
+            );
+            let signer_provider_manager = SignerProviderManager::new(
+                self.mnemonic.resolve(),
+                self.from_mnemonic_index,
+                accounts,
+                self.target_urls.clone(),
+                Box::new(|target_url, _cached_nonce_manager| {
+                    ProviderBuilder::new_with_network::<TempoNetwork>()
+                        .with_random_2d_nonces()
+                        .connect_http(target_url)
+                }),
+                signer_provider_factory,
+            );
+            self.run_with_manager(signer_provider_manager).await
+        }
+    }
+
+    async fn run_with_manager<F: TxFiller<TempoNetwork> + 'static>(
+        self,
+        signer_provider_manager: SignerProviderManager<F>,
+    ) -> eyre::Result<()> {
+        let accounts = self.accounts.get();
         let signer_providers = signer_provider_manager.signer_providers();
 
         if self.clear_txpool {
