@@ -526,6 +526,32 @@ export default defineConfig({
               link: '/sdk/typescript/viem/setup',
             },
             {
+              text: 'Accounts',
+              collapsed: true,
+              items: [
+                {
+                  text: 'Overview',
+                  link: '/sdk/typescript/viem/accounts',
+                },
+                {
+                  text: 'fromWebAuthnP256',
+                  link: '/sdk/typescript/viem/account.fromWebAuthnP256',
+                },
+                {
+                  text: 'fromWebCryptoP256',
+                  link: '/sdk/typescript/viem/account.fromWebCryptoP256',
+                },
+                {
+                  text: 'fromSecp256k1',
+                  link: '/sdk/typescript/viem/account.fromSecp256k1',
+                },
+                {
+                  text: 'fromP256',
+                  link: '/sdk/typescript/viem/account.fromP256',
+                },
+              ],
+            },
+            {
               text: 'Actions',
               collapsed: true,
               items: [
@@ -864,7 +890,7 @@ export default defineConfig({
                 },
                 {
                   text: 'withFeePayer',
-                  link: '/sdk/typescript/viem/withFeePayer',
+                  link: '/sdk/typescript/viem/transport.withFeePayer',
                 },
               ],
             },
