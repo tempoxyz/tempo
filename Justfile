@@ -27,14 +27,14 @@ genesis accounts="1000" output="genesis.json" profile="maxperf":
 [group('localnet')]
 [doc('Deletes local network data and launches a new localnet')]
 [confirm('This will wipe your data directory (unless you have reset=false) - please confirm before proceeding (y/n):')]
-localnet accounts="1000" reset="true" profile="maxperf" features="asm-keccak" args="":
+localnet accounts="1000" reset="true" profile="profiling" features="asm-keccak" args="":
     #!/bin/bash
     if [[ "{{reset}}" = "true" ]]; then
         rm -r ./localnet/ || true
         mkdir ./localnet/
         just genesis {{accounts}} ./localnet/genesis.json {{profile}}
     fi;
-    cargo run --bin tempo --profile {{profile}} --features {{features}} -- \
+    cargo run --bin tempo --profile {{profile}} --features "{{features}}" -- \
                       node \
                       --chain ./localnet/genesis.json \
                       --dev \

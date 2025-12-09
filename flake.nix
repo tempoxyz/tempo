@@ -59,15 +59,6 @@
           ];
         };
 
-        withMold = prev: {
-          buildInputs = prev.buildInputs or [ ] ++ [
-            pkgs.mold
-          ];
-          RUSTFLAGS = prev.RUSTFLAGS or [ ] ++ [
-            "-Clink-arg=-fuse-ld=${pkgs.mold}/bin/mold"
-          ];
-        };
-
         mkTempo =
           overrides:
           craneLib.buildPackage (
@@ -84,15 +75,10 @@
       in
       {
         packages = rec {
-          tempo = mkTempo (
-            [
-              withClang
-              withMaxPerf
-            ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-              withMold
-            ]
-          );
+          tempo = mkTempo [
+            withClang
+            withMaxPerf
+          ];
 
           default = tempo;
         };
@@ -101,9 +87,6 @@
           let
             overrides = [
               withClang
-            ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-              withMold
             ];
           in
           craneLib.devShell (
