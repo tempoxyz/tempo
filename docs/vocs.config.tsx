@@ -64,10 +64,6 @@ export default defineConfig({
         ],
       },
       {
-        text: 'Ecosystem',
-        link: '/ecosystem',
-      },
-      {
         text: 'Integrate Tempo Testnet',
         items: [
           {
