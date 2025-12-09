@@ -3,7 +3,6 @@ import { Hooks } from 'tempo.ts/wagmi'
 import { useConnection, useConnectionEffect } from 'wagmi'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function CancelOrder(props: DemoStepProps) {
@@ -43,7 +42,7 @@ export function CancelOrder(props: DemoStepProps) {
           disabled={!active}
           onClick={() => {
             if (orderId) {
-              cancelOrder.mutate({ orderId, feeToken: alphaUsd })
+              cancelOrder.mutate({ orderId })
             }
           }}
           type="button"

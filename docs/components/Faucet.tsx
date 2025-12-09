@@ -141,7 +141,6 @@ export function Faucet() {
       setUserToken.mutate(
         {
           token: resolvedFeeToken as Address,
-          feeToken: alphaUsd,
           chainId: defaultChainId,
           account: address,
         },

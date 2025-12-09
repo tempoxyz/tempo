@@ -44,7 +44,6 @@ export function SendRelayerSponsoredPayment(props: DemoStepProps) {
       to: recipient as `0x${string}`,
       token: alphaUsd,
       memo: memo ? pad(stringToHex(memo), { size: 32 }) : undefined,
-      feeToken: alphaUsd,
       feePayer: true,
     })
   }
