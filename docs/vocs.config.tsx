@@ -508,6 +508,10 @@ export default defineConfig({
             link: '/learn/tempo',
           },
           {
+            text: 'Stablecoin DEX',
+            link: '/learn/tempo/stablecoin-dex',
+          },
+          {
             text: 'Native Stablecoins',
             link: '/learn/tempo/native-stablecoins',
           },

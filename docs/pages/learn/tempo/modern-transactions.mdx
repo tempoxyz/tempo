@@ -14,7 +14,7 @@ On other chains, even when available, these are generally add-on functionalities
 
 ## Batched Payments
 
-Payment processors and platforms often need to send thousands of payments at once—payroll runs, merchant settlements, customer refunds. Tempo's native account abstraction enables batch transactions where multiple operations execute atomically in a single transaction.
+Payment processors and platforms often need to send thousands of payments at once (e.g., payroll runs, merchant settlements, customer refunds). Tempo's native account abstraction enables batch transactions where multiple operations execute atomically in a single transaction.
 
 This unlocks high-volume use cases: orchestrators can submit thousands of payouts as a single operation, rather than submitting them one-by-one and tracking individual success or failure. If any operation in the batch fails, the entire batch reverts, ensuring atomic execution across all payments. This is critical for payment operators who need guaranteed settlement guarantees for their workflows.
 
@@ -24,7 +24,7 @@ This unlocks high-volume use cases: orchestrators can submit thousands of payout
 
 ## Fee Sponsorship
 
-Applications often want to pay transaction fees on behalf of their users—to simplify onboarding, to improve the user experience, or to remove friction from their payment flows. 
+Applications often want to pay transaction fees on behalf of their users. For instance, to simplify onboarding, to improve the user experience, or to remove friction from their payment flows. 
 
 Tempo's protocol-level fee sponsorship allows an account to sign a transaction while a separate sponsor (typically the application) pays the gas fee. This means end users can interact with your application without holding any tokens for fees, dramatically lowering the barrier to entry.
 
@@ -46,7 +46,7 @@ This enables "set and forget" payment operations directly at the protocol level,
 
 Tempo supports passkey authentication through WebAuthn/P256 signature validation, built directly into the protocol. Users can authenticate with the same biometrics (fingerprint, Face ID) they already use for other apps.
 
-Their keys are stored in their device's secure enclave, and passkeys sync across devices via services they already use such as iCloud Keychain or Google Password Manager. This removes significant barriers to mainstream adoption—users don't need to secure a 12 or 24-word seed phrase for traditional wallets. For payment applications, this means onboarding flows can be as simple as existing consumer apps, without sacrificing security.
+Their keys are stored in their device's secure enclave, and passkeys sync across devices via services they already use such as iCloud Keychain or Google Password Manager. This way, users don't need to secure a 12 or 24-word seed phrase for traditional wallets. For payment applications, this means onboarding flows can be as simple as existing consumer apps, without sacrificing security.
 
 Tempo uses an [EIP-2718](https://eips.ethereum.org/EIPS/eip-2718) transaction type with native support for these features.
 
