@@ -3,12 +3,12 @@ import { Hooks } from 'tempo.ts/wagmi'
 import { type Address, isAddress } from 'viem'
 import { useChainId, useConfig, useConnection } from 'wagmi'
 import { Button, ExplorerLink, Step, StringFormatter } from '../../Demo'
-import { alphaUsd, betaUsd, pathUsd, thetaUsd } from '../../tokens'
+import { alphaUsd, betaUsd, thetaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 type FeeTokenOption =
   | {
-      value: 'alpha' | 'beta' | 'theta' | 'path'
+      value: 'alpha' | 'beta' | 'theta'
       label: string
       address: Address
     }
@@ -18,7 +18,6 @@ const FEE_TOKEN_OPTIONS = [
   { value: 'alpha', label: 'AlphaUSD', address: alphaUsd },
   { value: 'beta', label: 'BetaUSD', address: betaUsd },
   { value: 'theta', label: 'ThetaUSD', address: thetaUsd },
-  { value: 'path', label: 'PathUSD', address: pathUsd },
   { value: 'other', label: 'Other (custom)' },
 ] as const satisfies readonly FeeTokenOption[]
 
@@ -32,7 +31,7 @@ export function SetFeeToken(props: DemoStepProps) {
   const config = useConfig()
 
   const [selectedFeeToken, setSelectedFeeToken] =
-    React.useState<FeeTokenOption['value']>('path')
+    React.useState<FeeTokenOption['value']>('alpha')
   const [customFeeToken, setCustomFeeToken] = React.useState('')
   const [txHash, setTxHash] = React.useState<string | undefined>(undefined)
 
