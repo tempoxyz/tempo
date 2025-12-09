@@ -100,10 +100,10 @@ where
 
         // Run migration from old metadata stores if needed
         {
-            let mut tx = db.read_write()?;
+            let mut tx = db.read_write();
             super::migrate::maybe_migrate_to_db(&context, &config.partition_prefix, &mut tx)
                 .await?;
-            tx.set_node_version(env!("CARGO_PKG_VERSION").to_string())?;
+            tx.set_node_version(env!("CARGO_PKG_VERSION").to_string());
             tx.commit().await?;
         }
 
@@ -171,7 +171,7 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
-        let mut tx = self.db.read_write().expect("must be able to open tx");
+        let mut tx = self.db.read_write();
 
         self.pre_allegretto_init(&mut tx).await;
 
@@ -224,7 +224,7 @@ where
                 // In other words: no dealing will ever have to be verified if it is
                 // for another epoch than the currently latest one.
                 super::Command::VerifyDealing(verify_dealing) => {
-                    let mut tx = self.db.read_write().expect("must be able to open tx");
+                    let mut tx = self.db.read_write();
                     let outcome = if tx.has_post_allegretto_state().await {
                         verify_dealing
                             .dealing
@@ -303,7 +303,7 @@ where
         cause: Span,
         GetOutcome { response }: GetOutcome,
     ) -> eyre::Result<()> {
-        let mut tx = self.db.read_write()?;
+        let mut tx = self.db.read_write();
 
         let outcome = tx.get_public_outcome().await?.ok_or_else(|| {
             eyre!(
@@ -365,7 +365,7 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let mut tx = self.db.read_write().expect("must be able to open tx");
+        let mut tx = self.db.read_write();
 
         if self.is_running_post_allegretto(&block, &mut tx).await {
             self.handle_finalized_post_allegretto(
@@ -443,8 +443,7 @@ where
             EpochState::PostModerato(epoch_state) => epoch_state.validator_state.clone(),
         };
 
-        tx.set_validators(epoch_state.epoch(), new_validator_state.clone())
-            .expect("must be able to set validators");
+        tx.set_validators(epoch_state.epoch(), new_validator_state.clone());
 
         self.config
             .epoch_manager

@@ -54,14 +54,12 @@ where
                 participants: self.config.initial_validators.keys().clone(),
                 public: self.config.initial_public_polynomial.clone(),
                 share: self.config.initial_share.clone(),
-            })
-            .expect("must be able to set epoch");
+            });
 
             tx.set_validators(
                 0,
                 ValidatorState::with_unknown_contract_state(self.config.initial_validators.clone()),
-            )
-            .expect("must be able to set validators");
+            );
         }
     }
 
@@ -191,8 +189,7 @@ where
                     ValidatorState::with_unknown_contract_state(
                         self.config.initial_validators.clone(),
                     ),
-                )
-                .expect("must be able to set validators");
+                );
             } else {
                 warn!(
                     "block was a boundary block, but not the last block of the \
@@ -286,8 +283,7 @@ where
             .expect("must be able to read epoch")
             .expect("there must always be a current epoch state");
 
-        tx.set_previous_epoch(old_epoch_state)
-            .expect("must be able to set previous epoch");
+        tx.set_previous_epoch(old_epoch_state);
 
         let new_epoch_state = EpochState {
             epoch: next_epoch,
@@ -295,8 +291,7 @@ where
             public,
             share,
         };
-        tx.set_epoch(new_epoch_state.clone())
-            .expect("must be able to set epoch");
+        tx.set_epoch(new_epoch_state.clone());
 
         // Prune older ceremony.
         if let Some(epoch) = new_epoch_state.epoch.checked_sub(2) {

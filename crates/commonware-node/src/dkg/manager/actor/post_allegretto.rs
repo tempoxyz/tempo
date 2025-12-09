@@ -199,8 +199,7 @@ where
             participants: ceremony_outcome.participants,
             public,
             share,
-        })
-        .expect("must always be able to persist the DKG outcome");
+        });
 
         // Prune older ceremony.
         if let Some(epoch) = current_epoch.checked_sub(1) {
@@ -277,8 +276,7 @@ where
             validator_state: new_validator_state.clone(),
         };
 
-        tx.set_epoch(new_epoch_state)
-            .expect("syncing state must always work");
+        tx.set_epoch(new_epoch_state);
 
         self.register_current_epoch_state(tx).await;
 
@@ -391,11 +389,9 @@ where
             validator_state: new_validator_state.clone(),
         };
 
-        tx.set_previous_epoch(old_epoch_state)
-            .expect("must be able to set previous epoch");
+        tx.set_previous_epoch(old_epoch_state);
 
-        tx.set_epoch(new_epoch_state.clone())
-            .expect("must be able to set epoch");
+        tx.set_epoch(new_epoch_state.clone());
 
         self.register_current_epoch_state(tx).await;
     }

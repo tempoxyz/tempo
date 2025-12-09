@@ -135,7 +135,7 @@ where
         for epoch in current.saturating_sub(2)..=current {
             if let Some(state) = ceremony_metadata.get(&U64::from(epoch)) {
                 info!(epoch, "migrating ceremony state");
-                tx.set_ceremony(epoch, state.clone())?;
+                tx.set_ceremony(epoch, state.clone());
             }
         }
     }
@@ -201,7 +201,7 @@ where
             regime = ?E::REGIME,
             "migrating current epoch state"
         );
-        tx.set_epoch(current_epoch.clone())?;
+        tx.set_epoch(current_epoch.clone());
     }
 
     if let Some(previous_epoch) = epoch_metadata.get(&PREVIOUS_EPOCH_KEY) {
@@ -210,7 +210,7 @@ where
             regime = ?E::REGIME,
             "migrating previous epoch state"
         );
-        tx.set_previous_epoch(previous_epoch.clone())?;
+        tx.set_previous_epoch(previous_epoch.clone());
     }
 
     Ok(())
@@ -233,7 +233,7 @@ where
 
     if let Some(outcome) = dkg_outcome_metadata.get(&DKG_OUTCOME_KEY) {
         info!(epoch = outcome.epoch, "migrating DKG outcome");
-        tx.set_dkg_outcome(outcome.clone())?;
+        tx.set_dkg_outcome(outcome.clone());
     }
 
     Ok(())
@@ -260,7 +260,7 @@ where
         for epoch in current.saturating_sub(3)..=current {
             if let Some(state) = validators_metadata.get(&U64::from(epoch)) {
                 info!(epoch, "migrating validators state");
-                tx.set_validators(epoch, state.clone())?;
+                tx.set_validators(epoch, state.clone());
             }
         }
     }

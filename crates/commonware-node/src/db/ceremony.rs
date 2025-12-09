@@ -56,6 +56,7 @@ where
     {
         let mut state = self.get_ceremony(epoch).await?.unwrap_or_default();
         f(&mut state);
-        self.set_ceremony(epoch, state)
+        self.set_ceremony(epoch, state);
+        Ok(())
     }
 }

@@ -263,8 +263,7 @@ where
                     }),
                     ..State::default()
                 },
-            )
-            .expect("must always be able to initialize the ceremony state to disk");
+            );
         };
 
         metrics.how_often_player.inc_by(player_me.is_some() as u64);
