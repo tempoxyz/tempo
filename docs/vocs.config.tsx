@@ -508,10 +508,6 @@ export default defineConfig({
             link: '/learn/tempo',
           },
           {
-            text: 'Unified Liquidity',
-            link: '/learn/tempo/unified-liquidity',
-          },
-          {
             text: 'Native Stablecoins',
             link: '/learn/tempo/native-stablecoins',
           },
