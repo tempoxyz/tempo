@@ -52,16 +52,12 @@ export default defineConfig({
   sidebar: {
     '/': [
       {
-        items: [
-          {
-            text: 'Home',
-            link: '/',
-          },
-          {
-            text: 'Ecosystem',
-            link: '/ecosystem',
-          }
-        ],
+        text: 'Home',
+        link: '/',
+      },
+      {
+        text: 'Ecosystem',
+        link: '/ecosystem',
       },
       {
         text: 'Integrate Tempo Testnet',
