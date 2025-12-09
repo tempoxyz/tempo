@@ -70,8 +70,9 @@ contract FeeAMMTest is BaseTest {
         uint256 minLiq = 1000; // MIN_LIQUIDITY constant
 
         vm.prank(alice);
-        uint256 liquidity =
-            amm.mintWithValidatorToken(address(userToken), address(validatorToken), amountV, alice);
+        uint256 liquidity = amm.mintWithValidatorToken(
+            address(userToken), address(validatorToken), amountV, alice
+        );
 
         // Expected liquidity: amountV/2 - MIN_LIQUIDITY
         uint256 expected = amountV / 2 - minLiq;
@@ -107,30 +108,31 @@ contract FeeAMMTest is BaseTest {
         // IDENTICAL_ADDRESSES
         try amm.mintWithValidatorToken(address(userToken), address(userToken), 1e18, alice) {
             revert CallShouldHaveReverted();
-        } catch Error(string memory reason) {
-            assertEq(reason, "IDENTICAL_ADDRESSES");
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IFeeAMM.IdenticalAddresses.selector));
         }
 
         // INVALID_TOKEN - userToken
         try amm.mintWithValidatorToken(address(0x1234), address(validatorToken), 1e18, alice) {
             revert CallShouldHaveReverted();
-        } catch Error(string memory reason) {
-            assertEq(reason, "INVALID_TOKEN");
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IFeeAMM.InvalidToken.selector));
         }
 
         // INVALID_TOKEN - validatorToken
         try amm.mintWithValidatorToken(address(userToken), address(0x1234), 1e18, alice) {
             revert CallShouldHaveReverted();
-        } catch Error(string memory reason) {
-            assertEq(reason, "INVALID_TOKEN");
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IFeeAMM.InvalidToken.selector));
         }
 
         // ONLY_USD_TOKENS (valid TIP20 but non-USD currency)
         TIP20 eurToken = TIP20(factory.createToken("Euro", "EUR", "EUR", pathUSD, admin));
+
         try amm.mintWithValidatorToken(address(eurToken), address(validatorToken), 1e18, alice) {
             revert CallShouldHaveReverted();
-        } catch Error(string memory reason) {
-            assertEq(reason, "ONLY_USD_TOKENS");
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IFeeAMM.InvalidCurrency.selector));
         }
 
         vm.stopPrank();
@@ -190,8 +192,8 @@ contract FeeAMMTest is BaseTest {
         vm.prank(alice);
         try amm.burn(address(userToken), address(validatorToken), aliceLiquidity + 1, alice) {
             revert CallShouldHaveReverted();
-        } catch Error(string memory reason) {
-            assertEq(reason, "INSUFFICIENT_LIQUIDITY");
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IFeeAMM.InsufficientLiquidity.selector));
         }
     }
 
@@ -223,13 +225,23 @@ contract FeeAMMTest is BaseTest {
 
         bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
 
+        uint256 reserveValidatorToken = uint256(5000e18);
+        uint256 reserveUserToken = uint256(1000e18);
         // Seed userToken into pool - need to pack both reserves into single slot
         // Pool struct: reserveUserToken (uint128) | reserveValidatorToken (uint128)
         // reserveValidatorToken is 5000e18, reserveUserToken we set to 1000e18
-        bytes32 slot = keccak256(abi.encode(poolId, uint256(0))); // pools mapping at slot 0
-        bytes32 packedValue = bytes32(uint256(5000e18) << 128 | uint256(1000e18));
+        // In TipFeeManager precompile, pools is at slot 5. In FeeAMM reference, it's at slot 0.
+        uint256 poolsSlot = isTempo ? 5 : 0;
+        bytes32 slot = keccak256(abi.encode(poolId, poolsSlot));
+        bytes32 packedValue = bytes32((reserveValidatorToken << 128) | reserveUserToken);
         vm.store(address(amm), slot, packedValue);
         userToken.mint(address(amm), 1000e18);
+
+        // Validate that the pool reserves are seeded correctly
+        IFeeAMM.Pool memory pool = amm.getPool(address(userToken), address(validatorToken));
+
+        require(pool.reserveValidatorToken == 5000e18);
+        require(pool.reserveUserToken == 1000e18);
 
         uint256 aliceUserBefore = userToken.balanceOf(alice);
 
