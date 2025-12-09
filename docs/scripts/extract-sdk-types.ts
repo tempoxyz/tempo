@@ -80,10 +80,7 @@ const abisPath = path.join(
   process.cwd(),
   'node_modules/tempo.ts/src/viem/Abis.ts',
 )
-const typeHelpersPath = path.join(
-  process.cwd(),
-  'scripts/type-helpers.ts',
-)
+const typeHelpersPath = path.join(process.cwd(), 'scripts/type-helpers.ts')
 
 // Create TypeScript program
 const configPath = ts.findConfigFile(
@@ -235,8 +232,12 @@ function sortFields<T extends { optional?: boolean }>(
   fields: Record<string, T>,
 ): Record<string, T> {
   const entries = Object.entries(fields)
-  const required = entries.filter(([, v]) => !v.optional).sort(([a], [b]) => a.localeCompare(b))
-  const optional = entries.filter(([, v]) => v.optional).sort(([a], [b]) => a.localeCompare(b))
+  const required = entries
+    .filter(([, v]) => !v.optional)
+    .sort(([a], [b]) => a.localeCompare(b))
+  const optional = entries
+    .filter(([, v]) => v.optional)
+    .sort(([a], [b]) => a.localeCompare(b))
   return Object.fromEntries([...required, ...optional])
 }
 
@@ -458,9 +459,12 @@ function extractReturnType(type: ts.Type, statement: ts.Node): ReturnTypeInfo {
   }
 
   // Sort fields alphabetically
-  const sortedFields = Object.keys(fields).length > 0
-    ? Object.fromEntries(Object.entries(fields).sort(([a], [b]) => a.localeCompare(b)))
-    : undefined
+  const sortedFields =
+    Object.keys(fields).length > 0
+      ? Object.fromEntries(
+          Object.entries(fields).sort(([a], [b]) => a.localeCompare(b)),
+        )
+      : undefined
 
   return {
     type: typeString,
@@ -614,7 +618,9 @@ function extractSyncReturnType(
 function extractParametersFromTypeHelper(typeName: string): ParamInfo[] {
   const sourceFile = program.getSourceFile(typeHelpersPath)
   if (!sourceFile) {
-    console.warn(`Warning: Could not load type helpers file: ${typeHelpersPath}`)
+    console.warn(
+      `Warning: Could not load type helpers file: ${typeHelpersPath}`,
+    )
     return []
   }
 
@@ -714,8 +720,12 @@ if (actionType === 'write') {
 
 // Sort parameters: required (alphabetical) then optional (alphabetical)
 const allParams = [...extracted.args, ...filteredBaseParams]
-const requiredParams = allParams.filter((p) => !p.optional).sort((a, b) => a.name.localeCompare(b.name))
-const optionalParams = allParams.filter((p) => p.optional).sort((a, b) => a.name.localeCompare(b.name))
+const requiredParams = allParams
+  .filter((p) => !p.optional)
+  .sort((a, b) => a.name.localeCompare(b.name))
+const optionalParams = allParams
+  .filter((p) => p.optional)
+  .sort((a, b) => a.name.localeCompare(b.name))
 const sortedParams = [...requiredParams, ...optionalParams]
 
 const typeInfo: TypeInfo = {
