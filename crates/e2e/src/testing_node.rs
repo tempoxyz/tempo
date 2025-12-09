@@ -4,7 +4,7 @@ use crate::execution_runtime::{self, ExecutionNode, ExecutionNodeConfig, Executi
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::simulated::{Control, Oracle, SocketManager};
 use commonware_runtime::{Handle, deterministic::Context};
-use reth_db::{DatabaseEnv, mdbx::DatabaseArguments, open_db_read_only};
+use reth_db::{Database, DatabaseEnv, mdbx::DatabaseArguments, open_db_read_only};
 use reth_ethereum::{
     provider::{
         DatabaseProviderFactory, ProviderFactory,
@@ -285,6 +285,7 @@ impl TestingNode {
     /// Panics if execution node is not running.
     #[instrument(skip_all)]
     async fn stop_execution(&mut self) {
+        debug!(%self.uid, "stopping execution node for testing node");
         let execution_node = self.execution_node.take().unwrap_or_else(|| {
             panic!(
                 "execution node is not running for {}, cannot stop",
@@ -305,7 +306,22 @@ impl TestingNode {
         );
         self.last_db_block_on_stop = Some(last_db_block);
 
-        execution_node.shutdown().await
+        execution_node.shutdown().await;
+
+        // Acquire a RW transaction and immediately drop it. This blocks until any
+        // pending write transaction completes, ensuring all database writes are
+        // fully flushed. Without this, a pending write could still be in-flight
+        // after shutdown returns, leading to database/static-file inconsistencies
+        // when the node restarts.
+        drop(
+            self.execution_database
+                .as_ref()
+                .expect("database should exist")
+                .tx_mut()
+                .expect("failed to acquire rw transaction"),
+        );
+
+        debug!(%self.uid, "stopped execution node for testing node");
     }
 
     /// Check if both consensus and execution are running
