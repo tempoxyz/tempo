@@ -11,6 +11,7 @@ import { Actions } from 'tempo.ts/wagmi'
 import { config } from './wagmi.config'
 
 const unwatch = Actions.token.watchTransfer(config, {
+  token: 1n,
   onTransfer: (args, log) => {
     console.log('Amount:', args.amount)
     console.log('From:', args.from)

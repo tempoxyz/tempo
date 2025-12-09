@@ -71,22 +71,21 @@ type ReturnType = {
 
 ### adminRole
 
-- **Type:** `TokenRole | Hex`
+- **Type:** `"defaultAdmin" | "pause" | "unpause" | "issuer" | "burnBlocked"`
 
-Role that will become the admin. Can be a standard role name or custom role hash.
+New admin role.
 
 ### role
 
-- **Type:** `TokenRole | Hex`
+- **Type:** `"defaultAdmin" | "pause" | "unpause" | "issuer" | "burnBlocked"`
 
-Role to set the admin for. Can be a standard role name or custom role hash.
+Role to set admin for.
 
-### token (optional)
+### token
 
 - **Type:** `Address | bigint`
-- **Default:** `Addresses.pathUsd` (Token ID 0)
 
-Address or ID of the TIP-20 token.
+Address or ID of the TIP20 token.
 
 <WriteParameters wagmi />
 

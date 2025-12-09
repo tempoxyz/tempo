@@ -10,10 +10,10 @@ Watches for token mint events on TIP20 tokens.
 import { client } from './viem.config'
 
 const unwatch = client.token.watchMint({
+  token: '0x20c0000000000000000000000000000000000001',
   onMint: (args, log) => {
-    console.log('Amount:', args.amount)
-    console.log('Minter:', args.minter)
     console.log('To:', args.to)
+    console.log('Amount:', args.amount)
   },
 })
 
@@ -39,18 +39,16 @@ Returns a function to unsubscribe from the event.
 
 ### onMint
 
-- **Type:**
+- **Type:** `function`
 
 ```ts
 declare function onMint(args: Args, log: Log): void
 
 type Args = {
-  /** Amount minted */
-  amount: bigint
-  /** Address that initiated the mint */
-  minter: Address
   /** Address that received the tokens */
   to: Address
+  /** Amount minted */
+  amount: bigint
 }
 ```
 
