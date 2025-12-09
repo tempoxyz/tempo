@@ -140,6 +140,7 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         if elapsed.is_zero() {
             return Ok(());
         }
+
         // NOTE(rusowsky): first limb = u64, so it should be fine.
         // however, it would be easier to always work with U256, since
         // there is no possible slot packing in this slot (surrounded by U256)
