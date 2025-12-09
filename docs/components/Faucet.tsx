@@ -7,8 +7,8 @@ import {
   type Address,
   formatUnits,
   type Hex as HexType,
-  parseEventLogs,
   isAddress,
+  parseEventLogs,
 } from 'viem'
 import { useAccount, useChainId, useConfig } from 'wagmi'
 import LucideDollarSign from '~icons/lucide/dollar-sign'
@@ -18,16 +18,22 @@ import { Button, ExplorerLink, StringFormatter } from './guides/Demo'
 import { alphaUsd, betaUsd, pathUsd, thetaUsd } from './guides/tokens'
 
 type FeeTokenOption =
-  | { value: 'alpha' | 'beta' | 'theta' | 'path'; label: string; address: Address }
+  | {
+      value: 'alpha' | 'beta' | 'theta' | 'path'
+      label: string
+      address: Address
+    }
   | { value: 'other'; label: string }
 
-const FEE_TOKEN_OPTIONS: FeeTokenOption[] = [
+const FEE_TOKEN_OPTIONS = [
   { value: 'alpha', label: 'AlphaUSD', address: alphaUsd },
   { value: 'beta', label: 'BetaUSD', address: betaUsd },
   { value: 'theta', label: 'ThetaUSD', address: thetaUsd },
   { value: 'path', label: 'PathUSD', address: pathUsd },
   { value: 'other', label: 'Other (custom)' },
-]
+] as const satisfies readonly FeeTokenOption[]
+
+const DEFAULT_FEE_TOKEN_OPTION = FEE_TOKEN_OPTIONS[0]
 
 export function Faucet() {
   const { address, isConnected } = useAccount()
@@ -41,10 +47,15 @@ export function Faucet() {
     undefined,
   )
 
-  const [selectedFeeToken, setSelectedFeeToken] = React.useState<FeeTokenOption['value']>('path')
+  const [selectedFeeToken, setSelectedFeeToken] =
+    React.useState<FeeTokenOption['value']>('path')
   const [customFeeToken, setCustomFeeToken] = React.useState('')
-  const [feeStatus, setFeeStatus] = React.useState<string | undefined>(undefined)
-  const [feeTxHash, setFeeTxHash] = React.useState<string | undefined>(undefined)
+  const [feeStatus, setFeeStatus] = React.useState<string | undefined>(
+    undefined,
+  )
+  const [feeTxHash, setFeeTxHash] = React.useState<string | undefined>(
+    undefined,
+  )
 
   const userToken = Hooks.fee.useUserToken({
     account: address,
@@ -59,7 +70,7 @@ export function Faucet() {
     const option = FEE_TOKEN_OPTIONS.find(
       (candidate) => candidate.value === selectedFeeToken,
     )
-    return option ?? FEE_TOKEN_OPTIONS[0]!
+    return option ?? DEFAULT_FEE_TOKEN_OPTION
   }, [selectedFeeToken])
   const resolvedFeeToken =
     selectedOption.value === 'other' ? customFeeToken : selectedOption.address
@@ -67,7 +78,10 @@ export function Faucet() {
     selectedOption.value !== 'other' || isAddress(customFeeToken)
   const defaultChainId = chainId ?? config?.chains?.[0]?.id
   const canSubmitFeeToken = Boolean(
-    isConnected && resolvedFeeToken && isFeeTokenValid && !setUserToken.isPending,
+    isConnected &&
+      resolvedFeeToken &&
+      isFeeTokenValid &&
+      !setUserToken.isPending,
   )
   const currentFeeTokenLabel = React.useMemo(() => {
     const userTokenAddress = userToken.data?.address ?? undefined
@@ -125,7 +139,11 @@ export function Faucet() {
 
       setFeeStatus(undefined)
       setUserToken.mutate(
-        { token: resolvedFeeToken as Address, chainId: defaultChainId, account: address },
+        {
+          token: resolvedFeeToken as Address,
+          chainId: defaultChainId,
+          account: address,
+        },
         {
           onSuccess: (result) => {
             setFeeTxHash(result?.receipt.transactionHash)
@@ -306,7 +324,8 @@ export function Faucet() {
                 Fee token for EVM txs
               </div>
               <div className="text-[13px] text-gray9 -tracking-[1%] leading-normal">
-                EVM transactions use your chosen stablecoin for fees; this faucet action stays free.
+                EVM transactions use your chosen stablecoin for fees; this
+                faucet action stays free.
               </div>
             </div>
             {address && (
@@ -353,7 +372,11 @@ export function Faucet() {
           </div>
 
           <div className="flex items-center gap-2">
-            <Button variant="accent" type="submit" disabled={!canSubmitFeeToken}>
+            <Button
+              variant="accent"
+              type="submit"
+              disabled={!canSubmitFeeToken}
+            >
               {!isConnected
                 ? 'Connect your wallet above'
                 : setUserToken.isPending
