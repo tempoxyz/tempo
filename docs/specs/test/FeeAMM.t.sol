@@ -134,6 +134,12 @@ contract FeeAMMTest is BaseTest {
             assertEq(err, abi.encodeWithSelector(IFeeAMM.InvalidCurrency.selector));
         }
 
+        try amm.mintWithValidatorToken(address(validatorToken), address(eurToken), 1e18, alice) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IFeeAMM.InvalidCurrency.selector));
+        }
+
         vm.stopPrank();
     }
 
