@@ -620,7 +620,9 @@ contract StablecoinExchange is IStablecoinExchange {
         if (pb.quoteEscrowed < quoteAmount) {
             revert IStablecoinExchange.PairBalanceInvariant(key);
         }
-        pb.quoteEscrowed -= quoteAmount;
+        unchecked {
+            pb.quoteEscrowed -= quoteAmount;
+        }
     }
 
     /// @notice Decrement base escrow for a pair, reverting if this would violate the invariant
@@ -629,7 +631,9 @@ contract StablecoinExchange is IStablecoinExchange {
         if (pb.baseEscrowed < baseAmount) {
             revert IStablecoinExchange.PairBalanceInvariant(key);
         }
-        pb.baseEscrowed -= baseAmount;
+        unchecked {
+            pb.baseEscrowed -= baseAmount;
+        }
     }
 
     /// @notice Swap tokens for exact amount out (supports multi-hop routing)
