@@ -92,7 +92,7 @@ export function AddTokensToWallet(props: DemoStepProps) {
       completed={completed}
       actions={actions}
       number={stepNumber}
-      title="Add tokens to wallet."
+      title="Add tokens to your wallet token list."
     >
       {expanded && (
         <div className="flex mx-6 flex-col gap-3 pb-4">
