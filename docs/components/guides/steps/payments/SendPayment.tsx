@@ -11,6 +11,7 @@ export function SendPayment(props: DemoStepProps) {
   const { address } = useConnection()
   const [recipient, setRecipient] = React.useState<string>(FAKE_RECIPIENT)
   const [memo, setMemo] = React.useState<string>('')
+  const [memoError, setMemoError] = React.useState<string | null>(null)
   const [expanded, setExpanded] = React.useState(false)
   const { data: balance, refetch: balanceRefetch } = Hooks.token.useGetBalance({
     account: address,
@@ -26,14 +27,29 @@ export function SendPayment(props: DemoStepProps) {
   useConnectionEffect({
     onDisconnect() {
       setExpanded(false)
+      setMemoError(null)
       sendPayment.reset()
     },
   })
 
   const isValidRecipient = recipient && isAddress(recipient)
 
+  const validateMemo = (value: string): string | null => {
+    const byteLength = new TextEncoder().encode(value).length
+    if (byteLength > 32) {
+      return `${byteLength - 32} characters too long`
+    }
+    return null
+  }
+
+  const handleMemoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value
+    setMemo(value)
+    setMemoError(validateMemo(value))
+  }
+
   const handleTransfer = () => {
-    if (!isValidRecipient) return
+    if (!isValidRecipient || memoError) return
     sendPayment.mutate({
       amount: parseUnits('100', 6),
       to: recipient as `0x${string}`,
@@ -109,23 +125,23 @@ export function SendPayment(props: DemoStepProps) {
                   Memo (optional)
                 </label>
                 <input
-                  className="h-[34px] border border-gray4 px-3.25 rounded-[50px] text-[14px] font-normal -tracking-[2%] placeholder-gray9 text-black dark:text-white"
+                  className={`h-[34px] border px-3.25 rounded-[50px] text-[14px] font-normal -tracking-[2%] placeholder-gray9 text-black dark:text-white ${memoError ? 'border-red-500' : 'border-gray4'}`}
                   data-1p-ignore
                   type="text"
                   name="memo"
                   value={memo}
-                  onChange={(e) => setMemo(e.target.value)}
+                  onChange={handleMemoChange}
                   placeholder="INV-12345"
                 />
               </div>
               <Button
                 variant={
-                  address && balance && balance > 0n && isValidRecipient
+                  address && balance && balance > 0n && isValidRecipient && !memoError
                     ? 'accent'
                     : 'default'
                 }
                 disabled={
-                  !(address && balance && balance > 0n && isValidRecipient)
+                  !(address && balance && balance > 0n && isValidRecipient) || !!memoError
                 }
                 onClick={handleTransfer}
                 type="button"
@@ -134,6 +150,9 @@ export function SendPayment(props: DemoStepProps) {
                 {sendPayment.isPending ? 'Sending...' : 'Send'}
               </Button>
             </div>
+            {memoError && (
+                  <span className="text-[11px] text-red-500 mt-1">{memoError}</span>
+                )}
             {sendPayment.isSuccess && sendPayment.data && (
               <ExplorerLink hash={sendPayment.data.receipt.transactionHash} />
             )}
