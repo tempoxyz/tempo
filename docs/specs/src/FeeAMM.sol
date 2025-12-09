@@ -18,10 +18,10 @@ contract FeeAMM is IFeeAMM {
     mapping(bytes32 => mapping(address => uint256)) public liquidityBalances; // LP token balances
 
     function _requireUSDTIP20(address token) internal view {
-        require(bytes14(bytes20(token)) == 0x20c0000000000000000000000000, "INVALID_TOKEN");
-        require(
-            keccak256(bytes(ITIP20(token).currency())) == keccak256(bytes("USD")), "ONLY_USD_TOKENS"
-        );
+        if (bytes14(bytes20(token)) != 0x20c0000000000000000000000000) revert InvalidToken();
+        if (keccak256(bytes(ITIP20(token).currency())) != keccak256(bytes("USD"))) {
+            revert InvalidCurrency();
+        }
     }
 
     function getPoolId(address userToken, address validatorToken) public pure returns (bytes32) {
@@ -106,7 +106,7 @@ contract FeeAMM is IFeeAMM {
         uint256 amountValidatorToken,
         address to
     ) external returns (uint256 liquidity) {
-        require(userToken != validatorToken, "IDENTICAL_ADDRESSES");
+        if (userToken == validatorToken) revert IdenticalAddresses();
 
         _requireUSDTIP20(userToken);
         _requireUSDTIP20(validatorToken);
@@ -156,7 +156,7 @@ contract FeeAMM is IFeeAMM {
 
         Pool storage pool = pools[poolId];
 
-        require(liquidityBalances[poolId][msg.sender] >= liquidity, "INSUFFICIENT_LIQUIDITY");
+        if (liquidityBalances[poolId][msg.sender] < liquidity) revert InsufficientLiquidity();
 
         // Calculate amounts
         (amountUserToken, amountValidatorToken) = _calculateBurnAmounts(pool, poolId, liquidity);
