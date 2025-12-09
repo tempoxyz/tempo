@@ -48,7 +48,7 @@ export function AddFunds(props: DemoStepProps & { fundOthers?: boolean }) {
       if (!isValidTarget) throw new Error('valid target address not found')
       if (!client) throw new Error('client not found')
 
-      let receipts
+      let receipts = null
       if (import.meta.env.VITE_LOCAL !== 'true')
         receipts = await Actions.faucet.fundSync(
           client as unknown as Client<Transport, Chain.Chain<null>>,
@@ -121,7 +121,11 @@ export function AddFunds(props: DemoStepProps & { fundOthers?: boolean }) {
       actions={actions}
       error={fundAccount.error}
       number={stepNumber}
-      title={fundOthers ? 'Add testnet funds to an address.' : 'Add testnet funds to your account.'}
+      title={
+        fundOthers
+          ? 'Add testnet funds to an address.'
+          : 'Add testnet funds to your account.'
+      }
     >
       {fundOthers && (
         <div className="flex mx-6 flex-col gap-3 pb-4">
