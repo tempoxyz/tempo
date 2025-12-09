@@ -136,12 +136,17 @@ export function SendPayment(props: DemoStepProps) {
               </div>
               <Button
                 variant={
-                  address && balance && balance > 0n && isValidRecipient && !memoError
+                  address &&
+                  balance &&
+                  balance > 0n &&
+                  isValidRecipient &&
+                  !memoError
                     ? 'accent'
                     : 'default'
                 }
                 disabled={
-                  !(address && balance && balance > 0n && isValidRecipient) || !!memoError
+                  !(address && balance && balance > 0n && isValidRecipient) ||
+                  !!memoError
                 }
                 onClick={handleTransfer}
                 type="button"
@@ -151,8 +156,8 @@ export function SendPayment(props: DemoStepProps) {
               </Button>
             </div>
             {memoError && (
-                  <span className="text-[11px] text-red-500 mt-1">{memoError}</span>
-                )}
+              <span className="text-[11px] text-red-500 mt-1">{memoError}</span>
+            )}
             {sendPayment.isSuccess && sendPayment.data && (
               <ExplorerLink hash={sendPayment.data.receipt.transactionHash} />
             )}
