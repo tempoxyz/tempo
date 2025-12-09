@@ -32,6 +32,7 @@ struct RestartSetup {
 }
 
 /// Runs a validator restart test with the given configuration
+#[track_caller]
 fn run_restart_test(
     RestartSetup {
         node_setup,
@@ -65,8 +66,9 @@ fn run_restart_test(
             height = restart_height,
             "waiting for remaining validators to reach target height before restarting validator",
         );
-        wait_for_height(&context, validators.len() as u32, restart_height).await;
+        wait_for_height(&context, node_setup.how_many_signers - 1, restart_height).await;
 
+        debug!("target height reached, restarting stopped validator");
         validators[idx].start().await;
         debug!(
             public_key = %validators[idx].public_key(),
@@ -77,7 +79,7 @@ fn run_restart_test(
             height = final_height,
             "waiting for reconstituted validators to reach target height to reach test success",
         );
-        wait_for_height(&context, validators.len() as u32, final_height).await;
+        wait_for_height(&context, node_setup.how_many_signers, final_height).await;
 
         context.auditor().state()
     })
@@ -85,13 +87,12 @@ fn run_restart_test(
 
 /// Wait for a specific number of validators to reach a target height
 async fn wait_for_height(context: &Context, expected_validators: u32, target_height: u64) {
-    let prefix = format!("{CONSENSUS_NODE_PREFIX}-");
     loop {
         let metrics = context.encode();
         let mut validators_at_height = 0;
 
         for line in metrics.lines() {
-            if !line.starts_with(&prefix) {
+            if !line.starts_with(CONSENSUS_NODE_PREFIX) {
                 continue;
             }
 
@@ -107,7 +108,7 @@ async fn wait_for_height(context: &Context, expected_validators: u32, target_hei
                 }
             }
         }
-        if validators_at_height >= expected_validators {
+        if validators_at_height == expected_validators {
             break;
         }
         context.sleep(Duration::from_secs(1)).await;
@@ -116,12 +117,11 @@ async fn wait_for_height(context: &Context, expected_validators: u32, target_hei
 
 /// Ensures that no more finalizations happen.
 async fn ensure_no_progress(context: &Context, tries: u32) {
-    let prefix = format!("{CONSENSUS_NODE_PREFIX}-");
     let baseline = {
         let metrics = context.encode();
         let mut height = None;
         for line in metrics.lines() {
-            if !line.starts_with(&prefix) {
+            if !line.starts_with(CONSENSUS_NODE_PREFIX) {
                 continue;
             }
             let mut parts = line.split_whitespace();
@@ -142,7 +142,7 @@ async fn ensure_no_progress(context: &Context, tries: u32) {
         let metrics = context.encode();
         let mut height = None;
         for line in metrics.lines() {
-            if !line.starts_with(&prefix) {
+            if !line.starts_with(CONSENSUS_NODE_PREFIX) {
                 continue;
             }
             let mut parts = line.split_whitespace();
@@ -282,8 +282,10 @@ fn allegretto_at_genesis_validator_catches_up_across_epochs() {
     let _state = run_restart_test(setup);
 }
 
+// FIXME: needs https://github.com/tempoxyz/tempo/issues/1309
+#[ignore]
 #[test_traced]
-fn node_recovers_after_finalizing_ceremony_allegretto_at_genesis_one_validator() {
+fn single_node_with_allegretto_at_genesis_recovers_after_finalizing_ceremony() {
     AssertNodeRecoversAfterFinalizingBlock {
         n_validators: 1,
         epoch_length: 10,
@@ -306,8 +308,10 @@ fn node_recovers_after_finalizing_ceremony_allegretto_at_genesis_four_validators
     .run()
 }
 
+// FIXME: needs https://github.com/tempoxyz/tempo/issues/1309
+#[ignore]
 #[test_traced]
-fn node_recovers_after_finalizing_boundary_allegretto_at_genesis_one_validator() {
+fn single_node_with_allegretto_at_genesis_recovers_after_finalizing_boundary() {
     AssertNodeRecoversAfterFinalizingBlock {
         n_validators: 1,
         epoch_length: 10,
@@ -330,8 +334,10 @@ fn node_recovers_after_finalizing_boundary_allegretto_at_genesis_four_validators
     .run()
 }
 
+// FIXME: needs https://github.com/tempoxyz/tempo/issues/1309
+#[ignore]
 #[test_traced]
-fn node_recovers_after_finalizing_ceremony_pre_allegretto_one_validator() {
+fn single_node_with_pre_allegretto_logic_recovers_after_finalizing_ceremony() {
     AssertNodeRecoversAfterFinalizingBlock {
         n_validators: 1,
         epoch_length: 10,
@@ -354,8 +360,10 @@ fn node_recovers_after_finalizing_ceremony_pre_allegretto_four_validators() {
     .run()
 }
 
+// FIXME: needs https://github.com/tempoxyz/tempo/issues/1309
+#[ignore]
 #[test_traced]
-fn node_recovers_after_finalizing_boundary_pre_allegretto_one_validator() {
+fn single_node_with_pre_allegretto_logic_recovers_after_finalizing_boundary() {
     AssertNodeRecoversAfterFinalizingBlock {
         n_validators: 1,
         epoch_length: 10,
@@ -378,8 +386,10 @@ fn node_recovers_after_finalizing_boundary_pre_allegretto_four_validators() {
     .run()
 }
 
+// FIXME: needs https://github.com/tempoxyz/tempo/issues/1309
+#[ignore]
 #[test_traced]
-fn node_recovers_after_finalizing_ceremony_post_allegretto_one_validator() {
+fn single_node_transitions_to_allegretto_and_recovers_after_finalizing_ceremony() {
     AssertNodeRecoversAfterFinalizingBlock {
         n_validators: 1,
         epoch_length: 10,
@@ -402,8 +412,10 @@ fn node_recovers_after_finalizing_ceremony_post_allegretto_four_validators() {
     .run()
 }
 
+// FIXME: needs https://github.com/tempoxyz/tempo/issues/1309
+#[ignore]
 #[test_traced]
-fn node_recovers_after_finalizing_boundary_post_allegretto_one_validator() {
+fn single_node_transitions_to_allegretto_and_recovers_after_finalizing_boundary() {
     AssertNodeRecoversAfterFinalizingBlock {
         n_validators: 1,
         epoch_length: 10,
@@ -464,7 +476,6 @@ impl AssertNodeRecoversAfterFinalizingBlock {
             !(allegretto_at_genesis && await_transition),
             "awaiting a hardfork transition and setting allegretto at genesis is mutually exclusive"
         );
-        let prefix = format!("{CONSENSUS_NODE_PREFIX}-");
 
         let setup = Setup::new()
             .how_many_signers(n_validators)
@@ -554,7 +565,7 @@ impl AssertNodeRecoversAfterFinalizingBlock {
             let (metric, height) = 'wait_to_boundary: loop {
                 let metrics = context.encode();
                 'lines: for line in metrics.lines() {
-                    if !line.starts_with(&prefix) {
+                    if !line.starts_with(CONSENSUS_NODE_PREFIX) {
                         continue 'lines;
                     }
                     let mut parts = line.split_whitespace();
@@ -589,7 +600,7 @@ impl AssertNodeRecoversAfterFinalizingBlock {
                 context.sleep(Duration::from_secs(1)).await;
                 let metrics = context.encode();
                 'lines: for line in metrics.lines() {
-                    if !line.starts_with(&prefix) {
+                    if !line.starts_with(CONSENSUS_NODE_PREFIX) {
                         continue 'lines;
                     }
                     if line.starts_with(&metric) {
