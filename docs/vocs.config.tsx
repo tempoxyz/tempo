@@ -56,10 +56,6 @@ export default defineConfig({
         link: '/',
       },
       {
-        text: 'Ecosystem',
-        link: '/ecosystem',
-      },
-      {
         text: 'Integrate Tempo Testnet',
         items: [
           {
@@ -462,6 +458,14 @@ export default defineConfig({
       {
         text: 'Home',
         link: '/learn',
+      },
+      {
+        text: 'Partners',
+        link: '/learn/partners',
+      },
+      {
+        text: 'Blog',
+        link: 'https://tempo.xyz/blog',
       },
       {
         text: 'Stablecoins',
