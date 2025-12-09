@@ -3,7 +3,7 @@
 use alloy::primitives::{Address, U256};
 use std::marker::PhantomData;
 
-use crate::storage::{Layout, LayoutCtx, StorableType, StorageKey};
+use crate::storage::{Layout, LayoutCtx, Storable, StorableType, StorageKey};
 
 /// Type-safe access wrapper for EVM storage mappings (hash-based key-value storage).
 ///
@@ -71,32 +71,13 @@ impl<K, V> Mapping<K, V> {
     pub fn at(&self, key: K) -> V::Handler
     where
         K: StorageKey,
-        V: StorableType,
+        V: StorableType + MappingStorable,
     {
         V::handle(
             key.mapping_slot(self.base_slot),
             LayoutCtx::FULL,
             self.address,
         )
-    }
-
-    /// Returns a `Handler` for a mapping field within a struct at a given base slot.
-    ///
-    /// This method enables accessing mapping fields within structs when you have
-    /// the struct's base slot at runtime and know the field's offset.
-    #[inline]
-    pub fn at_offset(
-        struct_base_slot: U256,
-        field_offset_slots: usize,
-        address: Address,
-        key: K,
-    ) -> V::Handler
-    where
-        K: StorageKey,
-        V: StorableType,
-    {
-        let field_slot = struct_base_slot + U256::from(field_offset_slots);
-        V::handle(key.mapping_slot(field_slot), LayoutCtx::FULL, address)
     }
 }
 
@@ -118,6 +99,86 @@ impl<K, V> StorableType for Mapping<K, V> {
         Self::new(slot, address)
     }
 }
+
+// -- USER MAPPING (WITHOUT HASHING) -------------------------------------------
+
+/// Mapping with direct slot computation (no keccak hashing).
+///
+/// Unlike `Mapping<Address, V>` which uses `keccak256(addr || slot)`,
+/// `UserMapping<V>` uses the address value directly: `slot = U256::from(address)`.
+/// This enables cheap lookups by address without hash computation.
+///
+/// # CONSTRAINTS
+///
+/// Enforced by the type system:
+/// - Cannot be nested inside other mappings (`Mapping<K, UserMapping<V>>` is forbidden)
+/// - Value type cannot be a mapping (`UserMapping<Mapping<K, V>>` is forbidden)
+///
+/// Enforced by `#[contract]` macro:
+/// - At most one `UserMapping` per contract
+#[derive(Debug, Clone)]
+pub struct UserMapping<V> {
+    address: Address,
+    _phantom: PhantomData<V>,
+}
+
+impl<V> UserMapping<V> {
+    /// Creates a new `UserMapping` with the given contract address.
+    #[inline]
+    pub fn new(address: Address) -> Self {
+        Self {
+            address,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Returns a `Handler` for the given user address.
+    ///
+    /// The storage slot is directly derived from the user address.
+    pub fn at(&self, user: Address) -> V::Handler
+    where
+        V: StorableType + UserMappingStorable,
+    {
+        let mut slot = [0u8; 32];
+        slot[..20].copy_from_slice(user.as_slice());
+
+        V::handle(U256::from_be_bytes(slot), LayoutCtx::FULL, self.address)
+    }
+}
+
+impl<V> Default for UserMapping<V> {
+    fn default() -> Self {
+        Self::new(Address::ZERO)
+    }
+}
+
+impl<V> StorableType for UserMapping<V> {
+    const LAYOUT: Layout = Layout::Slots(1);
+    type Handler = Self;
+
+    fn handle(_slot: U256, _ctx: LayoutCtx, address: Address) -> Self::Handler {
+        Self::new(address)
+    }
+}
+
+/// Marker trait for types that can be used as values in `Mapping<K, V>`.
+///
+/// Implemented for all `Storable` types and `Mapping<K, V>` itself (for nesting).
+/// `UserMapping` deliberately does NOT implement this trait, preventing it from
+/// being nested inside mappings.
+pub trait MappingStorable {}
+
+impl<T: Storable> MappingStorable for T {}
+impl<K, V> MappingStorable for Mapping<K, V> {}
+
+/// Marker trait for types that can be used as values in `UserMapping<V>`.
+///
+/// Only `Storable` types (primitives, structs) implement this trait.
+/// `Mapping` and `UserMapping` do NOT implement this trait, preventing
+/// any mapping types from being nested inside `UserMapping`.
+pub trait UserMappingStorable {}
+
+impl<T: Storable> UserMappingStorable for T {}
 
 #[cfg(test)]
 mod tests {
@@ -307,33 +368,6 @@ mod tests {
     }
 
     #[test]
-    fn test_mapping_at_offset() {
-        // Simulate: mapping(bytes32 => Orderbook) books
-        // where Orderbook has a mapping field `bids` at field offset 1
-        let pair_key = B256::random();
-        let books_base_slot = U256::random();
-        let orderbook_base_slot = pair_key.mapping_slot(books_base_slot);
-
-        // Test that Mapping::at_offset() computes the correct slot
-        let tick: i16 = 123;
-        let address = Address::random();
-
-        let slot = Mapping::<i16, U256>::at_offset(
-            orderbook_base_slot,
-            1, // bids field is at offset 1 in Orderbook
-            address,
-            tick,
-        );
-
-        // Verify the slot was computed correctly:
-        // 1. Field slot = orderbook_base_slot + 1
-        // 2. Mapping slot = keccak256(tick || field_slot)
-        let field_slot = orderbook_base_slot + U256::from(1);
-        let expected_slot = tick.mapping_slot(field_slot);
-        assert_eq!(slot.slot(), expected_slot);
-    }
-
-    #[test]
     fn test_nested_mapping_at_offset() {
         // Simulate a struct with nested mapping at field offset 3
         let struct_key = B256::random();
@@ -357,38 +391,57 @@ mod tests {
         assert_eq!(final_slot.slot(), expected_slot);
     }
 
+    // --- USER MAPPING TESTS --------------------------------------------------
+
     #[test]
-    fn test_multiple_fields_at_different_offsets() {
-        // Simulate Orderbook with multiple mapping fields at different offsets
-        let pair_key = B256::random();
-        let address = Address::random();
-        let books_base_slot = U256::random();
-        let orderbook_base = pair_key.mapping_slot(books_base_slot);
+    fn test_user_mapping_slot_is_direct() {
+        let user = Address::random();
+        let contract_addr = Address::random();
+        let mapping = UserMapping::<U256>::new(contract_addr);
 
-        // bids at offset 1
-        let tick1: i16 = 111;
-        let bids_slot = Mapping::<i16, U256>::at_offset(orderbook_base, 1, address, tick1);
+        let handler = mapping.at(user);
+        let expected_slot = U256::from_be_slice(user.as_slice()) << 96;
+        assert_eq!(handler.slot(), expected_slot);
+    }
 
-        // asks at offset 2
-        let tick2: i16 = 222;
-        let asks_slot = Mapping::<i16, U256>::at_offset(orderbook_base, 2, address, tick2);
+    #[test]
+    fn test_user_mapping_different_addresses_different_slots() {
+        let contract_addr = Address::random();
+        let mapping = UserMapping::<U256>::new(contract_addr);
 
-        // bidBitmap at offset 3
-        let bitmap_key: i16 = 333;
-        let bitmap_slot = Mapping::<i16, U256>::at_offset(orderbook_base, 3, address, bitmap_key);
+        let addr1 = Address::random();
+        let addr2 = Address::random();
 
-        // Verify all fields compute different slots (they're independent)
-        let bids_expected = tick1.mapping_slot(orderbook_base + U256::from(1));
-        let asks_expected = tick2.mapping_slot(orderbook_base + U256::from(2));
-        let bitmap_expected = bitmap_key.mapping_slot(orderbook_base + U256::from(3));
+        assert_ne!(mapping.at(addr1).slot(), mapping.at(addr2).slot());
+    }
 
-        assert_eq!(bids_slot.slot(), bids_expected);
-        assert_eq!(asks_slot.slot(), asks_expected);
-        assert_eq!(bitmap_slot.slot(), bitmap_expected);
+    #[test]
+    fn test_user_mapping_deterministic() {
+        let contract_addr = Address::random();
+        let mapping = UserMapping::<U256>::new(contract_addr);
+        let user = Address::random();
 
-        // Verify they're all different
-        assert_ne!(bids_slot.slot(), asks_slot.slot());
-        assert_ne!(bids_slot.slot(), bitmap_slot.slot());
-        assert_ne!(asks_slot.slot(), bitmap_slot.slot());
+        // Same user always gets same slot
+        assert_eq!(mapping.at(user).slot(), mapping.at(user).slot());
+    }
+
+    #[test]
+    fn test_user_mapping_size() {
+        // `UserMapping` contains: Address + PhantomData (0) = 20 bytes
+        assert_eq!(std::mem::size_of::<UserMapping<U256>>(), 20);
+        assert_eq!(std::mem::size_of::<UserMapping<Address>>(), 20);
+    }
+
+    #[test]
+    fn test_user_mapping_storable_type() {
+        // Verify `StorableType` implementation
+        assert_eq!(
+            <UserMapping<U256> as crate::storage::StorableType>::SLOTS,
+            1
+        );
+        assert_eq!(
+            <UserMapping<U256> as crate::storage::StorableType>::LAYOUT,
+            crate::storage::Layout::Slots(1)
+        );
     }
 }
