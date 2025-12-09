@@ -74,7 +74,7 @@ The protocol checks for token preferences in five ways, with this order of prece
 
 1. Transaction (set by the `fee_token` field of the transaction)
 2. Account (set on the FeeManager contract by the `fee_payer` of the transaction)
-3. TIP-20 contract (if the transaction is calling `transfer`, `transferWithMemo`, or `startReward` on a TIP-20 contract, the transaction uses that token as its fee token)
+3. TIP-20 contract (if the transaction is calling `transfer`, `transferWithMemo`, or `startReward` on a TIP-20 token contract, the transaction uses that token as its fee token)
 4. Stablecoin Exchange (for certain swap calls, the transaction uses the `tokenIn` argument as its fee token)
 5. PathUSD (as a fallback)
 
