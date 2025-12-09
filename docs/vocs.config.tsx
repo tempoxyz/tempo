@@ -75,16 +75,16 @@ export default defineConfig({
             link: '/quickstart/faucet',
           },
           {
+            text: 'Developer Tools',
+            link: '/quickstart/developer-tools',
+          },
+          {
             text: 'EVM Differences',
             link: '/quickstart/evm-compatibility',
           },
           {
             text: 'Predeployed Contracts',
             link: '/quickstart/predeployed-contracts',
-          },
-          {
-            text: 'Developer Tools',
-            link: '/quickstart/developer-tools',
           },
         ],
       },
@@ -112,10 +112,6 @@ export default defineConfig({
                 link: '/guide/use-accounts/add-funds',
               },
             ],
-          },
-          {
-            text: 'Use Tempo Transactions',
-            link: '/guide/tempo-transaction',
           },
           {
             text: 'Make Payments',
@@ -527,14 +523,14 @@ export default defineConfig({
           link: '/sdk/typescript',
         },
         {
-          text: 'Integrate Tempo Testnet',
+          text: 'Viem Reference',
           items: [
             {
               text: 'Setup',
               link: '/sdk/typescript/viem/setup',
             },
             {
-              text: 'Create & Use Accounts',
+              text: 'Actions',
               collapsed: true,
               items: [
                 {

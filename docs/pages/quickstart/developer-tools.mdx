@@ -1,6 +1,62 @@
+import LucideHammer from '~icons/lucide/hammer'
+import LucideBarChart from '~icons/lucide/bar-chart'
+import LucideWallet from '~icons/lucide/wallet'
+import LucideServer from '~icons/lucide/server'
+import LucideShield from '~icons/lucide/shield'
+import LucidePackage from '~icons/lucide/package'
+import LucideSearch from '~icons/lucide/search'
+import * as Card from "../../components/Card.tsx"
+
 # Developer Tools
 
-Tempo has partnered with leading infrastructure providers to make it easy to build, test, and scale applications on the network.
+Integrating with Tempo is easy by leveraging services provided by our infrastructure partners. These partners take advantage of Tempo transactions, TIP-20 tokens, and more. Visit their documentation for more information on how to get started.
+
+<Card.Container>
+  <Card.Link
+    description="Query blockchain data with indexers, analytics platforms, and monitoring tools"
+    href="#data--analytics"
+    icon={LucideBarChart}
+    title="Data & Analytics"
+  />
+  <Card.Link
+    description="View transactions, blocks, accounts, and token activity on Tempo"
+    href="#block-explorers"
+    icon={LucideSearch}
+    title="Block Explorers"
+  />
+  <Card.Link
+    description="Integrate user-friendly wallet experiences directly into your application"
+    href="#embedded-wallets"
+    icon={LucideWallet}
+    title="Embedded Wallets"
+  />
+  <Card.Link
+    description="Build with account abstraction and programmable smart contract wallets"
+    href="#smart-contract-libraries"
+    icon={LucideWallet}
+    title="Smart Contract Libraries"
+  />
+  <Card.Link
+    description="Connect to Tempo with reliable RPC endpoints and managed node services"
+    href="#node-infrastructure"
+    icon={LucideServer}
+    title="Node Infrastructure"
+  />
+  <Card.Link
+    description="Build on Tempo with official SDKs for TypeScript, Go, Foundry, and Rust"
+    href="/sdk"
+    icon={LucidePackage}
+    title="Tempo SDKs"
+  />
+</Card.Container>
+
+<Card.Notice
+  icon={LucideHammer}
+  title="Are you building a developer product on Tempo?"
+  inline
+>
+  <p>Reach out to <a href="mailto:partners@tempo.xyz">get listed on this page</a>.</p>
+</Card.Notice>
 
 ## Data & Analytics
 
@@ -12,15 +68,17 @@ TODO
 
 TODO
 
-### Blockscout
-
-TODO
-
-### Fireblocks
-
-TODO
-
 ### Range
+
+TODO
+
+## Block Explorers
+
+### Tempo Explorer
+
+Tempo's official block explorer is available at [explore.tempo.xyz](https://explore.tempo.xyz). View transactions, blocks, accounts, and token activity on the Tempo network.
+
+### Blockscout
 
 TODO
 
@@ -28,21 +86,13 @@ TODO
 
 TODO
 
-## Wallets & Account Abstraction
+## Embedded Wallets
 
 ### Privy
 
 TODO
 
 ### Turnkey
-
-TODO
-
-### ZeroDev
-
-TODO
-
-### Safe Wallet
 
 TODO
 
@@ -61,6 +111,16 @@ Try features live in the [thirdweb Playground](https://playground.thirdweb.com) 
 [Dynamic](https://dynamic.xyz) combines authentication, smart wallets, and key management into a flexible SDK for Tempo developers. Teams can onboard users with familiar login methods and provision Tempo-compatible wallets through Dynamic’s secure infrastructure.
 
 Explore Tempo support in the [Dynamic dashboard](https://app.dynamic.xyz/dashboard/chains-and-networks), and create an account [here](https://www.dynamic.xyz/get-started) to start integrating Dynamic into your app.
+
+## Smart Contract Libraries
+
+### ZeroDev
+
+TODO
+
+### Safe Wallet
+
+TODO
 
 ## Node Infrastructure
 
@@ -102,12 +162,3 @@ Discover how Hexagate supports Tempo [here](https://www.hexagate.com), or reques
 [Blockaid](https://blockaid.io) provides real-time security infrastructure for Web3 applications. Its transaction scanning and threat detection systems identify malicious activity before users sign transactions, improving safety across wallets and interfaces.
 
 Learn how Blockaid’s transaction scanning improves security by visiting their [overview page](https://www.blockaid.io/transaction-security), and reach out to their team [here](https://www.blockaid.io/contact) to get started.
-
-
----
-
-## Get Started
-
-These partners offer Tempo-specific integrations and support. Visit their documentation or reach out to learn more about building with their infrastructure.
-
-For questions about infrastructure integrations, [contact the Tempo team](mailto:partners@tempo.xyz).
