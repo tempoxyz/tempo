@@ -657,18 +657,20 @@ When an Access Key attempts to call `authorizeKey()`, `revokeKey()`, or `updateS
 
 The protocol tracks and enforces spending limits for TIP20 token transfers:
 
-**Scope:** Only TIP20 `transfer()` and `transferFrom()` calls are tracked
+**Scope:** Only TIP20 `transfer()` and `approve()` calls are tracked
 - Native value transfers are NOT limited
 - NFT transfers are NOT limited
 - Other asset types are NOT limited
 
 **Tracking:** During transaction execution, when an Access Key's transaction calls TIP20 methods:
-1. Protocol intercepts `transfer(to, amount)` and `transferFrom(from, to, amount)` calls
-2. Queries: `getRemainingLimit(account, keyId, token)`
-3. Checks: `amount <= remaining_limit`
-4. If check fails: reverts with `SpendingLimitExceeded`
-5. If check passes: decrements the limit by `amount`
-6. Updates are stored in precompile state
+1. Protocol intercepts `transfer(to, amount)` and `approve(spender, amount)` calls
+2. For `transfer`, the full `amount` is checked against the remaining limit
+3. For `approve`, only **increases** in approval (new approval minus previous allowance) are checked and counted against the limit
+4. Queries: `getRemainingLimit(account, keyId, token)`
+5. Checks: relevant amount (transfer amount or approval increase) `<= remaining_limit`
+6. If check fails: reverts with `SpendingLimitExceeded`
+7. If check passes: decrements the limit by the relevant amount
+8. Updates are stored in precompile state
 
 **Root Key Behavior:** Spending limit checks are skipped entirely (no limits apply)
 
