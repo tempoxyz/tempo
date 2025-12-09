@@ -2,13 +2,13 @@
 
 ## Abstract
 
-pathUSD is a USD stablecoin that can be used as a quote token on Tempo's decentralized exchange. It is the first stablecoin deployed to the chain, and is used as a fallback gas token when the user or validator does not specify a gas token. Use of pathUSD is optional.
+pathUSD is a USD-denominated stablecoin that can be used as a quote token on Tempo's decentralized exchange. It is the first stablecoin deployed to the chain, and is used as a fallback gas token when the user or validator does not specify a gas token. Use of pathUSD is optional.
 
 ## Motivation
 
 Each USD TIP-20 on Tempo can choose any other USD TIP-20 as its [quote token](/protocol/exchange/spec.mdx#quote-tokens)—the token it is paired against on the [native decentralized exchange](/protocol/exchange/spec.mdx). This guarantees that there is one path between any two tokens, which reduces fragmentation of liquidity and simplifies routing.
 
-While on other chains, most liquidity accrues to a few stablecoins, or even one, Tempo offers a USD-denominated stablecoin, pathUSD, that other stablecoins can choose as their quote token. PathUSD is not meant to compete as a consumer-facing stablecoin, and will not be issued on any other chain. Use of pathUSD is optional, and tokens are able to list any other token as their quote token if they choose.
+While on other chains, most liquidity accrues to a few stablecoins, or even one, Tempo offers a USD-denominated stablecoin, pathUSD, that other stablecoins can choose as their quote token. PathUSD is not meant to compete as a consumer-facing stablecoin. Use of pathUSD is optional, and tokens are able to list any other token as their quote token if they choose.
 
 PathUSD can also be accepted as a fee token by validators.
 
@@ -43,7 +43,7 @@ TIP20 token = factory.createToken(
 
 This means:
 - Your token trades against pathUSD on the decentralized exchange
-- Users can swap between your token and other USD stablecoins that also use pathUSD, or ones that are connected to it by a multi-hop path.
+- Users can swap between your token and other USD stablecoins that also use pathUSD, or ones that are connected to it by a multi-hop path
 
 ##### Tree Structure
 
@@ -61,9 +61,9 @@ The tree structure guarantees that there is a single path between any two USD st
 
 ##### Example: Cross-Stablecoin Payment
 
-1. Market makers provide liquidity for USDC/pathUSD and USDP/pathUSD pairs
-2. User wants to send USDC to a merchant who prefers USDP
-3. DEX atomically routes: User's USDC → pathUSD → Merchant's USDP
+1. Market makers provide liquidity for USDX/pathUSD and USDY/pathUSD pairs
+2. User wants to send USDX to a merchant who prefers USDY
+3. DEX atomically routes: User's USDX → pathUSD → Merchant's USDY
 4. Single action, no manual swaps
 
 This is critical for payments between parties with different stablecoin preferences. The user and merchant never touch pathUSD; it is used only as a routing mechanism.
