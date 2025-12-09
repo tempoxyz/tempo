@@ -1,12 +1,12 @@
 import { Callout } from 'vocs/components'
 
-# Exchange Balance
+# DEX Balance
 
-The Stablecoin Exchange allows you to hold token balances directly on the exchange contract. This eliminates the need for token transfers on every trade, significantly reducing gas costs for active traders and liquidity providers.
+The Stablecoin DEX allows you to hold token balances directly using the DEX contract. This eliminates the need for token transfers on every trade, significantly reducing gas costs for active traders and liquidity providers.
 
-## Why Exchange Balances?
+## Why DEX Balances?
 
-When you trade or provide liquidity on the exchange, constantly transferring tokens between your wallet and the exchange contract wastes gas. By maintaining a balance on the DEX, you can:
+When you trade or provide liquidity on the DEX, constantly transferring tokens between your wallet and the DEX contract wastes gas. By maintaining a balance via the DEX contract, you can:
 
 - **Save on gas costs** - Avoid ERC-20 transfer costs for each trade
 - **Trade more efficiently** - Execute multiple swaps without transfers between each trade
@@ -14,7 +14,7 @@ When you trade or provide liquidity on the exchange, constantly transferring tok
 
 ## Checking Your Balance
 
-View your balance of any token held on the exchange:
+Use the DEX contract to view your balance of any token held on the DEX:
 
 ```solidity
 function balanceOf(
@@ -28,19 +28,20 @@ function balanceOf(
 uint128 balance = exchange.balanceOf(msg.sender, USDC_ADDRESS);
 ```
 
-## Depositing to the Exchange
+## Using Your DEX Balance
 
-There is no explicit deposit function. When you execute a swap or place an order, the exchange automatically:
+Each transaction that you authorize will use your DEX balance before using funds you approve from your wallet. When you execute a swap or place an order, the DEX contract automatically:
 
-1. First checks if you have sufficient balance on the exchange
-2. If insufficient, transfers the needed amount from your wallet to the exchange
-3. Uses your exchange balance for the operation
+1. Checks if you have sufficient balance in the DEX
+2. If insufficient, transfers the needed amount from your wallet to your DEX balance
+3. Uses your DEX balance for the operation
 
-This means depositing happens automatically as needed during trading activity.
 
-## Withdrawing from the Exchange
 
-Transfer tokens from your exchange balance back to your wallet:
+
+## Withdrawing from the DEX
+
+Transfer tokens from your DEX balance back to your wallet:
 
 ```solidity
 function withdraw(

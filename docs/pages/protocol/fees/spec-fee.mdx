@@ -110,9 +110,9 @@ If the top-level call of a transaction is to a TIP-20 contract for which the cur
 
 ### Stablecoin Exchange contract
 
-If the top-level call of a transaction is to the [Stablecoin Exchange](/documentation/protocol/exchange/spec-stablecoin-exchange.mdx) contract, the function being called is either `swapExactAmountIn` or `swapExactAmountOut`, and the `tokenIn` argument to that function is the address of a TIP-20 token for which the currency is USD, then the `tokenIn` argument is used as the user's fee token for the transaction (unless there is a preference specified at the [transaction](#transaction-level) or [account](#account-level) level).
+If the top-level call of a transaction is to the [Stablecoin Exchange](/protocol/exchange/spec.mdx) contract, the function being called is either `swapExactAmountIn` or `swapExactAmountOut`, and the `tokenIn` argument to that function is the address of a TIP-20 token for which the currency is USD, then the `tokenIn` argument is used as the user's fee token for the transaction (unless there is a preference specified at the [transaction](#transaction-level) or [account](#account-level) level).
 
-For [Tempo transactions](/documentation/protocol/transactions/spec-tempo-transaction.mdx), this rule applies only if there is only one top-level call in the transaction.
+For [Tempo transactions](/protocol/transactions/spec-tempo-transaction.mdx), this rule applies only if there is only one top-level call in the transaction.
 
 ### pathUSD
 

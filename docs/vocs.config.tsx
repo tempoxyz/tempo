@@ -71,6 +71,10 @@ export default defineConfig({
             link: '/quickstart/faucet',
           },
           {
+            text: 'Developer Tools',
+            link: '/quickstart/developer-tools',
+          },
+          {
             text: 'EVM Differences',
             link: '/quickstart/evm-compatibility',
           },
@@ -104,10 +108,6 @@ export default defineConfig({
                 link: '/guide/use-accounts/add-funds',
               },
             ],
-          },
-          {
-            text: 'Use Tempo Transactions',
-            link: '/guide/tempo-transaction',
           },
           {
             text: 'Make Payments',
@@ -345,7 +345,7 @@ export default defineConfig({
             ],
           },
           {
-            text: 'Stablecoin Exchange',
+            text: 'Stablecoin DEX',
             collapsed: true,
             items: [
               {
@@ -369,7 +369,7 @@ export default defineConfig({
                 link: '/protocol/exchange/providing-liquidity',
               },
               {
-                text: 'Exchange Balance',
+                text: 'DEX Balance',
                 link: '/protocol/exchange/exchange-balance',
               },
               {
@@ -460,53 +460,72 @@ export default defineConfig({
         link: '/learn',
       },
       {
-        text: 'Get Started',
+        text: 'Partners',
+        link: '/learn/partners',
+      },
+      {
+        text: 'Blog',
+        link: 'https://tempo.xyz/blog',
+      },
+      {
+        text: 'Stablecoins',
         items: [
           {
-            text: 'About Stablecoins',
+            text: 'Overview',
             link: '/learn/stablecoins',
           },
           {
-            text: 'Stablecoins on Tempo',
-            link: '/learn/stablecoins-on-tempo',
-          },
-        ],
-      },
-      {
-        text: 'Stablecoin Use Cases',
-        items: [
-          {
             text: 'Remittances',
-            link: '/learn/remittances',
+            link: '/learn/use-cases/remittances',
           },
           {
             text: 'Global Payouts',
-            link: '/learn/global-payouts',
+            link: '/learn/use-cases/global-payouts',
           },
           {
             text: 'Embedded Finance',
-            link: '/learn/embedded-finance',
+            link: '/learn/use-cases/embedded-finance',
           },
           {
             text: 'Tokenized Deposits',
-            link: '/learn/tokenized-deposits',
+            link: '/learn/use-cases/tokenized-deposits',
           },
           {
             text: 'Microtransactions',
-            link: '/learn/microtransactions',
+            link: '/learn/use-cases/microtransactions',
           },
           {
             text: 'Agentic Commerce',
-            link: '/learn/agentic-commerce',
+            link: '/learn/use-cases/agentic-commerce',
           },
         ],
       },
       {
-        text: 'More About Tempo',
+        text: 'Tempo',
         items: [
           {
-            text: 'Tempo Overview',
-            link: '/learn/tempo-overview',
+            text: 'Overview',
+            link: '/learn/tempo',
+          },
+          {
+            text: 'Native Stablecoins',
+            link: '/learn/tempo/native-stablecoins',
+          },
+          {
+            text: 'Modern Transactions',
+            link: '/learn/tempo/modern-transactions',
+          },
+          {
+            text: 'Performance',
+            link: '/learn/tempo/performance',
+          },
+          {
+            text: 'Onchain FX',
+            link: '/learn/tempo/fx',
+          },
+          {
+            text: 'Privacy',
+            link: '/learn/tempo/privacy',
           },
         ],
       },
@@ -524,6 +543,32 @@ export default defineConfig({
             {
               text: 'Setup',
               link: '/sdk/typescript/viem/setup',
+            },
+            {
+              text: 'Accounts',
+              collapsed: true,
+              items: [
+                {
+                  text: 'Overview',
+                  link: '/sdk/typescript/viem/accounts',
+                },
+                {
+                  text: 'fromWebAuthnP256',
+                  link: '/sdk/typescript/viem/account.fromWebAuthnP256',
+                },
+                {
+                  text: 'fromWebCryptoP256',
+                  link: '/sdk/typescript/viem/account.fromWebCryptoP256',
+                },
+                {
+                  text: 'fromSecp256k1',
+                  link: '/sdk/typescript/viem/account.fromSecp256k1',
+                },
+                {
+                  text: 'fromP256',
+                  link: '/sdk/typescript/viem/account.fromP256',
+                },
+              ],
             },
             {
               text: 'Actions',
@@ -864,7 +909,7 @@ export default defineConfig({
                 },
                 {
                   text: 'withFeePayer',
-                  link: '/sdk/typescript/viem/withFeePayer',
+                  link: '/sdk/typescript/viem/transport.withFeePayer',
                 },
               ],
             },

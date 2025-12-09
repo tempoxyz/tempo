@@ -37,10 +37,18 @@ type ReturnType = {
   address: Address
   /** ID of the fee token */
   id: bigint
-}
+} | null
 ```
 
+Returns `null` if the user has not set a default fee token.
+
 ## Parameters
+
+### account
+
+- **Type:** `Address`
+
+Account address.
 
 <ReadParameters wagmi />
 

@@ -705,7 +705,7 @@ Edit `vocs.config.tsx` to add entries to the sidebar.
 
 ### Viem Actions sidebar (around line 244-538)
 
-The Actions section contains module categories (AMM, Fee, Policy, Reward, Stablecoin Exchange, Token). Find the appropriate module category and add entries alphabetically within its `items` array:
+The Actions section contains module categories (AMM, Fee, Policy, Reward, Stablecoin DEX, Token). Find the appropriate module category and add entries alphabetically within its `items` array:
 
 ```tsx
 // Find the module category by its text label
@@ -776,7 +776,7 @@ Common module categories used in the SDK. The left column shows the lowercase mo
 | Module (file path) | Sidebar Text Label |
 |--------------------|-------------------|
 | `amm` | `AMM` |
-| `dex` | `Stablecoin Exchange` |
+| `dex` | `Stablecoin DEX` |
 | `faucet` | `Faucet` |
 | `fee` | `Fee` |
 | `policy` | `Policy` |

@@ -1,13 +1,17 @@
 import { Callout } from 'vocs/components'
 import LucideFileText from '~icons/lucide/file-text'
-import * as Card from "../../components/Card.tsx"
+import LucideMail from '~icons/lucide/mail'
+import LucideRocket from '~icons/lucide/rocket'
+import * as Card from "../../../components/Card.tsx"
+import { ZoomableImage } from "../../../components/ZoomableImage.tsx"
 
-# Embedded Finance
+# Bring embedded finance to life with stablecoins [Enable platforms and marketplaces to streamline partner payouts, lower payment costs, and launch more rewarding loyalty programs.]
 
-<Card.Notice title="Executive Summary" icon={LucideFileText}>
+<Card.Notice title="Executive Summary" icon={LucideFileText} inverse>
   Stablecoins bring the true promise of embedded finance to life. Their real-time, global nature lets platforms and marketplaces streamline partner and merchant payouts, lower the cost of payment acceptance and launch more rewarding loyalty programs for consumers. This creates a better experience for users and more efficient backend processes for platforms and marketplaces.
 </Card.Notice>
 
+## The challenge with traditional embedded finance
 
 Embedded finance was meant to help platforms and marketplaces offer smoother, more integrated user experiences. Yet its impact remains constrained by traditional payment rails, whose delays, fees, and operational complexity undermine much of the value embedded finance aims to provide.
 
@@ -15,27 +19,43 @@ For example, gig economy and creator work happens around the clock, while tradit
 
 Merchant payouts on marketplaces face similar challenges. Settlement is often delayed by banking windows, regional cutoff times, and inconsistent payment rails across countries. Cross-border merchant payments frequently move through multiple intermediaries, adding cost and introducing unpredictability in when funds will arrive.
 
+## How stablecoins solve this
 
 By embedding blockchain wallets directly into their applications, these platforms can move onto modern, always-on payment rails. Partners, creators, and merchants can receive earnings in stablecoins far faster than through traditional methods, with settlement occurring onchain in seconds. Stablecoins also make these payouts inherently global, removing many of the barriers of regional banking systems.
 
-![How stablecoins transform embedded finance](/learn/image4.png)
+<ZoomableImage src="/learn/embedded-finance-transformation.png" alt="How stablecoins transform embedded finance" />
 
 Once partners, creators and merchants receive their earnings in the embedded wallet, they can manage those funds directly within the same application they use for work. The wallet can hold stablecoin balances, allow payouts to linked bank accounts, or support spending for goods and services through a stablecoin-linked payment card.
 
-
 Stablecoins and embedded wallets can support far more than payouts. Marketplaces can also use stablecoins to collect consumer payments, deliver instant refunds, and issue loyalty rewards. Stablecoin payments do not have the settlement delays and interchange fees of card networks, making them a faster and cheaper payment option.
 
-![Beyond payouts](/learn/image1.png)
+<ZoomableImage src="/learn/embedded-finance-beyond-payouts.png" alt="Beyond payouts" />
+
+## Benefits beyond speed and cost
 
 By significantly reducing the cost of collecting payments from consumers and paying out partners, creators, and merchants, marketplaces can redirect more value toward customer and merchant benefits. Lower payment costs give merchants more flexibility to reward loyal customers with better offers, reimagining their loyalty programs. After all, merchants ultimately fund card rewards through interchange fees.
 
-
 For platforms, embedded wallets and stablecoin rails replace a patchwork of payment processors, banking partners, and regional settlement rules with a single, consistent infrastructure. Reconciliation relies on unified onchain records rather than scattered bank statements, and operational teams spend far less time managing exceptions or coordinating across time zones.
-
 
 Faster payouts, lower-cost payment acceptance, and more dynamic loyalty programs are only the beginning of what stablecoins bring to embedded finance. As stablecoins become the foundation for agentic commerce, platforms will gain new opportunities to create value for customers and expand what embedded finance can offer.
 
+## Building with Tempo
 
-By providing a low-cost, high-speed settlement layer, Tempo enables platforms to offer financial products that were previously cost-prohibitive on legacy rails. Whether you are looking to embed wallets for gig workers or streamline complex marketplace settlements, our team can guide you through the wallet integration patterns that best fit your user experience. We are available to help you evaluate the technical lift and commercial impact of moving your platform's payments onchain.
+By providing a low-cost, high-speed settlement layer, Tempo enables platforms to offer financial products that were previously cost-prohibitive on legacy rails. Whether you are looking to embed wallets for gig workers or streamline complex marketplace settlements, our team can guide you through the wallet integration patterns that best fit your user experience.
 
-If you're interested in learning more, please email us at partners@tempo.xyz.
+We are available to help you evaluate the technical lift and commercial impact of moving your platform's payments onchain.
+
+<Card.Container>
+  <Card.Link
+    description="Want to explore this use case on Tempo? Email us to learn more about building embedded finance solutions."
+    href="mailto:partners@tempo.xyz"
+    icon={LucideMail}
+    title="Get in Touch"
+  />
+  <Card.Link
+    description="Start building on Tempo with our guides, SDKs, and documentation."
+    href="/quickstart/integrate-tempo"
+    icon={LucideRocket}
+    title="Build on Tempo"
+  />
+</Card.Container>

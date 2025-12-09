@@ -1,4 +1,4 @@
-# Stablecoin Exchange
+# Stablecoin DEX
 
 ## Abstract
 
@@ -48,9 +48,14 @@ Each TIP‑20 token specifies a single quote token in its metadata via `quoteTok
 
 This design reduces liquidity fragmentation by giving every token exactly one paired asset.
 
-It also simplifies routing. The requirement that each token picks a single other stablecoin as its quote token, and that quote token relationships cannot create a cycle, forces liquidity into a tree structure, which means that there is only one path between any two stablecoins.
+It also simplifies routing. We require that:
 
-USD tokens can only choose USD tokens as their quote token. Non-USD TIP-20 tokens can pick any token as their quote token, but currently there is no support for cross-currency trading, or same-currency trading of non-USD tokens, on the built-in stablecoin exchange.
+ 1. each token picks a single other stablecoin as its quote token, and, 
+ 2. quote token relationships cannot have circular dependencies. 
+
+This forces liquidity into a tree structure, which in turn implies that there is only one path between any two stablecoins
+
+USD tokens can only choose USD tokens as their quote token. Non-USD TIP-20 tokens can pick any token as their quote token, but currently there is no support for cross-currency trading, or same-currency trading of non-USD tokens, on the DEX.
  
 The platform offers a neutral USD stablecoin, [`pathUSD`](/protocol/exchange/pathUSD), as an option for quote token. PathUSD is the first stablecoin deployed on the chain, which means it has no quote token. Use of pathUSD is optional.
 
