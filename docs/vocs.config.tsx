@@ -224,7 +224,7 @@ export default defineConfig({
               },
               {
                 text: 'Reference Implementation',
-                link: 'https://github.com/tempoxyz/docs/blob/main/specs/src/TIP20.sol',
+                link: 'https://github.com/tempoxyz/tempo/blob/main/docs/specs/src/TIP20.sol',
               },
               {
                 text: 'Rust Implementation',
@@ -260,7 +260,7 @@ export default defineConfig({
               },
               {
                 text: 'Reference Implementation',
-                link: 'https://github.com/tempoxyz/docs/blob/main/specs/src/TIP403Registry.sol',
+                link: 'https://github.com/tempoxyz/tempo/blob/main/docs/specs/src/TIP403Registry.sol',
               },
               {
                 text: 'Rust Implementation',
@@ -294,7 +294,7 @@ export default defineConfig({
                   },
                   {
                     text: 'Reference Implementation',
-                    link: 'https://github.com/tempoxyz/docs/blob/main/specs/src/FeeManager.sol',
+                    link: 'https://github.com/tempoxyz/tempo/blob/main/docs/specs/src/FeeManager.sol',
                   },
                   {
                     text: 'Rust Implementation',
@@ -374,7 +374,7 @@ export default defineConfig({
               },
               {
                 text: 'Reference Implementation',
-                link: 'https://github.com/tempoxyz/docs/blob/main/specs/src/StablecoinExchange.sol',
+                link: 'https://github.com/tempoxyz/tempo/blob/main/docs/specs/src/StablecoinExchange.sol',
               },
               {
                 text: 'Rust Implementation',
