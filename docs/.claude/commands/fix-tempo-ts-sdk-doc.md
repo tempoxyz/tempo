@@ -1,19 +1,19 @@
 ---
-description: "Audit a single SDK action's docs. Usage: /audit-tempo-ts-docs <module> <function> (e.g., token transfer)"
+description: "Fix a single SDK action's docs. Usage: /fix-tempo-ts-sdk-doc <module> <function> (e.g., token transfer)"
 ---
 
-# Audit tempo.ts SDK Documentation
+# Fix tempo.ts SDK Documentation
 
-Audit an existing documentation page against the underlying TypeScript source code to ensure parameters and return values are accurate. Can also generate documentation from the extracted types.
+Fix an existing documentation page by comparing it against the underlying TypeScript source code to ensure parameters and return values are accurate.
 
 ## Usage
 
-Run this command with a documentation file path:
+Run this command with a module and function name:
 ```
-/audit-tempo-ts-docs $ARGUMENTS
+/fix-tempo-ts-sdk-doc $ARGUMENTS
 ```
 
-Where `$ARGUMENTS` is the path to the `.mdx` documentation file to audit (e.g., `pages/sdk/typescript/viem/token.transfer.mdx`).
+Where `$ARGUMENTS` is the module and function name (e.g., `token transfer` for `pages/sdk/typescript/viem/token.transfer.mdx`).
 
 ## Workflow
 

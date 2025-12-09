@@ -35,41 +35,14 @@ Extract `module.function` from each filename (e.g., `token.transfer.mdx` → `to
 
 ### Step 2: Launch Parallel Agents
 
-For each unique `module.function` pair, spawn a Task agent with `subagent_type: "general-purpose"`.
+For each unique `module.function` pair, spawn a Task agent with `subagent_type: "tempo-ts-sdk-doc-fixer"`.
 
 **IMPORTANT:** Launch agents in parallel batches. Use a single message with multiple Task tool calls.
 
 Each agent prompt should be:
 
 ```
-Audit and fix the tempo.ts SDK documentation for {module}.{function}.
-
-## Instructions
-
-1. Run type extraction:
-   ```bash
-   bun extract-sdk-types {module} {function}
-   ```
-
-2. Read the generated JSON from `.claude/sdk-types/{module}.{function}.json`
-
-3. Read BOTH documentation files:
-   - `pages/sdk/typescript/viem/{module}.{function}.mdx`
-   - `pages/sdk/typescript/wagmi/actions/{module}.{function}.mdx`
-
-4. Compare each doc against the extracted types:
-   - Check all parameters are documented
-   - Check types match (use `Address` for `0x${string}`, `Address | bigint` for `TokenIdOrAddress`)
-   - Check optionality is correct (`optional: false` = required, `optional: true` = "(optional)")
-   - For object types: use `- **Type:** \`object\`` with code block
-   - For function types: use `- **Type:** \`function\`` with code block
-
-5. **Automatically fix any issues found** - do not ask for confirmation
-
-6. Return a summary:
-   - Files checked
-   - Issues found and fixed (list each)
-   - Or "No issues found" if clean
+Fix the tempo.ts SDK documentation for {module}.{function}.
 ```
 
 ### Step 3: Collect Results
