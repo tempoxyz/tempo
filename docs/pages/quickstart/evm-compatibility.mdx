@@ -6,7 +6,7 @@ import LucideCheckCircle from '~icons/lucide/check-circle'
 import LucideZap from '~icons/lucide/zap'
 import * as Card from "../../components/Card.tsx"
 
-# EVM Differences
+## EVM Differences
 
 Tempo is fully compatible with the Ethereum Virtual Machine (EVM), targeting the **Osaka** EVM hard fork. Developers can deploy and interact with smart contracts using the same tools, languages, and frameworks they use on Ethereum, such as Solidity, Foundry, and Hardhat. All Ethereum JSON-RPC methods work out of the box. 
 
@@ -14,7 +14,7 @@ While the execution environment mirrors Ethereum's, Tempo introduces some differ
 
 <Card.Container>
   <Card.Link
-    description="How Tempo handles wallet compatibility, balance checks, and native token representation."
+    description="How Tempo handles wallet compatibility and native token representation."
     href="#wallet-differences"
     icon={LucideWallet}
     title="Wallet Differences"
@@ -26,14 +26,14 @@ While the execution environment mirrors Ethereum's, Tempo introduces some differ
     title="Transaction Differences"
   />
   <Card.Link
-    description="VM-level differences including balance opcodes and JSON-RPC compatibility."
+    description="VM-level differences including balance opcodes and Solidity compatibility."
     href="#vm-layer-differences"
     icon={LucideCode}
     title="VM Layer Differences"
   />
   <Card.Link
     description="How Tempo's consensus and finality differ from Ethereum's approach."
-    href="#consensus-finality"
+    href="#consensus--finality"
     icon={LucideCheckCircle}
     title="Consensus & Finality"
   />
@@ -45,7 +45,7 @@ By default, all existing functionality will work for EVM-compatible wallets, wit
 
 ### Handling ETH (native token) Balance Checks
 
-Remember, that on Tempo there is no native gas token.
+Remember that on Tempo, there is no native gas token.
 
 Many wallets and applications check a user's "native account balance" before letting them complete some action. In this scenario, you might see an error message like "Insufficient balance".
 
@@ -55,7 +55,7 @@ On Tempo, the `eth_getBalance` method returns a hex string representing an extre
 
 Our recommendation to wallets and to applications using this method is to remove this balance check, and to not represent any "native balance" in your user's UI. This will allow users to complete actions without being blocked by balance checks.
 
-We endorse [this proposed ERC](https://github.com/ethereum/ERCs/pull/1220) to 
+We endorse [this proposed ERC](https://github.com/ethereum/ERCs/pull/1220) to standardize this behavior.
 
 ### Specifying a Native Token Currency Symbol
 
@@ -65,10 +65,10 @@ Sometimes wallets will need to specify the currency symbol for the native token.
 
 <Card.Notice
   icon={LucideZap}
-  title="Tempo Transactions."
+  title="Tempo Transactions"
 >
   <p>
-    We strongly recommend using <a href="/quickstart/integrate-tempo#tempo-transactions">Tempo Transactions</a> over legacy Ethereum transactions if you have control over the transaction submission, in order to leverage features like native gas sponsorship.
+    We strongly recommend using <a href="/guide/tempo-transaction">Tempo Transactions</a> over legacy Ethereum transactions if you have control over the transaction submission, in order to leverage features like native gas sponsorship.
   </p>
 </Card.Notice>
 
@@ -78,11 +78,11 @@ Tempo does not have a native gas token. Instead, fees are denominated in USD and
 
 If your transactions are not using Tempo Transactions, there is a cascading fee token selection algorithm that determines the default fee token based on the user's preferences and the contract being called.
 
-This preference system is specified [here](/documentation/protocol/fees/spec-fee#fee-token-preferences) in detail. 
+This preference system is specified [here](/protocol/fees/spec-fee#fee-token-preferences) in detail. 
 
 #### Consideration 1: Setting a user default fee token
 
-As specified in the preference system above, the simplest way to specify the fee token for a user is to set the user default fee token. Read about how to do that [here](http://localhost:5173/documentation/protocol/fees/spec-fee#account-level) on behalf of an account.
+As specified in the preference system above, the simplest way to specify the fee token for a user is to set the user default fee token. Read about how to do that [here](/protocol/fees/spec-fee#account-level) on behalf of an account.
 
 #### Consideration 2: Paying fees in the TIP-20 contract being interacted with
 
@@ -94,7 +94,7 @@ Importantly, note that the `amount` field in this case is sent in full. So, if t
 
 If the user is calling a contract that is not a TIP-20 token, the EVM transaction will default to the PathUSD token. Thus, in order to send transactions to non-TIP-20 contracts, the wallet must hold some balance of PathUSD.
 
-On the Tempo Testnet, PathUSD is available to be deposited from the [faucet](/quickstart/faucet).
+On the Tempo Testnet, PathUSD is available from the [faucet](/quickstart/faucet).
 
 If a wallet wants to submit a non-TIP20 transaction without having to submit the above transaction, we recommend investing in using [Tempo Transactions](/quickstart/integrate-tempo#tempo-transactions) instead.
 
@@ -110,7 +110,7 @@ At the VM layer, all opcodes are supported out of the box. Due to the lack of a 
 | **`CALLVALUE`** | Will always return 0 | There is no alternative |
 
 :::info
-We are exploring transaction level introspection for Tempo Transactions, with an ability to declare things like `tx.fee_tokens` and `tx.fee_payer` in Solidity.
+We are exploring transaction level introspection for Tempo Transactions, with an ability to declare things like `tx.fee_token` and `tx.fee_payer` in Solidity.
 :::
 
 ## Consensus & Finality

@@ -24,7 +24,7 @@ TIP-20 is Tempo's native token standard for stablecoins and payment tokens. TIP-
   </p>
 </Card.Notice>
 
-All TIP-20 tokens are created by interacting with the [TIP-20 Factory contract](/documentation/protocol/tip20/spec#tip20factory), calling the `createToken` function. If you're issuing a stablecoin on Tempo, we **strongly recommend** using the TIP-20 standard. Learn more about the benefits, or follow the guide on issuance [here](/guide/issuance).
+All TIP-20 tokens are created by interacting with the [TIP-20 Factory contract](/protocol/tip20/spec#tip20factory), calling the `createToken` function. If you're issuing a stablecoin on Tempo, we **strongly recommend** using the TIP-20 standard. Learn more about the benefits, or follow the guide on issuance [here](/guide/issuance).
 
 ## Benefits & Features of TIP-20 Tokens
 
@@ -85,32 +85,32 @@ Below are some of the key benefits and features of TIP-20 tokens:
 
 Any USD-denominated TIP-20 token can be used to pay transaction fees on Tempo.
 
-The [Fee AMM](/documentation/protocol/fees/spec-fee-amm) automatically converts your token to the validator's preferred fee token, eliminating the need for users to hold a separate gas token. This feature works natively: no additional infrastructure or integration required.
+The [Fee AMM](/protocol/fees/spec-fee-amm) automatically converts your token to the validator's preferred fee token, eliminating the need for users to hold a separate gas token. This feature works natively: no additional infrastructure or integration required.
 
-Full specification of this feature can be found in the [Payment Lanes Specification](/documentation/protocol/blockspace/payment-lane-specification).
+Full specification of this feature can be found in the [Payment Lanes Specification](/protocol/blockspace/payment-lane-specification).
 
 ### Get Predictable Payment Fees
 
-Tempo has dedicated payment lanes: reserved blockspace for payment TIP-20 transactions that other applications cannot consume. Even if there are extremely popular applications on the chain competing for blockspace, payroll runs or customer disbursements execute predictably. Learn more about the [payments lane](/documentation/protocol/blockspace/payment-lane-specification).
+Tempo has dedicated payment lanes: reserved blockspace for payment TIP-20 transactions that other applications cannot consume. Even if there are extremely popular applications on the chain competing for blockspace, payroll runs or customer disbursements execute predictably. Learn more about the [payments lane](/protocol/blockspace/payment-lane-specification).
 
 ### Role-Based Access Control (RBAC)
 
-TIP-20 includes a built-in [RBAC system](/documentation/protocol/tip403/spec#tip-20-token-roles) that separates administrative responsibilities:
+TIP-20 includes a built-in [RBAC system](/protocol/tip403/spec#tip-20-token-roles) that separates administrative responsibilities:
 
 - **ISSUER_ROLE**: Grants permission to mint and burn tokens, enabling controlled token issuance
 - **PAUSE_ROLE** / **UNPAUSE_ROLE**: Allows pausing and unpausing token transfers for emergency controls
 - **BURN_BLOCKED_ROLE**: Permits burning tokens from blocked addresses (e.g., for compliance actions)
 
-Roles can be granted, revoked, and delegated without custom contract changes. This enables issuers to separate operational roles (e.g., who can mint) from administrative roles (e.g., who can pause). Learn more in the [TIP-20 specification](/documentation/protocol/tip20/spec#roles).
+Roles can be granted, revoked, and delegated without custom contract changes. This enables issuers to separate operational roles (e.g., who can mint) from administrative roles (e.g., who can pause). Learn more in the [TIP-20 specification](/protocol/tip20/spec#roles).
 
 ### TIP-403 Transfer Policies
 
-TIP-20 tokens integrate with the [TIP-403 Policy Registry](/documentation/protocol/tip403/overview) to enforce compliance policies. Each token can reference a policy that controls who can send and receive tokens:
+TIP-20 tokens integrate with the [TIP-403 Policy Registry](/protocol/tip403/overview) to enforce compliance policies. Each token can reference a policy that controls who can send and receive tokens:
 
 - **Whitelist policies**: Only addresses in the whitelist can transfer tokens
 - **Blacklist policies**: Addresses in the blacklist are blocked from transferring tokens
 
-Policies can be shared across multiple tokens, enabling consistent compliance enforcement across your token ecosystem. See the [TIP-403 specification](/documentation/protocol/tip403/spec) for details.
+Policies can be shared across multiple tokens, enabling consistent compliance enforcement across your token ecosystem. See the [TIP-403 specification](/protocol/tip403/spec) for details.
 
 ### Operational Controls
 
@@ -124,8 +124,8 @@ TIP-20 tokens also have **pause/unpause** commands, which provide emergency cont
 
 ### Reward Distribution
 
-TIP-20 supports an opt-in [reward distribution system](/documentation/protocol/tip20-rewards/overview) that allows issuers to distribute rewards to token holders. Rewards can be claimed by holders or automatically forwarded to designated recipient addresses.
+TIP-20 supports an opt-in [reward distribution system](/protocol/tip20-rewards/overview) that allows issuers to distribute rewards to token holders. Rewards can be claimed by holders or automatically forwarded to designated recipient addresses.
 
 ### Currency Declaration
 
-A TIP-20 token can declare a currency identifier (e.g., `"USD"`, `"EUR"`) that identifies the real-world asset backing the token. This enables proper routing and pricing in Tempo's [stablecoin exchange](/documentation/protocol/exchange). USD-denominated TIP-20 tokens can be used to pay transaction fees.
+A TIP-20 token can declare a currency identifier (e.g., `"USD"`, `"EUR"`) that identifies the real-world asset backing the token. This enables proper routing and pricing in Tempo's [stablecoin exchange](/protocol/exchange). USD-denominated TIP-20 tokens can be used to pay transaction fees.

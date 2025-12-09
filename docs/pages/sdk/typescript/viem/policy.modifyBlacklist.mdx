@@ -12,7 +12,7 @@ Modifies the blacklist for a blacklist-type transfer policy. Requires policy adm
 import { client } from './viem.config'
 
 const { receipt } = await client.policy.modifyBlacklistSync({
-  account: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
+  address: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
   policyId: 1n,
   restricted: true,
 })
@@ -38,7 +38,7 @@ import { Actions } from 'tempo.ts/viem'
 import { client } from './viem.config'
 
 const hash = await client.policy.modifyBlacklist({
-  account: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
+  address: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
   policyId: 1n,
   restricted: true,
 })
@@ -67,11 +67,11 @@ type ReturnType = {
 
 ## Parameters
 
-### account
+### address
 
 - **Type:** `Address`
 
-Address to add or remove from the blacklist.
+Target account address to add or remove from the blacklist.
 
 ### policyId
 

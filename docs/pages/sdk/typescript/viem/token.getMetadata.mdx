@@ -40,17 +40,20 @@ type ReturnType = {
   currency: string
   decimals: number
   name: string
+  paused?: boolean
+  quoteToken?: Address
+  supplyCap?: bigint
   symbol: string
   totalSupply: bigint
+  transferPolicyId?: bigint
 }
 ```
 
 ## Parameters
 
-### token (optional)
+### token
 
 - **Type:** `Address | bigint`
-- **Default:** `Addresses.pathUsd` (Token ID 0)
 
 Address or ID of the TIP-20 token.
 

@@ -1,0 +1,64 @@
+import LucideMail from '~icons/lucide/mail'
+import LucideRocket from '~icons/lucide/rocket'
+import LucideLayout from '~icons/lucide/layout'
+import LucideDollarSign from '~icons/lucide/dollar-sign'
+import LucideFileText from '~icons/lucide/file-text'
+import LucideShield from '~icons/lucide/shield'
+import LucideArrowLeftRight from '~icons/lucide/arrow-left-right'
+import * as Card from "../../../components/Card.tsx"
+
+# TIP-20 Tokens [Tempo's native stablecoin token standard]
+
+Tempo extends the [ERC-20 standard](https://ethereum.org/en/developers/docs/standards/tokens/erc-20/) used on EVM chains (Ethereum, Base, Arbitrum) with additional features, and enshrines them in protocol as the TIP-20 contract suite. These features are purpose-built for payment use cases at scale.
+
+## Predictable Payment Throughput
+
+Tempo has dedicated payment lanes: reserved blockspace for payment transactions (specifically, TIP-20 token transfers) that other applications cannot consume. Payments have guaranteed blockspace reserved at the protocol level and don't compete with other traffic like NFT mints, liquidations, or high-frequency contract calls.
+
+Even if there are extremely popular applications on the chain competing for blockspace, payroll runs or customer disbursements execute predictably. Fees stay low and stable even when other network activity spikes, with a target of one-tenth of a cent per payment transaction. For payment processors, that means no "downtime" from congestion, and predictable economics for high-volume flows.
+
+There is no "noisy neighbor problem" like on traditional blockchains, where blockspace can fill up or cost orders of magnitude more during times of intense activity.
+
+<Card.Notice title="Payment Lane Specification" icon={LucideLayout} inline>
+  Learn more in the [payment lanes specification](/protocol/blockspace/payment-lane-specification).
+</Card.Notice>
+
+## Low, Predictable Fees, in Stables
+
+Transaction fees can be paid directly in USD-denominated stablecoins. This removes the need for volatile gas tokens and lets payment applications operate entirely in the same currency as their underlying flows, ensuring predictable costs and simpler accounting. 
+
+For wallets and custodians, this removes the need to hold a balance of new cryptoassets just to facilitate stablecoin payments. Users can pay fees in any USD stablecoin, and validators can receive fees in any USD stablecoin, with the protocol automatically converting between them using onchain liquidity through Tempo's built-in DEX.
+
+Costs are predictable and low: TIP-20 transfers target one-tenth of a cent per transaction. This removes a major barrier for mainstream adoption. Users can interact with Tempo using only the stablecoins they're already familiar with, without needing to understand or manage volatile crypto assets.
+
+<Card.Notice title="Fee System Specification" icon={LucideDollarSign} inline>
+  Learn more in the [fees specification](/protocol/fees).
+</Card.Notice>
+
+## Native Reconciliation
+
+Tempo's TIP-20 tokens can natively attach a short memo directly to each transfer. This mirrors traditional payment systems, where every transaction carries context (e.g., an invoice number, a customer ID, a cost center, or a simple reference note) for backend systems to automatically match payments to internal records.
+
+For larger memos, Tempo supports flexible approaches where only a commitment (like a hash or locator) travels onchain while the full data (including PII) lives off-chain. This means finance teams can automatically match payments to invoices and payment processors can embed the structured data their systems need without custom solutions or integration with third-party reconciliation infrastructure.
+
+<Card.Notice title="TIP-20 Token Specification" icon={LucideFileText} inline>
+  Learn more in the [TIP-20 specification](/protocol/tip20/overview).
+</Card.Notice>
+
+## Built-in Compliance
+
+Stablecoin (and other regulated asset) issuers operate under regulatory requirements. They need to enforce whitelists (only approved addresses can transact) or blacklists (sanctioned addresses cannot transact). 
+
+Tempo provides a shared compliance infrastructure through the TIP-403 Policy Registry. An issuer can thus create a single policy with their compliance rules, and multiple tokens they issue can adopt that policy. When the compliance manager updates the policy, all tokens using it automatically enforce the new rules, unlike traditional blockchains where an issuer must update each contract one-by-one.
+
+<Card.Notice title="TIP-403 Policy Specification" icon={LucideShield} inline>
+  Learn more in the [TIP-403 policy specification](/protocol/tip403/overview).
+</Card.Notice>
+
+## Built-in Stable Asset DEX
+
+Tempo includes a native decentralized exchange optimized for stablecoins and tokenized deposits. This means users can pay fees in any USD stablecoin, and validators can receive fees in any USD stablecoin, with the protocol automatically converting between them using onchain liquidity.
+
+<Card.Notice title="Stablecoin DEX" icon={LucideArrowLeftRight} inline>
+  Learn more about the [stablecoin DEX](/protocol/exchange).
+</Card.Notice>

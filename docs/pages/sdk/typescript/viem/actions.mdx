@@ -39,18 +39,18 @@
 | [`reward.start`](/sdk/typescript/viem/reward.start) | Starts a new reward stream that distributes tokens to opted-in holders |
 | [`reward.watchRewardRecipientSet`](/sdk/typescript/viem/reward.watchRewardRecipientSet) | Watches for reward recipient set events |
 | [`reward.watchRewardScheduled`](/sdk/typescript/viem/reward.watchRewardScheduled) | Watches for reward scheduled events |
-| **Stablecoin Exchange Actions** | |
-| [`dex.buy`](/sdk/typescript/viem/dex.buy) | Buys a specific amount of tokens from the Stablecoin Exchange orderbook |
+| **Stablecoin DEX Actions** | |
+| [`dex.buy`](/sdk/typescript/viem/dex.buy) | Buys a specific amount of tokens from the Stablecoin DEX orderbook |
 | [`dex.cancel`](/sdk/typescript/viem/dex.cancel) | Cancels an order from the orderbook |
 | [`dex.createPair`](/sdk/typescript/viem/dex.createPair) | Creates a new trading pair on the DEX |
-| [`dex.getBalance`](/sdk/typescript/viem/dex.getBalance) | Gets a user's token balance on the Stablecoin Exchange |
+| [`dex.getBalance`](/sdk/typescript/viem/dex.getBalance) | Gets a user's token balance on the Stablecoin DEX |
 | [`dex.getBuyQuote`](/sdk/typescript/viem/dex.getBuyQuote) | Gets the quote for buying a specific amount of tokens |
 | [`dex.getOrder`](/sdk/typescript/viem/dex.getOrder) | Gets an order's details from the orderbook |
 | [`dex.getTickLevel`](/sdk/typescript/viem/dex.getTickLevel) | Gets the price level information at a specific tick |
 | [`dex.getSellQuote`](/sdk/typescript/viem/dex.getSellQuote) | Gets the quote for selling a specific amount of tokens |
 | [`dex.place`](/sdk/typescript/viem/dex.place) | Places a limit order on the orderbook |
 | [`dex.placeFlip`](/sdk/typescript/viem/dex.placeFlip) | Places a flip order that automatically flips when filled |
-| [`dex.sell`](/sdk/typescript/viem/dex.sell) | Sells a specific amount of tokens from the Stablecoin Exchange orderbook |
+| [`dex.sell`](/sdk/typescript/viem/dex.sell) | Sells a specific amount of tokens from the Stablecoin DEX orderbook |
 | [`dex.watchFlipOrderPlaced`](/sdk/typescript/viem/dex.watchFlipOrderPlaced) | Watches for flip order placed events |
 | [`dex.watchOrderCancelled`](/sdk/typescript/viem/dex.watchOrderCancelled) | Watches for order cancelled events |
 | [`dex.watchOrderFilled`](/sdk/typescript/viem/dex.watchOrderFilled) | Watches for order filled events |
@@ -86,4 +86,4 @@
 
 | Transport | Description |
 |-----------|-------------|
-| [`withFeePayer`](/sdk/typescript/viem/withFeePayer) | Creates a transport that routes requests to a fee payer service when a `feePayer` is requested on an action |
+| [`withFeePayer`](/sdk/typescript/viem/transport.withFeePayer) | Creates a transport that routes requests to a fee payer service when a `feePayer` is requested on an action |

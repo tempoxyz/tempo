@@ -703,53 +703,54 @@ Add entries to the appropriate section:
 
 Edit `vocs.config.tsx` to add entries to the sidebar.
 
-### Viem Actions sidebar (around line 550-860)
+### Viem Actions sidebar (around line 244-538)
 
-Find the appropriate module section and add entries alphabetically:
+The Actions section contains module categories (AMM, Fee, Policy, Reward, Stablecoin DEX, Token). Find the appropriate module category and add entries alphabetically within its `items` array:
 
 ```tsx
+// Find the module category by its text label
 {
-  text: '{Module}',
+  text: 'Token',  // or 'AMM', 'Fee', 'Policy', 'Reward', 'Stablecoin Exchange'
   items: [
+    // Add new entries here, alphabetically by function name
     {
       text: '{functionName}',
       link: '/sdk/typescript/viem/{module}.{functionName}',
     },
-    // ... other items alphabetically
   ],
 },
 ```
 
-### Wagmi Actions sidebar (around line 890-1170)
+If adding a function for a new module that doesn't have a category yet, create a new module category object following the existing pattern.
 
-Find or create the module section between existing sections:
+### Wagmi Actions sidebar (around line 581-866)
+
+The Actions section contains module categories. Find the appropriate module category and add entries alphabetically within its `items` array:
 
 ```tsx
 {
-  text: '{Module}',
+  text: 'Token',  // or 'AMM', 'Fee', 'Policy', 'Stablecoin Exchange'
   items: [
     {
       text: '{functionName}',
       link: '/sdk/typescript/wagmi/actions/{module}.{functionName}',
     },
-    // ... other items alphabetically
   ],
 },
 ```
 
-### Wagmi Hooks sidebar (around line 1195-1475)
+### Wagmi Hooks sidebar (around line 885-1171)
 
-Find or create the module section:
+The Hooks section contains module categories. Find the appropriate module category and add entries alphabetically within its `items` array:
 
 ```tsx
 {
-  text: '{Module}',
+  text: 'Token',  // or 'AMM', 'Fee', 'Policy', 'Stablecoin Exchange'
   items: [
     {
       text: 'use{FunctionName}',
       link: '/sdk/typescript/wagmi/hooks/{module}.use{FunctionName}',
     },
-    // ... other items alphabetically
   ],
 },
 ```
@@ -770,14 +771,17 @@ For each new function, ensure:
 
 ## Module Categories
 
-Common module categories used in the SDK:
-- `amm` - Fee AMM liquidity operations
-- `dex` - Stablecoin Exchange operations
-- `faucet` - Testnet faucet operations
-- `fee` - Fee token preference operations
-- `policy` - Transfer policy operations
-- `reward` - Reward distribution operations
-- `token` - TIP-20 token operations
+Common module categories used in the SDK. The left column shows the lowercase module name used in file paths (e.g., `token.create.mdx`), and the right column shows the sidebar text label in vocs.config.tsx:
+
+| Module (file path) | Sidebar Text Label |
+|--------------------|-------------------|
+| `amm` | `AMM` |
+| `dex` | `Stablecoin DEX` |
+| `faucet` | `Faucet` |
+| `fee` | `Fee` |
+| `policy` | `Policy` |
+| `reward` | `Reward` |
+| `token` | `Token` |
 
 ## Undocumented Functions
 
