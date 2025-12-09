@@ -41,11 +41,8 @@
 
         nativeBuildInputs = [
           pkgs.pkg-config
-          pkgs.perl
-        ];
-
-        buildInputs = [
           pkgs.libgit2
+          pkgs.perl
         ];
 
         withClang = prev: {
@@ -79,8 +76,9 @@
               pname = "tempo";
               version = packageVersion;
               src = ./.;
-              inherit nativeBuildInputs buildInputs;
+              inherit nativeBuildInputs;
               doCheck = false;
+              LIBGIT2_NO_VENDOR = 1;
             } overrides
           );
 
@@ -111,7 +109,7 @@
           in
           craneLib.devShell (
             composeAttrOverrides {
-              packages = nativeBuildInputs ++ buildInputs ++ [
+              packages = nativeBuildInputs ++ [
                 rustNightly.rust-analyzer
                 rustNightly.rustfmt
                 pkgs.cargo-nextest
