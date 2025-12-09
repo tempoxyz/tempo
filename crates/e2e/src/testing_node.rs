@@ -16,7 +16,7 @@ use reth_node_builder::NodeTypesWithDBAdapter;
 use std::{path::PathBuf, sync::Arc};
 use tempo_commonware_node::consensus;
 use tempo_node::node::TempoNode;
-use tracing::debug;
+use tracing::{debug, instrument};
 
 /// A testing node that can start and stop both consensus and execution layers.
 pub struct TestingNode {
@@ -118,6 +118,7 @@ impl TestingNode {
     ///
     /// # Panics
     /// Panics if execution node is already running.
+    #[instrument(skip_all, fields(last_db_block = self.last_db_block_on_stop))]
     async fn start_execution(&mut self) {
         assert!(
             self.execution_node.is_none(),
@@ -261,6 +262,7 @@ impl TestingNode {
     ///
     /// # Panics
     /// Panics if consensus is not running.
+    #[instrument(skip_all)]
     async fn stop_consensus(&mut self) {
         let handle = self
             .consensus_handle
@@ -281,6 +283,7 @@ impl TestingNode {
     ///
     /// # Panics
     /// Panics if execution node is not running.
+    #[instrument(skip_all)]
     async fn stop_execution(&mut self) {
         let execution_node = self.execution_node.take().unwrap_or_else(|| {
             panic!(
@@ -296,6 +299,10 @@ impl TestingNode {
             .expect("failed to get database provider")
             .last_block_number()
             .expect("failed to get last block number from database");
+        tracing::debug!(
+            last_db_block,
+            "storing last block block number to verify restart"
+        );
         self.last_db_block_on_stop = Some(last_db_block);
 
         execution_node.shutdown().await

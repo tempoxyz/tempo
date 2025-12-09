@@ -364,6 +364,7 @@ impl ExecutionRuntime {
         let tempdir = tempfile::Builder::new()
             // TODO(janis): cargo manifest prefix?
             .prefix("tempo_e2e_test")
+            .disable_cleanup(true)
             .tempdir()
             .expect("must be able to create a temp directory run tun tests");
 
@@ -640,7 +641,7 @@ impl ExecutionNode {
     pub async fn shutdown(self) {
         let _ = self.node.rpc_server_handle().clone().stop();
         self.task_manager
-            .graceful_shutdown_with_timeout(Duration::from_secs(1));
+            .graceful_shutdown_with_timeout(Duration::from_secs(10));
         let _ = self.exit_fut.await;
     }
 }
@@ -689,6 +690,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     config: ExecutionNodeConfig,
     database: Arc<DatabaseEnv>,
 ) -> eyre::Result<ExecutionNode> {
+    println!("launching node at {}", datadir.as_ref().display());
     let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_rpc(
             RpcServerArgs::default()
@@ -725,7 +727,12 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         .node(TempoNode::default())
         .launch()
         .await
-        .wrap_err("failed launching node")?;
+        .wrap_err_with(|| {
+            format!(
+                "failed launching node; databasedir: `{}`",
+                datadir.as_ref().display()
+            )
+        })?;
 
     Ok(ExecutionNode {
         node: node_handle.node,
