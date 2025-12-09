@@ -12,7 +12,7 @@ Modifies the whitelist for a whitelist-type transfer policy. Requires policy adm
 import { client } from './viem.config'
 
 const { receipt } = await client.policy.modifyWhitelistSync({
-  account: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
+  address: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
   allowed: true,
   policyId: 1n,
 })
@@ -38,7 +38,7 @@ import { Actions } from 'tempo.ts/viem'
 import { client } from './viem.config'
 
 const hash = await client.policy.modifyWhitelist({
-  account: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
+  address: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
   allowed: true,
   policyId: 1n,
 })
@@ -67,11 +67,11 @@ type ReturnType = {
 
 ## Parameters
 
-### account
+### address
 
 - **Type:** `Address`
 
-Address to add or remove from the whitelist.
+Target account address to add or remove from the whitelist.
 
 ### allowed
 
