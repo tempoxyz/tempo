@@ -26,7 +26,8 @@ const DEFAULT_FEE_TOKEN_OPTION = FEE_TOKEN_OPTIONS[0]
 
 export function SetFeeToken(props: DemoStepProps) {
   const { stepNumber = 1 } = props
-  const { address } = useConnection()
+  const { address, connector } = useConnection()
+  const hasNonWebAuthnWallet = Boolean(address && connector?.id !== 'webAuthn')
   const chainId = useChainId()
   const config = useConfig()
 
@@ -65,7 +66,7 @@ export function SetFeeToken(props: DemoStepProps) {
   const hasUserToken = Boolean(userToken.data?.address)
 
   const canSubmit = Boolean(
-    address &&
+    hasNonWebAuthnWallet &&
       hasBalance &&
       resolvedFeeToken &&
       isFeeTokenValid &&
@@ -102,6 +103,7 @@ export function SetFeeToken(props: DemoStepProps) {
       {
         onSuccess: (result) => {
           setTxHash(result?.receipt.transactionHash)
+          userToken.refetch()
         },
         onSettled: (_data, error) => {
           if (error) setTxHash(undefined)
@@ -128,8 +130,8 @@ export function SetFeeToken(props: DemoStepProps) {
     }
   }, [userToken.data?.address])
 
-  const active = hasBalance && !hasUserToken
-  const completed = hasBalance && hasUserToken
+  const active = hasNonWebAuthnWallet && hasBalance && !hasUserToken
+  const completed = hasNonWebAuthnWallet && hasBalance && hasUserToken
 
   const actions = React.useMemo(() => {
     return (

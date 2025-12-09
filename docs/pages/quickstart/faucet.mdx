@@ -11,9 +11,9 @@ import * as Token from '../../components/guides/tokens'
 
 Get test stablecoins funded to your account using the form below after you connect your wallet.
 
-<Demo.Container name="Use the Faucet" footerVariant="balances" tokens={[Token.pathUsd, Token.alphaUsd, Token.betaUsd, Token.thetaUsd]} src="tempoxyz/tempo-ts/tree/main/examples/payments">
+<Demo.Container name="Use the Faucet" footerVariant="balances" tokens={[Token.pathUsd, Token.alphaUsd, Token.betaUsd, Token.thetaUsd]} balanceSource="wallet">
   <Step.ConnectWallet stepNumber={1} />
-  <Step.AddFunds stepNumber={2} fundOthers />
+  <Step.AddFundsToWallet stepNumber={2} />
   <Step.SetFeeToken stepNumber={3} last />
 </Demo.Container>
 
@@ -27,3 +27,11 @@ The faucet funds the following assets.
 | [AlphaUSD](https://explore.tempo.xyz/address/0x20c0000000000000000000000000000000000001) | `0x20c0000000000000000000000000000000000001` | `1M` |
 | [BetaUSD](https://explore.tempo.xyz/address/0x20c0000000000000000000000000000000000002) | `0x20c0000000000000000000000000000000000002` | `1M` |
 | [ThetaUSD](https://explore.tempo.xyz/address/0x20c0000000000000000000000000000000000003)   | `0x20c0000000000000000000000000000000000003` | `1M` |
+
+## Funding others
+
+You can use the faucet to send funds to any address
+
+<Demo.Container name="Send Faucet Funds to Others">
+  <Step.AddFundsToOthers stepNumber={1} last />
+</Demo.Container>

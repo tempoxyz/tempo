@@ -14,9 +14,9 @@ Get test tokens to start building on Tempo testnet.
 
 You can access the faucet directly here in the docs.
 
-<Demo.Container name="Use the Faucet" footerVariant="balances" tokens={[Token.alphaUsd, Token.betaUsd, Token.thetaUsd]} src="tempoxyz/tempo-ts/tree/main/examples/payments">
+<Demo.Container name="Use the Faucet" footerVariant="balances" tokens={[Token.alphaUsd, Token.betaUsd, Token.thetaUsd]} balanceSource="wallet">
   <Step.ConnectWallet stepNumber={1} />
-  <Step.AddFunds stepNumber={2} fundOthers />
+  <Step.AddFundsToOthers stepNumber={2} />
 </Demo.Container>
 
 

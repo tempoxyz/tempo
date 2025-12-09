@@ -7,21 +7,26 @@ import type { Client, Transport } from 'viem'
 import { parseUnits } from 'viem'
 import { mnemonicToAccount } from 'viem/accounts'
 import { useBlockNumber, useClient, useConnection } from 'wagmi'
-import { Button, Login, Step } from '../../Demo'
+import { Button, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
-export function AddFunds(props: DemoStepProps) {
+export function AddFundsToWallet(props: DemoStepProps) {
   const { stepNumber = 2, last = false } = props
-  const { address } = useConnection()
+  const { address, connector } = useConnection()
+  const hasNonWebAuthnWallet = Boolean(address && connector?.id !== 'webAuthn')
   const queryClient = useQueryClient()
+
   const { data: balance, refetch: balanceRefetch } = Hooks.token.useGetBalance({
     account: address,
     token: alphaUsd,
+    query: {
+      enabled: hasNonWebAuthnWallet,
+    },
   })
   const { data: blockNumber } = useBlockNumber({
     query: {
-      enabled: Boolean(address && (!balance || balance < 0)),
+      enabled: Boolean(hasNonWebAuthnWallet && (!balance || balance < 0)),
       refetchInterval: 1_500,
     },
   })
@@ -57,25 +62,19 @@ export function AddFunds(props: DemoStepProps) {
     },
   })
 
-  const showLogin = stepNumber === 1 && !address
-
   const active = React.useMemo(() => {
-    // If we need to show the login button, we are active.
-    if (showLogin) return true
+    // If this is the last step, simply has to have a non-webauthn wallet
+    if (last) return hasNonWebAuthnWallet
 
-    // If this is the last step, simply has to be logged in
-    if (last) return !!address
-
-    // If this is an intermediate step, also needs to not have succeeded
-    return Boolean(address && !balance)
-  }, [address, balance, last])
+    // If this is an intermediate step, also needs to not have balance yet
+    return hasNonWebAuthnWallet && !balance
+  }, [hasNonWebAuthnWallet, balance, last])
 
   const actions = React.useMemo(() => {
-    if (showLogin) return <Login />
     if (balance && balance > 0n)
       return (
         <Button
-          disabled={fundAccount.isPending}
+          disabled={!hasNonWebAuthnWallet || fundAccount.isPending}
           variant="default"
           className="text-[14px] -tracking-[2%] font-normal"
           onClick={() => fundAccount.mutate()}
@@ -86,8 +85,8 @@ export function AddFunds(props: DemoStepProps) {
       )
     return (
       <Button
-        disabled={!address || fundAccount.isPending}
-        variant={address ? 'accent' : 'default'}
+        disabled={!hasNonWebAuthnWallet || fundAccount.isPending}
+        variant={hasNonWebAuthnWallet ? 'accent' : 'default'}
         className="text-[14px] -tracking-[2%] font-normal"
         type="button"
         onClick={() => fundAccount.mutate()}
@@ -95,16 +94,16 @@ export function AddFunds(props: DemoStepProps) {
         {fundAccount.isPending ? 'Adding funds' : 'Add funds'}
       </Button>
     )
-  }, [stepNumber, address, balance, fundAccount.isPending])
+  }, [hasNonWebAuthnWallet, balance, fundAccount.isPending])
 
   return (
     <Step
       active={active}
-      completed={Boolean(address && balance && balance > 0n)}
+      completed={Boolean(hasNonWebAuthnWallet && balance && balance > 0n)}
       actions={actions}
       error={fundAccount.error}
       number={stepNumber}
-      title="Add testnet funds to your account."
+      title="Add testnet funds to your wallet."
     />
   )
 }

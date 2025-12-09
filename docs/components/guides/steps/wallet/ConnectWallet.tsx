@@ -1,18 +1,24 @@
 import * as React from 'react'
 import {
-  useAccount,
   useChains,
   useConnect,
+  useConnection,
+  useConnections,
   useConnectors,
+  useDisconnect,
   useSwitchChain,
 } from 'wagmi'
-import { Button, Logout, Step } from '../../Demo'
+import LucideCheck from '~icons/lucide/check'
+import LucideWalletCards from '~icons/lucide/wallet-cards'
+import { Button, Step, StringFormatter, useCopyToClipboard } from '../../Demo'
 import type { DemoStepProps } from '../types'
 
 export function ConnectWallet(props: DemoStepProps) {
   const { stepNumber = 1 } = props
-  const { address, chain, connector } = useAccount()
+  const { chain, connector } = useConnection()
+  const connections = useConnections()
   const connect = useConnect()
+  const disconnect = useDisconnect()
   const connectors = useConnectors()
   const injectedConnectors = React.useMemo(
     () => connectors.filter((connector) => connector.id !== 'webAuthn'),
@@ -21,9 +27,16 @@ export function ConnectWallet(props: DemoStepProps) {
   const switchChain = useSwitchChain()
   const chains = useChains()
   const isSupported = chains.some((c) => c.id === chain?.id)
+  const [copied, copyToClipboard] = useCopyToClipboard()
 
-  const active = !address || !isSupported
-  const completed = Boolean(address && isSupported)
+  const walletConnection = connections.find(
+    (c) => c.connector.id !== 'webAuthn',
+  )
+  const walletAddress = walletConnection?.accounts[0]
+  const walletConnector = walletConnection?.connector
+  const hasNonWebAuthnWallet = Boolean(walletAddress)
+  const active = !hasNonWebAuthnWallet || !isSupported
+  const completed = hasNonWebAuthnWallet && isSupported
 
   const actions = React.useMemo(() => {
     if (!injectedConnectors.length) {
@@ -34,7 +47,7 @@ export function ConnectWallet(props: DemoStepProps) {
       )
     }
 
-    if (!address || connector?.id === 'webAuthn') {
+    if (!hasNonWebAuthnWallet) {
       return (
         <div className="flex gap-2">
           {injectedConnectors.map((conn) => (
@@ -58,7 +71,34 @@ export function ConnectWallet(props: DemoStepProps) {
 
     return (
       <div className="flex flex-col gap-2">
-        <Logout />
+        <div className="flex items-center gap-1">
+          <Button
+            onClick={() => walletAddress && copyToClipboard(walletAddress)}
+            variant="default"
+          >
+            {copied ? (
+              <LucideCheck className="text-gray9 mt-px" />
+            ) : (
+              <LucideWalletCards className="text-gray9 mt-px" />
+            )}
+            {walletAddress &&
+              StringFormatter.truncate(walletAddress, {
+                start: 6,
+                end: 4,
+                separator: '⋅⋅⋅',
+              })}
+          </Button>
+          <Button
+            variant="destructive"
+            className="text-[14px] -tracking-[2%] font-normal"
+            onClick={() =>
+              disconnect.disconnect({ connector: walletConnector })
+            }
+            type="button"
+          >
+            Disconnect
+          </Button>
+        </div>
         {!isSupported && (
           <Button
             className="w-fit"
@@ -89,7 +129,12 @@ export function ConnectWallet(props: DemoStepProps) {
     )
   }, [
     injectedConnectors,
-    address,
+    hasNonWebAuthnWallet,
+    walletAddress,
+    walletConnector,
+    copied,
+    copyToClipboard,
+    disconnect,
     connector,
     connect,
     isSupported,
