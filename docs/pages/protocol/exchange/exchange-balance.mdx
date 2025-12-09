@@ -2,7 +2,7 @@ import { Callout } from 'vocs/components'
 
 # Exchange Balance
 
-The Stablecoin Exchange allows you to hold token balances directly on the exchange contract. This eliminates the need for token transfers on every trade, significantly reducing gas costs for active traders and liquidity providers.
+The Stablecoin DEX allows you to hold token balances directly on the exchange contract. This eliminates the need for token transfers on every trade, significantly reducing gas costs for active traders and liquidity providers.
 
 ## Why Exchange Balances?
 
@@ -14,7 +14,7 @@ When you trade or provide liquidity on the exchange, constantly transferring tok
 
 ## Checking Your Balance
 
-View your balance of any token held on the exchange:
+View your balance of any token held on the DEX:
 
 ```solidity
 function balanceOf(
@@ -28,19 +28,17 @@ function balanceOf(
 uint128 balance = exchange.balanceOf(msg.sender, USDC_ADDRESS);
 ```
 
-## Depositing to the Exchange
+## Depositing to the DEX
 
-There is no explicit deposit function. When you execute a swap or place an order, the exchange automatically:
+There is no deposit function. When you execute a swap or place an order, the exchange automatically:
 
-1. First checks if you have sufficient balance on the exchange
-2. If insufficient, transfers the needed amount from your wallet to the exchange
-3. Uses your exchange balance for the operation
+1. Checks if you have sufficient balance in the DEX
+2. If insufficient, transfers the needed amount from your wallet to your DEX balance
+3. Uses your DEX balance for the operation
 
-This means depositing happens automatically as needed during trading activity.
+## Withdrawing from the DEX
 
-## Withdrawing from the Exchange
-
-Transfer tokens from your exchange balance back to your wallet:
+Transfer tokens from your DEX balance back to your wallet:
 
 ```solidity
 function withdraw(

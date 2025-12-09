@@ -9,7 +9,7 @@ TIP-20 extends ERC-20, building these features into precompiled contracts that a
 It also enables deeper integration with token-specific Tempo features like paying gas in stablecoins and payment lanes.
 
 ## Specification
-TIP-20 tokens support standard fungible token operations such as transfers, mints, and burns. They also support transfers, mints, and burns with an attached 32-byte memo; a role-based access control system for token administrative operations; and a system for opt-in [reward distribution](/documentation/protocol/tip20-rewards/spec).
+TIP-20 tokens support standard fungible token operations such as transfers, mints, and burns. They also support transfers, mints, and burns with an attached 32-byte memo; a role-based access control system for token administrative operations; and a system for opt-in [reward distribution](/protocol/tip20-rewards/spec).
 
 
 ## TIP20
@@ -407,7 +407,7 @@ TIP-20 tokens cannot be sent to other TIP-20 token contract addresses. The imple
 Any attempt to transfer to a TIP-20 token address must revert with `InvalidRecipient`. This prevents accidental token loss by sending funds to token contracts instead of user accounts.
 
 ## Currencies and Quote Tokens
-Each TIP-20 token declares a currency identifier and a corresponding `quoteToken` used for pricing and routing in the StablecoinExchange. Tokens with `currency == "USD"` must pair with a USD-denominated TIP-20 token.
+Each TIP-20 token declares a currency identifier and a corresponding `quoteToken` used for pricing and routing in the Stablecoin DEX. Tokens with `currency == "USD"` must pair with a USD-denominated TIP-20 token.
 
 Updating the quote token occurs in two phases:
 1. `setNextQuoteToken` stages a new quote token.
@@ -433,10 +433,10 @@ Roles are assigned and managed through `grantRole`, `revokeRole`, `renounceRole`
 
 
 ## System Functions
-System level functions `systemTransferFrom`, `transferFeePreTx`, and `transferFeePostTx` are only callable by other Tempo protocol precompiles. These entrypoints power transaction fee collection, refunds, and internal accounting within the Fee AMM and StablecoinExchange. They must not be callable by general contracts or users.
+System level functions `systemTransferFrom`, `transferFeePreTx`, and `transferFeePostTx` are only callable by other Tempo protocol precompiles. These entrypoints power transaction fee collection, refunds, and internal accounting within the Fee AMM and Stablecoin DEX. They must not be callable by general contracts or users.
 
 ## Token Rewards Distribution
-See [rewards distribution](/documentation/protocol/tip20-rewards/spec) for more information.
+See [rewards distribution](/protocol/tip20-rewards/spec) for more information.
 
 ## TIP20Factory
 The `TIP20Factory` contract is the canonical entrypoint for creating new TIP-20 tokens on Tempo. The factory maintains an internal `tokenIdCounter` that increments with each deployment, and uses this counter to derive deterministic “vanity” deployment addresses under a fixed 12-byte TIP-20 prefix. This ensures that every TIP-20 token exists at a predictable, collision-free address, and that integrators can infer a token’s identifier directly from its address. The `TIP20Factory` precompile is deployed at 0x20Fc000000000000000000000000000000000000`.

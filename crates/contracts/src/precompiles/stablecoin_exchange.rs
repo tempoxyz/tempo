@@ -6,9 +6,9 @@ pub use IStablecoinExchange::{
 use alloy::sol;
 
 sol! {
-    /// StablecoinExchange interface for managing order book based trading of stablecoins.
+    /// StablecoinExchange interface for managing orderbook based trading of stablecoins.
     ///
-    /// The StablecoinExchange provides a limit order book system where users can:
+    /// The StablecoinExchange provides a limit orderbook system where users can:
     /// - Place limit orders (buy/sell) with specific price ticks
     /// - Place flip orders that automatically create opposite-side orders when filled
     /// - Execute swaps against existing liquidity

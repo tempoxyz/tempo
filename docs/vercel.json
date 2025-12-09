@@ -2,6 +2,11 @@
   "cleanUrls": true,
   "redirects": [
     {
+      "source": "/documentation/protocol/:path*",
+      "destination": "/protocol/:path*",
+      "permanent": true
+    },
+    {
       "source": "/sdk/typescript/api",
       "destination": "/sdk/typescript/viem",
       "permanent": true
@@ -23,17 +28,17 @@
     },
     {
       "source": "/errors/tx/ExceedsNonPaymentLimit",
-      "destination": "/documentation/protocol/blockspace/payment-lane-specification",
+      "destination": "/protocol/blockspace/payment-lane-specification",
       "permanent": false
     },
     {
       "source": "/errors/tx/Keychain",
-      "destination": "/documentation/protocol/transactions/spec-default-aa",
+      "destination": "/protocol/transactions/spec-default-aa",
       "permanent": false
     },
     {
       "source": "/errors/tx/SubblockNonceKey",
-      "destination": "/documentation/protocol/blockspace/sub-block-specification#4-block-validity-rules",
+      "destination": "/protocol/blockspace/sub-block-specification#4-block-validity-rules",
       "permanent": false
     }
   ]

@@ -6,7 +6,7 @@ import LucideWallet from '~icons/lucide/wallet'
 import LucideLayers from '~icons/lucide/layers'
 import LucideLayout from '~icons/lucide/layout'
 import LucideArrowLeftRight from '~icons/lucide/arrow-left-right'
-import * as Card from "../../../components/Card.tsx"
+import * as Card from "../../components/Card.tsx"
 
 ## Tempo Protocol
 
@@ -19,44 +19,44 @@ This section provides details on the Tempo Protocol specifications, and serves a
 <Card.Container>
   <Card.Link
     description="Core token standard with native stablecoin features and policy registry integration"
-    href="/documentation/protocol/tip20/overview"
+    href="/protocol/tip20/overview"
     icon={LucideCoins}
     title="TIP-20 Tokens"
   />
   <Card.Link
     description="Reward distribution system for token holders with automated yield mechanisms"
-    href="/documentation/protocol/tip20-rewards/overview"
+    href="/protocol/tip20-rewards/overview"
     icon={LucideGift}
     title="TIP-20 Rewards"
   />
   <Card.Link
     description="Policy registry system for compliance, access control, and token governance"
-    href="/documentation/protocol/tip403/overview"
+    href="/protocol/tip403/overview"
     icon={LucideShield}
     title="TIP-403 Policies"
   />
   <Card.Link
     description="Multi-token fee payment system with AMM for stablecoin conversion"
-    href="/documentation/protocol/fees"
+    href="/protocol/fees"
     icon={LucideWallet}
     title="Fees"
   />
   <Card.Link
-    description="AATransaction (0x76) and deprecated FeeTokenTransaction (0x77) transaction types"
-    href="/documentation/protocol/transactions"
+    description="EIP-2718 transaction type with native passkeys, batching, scheduling, and fee sponsorship"
+    href="/protocol/transactions"
     icon={LucideLayers}
     title="Tempo Transactions"
   />
   <Card.Link
     description="Block format, payment lanes, and sub-blocks for optimized throughput"
-    href="/documentation/protocol/blockspace/overview"
+    href="/protocol/blockspace/overview"
     icon={LucideLayout}
     title="Blockspace"
   />
   <Card.Link
     description="Enshrined stablecoin exchange with pathUSD mechanisms"
-    href="/documentation/protocol/exchange"
+    href="/protocol/exchange"
     icon={LucideArrowLeftRight}
-    title="Stablecoin Exchange"
+    title="Stablecoin DEX"
   />
 </Card.Container>

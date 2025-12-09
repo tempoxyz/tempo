@@ -56,11 +56,13 @@ export function Container(props: React.PropsWithChildren) {
   return <div className="grid md:grid-cols-2 gap-3">{children}</div>
 }
 
-export function Notice(props: React.PropsWithChildren<{
-  title?: string,
-  icon?: typeof LucideArrowLeftRight,
-  inline?: boolean,
-}>) {
+export function Notice(
+  props: React.PropsWithChildren<{
+    title?: string
+    icon?: typeof LucideArrowLeftRight
+    inline?: boolean
+  }>,
+) {
   const { children, icon: Icon, title, inline } = props
   return (
     <div
@@ -68,7 +70,7 @@ export function Notice(props: React.PropsWithChildren<{
         'relative border border-gray4 rounded-lg p-4 flex gap-4 flex-col',
         {
           'md:flex-row md:items-center': inline,
-        }
+        },
       )}
     >
       {(Icon || title) && (

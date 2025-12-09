@@ -7,7 +7,7 @@ import LucideWallet from '~icons/lucide/wallet'
 
 # Providing Liquidity
 
-Add liquidity for a token pair by placing orders on the Stablecoin DEX. You can provide liquidity on the `buy` or `sell` side of the orderbook, with `limit` or `flip` orders. To learn more about order types see the [documentation on order types](/documentation/protocol/exchange/providing-liquidity#order-types).
+Add liquidity for a token pair by placing orders on the Stablecoin DEX. You can provide liquidity on the `buy` or `sell` side of the orderbook, with `limit` or `flip` orders. To learn more about order types see the [documentation on order types](/protocol/exchange/providing-liquidity#order-types).
 
 In this guide you will learn how to place buy and sell orders to provide liquidity on the Stablecoin DEX orderbook.
 
@@ -189,7 +189,7 @@ For more details on querying orders, see the [`Hooks.dex.useOrder`](/sdk/typescr
 
 Cancel an order using its order ID.
 
-When you cancel an order, any remaining funds are credited to your exchange balance (not directly to your wallet). To move funds back to your wallet, you can [withdraw them to your wallet](/documentation/protocol/exchange/exchange-balance#withdrawing-funds).
+When you cancel an order, any remaining funds are credited to your exchange balance (not directly to your wallet). To move funds back to your wallet, you can [withdraw them to your wallet](/protocol/exchange/exchange-balance#withdrawing-funds).
 
 <Demo.Container name="Place and Cancel an Order" footerVariant="source" src="tempoxyz/tempo-ts/tree/main/examples/exchange">
   <Step.Connect stepNumber={1} />
@@ -385,7 +385,7 @@ const sellCall = Actions.dex.place.call({ // [!code hl]
 
 ```
 
-For more details including tick precision, limits, and calculation examples, see [Understanding Ticks](/documentation/protocol/exchange/providing-liquidity#understanding-ticks).
+For more details including tick precision, limits, and calculation examples, see [Understanding Ticks](/protocol/exchange/providing-liquidity#understanding-ticks).
 
 ## Best practices
 
@@ -402,14 +402,14 @@ You can batch the calls to approve spend and place the order in a single transac
     title="Executing Swaps"
   />
   <Card.Link
-    description="Deep dive into the Stablecoin Exchange protocol specification"
-    href="/documentation/protocol/exchange/spec"
+    description="Deep dive into the Stablecoin DEX protocol specification"
+    href="/protocol/exchange/spec"
     icon={LucideBookOpen}
     title="Protocol Exchange Specification"
   />
   <Card.Link
     description="Manage token balances on the exchange to optimize gas costs"
-    href="/documentation/protocol/exchange/exchange-balance"
+    href="/protocol/exchange/exchange-balance"
     icon={LucideWallet}
     title="Exchange Balance"
   />
