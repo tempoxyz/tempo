@@ -52,8 +52,16 @@ export default defineConfig({
   sidebar: {
     '/': [
       {
-        text: 'Home',
-        link: '/',
+        items: [
+          {
+            text: 'Home',
+            link: '/',
+          },
+          {
+            text: 'Ecosystem',
+            link: '/ecosystem',
+          }
+        ],
       },
       {
         text: 'Ecosystem',
