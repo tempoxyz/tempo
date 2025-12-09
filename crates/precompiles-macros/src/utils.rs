@@ -220,9 +220,9 @@ pub(crate) fn extract_storable_array_sizes(attrs: &[Attribute]) -> syn::Result<O
     Ok(None)
 }
 
-/// Extracts the type parameters from `Mapping<K, V>`.
+/// Extracts the type parameters from Mapping<K, V>.
 ///
-/// Returns `Some((key_type, value_type))` if the type is a `Mapping`, `None` otherwise.
+/// Returns Some((key_type, value_type)) if the type is a Mapping, None otherwise.
 pub(crate) fn extract_mapping_types(ty: &Type) -> Option<(&Type, &Type)> {
     if let Type::Path(type_path) = ty {
         let last_segment = type_path.path.segments.last()?;
