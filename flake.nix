@@ -44,9 +44,12 @@
           pkgs.perl
         ];
 
-        buildInputs = [
-          pkgs.libgit2
-        ];
+        withLibgit2 = prev: {
+          buildInputs = prev.buildInputs or [ ] ++ [
+            pkgs.libgit2
+          ];
+          LD_LIBRARY_PATH = "${pkgs.libgit2}/lib";
+        };
 
         withClang = prev: {
           buildInputs = prev.buildInputs or [ ] ++ [
@@ -79,7 +82,7 @@
               pname = "tempo";
               version = packageVersion;
               src = ./.;
-              inherit nativeBuildInputs buildInputs;
+              inherit nativeBuildInputs;
               doCheck = false;
               LD_LIBRARY_PATH = "${pkgs.libgit2}/lib";
             } overrides
@@ -91,6 +94,7 @@
           tempo = mkTempo (
             [
               withClang
+              withLibgit2
               withMaxPerf
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
@@ -105,6 +109,7 @@
           let
             overrides = [
               withClang
+              withLibgit2
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
               withMold
@@ -112,12 +117,11 @@
           in
           craneLib.devShell (
             composeAttrOverrides {
-              packages = nativeBuildInputs ++ buildInputs ++ [
+              packages = nativeBuildInputs ++ [
                 rustNightly.rust-analyzer
                 rustNightly.rustfmt
                 pkgs.cargo-nextest
               ];
-              LD_LIBRARY_PATH = "${pkgs.libgit2}/lib";
 
             } overrides
           );
