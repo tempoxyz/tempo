@@ -6,6 +6,7 @@ import { useConnection, useConnectionEffect } from 'wagmi'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
+
 import type { DemoStepProps } from '../types'
 
 export function RevokeTokenRoles(
