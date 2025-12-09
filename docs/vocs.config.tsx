@@ -357,7 +357,7 @@ export default defineConfig({
             ],
           },
           {
-            text: 'Stablecoin Exchange',
+            text: 'Stablecoin DEX',
             collapsed: true,
             items: [
               {
@@ -381,7 +381,7 @@ export default defineConfig({
                 link: '/protocol/exchange/providing-liquidity',
               },
               {
-                text: 'Exchange Balance',
+                text: 'DEX Balance',
                 link: '/protocol/exchange/exchange-balance',
               },
               {
