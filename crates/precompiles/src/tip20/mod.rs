@@ -943,7 +943,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         let to_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
 
-        dbg!(&to_balance, &amount, &from_balance);
         let new_to_balance = to_balance
             .checked_add(amount)
             .ok_or(TIP20Error::supply_cap_exceeded())?;

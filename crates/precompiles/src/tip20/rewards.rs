@@ -134,24 +134,18 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
     /// the total reward rate and the time elapsed since the last update.
     /// Only processes rewards if there is an opted-in supply.
     pub fn accrue(&mut self, accrue_to_timestamp: U256) -> Result<()> {
-        dbg!(accrue_to_timestamp);
-        let last_update_time = self.get_last_update_time()?;
-        dbg!(last_update_time);
         let elapsed = accrue_to_timestamp
-            .checked_sub(U256::from(last_update_time))
+            .checked_sub(U256::from(self.get_last_update_time()?))
             .ok_or(TempoPrecompileError::under_overflow())?;
-        dbg!(elapsed);
         if elapsed.is_zero() {
             return Ok(());
         }
-
         // NOTE(rusowsky): first limb = u64, so it should be fine.
         // however, it would be easier to always work with U256, since
         // there is no possible slot packing in this slot (surrounded by U256)
         self.set_last_update_time(accrue_to_timestamp.to::<u64>())?;
 
         let opted_in_supply = U256::from(self.get_opted_in_supply()?);
-        dbg!(opted_in_supply);
         if opted_in_supply == U256::ZERO {
             return Ok(());
         }
