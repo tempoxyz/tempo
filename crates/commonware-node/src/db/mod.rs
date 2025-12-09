@@ -7,6 +7,7 @@ pub use epoch::DkgEpochStore;
 mod validators;
 pub use validators::ValidatorsStore;
 
+use eyre::WrapErr;
 use std::{any::Any, collections::HashMap, sync::Arc};
 
 use alloy_primitives::keccak256;
@@ -272,10 +273,7 @@ where
             }
         }
 
-        db.store
-            .sync()
-            .await
-            .map_err(|e| eyre::eyre!("sync failed: {}", e))?;
+        db.store.sync().await.wrap_err("sync failed")?;
 
         Ok(())
     }
