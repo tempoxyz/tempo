@@ -3,7 +3,7 @@ mipd: true
 ---
 
 import * as Demo from '../../../components/guides/Demo.tsx'
-import { Faucet } from '../../../components/Faucet.tsx'
+import * as Step from '../../../components/guides/steps'
 import { ConnectWallet } from '../../../components/ConnectWallet.tsx'
 
 # Connect to Wallets
@@ -20,7 +20,7 @@ This guide will walk you through how to set up your application to connect to wa
   footerVariant="source" 
   src="tempoxyz/tempo-ts/tree/main/examples/accounts"
 >
-  <ConnectWallet />
+  <Step.ConnectWallet stepNumber={1} last />
 </Demo.Container>
 
 ## Wagmi Setup

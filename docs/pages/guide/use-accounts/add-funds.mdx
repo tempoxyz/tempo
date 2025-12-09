@@ -1,3 +1,7 @@
+---
+mipd: true
+---
+
 import * as Demo from '../../../components/guides/Demo.tsx'
 import * as Step from '../../../components/guides/steps'
 import * as Token from '../../../components/guides/tokens'
@@ -11,8 +15,8 @@ Get test tokens to start building on Tempo testnet.
 You can access the faucet directly here in the docs.
 
 <Demo.Container name="Use the Faucet" footerVariant="balances" tokens={[Token.alphaUsd, Token.betaUsd, Token.thetaUsd]} src="tempoxyz/tempo-ts/tree/main/examples/payments">
-  <Step.Connect stepNumber={1} />
-  <Step.AddFunds stepNumber={2} last />
+  <Step.ConnectWallet stepNumber={1} />
+  <Step.AddFunds stepNumber={2} fundOthers />
 </Demo.Container>
 
 
