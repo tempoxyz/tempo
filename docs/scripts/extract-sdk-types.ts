@@ -49,6 +49,11 @@ interface ReturnTypeInfo {
     | undefined
 }
 
+interface TypeImportInfo {
+  typeName: string
+  importPath: string
+}
+
 interface TypeInfo {
   module: string
   function: string
@@ -59,6 +64,7 @@ interface TypeInfo {
   syncReturnType?: ReturnTypeInfo | undefined
   callbackArgs?: ReturnTypeInfo | undefined // For watchers: the args passed to the callback
   sourceFile: string
+  imports: TypeImportInfo[]
 }
 
 // Paths to source files
@@ -172,6 +178,180 @@ const BUILTIN_METHODS = new Set([
   'isWellFormed',
   'toWellFormed',
 ])
+
+// Known type imports - maps type names to their import paths
+const KNOWN_TYPE_IMPORTS: Record<string, string> = {
+  // viem core types
+  Account: 'viem',
+  Address: 'viem',
+  BlockTag: 'viem',
+  Chain: 'viem',
+  Hex: 'viem',
+  Log: 'viem',
+  TransactionReceipt: 'viem',
+  // viem types from submodules (but importable from viem)
+  BlockOverrides: 'viem',
+  StateOverride: 'viem',
+  // tempo.ts types
+  TokenIdOrAddress: 'tempo.ts',
+}
+
+// Primitives and built-in types that don't need imports
+const PRIMITIVE_TYPES = new Set([
+  'string',
+  'number',
+  'boolean',
+  'bigint',
+  'undefined',
+  'null',
+  'void',
+  'never',
+  'unknown',
+  'any',
+  'true',
+  'false',
+  'object',
+])
+
+// Built-in utility types that don't need imports
+const BUILTIN_UTILITY_TYPES = new Set([
+  'Record',
+  'Partial',
+  'Required',
+  'Readonly',
+  'Pick',
+  'Omit',
+  'Exclude',
+  'Extract',
+  'NonNullable',
+  'Parameters',
+  'ReturnType',
+  'InstanceType',
+  'Promise',
+  'Array',
+  'Map',
+  'Set',
+  'WeakMap',
+  'WeakSet',
+  'Awaited',
+])
+
+/**
+ * Extract individual type names from a type string.
+ * Handles union types, generic types, and filters out primitives/built-ins.
+ */
+function extractTypeNames(typeString: string): string[] {
+  // Remove template literals (backtick strings like `0x${string}`)
+  let cleaned = typeString.replace(/`[^`]*`/g, '')
+
+  // Remove generic parameters recursively (handles nested generics)
+  let prev = ''
+  while (prev !== cleaned) {
+    prev = cleaned
+    cleaned = cleaned.replace(/<[^<>]*>/g, '')
+  }
+
+  // Remove array brackets
+  cleaned = cleaned.replace(/\[\]/g, '')
+
+  // Remove parentheses (from function types like () => void)
+  cleaned = cleaned.replace(/\([^)]*\)/g, '')
+
+  // Remove arrow function syntax
+  cleaned = cleaned.replace(/=>/g, '')
+
+  // Split on union/intersection operators
+  const parts = cleaned.split(/\s*[|&]\s*/)
+
+  // Filter to valid PascalCase type identifiers
+  return parts
+    .map((p) => p.trim())
+    .filter((p) => /^[A-Z][a-zA-Z0-9]*$/.test(p)) // PascalCase only
+    .filter((p) => !PRIMITIVE_TYPES.has(p.toLowerCase())) // Not a primitive
+    .filter((p) => !BUILTIN_UTILITY_TYPES.has(p)) // Not a built-in utility
+}
+
+/**
+ * Collect all type names from a TypeInfo object.
+ * Walks through parameters, return types, nested fields, and function signatures.
+ */
+function collectAllTypeNames(typeInfo: TypeInfo): Set<string> {
+  const types = new Set<string>()
+
+  function addTypesFromString(typeString: string) {
+    for (const t of extractTypeNames(typeString)) {
+      types.add(t)
+    }
+  }
+
+  function addTypesFromParam(param: ParamInfo) {
+    addTypesFromString(param.type)
+
+    // From nested fields
+    if (param.fields) {
+      for (const field of Object.values(param.fields)) {
+        addTypesFromString(field.type)
+      }
+    }
+
+    // From function signatures
+    if (param.functionSignature) {
+      for (const p of param.functionSignature.parameters) {
+        addTypesFromParam(p)
+      }
+      addTypesFromString(param.functionSignature.returnType)
+    }
+  }
+
+  function addTypesFromReturnType(returnType: ReturnTypeInfo) {
+    addTypesFromString(returnType.type)
+    if (returnType.fields) {
+      for (const field of Object.values(returnType.fields)) {
+        addTypesFromString(field.type)
+      }
+    }
+  }
+
+  // From parameters
+  for (const param of typeInfo.parameters) {
+    addTypesFromParam(param)
+  }
+
+  // From return type
+  addTypesFromReturnType(typeInfo.returnType)
+
+  // From sync return type
+  if (typeInfo.syncReturnType) {
+    addTypesFromReturnType(typeInfo.syncReturnType)
+  }
+
+  // From callback args (watchers)
+  if (typeInfo.callbackArgs) {
+    addTypesFromReturnType(typeInfo.callbackArgs)
+  }
+
+  return types
+}
+
+/**
+ * Resolve import information for a set of type names.
+ * Uses KNOWN_TYPE_IMPORTS for known types, marks unknown types with 'unknown'.
+ */
+function resolveImports(typeNames: Set<string>): TypeImportInfo[] {
+  const imports: TypeImportInfo[] = []
+
+  for (const typeName of typeNames) {
+    const importPath = KNOWN_TYPE_IMPORTS[typeName] || 'unknown'
+    imports.push({ typeName, importPath })
+  }
+
+  // Sort by importPath, then typeName
+  return imports.sort(
+    (a, b) =>
+      a.importPath.localeCompare(b.importPath) ||
+      a.typeName.localeCompare(b.typeName),
+  )
+}
 
 /**
  * Check if a type is a function type
@@ -728,7 +908,8 @@ const optionalParams = allParams
   .sort((a, b) => a.name.localeCompare(b.name))
 const sortedParams = [...requiredParams, ...optionalParams]
 
-const typeInfo: TypeInfo = {
+// Build typeInfo without imports first (to collect type names)
+const typeInfoWithoutImports = {
   module: moduleName,
   function: functionName,
   actionType,
@@ -738,6 +919,16 @@ const typeInfo: TypeInfo = {
   syncReturnType: syncReturnType || undefined,
   callbackArgs: extracted.callbackArgs,
   sourceFile: path.relative(process.cwd(), viemActionsPath),
+  imports: [] as TypeImportInfo[],
+}
+
+// Step 5: Collect and resolve type imports
+const allTypeNames = collectAllTypeNames(typeInfoWithoutImports)
+const imports = resolveImports(allTypeNames)
+
+const typeInfo: TypeInfo = {
+  ...typeInfoWithoutImports,
+  imports,
 }
 
 // Output directory
