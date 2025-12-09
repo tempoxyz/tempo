@@ -407,7 +407,7 @@ TIP-20 tokens cannot be sent to other TIP-20 token contract addresses. The imple
 Any attempt to transfer to a TIP-20 token address must revert with `InvalidRecipient`. This prevents accidental token loss by sending funds to token contracts instead of user accounts.
 
 ## Currencies and Quote Tokens
-Each TIP-20 token declares a currency identifier and a corresponding `quoteToken` used for pricing and routing in the StablecoinDEX. Tokens with `currency == "USD"` must pair with a USD-denominated TIP-20 token.
+Each TIP-20 token declares a currency identifier and a corresponding `quoteToken` used for pricing and routing in the Stablecoin DEX. Tokens with `currency == "USD"` must pair with a USD-denominated TIP-20 token.
 
 Updating the quote token occurs in two phases:
 1. `setNextQuoteToken` stages a new quote token.
