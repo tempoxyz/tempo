@@ -52,32 +52,15 @@ The `TempoTransaction` includes a `calls` field that accepts a list of operation
 
 ```rust
 pub struct TempoTransaction {
-    // Standard EIP-1559 fields
-    chain_id: ChainId,                          // EIP-155 replay protection
-    max_priority_fee_per_gas: u128,
-    max_fee_per_gas: u128,
-    gas_limit: u64,
-    calls: Vec<Call>,                           // Batch of calls to execute atomically // [!code highlight]
-    access_list: AccessList,                    // EIP-2930 access list
-
-    // AA-specific fields
-    nonce_key: U256,                            // 2D nonce key (0 = protocol nonce, >0 = user nonces)
-    nonce: u64,                                 // Current nonce value for the nonce key
-
-    // Optional features
-    fee_token: Option<Address>,                 // Optional fee token preference
-    fee_payer_signature: Option<Signature>,     // Sponsored transactions (secp256k1 only)
-    valid_before: Option<u64>,                  // Transaction expiration timestamp
-    valid_after: Option<u64>,                   // Transaction can only be included after this timestamp
-    key_authorization: Option<SignedKeyAuthorization>, // Access key authorization (optional)
-    aa_authorization_list: Vec<TempoSignedAuthorization>, // EIP-7702 style authorizations with AA signatures
+    // ... other fields
+    calls: Vec<Call>,  // Batch of calls to execute atomically
+    // ...
 }
 
-// Call structure for batching // [!code highlight]
-pub struct Call { // [!code highlight]
-    to: TxKind,      // Can be Address or Create // [!code highlight]
-    value: U256, // [!code highlight]
-    input: Bytes     // Calldata for the call // [!code highlight]
-} // [!code highlight]
+pub struct Call {
+    to: TxKind,      // Target address or Create for contract deployment
+    value: U256,     // ETH value to send
+    input: Bytes,    // Calldata for the call
+}
 ```
 
