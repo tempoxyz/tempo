@@ -16,6 +16,7 @@ use crate::{
         ITIP20, TIP20Token, address_to_token_id_unchecked, is_tip20_prefix, token_id_to_address,
         validate_usd_currency,
     },
+    tip20_factory::TIP20Factory,
 };
 
 // Re-export PoolKey for backward compatibility with tests
@@ -93,7 +94,14 @@ impl TipFeeManager {
         call: IFeeManager::setValidatorTokenCall,
         beneficiary: Address,
     ) -> Result<()> {
-        if !is_tip20_prefix(call.token) {
+        // Validate that the token is a valid deployed TIP20
+        if self.storage.spec().is_allegro_moderato() {
+            // Post-AllegroModerato: use factory's is_tip20 which checks both prefix and counter
+            if !TIP20Factory::new(self.storage).is_tip20(call.token)? {
+                return Err(FeeManagerError::invalid_token().into());
+            }
+        } else if !is_tip20_prefix(call.token) {
+            // Pre-AllegroModerato: only check prefix
             return Err(FeeManagerError::invalid_token().into());
         }
 
@@ -126,7 +134,14 @@ impl TipFeeManager {
         sender: Address,
         call: IFeeManager::setUserTokenCall,
     ) -> Result<()> {
-        if !is_tip20_prefix(call.token) {
+        // Validate that the token is a valid deployed TIP20
+        if self.storage.spec().is_allegro_moderato() {
+            // Post-AllegroModerato: use factory's is_tip20 which checks both prefix and counter
+            if !TIP20Factory::new(self.storage).is_tip20(call.token)? {
+                return Err(FeeManagerError::invalid_token().into());
+            }
+        } else if !is_tip20_prefix(call.token) {
+            // Pre-AllegroModerato: only check prefix
             return Err(FeeManagerError::invalid_token().into());
         }
 
