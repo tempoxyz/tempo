@@ -137,7 +137,9 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         dbg!(accrue_to_timestamp);
         let last_update_time = self.get_last_update_time()?;
         dbg!(last_update_time);
-        let elapsed = accrue_to_timestamp.checked_sub(U256::from(last_update_time)).ok_or(TempoPrecompileError::under_overflow())?;
+        let elapsed = accrue_to_timestamp
+            .checked_sub(U256::from(last_update_time))
+            .ok_or(TempoPrecompileError::under_overflow())?;
         dbg!(elapsed);
         if elapsed.is_zero() {
             return Ok(());
