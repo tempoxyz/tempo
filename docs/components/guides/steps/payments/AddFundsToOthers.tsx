@@ -76,11 +76,11 @@ export function AddFundsToOthers(props: DemoStepProps) {
 
   const active = React.useMemo(() => {
     // If this is the last step, simply has to be logged in
-    if (last) return !!address
+    if (last) return true
 
     // If this is an intermediate step, also needs to not have succeeded
-    return Boolean(address && !fundAccount.isSuccess)
-  }, [address, fundAccount.isSuccess, last])
+    return !fundAccount.isSuccess
+  }, [fundAccount.isSuccess, last])
 
   const actions = React.useMemo(() => {
     if (balance && balance > 0n && fundAccount.isSuccess)
