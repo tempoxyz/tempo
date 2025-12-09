@@ -50,27 +50,25 @@ export function toAddressValue(
 }
 
 type RunQueryOptions = {
+  chainId: number
   signatures?: string[]
 }
 
 export async function runIndexSupplyQuery(
   query: string,
-  options: RunQueryOptions = {},
+  options: RunQueryOptions,
 ) {
-  const token = import.meta.env.VITE_FRONTEND_API_TOKEN
-
-  if (!token) throw new Error('VITE_FRONTEND_API_TOKEN is not configured')
-
-  const response = await fetch('/api/index-supply', {
+  const url = import.meta.env.VITE_INDEXSUPPLY_API_URL || 'https://api.indexsupply.net/v2'
+  const response = await fetch(`${url}/query`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-api-token': token,
     },
-    body: JSON.stringify({
+    body: JSON.stringify([{
+      cursor: `${options.chainId}-0`,
       query: query.replace(/\s+/g, ' ').trim(),
       signatures: options.signatures,
-    }),
+    }]),
   })
 
   let json: unknown
@@ -91,7 +89,7 @@ export async function runIndexSupplyQuery(
     throw new Error(`API error (${response.status}): ${message}`)
   }
 
-  const result = json as z.infer<typeof responseSchema>[0]
+  const result = (json as unknown[])[0] as z.infer<typeof responseSchema>[0]
   if (!result) throw new Error('API returned an empty result set')
   return result
 }

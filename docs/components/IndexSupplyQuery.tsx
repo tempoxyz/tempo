@@ -2,6 +2,7 @@ import * as React from 'react'
 import { isAddress, isHash } from 'viem'
 import type * as z from 'zod/mini'
 import LucideExternalLink from '~icons/lucide/external-link'
+import { useChainId } from 'wagmi'
 import { Container } from './Container'
 import { Button } from './guides/Demo'
 import { type responseSchema, runIndexSupplyQuery } from './lib/IndexSupply'
@@ -136,6 +137,8 @@ function renderCellValue(
 }
 
 export function IndexSupplyQuery(props: IndexSupplyQueryProps = {}) {
+  const chainId = useChainId()
+
   const isReadOnly = props.query !== undefined
 
   const allSignatures = React.useMemo(() => getAllSignatures(), [])
@@ -213,8 +216,7 @@ export function IndexSupplyQuery(props: IndexSupplyQueryProps = {}) {
     setResult(null)
 
     try {
-      const options = signatures.length > 0 ? { signatures } : {}
-      const queryResult = await runIndexSupplyQuery(queryToRun, options)
+      const queryResult = await runIndexSupplyQuery(queryToRun, { chainId, ...(signatures.length > 0 ? { signatures } : {}) })
       setResult(queryResult)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error occurred')
@@ -236,10 +238,7 @@ export function IndexSupplyQuery(props: IndexSupplyQueryProps = {}) {
       setError(null)
       setResult(null)
 
-      runIndexSupplyQuery(
-        queryToRun,
-        signatures.length > 0 ? { signatures } : {},
-      )
+      runIndexSupplyQuery(queryToRun, { chainId, ...(signatures.length > 0 ? { signatures } : {}) })
         .then((queryResult) => {
           setResult(queryResult)
         })
