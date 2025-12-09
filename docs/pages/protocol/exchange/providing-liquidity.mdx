@@ -2,17 +2,17 @@ import { Callout } from 'vocs/components'
 
 # Providing Liquidity
 
-Provide liquidity to the exchange by placing limit orders or flip orders in the order book.
+Provide liquidity to the DEX by placing limit orders or flip orders in the onchain orderbook.
 
 When your orders are filled, you earn the spread between bid and ask prices while helping facilitate trades for other users.
 
-You can only place orders on pairs between a token and its designated quote token. All TIP-20 tokens specify a quote token for trading pairs. [PathUSD](/protocol/exchange/pathUSD) can be used as a simple choice for quote token.
+You can only place orders on pairs between a token and its designated quote token. All TIP-20 tokens specify a quote token for trading pairs. [PathUSD](/protocol/exchange/pathUSD) can be used as a simple choice for a quote token.
 
 ## Overview
 
-The exchange uses an on-chain order book where you can place orders at specific price ticks. Orders are matched using price-time priority, meaning better-priced orders fill first, and within the same price, earlier orders fill first.
+The DEX uses an onchain orderbook where you can place orders at specific price ticks. Orders are matched using price-time priority, meaning better-priced orders fill first, and within the same price, earlier orders fill first.
 
-Unlike traditional AMMs, you specify exact prices where you want to buy or sell, giving you precise control over your liquidity provision strategy.
+Unlike traditional AMMs, you specify exact prices where you want to buy or sell, giving you more precise control over your liquidity provision strategy.
 
 ## Order Types
 
@@ -185,6 +185,6 @@ Cancellations execute immediately, and any unfilled portion of your order is ref
 
 ## Managing DEX Balances
 
-The exchange allows you to hold token balances directly on the exchange contract to avoid transfer costs. When placing orders, tokens are debited from your exchange balance (or transferred from your wallet if insufficient). When your orders fill, proceeds are credited to your exchange balance.
+The DEX allows you to hold token balances directly on the DEX contract to avoid transfer costs. When placing orders, tokens are debited from your exchange balance (or transferred from your wallet if insufficient). When your orders fill, proceeds are credited to your DEX balance.
 
 For complete details on checking balances, depositing, withdrawing, and best practices for managing your exchange balance, see the [Exchange Balance](/protocol/exchange/exchange-balance) page.

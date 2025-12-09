@@ -107,7 +107,7 @@ delegateToDefault(bytes32 hash, uint8 v, bytes32 r, bytes32 s)
 ## Rationale
 
 - **First-use default:** Ensures EOAs are smart-wallet capable immediately without wallet migration UX, while preserving legacy tx signing.
-- **Registrar “any message”:** The design intentionally accepts **any** valid ECDSA signature to “prove EOA control,” enabling use of existing public signatures (tweets, GitHub sigs, old on-chain proofs). Replay across chains or contexts is **explicitly allowed** by design (no domain binding).
+- **Registrar “any message”:** The design intentionally accepts **any** valid ECDSA signature to “prove EOA control,” enabling use of existing public signatures (tweets, GitHub sigs, old onchain proofs). Replay across chains or contexts is **explicitly allowed** by design (no domain binding).
 - **Revert if nonce is not 0:** Allows addresses to opt out (by delegating to some other 7702 contract or to empty code) and not be forcibly redelegated.
 - **Revert if code is not empty:** Prevents edge cases (including repeated auto-delegation of the same account).
 - **Always-warm DEFAULT_7702_IMPL:** Smooths gas, based on the assumption that many transactions will use the default contract.

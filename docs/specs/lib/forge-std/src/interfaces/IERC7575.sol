@@ -33,7 +33,7 @@ interface IERC7575 is IERC165 {
      *
      * - MUST NOT be inclusive of any fees that are charged against assets in the Vault.
      * - MUST NOT show any variations depending on the caller.
-     * - MUST NOT reflect slippage or other on-chain conditions, when performing the actual exchange.
+     * - MUST NOT reflect slippage or other onchain conditions, when performing the actual exchange.
      * - MUST NOT revert.
      *
      * NOTE: This calculation MAY NOT reflect the “per-user” price-per-share, and instead should reflect the
@@ -48,7 +48,7 @@ interface IERC7575 is IERC165 {
      *
      * - MUST NOT be inclusive of any fees that are charged against assets in the Vault.
      * - MUST NOT show any variations depending on the caller.
-     * - MUST NOT reflect slippage or other on-chain conditions, when performing the actual exchange.
+     * - MUST NOT reflect slippage or other onchain conditions, when performing the actual exchange.
      * - MUST NOT revert.
      *
      * NOTE: This calculation MAY NOT reflect the “per-user” price-per-share, and instead should reflect the
@@ -77,8 +77,8 @@ interface IERC7575 is IERC165 {
     function maxDeposit(address receiver) external view returns (uint256 maxAssets);
 
     /**
-     * @dev Allows an on-chain or off-chain user to simulate the effects of their deposit at the current block, given
-     * current on-chain conditions.
+     * @dev Allows an onchain or off-chain user to simulate the effects of their deposit at the current block, given
+     * current onchain conditions.
      *
      * - MUST return as close to and no more than the exact amount of Vault shares that would be minted in a deposit
      *   call in the same transaction. I.e. deposit should return the same or more shares as previewDeposit if called
@@ -115,8 +115,8 @@ interface IERC7575 is IERC165 {
     function maxMint(address receiver) external view returns (uint256 maxShares);
 
     /**
-     * @dev Allows an on-chain or off-chain user to simulate the effects of their mint at the current block, given
-     * current on-chain conditions.
+     * @dev Allows an onchain or off-chain user to simulate the effects of their mint at the current block, given
+     * current onchain conditions.
      *
      * - MUST return as close to and no fewer than the exact amount of assets that would be deposited in a mint call
      *   in the same transaction. I.e. mint should return the same or fewer assets as previewMint if called in the
@@ -154,8 +154,8 @@ interface IERC7575 is IERC165 {
     function maxWithdraw(address owner) external view returns (uint256 maxAssets);
 
     /**
-     * @dev Allows an on-chain or off-chain user to simulate the effects of their withdrawal at the current block,
-     * given current on-chain conditions.
+     * @dev Allows an onchain or off-chain user to simulate the effects of their withdrawal at the current block,
+     * given current onchain conditions.
      *
      * - MUST return as close to and no fewer than the exact amount of Vault shares that would be burned in a withdraw
      *   call in the same transaction. I.e. withdraw should return the same or fewer shares as previewWithdraw if
@@ -196,8 +196,8 @@ interface IERC7575 is IERC165 {
     function maxRedeem(address owner) external view returns (uint256 maxShares);
 
     /**
-     * @dev Allows an on-chain or off-chain user to simulate the effects of their redeemption at the current block,
-     * given current on-chain conditions.
+     * @dev Allows an onchain or off-chain user to simulate the effects of their redeemption at the current block,
+     * given current onchain conditions.
      *
      * - MUST return as close to and no more than the exact amount of assets that would be withdrawn in a redeem call
      *   in the same transaction. I.e. redeem should return the same or more assets as previewRedeem if called in the
