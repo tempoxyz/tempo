@@ -59,6 +59,16 @@
           ];
         };
 
+        withMold = prev: {
+          buildInputs = prev.buildInputs or [ ] ++ [
+            pkgs.mold
+          ];
+          "CARGO_TARGET_${cargoTargetEnvVar}_LINKER" = "${pkgs.llvmPackages.clangUseLLVM}/bin/clang";
+          RUSTFLAGS = prev.RUSTFLAGS or [ ] ++ [
+            "-Clink-arg=-fuse-ld=${pkgs.mold}/bin/mold"
+          ];
+        };
+
         mkTempo =
           overrides:
           craneLib.buildPackage (
@@ -68,17 +78,21 @@
               src = ./.;
               inherit nativeBuildInputs;
               doCheck = false;
-              LIBGIT2_NO_VENDOR = 1;
             } overrides
           );
 
       in
       {
         packages = rec {
-          tempo = mkTempo [
-            withClang
-            withMaxPerf
-          ];
+          tempo = mkTempo (
+            [
+              withClang
+              withMaxPerf
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+              withMold
+            ]
+          );
 
           default = tempo;
         };
@@ -87,6 +101,9 @@
           let
             overrides = [
               withClang
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+              withMold
             ];
           in
           craneLib.devShell (
