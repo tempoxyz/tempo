@@ -40,6 +40,15 @@ where
 
     /// Remove the previous epoch state for the given hardfork regime.
     fn remove_previous_epoch(&mut self, regime: HardforkRegime);
+
+    /// Remove the current epoch state for the given hardfork regime.
+    fn remove_epoch(&mut self, regime: HardforkRegime);
+
+    /// Check if a post-allegretto epoch state exists.
+    fn has_post_allegretto_state(&mut self) -> impl Future<Output = bool> + Send;
+
+    /// Check if a pre-allegretto epoch state exists.
+    fn has_pre_allegretto_state(&mut self) -> impl Future<Output = bool> + Send;
 }
 
 impl<TContext> DkgEpochStore<TContext> for Tx<TContext>
@@ -64,5 +73,19 @@ where
 
     fn remove_previous_epoch(&mut self, regime: HardforkRegime) {
         self.remove(previous_epoch_key(regime))
+    }
+
+    fn remove_epoch(&mut self, regime: HardforkRegime) {
+        self.remove(current_epoch_key(regime))
+    }
+
+    async fn has_post_allegretto_state(&mut self) -> bool {
+        self.exists(current_epoch_key(HardforkRegime::PostAllegretto))
+            .await
+    }
+
+    async fn has_pre_allegretto_state(&mut self) -> bool {
+        self.exists(current_epoch_key(HardforkRegime::PreAllegretto))
+            .await
     }
 }

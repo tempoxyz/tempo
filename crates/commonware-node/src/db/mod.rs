@@ -215,6 +215,22 @@ where
         self.writes.insert(key_hash, None);
     }
 
+    /// Check if a key exists in the store.
+    ///
+    /// This checks pending writes first, then falls back to the database.
+    pub async fn exists<K>(&self, key: K) -> bool
+    where
+        K: AsRef<[u8]>,
+    {
+        let key_hash = key_to_b256(key.as_ref());
+
+        if let Some(value_opt) = self.writes.get(&key_hash) {
+            return value_opt.is_some();
+        }
+
+        self.db.get_raw(key).await.is_some()
+    }
+
     /// Get the node version that last wrote to this database.
     ///
     /// Returns None if no version has been written yet (new database).
@@ -341,7 +357,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use commonware_runtime::{ContextCell, Runner, tokio, tokio::Context};
+    use commonware_runtime::{
+        ContextCell, Runner,
+        tokio::{self, Context},
+    };
 
     #[test]
     fn test_insert_get_remove_commit() {

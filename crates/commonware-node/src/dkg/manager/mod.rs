@@ -13,6 +13,7 @@ use tempo_node::TempoFullNode;
 
 pub mod actor;
 mod ingress;
+mod migrate;
 pub mod validators;
 
 pub(crate) use actor::Actor;
@@ -33,7 +34,7 @@ where
     TPeerManager: commonware_p2p::Manager<
             PublicKey = PublicKey,
             Peers = OrderedAssociated<PublicKey, SocketAddr>,
-        >,
+        > + Sync,
 {
     let (tx, rx) = mpsc::unbounded();
 
