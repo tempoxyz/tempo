@@ -301,7 +301,7 @@ fn node_recovers_after_finalizing_ceremony_post_allegretto_four_validators() {
     );
 }
 
-/// FIXME: flaky, needs https://github.com/tempoxyz/tempo/issues/1309 
+/// FIXME: flaky, needs https://github.com/tempoxyz/tempo/issues/1309
 #[test_traced]
 #[ignore]
 fn node_recovers_after_finalizing_boundary_post_allegretto_one_validator() {
