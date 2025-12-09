@@ -19,7 +19,9 @@ import ts from 'typescript'
 const [, , moduleName, functionName] = process.argv
 
 if (!moduleName || !functionName) {
-  console.error('Usage: pnpm tsx scripts/extract-sdk-types.ts <module> <function>')
+  console.error(
+    'Usage: pnpm tsx scripts/extract-sdk-types.ts <module> <function>',
+  )
   console.error('Example: pnpm tsx scripts/extract-sdk-types.ts token transfer')
   process.exit(1)
 }
@@ -42,7 +44,9 @@ interface ParamInfo {
 
 interface ReturnTypeInfo {
   type: string
-  fields?: Record<string, { type: string; description?: string | undefined }> | undefined
+  fields?:
+    | Record<string, { type: string; description?: string | undefined }>
+    | undefined
 }
 
 interface TypeInfo {
@@ -53,7 +57,7 @@ interface TypeInfo {
   parameters: ParamInfo[]
   returnType: ReturnTypeInfo
   syncReturnType?: ReturnTypeInfo | undefined
-  callbackArgs?: ReturnTypeInfo | undefined  // For watchers: the args passed to the callback
+  callbackArgs?: ReturnTypeInfo | undefined // For watchers: the args passed to the callback
   sourceFile: string
 }
 
@@ -61,33 +65,44 @@ interface TypeInfo {
 const viemActionsPath = path.join(
   process.cwd(),
   'node_modules/tempo.ts/src/viem/Actions',
-  `${moduleName}.ts`
+  `${moduleName}.ts`,
 )
 const wagmiActionsPath = path.join(
   process.cwd(),
   'node_modules/tempo.ts/src/wagmi/Actions',
-  `${moduleName}.ts`
+  `${moduleName}.ts`,
 )
 const internalTypesPath = path.join(
   process.cwd(),
-  'node_modules/tempo.ts/src/viem/internal/types.ts'
+  'node_modules/tempo.ts/src/viem/internal/types.ts',
 )
 const abisPath = path.join(
   process.cwd(),
-  'node_modules/tempo.ts/src/viem/Abis.ts'
+  'node_modules/tempo.ts/src/viem/Abis.ts',
 )
 
 // Create TypeScript program
-const configPath = ts.findConfigFile(process.cwd(), ts.sys.fileExists, 'tsconfig.json')
-const configFile = configPath ? ts.readConfigFile(configPath, ts.sys.readFile) : { config: {} }
+const configPath = ts.findConfigFile(
+  process.cwd(),
+  ts.sys.fileExists,
+  'tsconfig.json',
+)
+const configFile = configPath
+  ? ts.readConfigFile(configPath, ts.sys.readFile)
+  : { config: {} }
 const parsedConfig = ts.parseJsonConfigFileContent(
   configFile.config,
   ts.sys,
-  process.cwd()
+  process.cwd(),
 )
 
 const program = ts.createProgram({
-  rootNames: [viemActionsPath, wagmiActionsPath, internalTypesPath, abisPath].filter(fs.existsSync),
+  rootNames: [
+    viemActionsPath,
+    wagmiActionsPath,
+    internalTypesPath,
+    abisPath,
+  ].filter(fs.existsSync),
   options: {
     ...parsedConfig.options,
     noEmit: true,
@@ -102,14 +117,57 @@ function getTypeString(type: ts.Type): string {
 
 // Built-in type methods to filter out from return type expansion
 const BUILTIN_METHODS = new Set([
-  'toString', 'valueOf', 'toLocaleString', 'charAt', 'charCodeAt', 'concat',
-  'indexOf', 'lastIndexOf', 'localeCompare', 'match', 'replace', 'search',
-  'slice', 'split', 'substring', 'toLowerCase', 'toLocaleLowerCase',
-  'toUpperCase', 'toLocaleUpperCase', 'trim', 'length', 'substr', 'codePointAt',
-  'includes', 'endsWith', 'normalize', 'repeat', 'startsWith', 'anchor', 'big',
-  'blink', 'bold', 'fixed', 'fontcolor', 'fontsize', 'italics', 'link', 'small',
-  'strike', 'sub', 'sup', 'padStart', 'padEnd', 'trimEnd', 'trimStart',
-  'trimLeft', 'trimRight', 'matchAll', 'replaceAll', 'at', 'isWellFormed',
+  'toString',
+  'valueOf',
+  'toLocaleString',
+  'charAt',
+  'charCodeAt',
+  'concat',
+  'indexOf',
+  'lastIndexOf',
+  'localeCompare',
+  'match',
+  'replace',
+  'search',
+  'slice',
+  'split',
+  'substring',
+  'toLowerCase',
+  'toLocaleLowerCase',
+  'toUpperCase',
+  'toLocaleUpperCase',
+  'trim',
+  'length',
+  'substr',
+  'codePointAt',
+  'includes',
+  'endsWith',
+  'normalize',
+  'repeat',
+  'startsWith',
+  'anchor',
+  'big',
+  'blink',
+  'bold',
+  'fixed',
+  'fontcolor',
+  'fontsize',
+  'italics',
+  'link',
+  'small',
+  'strike',
+  'sub',
+  'sup',
+  'padStart',
+  'padEnd',
+  'trimEnd',
+  'trimStart',
+  'trimLeft',
+  'trimRight',
+  'matchAll',
+  'replaceAll',
+  'at',
+  'isWellFormed',
   'toWellFormed',
 ])
 
@@ -146,14 +204,20 @@ function isObjectType(type: ts.Type): boolean {
 
   // Exclude primitives that masquerade as objects (like string templates)
   const typeString = getTypeString(nonNullType)
-  if (typeString.startsWith('`') || typeString === 'string' || typeString === 'number' || typeString === 'boolean' || typeString === 'bigint') {
+  if (
+    typeString.startsWith('`') ||
+    typeString === 'string' ||
+    typeString === 'number' ||
+    typeString === 'boolean' ||
+    typeString === 'bigint'
+  ) {
     return false
   }
 
   // Must have meaningful properties
   const props = nonNullType.getProperties()
   const meaningfulProps = props.filter(
-    (p) => !BUILTIN_METHODS.has(p.getName()) && !p.getName().startsWith('__@')
+    (p) => !BUILTIN_METHODS.has(p.getName()) && !p.getName().startsWith('__@'),
   )
 
   return meaningfulProps.length > 0
@@ -162,7 +226,10 @@ function isObjectType(type: ts.Type): boolean {
 /**
  * Expand an object type into its fields (1 level deep)
  */
-function expandObjectType(type: ts.Type, node: ts.Node): Record<string, ParamInfo> | undefined {
+function expandObjectType(
+  type: ts.Type,
+  node: ts.Node,
+): Record<string, ParamInfo> | undefined {
   if (!isObjectType(type)) return undefined
 
   // Use non-nullable type to get the actual object properties
@@ -172,16 +239,22 @@ function expandObjectType(type: ts.Type, node: ts.Node): Record<string, ParamInf
   const props = nonNullType.getProperties()
 
   for (const prop of props) {
-    if (BUILTIN_METHODS.has(prop.getName()) || prop.getName().startsWith('__@')) {
+    if (
+      BUILTIN_METHODS.has(prop.getName()) ||
+      prop.getName().startsWith('__@')
+    ) {
       continue
     }
 
     const propType = checker.getTypeOfSymbolAtLocation(prop, node)
     const declarations = prop.getDeclarations()
-    const isOptional = declarations?.some(
-      (d) => ts.isPropertySignature(d) && !!d.questionToken
-    ) || getTypeString(propType).includes('undefined')
-    const jsDocComment = ts.displayPartsToString(prop.getDocumentationComment(checker))
+    const isOptional =
+      declarations?.some(
+        (d) => ts.isPropertySignature(d) && !!d.questionToken,
+      ) || getTypeString(propType).includes('undefined')
+    const jsDocComment = ts.displayPartsToString(
+      prop.getDocumentationComment(checker),
+    )
 
     fields[prop.getName()] = {
       name: prop.getName(),
@@ -198,7 +271,10 @@ function expandObjectType(type: ts.Type, node: ts.Node): Record<string, ParamInf
 /**
  * Expand a function type into its signature (parameters and return type)
  */
-function expandFunctionType(type: ts.Type, node: ts.Node): FunctionSignature | undefined {
+function expandFunctionType(
+  type: ts.Type,
+  node: ts.Node,
+): FunctionSignature | undefined {
   const callSignatures = type.getCallSignatures()
   if (callSignatures.length === 0) return undefined
 
@@ -211,10 +287,12 @@ function expandFunctionType(type: ts.Type, node: ts.Node): FunctionSignature | u
   for (const param of signature.getParameters()) {
     const paramType = checker.getTypeOfSymbolAtLocation(param, node)
     const declarations = param.getDeclarations()
-    const isOptional = declarations?.some(
-      (d) => ts.isParameter(d) && !!d.questionToken
-    ) || getTypeString(paramType).includes('undefined')
-    const jsDocComment = ts.displayPartsToString(param.getDocumentationComment(checker))
+    const isOptional =
+      declarations?.some((d) => ts.isParameter(d) && !!d.questionToken) ||
+      getTypeString(paramType).includes('undefined')
+    const jsDocComment = ts.displayPartsToString(
+      param.getDocumentationComment(checker),
+    )
 
     const paramInfo: ParamInfo = {
       name: param.getName(),
@@ -242,16 +320,15 @@ function expandFunctionType(type: ts.Type, node: ts.Node): FunctionSignature | u
 /**
  * Extract a parameter with expanded type info
  */
-function extractParamWithExpansion(
-  prop: ts.Symbol,
-  node: ts.Node
-): ParamInfo {
+function extractParamWithExpansion(prop: ts.Symbol, node: ts.Node): ParamInfo {
   const propType = checker.getTypeOfSymbolAtLocation(prop, node)
   const declarations = prop.getDeclarations()
-  const isOptional = declarations?.some(
-    (d) => ts.isPropertySignature(d) && !!d.questionToken
-  ) || getTypeString(propType).includes('undefined')
-  const jsDocComment = ts.displayPartsToString(prop.getDocumentationComment(checker))
+  const isOptional =
+    declarations?.some((d) => ts.isPropertySignature(d) && !!d.questionToken) ||
+    getTypeString(propType).includes('undefined')
+  const jsDocComment = ts.displayPartsToString(
+    prop.getDocumentationComment(checker),
+  )
 
   const paramInfo: ParamInfo = {
     name: prop.getName(),
@@ -278,7 +355,7 @@ function extractParamWithExpansion(
  */
 function detectActionType(
   sourceFile: ts.SourceFile,
-  funcName: string
+  funcName: string,
 ): { actionType: 'read' | 'write' | 'watch'; hasSyncVariant: boolean } | null {
   let hasSyncVariant = false
   let hasParameters = false
@@ -289,8 +366,10 @@ function detectActionType(
   function visit(node: ts.Node) {
     // Check for Sync variant
     if (
-      (ts.isFunctionDeclaration(node) && node.name?.getText() === `${funcName}Sync`) ||
-      (ts.isModuleDeclaration(node) && node.name.getText() === `${funcName}Sync`)
+      (ts.isFunctionDeclaration(node) &&
+        node.name?.getText() === `${funcName}Sync`) ||
+      (ts.isModuleDeclaration(node) &&
+        node.name.getText() === `${funcName}Sync`)
     ) {
       hasSyncVariant = true
     }
@@ -334,23 +413,25 @@ function detectActionType(
   return { actionType, hasSyncVariant }
 }
 
-function extractReturnType(
-  type: ts.Type,
-  statement: ts.Node
-): ReturnTypeInfo {
+function extractReturnType(type: ts.Type, statement: ts.Node): ReturnTypeInfo {
   const typeString = getTypeString(type)
-  const fields: Record<string, { type: string; description?: string | undefined }> = {}
+  const fields: Record<
+    string,
+    { type: string; description?: string | undefined }
+  > = {}
 
   // Check if this is a meaningful object type (not a primitive with methods)
   const props = type.getProperties()
   const meaningfulProps = props.filter(
-    (p) => !BUILTIN_METHODS.has(p.getName()) && !p.getName().startsWith('__@')
+    (p) => !BUILTIN_METHODS.has(p.getName()) && !p.getName().startsWith('__@'),
   )
 
   if (meaningfulProps.length > 0) {
     for (const prop of meaningfulProps) {
       const propType = checker.getTypeOfSymbolAtLocation(prop, statement)
-      const jsDocComment = ts.displayPartsToString(prop.getDocumentationComment(checker))
+      const jsDocComment = ts.displayPartsToString(
+        prop.getDocumentationComment(checker),
+      )
       fields[prop.getName()] = {
         type: getTypeString(propType),
         description: jsDocComment || undefined,
@@ -373,7 +454,7 @@ interface ExtractedNamespace {
 
 function extractArgsFromNamespace(
   sourceFile: ts.SourceFile,
-  funcName: string
+  funcName: string,
 ): ExtractedNamespace | null {
   let result: ExtractedNamespace | null = null
 
@@ -392,7 +473,8 @@ function extractArgsFromNamespace(
           if (ts.isTypeAliasDeclaration(statement)) {
             if (statement.name.getText() === 'Parameters') hasParameters = true
             if (statement.name.getText() === 'Args') hasArgs = true
-            if (statement.name.getText() === 'ReturnValue') hasReturnValue = true
+            if (statement.name.getText() === 'ReturnValue')
+              hasReturnValue = true
           }
         }
 
@@ -418,13 +500,21 @@ function extractArgsFromNamespace(
               args.push(extractParamWithExpansion(prop, statement))
             }
 
-            result = result || { args: [], returnType: { type: 'unknown' }, isWatcher }
+            result = result || {
+              args: [],
+              returnType: { type: 'unknown' },
+              isWatcher,
+            }
             result.args = args
             result.isWatcher = isWatcher
           }
 
           // For watchers: extract Args as the callback args type
-          if (isWatcher && ts.isTypeAliasDeclaration(statement) && statement.name.getText() === 'Args') {
+          if (
+            isWatcher &&
+            ts.isTypeAliasDeclaration(statement) &&
+            statement.name.getText() === 'Args'
+          ) {
             const type = checker.getTypeAtLocation(statement)
             argsType = extractReturnType(type, statement)
           }
@@ -435,7 +525,11 @@ function extractArgsFromNamespace(
             statement.name.getText() === 'ReturnValue'
           ) {
             const type = checker.getTypeAtLocation(statement)
-            result = result || { args: [], returnType: { type: 'unknown' }, isWatcher }
+            result = result || {
+              args: [],
+              returnType: { type: 'unknown' },
+              isWatcher,
+            }
             result.returnType = extractReturnType(type, statement)
           }
         }
@@ -458,13 +552,16 @@ function extractArgsFromNamespace(
 
 function extractSyncReturnType(
   sourceFile: ts.SourceFile,
-  funcName: string
+  funcName: string,
 ): ReturnTypeInfo | null {
   let result: ReturnTypeInfo | null = null
 
   function visit(node: ts.Node) {
     // Look for namespace declaration for the Sync variant
-    if (ts.isModuleDeclaration(node) && node.name.getText() === `${funcName}Sync`) {
+    if (
+      ts.isModuleDeclaration(node) &&
+      node.name.getText() === `${funcName}Sync`
+    ) {
       const body = node.body
       if (body && ts.isModuleBlock(body)) {
         for (const statement of body.statements) {
@@ -494,28 +591,113 @@ function extractWriteParameters(): ParamInfo[] {
   // These are the known WriteParameters based on manual inspection
   // The TypeScript compiler has trouble fully resolving the complex conditional types
   return [
-    { name: 'account', type: 'Account | Address', optional: true, description: 'Account to use for the transaction' },
-    { name: 'chain', type: 'Chain', optional: true, description: 'Chain to use' },
-    { name: 'gas', type: 'bigint', optional: true, description: 'Gas limit for the transaction' },
-    { name: 'maxFeePerGas', type: 'bigint', optional: true, description: 'Max fee per gas' },
-    { name: 'maxPriorityFeePerGas', type: 'bigint', optional: true, description: 'Max priority fee per gas' },
-    { name: 'nonce', type: 'number', optional: true, description: 'Nonce for the transaction' },
-    { name: 'feeToken', type: 'Address | bigint', optional: true, description: 'Fee token address or ID' },
-    { name: 'feePayer', type: 'Account | true', optional: true, description: 'Fee payer account or true for fee payer service' },
-    { name: 'nonceKey', type: "'random' | bigint", optional: true, description: 'Nonce key for the transaction' },
-    { name: 'validAfter', type: 'number', optional: true, description: 'Unix timestamp after which transaction is valid' },
-    { name: 'validBefore', type: 'number', optional: true, description: 'Unix timestamp before which transaction must be included' },
-    { name: 'throwOnReceiptRevert', type: 'boolean', optional: true, description: 'Whether to throw on receipt revert (Sync only)' },
+    {
+      name: 'account',
+      type: 'Account | Address',
+      optional: true,
+      description: 'Account to use for the transaction',
+    },
+    {
+      name: 'chain',
+      type: 'Chain',
+      optional: true,
+      description: 'Chain to use',
+    },
+    {
+      name: 'gas',
+      type: 'bigint',
+      optional: true,
+      description: 'Gas limit for the transaction',
+    },
+    {
+      name: 'maxFeePerGas',
+      type: 'bigint',
+      optional: true,
+      description: 'Max fee per gas',
+    },
+    {
+      name: 'maxPriorityFeePerGas',
+      type: 'bigint',
+      optional: true,
+      description: 'Max priority fee per gas',
+    },
+    {
+      name: 'nonce',
+      type: 'number',
+      optional: true,
+      description: 'Nonce for the transaction',
+    },
+    {
+      name: 'feeToken',
+      type: 'Address | bigint',
+      optional: true,
+      description: 'Fee token address or ID',
+    },
+    {
+      name: 'feePayer',
+      type: 'Account | true',
+      optional: true,
+      description: 'Fee payer account or true for fee payer service',
+    },
+    {
+      name: 'nonceKey',
+      type: "'random' | bigint",
+      optional: true,
+      description: 'Nonce key for the transaction',
+    },
+    {
+      name: 'validAfter',
+      type: 'number',
+      optional: true,
+      description: 'Unix timestamp after which transaction is valid',
+    },
+    {
+      name: 'validBefore',
+      type: 'number',
+      optional: true,
+      description: 'Unix timestamp before which transaction must be included',
+    },
+    {
+      name: 'throwOnReceiptRevert',
+      type: 'boolean',
+      optional: true,
+      description: 'Whether to throw on receipt revert (Sync only)',
+    },
   ]
 }
 
 function extractReadParameters(): ParamInfo[] {
   return [
-    { name: 'account', type: 'Account | Address', optional: true, description: 'Account to use for the call' },
-    { name: 'blockNumber', type: 'bigint', optional: true, description: 'Block number to read state from' },
-    { name: 'blockOverrides', type: 'BlockOverrides', optional: true, description: 'Block overrides to apply' },
-    { name: 'blockTag', type: 'BlockTag', optional: true, description: 'Block tag to read state from' },
-    { name: 'stateOverride', type: 'StateOverride', optional: true, description: 'State override to apply' },
+    {
+      name: 'account',
+      type: 'Account | Address',
+      optional: true,
+      description: 'Account to use for the call',
+    },
+    {
+      name: 'blockNumber',
+      type: 'bigint',
+      optional: true,
+      description: 'Block number to read state from',
+    },
+    {
+      name: 'blockOverrides',
+      type: 'BlockOverrides',
+      optional: true,
+      description: 'Block overrides to apply',
+    },
+    {
+      name: 'blockTag',
+      type: 'BlockTag',
+      optional: true,
+      description: 'Block tag to read state from',
+    },
+    {
+      name: 'stateOverride',
+      type: 'StateOverride',
+      optional: true,
+      description: 'State override to apply',
+    },
   ]
 }
 

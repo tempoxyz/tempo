@@ -37,7 +37,7 @@ export function getConfig(options: getConfig.Options = {}) {
     }),
     transports: {
       [tempoTestnet.id]: withFeePayer(
-        webSocket('wss://rpc-orchestra.testnet.tempo.xyz/zealous-mayer', {
+        webSocket('wss://rpc.testnet.tempo.xyz', {
           keepAlive: { interval: 1_000 },
         }),
         http('https://sponsor.testnet.tempo.xyz'),

@@ -71,6 +71,8 @@ jobs:
       - name: Setup Pages
         if: github.ref_name == 'main' && github.event_name == 'push'
         uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - name: Upload artifact
         if: github.ref_name == 'main' && github.event_name == 'push'
         uses: actions/upload-pages-artifact@v4
