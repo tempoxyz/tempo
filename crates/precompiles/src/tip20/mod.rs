@@ -906,19 +906,15 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
 
         // Handle rewards (only after Moderato hardfork)
         if self.storage.spec().is_moderato() {
-            dbg!("accrue rewards");
             // Accrue rewards up to current timestamp
             let current_timestamp = self.storage.timestamp();
             self.accrue(current_timestamp)?;
-
-            dbg!("update rewards");
 
             // Update rewards for the sender and get their reward recipient
             let from_reward_recipient = self.update_rewards(from)?;
 
             // If user is opted into rewards, decrease opted-in supply
             if from_reward_recipient != Address::ZERO {
-                dbg!("opted into rewards");
                 let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                     .checked_sub(amount)
                     .ok_or(TempoPrecompileError::under_overflow())?;
@@ -942,7 +938,6 @@ impl<'a, S: PrecompileStorageProvider> TIP20Token<'a, S> {
         self.set_balance(from, new_from_balance)?;
 
         let to_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-
         let new_to_balance = to_balance
             .checked_add(amount)
             .ok_or(TIP20Error::supply_cap_exceeded())?;
