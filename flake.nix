@@ -63,7 +63,6 @@
           buildInputs = prev.buildInputs or [ ] ++ [
             pkgs.mold
           ];
-          "CARGO_TARGET_${cargoTargetEnvVar}_LINKER" = "${pkgs.llvmPackages.clangUseLLVM}/bin/clang";
           RUSTFLAGS = prev.RUSTFLAGS or [ ] ++ [
             "-Clink-arg=-fuse-ld=${pkgs.mold}/bin/mold"
           ];
