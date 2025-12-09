@@ -34,7 +34,7 @@ export function ZoomableImage(props: {
       <img
         src={src}
         alt={alt}
-        className="cursor-zoom-in rounded-lg border border-gray4 transition-opacity hover:opacity-80 bg-white"
+        className="cursor-zoom-in rounded-lg border border-gray4 transition-opacity hover:opacity-80 bg-[#F9F9F9] p-[10px]"
         onClick={handleOpen}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
@@ -54,7 +54,7 @@ export function ZoomableImage(props: {
           aria-modal="true"
         >
           <div
-            className="relative w-[90vw] h-[90vh] bg-white rounded-lg shadow-2xl border border-gray4 p-8 flex items-center justify-center"
+            className="relative w-[90vw] h-[90vh] bg-[#F9F9F9] rounded-lg shadow-2xl border border-gray4 p-8 flex items-center justify-center"
             onClick={(e) => e.stopPropagation()}
           >
             <button
