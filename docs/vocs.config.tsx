@@ -56,6 +56,10 @@ export default defineConfig({
         link: '/',
       },
       {
+        text: 'Ecosystem',
+        link: '/ecosystem',
+      },
+      {
         text: 'Integrate Tempo Testnet',
         items: [
           {
@@ -77,6 +81,10 @@ export default defineConfig({
           {
             text: 'Predeployed Contracts',
             link: '/quickstart/predeployed-contracts',
+          },
+          {
+            text: 'Developer Tools',
+            link: '/quickstart/developer-tools',
           },
         ],
       },
@@ -519,41 +527,12 @@ export default defineConfig({
           link: '/sdk/typescript',
         },
         {
-          text: 'Ecosystem',
-          link: '/ecosystem',
-        },
-        {
           text: 'Integrate Tempo Testnet',
           items: [
             {
               text: 'Setup',
               link: '/sdk/typescript/viem/setup',
             },
-            {
-              text: 'Connect to the Network',
-              link: '/quickstart/connection-details',
-            },
-            {
-              text: 'Get Faucet Funds',
-              link: '/quickstart/faucet',
-            },
-            {
-              text: 'EVM Differences',
-              link: '/quickstart/evm-compatibility',
-            },
-            {
-              text: 'Predeployed Contracts',
-              link: '/quickstart/predeployed-contracts',
-            },
-            {
-              text: 'Developer Tools',
-              link: '/quickstart/developer-tools',
-            },
-          ],
-        },
-        {
-          text: 'Start Building on Tempo',
-          items: [
             {
               text: 'Create & Use Accounts',
               collapsed: true,
