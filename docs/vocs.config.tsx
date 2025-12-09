@@ -464,53 +464,64 @@ export default defineConfig({
         link: '/learn',
       },
       {
-        text: 'Get Started',
+        text: 'Stablecoins',
         items: [
           {
-            text: 'About Stablecoins',
+            text: 'Overview',
             link: '/learn/stablecoins',
           },
           {
-            text: 'Stablecoins on Tempo',
-            link: '/learn/stablecoins-on-tempo',
-          },
-        ],
-      },
-      {
-        text: 'Stablecoin Use Cases',
-        items: [
-          {
             text: 'Remittances',
-            link: '/learn/remittances',
+            link: '/learn/use-cases/remittances',
           },
           {
             text: 'Global Payouts',
-            link: '/learn/global-payouts',
+            link: '/learn/use-cases/global-payouts',
           },
           {
             text: 'Embedded Finance',
-            link: '/learn/embedded-finance',
+            link: '/learn/use-cases/embedded-finance',
           },
           {
             text: 'Tokenized Deposits',
-            link: '/learn/tokenized-deposits',
+            link: '/learn/use-cases/tokenized-deposits',
           },
           {
             text: 'Microtransactions',
-            link: '/learn/microtransactions',
+            link: '/learn/use-cases/microtransactions',
           },
           {
             text: 'Agentic Commerce',
-            link: '/learn/agentic-commerce',
+            link: '/learn/use-cases/agentic-commerce',
           },
         ],
       },
       {
-        text: 'More About Tempo',
+        text: 'Tempo',
         items: [
           {
-            text: 'Tempo Overview',
-            link: '/learn/tempo-overview',
+            text: 'Overview',
+            link: '/learn/tempo',
+          },
+          {
+            text: 'Native Stablecoins',
+            link: '/learn/tempo/native-stablecoins',
+          },
+          {
+            text: 'Modern Transactions',
+            link: '/learn/tempo/modern-transactions',
+          },
+          {
+            text: 'Performance',
+            link: '/learn/tempo/performance',
+          },
+          {
+            text: 'Onchain FX',
+            link: '/learn/tempo/fx',
+          },
+          {
+            text: 'Privacy',
+            link: '/learn/tempo/privacy',
           },
         ],
       },

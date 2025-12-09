@@ -1,0 +1,42 @@
+import LucideMail from '~icons/lucide/mail'
+import LucideRocket from '~icons/lucide/rocket'
+import LucideGithub from '~icons/lucide/github'
+import LucideGauge from '~icons/lucide/gauge'
+import LucideCheckCircle from '~icons/lucide/check-circle'
+import * as Card from "../../../components/Card.tsx"
+
+# Performance [Tempo's performant blockchain architecture]
+
+All of Tempo's payments-first features are built on a foundation of a highly performant blockchain. Tempo delivers the throughput and finality characteristics that payment applications require.
+
+## High Throughput
+
+Tempo is built on the [Reth](https://reth.rs/) SDK, the most performant and flexible EVM (Ethereum Virtual Machine) execution client. Reth is also relied upon by several other blockchains including Ethereum, Base and Arc.
+
+Tempo houses the team that built and maintains Reth, and several other pieces of core blockchain developer software such as [Foundry](https://getfoundry.sh/). We are already benchmarking 20,000 TPS on testnet with a clear line of sight to an order of magnitude higher by mainnet.
+
+This throughput is critical for payment use cases. Whether processing payroll for thousands of employees, settling marketplace transactions, or handling microtransactions at scale, Tempo's performance ensures that your payment flows won't be bottlenecked by blockchain capacity.
+
+<Card.Notice title="Blockspace Specification" icon={LucideGauge} inline>
+  Learn more in the [blockspace specification](/protocol/blockspace/overview).
+</Card.Notice>
+
+<Card.Notice title="Open Source" icon={LucideGithub} inline>
+  Tempo is open source. Read the code on [GitHub](https://github.com/tempoxyz/tempo)!
+</Card.Notice>
+
+## Fast Finality
+
+Public blockchains that support financial activity need to balance two contradictory demands.
+
+On the one hand, the blockchain needs fast finality: a payment made on the blockchain should be quickly confirmed as final, with no risk of being "re-orged" out as can happen on many blockchains today.
+
+On the other hand, the blockchain also needs to degrade gracefully under suboptimal network conditions. Tempo uses Simplex Consensus (via [Commonware](https://www.commonware.xyz/)), which provides fast, sub-second finality in normal conditions while maintaining graceful degradation under adverse networks.
+
+Tempo uses Byzantine-fault tolerant consensus with four validators on testnet. Blocks are finalized every ~0.5 seconds, and once a block is marked as final, transactions in that block are guaranteed to be included in the chain. This cutting-edge consensus algorithm optimally balances speed with resilience.
+
+For payment applications, this gives payment operators the same settlement certainty they expect from existing financial systems, with speed that matches best-in-class blockchains. This is critical for use cases like point-of-sale systems, instant settlements, and cross-border transfers where users expect immediate, irreversible confirmation.
+
+<Card.Notice title="Consensus Specification" icon={LucideCheckCircle} inline>
+  Learn more about consensus in the [blockspace specification](/protocol/blockspace/overview).
+</Card.Notice>
