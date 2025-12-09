@@ -74,7 +74,7 @@ The protocol checks for token preferences in five ways, with this order of prece
 
 1. Transaction (set by the `fee_token` field of the transaction)
 2. Account (set on the FeeManager contract by the `fee_payer` of the transaction)
-3. TIP-20 contract (if the transaction is calling any function on a TIP-20 contract, the transaction uses that token as its fee token)
+3. TIP-20 contract (if the transaction is calling `transfer`, `transferWithMemo`, or `startReward` on a TIP-20 token contract, the transaction uses that token as its fee token)
 4. Stablecoin Exchange (for certain swap calls, the transaction uses the `tokenIn` argument as its fee token)
 5. PathUSD (as a fallback)
 
@@ -106,7 +106,16 @@ At this step, the protocol does one more check:
 
 ### TIP-20 contracts
 
-If the top-level call of a transaction is to a TIP-20 contract for which the currency is USD, or _all_ of the top-level calls of a TempoTransaction are to the same TIP-20 contract for which the currency is USD, that token is used as the user's fee token for that transaction (unless there is a preference specified at the [transaction](#transaction-level) or [account](#account-level) level).
+If the top-level call of a transaction is to one of the following functions on a TIP-20 token whose currency is USD:
+
+* `transfer(address to, uint256 amount)`
+* `transferWithMemo(address to, uint256 amount, bytes32 memo)`
+* `startReward(uint256 amount, uint32 seconds_)`
+
+then that TIP-20 token is used as the user's fee token for that transaction (unless there is a preference specified at the [transaction](#transaction-level) or [account](#account-level) level).
+
+For [Tempo transactions](/documentation/protocol/transactions/spec-account-abstraction.mdx), this rule applies only if _all_ top-level calls are to the same TIP-20 contract, and each such call is to one of the functions listed above, with `fee_payer == tx.origin`.
+
 
 ### Stablecoin Exchange contract
 
