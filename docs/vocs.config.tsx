@@ -21,6 +21,7 @@ export default defineConfig({
           content="width=device-width, initial-scale=1, maximum-scale=1"
           name="viewport"
         />
+        <meta content="Documentation ⋅ Tempo" property="og:title" />
         <meta content="/og-docs.png" property="og:image" />
         <meta content="image/png" property="og:image:type" />
         <meta content="1200" property="og:image:width" />
@@ -36,7 +37,7 @@ export default defineConfig({
       </>
     )
   },
-  title: 'Tempo',
+  title: 'Documentation ⋅ Tempo',
   description: 'Documentation for Tempo testnet and protocol specifications',
   logoUrl: {
     light: '/lockup-light.svg',
