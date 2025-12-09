@@ -86,7 +86,7 @@ forge create src/Mail.sol:Mail \
 
 # Deploy a simple contract with custom fee token
 forge create src/Mail.sol:Mail \
-  --fee-token <FEE_TOKEN_ADDRESS>
+  --fee-token <FEE_TOKEN_ADDRESS> \
   --rpc-url $TEMPO_RPC_URL \
   --interactive \
   --broadcast \
@@ -95,6 +95,7 @@ forge create src/Mail.sol:Mail \
 
 # Run a deployment script and verify on Tempo's explorer
 forge script script/Mail.s.sol \
+  --rpc-url $TEMPO_RPC_URL \
   --interactive \
   --sender <YOUR_WALLET_ADDRESS> \
   --broadcast \
@@ -102,7 +103,8 @@ forge script script/Mail.s.sol \
 
 # Run a deployment script with custom fee token and verify on Tempo's explorer
 forge script script/Mail.s.sol \
-  --fee-token <FEE_TOKEN_ADDRESS>
+  --fee-token <FEE_TOKEN_ADDRESS> \
+  --rpc-url $TEMPO_RPC_URL \
   --interactive \
   --sender <YOUR_WALLET_ADDRESS> \
   --broadcast \
@@ -149,3 +151,6 @@ cast send <CONTRACT_ADDRESS> <FUNCTION_SIGNATURE> \
 cast run <TX_HASH> \
   --rpc-url $TEMPO_RPC_URL
 ```
+
+### Wallets limitation
+Ledger and Trezor wallets are not compatible with `--fee-token` option.
