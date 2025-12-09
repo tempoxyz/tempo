@@ -92,8 +92,9 @@ contract FeeAMMTest is BaseTest {
         uint256 amountV = 2 * minLiq; // amountV/2 == MIN_LIQUIDITY -> should revert
 
         vm.prank(alice);
-        try amm.mintWithValidatorToken(address(userToken), address(validatorToken), amountV, alice)
-        {
+        try amm.mintWithValidatorToken(
+            address(userToken), address(validatorToken), amountV, alice
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory revertData) {
             assertEq(bytes4(revertData), IFeeAMM.InsufficientLiquidity.selector);

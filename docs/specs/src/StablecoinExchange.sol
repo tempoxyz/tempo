@@ -227,13 +227,12 @@ contract StablecoinExchange is IStablecoinExchange {
             } else {
                 balances[maker][escrowToken] = 0;
                 if (revertOnTransferFail) {
-                    ITIP20(escrowToken).transferFrom(
-                        maker, address(this), escrowAmount - userBalance
-                    );
+                    ITIP20(escrowToken)
+                        .transferFrom(maker, address(this), escrowAmount - userBalance);
                 } else {
-                    try ITIP20(escrowToken).transferFrom(
-                        maker, address(this), escrowAmount - userBalance
-                    ) { } catch {
+                    try ITIP20(escrowToken)
+                        .transferFrom(maker, address(this), escrowAmount - userBalance) { }
+                    catch {
                         return 0;
                     }
                 }
@@ -566,9 +565,7 @@ contract StablecoinExchange is IStablecoinExchange {
     /// @param user The user to transfer from
     /// @param token The token to transfer
     /// @param amount The amount to transfer
-    function _decrementBalanceOrTransferFrom(address user, address token, uint128 amount)
-        internal
-    {
+    function _decrementBalanceOrTransferFrom(address user, address token, uint128 amount) internal {
         uint128 userBalance = balances[user][token];
         if (userBalance >= amount) {
             balances[user][token] -= amount;

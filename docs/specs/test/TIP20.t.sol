@@ -1849,9 +1849,7 @@ contract TIP20Test is BaseTest {
     }
 
     /// @notice Fuzz test for scheduled rewards - should always revert with ScheduledRewardsDisabled
-    function testFuzz_scheduledRewards_AlwaysReverts(uint256 rewardAmount, uint32 duration)
-        public
-    {
+    function testFuzz_scheduledRewards_AlwaysReverts(uint256 rewardAmount, uint32 duration) public {
         rewardAmount = bound(rewardAmount, 1e18, 100e18);
         duration = uint32(bound(duration, 1, 365 days)); // duration > 0
 

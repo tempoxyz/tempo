@@ -144,8 +144,9 @@ contract TIP20FactoryTest is BaseTest {
         vm.assume(!factory.isTIP20(invalidQuote));
 
         // Try-catch is better for precompiles than expectRevert
-        try factory.createToken("Token", "TK", "USD", ITIP20(invalidQuote), admin) returns (address)
-        {
+        try factory.createToken("Token", "TK", "USD", ITIP20(invalidQuote), admin) returns (
+            address
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory reason) {
             // Verify it's the correct error
