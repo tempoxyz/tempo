@@ -45,7 +45,7 @@ Returns a function to unsubscribe from the event.
 
 ### onBurn
 
-- **Type:**
+- **Type:** `function`
 
 ```ts
 declare function onBurn(args: Args, log: Log): void
@@ -70,15 +70,60 @@ type Args = {
 
 Callback to invoke when liquidity is removed.
 
+### args (optional)
+
+- **Type:** `object`
+
+```ts
+type Args = {
+  /** Filter by sender address */
+  sender?: Address | Address[] | null
+  /** Filter by user token address */
+  userToken?: Address | Address[] | null
+  /** Filter by validator token address */
+  validatorToken?: Address | Address[] | null
+}
+```
+
+Filter events by indexed parameters.
+
 ### userToken (optional)
 
-- **Type:** `Address | undefined`
+- **Type:** `Address | bigint`
 
-Filter events by user token address.
+Address or ID of the user token to filter events.
 
 ### validatorToken (optional)
 
-- **Type:** `Address | undefined`
+- **Type:** `Address | bigint`
 
-Filter events by validator token address.
+Address or ID of the validator token to filter events.
+
+### fromBlock (optional)
+
+- **Type:** `bigint`
+
+Block to start listening from.
+
+### onError (optional)
+
+- **Type:** `function`
+
+```ts
+declare function onError(error: Error): void
+```
+
+The callback to call when an error occurred when trying to get for a new block.
+
+### poll (optional)
+
+- **Type:** `true`
+
+Enable polling mode.
+
+### pollingInterval (optional)
+
+- **Type:** `number`
+
+Polling frequency (in ms). Defaults to Client's pollingInterval config.
 
