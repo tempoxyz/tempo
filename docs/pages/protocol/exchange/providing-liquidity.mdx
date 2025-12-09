@@ -177,14 +177,9 @@ function cancel(
 exchange.cancel(12345);
 ```
 
-Cancellations execute immediately, and any unfilled portion of your order is refunded to your DEX balance.
+Cancellations execute immediately, and any unfilled portion of your order is refunded to your [DEX balance](/protocol/exchange/exchange-balance).
 
 <Callout type="warning">
   You can only cancel your own orders. Attempting to cancel another user's order will revert.
 </Callout>
 
-## Managing DEX Balances
-
-The DEX allows you to hold token balances directly on the DEX contract to avoid transfer costs. When placing orders, tokens are debited from your exchange balance (or transferred from your wallet if insufficient). When your orders fill, proceeds are credited to your DEX balance.
-
-For complete details on checking balances, depositing, withdrawing, and best practices for managing your exchange balance, see the [Exchange Balance](/protocol/exchange/exchange-balance) page.
