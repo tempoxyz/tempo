@@ -16,7 +16,6 @@ import { config } from './wagmi.config'
 const { amount, durationSeconds, funder, id, receipt } =
   await Actions.reward.startSync(config, {
     amount: parseEther('1000'),
-    seconds: 2_592_000, // 30 days
     token: '0x20c0000000000000000000000000000000000000',
   })
 
@@ -35,25 +34,6 @@ console.log('Duration:', durationSeconds, 'seconds')
 
 :::
 
-### Immediate Distribution
-
-Set `seconds` to `0` for immediate distribution to current opted-in holders:
-
-```ts twoslash
-import { Actions } from 'tempo.ts/wagmi'
-import { parseEther } from 'viem'
-import { config } from './wagmi.config'
-
-const { id } = await Actions.reward.startSync(config, {
-  amount: parseEther('100'),
-  seconds: 0, // Immediate distribution
-  token: '0x20c0000000000000000000000000000000000000',
-})
-
-console.log('Stream ID:', id)
-// @log: Stream ID: 0n
-```
-
 ### Asynchronous Usage
 
 The example above uses a `*Sync` variant of the action, that will wait for the transaction to be included before returning.
@@ -69,7 +49,6 @@ import { config } from './wagmi.config'
 
 const hash = await Actions.reward.start(config, {
   amount: parseEther('1000'),
-  seconds: 2_592_000,
   token: '0x20c0000000000000000000000000000000000000',
 })
 const receipt = await waitForTransactionReceipt(config, { hash })
@@ -102,12 +81,6 @@ type ReturnType = {
 - **Type:** `bigint`
 
 The amount of tokens to distribute. Must be greater than 0.
-
-### seconds
-
-- **Type:** `number`
-
-The duration in seconds. Currently, must be `0` (meaning immediate distribution).
 
 ### token
 

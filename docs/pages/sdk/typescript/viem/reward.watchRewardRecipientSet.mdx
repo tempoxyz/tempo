@@ -60,14 +60,17 @@ Callback to invoke when a reward recipient is set.
 
 Address of the TIP-20 token to watch.
 
-### holder (optional)
+### args (optional)
 
-- **Type:** `Address | undefined`
+- **Type:** `object`
 
-Filter events by holder address.
+```ts
+type Args = {
+  /** Filter events by holder address */
+  holder?: Address
+  /** Filter events by recipient address */
+  recipient?: Address
+}
+```
 
-### recipient (optional)
-
-- **Type:** `Address | undefined`
-
-Filter events by recipient address.
+Optional filters for the event.
