@@ -44,18 +44,18 @@
           pkgs.perl
         ];
 
-        withLibgit2 = prev: {
-          buildInputs = prev.buildInputs or [ ] ++ [
-            pkgs.libgit2
-          ];
-          LD_LIBRARY_PATH = "${pkgs.libgit2}/lib";
-        };
-
         withClang = prev: {
           buildInputs = prev.buildInputs or [ ] ++ [
             pkgs.clang
           ];
           LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
+        };
+
+        withLibgit2 = prev: {
+          buildInputs = prev.buildInputs or [ ] ++ [
+            pkgs.libgit2
+          ];
+          LD_LIBRARY_PATH = "${pkgs.libgit2}/lib";
         };
 
         withMaxPerf = prev: {
