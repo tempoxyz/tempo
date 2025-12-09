@@ -4,7 +4,7 @@ description: "Fix a single SDK action's docs. Usage: /fix-tempo-ts-sdk-doc <modu
 
 # Fix tempo.ts SDK Documentation
 
-Fix an existing documentation page by comparing it against the underlying TypeScript source code to ensure parameters and return values are accurate.
+Fix existing documentation pages for both **viem** and **wagmi actions** by comparing them against the underlying TypeScript source code to ensure parameters and return values are accurate.
 
 ## Usage
 
@@ -13,7 +13,11 @@ Run this command with a module and function name:
 /fix-tempo-ts-sdk-doc $ARGUMENTS
 ```
 
-Where `$ARGUMENTS` is the module and function name (e.g., `token transfer` for `pages/sdk/typescript/viem/token.transfer.mdx`).
+Where `$ARGUMENTS` is the module and function name (e.g., `token transfer`).
+
+This will fix documentation for:
+- **Viem:** `pages/sdk/typescript/viem/{module}.{function}.mdx`
+- **Wagmi Actions:** `pages/sdk/typescript/wagmi/actions/{module}.{function}.mdx` (if exists)
 
 ## Workflow
 
@@ -68,7 +72,12 @@ interface ParamInfo {
 
 ### Step 3: Compare Against Documentation
 
-Read the documentation file and compare against the extracted JSON.
+Read **both** documentation files (if they exist) and compare against the extracted JSON:
+
+1. **Viem doc:** `pages/sdk/typescript/viem/{module}.{function}.mdx`
+2. **Wagmi action doc:** `pages/sdk/typescript/wagmi/actions/{module}.{function}.mdx`
+
+Use Glob to check which files exist before reading them.
 
 #### Action-Type Specific Checks
 
@@ -174,41 +183,56 @@ Description from the parameter.
 
 ### Step 4: Report Findings
 
-Create a table summarizing the audit:
+Create a table summarizing the audit for **each documentation file**:
 
 ```markdown
 ## Audit Results for `{module}.{function}`
 
-### Parameters
+### Viem Documentation
+
+**File:** `pages/sdk/typescript/viem/{module}.{function}.mdx`
+
+#### Parameters
 
 | Parameter | Documentation | Source Code | Status |
 |-----------|---------------|-------------|--------|
 | param1 | `Type` (required) | `Type` (required) | OK |
 | param2 | Missing | `Type` (optional) | Missing |
-| param3 | `Type` (optional) | `Type` (required) | Wrong optionality |
 
-### Return Type
-
-| Field | Documentation | Source Code | Status |
-|-------|---------------|-------------|--------|
-| field1 | `Type` | `Type` | OK |
-
-### Issues Found
+#### Issues Found
 1. Issue description
-2. Issue description
+
+---
+
+### Wagmi Action Documentation
+
+**File:** `pages/sdk/typescript/wagmi/actions/{module}.{function}.mdx`
+
+#### Parameters
+
+| Parameter | Documentation | Source Code | Status |
+|-----------|---------------|-------------|--------|
+| param1 | `Type` (required) | `Type` (required) | OK |
+
+#### Issues Found
+1. Issue description (or "No issues found")
 ```
+
+If a wagmi action doc doesn't exist, note it in the report but don't create it.
 
 ### Step 5: Fix Issues
 
 After presenting the audit results, ask the user if they want to fix the issues:
 
 Use AskUserQuestion:
-> "Found {N} issues in the documentation. Would you like me to fix them?"
+> "Found {N} issues across {viem/wagmi} documentation. Would you like me to fix them?"
 
 Options:
-- **Fix all** - Apply all fixes automatically
+- **Fix all** - Apply all fixes to both viem and wagmi docs automatically
 - **Review each** - Show each fix before applying
 - **Skip** - Don't make changes
+
+Apply fixes to **both** documentation files where applicable.
 
 ## Type Mappings
 
@@ -400,19 +424,148 @@ type Args = {
 Address or ID of the TIP20 token to watch.
 ```
 
+## Wagmi Action Templates
+
+Wagmi action docs follow the same structure as viem docs with these key differences:
+
+### Wagmi Write Action Template
+
+```mdx
+import WriteParameters from '../../../../../snippets/write-parameters.mdx'
+
+# `{module}.{function}`
+
+{Description of what this function does.}
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { Actions } from 'tempo.ts/wagmi'
+import { config } from './wagmi.config'
+
+const { receipt } = await Actions.{module}.{functionSync}(config, {
+  // required params
+})
+
+console.log('Transaction hash:', receipt.transactionHash)
+```
+
+```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+### Asynchronous Usage
+
+The example above uses a `*Sync` variant of the action, that will wait for the transaction to be included before returning.
+
+If you are optimizing for performance, you should use the non-sync `{module}.{function}` action and wait for inclusion manually:
+
+```ts twoslash
+import { Actions } from 'tempo.ts/wagmi'
+import { Actions as viem_Actions } from 'tempo.ts/viem'
+import { waitForTransactionReceipt } from 'wagmi/actions'
+import { config } from './wagmi.config'
+
+const hash = await Actions.{module}.{function}(config, {
+  // required params
+})
+const receipt = await waitForTransactionReceipt(config, { hash })
+
+const { args }
+  = viem_Actions.{module}.{function}.extractEvent(receipt.logs)
+```
+
+## Return Type
+
+```ts
+type ReturnType = {
+  // Fields from syncReturnType.fields
+}
+```
+
+## Parameters
+
+### {paramName}
+
+- **Type:** `{type}`
+
+{description}
+
+<WriteParameters wagmi />
+```
+
+### Wagmi Read Action Template
+
+```mdx
+import ReadParameters from '../../../../../snippets/read-parameters.mdx'
+
+# `{module}.{function}`
+
+{Description of what this function does.}
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { Actions } from 'tempo.ts/wagmi'
+import { config } from './wagmi.config'
+
+const result = await Actions.{module}.{function}(config, {
+  // required params
+})
+
+console.log('Result:', result)
+```
+
+```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = {returnType.type}
+```
+
+## Parameters
+
+### {paramName}
+
+- **Type:** `{type}`
+
+{description}
+
+<ReadParameters wagmi />
+```
+
+### Key Differences: Viem vs Wagmi
+
+| Aspect | Viem | Wagmi |
+|--------|------|-------|
+| Import | `import { client } from './viem.config'` | `import { Actions } from 'tempo.ts/wagmi'` |
+| Call style | `client.{module}.{function}(...)` | `Actions.{module}.{function}(config, ...)` |
+| Config file | `viem.config.ts` | `wagmi.config.ts` |
+| Snippet path | `../../../../snippets/` | `../../../../../snippets/` |
+| Parameters snippet | `<WriteParameters />` | `<WriteParameters wagmi />` |
+
 ## Example Audit
 
-For `pages/sdk/typescript/viem/token.watchTransfer.mdx`:
+For `token.transfer`:
 
-1. Run: `bun extract-sdk-types token watchTransfer`
-2. Read `.claude/sdk-types/token.watchTransfer.json`
-3. Note: `actionType: "watch"`, check for:
-   - `onTransfer` callback with `functionSignature`
-   - `callbackArgs` for the Args type shape
-   - Optional `args` parameter for filtering by `from`/`to`
-4. Read the doc file
-5. Compare and report findings:
-   - Is `args` parameter documented? (optional filter parameter)
-   - Is `onTransfer` callback signature correct?
-   - Are all callback args fields documented?
-6. Fix discrepancies
+1. Run: `bun extract-sdk-types token transfer`
+2. Read `.claude/sdk-types/token.transfer.json`
+3. Read both doc files:
+   - `pages/sdk/typescript/viem/token.transfer.mdx`
+   - `pages/sdk/typescript/wagmi/actions/token.transfer.mdx`
+4. Compare parameters and return types against source
+5. Report findings for each file
+6. Fix discrepancies in both files

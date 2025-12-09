@@ -4,7 +4,7 @@ description: "Audit all SDK docs with parallel agents. Usage: /audit-all-tempo-t
 
 # Batch Audit All tempo.ts SDK Documentation
 
-Audit all viem and wagmi action documentation files against the TypeScript source code using parallel agents.
+Audit all **viem and wagmi action** documentation files against the TypeScript source code using parallel agents. Each agent will fix both the viem doc and corresponding wagmi action doc (if it exists).
 
 ## Usage
 
@@ -24,6 +24,9 @@ Find all action documentation files and extract unique `module.function` pairs.
 **Viem files:** `pages/sdk/typescript/viem/*.mdx`
 - Exclude: `actions.mdx`, `setup.mdx`, `transports.mdx`, `withFeePayer.mdx`
 
+**Wagmi action files:** `pages/sdk/typescript/wagmi/actions/*.mdx`
+- Exclude: `index.mdx`
+
 If `$ARGUMENTS` is provided (e.g., `token`), filter to only files matching `{module}.*.mdx`.
 
 Use Glob tool:
@@ -32,6 +35,8 @@ pages/sdk/typescript/viem/{module}.*.mdx
 ```
 
 Extract `module.function` from each filename (e.g., `token.transfer.mdx` → `token transfer`).
+
+Note: The agent will handle both viem and wagmi docs for each action - no need to separately list wagmi files.
 
 ### Step 2: Launch Parallel Agents
 
@@ -57,25 +62,37 @@ Compile results from all agents into a summary:
 ## Batch Audit Results
 
 **Actions audited:** {count}
-**Actions with fixes:** {count}
+**Viem docs fixed:** {count}
+**Wagmi docs fixed:** {count}
 **Total fixes applied:** {sum}
 
 ### Results by Action
 
-| Action | Viem | Wagmi | Fixes Applied |
-|--------|------|-------|---------------|
-| token.transfer | ✓ Fixed | ✓ Fixed | 2 |
+| Action | Viem | Wagmi Action | Fixes Applied |
+|--------|------|--------------|---------------|
+| token.transfer | ✓ Fixed | ✓ Fixed | 4 |
 | token.getBalance | ✓ OK | ✓ OK | 0 |
-| dex.buy | ✓ Fixed | ✓ OK | 1 |
+| dex.buy | ✓ Fixed | — (no doc) | 1 |
 | ... | ... | ... | ... |
+
+Legend:
+- ✓ OK = No issues found
+- ✓ Fixed = Issues found and fixed
+- — (no doc) = Wagmi action doc doesn't exist
 
 ### Fix Details
 
 #### token.transfer
-- Added missing `from` parameter to viem doc
-- Fixed `token` optionality in viem doc
+**Viem:**
+- Added missing `from` parameter
+- Fixed `token` optionality
+
+**Wagmi Action:**
+- Added missing `from` parameter
+- Fixed `token` optionality
 
 #### dex.buy
+**Viem:**
 - Added missing `args` filter parameter
 ```
 

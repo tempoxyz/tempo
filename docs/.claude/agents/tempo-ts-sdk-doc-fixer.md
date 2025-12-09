@@ -1,7 +1,7 @@
 ---
 name: tempo-ts-sdk-doc-fixer
 description: agent that fixes an sdk docs page in the typescript SDK
-model: sonnet
+model: opus
 permissionMode: acceptEdits
 ---
 
