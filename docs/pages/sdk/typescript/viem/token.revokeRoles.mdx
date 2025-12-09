@@ -12,8 +12,8 @@ Revokes one or more roles from an address. Requires the admin role for each role
 import { client } from './viem.config'
 
 const { receipt, value } = await client.token.revokeRolesSync({
-  account: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
-  roles: ['issuer'],
+  from: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
+  role: 'issuer',
   token: '0x20c0000000000000000000000000000000000000',
 })
 
@@ -38,8 +38,8 @@ import { Actions } from 'tempo.ts/viem'
 import { client } from './viem.config'
 
 const hash = await client.token.revokeRoles({
-  account: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
-  roles: ['issuer'],
+  from: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
+  role: 'issuer',
   token: '0x20c0000000000000000000000000000000000000',
 })
 const receipt = await client.waitForTransactionReceipt({ hash })
@@ -55,36 +55,35 @@ type ReturnType = {
   receipt: TransactionReceipt
   /** Array of role membership update events */
   value: readonly {
-    /** Address that had role revoked */
-    account: Address
-    /** Whether the role was granted (true) or revoked (false) */
-    hasRole: boolean
     /** Role identifier */
     role: Hex
+    /** Address that had role revoked */
+    account: Address
     /** Address that revoked the role */
     sender: Address
+    /** Whether the role was granted (true) or revoked (false) */
+    hasRole: boolean
   }[]
 }
 ```
 
 ## Parameters
 
-### account
+### from
 
 - **Type:** `Address`
 
-Address to revoke roles from.
+Address to revoke the role from.
 
-### roles
+### role
 
-- **Type:** `TokenRole[] | Hex[]`
+- **Type:** `"defaultAdmin" | "pause" | "unpause" | "issuer" | "burnBlocked"`
 
-Array of roles to revoke. Can be standard role names (`'defaultAdmin'`, `'pause'`, `'unpause'`, `'issuer'`, `'burnBlocked'`) or custom role hashes.
+Role to revoke.
 
-### token (optional)
+### token
 
 - **Type:** `Address | bigint`
-- **Default:** `Addresses.pathUsd` (Token ID 0)
 
 Address or ID of the TIP-20 token.
 

@@ -11,10 +11,11 @@ Creates a new trading pair on the Stablecoin DEX.
 ```ts twoslash [example.ts]
 import { client } from './viem.config'
 
-const { base, quote, receipt } = await client.dex.createPairSync({
+const { key, base, quote, receipt } = await client.dex.createPairSync({
   base: '0x20c0000000000000000000000000000000000001',
 })
 
+console.log('Pair key:', key)
 console.log('Base token:', base)
 console.log('Quote token:', quote)
 ```
@@ -48,6 +49,8 @@ const { args: { base, quote } }
 
 ```ts
 type ReturnType = {
+  /** Key of the trading pair */
+  key: Hex
   /** Address of the base token */
   base: Address
   /** Address of the quote token */

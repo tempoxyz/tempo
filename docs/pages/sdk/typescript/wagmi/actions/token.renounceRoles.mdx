@@ -13,7 +13,7 @@ import { Actions } from 'tempo.ts/wagmi'
 import { config } from './wagmi.config'
 
 const { receipt, value } = await Actions.token.renounceRolesSync(config, {
-  roles: ['issuer'],
+  role: 'issuer',
   token: '0x20c0000000000000000000000000000000000000',
 })
 
@@ -41,7 +41,7 @@ import { waitForTransactionReceipt } from 'wagmi/actions'
 import { config } from './wagmi.config'
 
 const hash = await Actions.token.renounceRoles(config, {
-  roles: ['issuer'],
+  role: 'issuer',
   token: '0x20c0000000000000000000000000000000000000',
 })
 const receipt = await waitForTransactionReceipt(config, { hash })
@@ -71,16 +71,15 @@ type ReturnType = {
 
 ## Parameters
 
-### roles
+### role
 
-- **Type:** `TokenRole[] | Hex[]`
+- **Type:** `"defaultAdmin" | "pause" | "unpause" | "issuer" | "burnBlocked"`
 
-Array of roles to renounce. Can be standard role names (`'defaultAdmin'`, `'pause'`, `'unpause'`, `'issuer'`, `'burnBlocked'`) or custom role hashes.
+Role to renounce.
 
-### token (optional)
+### token
 
 - **Type:** `Address | bigint`
-- **Default:** `Addresses.pathUsd` (Token ID 0)
 
 Address or ID of the TIP-20 token.
 

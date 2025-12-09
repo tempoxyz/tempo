@@ -16,6 +16,7 @@ tmp
 
 # Local claude settings
 .claude/settings.local.json
+.claude/sdk-types
 
 # Sonda bundle diagnostic files
 .sonda

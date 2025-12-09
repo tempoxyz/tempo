@@ -1,3 +1,5 @@
+import ReadParameters from '../../../../../snippets/read-parameters.mdx'
+
 # `dex.getOrder`
 
 Gets an order's details from the Stablecoin DEX orderbook.  
@@ -43,6 +45,8 @@ type ReturnType = {
   maker: Address
   /** Next order ID in the doubly linked list (0 if tail) */
   next: bigint
+  /** The order ID */
+  orderId: bigint
   /** Previous order ID in the doubly linked list (0 if head) */
   prev: bigint
   /** Remaining amount to be filled */
@@ -62,3 +66,4 @@ Returns the complete order details including the maker's address, order amounts,
 
 Order ID to query.
 
+<ReadParameters wagmi />
