@@ -1,0 +1,67 @@
+import { Callout } from 'vocs/components'
+import LucideFileText from '~icons/lucide/file-text'
+import LucideMail from '~icons/lucide/mail'
+import LucideRocket from '~icons/lucide/rocket'
+import * as Card from "../../../components/Card.tsx"
+import { ZoomableImage } from "../../../components/ZoomableImage.tsx"
+
+# Power AI agents with programmable money [Enable autonomous agents to purchase goods, services, and digital resources with real-time, programmable stablecoin payments.]
+
+<Card.Notice title="Executive Summary" icon={LucideFileText} inverse>
+  As autonomous agents begin taking on everything from reordering groceries to buying digital services, they need real-time, programmable money. Stablecoins provide instant global settlement and built-in programmability, making stablecoins the natural financial infrastructure for the next generation of autonomous systems.
+</Card.Notice>
+
+## The rise of autonomous agents
+
+Autonomous agents are increasingly able to purchase goods and services, negotiate discounts, and manage everyday tasks without human input. An agent might reorder groceries when supplies run low, find better deals on household items, pay for digital services, manage streaming or app subscriptions, or book travel based on preferences and schedules.
+
+Further, the agentic commerce ecosystem is evolving quickly. New protocols are emerging that enable agents to interact directly with merchants: browsing offers, comparing terms, and purchasing goods or services autonomously. These protocols will allow businesses to sell directly to autonomous agents, whether they offer physical goods, digital items, compute, APIs, or data streams.
+
+## The challenge with traditional payment rails
+
+
+However, for autonomous agents to function reliably, they need real-time, digitally native money that matches the speed and autonomy of their decisions. This money must be available 24/7, settle instantly, and support frequent microtransactions without friction. It also needs to work seamlessly across borders and offer in-built programmability so agents can operate without human intervention.
+
+Traditional payment rails were not designed to meet these requirements. Although card tokenization is being explored as a way for agents to pay, cards were never intended for machine-to-machine interactions. The entire card ecosystem is built around human cardholders and fraud models designed to stop bots, not support them.
+
+## How stablecoins solve this
+
+
+Stablecoins fill this gap. They provide a stable, programmable representation of money that agents can use autonomously. Stablecoins combine the familiarity of fiat value with the instant, global settlement of public blockchains. Agents can hold stablecoins, pay for goods or services, and transact with other agents without relying on intermediaries.
+
+<ZoomableImage src="/learn/stablecoins-payment-rails-comparison.png" alt="Why stablecoins are the solution for agentic commerce" />
+
+Agents also need an easy way to access payment credentials. Creating cards or card tokens requires coordination with issuers, and, in many cases, manual workflows. In contrast, onchain wallets can be provisioned instantly, at massive scale, and without relying on banking partners. Wallets give agents a ready-to-use financial instrument the moment they are created.
+
+## Benefits beyond speed and cost
+
+
+For developers building agentic platforms, stablecoins and wallets are far simpler and more flexible to work with than traditional payment instruments. Wallets can be created instantly and at scale, without issuer partnerships or card-provisioning workflows. Stablecoins also make it easy to top up agent balances instantly whenever additional funds are needed.
+
+<ZoomableImage src="/learn/agentic-commerce-developer-benefits.png" alt="Developer benefits of stablecoins for agents" />
+
+Developers can also set spending limits, enforce policy rules, and implement automatic top-ups directly in code, ensuring agents always have the funds they need without human intervention. Stablecoin balances can be monitored and rebalanced programmatically, enabling precise liquidity management and predictable spending across large fleets of autonomous agents.
+
+
+As agentic commerce begins to scale, the need for a more native payment rail becomes unavoidable. Stablecoins provide exactly the properties agents require: real-time global settlement, programmable behavior, and the ability to operate without intermediaries or issuer dependencies. They offer payment infrastructure that aligns with how agents think, act, and transact.
+
+## Building with Tempo
+
+Autonomous agents require payment rails that are as programmable and tireless as they are. Tempo offers the throughput and sub-second settlement needed to support agent fleets at scale, without the friction of traditional card networks.
+
+If you are architecting payment flows for autonomous systems, we can help you understand how to implement automated wallet provisioning and policy-based spending controls directly into your agent's code.
+
+<Card.Container>
+  <Card.Link
+    description="Want to explore this use case on Tempo? Email us to learn more about building agentic commerce solutions."
+    href="mailto:partners@tempo.xyz"
+    icon={LucideMail}
+    title="Get in Touch"
+  />
+  <Card.Link
+    description="Start building on Tempo with our guides, SDKs, and documentation."
+    href="/quickstart/integrate-tempo"
+    icon={LucideRocket}
+    title="Build on Tempo"
+  />
+</Card.Container>

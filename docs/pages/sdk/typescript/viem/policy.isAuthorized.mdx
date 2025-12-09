@@ -12,7 +12,7 @@ Checks if an address is authorized by a transfer policy.
 import { client } from './viem.config'
 
 const isAuthorized = await client.policy.isAuthorized({
-  address: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
+  user: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
   policyId: 1n,
 })
 
@@ -34,17 +34,17 @@ type ReturnType = boolean
 
 ## Parameters
 
-### address
-
-- **Type:** `Address`
-
-Address to check authorization for.
-
 ### policyId
 
 - **Type:** `bigint`
 
-ID of the policy to check against.
+Policy ID.
+
+### user
+
+- **Type:** `Address`
+
+User address to check.
 
 <ReadParameters />
 

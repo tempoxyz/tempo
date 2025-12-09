@@ -2,7 +2,7 @@ import WriteParameters from '../../../../snippets/write-parameters.mdx'
 
 # `fee.setUserToken`
 
-Sets the user's default fee token preference. [Learn more about fees](/documentation/protocol/fees)
+Sets the user's default fee token preference. [Learn more about fees](/protocol/fees)
 
 ## Usage
 
@@ -48,12 +48,12 @@ const { args }
 
 ```ts
 type ReturnType = {
-  /** Transaction receipt */
-  receipt: TransactionReceipt
-  /** Address of the token set */
-  token: Address
   /** Address of the user */
   user: Address
+  /** Address of the token set */
+  token: Address
+  /** Transaction receipt */
+  receipt: TransactionReceipt
 }
 ```
 

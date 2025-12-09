@@ -13,7 +13,12 @@ use reth_transaction_pool::{
     EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction, PoolTransaction,
     error::PoolTransactionError,
 };
-use std::{convert::Infallible, fmt::Debug, sync::Arc};
+use std::{
+    convert::Infallible,
+    fmt::Debug,
+    sync::{Arc, OnceLock},
+};
+use tempo_precompiles::{nonce::slots, storage::double_mapping_slot};
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use thiserror::Error;
 
@@ -25,6 +30,8 @@ pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached payment classification for efficient block building
     is_payment: bool,
+    /// Cached slot of the 2D nonce, if any.
+    nonce_key_slot: OnceLock<Option<U256>>,
 }
 
 impl TempoPooledTransaction {
@@ -43,6 +50,7 @@ impl TempoPooledTransaction {
                 transaction,
             },
             is_payment,
+            nonce_key_slot: OnceLock::new(),
         }
     }
 
@@ -64,6 +72,20 @@ impl TempoPooledTransaction {
     /// Returns the nonce key of this transaction if it's an [`AASigned`](tempo_primitives::AASigned) transaction.
     pub fn nonce_key(&self) -> Option<U256> {
         self.inner.transaction.nonce_key()
+    }
+
+    /// Returns the storage slot for the nonce key of this transaction.
+    pub fn nonce_key_slot(&self) -> Option<U256> {
+        *self.nonce_key_slot.get_or_init(|| {
+            let nonce_key = self.nonce_key()?;
+            let sender = self.sender();
+            let slot = double_mapping_slot(
+                sender.as_slice(),
+                nonce_key.to_be_bytes::<32>(),
+                slots::NONCES,
+            );
+            Some(slot)
+        })
     }
 
     /// Returns whether this is a payment transaction.
@@ -144,7 +166,7 @@ pub enum TempoPoolTransactionError {
     /// Thrown when we couldn't find a recently used validator token that has enough liquidity
     /// in fee AMM pair with the user token this transaction will pay fees in.
     #[error(
-        "Insufficient liquidity for fee token: {0}, please see https://docs.tempo.xyz/documentation/protocol/fees for more"
+        "Insufficient liquidity for fee token: {0}, please see https://docs.tempo.xyz/protocol/fees for more"
     )]
     InsufficientLiquidity(Address),
 }

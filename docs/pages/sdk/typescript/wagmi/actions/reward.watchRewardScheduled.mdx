@@ -43,7 +43,7 @@ Returns a function to unsubscribe from the event.
 
 ### onRewardScheduled
 
-- **Type:**
+- **Type:** `function`
 
 ```ts
 declare function onRewardScheduled(args: Args, log: Log): void
@@ -68,8 +68,17 @@ Callback to invoke when a reward stream is scheduled.
 
 Address of the TIP-20 token to watch.
 
-### funder (optional)
+### args (optional)
 
-- **Type:** `Address | undefined`
+- **Type:** `object`
 
-Filter events by funder address.
+```ts
+type Args = {
+  /** Filter by funder address */
+  funder?: Address | Address[]
+  /** Filter by stream ID */
+  id?: bigint | bigint[]
+}
+```
+
+Optional filters to narrow down events by funder address or stream ID.

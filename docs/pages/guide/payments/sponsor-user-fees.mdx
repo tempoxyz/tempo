@@ -38,7 +38,7 @@ You can stand up a minimal fee payer service using the `Handler.feePayer` handle
 
 ### Configure your client to use the fee payer service
 
-Use the `withFeePayer` transport provided by the TypeScript SDK ([link](/sdk/typescript/viem/withFeePayer)). It routes transactions to the configured fee payer service for sponsorship when `feePayer: true` is requested on a transaction.
+Use the `withFeePayer` transport provided by the TypeScript SDK ([link](/sdk/typescript/viem/transport.withFeePayer)). It routes transactions to the configured fee payer service for sponsorship when `feePayer: true` is requested on a transaction.
 
 <PublicTestnetSponsorTip />
 
@@ -111,7 +111,7 @@ function SendSponsoredPayment() {
 ## Next Steps
 
 Now that you've implemented fee sponsorship, you can:
-- Learn more about the [Tempo Transaction](/documentation/protocol/transactions/spec-tempo-transaction#fee-payer-signature-details) type and fee payer signature details
+- Learn more about the [Tempo Transaction](/protocol/transactions/spec-tempo-transaction#fee-payer-signature-details) type and fee payer signature details
 - Explore [Batch Transactions](/guide/use-accounts/batch-transactions) to sponsor multiple operations at once
 - Learn how to [Pay Fees in Any Stablecoin](/guide/payments/pay-fees-in-any-stablecoin) 
 
@@ -163,13 +163,13 @@ const { receipt } = await client.token.transferSync({
 <Card.Container>
   <Card.Link
     description="Learn more about fees and how they work on Tempo"
-    href="/documentation/protocol/fees/spec-fee"
+    href="/protocol/fees/spec-fee"
     icon={LucideBook}
     title="Fee Specification"
   />
   <Card.Link
     description="Technical specification for TempoTransactions and fee payer signature details"
-    href="/documentation/protocol/transactions/spec-tempo-transaction"
+    href="/protocol/transactions/spec-tempo-transaction"
     icon={LucideFileCode}
     title="TempoTransaction Spec"
   />

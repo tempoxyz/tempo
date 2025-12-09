@@ -2,7 +2,7 @@ import WriteParameters from '../../../../snippets/write-parameters.mdx'
 
 # `token.changeTransferPolicy`
 
-Changes the transfer policy for a TIP-20 token. Requires the default admin role. [Learn more about transfer policies](/documentation/protocol/tip403/spec)
+Changes the transfer policy for a TIP-20 token. Requires the default admin role. [Learn more about transfer policies](/protocol/tip403/spec)
 
 ## Usage
 
@@ -65,12 +65,11 @@ type ReturnType = {
 
 - **Type:** `bigint`
 
-ID of the transfer policy to apply.
+New transfer policy ID.
 
-### token (optional)
+### token
 
 - **Type:** `Address | bigint`
-- **Default:** `Addresses.pathUsd` (Token ID 0)
 
 Address or ID of the TIP-20 token.
 

@@ -69,16 +69,16 @@ jobs:
         env:
           RUSTDOCFLAGS: --cfg docsrs -D warnings --show-type-layout --generate-link-to-definition --enable-index-page -Zunstable-options
       - name: Setup Pages
-        if: false && github.ref_name == 'main' && github.event_name == 'push'
+        if: github.ref_name == 'main' && github.event_name == 'push'
         uses: actions/configure-pages@v5
       - name: Upload artifact
-        if: false && github.ref_name == 'main' && github.event_name == 'push'
+        if: github.ref_name == 'main' && github.event_name == 'push'
         uses: actions/upload-pages-artifact@v4
         with:
           path: ./target/doc
 
   deploy-docs:
-    if: false && github.ref_name == 'main' && github.event_name == 'push'
+    if: github.ref_name == 'main' && github.event_name == 'push'
     needs: [docs]
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
