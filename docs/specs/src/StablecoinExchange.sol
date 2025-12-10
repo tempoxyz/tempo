@@ -59,8 +59,19 @@ contract StablecoinExchange is IStablecoinExchange {
                               STORAGE
     //////////////////////////////////////////////////////////////*/
 
+    /// @notice Tracks escrowed balances per trading pair, to isolate risk
+    struct PairBalance {
+        /// Escrowed base tokens backing active ask liquidity
+        uint128 baseEscrowed;
+        /// Escrowed quote tokens backing active bid liquidity
+        uint128 quoteEscrowed;
+    }
+
     /// Mapping of pair key to orderbook
     mapping(bytes32 pairKey => Orderbook orderbook) public books;
+
+    /// Mapping of pair key to aggregate escrowed balances
+    mapping(bytes32 pairKey => PairBalance balance) internal pairBalances;
 
     /// Mapping of order ID to order data
     mapping(uint128 orderId => IStablecoinExchange.Order order) internal orders;
@@ -237,6 +248,14 @@ contract StablecoinExchange is IStablecoinExchange {
                     }
                 }
             }
+
+            // Track escrowed balances for this pair
+            PairBalance storage pb = pairBalances[key];
+            if (isBid) {
+                pb.quoteEscrowed += escrowAmount;
+            } else {
+                pb.baseEscrowed += escrowAmount;
+            }
         }
         orderId = pendingOrderId + 1;
         ++pendingOrderId;
@@ -310,6 +329,14 @@ contract StablecoinExchange is IStablecoinExchange {
                 // For asks, escrow base tokens
                 escrowAmount = order.remaining;
             }
+
+            // Decrement pair-level escrow tracking; revert explicitly if this would underflow
+            if (order.isBid) {
+                _decrementPairQuoteEscrow(order.bookKey, escrowAmount);
+            } else {
+                _decrementPairBaseEscrow(order.bookKey, escrowAmount);
+            }
+
             balances[order.maker][token] += escrowAmount;
 
             delete orders[orderId];
@@ -350,6 +377,14 @@ contract StablecoinExchange is IStablecoinExchange {
                 // For asks, escrow base tokens
                 escrowAmount = order.remaining;
             }
+
+            // Decrement pair-level escrow tracking; revert explicitly if this would underflow
+            if (order.isBid) {
+                _decrementPairQuoteEscrow(order.bookKey, escrowAmount);
+            } else {
+                _decrementPairBaseEscrow(order.bookKey, escrowAmount);
+            }
+
             balances[order.maker][token] += escrowAmount;
 
             delete orders[orderId];
@@ -505,15 +540,18 @@ contract StablecoinExchange is IStablecoinExchange {
 
         emit OrderFilled(orderId, order.maker, msg.sender, fillAmount, order.remaining > 0);
 
-        // Credit maker with appropriate tokens
+        // Adjust pair-level escrow balances and credit maker with appropriate tokens.
+        // Both sides use the same tick price and quote amount for a given fill.
+        uint32 price = tickToPrice(order.tick);
+        uint128 quoteAmount = (fillAmount * price) / PRICE_SCALE;
         if (isBid) {
             // Bid order: maker gets base tokens
             balances[order.maker][book.base] += fillAmount;
+            _decrementPairQuoteEscrow(order.bookKey, quoteAmount);
         } else {
             // Ask order: maker gets quote tokens
-            uint32 price = tickToPrice(order.tick);
-            uint128 quoteAmount = (fillAmount * price) / PRICE_SCALE;
             balances[order.maker][book.quote] += quoteAmount;
+            _decrementPairBaseEscrow(order.bookKey, fillAmount);
         }
 
         if (order.remaining == 0) {
@@ -573,6 +611,28 @@ contract StablecoinExchange is IStablecoinExchange {
             balances[user][token] = 0;
             uint128 remaining = amount - userBalance;
             ITIP20(token).transferFrom(user, address(this), remaining);
+        }
+    }
+
+    /// @notice Decrement quote escrow for a pair, reverting if this would violate the invariant
+    function _decrementPairQuoteEscrow(bytes32 key, uint128 quoteAmount) internal {
+        PairBalance storage pb = pairBalances[key];
+        if (pb.quoteEscrowed < quoteAmount) {
+            revert IStablecoinExchange.PairBalanceInvariant(key);
+        }
+        unchecked {
+            pb.quoteEscrowed -= quoteAmount;
+        }
+    }
+
+    /// @notice Decrement base escrow for a pair, reverting if this would violate the invariant
+    function _decrementPairBaseEscrow(bytes32 key, uint128 baseAmount) internal {
+        PairBalance storage pb = pairBalances[key];
+        if (pb.baseEscrowed < baseAmount) {
+            revert IStablecoinExchange.PairBalanceInvariant(key);
+        }
+        unchecked {
+            pb.baseEscrowed -= baseAmount;
         }
     }
 

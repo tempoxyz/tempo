@@ -30,6 +30,14 @@ Places are delayed until the end of each block, and are processed in an `execute
 
 The contract maintains per‑user, per‑token internal balances. Order placement escrows funds from these balances (or transfers any shortfall from the user). When an order fills, the maker is credited internally with the counter‑asset at the order’s tick price. Users can withdraw available balances at any time.
 
+**Implementation note (non‑normative):**  
+
+The current implementation additionally tracks aggregate escrowed base and quote balances per trading pair, and decrements them on fills and cancellations. 
+
+This per‑pair accounting is a technically redundant runtime invariant check that enforces that each pair never spends more base or quote token than it has escrowed, providing an additional guardrail to keep pairs isolated.
+
+If this invariant is violated, the implementation reverts with `PairBalanceInvariant(key)` . If the implementation is bug-free, this error should never be triggered. This invariant check is not required by the spec, and may be removed in the future.
+
 #### Delayed order placement
 
 Orders placed during a block are recorded as pending and are not visible on the active book until the block ends. A system transaction calls `executeBlock()` to insert all pending orders into their ticks in creation order within the block. This reduces mid‑block MEV surfaces and JIT strategies.

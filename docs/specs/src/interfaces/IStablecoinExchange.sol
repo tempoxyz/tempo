@@ -44,6 +44,7 @@ interface IStablecoinExchange {
 
     // Errors
     error Unauthorized();
+    error PairBalanceInvariant(bytes32 pairKey);
     error PairDoesNotExist();
     error PairAlreadyExists();
     error OrderDoesNotExist();
