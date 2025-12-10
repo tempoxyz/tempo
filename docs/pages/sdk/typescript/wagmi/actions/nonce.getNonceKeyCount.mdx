@@ -1,8 +1,8 @@
 import ReadAccountParameters from '../../../../../snippets/read-account-parameters.mdx'
 
-# `dex.getBalance`
+# `nonce.getNonceKeyCount`
 
-Gets a user's token balance on the Stablecoin DEX.  
+Gets the number of active nonce keys for an account. Active nonce keys are keys that have been used at least once.
 
 ## Usage
 
@@ -12,13 +12,12 @@ Gets a user's token balance on the Stablecoin DEX.
 import { Actions } from 'tempo.ts/wagmi'
 import { config } from './wagmi.config'
 
-const balance = await Actions.dex.getBalance(config, {
+const count = await Actions.nonce.getNonceKeyCount(config, {
   account: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
-  token: '0x20c0000000000000000000000000000000000001',
 })
 
-console.log('DEX balance:', balance)
-// @log: DEX balance: 1000000000n
+console.log('Active nonce keys:', count)
+// @log: Active nonce keys: 3n
 ```
 
 ```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
@@ -34,18 +33,15 @@ console.log('DEX balance:', balance)
 type ReturnType = bigint
 ```
 
+The number of active nonce keys for the account.
+
 ## Parameters
 
 ### account
 
 - **Type:** `Address`
 
-Address of the account.
-
-### token
-
-- **Type:** `Address`
-
-Address of the token.
+Account address to get the active nonce key count for.
 
 <ReadAccountParameters wagmi />
+
