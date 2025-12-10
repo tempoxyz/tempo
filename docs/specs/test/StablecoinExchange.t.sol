@@ -79,7 +79,7 @@ contract StablecoinExchangeTest is BaseTest {
     }
 
     function test_PriceToTick(uint32 price) public view {
-        vm.assume(price >= exchange.MIN_PRICE() && price <= exchange.MAX_PRICE());
+        price = uint32(bound(price, exchange.MIN_PRICE(), exchange.MAX_PRICE()));
         int16 tick = exchange.priceToTick(price);
         int16 expectedTick = int16(int32(price) - int32(exchange.PRICE_SCALE()));
         assertEq(tick, expectedTick);
@@ -323,9 +323,8 @@ contract StablecoinExchangeTest is BaseTest {
         }
 
         vm.prank(alice);
-        uint128 amountIn = exchange.swapExactAmountOut(
-            address(pathUSD), address(token1), amountOut, maxAmountIn
-        );
+        uint128 amountIn =
+            exchange.swapExactAmountOut(address(pathUSD), address(token1), amountOut, maxAmountIn);
 
         assertEq(amountIn, expectedAmountIn);
         assertEq(token1.balanceOf(alice), initialBaseBalance + amountOut);
@@ -569,9 +568,8 @@ contract StablecoinExchangeTest is BaseTest {
             expectedError = abi.encodeWithSelector(IStablecoinExchange.InvalidTick.selector);
         } else if (amount < MIN_ORDER_AMOUNT) {
             shouldRevert = true;
-            expectedError = abi.encodeWithSelector(
-                IStablecoinExchange.BelowMinimumOrderSize.selector, amount
-            );
+            expectedError =
+                abi.encodeWithSelector(IStablecoinExchange.BelowMinimumOrderSize.selector, amount);
         }
 
         // Execute and verify
@@ -978,9 +976,8 @@ contract StablecoinExchangeTest is BaseTest {
             exchange.executeBlock();
 
             // Should route token1 -> pathUSD -> token2
-            uint128 amountOut = exchange.quoteSwapExactAmountIn(
-                address(token1), address(token2), MIN_ORDER_AMOUNT
-            );
+            uint128 amountOut =
+                exchange.quoteSwapExactAmountIn(address(token1), address(token2), MIN_ORDER_AMOUNT);
             assertGt(amountOut, 0);
         } else {
             // Reverse direction

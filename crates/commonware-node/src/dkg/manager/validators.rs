@@ -9,7 +9,9 @@ use commonware_utils::set::{Ordered, OrderedAssociated};
 use eyre::{OptionExt as _, WrapErr as _};
 use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
 use reth_node_builder::{Block as _, ConfigureEvm as _};
-use reth_provider::{BlockReader as _, StateProviderFactory as _};
+use reth_provider::{
+    BlockHashReader, BlockIdReader as _, BlockReader as _, BlockSource, StateProviderFactory as _,
+};
 use tempo_node::TempoFullNode;
 use tempo_precompiles::{
     storage::{StorageContext, evm::EvmPrecompileStorageProvider},
@@ -38,19 +40,42 @@ pub(super) async fn read_from_contract(
     epoch_length: u64,
 ) -> eyre::Result<OrderedAssociated<PublicKey, DecodedValidator>> {
     let last_height = last_height_before_epoch(for_epoch, epoch_length);
+
+    // Try mapping the block height to a hash tracked by reth.
+    //
+    // First check the canonical chain, then fallback to pending block state.
+    //
+    // Necessary because the DKG and application actors process finalized block concurrently.
+    let block_hash = if let Some(hash) = node
+        .provider
+        .block_hash(last_height)
+        .wrap_err_with(|| format!("failed reading block hash at height `{last_height}`"))?
+    {
+        hash
+    } else if let Some(pending) = node
+        .provider
+        .pending_block_num_hash()
+        .wrap_err("failed reading pending block state")?
+        && pending.number == last_height
+    {
+        pending.hash
+    } else {
+        return Err(eyre::eyre!("block not found at height `{last_height}`"));
+    };
+
     let block = node
         .provider
-        .block_by_number(last_height)
+        .find_block_by_hash(block_hash, BlockSource::Any)
         .map_err(Into::<eyre::Report>::into)
         .and_then(|maybe| maybe.ok_or_eyre("execution layer returned empty block"))
-        .wrap_err_with(|| format!("failed reading block at height `{last_height}`"))?;
+        .wrap_err_with(|| format!("failed reading block with hash `{block_hash}`"))?;
 
     let db = State::builder()
         .with_database(StateProviderDatabase::new(
             node.provider
-                .state_by_block_id(last_height.into())
+                .state_by_block_hash(block_hash)
                 .wrap_err_with(|| {
-                    format!("failed to get state from node provider for height `{last_height}`")
+                    format!("failed to get state from node provider for hash `{block_hash}`")
                 })?,
         ))
         .build();

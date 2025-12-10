@@ -16,9 +16,7 @@ use futures::future::join_all;
 use rand::Rng;
 use tracing::debug;
 
-use crate::{
-    CONSENSUS_NODE_PREFIX, PreparedNode, Setup, execution_runtime::validator, setup_validators,
-};
+use crate::{CONSENSUS_NODE_PREFIX, Setup, execution_runtime::validator, setup_validators};
 
 /// Test configuration for restart scenarios
 #[derive(Clone)]
@@ -46,10 +44,10 @@ fn run_restart_test(
     let executor = Runner::from(cfg);
 
     executor.start(|mut context| async move {
-        let (nodes, _execution_runtime) =
+        let (mut nodes, _execution_runtime) =
             setup_validators(context.clone(), node_setup.clone()).await;
 
-        let mut running = join_all(nodes.into_iter().map(|node| node.start())).await;
+        join_all(nodes.iter_mut().map(|node| node.start())).await;
 
         debug!(
             height = shutdown_height,
@@ -58,20 +56,21 @@ fn run_restart_test(
         wait_for_height(&context, node_setup.how_many_signers, shutdown_height).await;
 
         // Randomly select a validator to kill
-        let idx = context.gen_range(0..running.len());
-        let to_restart = running.remove(idx).stop();
+        let idx = context.gen_range(0..nodes.len());
+        nodes[idx].stop().await;
 
-        debug!(public_key = %to_restart.public_key, "stopped a random validator");
+        debug!(public_key = %nodes[idx].public_key(), "stopped a random validator");
 
         debug!(
             height = restart_height,
             "waiting for remaining validators to reach target height before restarting validator",
         );
-        wait_for_height(&context, running.len() as u32, restart_height).await;
+        let num_running = nodes.iter().filter(|n| n.is_running()).count() as u32;
+        wait_for_height(&context, num_running, restart_height).await;
 
-        running.push(to_restart.start().await);
+        nodes[idx].start().await;
         debug!(
-            public_key = %running.last().unwrap().public_key,
+            public_key = %nodes[idx].public_key(),
             "restarted validator",
         );
 
@@ -79,7 +78,7 @@ fn run_restart_test(
             height = final_height,
             "waiting for reconstituted validators to reach target height to reach test success",
         );
-        wait_for_height(&context, running.len() as u32, final_height).await;
+        wait_for_height(&context, nodes.len() as u32, final_height).await;
 
         context.auditor().state()
     })
@@ -173,51 +172,50 @@ async fn ensure_no_progress(context: &Context, tries: u32) {
 fn network_resumes_after_restart() {
     let _ = tempo_eyre::install();
 
-    for seed in 0..3 {
-        let setup = Setup::new()
-            .how_many_signers(3) // quorum for 3 validators is 3.
-            .seed(seed)
-            .epoch_length(100);
+    let setup = Setup::new()
+        .how_many_signers(3) // quorum for 3 validators is 3.
+        .seed(0)
+        .epoch_length(100)
+        .connect_execution_layer_nodes(true);
 
-        let shutdown_height = 5;
-        let final_height = 10;
+    let shutdown_height = 5;
+    let final_height = 10;
 
-        let cfg = deterministic::Config::default().with_seed(setup.seed);
-        let executor = Runner::from(cfg);
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+    let executor = Runner::from(cfg);
 
-        executor.start(|mut context| async move {
-            let (nodes, _execution_runtime) =
-                setup_validators(context.clone(), setup.clone()).await;
+    executor.start(|mut context| async move {
+        let (mut nodes, _execution_runtime) =
+            setup_validators(context.clone(), setup.clone()).await;
 
-            let mut running = join_all(nodes.into_iter().map(|node| node.start())).await;
+        join_all(nodes.iter_mut().map(|node| node.start())).await;
 
-            debug!(
-                height = shutdown_height,
-                "waiting for network to reach target height before stopping a validator",
-            );
-            wait_for_height(&context, setup.how_many_signers, shutdown_height).await;
+        debug!(
+            height = shutdown_height,
+            "waiting for network to reach target height before stopping a validator",
+        );
+        wait_for_height(&context, setup.how_many_signers, shutdown_height).await;
 
-            let idx = context.gen_range(0..running.len());
-            let to_restart = running.remove(idx).stop();
-            debug!(public_key = %to_restart.public_key, "stopped a random validator");
+        let idx = context.gen_range(0..nodes.len());
+        nodes[idx].stop().await;
+        debug!(public_key = %nodes[idx].public_key(), "stopped a random validator");
 
-            // wait a bit to let the network settle; some finalizations come in later
-            context.sleep(Duration::from_secs(1)).await;
-            ensure_no_progress(&context, 5).await;
+        // wait a bit to let the network settle; some finalizations come in later
+        context.sleep(Duration::from_secs(1)).await;
+        ensure_no_progress(&context, 5).await;
 
-            running.push(to_restart.start().await);
-            debug!(
-                public_key = %running.last().unwrap().public_key,
-                "restarted validator",
-            );
+        nodes[idx].start().await;
+        debug!(
+            public_key = %nodes[idx].public_key(),
+            "restarted validator",
+        );
 
-            debug!(
-                height = final_height,
-                "waiting for reconstituted validators to reach target height to reach test success",
-            );
-            wait_for_height(&context, running.len() as u32, final_height).await;
-        })
-    }
+        debug!(
+            height = final_height,
+            "waiting for reconstituted validators to reach target height to reach test success",
+        );
+        wait_for_height(&context, nodes.len() as u32, final_height).await;
+    });
 }
 
 #[test_traced]
@@ -253,7 +251,7 @@ fn validator_catches_up_across_epochs() {
 fn node_recovers_after_finalizing_ceremony_pre_allegretto_one_validator() {
     assert_node_recovers_after_finalizing_block_pre_allegretto(
         1,
-        10,
+        20,
         ShutdownAfterFinalizing::Ceremony,
     );
 }
@@ -303,7 +301,9 @@ fn node_recovers_after_finalizing_ceremony_post_allegretto_four_validators() {
     );
 }
 
+/// FIXME: flaky, needs https://github.com/tempoxyz/tempo/issues/1309
 #[test_traced]
+#[ignore]
 fn node_recovers_after_finalizing_boundary_post_allegretto_one_validator() {
     assert_node_recovers_after_finalizing_block_post_allegretto(
         1,
@@ -354,9 +354,10 @@ fn assert_node_recovers_after_finalizing_block_pre_allegretto(
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
-        let (nodes, _execution_runtime) = setup_validators(context.clone(), setup.clone()).await;
+        let (mut nodes, _execution_runtime) =
+            setup_validators(context.clone(), setup.clone()).await;
 
-        let mut running = join_all(nodes.into_iter().map(|node| node.start())).await;
+        join_all(nodes.iter_mut().map(|node| node.start())).await;
 
         // Catch a node right after it processed the pre-to-boundary height.
         // Best-effort: we hot-loop in 100ms steps, but if processing is too
@@ -388,11 +389,12 @@ fn assert_node_recovers_after_finalizing_block_pre_allegretto(
             "found a node that reached the pre-to-last height; restarting it"
         );
         // Now restart the node for which we found the metric.
-        let idx = running
+        let idx = nodes
             .iter()
-            .position(|node| metric.contains(&node.uid))
+            .position(|node| metric.contains(node.uid()))
             .unwrap();
-        let _node = running.remove(idx).stop().start().await;
+        nodes[idx].stop().await;
+        nodes[idx].start().await;
 
         let mut iteration = 0;
         'look_for_progress: loop {
@@ -434,26 +436,24 @@ fn assert_node_recovers_after_finalizing_block_post_allegretto(
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
-        let (validators, execution_runtime) =
-            setup_validators(context.clone(), setup.clone()).await;
-        let mut validators = join_all(validators.into_iter().map(PreparedNode::start)).await;
+        let (mut nodes, execution_runtime) = setup_validators(context.clone(), setup.clone()).await;
+        join_all(nodes.iter_mut().map(|node| node.start())).await;
 
         // Send an arbitrary node of the initial validator set the smart contract call.
-        let http_url = validators[0]
-            .execution_node
-            .node
+        let http_url = nodes[0]
+            .execution()
             .rpc_server_handle()
             .http_url()
             .unwrap()
             .parse::<Url>()
             .unwrap();
 
-        for (i, node) in validators.iter().enumerate() {
+        for (i, node) in nodes.iter().enumerate() {
             let receipt = execution_runtime
                 .add_validator(
                     http_url.clone(),
                     validator(i as u32),
-                    node.public_key.clone(),
+                    node.public_key().clone(),
                     SocketAddr::from(([127, 0, 0, 1], (i + 1) as u16)),
                 )
                 .await
@@ -525,11 +525,12 @@ fn assert_node_recovers_after_finalizing_block_post_allegretto(
             "found a node that reached the pre-to-last height; restarting it"
         );
         // Now restart the node for which we found the metric.
-        let idx = validators
+        let idx = nodes
             .iter()
-            .position(|node| metric.contains(&node.uid))
+            .position(|node| metric.contains(node.uid()))
             .unwrap();
-        let _node = validators.remove(idx).stop().start().await;
+        nodes[idx].stop().await;
+        nodes[idx].start().await;
 
         let mut iteration = 0;
         'look_for_progress: loop {

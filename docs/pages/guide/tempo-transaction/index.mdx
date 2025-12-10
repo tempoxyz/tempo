@@ -1,13 +1,82 @@
+import LucideCoins from '~icons/lucide/coins'
+import LucideShieldCheck from '~icons/lucide/shield-check'
+import LucideLayers from '~icons/lucide/layers'
+import LucideKey from '~icons/lucide/key'
+import LucideZap from '~icons/lucide/zap'
+import LucideCircleHelp from '~icons/lucide/circle-help'
+import LucideClock from '~icons/lucide/clock'
+import * as Card from "../../../components/Card.tsx"
+
 import TempoTxProperties from '../../../snippets/tempo-tx-properties.mdx'
 
-# Use Tempo Transactions
+## Use Tempo Transactions
 
-Tempo Transactions are the recommended way to use Tempo's payment-optimized architecture. They provide the following features:
-* [Configurable fee tokens](#configurable-fee-tokens): Specify the fee token for the transaction, enabling fee payment in any stablecoin.
-* [Fee sponsorship](#fee-sponsorship): Sponsor the gas for a transaction, enabling feeless transaction UX for your users.
-* [Batching](#batch-calls): Batch multiple transactions together, enabling higher throughput and simpler wallet management by skipping multiple confirmation screens, and saving on cost.
-* [Concurrent transactions](#concurrent-transactions): Enable higher throughput and simpler wallet management using parallelizable nonces.
-* [Scheduled transactions](#scheduled-transactions): Schedule transactions, enabling you to specify a time window in which the transaction can be executed.
+Tempo Transactions are a new [EIP-2718](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-2718.md) transaction type, exclusively available on Tempo.
+
+<Card.Notice
+  icon={LucideCircleHelp}
+  title="SDKs Support."
+  inline
+>
+  <p>
+      Transaction [SDKs](#integration-guides) are available for TypeScript, Rust, Go, and Foundry.
+  </p>
+</Card.Notice>
+
+If you're integrating with Tempo, we **strongly recommend** using Tempo Transactions, and not regular Ethereum transactions. Learn more about the benefits below, or follow the guide on issuance [here](/guide/issuance).
+
+<Card.Container>
+  <Card.Link
+    description="Pay transaction fees with any USD-denominated TIP-20 token via automatic Fee AMM conversion."
+    href="#configurable-fee-tokens"
+    icon={LucideCoins}
+    title="Configurable Fee Tokens"
+  />
+  <Card.Link
+    description="Sponsor gas fees for users, enabling feeless transaction experiences in your application."
+    href="#fee-sponsorship"
+    icon={LucideShieldCheck}
+    title="Fee Sponsorship"
+  />
+  <Card.Link
+    description="Batch multiple transactions together for higher throughput and simpler wallet management."
+    href="#batch-calls"
+    icon={LucideLayers}
+    title="Batch Calls"
+  />
+  <Card.Link
+    description="Delegate transaction signing capabilities to specific keys with customizable permissions."
+    href="#access-keys"
+    icon={LucideKey}
+    title="Access Keys"
+  />
+  <Card.Link
+    description="Execute transactions in parallel using independent nonces for improved throughput."
+    href="#concurrent-transactions"
+    icon={LucideZap}
+    title="Concurrent Transactions"
+  />
+  <Card.Link
+    description="Schedule transactions to execute within a specific time window for automated payments."
+    href="#scheduled-transactions"
+    icon={LucideClock}
+    title="Scheduled Transactions"
+  />
+</Card.Container>
+
+## Integration Guides
+
+Integrating Tempo Transactions is easy and can be done quickly by a developer in multiple languages. See below for quick links to some of our guides.
+
+|Language|Source|Integration Time|
+|--------|--------|--------|
+| **TypeScript**   | [tempoxyz/tempo-ts](/sdk/typescript)                            | < 1 hour         |
+| **Rust**         | [tempo-alloy](/sdk/rust)              | < 1 hour         |
+| **Golang**       | [tempo-go](https://github.com/tempoxyz/tempo-go)                                | < 1 hour         |
+| **Python**       | [pytempo](https://github.com/tempoxyz/pytempo)                                | < 1 hour         |
+| **Other Languages** | Reach out to us! Specification is [here](/protocol/transactions/spec-tempo-transaction) and easy to build against.                                                                  | 1-3 days         |
+
+If you are an EVM smart contract developer, see the [Tempo extension for Foundry](/sdk/foundry).
 
 
 ## Properties

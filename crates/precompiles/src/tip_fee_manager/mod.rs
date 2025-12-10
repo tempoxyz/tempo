@@ -13,7 +13,7 @@ use crate::{
     storage::{Handler, Mapping, StorableType, StorageKey},
     tip_fee_manager::amm::{Pool, compute_amount_out},
     tip20::{
-        ITIP20, TIP20Token, address_to_token_id_unchecked, is_tip20, token_id_to_address,
+        ITIP20, TIP20Token, address_to_token_id_unchecked, is_tip20_prefix, token_id_to_address,
         validate_usd_currency,
     },
 };
@@ -106,7 +106,7 @@ impl TipFeeManager {
         call: IFeeManager::setValidatorTokenCall,
         beneficiary: Address,
     ) -> Result<()> {
-        if !is_tip20(call.token) {
+        if !is_tip20_prefix(call.token) {
             return Err(FeeManagerError::invalid_token().into());
         }
 
@@ -139,7 +139,7 @@ impl TipFeeManager {
         sender: Address,
         call: IFeeManager::setUserTokenCall,
     ) -> Result<()> {
-        if !is_tip20(call.token) {
+        if !is_tip20_prefix(call.token) {
             return Err(FeeManagerError::invalid_token().into());
         }
 
@@ -186,7 +186,7 @@ impl TipFeeManager {
             self.reserve_liquidity(user_token, validator_token, max_amount)?;
         }
 
-        let mut tip20_token = TIP20Token::from_address(user_token);
+        let mut tip20_token = TIP20Token::from_address(user_token)?;
 
         // Ensure that user and FeeManager are authorized to interact with the token
         tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
@@ -209,7 +209,7 @@ impl TipFeeManager {
         beneficiary: Address,
     ) -> Result<()> {
         // Refund unused tokens to user
-        let mut tip20_token = TIP20Token::from_address(fee_token);
+        let mut tip20_token = TIP20Token::from_address(fee_token)?;
         tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
 
         // Execute fee swap and track collected fees
@@ -293,7 +293,7 @@ impl TipFeeManager {
             }
 
             let validator_token = self.get_validator_token(validator)?;
-            let mut token = TIP20Token::from_address(validator_token);
+            let mut token = TIP20Token::from_address(validator_token)?;
 
             // If FeeManager or validator are blacklisted, we are not transferring any fees
             if token.is_transfer_authorized(self.address, beneficiary)? {
@@ -433,7 +433,7 @@ impl TipFeeManager {
             }
         }
 
-        let tip20_token = TIP20Token::from_address(token);
+        let tip20_token = TIP20Token::from_address(token)?;
         let token_balance = tip20_token.balance_of(ITIP20::balanceOfCall {
             account: call.sender,
         })?;
@@ -456,7 +456,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageContext, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
-        tip20::{ITIP20, is_tip20, token_id_to_address},
+        tip20::{ITIP20, token_id_to_address},
     };
 
     #[test]
@@ -615,10 +615,10 @@ mod tests {
             // Valid TIP20 address
             let token_id = rand::random::<u64>();
             let token = token_id_to_address(token_id);
-            assert!(is_tip20(token));
+            assert!(is_tip20_prefix(token));
 
             // Random address is not TIP20
-            assert!(!is_tip20(random));
+            assert!(!is_tip20_prefix(random));
 
             Ok(())
         })

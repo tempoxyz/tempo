@@ -142,6 +142,7 @@ mod tests {
         tip20_rewards_registry::TIP20RewardsRegistry,
     };
     use alloy::primitives::Address;
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ITIP20;
 
     #[test]
@@ -293,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_finalize_streams() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let admin = Address::random();
         let unauthorized = Address::random();
         StorageContext::enter(&mut storage, || {

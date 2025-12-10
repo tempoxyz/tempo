@@ -11,10 +11,11 @@ curl -L https://tempo.xyz/install | bash
 ## Usage
 
 ```bash
-tempoup                    # Install latest release
-tempoup --version v1.0.0   # Install specific version
-tempoup --update           # Update tempoup itself
-tempoup --help             # Show help
+tempoup                  # Install latest release
+tempoup -i v1.0.0        # Install specific version
+tempoup -v               # Print installer version
+tempoup --update         # Update tempoup itself
+tempoup --help           # Show help
 ```
 
 ## Supported Platforms

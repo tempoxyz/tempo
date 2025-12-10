@@ -12,6 +12,8 @@
 | [`amm.useWatchFeeSwap`](/sdk/typescript/wagmi/hooks/amm.useWatchFeeSwap) | Hook for watching fee swap events |
 | [`amm.useWatchMint`](/sdk/typescript/wagmi/hooks/amm.useWatchMint) | Hook for watching liquidity mint events |
 | [`amm.useWatchRebalanceSwap`](/sdk/typescript/wagmi/hooks/amm.useWatchRebalanceSwap) | Hook for watching rebalance swap events |
+| **Faucet Hooks** | |
+| [`faucet.useFund`](/sdk/typescript/wagmi/hooks/faucet.useFund) | Hook for funding an account with testnet tokens |
 | **Fee Hooks** | |
 | [`fee.useSetUserToken`](/sdk/typescript/wagmi/hooks/fee.useSetUserToken) | Hook for setting the user's default fee token preference |
 | [`fee.useUserToken`](/sdk/typescript/wagmi/hooks/fee.useUserToken) | Hook for getting the user's default fee token preference |
@@ -27,9 +29,17 @@
 | [`policy.useWatchBlacklistUpdated`](#TODO) | Hook for watching blacklist update events |
 | [`policy.useWatchCreate`](#TODO) | Hook for watching policy creation events |
 | [`policy.useWatchWhitelistUpdated`](#TODO) | Hook for watching whitelist update events |
-| **Stablecoin Exchange Hooks** | |
-| [`dex.useBalance`](/sdk/typescript/wagmi/hooks/dex.useBalance) | Hook for getting a user's token balance on the Stablecoin Exchange |
-| [`dex.useBuy`](/sdk/typescript/wagmi/hooks/dex.useBuy) | Hook for buying a specific amount of tokens from the Stablecoin Exchange orderbook |
+| **Reward Hooks** | |
+| [`reward.useClaim`](/sdk/typescript/wagmi/hooks/reward.useClaim) | Hook for claiming accumulated rewards |
+| [`reward.useGetTotalPerSecond`](/sdk/typescript/wagmi/hooks/reward.useGetTotalPerSecond) | Hook for getting the total reward per second rate for all active streams |
+| [`reward.useSetRecipient`](/sdk/typescript/wagmi/hooks/reward.useSetRecipient) | Hook for setting or changing the reward recipient for a token holder |
+| [`reward.useStart`](/sdk/typescript/wagmi/hooks/reward.useStart) | Hook for starting a new reward stream that distributes tokens to opted-in holders |
+| [`reward.useUserRewardInfo`](/sdk/typescript/wagmi/hooks/reward.useUserRewardInfo) | Hook for getting reward information for a specific account |
+| [`reward.useWatchRewardRecipientSet`](/sdk/typescript/wagmi/hooks/reward.useWatchRewardRecipientSet) | Hook for watching reward recipient set events |
+| [`reward.useWatchRewardScheduled`](/sdk/typescript/wagmi/hooks/reward.useWatchRewardScheduled) | Hook for watching reward scheduled events |
+| **Stablecoin DEX Hooks** | |
+| [`dex.useBalance`](/sdk/typescript/wagmi/hooks/dex.useBalance) | Hook for getting a user's token balance on the Stablecoin DEX |
+| [`dex.useBuy`](/sdk/typescript/wagmi/hooks/dex.useBuy) | Hook for buying a specific amount of tokens from the Stablecoin DEX orderbook |
 | [`dex.useBuyQuote`](/sdk/typescript/wagmi/hooks/dex.useBuyQuote) | Hook for getting the quote for buying a specific amount of tokens |
 | [`dex.useCancel`](/sdk/typescript/wagmi/hooks/dex.useCancel) | Hook for canceling an order from the orderbook |
 | [`dex.useCreatePair`](/sdk/typescript/wagmi/hooks/dex.useCreatePair) | Hook for creating a new trading pair on the DEX |
@@ -37,7 +47,7 @@
 | [`dex.usePlace`](/sdk/typescript/wagmi/hooks/dex.usePlace) | Hook for placing a limit order on the orderbook |
 | [`dex.usePlaceFlip`](/sdk/typescript/wagmi/hooks/dex.usePlaceFlip) | Hook for placing a flip order that automatically flips when filled |
 | [`dex.useTickLevel`](/sdk/typescript/wagmi/hooks/dex.useTickLevel) | Hook for getting the price level information at a specific tick |
-| [`dex.useSell`](/sdk/typescript/wagmi/hooks/dex.useSell) | Hook for selling a specific amount of tokens from the Stablecoin Exchange orderbook |
+| [`dex.useSell`](/sdk/typescript/wagmi/hooks/dex.useSell) | Hook for selling a specific amount of tokens from the Stablecoin DEX orderbook |
 | [`dex.useSellQuote`](/sdk/typescript/wagmi/hooks/dex.useSellQuote) | Hook for getting the quote for selling a specific amount of tokens |
 | [`dex.useWatchFlipOrderPlaced`](/sdk/typescript/wagmi/hooks/dex.useWatchFlipOrderPlaced) | Hook for watching flip order placed events |
 | [`dex.useWatchOrderCancelled`](/sdk/typescript/wagmi/hooks/dex.useWatchOrderCancelled) | Hook for watching order cancelled events |

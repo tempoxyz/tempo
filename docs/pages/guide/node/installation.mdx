@@ -5,15 +5,11 @@ We provide three different installation paths - installing a pre-built binary, b
 ## Pre-built Binary
 
 ```bash /dev/null/download.sh#L1-4
-# Download latest version
-# e.g.
-# curl -L https://testnet-assets.tempoxyz.dev/binaries/v<version>/tempo-v<version>-<arch>-<platform>.tar.gz -o tempo.tar.gz
-curl -L https://testnet-assets.tempoxyz.dev/binaries/v0.7.0/tempo-v0.7.0-x86_64-unknown-linux-gnu.tar.gz -o tempo.tar.gz
-tar -xzvf tempo.tar.gz
-chmod +x tempo
-sudo mv tempo /usr/local/bin/tempo
+curl -L https://tempo.xyz/install | bash
 tempo --version
 ```
+
+To update Tempo in the future, simply run `tempoup`.
 
 ## Build from Source
 
@@ -33,9 +29,9 @@ You can find the latest tagged version of Tempo at [the Tempo GHCR package](http
 
 ```bash /dev/null/docker.sh#L1-4
 # Pull the latest Docker image
-docker pull ghcr.io/tempoxyz/tempo:0.7.0
+docker pull ghcr.io/tempoxyz/tempo:0.7.2
 
 # Run the Docker container
-docker run -d --name tempo ghcr.io/tempoxyz/tempo:0.7.0 --version
+docker run -d --name tempo ghcr.io/tempoxyz/tempo:0.7.2 --version
 docker logs tempo
 ```

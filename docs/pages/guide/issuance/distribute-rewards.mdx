@@ -42,11 +42,11 @@ Token holders must opt in to receive rewards by setting their reward recipient a
 ```tsx twoslash [OptInToRewards.tsx]
 import React from 'react'
 import { Hooks } from 'tempo.ts/wagmi'
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 
 // @noErrors
 export function OptInToRewards() {
-  const { address } = useAccount()
+  const { address } = useConnection()
   const tokenAddress = '0x...' // Your token address
 
   const setRecipient = Hooks.reward.useSetRecipientSync()
@@ -56,7 +56,6 @@ export function OptInToRewards() {
     setRecipient.mutate({ // [!code hl]
       recipient: address, // [!code hl]
       token: tokenAddress, // [!code hl]
-      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
     }) // [!code hl]
   } // [!code hl]
 
@@ -117,7 +116,6 @@ export function StartReward() {
     start.mutate({ // [!code hl]
       amount: parseUnits('50', metadata.decimals), // [!code hl]
       token: tokenAddress, // [!code hl]
-      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
     }) // [!code hl]
   } // [!code hl]
 
@@ -171,7 +169,6 @@ export function ClaimReward() {
   const handleClaim = () => { // [!code hl]
     claim.mutate({ // [!code hl]
       token: tokenAddress, // [!code hl]
-      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
     }) // [!code hl]
   } // [!code hl]
 
@@ -261,13 +258,13 @@ function WatchOptIns() {
 <Card.Container>
   <Card.Link
     description="See the TIP-20 rewards spec"
-    href="/documentation/protocol/tip20-rewards/spec"
+    href="/protocol/tip20-rewards/spec"
     icon={LucideFileText}
     title="TIP-20 Rewards Spec"
   />
   <Card.Link
     description="Read an overview of TIP-20 rewards"
-    href="/documentation/protocol/tip20-rewards/overview"
+    href="/protocol/tip20-rewards/overview"
     icon={LucideBookOpen}
     title="TIP-20 Rewards Overview"
   />

@@ -39,7 +39,7 @@ use tempo_precompiles::{
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{StorageContext, evm::EvmPrecompileStorageProvider},
     tip_fee_manager::TipFeeManager,
-    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
+    tip20::{self, ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
 };
 use tempo_primitives::transaction::{
     PrimitiveSignature, RecoveredTempoAuthorization, SignatureType, TempoSignature,
@@ -886,6 +886,7 @@ where
             })
         } else {
             journal.checkpoint_commit();
+            evm.collected_fee = gas_balance_spending;
 
             Ok(())
         }
@@ -897,7 +898,7 @@ where
         exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
     ) -> Result<(), Self::Error> {
         // Call collectFeePostTx on TipFeeManager precompile
-        let context = evm.ctx();
+        let context = &mut evm.inner.ctx;
         let tx = context.tx();
         let basefee = context.block().basefee() as u128;
         let effective_gas_price = tx.effective_gas_price(basefee);
@@ -910,6 +911,18 @@ where
             context.block.blob_gasprice().unwrap_or_default(),
         )? - tx.value
             - actual_spending;
+
+        // Skip `collectFeePostTx` call if the initial fee collected in
+        // `collectFeePreTx` was zero, but spending is non-zero.
+        //
+        // This is normally unreachable unless the gas price was increased mid-transaction,
+        // which is only possible when there are some EVM customizations involved (e.g Foundry EVM).
+        if context.cfg.disable_fee_charge
+            && evm.collected_fee.is_zero()
+            && !actual_spending.is_zero()
+        {
+            return Ok(());
+        }
 
         // Create storage provider and fee manager
         let (journal, block) = (&mut context.journaled_state, &context.block);
@@ -1233,6 +1246,7 @@ where
     Ok(batch_gas)
 }
 
+/// IMPORTANT: the caller must ensure `token` is a valid TIP20Token address.
 pub fn get_token_balance<JOURNAL>(
     journal: &mut JOURNAL,
     token: Address,
@@ -1241,8 +1255,11 @@ pub fn get_token_balance<JOURNAL>(
 where
     JOURNAL: JournalTr,
 {
+    // Address has already been validated
+    let token_id = tip20::address_to_token_id_unchecked(token);
+
     journal.load_account(token)?;
-    let balance_slot = TIP20Token::from_address(token).balances.at(sender).slot();
+    let balance_slot = TIP20Token::new(token_id).balances.at(sender).slot();
     let balance = journal.sload(token, balance_slot)?.data;
 
     Ok(balance)
@@ -1340,7 +1357,7 @@ mod tests {
         state::Account,
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
+    use tempo_precompiles::{DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS};
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
         let db = CacheDB::new(EmptyDB::default());
@@ -1355,7 +1372,7 @@ mod tests {
         let expected_balance = U256::random();
 
         // Set up initial balance
-        let balance_slot = TIP20Token::from_address(token).balances.at(account).slot();
+        let balance_slot = TIP20Token::from_address(token)?.balances.at(account).slot();
         journal.load_account(token)?;
         journal
             .sstore(token, balance_slot, expected_balance)
@@ -1401,7 +1418,7 @@ mod tests {
             user,
             TempoHardfork::default(),
         )?;
-        assert_eq!(validator_fee_token, fee_token);
+        assert_eq!(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, fee_token);
 
         // Set user token
         let user_slot = TipFeeManager::new().user_tokens.at(user).slot();
@@ -1417,7 +1434,7 @@ mod tests {
             &ctx.tx,
             validator,
             user,
-            TempoHardfork::Allegretto,
+            TempoHardfork::default(),
         )?;
         assert_eq!(user_fee_token, fee_token);
 
@@ -1427,7 +1444,7 @@ mod tests {
             &ctx.tx,
             validator,
             user,
-            TempoHardfork::Allegretto,
+            TempoHardfork::default(),
         )?;
         assert_eq!(tx_fee_token, fee_token);
 

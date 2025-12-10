@@ -1,12 +1,43 @@
----
-layout: landing
-showLogo: false
-content:
-  horizontalPadding: 0
-  width: 1180px
-  verticalPadding: 0
----
+import LucideRocket from '~icons/lucide/rocket'
+import LucideBookOpen from '~icons/lucide/book-open'
+import LucideUsers from '~icons/lucide/users'
+import LucideMail from '~icons/lucide/mail'
+import * as Card from "../components/Card.tsx"
+import { Callout } from 'vocs/components'
 
-import { HomePage } from '../components/HomePage.tsx'
+# Tempo [Documentation, integration guides, and protocol specifications]
 
-<HomePage />
+## Welcome to Tempo! 
+
+Tempo is a general-purpose blockchain optimized for payments. Tempo is designed to be a low-cost, high-throughput blockchain with user and developer features that we believe should be core to a modern payment system.
+
+Tempo was designed in close collaboration with an exceptional group of [design partners](https://tempo.xyz/ecosystem) who are helping to validate the system against real payment workloads.
+
+Whether you're new to stablecoins, ready to start building, or looking for partners to help you integrate, these docs will help you get started with Tempo.
+
+<Card.Container>
+  <Card.Link
+    description="Start here to understand what they are, why they matter, and the real-world payment use cases they enable."
+    href="/learn"
+    icon={LucideBookOpen}
+    title="Learn About Stablecoins"
+  />
+  <Card.Link
+    description="Connect to the testnet, get faucet funds, and start building with our SDKs and guides."
+    href="/quickstart/integrate-tempo"
+    icon={LucideRocket}
+    title="Integrate Tempo Testnet"
+  />
+  <Card.Link
+    description="Work with our ecosystem partners for stablecoin issuance, custody, compliance, orchestration, and infrastructure."
+    href="/learn/partners"
+    icon={LucideUsers}
+    title="Build With Partners"
+  />
+  <Card.Link
+    description="Connect with the Tempo team to discuss partnerships, integration opportunities, or opportunities to collaborate."
+    href="mailto:partners@tempo.xyz"
+    icon={LucideMail}
+    title="Get In Touch"
+  />
+</Card.Container>

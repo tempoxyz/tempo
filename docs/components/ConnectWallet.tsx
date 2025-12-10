@@ -69,6 +69,7 @@ export function ConnectWallet({
                   decimals: 18,
                   symbol: 'USD',
                 },
+                blockExplorerUrls: ['https://explore.tempo.xyz'],
               },
             })
           }

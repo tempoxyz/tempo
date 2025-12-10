@@ -2,7 +2,7 @@ import WriteParameters from '../../../../../snippets/write-parameters.mdx'
 
 # `token.grantRoles`
 
-Grants one or more roles to an address. Requires the admin role for each role being granted. [Learn more about token roles](/documentation/protocol/tip403/spec)
+Grants a role to an address. Requires the admin role for the role being granted. [Learn more about token roles](/protocol/tip403/spec)
 
 ## Usage
 
@@ -13,13 +13,13 @@ import { Actions } from 'tempo.ts/wagmi'
 import { config } from './wagmi.config'
 
 const { receipt, value } = await Actions.token.grantRolesSync(config, {
-  account: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
-  roles: ['issuer', 'pause'],
+  role: 'issuer',
   token: '0x20c0000000000000000000000000000000000000',
+  to: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
 })
 
-console.log('Roles granted:', value.length)
-// @log: Roles granted: 2
+console.log('Role granted:', value[0].hasRole)
+// @log: Role granted: true
 ```
 
 ```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
@@ -42,9 +42,9 @@ import { waitForTransactionReceipt } from 'wagmi/actions'
 import { config } from './wagmi.config'
 
 const hash = await Actions.token.grantRoles(config, {
-  account: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
-  roles: ['issuer', 'pause'],
+  role: 'issuer',
   token: '0x20c0000000000000000000000000000000000000',
+  to: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
 })
 const receipt = await waitForTransactionReceipt(config, { hash })
 
@@ -59,38 +59,37 @@ type ReturnType = {
   receipt: TransactionReceipt
   /** Array of role membership update events */
   value: readonly {
-    /** Address that received the role */
-    account: Address
-    /** Whether the role was granted (true) or revoked (false) */
-    hasRole: boolean
     /** Role identifier */
     role: Hex
+    /** Address that received the role */
+    account: Address
     /** Address that granted the role */
     sender: Address
+    /** Whether the role was granted (true) or revoked (false) */
+    hasRole: boolean
   }[]
 }
 ```
 
 ## Parameters
 
-### account
+### role
+
+- **Type:** `"defaultAdmin" | "pause" | "unpause" | "issuer" | "burnBlocked"`
+
+Role to grant.
+
+### token
+
+- **Type:** `Address | bigint`
+
+Address or ID of the TIP20 token.
+
+### to
 
 - **Type:** `Address`
 
-Address to grant roles to.
-
-### roles
-
-- **Type:** `TokenRole[] | Hex[]`
-
-Array of roles to grant. Can be standard role names (`'defaultAdmin'`, `'pause'`, `'unpause'`, `'issuer'`, `'burnBlocked'`) or custom role hashes.
-
-### token (optional)
-
-- **Type:** `Address | bigint`
-- **Default:** `Addresses.pathUsd` (Token ID 0)
-
-Address or ID of the TIP-20 token.
+Address to grant the role to.
 
 <WriteParameters wagmi />
 

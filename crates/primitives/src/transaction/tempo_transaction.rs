@@ -271,10 +271,10 @@ impl TempoTransaction {
             mem::size_of::<TxKind>() + mem::size_of::<U256>() + call.input.len()
         }).sum::<usize>() + // calls
         self.access_list.size() + // access_list
-        mem::size_of::<u64>() + // nonce_key
+        mem::size_of::<U256>() + // nonce_key
         mem::size_of::<u64>() + // nonce
         mem::size_of::<Option<Signature>>() + // fee_payer_signature
-        mem::size_of::<u64>() + // valid_before
+        mem::size_of::<Option<u64>>() + // valid_before
         mem::size_of::<Option<u64>>() + // valid_after
         // key_authorization (optional)
         self.key_authorization.as_ref().map(|k| k.size()).unwrap_or(mem::size_of::<Option<KeyAuthorization>>()) +
@@ -1939,5 +1939,61 @@ mod tests {
         );
         assert_eq!(call.value, U256::ONE);
         assert_eq!(call.input, bytes!("0x1234"));
+    }
+
+    #[test]
+    fn test_size_accounts_for_all_fields() {
+        // This test ensures the size() function correctly accounts for all field types.
+        // If you add a new field to TempoTransaction or change a field's type,
+        // you must update both this test AND the size() function.
+        //
+        // The test calculates expected size by summing the size of each field type,
+        // which should match what size() computes for a minimal transaction.
+
+        let dummy_call = Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+
+        let tx = TempoTransaction {
+            chain_id: 1,
+            fee_token: None,
+            max_priority_fee_per_gas: 0,
+            max_fee_per_gas: 0,
+            gas_limit: 0,
+            calls: vec![dummy_call],
+            access_list: Default::default(),
+            nonce_key: U256::ZERO,
+            nonce: 0,
+            fee_payer_signature: None,
+            valid_before: None,
+            valid_after: None,
+            key_authorization: None,
+            tempo_authorization_list: vec![],
+        };
+
+        // Calculate expected size by manually summing field sizes
+        // This acts as a specification that the size() function must match
+        let expected_size = mem::size_of::<ChainId>() + // chain_id: u64
+            mem::size_of::<Option<Address>>() + // fee_token: Option<Address>
+            mem::size_of::<u128>() + // max_priority_fee_per_gas: u128
+            mem::size_of::<u128>() + // max_fee_per_gas: u128
+            mem::size_of::<u64>() + // gas_limit: u64
+            (mem::size_of::<TxKind>() + mem::size_of::<U256>()) + // calls: one call with empty input
+            tx.access_list.size() + // access_list: AccessList
+            mem::size_of::<U256>() + // nonce_key: U256
+            mem::size_of::<u64>() + // nonce: u64
+            mem::size_of::<Option<Signature>>() + // fee_payer_signature: Option<Signature>
+            mem::size_of::<Option<u64>>() + // valid_before: Option<u64>
+            mem::size_of::<Option<u64>>() + // valid_after: Option<u64>
+            mem::size_of::<Option<KeyAuthorization>>(); // key_authorization + empty tempo_authorization_list
+
+        assert_eq!(
+            tx.size(),
+            expected_size,
+            "size() calculation doesn't match expected field sizes. \
+             If you added/changed a field in TempoTransaction, update both size() and this test."
+        );
     }
 }

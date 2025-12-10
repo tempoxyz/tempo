@@ -8,7 +8,7 @@ import LucideFileText from '~icons/lucide/file-text'
 
 Configure your stablecoin's permissions, supply limits, and compliance policies after deployment. This guide covers granting roles to manage token operations, setting supply caps, configuring transfer policies, and controlling token transfers through pause/unpause functionality.
 
-TIP-20 tokens use a role-based access control system that allows you to delegate different administrative functions to different addresses. For detailed information about the role system, see the [TIP-20 specification](/documentation/protocol/tip20/spec#role-based-access-control).
+TIP-20 tokens use a role-based access control system that allows you to delegate different administrative functions to different addresses. For detailed information about the role system, see the [TIP-20 specification](/protocol/tip20/spec#role-based-access-control).
 
 ## Steps
 
@@ -53,7 +53,6 @@ export function GrantRoles() {
       token: tokenAddress, // [!code hl]
       roles: ['issuer'], // [!code hl]
       to: treasuryAddress, // [!code hl]
-      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
     }) // [!code hl]
   } // [!code hl]
 
@@ -119,7 +118,6 @@ export function GrantRoles() {
       token: tokenAddress,
       roles: ['issuer'],
       to: treasuryAddress,
-      feeToken: '0x20c0000000000000000000000000000000000001',
     })
   }
 
@@ -207,7 +205,6 @@ export function RevokeRoles() {
       token: tokenAddress,
       roles: ['issuer'],
       to: treasuryAddress,
-      feeToken: '0x20c0000000000000000000000000000000000001',
     })
   }
 
@@ -232,7 +229,6 @@ export function RevokeRoles() {
       token: tokenAddress, // [!code ++]
       roles: ['issuer'], // [!code ++]
       from: treasuryAddress, // [!code ++]
-      feeToken: '0x20c0000000000000000000000000000000000001', // [!code ++]
     }) // [!code ++]
   } // [!code ++]
 
@@ -320,7 +316,6 @@ export function SetSupplyCap() {
     setSupplyCap.mutate({ // [!code hl]
       token: tokenAddress, // [!code hl]
       supplyCap: parseUnits('1000', metadata?.decimals || 6), // [!code hl]
-      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
     }) // [!code hl]
   } // [!code hl]
 
@@ -365,7 +360,7 @@ Transfer policies can be:
 - **Whitelist**: Only authorized addresses can send/receive
 - **Blacklist**: Blocked addresses cannot send/receive
 
-Learn more about configuring transfer policies in the [TIP-403 specification](/documentation/protocol/tip403/spec).
+Learn more about configuring transfer policies in the [TIP-403 specification](/protocol/tip403/spec).
 
 <Demo.Container name="Create and Link Transfer Policy" footerVariant="source" src="tempoxyz/tempo-ts/tree/main/examples/issuance">
   <Step.Connect stepNumber={1} />
@@ -400,7 +395,6 @@ export function CreateTokenPolicy() {
         '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb', // [!code hl]
       ], // [!code hl]
       type: 'blacklist', // [!code hl]
-      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
     }) // [!code hl]
   } // [!code hl]
 
@@ -411,7 +405,7 @@ export function CreateTokenPolicy() {
       type="button" // [!code hl]
     > {/* [!code hl] */}
       {createPolicy.isPending ? 'Creating...' : 'Create Policy'} {/* [!code hl] */}
-    </button> {/* [!code hl] */}
+    </button> // [!code hl]
   )
 }
 ```
@@ -431,7 +425,6 @@ export function LinkTokenPolicy() {
     await linkPolicy.mutateAsync({ // [!code hl]
       policyId, // [!code hl]
       token: tokenAddress, // [!code hl]
-      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
     }) // [!code hl]
   } // [!code hl]
 
@@ -442,7 +435,7 @@ export function LinkTokenPolicy() {
       type="button" // [!code hl]
     > {/* [!code hl] */}
       {linkPolicy.isPending ? 'Linking...' : 'Link Policy'} {/* [!code hl] */}
-    </button> {/* [!code hl] */}
+    </button> // [!code hl]
   )
 }
 ```
@@ -505,12 +498,10 @@ export function PauseUnpauseTransfers() {
     if (paused) { // [!code hl]
       unpause.mutate({ // [!code hl]
         token: tokenAddress, // [!code hl]
-        feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
       }) // [!code hl]
     } else { // [!code hl]
       pause.mutate({ // [!code hl]
         token: tokenAddress, // [!code hl]
-        feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
       }) // [!code hl]
     } // [!code hl]
   } // [!code hl]
@@ -524,7 +515,7 @@ export function PauseUnpauseTransfers() {
       type="button" // [!code hl]
     > {/* [!code hl] */}
       {isProcessing ? 'Processing...' : paused ? 'Unpause' : 'Pause'} {/* [!code hl] */}
-    </button> {/* [!code hl] */}
+    </button> // [!code hl]
   )
 }
 ```
@@ -558,7 +549,7 @@ The Burn Blocked role allows your team to burn tokens from blocked or frozen add
   <Step.CreateOrLoadToken stepNumber={3} />
   <Step.GrantTokenRoles stepNumber={4} roles={['issuer', 'burnBlocked']} />
   <Step.MintToken stepNumber={5} recipient={Demo.FAKE_RECIPIENT} />
-  <Step.CreateTokenPolicy stepNumber={6} waitForTransfer />
+  <Step.CreateTokenPolicy stepNumber={6} flowDependencies={['transferId']} />
   <Step.LinkTokenPolicy stepNumber={7} />
   <Step.BurnTokenBlocked stepNumber={8} last />
 </Demo.Container>
@@ -588,7 +579,6 @@ export function BurnBlocked() {
       token: tokenAddress, // [!code hl]
       from: blockedAddress, // [!code hl]
       amount: parseUnits('100', metadata.decimals), // [!code hl]
-      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
     }) // [!code hl]
   } // [!code hl]
 
@@ -599,7 +589,7 @@ export function BurnBlocked() {
       type="button" // [!code hl]
     > {/* [!code hl] */}
       {burnBlocked.isPending ? 'Burning...' : 'Burn Blocked Tokens'} {/* [!code hl] */}
-    </button> {/* [!code hl] */}
+    </button> // [!code hl]
   )
 }
 ```
@@ -631,7 +621,7 @@ Use different addresses for different roles to enhance security. For example, as
 
 ### Event Monitoring
 
-Monitor on-chain events for role changes, mints, burns, and administrative actions to maintain visibility into token operations and detect unauthorized activities.
+Monitor onchain events for role changes, mints, burns, and administrative actions to maintain visibility into token operations and detect unauthorized activities.
 
 ### Emergency Procedures
 
@@ -642,13 +632,13 @@ Ensure pause and unpause roles are assigned to trusted addresses and that your t
 <Card.Container>
   <Card.Link
     description="Learn about the role-based access control system and all available roles"
-    href="/documentation/protocol/tip20/spec#role-based-access-control"
+    href="/protocol/tip20/spec#role-based-access-control"
     icon={LucideShield}
     title="Role-Based Access Control"
   />
   <Card.Link
     description="Learn how to configure transfer policies for compliance requirements"
-    href="/documentation/protocol/tip403/spec"
+    href="/protocol/tip403/spec"
     icon={LucideFileText}
     title="Transfer Policies (TIP-403)"
   />

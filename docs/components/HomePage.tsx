@@ -23,7 +23,7 @@ export function HomePage() {
         </div>
         <div className="h-[24px]" />
         <div className="flex gap-[12px]">
-          <Button variant="inverted" render={<Link to="/guide" />}>
+          <Button variant="inverted" render={<Link to="/" />}>
             Start Building
           </Button>
           <Button variant="inverted" render={<Link to="/documentation" />}>

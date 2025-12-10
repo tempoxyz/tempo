@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn delegate_to_default_v2_rejected_pre_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         StorageContext::enter(&mut storage, || {
             // Pre-Moderato: delegateToDefault(bytes,bytes) should be rejected
             let mut registrar = TipAccountRegistrar::new();

@@ -66,7 +66,7 @@ export function GrantIssuerRole() {
       type="button" // [!code hl]
     > {/* [!code hl] */}
       {grant.isPending ? 'Granting...' : 'Grant Issuer Role'} {/* [!code hl] */}
-    </button> {/* [!code hl] */}
+    </button> // [!code hl]
   )
 }
 ```
@@ -107,13 +107,13 @@ Now that the issuer role is granted, you can mint tokens to any address.
 ```tsx twoslash [MintToken.tsx]
 import React from 'react'
 import { Hooks } from 'tempo.ts/wagmi'
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 import { parseUnits, pad, stringToHex } from 'viem'
 import { useQueryClient } from '@tanstack/react-query'
 
 // @noErrors
 export function MintToken() {
-  const { address } = useAccount()
+  const { address } = useConnection()
   const queryClient = useQueryClient()
   const tokenAddress = '0x...' // Your token address
   const [recipient, setRecipient] = React.useState<string>('')
@@ -272,13 +272,13 @@ To decrease supply, you can burn tokens from your own balance. Burning requires 
 ```tsx twoslash [BurnToken.tsx]
 import React from 'react'
 import { Hooks } from 'tempo.ts/wagmi'
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 import { parseUnits, pad, stringToHex } from 'viem'
 import { useQueryClient } from '@tanstack/react-query'
 
 // @noErrors
 export function BurnToken() {
-  const { address } = useAccount()
+  const { address } = useConnection()
   const queryClient = useQueryClient()
   const tokenAddress = '0x...' // Your token address
   const [memo, setMemo] = React.useState<string>('')
@@ -416,7 +416,7 @@ Assign the issuer role to dedicated treasury or minting addresses separate from 
 <Card.Container>
   <Card.Link
     description="Learn more about TIP-20 tokens on Tempo"
-    href="/documentation/protocol/tip20/overview"
+    href="/protocol/tip20/overview"
     icon={LucideCoins}
     title="TIP-20 Tokens"
   />

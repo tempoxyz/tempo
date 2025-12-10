@@ -44,10 +44,10 @@ The built-in Tempo testnet faucet funds accounts with `AlphaUSD`.
 ```tsx twoslash [AddFunds.ts]
 // @noErrors
 import { Hooks } from 'tempo.ts/wagmi'
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 
 function AddFunds() {
-  const { address } = useAccount()
+  const { address } = useConnection()
   const { mutate, isPending } = Hooks.faucet.useFundSync()
 
   return (
@@ -458,7 +458,7 @@ function SendPayment() {
   />
   <Card.Link
     description="Learn more about transactions on Tempo"
-    href="/documentation/protocol/transactions"
+    href="/protocol/transactions"
     icon={LucideSend}
     title="Transactions"
   />

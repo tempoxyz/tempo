@@ -1,11 +1,12 @@
 import { Tabs } from '../components/Tabs'
+import PublicTestnetSponsorTip from './public-testnet-sponsor-tip.mdx'
 
 ### Configurable Fee Tokens
 
-A fee token is a permissionless [TIP-20 token](/documentation/protocol/tip20/overview) that can be used to pay fees on Tempo. 
+A fee token is a permissionless [TIP-20 token](/protocol/tip20/overview) that can be used to pay fees on Tempo. 
 
 When a TIP-20 token is passed as the `fee_token` parameter in a transaction, 
-Tempo's [Fee AMM](/documentation/protocol/fees/spec-fee-amm) automatically facilitates conversion between the 
+Tempo's [Fee AMM](/protocol/fees/spec-fee-amm) automatically facilitates conversion between the 
 user's preferred fee token and the validator's preferred token. 
 
 <div className="-mt-2" />
@@ -230,6 +231,8 @@ over the transaction with a special "fee payer envelope" to commit to paying fee
 It is also possible to use a remote [Fee Payer Relay](/guide/payments/sponsor-user-fees#fee-payer-relay) instead of a local account.
 :::
 
+<PublicTestnetSponsorTip />
+
 :::info
 See a full guide on [sponsoring fees](/guide/payments/sponsor-user-fees).
 :::
@@ -446,7 +449,7 @@ transactions thereafter can be signed by the access key.
 </Tabs>
 
 :::info
-Learn more about [Access Keys](/documentation/protocol/transactions/spec-tempo-transaction#access-keys).
+Learn more about [Access Keys](/protocol/transactions/spec-tempo-transaction#access-keys).
 :::
 
 ### Concurrent Transactions

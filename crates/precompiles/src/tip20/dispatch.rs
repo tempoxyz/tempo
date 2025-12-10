@@ -257,21 +257,19 @@ impl Precompile for TIP20Token {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::{
         PATH_USD_ADDRESS,
-        storage::StorageContext,
+        storage::{StorageContext, hashmap::HashMapStorageProvider},
         test_util::setup_storage,
         tip20::{ISSUER_ROLE, PAUSE_ROLE, TIP20Token, UNPAUSE_ROLE, tests::initialize_path_usd},
     };
-
     use alloy::{
         primitives::{Bytes, U256},
         sol_types::{SolInterface, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{RolesAuthError, TIP20Error};
-
-    use super::*;
 
     #[test]
     fn test_function_selector_dispatch() -> eyre::Result<()> {
@@ -799,7 +797,6 @@ mod tests {
         use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
 
         let (mut storage, admin) = setup_storage();
-        storage.set_spec(TempoHardfork::Allegretto);
 
         StorageContext::enter(&mut storage, || {
             initialize_path_usd(admin).unwrap();
@@ -821,6 +818,113 @@ mod tests {
             );
 
             assert_full_coverage([itip20_unsupported, roles_unsupported]);
+        })
+    }
+
+    #[test]
+    fn test_fee_recipient_pre_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::random();
+
+        StorageContext::enter(&mut storage, || {
+            initialize_path_usd(admin)?;
+            let mut token = TIP20Token::new(1);
+            token.initialize(
+                "Test",
+                "TST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+                Address::from([0x11; 20]),
+            )?;
+
+            let call = ITIP20::feeRecipientCall {};
+            let calldata = call.abi_encode();
+            let result = token.call(&Bytes::from(calldata), admin);
+
+            assert!(matches!(
+                result,
+                Err(revm::precompile::PrecompileError::Other(ref msg)) if msg.contains("Unknown function selector")
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_fee_recipient_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let admin = Address::random();
+        let fee_recipient = Address::random();
+
+        StorageContext::enter(&mut storage, || {
+            initialize_path_usd(admin)?;
+            let mut token = TIP20Token::new(1);
+            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, fee_recipient)?;
+
+            let call = ITIP20::feeRecipientCall {};
+            let calldata = call.abi_encode();
+            let result = token.call(&Bytes::from(calldata), admin)?;
+
+            assert!(!result.reverted);
+            let recipient = ITIP20::feeRecipientCall::abi_decode_returns(&result.bytes)?;
+            assert_eq!(recipient, fee_recipient);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_fee_recipient_pre_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::random();
+
+        StorageContext::enter(&mut storage, || {
+            initialize_path_usd(admin)?;
+            let mut token = TIP20Token::new(1);
+            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, admin)?;
+
+            let call = ITIP20::setFeeRecipientCall {
+                newRecipient: Address::from([0x33; 20]),
+            };
+            let calldata = call.abi_encode();
+            let result = token.call(&Bytes::from(calldata), admin);
+
+            assert!(matches!(
+                result,
+                Err(revm::precompile::PrecompileError::Other(ref msg)) if msg.contains("Unknown function selector")
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_fee_recipient_post_allegretto() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let admin = Address::random();
+        let new_recipient = Address::random();
+
+        StorageContext::enter(&mut storage, || {
+            initialize_path_usd(admin)?;
+            let mut token = TIP20Token::new(1);
+            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, admin)?;
+
+            let call = ITIP20::setFeeRecipientCall {
+                newRecipient: new_recipient,
+            };
+            let calldata = call.abi_encode();
+            let result = token.call(&Bytes::from(calldata), admin)?;
+
+            assert!(!result.reverted);
+
+            let call = ITIP20::feeRecipientCall {};
+            let calldata = call.abi_encode();
+            let result = token.call(&Bytes::from(calldata), admin)?;
+
+            let recipient = ITIP20::feeRecipientCall::abi_decode_returns(&result.bytes)?;
+            assert_eq!(recipient, new_recipient);
+
+            Ok(())
         })
     }
 }

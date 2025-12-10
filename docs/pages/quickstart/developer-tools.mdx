@@ -1,0 +1,245 @@
+import LucideHammer from '~icons/lucide/hammer'
+import LucideBarChart from '~icons/lucide/bar-chart'
+import LucideWallet from '~icons/lucide/wallet'
+import LucideServer from '~icons/lucide/server'
+import LucideShield from '~icons/lucide/shield'
+import LucidePackage from '~icons/lucide/package'
+import LucideSearch from '~icons/lucide/search'
+import * as Card from "../../components/Card.tsx"
+
+# Developer Tools
+
+Integrating with Tempo is easy by leveraging services provided by our infrastructure partners. These partners take advantage of Tempo transactions, TIP-20 tokens, and more. Visit their documentation for more information on how to get started.
+
+<Card.Container>
+  <Card.Link
+    description="Query blockchain data with indexers, analytics platforms, and monitoring tools"
+    href="#data--analytics"
+    icon={LucideBarChart}
+    title="Data & Analytics"
+  />
+  <Card.Link
+    description="View transactions, blocks, accounts, and token activity on Tempo"
+    href="#block-explorers"
+    icon={LucideSearch}
+    title="Block Explorers"
+  />
+  <Card.Link
+    description="Integrate user-friendly wallet experiences directly into your application"
+    href="#embedded-wallets"
+    icon={LucideWallet}
+    title="Embedded Wallets"
+  />
+  <Card.Link
+    description="Build with account abstraction and programmable smart contract wallets"
+    href="#smart-contract-libraries"
+    icon={LucideWallet}
+    title="Smart Contract Libraries"
+  />
+  <Card.Link
+    description="Connect to Tempo with reliable RPC endpoints and managed node services"
+    href="#node-infrastructure"
+    icon={LucideServer}
+    title="Node Infrastructure"
+  />
+  <Card.Link
+    description="Build on Tempo with official SDKs for TypeScript, Go, Foundry, and Rust"
+    href="/sdk"
+    icon={LucidePackage}
+    title="Tempo SDKs"
+  />
+</Card.Container>
+
+<Card.Notice
+  icon={LucideHammer}
+  title="Are you building a developer product on Tempo?"
+  inline
+>
+  <p>Reach out to <a href="mailto:partners@tempo.xyz">get listed on this page</a>.</p>
+</Card.Notice>
+
+## Data & Analytics
+
+### Allium
+
+[Allium](https://www.allium.so) is an enterprise blockchain data platform that delivers real-time, analytics-ready datasets through a unified schema across chains. Developers can fetch wallet, token, and price data in milliseconds without managing infrastructure, decoding raw data, or inferring transactions—making it easy to focus on building Tempo applications.
+
+Get access to Tempo data through the [Allium App](https://app.allium.so/join), explore the full API in the [Allium docs](https://docs.allium.so/), and browse real examples of production apps built on Allium [here](https://docs.allium.so/api/developer/overview).
+
+### Artemis
+
+[Artemis](https://www.artemisanalytics.com/products/terminal) provides a unified analytics terminal for monitoring onchain activity across stablecoins, assets, and networks. Developers use Artemis to analyze flows, liquidity, token performance, and ecosystem-level trends through a clean, queryable interface.
+
+Tempo is already supported within Artemis, with a dedicated analytics page for [Tempo Testnet](https://app.artemisanalytics.com/asset/tempo).
+
+Artemis also maintains a cross-chain stablecoin dashboard covering major USD-pegged assets across numerous networks. Stablecoins launched on Tempo will appear in the [Stablecoins dashboard](https://app.artemisanalytics.com/stablecoins).
+
+### Chainlink
+
+[Chainlink](https://chain.link) is the industry-standard oracle platform powering the majority of DeFi and bringing capital markets onchain. The Chainlink stack provides the data, interoperability, and security needed for tokenized assets, stablecoins, payments, lending, and other advanced onchain use cases.
+
+Chainlink supports Tempo through:
+
+- **Cross-Chain Interoperability Protocol (CCIP):** A secure interoperability layer for sending messages and value across chains, enabling cross-chain user flows and multi-chain architectures.  
+Explore CCIP in the [Chainlink CCIP docs](https://docs.chain.link/ccip).
+- **Data Streams:** Chainlink Data Streams delivers low-latency market data offchain, which can be verified onchain. This pull-based design gives dApps on-demand access to high-frequency market data backed by decentralized, fault-tolerant, and transparent infrastructure—an improvement over traditional push-based oracles that update only at fixed intervals or price thresholds.  
+View the Chainlink Data Stream deployed on Tempo [here](https://explore.tempo.xyz/address/0x72790f9eB82db492a7DDb6d2af22A270Dcc3Db64?tab=contract).
+
+Developers can explore CCIP, Data Streams, and the full Chainlink platform through the [Chainlink Developer Docs](https://docs.chain.link/).
+
+### Goldsky
+
+[Goldsky](https://goldsky.com) makes it easy to access real-time Tempo data with minimal maintenance. Goldsky offers two core products for indexing and streaming onchain data:
+
+- **[Subgraphs](https://docs.goldsky.com/subgraphs/):** A fully backwards-compatible subgraph indexing solution that handles reorgs, RPC failures, and scaling automatically, with improved reliability and performance over traditional subgraph hosts.
+- **[Mirror](https://docs.goldsky.com/mirror/):** A simple way to replicate subgraph or chain-level streams directly into your own databases or message queues, powering flexible front-end and back-end data pipelines.
+
+Start indexing Tempo [here](https://goldsky.com/chains/tempo).
+
+### Range
+
+[Range](https://www.range.org) powers the Stablecoin Explorer, which provides a unified view of major stablecoins across 100+ chains. Tempo is fully supported, allowing developers and users to trace stablecoin flows in a way traditional explorers cannot.
+
+Range stands out through:
+- **Complete cross-chain visibility**, showing the entire lifecycle of a transfer in one place  
+- **Enriched context**, including bridge routes, verified entities, and risk signals  
+- **Built-in compliance checks** via global sanctions lists  
+
+Explore Tempo activity in the [Stablecoin Explorer](https://explorer.money/transactions?sn=tempo).
+
+
+## Block Explorers
+
+### Tempo Explorer
+
+Tempo's official block explorer is available at [explore.tempo.xyz](https://explore.tempo.xyz). View transactions, blocks, accounts, and token activity on the Tempo network.
+
+### Blockscout
+
+Blockscout provides an open-source block explorer with support for Tempo’s network. Developers can use Blockscout to inspect Tempo transactions, contracts, and account activity.
+
+Visit the [Tempo Blockscout Explorer](https://scout.tempo.xyz).
+
+### Tenderly
+
+[Tenderly](https://tenderly.co) delivers full-stack observability, debugging, and simulation tools for Tempo smart contract development and monitoring. With Tenderly you get real-time error tracking, EVM-level tracing, and off-chain transaction simulation — enabling you to catch bugs, analyze reverts, and inspect gas usage before transactions go live.
+
+You can enable Tempo in the [Tenderly Dashboard](https://dashboard.tenderly.co/) to use its tracing, alerts, and debugging tools with no infrastructure to manage.
+
+## Embedded Wallets
+
+### Crossmint
+
+[Crossmint](https://www.crossmint.com) is an all-in-one platform, with unified APIs for [wallets](https://docs.crossmint.com/wallets/), [stablecoin orchestration](https://docs.crossmint.com/stablecoin-orchestration/), [checkout flows](https://docs.crossmint.com/payments), and [tokenization](https://docs.crossmint.com/minting), giving developers a single interface for everything from payments to asset management on Tempo.
+
+Crossmint delivers a gasless, seed-phrase-free UX backed by bank-grade security and compliance, along with no-code dashboards for managing programs across your team.
+
+Set up a project in the [Crossmint console](https://crossmint.com/console) and explore the [Solution Guide](https://docs.crossmint.com/solutions/overview#fintech) tailored for payment use-cases.
+
+### Dynamic
+
+[Dynamic](https://dynamic.xyz) combines authentication, smart wallets, and key management into a flexible SDK for Tempo developers. Teams can onboard users with familiar login methods and provision Tempo-compatible wallets through Dynamic’s secure infrastructure.
+
+Enable Tempo testnet in the [Dynamic dashboard](https://app.dynamic.xyz/dashboard/chains-and-networks), and create an account [here](https://www.dynamic.xyz/get-started) to start integrating Dynamic into your app.
+
+### Para
+
+[Para](https://getpara.com) is a comprehensive wallet and authentication suite for fintech and crypto applications. It provides flexible login methods, secure MPC-backed wallets, fast authentication, and infrastructure for automating onchain activity. Para is adding Tempo chain support so developers can easily build Tempo-enabled wallets and payment flows.
+
+Get started by signing up through the [Para Dev Portal](https://developer.getpara.com/) and following the quickstart in the [Para docs](https://docs.getpara.com/v2/introduction/welcome).
+
+### Privy
+
+[Privy](https://www.privy.io) makes it easy to onboard users with familiar login methods while giving each user a secure, self-custodial wallet behind the scenes. Developers can integrate authentication and embedded wallets in minutes, enabling smooth Tempo-native experiences without exposing users to seed phrases.
+
+Get started by enabling Tempo support in the [Privy dashboard](https://dashboard.privy.io) and following the setup guides in the [Privy docs](https://docs.privy.io/basics/get-started/).
+
+### thirdweb
+
+[thirdweb](https://thirdweb.com) provides a full-stack developer platform for building modern onchain applications. Developers can create wallets, deploy tokens, use blockchain-native AI tools, and integrate native internet payments—all with built-in support for Tempo. Access the Tempo Testnet via the [thirdweb dashboard](https://thirdweb.com/tempo-testnet) and explore tooling in the [Thirdweb developer docs](https://portal.thirdweb.com).
+
+Try features live in the [thirdweb Playground](https://playground.thirdweb.com) and create an account by signing up [here](https://thirdweb.com/login).
+
+### Turnkey
+
+[Turnkey](https://www.turnkey.com) provides programmable key management and non-custodial wallet infrastructure for applications that need granular signing policies and automated transaction flows. With Turnkey, developers can securely sign Tempo transactions, automate wallet operations, and build custom logic around how keys are used.
+
+Turnkey also supports sponsor-style workflows, enabling gasless or subsidized transaction flows through configurable signing policies.
+
+[Create your Turnkey account](https://app.turnkey.com/dashboard) and follow the [Turnkey Embedded Wallet Kit guide](https://docs.turnkey.com/sdks/react/getting-started) to integrate embedded wallets into your Tempo app.
+
+### Utila
+
+[Utila](https://utila.io) provides secure MPC wallet infrastructure and asset-management tooling for teams building with stablecoins and digital assets. Developers can use Utila to manage Tempo-based payments and treasury operations across multiple wallets and blockchains, all within a single policy-driven platform. Utila’s MPC technology reduces counterparty risk, while its configurable approval engine gives teams granular control over how funds are moved.
+
+[Learn more](https://utila.io/product/payments/) about how Utila supports stablecoin operations on Tempo, and [request a demo](https://utila.io/request-a-demo/) if you're interested in secure MPC infrastructure.
+
+## Smart Contract Libraries
+
+### Safe *(coming soon)*
+
+[Safe](https://safe.global) provides a modular smart account framework used across leading Web3 applications and institutions. With Safe, developers can build Tempo applications that take advantage of multi-sig controls, programmable permissions, session keys, and automated transaction policies. 
+
+Safe integration for Tempo is coming soon. Stay tuned for updates as support becomes available.
+
+### ZeroDev
+
+[ZeroDev](https://zerodev.app) provides a powerful smart account platform for Tempo, supporting both ERC-4337 and EIP-7702. Developers can onboard users with social logins, enable gas sponsorship, and automate transactions while taking advantage of ZeroDev’s chain-abstracted workflows. Its modular wallet stack also allows teams to build customized features such as custom transaction policies and tailored approval logic.
+
+Create a project in the [ZeroDev dashboard](https://dashboard.zerodev.app) and follow the [SDK quickstart](https://docs.zerodev.app/sdk/getting-started/quickstart) to integrate smart accounts into your Tempo application.
+
+## Node Infrastructure
+
+### Alchemy
+
+With [Alchemy](https://alchemy.com), build the fastest and most reliable Tempo applications, powered by industry-leading latency, uptime, and elastic throughput. Alchemy’s global RPC infrastructure supports everything from stablecoins to tokenization and large-scale consumer apps.
+
+Sign up through the [Alchemy dashboard](https://dashboard.alchemy.com) and visit the [Alchemy docs](https://www.alchemy.com/docs/node#tldr) to start building.
+
+### Blockdaemon
+
+[Blockdaemon](https://app.blockdaemon.com/) provides institutional-grade node and API infrastructure, along with staking and MPC wallet services. Their globally distributed platform supports enterprise-scale, production workloads with strong reliability and compliance guarantees.
+
+Sign up through the [Blockdaemon Developer Dashboard](https://app.blockdaemon.com/) and deploy a Tempo node by navigating to **Nodes & RPC → Deploy a Node**.
+
+### Conduit
+
+[Conduit](https://conduit.xyz) provides high-performance RPC infrastructure for Tempo Testnet. Developers can create API keys and access Tempo Testnet endpoints through the [Conduit app](https://app.conduit.xyz). 
+
+View the Tempo Testnet RPC endpoint in the [Conduit Hub](https://hub.conduit.xyz/tempo-testnet) and learn more in the [Conduit RPC documentation](https://docs.conduit.xyz/rpc-nodes/overview).
+
+### QuickNode
+
+[QuickNode](https://quicknode.com) is the enterprise-grade development platform for building, scaling, and launching onchain applications with speed and reliability. Their globally optimized RPC network makes it easy to run high-performance Tempo workloads from day one.
+
+Create an account in the [QuickNode dashboard](https://dashboard.quicknode.com/) and follow the [QuickStart guide](https://www.quicknode.com/docs/) to create your Tempo RPC endpoint.
+
+## Security & Compliance
+
+### Blockaid
+
+[Blockaid](https://blockaid.io) provides real-time security infrastructure for Web3 applications. Its transaction scanning and threat detection systems identify malicious activity before users sign transactions, improving safety across wallets and interfaces.
+
+Learn how Blockaid’s transaction scanning improves security by visiting their [overview page](https://www.blockaid.io/transaction-security), and reach out to their team [here](https://www.blockaid.io/contact) to get started.
+
+### Chainalysis
+
+[Chainalysis](https://www.chainalysis.com) delivers industry-leading on-chain intelligence, compliance, and security infrastructure. Through Hexagate, Chainalysis supports Tempo with real-time monitoring, anomaly detection, and threat insights to help developers and platforms better understand and manage on-chain risk as the ecosystem grows.
+
+Discover how Hexagate supports Tempo [here](https://www.hexagate.com), or request a dedicated walkthrough from the Chainalysis team through their [demo form](https://www.hexagate.com/request-demo).
+
+## Issuance
+### Brale
+
+[Brale](https://brale.xyz) makes it easy to issue, move, and manage stablecoins across chains. Developers can create their own stablecoin or work with existing issued assets, using Brale’s APIs to power on/off-ramps, automate payouts, and move stablecoins across ecosystems.
+
+Brale provides two complementary APIs:
+
+- [**Stablecoin Movement & Account Management:**](https://docs.brale.xyz/#stablecoin-movement--account-management-apibralexyz) a secure, authenticated API for orchestrating stablecoin workflows, including issuing assets, transferring funds across accounts or chains, linking financial institutions, and managing custody.
+- [**Stablecoin Market Data:**](https://docs.brale.xyz/#stablecoin-market-data-databralexyz) a public, read-only API offering token metadata, stablecoin definitions, and price feeds.
+
+With support for minting, redeeming, swapping stablecoins, and leveraging them for payouts or treasury operations, Brale gives fintechs, exchanges, and payment platforms the infrastructure to build stablecoin-enabled products on Tempo.
+
+Brale also offers a [**$0 Business plan**](https://brale.xyz/pricing) that allows teams to mint, redeem, and custody popular stablecoins at no monthly cost, making it simple to get started with Brale’s APIs before scaling.
+
+[Create your stablecoin today](https://app.brale.xyz/buy/signup/).

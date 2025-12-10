@@ -1,0 +1,43 @@
+---
+mipd: true
+---
+
+import * as Demo from '../../components/guides/Demo.tsx'
+import { Faucet } from '../../components/Faucet.tsx'
+import { ConnectWallet } from '../../components/ConnectWallet.tsx'
+
+## Connect to the Network
+
+You can connect with the Tempo Testnet like you would with any other EVM chain.
+
+### Connect using a Browser Wallet
+
+Click on your browser wallet below to automatically connect it to the Tempo Testnet.
+
+<ConnectWallet />
+
+:::warning
+Note that on some wallets, you might see an unusually high "balance". This is because, historically, blockchain wallets have always assumed that a blockchain has a "native gas token". On Tempo, there is no native gas token, and so the value shown is a placeholder. See [EVM Differences](/quickstart/evm-compatibility#handling-eth-balance-checks) for more information on this quirk.
+:::
+
+### Connect via CLI
+
+To connect via CLI, we recommend using [`cast`](https://getfoundry.sh/cast/overview/), which is a command-line tool for interacting with Ethereum networks. To install cast, you can read more in the [Foundry SDK docs](/sdk/foundry#get-started-with-foundry).
+
+```bash /dev/null/monitor.sh#L1-11
+# Check block height (should be steadily increasing)
+cast block-number --rpc-url https://rpc.testnet.tempo.xyz
+```
+
+### Direct Connection Details
+
+If you're manually connecting to Tempo Testnet, you can use the following details:
+
+| **Property** | **Value** |
+|-------------------|-------|
+| **Network Name** | Tempo Testnet (Andantino) |
+| **Currency** | `USD` |
+| **Chain ID** | `42429` |
+| **HTTP URL** | `https://rpc.testnet.tempo.xyz` |
+| **WebSocket URL** | `wss://rpc.testnet.tempo.xyz` |
+| **Block Explorer** | [`https://explore.tempo.xyz`](https://explore.tempo.xyz) |

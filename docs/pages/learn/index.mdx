@@ -1,0 +1,73 @@
+import LucideDollarSign from '~icons/lucide/dollar-sign'
+import LucideInfo from '~icons/lucide/info'
+import LucideSend from '~icons/lucide/send'
+import LucideGlobe from '~icons/lucide/globe'
+import LucideWallet from '~icons/lucide/wallet'
+import LucideLandmark from '~icons/lucide/landmark'
+import LucideActivity from '~icons/lucide/activity'
+import LucideBot from '~icons/lucide/bot'
+import * as Card from "../../components/Card.tsx"
+  
+# Learn [Notes on stablecoin use cases and Tempo's architecture]
+
+Tempo is a general-purpose blockchain optimized for payments. Tempo is designed to be a low-cost, high-throughput blockchain with user and developer features that we believe should be core to a modern payment system.
+
+Tempo was designed in close collaboration with an exceptional group of [design partners](https://tempo.xyz/ecosystem) who are helping to validate the system against real payment workloads. Here, we have written about what stablecoins are and how Tempo is designed from the ground up for the use cases they enable.
+
+<Card.Container>
+  <Card.Link
+    description="Learn what stablecoins are, how they work, and the real-world use cases they enable"
+    href="/learn/stablecoins"
+    icon={LucideDollarSign}
+    title="How Stablecoins Work"
+  />
+  <Card.Link
+    description="Learn about what makes Tempo optimized for stablecoin payments at scale"
+    href="/learn/tempo"
+    icon={LucideInfo}
+    title="Tempo Overview"
+  />
+</Card.Container>
+
+### Stablecoin use cases
+
+Stablecoins enable a wide range of payment and financial use cases across industries:
+
+<Card.Container>
+  <Card.Link
+    description="Enable fast, cheap, and predictable cross-border money transfers for individuals and businesses"
+    href="/learn/use-cases/remittances"
+    icon={LucideSend}
+    title="Remittances"
+  />
+  <Card.Link
+    description="Deliver instant, low-cost payouts to employees and contractors anywhere in the world"
+    href="/learn/use-cases/global-payouts"
+    icon={LucideGlobe}
+    title="Global Payouts"
+  />
+  <Card.Link
+    description="Let platforms and marketplaces embed seamless payment flows directly into their applications"
+    href="/learn/use-cases/embedded-finance"
+    icon={LucideWallet}
+    title="Embedded Finance"
+  />
+  <Card.Link
+    description="Move treasury liquidity instantly across borders with real-time visibility into global cash positions"
+    href="/learn/use-cases/tokenized-deposits"
+    icon={LucideLandmark}
+    title="Tokenized Deposits"
+  />
+  <Card.Link
+    description="Enable true pay-per-use pricing with sub-cent payments for APIs, content, and IoT services"
+    href="/learn/use-cases/microtransactions"
+    icon={LucideActivity}
+    title="Microtransactions"
+  />
+  <Card.Link
+    description="Power autonomous agents with programmable payments for goods, services, and digital resources"
+    href="/learn/use-cases/agentic-commerce"
+    icon={LucideBot}
+    title="Agentic Commerce"
+  />
+</Card.Container>

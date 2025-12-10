@@ -41,9 +41,9 @@ Add liquidity to your token's fee pool:
 // @noErrors
 import { Hooks } from 'tempo.ts/wagmi'
 import { parseUnits } from 'viem'
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 
-const { address } = useAccount()
+const { address } = useConnection()
 const yourToken = '0x...' // Your issued token address
 const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD on testnet
 
@@ -116,12 +116,12 @@ Your users can send payments using your issued stablecoin as the fee token:
 ```tsx twoslash [PayWithIssuedToken.tsx]
 import React from 'react'
 import { Hooks } from 'tempo.ts/wagmi'
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 import { parseUnits, pad, stringToHex, isAddress } from 'viem'
 
 // @noErrors
 export function PayWithIssuedToken() {
-  const { address } = useAccount()
+  const { address } = useConnection()
   const [recipient, setRecipient] = React.useState<string>('')
   const [memo, setMemo] = React.useState<string>('')
 
@@ -273,14 +273,14 @@ Users can set your stablecoin as their default fee token at the account level, o
 
 ## How It Works
 
-When users pay transaction fees with your stablecoin, Tempo's fee system automatically handles the conversion if validators prefer a different token. The [Fee AMM](/documentation/protocol/fees/spec-fee-amm) ensures seamless fee payments across all supported stablecoins.
+When users pay transaction fees with your stablecoin, Tempo's fee system automatically handles the conversion if validators prefer a different token. The [Fee AMM](/protocol/fees/spec-fee-amm) ensures seamless fee payments across all supported stablecoins.
 
 Users can select your stablecoin as their fee token through:
 - **Account-level preference**: Set as default for all transactions
 - **Transaction-level preference**: Specify for individual transactions
 - **Automatic selection**: When directly interacting with your token contract
 
-Learn more about [how users pay fees in different stablecoins](/guide/payments/pay-fees-in-any-stablecoin) and the complete [fee token preference hierarchy](/documentation/protocol/fees/spec-fee#fee-token-preferences).
+Learn more about [how users pay fees in different stablecoins](/guide/payments/pay-fees-in-any-stablecoin) and the complete [fee token preference hierarchy](/protocol/fees/spec-fee#fee-token-preferences).
 
 ## Benefits
 
@@ -323,7 +323,7 @@ Before promoting fee payments with your token, thoroughly test the flow on testn
   />
   <Card.Link
     description="Complete fee token specification"
-    href="/documentation/protocol/fees/spec-fee"
+    href="/protocol/fees/spec-fee"
     icon={LucideFileText}
     title="Fee Tokens"
   />

@@ -6,7 +6,7 @@ import { EmbedPasskeys, SignInButtons } from '../../../components/guides/EmbedPa
 
 # Embed Passkey Accounts
 
-Create a domain-bound passkey account on Tempo using WebAuthn signatures for secure, passwordless authentication with [Tempo transactions](/documentation/protocol/transactions/spec-tempo-transaction).
+Create a domain-bound passkey account on Tempo using WebAuthn signatures for secure, passwordless authentication with [Tempo transactions](/protocol/transactions/spec-tempo-transaction).
 
 Passkeys enable users to authenticate with biometrics (fingerprint, Face ID, Touch ID) they already use for other apps. Keys are stored in the device's secure enclave and sync across devices via iCloud Keychain or Google Password Manager.
 
@@ -37,7 +37,7 @@ By the end of this guide, you will be able to embed passkey accounts into your a
 
 ### Set up Wagmi
 
-Ensure that you have set up your project with Wagmi by following the [guide](/guide/sdks/typescript#wagmi-setup).
+Ensure that you have set up your project with Wagmi by following the [guide](/sdk/typescript#wagmi-setup).
 
 ### Configure the WebAuthn Connector
 
@@ -169,10 +169,10 @@ After the user has signed in, we can display the account information and a sign 
 
 ```tsx twoslash [Example.tsx]
 // @noErrors
-import { useAccount, useConnect, useConnectors, useDisconnect } from 'wagmi'
+import { useConnection, useConnect, useConnectors, useDisconnect } from 'wagmi'
 
 export function Example() {
-  const account = useAccount() // [!code ++]
+  const account = useConnection() // [!code ++]
   const connect = useConnect()
   const [connector] = useConnectors()
   const disconnect = useDisconnect() // [!code ++]
@@ -255,13 +255,13 @@ We can use the `isPending` property from the `useConnect` hook to show pending s
 
 ```tsx twoslash [Example.tsx]
 // @noErrors
-import { useAccount, useConnect, useConnectors, useDisconnect } from 'wagmi'
+import { useConnection, useConnect, useConnectors, useDisconnect } from 'wagmi'
 
 export function Example() {
-  const account = useAccount() 
+  const account = useConnection()
   const connect = useConnect()
   const [connector] = useConnectors()
-  const disconnect = useDisconnect() 
+  const disconnect = useDisconnect()
 
   if (connect.isPending) // [!code ++]
     return <div>Check prompt...</div> // [!code ++]
@@ -283,13 +283,13 @@ We can use the `error` property from the `useConnect` hook to show error state t
 
 ```tsx twoslash [Example.tsx]
 // @noErrors
-import { useAccount, useConnect, useConnectors, useDisconnect } from 'wagmi'
+import { useConnection, useConnect, useConnectors, useDisconnect } from 'wagmi'
 
 export function Example() {
-  const account = useAccount() 
+  const account = useConnection()
   const connect = useConnect()
   const [connector] = useConnectors()
-  const disconnect = useDisconnect() 
+  const disconnect = useDisconnect()
 
   if (connect.error) // [!code ++]
     return <div>Error: {connect.error.message}</div> // [!code ++]

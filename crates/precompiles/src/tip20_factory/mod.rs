@@ -8,7 +8,9 @@ use crate::{
     TIP20_FACTORY_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::Handler,
-    tip20::{TIP20Error, TIP20Token, address_to_token_id_unchecked, is_tip20, token_id_to_address},
+    tip20::{
+        TIP20Error, TIP20Token, address_to_token_id_unchecked, is_tip20_prefix, token_id_to_address,
+    },
 };
 use alloy::primitives::{Address, U256};
 use tracing::trace;
@@ -50,6 +52,25 @@ impl TIP20Factory {
             .with_account_info(TIP20_FACTORY_ADDRESS, |info| Ok(info.code.is_some()))
     }
 
+    /// Returns true if the address is a valid TIP20 token.
+    ///
+    /// Post-AllegroModerato: Matches the Solidity implementation which checks both:
+    /// 1. The address has the correct TIP20 prefix
+    /// 2. The token ID (lower 8 bytes) is less than tokenIdCounter
+    ///
+    /// Pre-AllegroModerato: Only checks the address prefix for backwards compatibility.
+    pub fn is_tip20(&self, token: Address) -> Result<bool> {
+        if !is_tip20_prefix(token) {
+            return Ok(false);
+        }
+        // Post-AllegroModerato: also check that token ID < tokenIdCounter
+        if self.storage.spec().is_allegro_moderato() {
+            let token_id = U256::from(address_to_token_id_unchecked(token));
+            return Ok(token_id < self.token_id_counter()?);
+        }
+        Ok(true)
+    }
+
     pub fn create_token(
         &mut self,
         sender: Address,
@@ -66,7 +87,6 @@ impl TIP20Factory {
 
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
         // Note that the token Id increments on each deployment.
-        // NOTE: start counter at 0
 
         // Post-Allegretto, require that the first TIP20 deployed has a quote token of address(0)
         if self.storage.spec().is_allegretto() && token_id == 0 {
@@ -75,7 +95,7 @@ impl TIP20Factory {
             }
         } else if self.storage.spec().is_moderato() {
             // Post-Moderato: Fixed validation - quote token id must be < current token_id (strictly less than).
-            if !is_tip20(call.quoteToken)
+            if !is_tip20_prefix(call.quoteToken)
                 || address_to_token_id_unchecked(call.quoteToken) >= token_id
             {
                 return Err(TIP20Error::invalid_quote_token().into());
@@ -83,7 +103,7 @@ impl TIP20Factory {
         } else {
             // Pre-Moderato: Original validation with off-by-one bug for consensus compatibility.
             // The buggy check allowed quote_token_id == token_id to pass.
-            if !is_tip20(call.quoteToken)
+            if !is_tip20_prefix(call.quoteToken)
                 || address_to_token_id_unchecked(call.quoteToken) > token_id
             {
                 return Err(TIP20Error::invalid_quote_token().into());
@@ -144,6 +164,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageContext, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
+        tip20::tests::initialize_path_usd,
     };
     use alloy::primitives::Address;
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -170,6 +191,15 @@ mod tests {
             let token_id_0 = address_to_token_id_unchecked(token_addr_0);
             let token_id_1 = address_to_token_id_unchecked(token_addr_1);
             let expected = vec![
+                TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
+                    token: path_usd.address(),
+                    tokenId: U256::ZERO,
+                    name: "PathUSD".to_string(),
+                    symbol: "PUSD".to_string(),
+                    currency: "USD".to_string(),
+                    quoteToken: Address::ZERO,
+                    admin: sender,
+                }),
                 TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
                     token: token_addr_0,
                     tokenId: U256::from(token_id_0),
@@ -407,6 +437,65 @@ mod tests {
             };
 
             factory.create_token(sender, call)?;
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_is_tip20_post_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let sender = Address::random();
+
+        StorageContext::enter(&mut storage, || {
+            initialize_path_usd(sender)?;
+
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            // Set tokenIdCounter to 1 (simulating PATH_USD was created through factory)
+            factory.token_id_counter.write(U256::from(1))?;
+
+            // PATH_USD (token ID 0) should be valid since 0 < 1
+            assert!(factory.is_tip20(crate::PATH_USD_ADDRESS)?);
+
+            // Token ID >= tokenIdCounter should be invalid
+            let token_id_counter: u64 = factory.token_id_counter()?.to();
+            let non_existent_tip20 = token_id_to_address(token_id_counter + 100);
+            assert!(!factory.is_tip20(non_existent_tip20)?);
+
+            // Non-TIP20 address should be invalid
+            assert!(!factory.is_tip20(Address::random())?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_is_tip20_pre_allegro_moderato() -> eyre::Result<()> {
+        // Pre-AllegroModerato: only check prefix, not tokenIdCounter
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let sender = Address::random();
+
+        StorageContext::enter(&mut storage, || {
+            initialize_path_usd(sender)?;
+
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            // PATH_USD (token ID 0) should be valid
+            assert!(factory.is_tip20(crate::PATH_USD_ADDRESS)?);
+
+            // Token ID >= tokenIdCounter should still be valid (only checks prefix pre-AllegroModerato)
+            let token_id_counter: u64 = factory.token_id_counter()?.to();
+            let non_existent_tip20 = token_id_to_address(token_id_counter + 100);
+            assert!(
+                factory.is_tip20(non_existent_tip20)?,
+                "Pre-AllegroModerato: should only check prefix"
+            );
+
+            // Non-TIP20 address should still be invalid (wrong prefix)
+            assert!(!factory.is_tip20(Address::random())?);
+
             Ok(())
         })
     }

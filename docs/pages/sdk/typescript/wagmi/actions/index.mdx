@@ -12,6 +12,8 @@
 | [`amm.watchFeeSwap`](/sdk/typescript/wagmi/actions/amm.watchFeeSwap) | Watches for fee swap events |
 | [`amm.watchMint`](/sdk/typescript/wagmi/actions/amm.watchMint) | Watches for liquidity mint events |
 | [`amm.watchRebalanceSwap`](/sdk/typescript/wagmi/actions/amm.watchRebalanceSwap) | Watches for rebalance swap events |
+| **Faucet Actions** | |
+| [`faucet.fund`](/sdk/typescript/wagmi/actions/faucet.fund) | Funds an account with testnet tokens |
 | **Fee Actions** | |
 | [`fee.getUserToken`](/sdk/typescript/wagmi/actions/fee.getUserToken) | Gets the user's default fee token preference |
 | [`fee.setUserToken`](/sdk/typescript/wagmi/actions/fee.setUserToken) | Sets the user's default fee token preference |
@@ -27,18 +29,26 @@
 | [`policy.watchBlacklistUpdated`](#TODO) | Watches for blacklist update events |
 | [`policy.watchCreate`](#TODO) | Watches for policy creation events |
 | [`policy.watchWhitelistUpdated`](#TODO) | Watches for whitelist update events |
-| **Stablecoin Exchange Actions** | |
-| [`dex.buy`](/sdk/typescript/wagmi/actions/dex.buy) | Buys a specific amount of tokens from the Stablecoin Exchange orderbook |
+| **Reward Actions** | |
+| [`reward.claim`](/sdk/typescript/wagmi/actions/reward.claim) | Claims accumulated rewards for the caller |
+| [`reward.getTotalPerSecond`](/sdk/typescript/wagmi/actions/reward.getTotalPerSecond) | Gets the total reward per second rate for all active streams |
+| [`reward.getUserRewardInfo`](/sdk/typescript/wagmi/actions/reward.getUserRewardInfo) | Gets reward information for a specific account |
+| [`reward.setRecipient`](/sdk/typescript/wagmi/actions/reward.setRecipient) | Sets or changes the reward recipient for a token holder |
+| [`reward.start`](/sdk/typescript/wagmi/actions/reward.start) | Starts a new reward stream that distributes tokens to opted-in holders |
+| [`reward.watchRewardRecipientSet`](/sdk/typescript/wagmi/actions/reward.watchRewardRecipientSet) | Watches for reward recipient set events |
+| [`reward.watchRewardScheduled`](/sdk/typescript/wagmi/actions/reward.watchRewardScheduled) | Watches for reward scheduled events |
+| **Stablecoin DEX Actions** | |
+| [`dex.buy`](/sdk/typescript/wagmi/actions/dex.buy) | Buys a specific amount of tokens from the Stablecoin DEX orderbook |
 | [`dex.cancel`](/sdk/typescript/wagmi/actions/dex.cancel) | Cancels an order from the orderbook |
 | [`dex.createPair`](/sdk/typescript/wagmi/actions/dex.createPair) | Creates a new trading pair on the DEX |
-| [`dex.getBalance`](/sdk/typescript/wagmi/actions/dex.getBalance) | Gets a user's token balance on the Stablecoin Exchange |
+| [`dex.getBalance`](/sdk/typescript/wagmi/actions/dex.getBalance) | Gets a user's token balance on the Stablecoin DEX |
 | [`dex.getBuyQuote`](/sdk/typescript/wagmi/actions/dex.getBuyQuote) | Gets the quote for buying a specific amount of tokens |
 | [`dex.getOrder`](/sdk/typescript/wagmi/actions/dex.getOrder) | Gets an order's details from the orderbook |
 | [`dex.getTickLevel`](/sdk/typescript/wagmi/actions/dex.getTickLevel) | Gets the price level information at a specific tick |
 | [`dex.getSellQuote`](/sdk/typescript/wagmi/actions/dex.getSellQuote) | Gets the quote for selling a specific amount of tokens |
 | [`dex.place`](/sdk/typescript/wagmi/actions/dex.place) | Places a limit order on the orderbook |
 | [`dex.placeFlip`](/sdk/typescript/wagmi/actions/dex.placeFlip) | Places a flip order that automatically flips when filled |
-| [`dex.sell`](/sdk/typescript/wagmi/actions/dex.sell) | Sells a specific amount of tokens from the Stablecoin Exchange orderbook |
+| [`dex.sell`](/sdk/typescript/wagmi/actions/dex.sell) | Sells a specific amount of tokens from the Stablecoin DEX orderbook |
 | [`dex.watchFlipOrderPlaced`](/sdk/typescript/wagmi/actions/dex.watchFlipOrderPlaced) | Watches for flip order placed events |
 | [`dex.watchOrderCancelled`](/sdk/typescript/wagmi/actions/dex.watchOrderCancelled) | Watches for order cancelled events |
 | [`dex.watchOrderFilled`](/sdk/typescript/wagmi/actions/dex.watchOrderFilled) | Watches for order filled events |

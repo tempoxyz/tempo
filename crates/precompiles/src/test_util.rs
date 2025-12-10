@@ -238,7 +238,7 @@ impl TIP20Setup {
     /// Initialize PathUSD (token 0) if needed and return it.
     fn path_usd_inner(&self) -> Result<TIP20Token> {
         if is_initialized(PATH_USD_ADDRESS) {
-            return Ok(TIP20Token::from_address(PATH_USD_ADDRESS));
+            return TIP20Token::from_address(PATH_USD_ADDRESS);
         }
 
         let admin = self
@@ -260,7 +260,7 @@ impl TIP20Setup {
             )?;
         } else {
             // Pre-Allegretto: direct initialization
-            TIP20Token::from_address(PATH_USD_ADDRESS).initialize(
+            TIP20Token::from_address(PATH_USD_ADDRESS)?.initialize(
                 "PathUSD",
                 "PUSD",
                 "USD",
@@ -270,7 +270,7 @@ impl TIP20Setup {
             )?;
         }
 
-        Ok(TIP20Token::from_address(PATH_USD_ADDRESS))
+        TIP20Token::from_address(PATH_USD_ADDRESS)
     }
 
     /// Initialize the TIP20 factory if needed.
@@ -311,14 +311,14 @@ impl TIP20Setup {
                         admin,
                     },
                 )?;
-                TIP20Token::from_address(token_address)
+                TIP20Token::from_address(token_address)?
             }
             Action::ConfigureToken { address } => {
                 assert!(
                     is_initialized(address),
                     "token not initialized, use `fn create` instead"
                 );
-                TIP20Token::from_address(address)
+                TIP20Token::from_address(address)?
             }
         };
 

@@ -40,10 +40,10 @@ export function Link(props: {
       )}
       <Icon className="text-accent size-4.5" />
       <div className="flex flex-col gap-1">
-        <div className="leading-normal text-gray12 font-[510] text-[14px]">
+        <div className="leading-normal text-gray12 font-[510] text-[15px]">
           {title}
         </div>
-        <div className="leading-normal text-gray11 text-[14px]">
+        <div className="leading-normal text-gray11 text-[15px]">
           {description}
         </div>
       </div>
@@ -54,4 +54,38 @@ export function Link(props: {
 export function Container(props: React.PropsWithChildren) {
   const { children } = props
   return <div className="grid md:grid-cols-2 gap-3">{children}</div>
+}
+
+export function Notice(
+  props: React.PropsWithChildren<{
+    title?: string
+    icon?: typeof LucideArrowLeftRight
+    inline?: boolean
+  }>,
+) {
+  const { children, icon: Icon, title, inline } = props
+  return (
+    <div
+      className={cx(
+        'relative border border-gray4 rounded-lg p-4 flex gap-4 flex-col',
+        {
+          'md:flex-row md:items-center': inline,
+        },
+      )}
+    >
+      {(Icon || title) && (
+        <div className="flex items-center gap-3">
+          {Icon && <Icon className="text-accent size-4.5" />}
+          {title && (
+            <div className="leading-normal text-gray12 font-[510] text-[15px]">
+              {title}
+            </div>
+          )}
+        </div>
+      )}
+      <div className="leading-normal text-gray11 text-[15px] [&_a]:underline [&_a]:text-accent hover:[&_a]:text-accentHover">
+        {children}
+      </div>
+    </div>
+  )
 }

@@ -76,7 +76,7 @@ export const config = createConfig({
 
 ### Add liquidity
 
-Add validator token to the pool to receive LP tokens representing your share. The first liquidity provider to a new pool must burn 1,000 units of liquidity. This costs approximately 0.002 USD and prevents attacks on pool reserves. Learn more in the [Fee AMM specification](/documentation/protocol/fees/spec-fee-amm).
+Add validator token to the pool to receive LP tokens representing your share. The first liquidity provider to a new pool must burn 1,000 units of liquidity. This costs approximately 0.002 USD and prevents attacks on pool reserves. Learn more in the [Fee AMM specification](/protocol/fees/spec-fee-amm).
 
 :::code-group
 
@@ -84,13 +84,13 @@ Add validator token to the pool to receive LP tokens representing your share. Th
 // @noErrors
 import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits, parseUnits } from 'viem'
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 
 const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
 const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
 
 function ManageFeeLiquidity() {
-  const { address } = useAccount()
+  const { address } = useConnection()
 
   const { data: pool } = Hooks.amm.usePool({
     userToken,
@@ -152,13 +152,13 @@ View your LP token balance to see your share of the pool.
 // @noErrors
 import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits, parseUnits } from 'viem'
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 
 const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
 const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
 
 function ManageFeeLiquidity() {
-  const { address } = useAccount()
+  const { address } = useConnection()
 
   const { data: pool } = Hooks.amm.usePool({
     userToken,
@@ -227,13 +227,13 @@ Burn LP tokens to withdraw your share of pool reserves plus accumulated fees.
 // @noErrors
 import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits, parseUnits } from 'viem'
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 
 const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
 const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
 
 function ManageFeeLiquidity() {
-  const { address } = useAccount()
+  const { address } = useConnection()
 
   const { data: pool } = Hooks.amm.usePool({
     userToken,
@@ -376,7 +376,7 @@ export const config = createConfig({
 
 ### Rebalance pools
 
-You can rebalance pools by swapping validator tokens for accumulated user tokens at a fixed rate. Rebalancing restores validator token reserves and enables continued fee conversions. Learn more [here](/documentation/protocol/fees/spec-fee-amm#swap-mechanisms).
+You can rebalance pools by swapping validator tokens for accumulated user tokens at a fixed rate. Rebalancing restores validator token reserves and enables continued fee conversions. Learn more [here](/protocol/fees/spec-fee-amm#swap-mechanisms).
 
 :::code-group
 
@@ -384,13 +384,13 @@ You can rebalance pools by swapping validator tokens for accumulated user tokens
 // @noErrors
 import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits, parseUnits } from 'viem'
-import { useAccount } from 'wagmi'
+import { useConnection } from 'wagmi'
 
 const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
 const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
 
 function RebalancePool() {
-  const { address } = useAccount()
+  const { address } = useConnection()
 
   const { data: pool } = Hooks.amm.usePool({
     userToken,
@@ -472,13 +472,13 @@ Focus liquidity on pools with:
 <Card.Container>
   <Card.Link
     description="Complete technical specification of the Fee AMM protocol"
-    href="/documentation/protocol/fees/spec-fee-amm"
+    href="/protocol/fees/spec-fee-amm"
     icon={LucideFileText}
     title="Fee AMM Specification"
   />
   <Card.Link
     description="Learn how the Fee AMM enables flexible fee payments"
-    href="/documentation/protocol/fees/fee-amm"
+    href="/protocol/fees/fee-amm"
     icon={LucideDroplet}
     title="Fee AMM Overview"
   />

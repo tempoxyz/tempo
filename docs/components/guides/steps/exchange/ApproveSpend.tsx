@@ -2,18 +2,18 @@ import * as React from 'react'
 import { Addresses } from 'tempo.ts/viem'
 import { Hooks } from 'tempo.ts/wagmi'
 import { parseUnits } from 'viem'
-import { useAccount, useAccountEffect } from 'wagmi'
+import { useConnection, useConnectionEffect } from 'wagmi'
 import { Button, ExplorerLink, Step } from '../../Demo'
 import { alphaUsd, pathUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function ApproveSpend(props: DemoStepProps) {
   const { stepNumber, last = false } = props
-  const { address } = useAccount()
+  const { address } = useConnection()
 
   const approve = Hooks.token.useApproveSync()
 
-  useAccountEffect({
+  useConnectionEffect({
     onDisconnect() {
       approve.reset()
     },
