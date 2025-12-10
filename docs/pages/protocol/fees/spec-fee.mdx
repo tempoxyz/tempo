@@ -23,14 +23,10 @@ Before the execution of each transaction, the protocol takes the following steps
 * Determine the [`fee_payer`](#fee-payer) of the transaction.
 * Determine the `fee_token` of the transaction, according to the [rules for fee token preferences](#fee-token-preferences). If the fee token cannot be determined, the transaction is invalid.
 * Compute the `max_fee` of the transaction as `gas_limit * gas_price`.
-* Deduct `max_fee` from the `fee_payer`'s balance of `fee_token`. If `fee_payer` does not have sufficient balance in `fee_token`, the transaction is invalid.
+* Transfer `max_fee` from the `fee_payer`'s balance of `fee_token` to the FeeManager. If `fee_payer` does not have sufficient balance in `fee_token`, the transaction is invalid.
 * Reserve `max_fee` of liquidity on the [fee AMM](/protocol/fees/spec-fee-amm) between the `fee_token` and the validator's preferred fee token. If there is insufficient liquidity, the transaction is invalid.
 
-After the execution of each transaction:
-
-* Compute the `refund_amount` as `(gas_limit - gas_used) * gas_price`.
-* Credit the `fee_payer`'s address with `refund_amount` of `fee_token`.
-* Log a `Transfer` event from the user to the [fee manager contract](/protocol/fees/spec-fee-amm) for the net amount of the fee payment.
+Note that for purposes of the block's `gas_limit`, the transaction still only uses `gas_used`, even though it pays for the full gas limit of the transaction.
 
 ## Fee payer
 
@@ -170,23 +166,15 @@ If either check fails, the transaction is rejected before execution.
 
 #### 3. Transaction execution
 
-The transaction executes normally. The actual gas consumed may be less than the maximum that was collected.
+The transaction executes normally. The actual gas consumed may be less than the maximum that was collected, but the user still pays the full `max_fee`.
 
-#### 4. Post-transaction refund
-
-After execution, the `FeeManager`:
-
-- Calculates the actual fee owed based on gas used
-- Refunds any unused tokens to the user
-- Queues the actual fee amount for conversion (if needed)
-
-#### 5. Fee swap queuing
+#### 4. Fee swap queuing
 
 If the user's fee token differs from the validator's preferred token, the fee is added to a pending fee swap queue for that token pair. The swap doesn't execute immediately—it's batched with all other fees collected during the block.
 
 If the user's fee token matches the validator's preference, no conversion is needed and the fee goes directly to the validator.
 
-#### 6. End-of-block settlement
+#### 5. End-of-block settlement
 
 At the end of each block, the protocol:
 
@@ -218,19 +206,18 @@ Here's a complete example of the fee lifecycle:
 2. **Validator** prefers to receive fees in **USDT**
 3. Alice's transaction has a max fee of 1.0 USDC
 4. The FeeManager collects 1.0 USDC from Alice before execution
-5. Transaction executes and uses 0.8 USDC worth of gas
-6. The FeeManager refunds 0.2 USDC to Alice
-7. The remaining 0.8 USDC is queued for conversion
-8. At block end, the Fee AMM swaps 0.8 USDC → 0.7976 USDT (0.8 × 0.9970)
-9. Validator receives 0.7976 USDT
-10. Liquidity providers earn 0.0024 USDT from the 0.3% fee
+5. Transaction executes and uses 0.8 USDC worth of gas (for accounting only)
+6. No refund is issued
+7. The full 1.0 USDC is queued for conversion
+8. At block end, the Fee AMM swaps 1.0 USDC → 0.9970 USDT (1.0 × 0.9970)
+9. Validator receives 0.9970 USDT
+10. Liquidity providers earn 0.0030 USDT from the 0.3% fee
 
 ### Gas costs
 
 The fee conversion process adds minimal overhead to transactions:
 
-- **Pre-transaction**: ~5,000 gas for balance and liquidity checks
-- **Post-transaction**: ~3,000 gas for refund and queue operations
+- **Pre-transaction**: ~5,000 gas for balance checks, liquidity checks, and fee accounting
 - **Block settlement**: Amortized across all transactions in the block
 
 For complete technical specifications on the Fee AMM mechanism, see the [Fee AMM Protocol Specification](/protocol/fees/spec-fee-amm).

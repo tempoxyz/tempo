@@ -897,47 +897,6 @@ contract TIP20Test is BaseTest {
         }
     }
 
-    function testTransferFeePostTx() public {
-        address feeManager = 0xfeEC000000000000000000000000000000000000;
-
-        if (!isTempo) {
-            // Setup: pre-transfer to fee manager
-            vm.prank(feeManager);
-            token.transferFeePreTx(alice, 100e18);
-
-            // Unauthorized
-            vm.prank(alice);
-            try token.transferFeePostTx(alice, 50e18, 50e18) {
-                revert CallShouldHaveReverted();
-            } catch {
-                // Expected revert
-            }
-
-            // to == address(0)
-            vm.prank(feeManager);
-            try token.transferFeePostTx(address(0), 50e18, 50e18) {
-                revert CallShouldHaveReverted();
-            } catch {
-                // Expected revert
-            }
-
-            // Success - refund 50, used 50
-            uint256 aliceBefore = token.balanceOf(alice);
-            vm.prank(feeManager);
-            token.transferFeePostTx(alice, 50e18, 50e18);
-            assertEq(token.balanceOf(alice), aliceBefore + 50e18);
-        } else {
-            vm.prank(alice);
-            try token.transferFeePostTx(alice, 50e18, 50e18) {
-                revert CallShouldHaveReverted();
-            } catch (bytes memory err) {
-                // On Tempo, this function doesnt exist so expect invalid function selector error
-                bytes4 errorSelector = bytes4(err);
-                assertEq(uint32(errorSelector), uint32(0xaa4bc69a));
-            }
-        }
-    }
-
     /*//////////////////////////////////////////////////////////////
                         LOOP PREVENTION TESTS
     //////////////////////////////////////////////////////////////*/

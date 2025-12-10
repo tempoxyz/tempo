@@ -387,7 +387,7 @@ fee_payer_hash = keccak256(0x78 || rlp([  // Note: 0x78 magic byte
 **Fee Payer Resolution:**
 - Fee payer signature present → recovered address via `ecrecover`
 - Fee payer signature absent → sender address
-- This address is used for all fee accounting (pre-charge, refund) via TIP Fee Manager precompile
+- This address is used for all fee accounting (pre-charge and settlement) via the FeeManager precompile
 
 #### Transaction Flow
 

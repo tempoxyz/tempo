@@ -219,12 +219,6 @@ interface ITIP20 {
     /// @param amount The fee amount
     function transferFeePreTx(address from, uint256 amount) external;
     
-    /// @notice Post-transaction fee handling (restricted to precompiles)
-    /// @param to The account to refund
-    /// @param refund The refund amount
-    /// @param actualUsed The actual fee used
-    function transferFeePostTx(address to, uint256 refund, uint256 actualUsed) external;
-
 
     // =========================================================================
     //                                Events
@@ -433,7 +427,7 @@ Roles are assigned and managed through `grantRole`, `revokeRole`, `renounceRole`
 
 
 ## System Functions
-System level functions `systemTransferFrom`, `transferFeePreTx`, and `transferFeePostTx` are only callable by other Tempo protocol precompiles. These entrypoints power transaction fee collection, refunds, and internal accounting within the Fee AMM and Stablecoin DEX. They must not be callable by general contracts or users.
+System level functions `systemTransferFrom` and `transferFeePreTx` are only callable by other Tempo protocol precompiles. These entrypoints power transaction fee collection and internal accounting within the Fee AMM and Stablecoin DEX. They must not be callable by general contracts or users.
 
 ## Token Rewards Distribution
 See [rewards distribution](/protocol/tip20-rewards/spec) for more information.
@@ -536,4 +530,4 @@ interface ITIP20Factory {
 - `totalSupply()` must always be `<= supplyCap` 
 - When `paused` is `true`, no functions that move tokens (`transfer`, `transferFrom`, memo variants, `systemTransferFrom`, `startReward`, `setRewardRecipient`, `claimRewards`) can succeed.
 - TIP20 tokens can not send any amount another TIP20 token address.
-- `systemTransferFrom`, `transferFeePreTx`, and `transferFeePostTx` never change `totalSupply()`.
+- `systemTransferFrom` and `transferFeePreTx` never change `totalSupply()`.

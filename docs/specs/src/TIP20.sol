@@ -386,28 +386,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
             balanceOf[from] -= amount;
             balanceOf[TIP_FEE_MANAGER_ADDRESS] += amount;
         }
-    }
 
-    function transferFeePostTx(address to, uint256 refund, uint256 actualUsed) external {
-        require(msg.sender == TIP_FEE_MANAGER_ADDRESS);
-        require(to != address(0));
-
-        uint256 feeManagerBalance = balanceOf[TIP_FEE_MANAGER_ADDRESS];
-        if (refund > feeManagerBalance) {
-            revert InsufficientBalance(feeManagerBalance, refund, address(this));
-        }
-
-        address tosRewardRecipient = _updateRewardsAndGetRecipient(to);
-        if (tosRewardRecipient != address(0)) {
-            optedInSupply += uint128(refund);
-        }
-
-        unchecked {
-            balanceOf[TIP_FEE_MANAGER_ADDRESS] -= refund;
-            balanceOf[to] += refund;
-        }
-
-        emit Transfer(to, TIP_FEE_MANAGER_ADDRESS, actualUsed);
+        emit Transfer(from, TIP_FEE_MANAGER_ADDRESS, amount);
     }
 
     /*//////////////////////////////////////////////////////////////

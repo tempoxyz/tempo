@@ -63,8 +63,9 @@ contract FeeManager is IFeeManager, FeeAMM {
     function collectFeePreTx(address user, address userToken, uint256 maxAmount) external {
         require(msg.sender == address(0), "ONLY_PROTOCOL");
 
-        // Get fee recipient's preferred token (fallback to PATH_USD if not set)
-        address validatorToken = validatorTokens[block.coinbase];
+        // Get fee recipient and their preferred token (fallback to PATH_USD if not set)
+        address feeRecipient = block.coinbase;
+        address validatorToken = validatorTokens[feeRecipient];
         if (validatorToken == address(0)) {
             validatorToken = PATH_USD;
         }
@@ -74,58 +75,28 @@ contract FeeManager is IFeeManager, FeeAMM {
             reserveLiquidity(userToken, validatorToken, maxAmount);
         }
 
+        // Collect the maximum fee up front from the user
         ITIP20(userToken).transferFeePreTx(user, maxAmount);
-    }
 
-    // This function is called by the protocol after a transaction is executed.
-    // It should never revert. If it does, there is a design flaw in the protocol.
-    function collectFeePostTx(
-        address user,
-        uint256 maxAmount,
-        uint256 actualUsed,
-        address userToken
-    ) external {
-        require(msg.sender == address(0), "ONLY_PROTOCOL");
-
-        // Get fee recipient and validator token from environment
-        address feeRecipient = block.coinbase;
-        address validatorToken = validatorTokens[feeRecipient];
-        if (validatorToken == address(0)) {
-            validatorToken = PATH_USD;
+        // Track validator for fee distribution
+        if (!validatorInFeesArray[feeRecipient]) {
+            validatorsWithFees.push(feeRecipient);
+            validatorInFeesArray[feeRecipient] = true;
         }
 
-        // Calculate refund amount
-        uint256 refundAmount = maxAmount - actualUsed;
+        if (userToken == validatorToken) {
+            // Direct fee in validator's preferred token
+            collectedFeesByValidator[feeRecipient] += maxAmount;
+        } else {
+            // Compute expected output immediately (simplified approach)
+            uint256 expectedOut = (maxAmount * M) / SCALE;
+            collectedFeesByValidator[feeRecipient] += expectedOut;
 
-        // Refund unused tokens to user (handles rewards and emits Transfer event for actualUsed)
-        ITIP20(userToken).transferFeePostTx(user, refundAmount, actualUsed);
-
-        if (userToken != validatorToken) {
-            releaseLiquidityPostTx(userToken, validatorToken, refundAmount);
-        }
-
-        // Track collected fees (only the actual used amount)
-        if (actualUsed > 0) {
-            // Track validator for fee distribution
-            if (!validatorInFeesArray[feeRecipient]) {
-                validatorsWithFees.push(feeRecipient);
-                validatorInFeesArray[feeRecipient] = true;
-            }
-
-            if (userToken == validatorToken) {
-                // Direct fee in validator's preferred token
-                collectedFeesByValidator[feeRecipient] += actualUsed;
-            } else {
-                // Compute expected output immediately (simplified approach)
-                uint256 expectedOut = (actualUsed * M) / SCALE;
-                collectedFeesByValidator[feeRecipient] += expectedOut;
-
-                // Track pool for swap execution (to update reserves)
-                bytes32 poolId = getPoolId(userToken, validatorToken);
-                if (!poolInFeesArray[poolId]) {
-                    poolsWithFees.push(TokenPair(userToken, validatorToken));
-                    poolInFeesArray[poolId] = true;
-                }
+            // Track pool for swap execution (to update reserves)
+            bytes32 poolId = getPoolId(userToken, validatorToken);
+            if (!poolInFeesArray[poolId]) {
+                poolsWithFees.push(TokenPair(userToken, validatorToken));
+                poolInFeesArray[poolId] = true;
             }
         }
     }

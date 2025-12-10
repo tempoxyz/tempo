@@ -188,50 +188,6 @@ contract FeeManagerTest is BaseTest {
         }
     }
 
-    function test_collectFeePostTx_DifferentTokens() public {
-        vm.prank(validator, validator);
-        amm.setValidatorToken(address(validatorToken));
-
-        vm.startPrank(user);
-        userToken.approve(address(amm), type(uint256).max);
-        vm.stopPrank();
-
-        uint256 maxAmount = 100e18;
-        uint256 actualUsed = 80e18;
-
-        vm.prank(address(0));
-        vm.coinbase(validator);
-
-        try amm.collectFeePreTx(user, address(userToken), maxAmount) {
-            uint256 userBalanceAfterPre = userToken.balanceOf(user);
-
-            vm.prank(address(0));
-            vm.coinbase(validator);
-            amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
-
-            assertEq(userToken.balanceOf(user), userBalanceAfterPre + (maxAmount - actualUsed));
-        } catch (bytes memory err) {
-            bytes4 errorSelector = bytes4(err);
-            assertTrue(errorSelector == 0xaa4bc69a);
-        }
-    }
-
-    function test_collectFeePostTx_RevertsIf_NotProtocol() public {
-        vm.prank(user);
-
-        if (!isTempo) {
-            vm.expectRevert("ONLY_PROTOCOL");
-        }
-
-        try amm.collectFeePostTx(user, 100e18, 80e18, address(userToken)) {
-            if (isTempo) {
-                revert CallShouldHaveReverted();
-            }
-        } catch {
-            // Expected to revert
-        }
-    }
-
     function test_executeBlock() public {
         vm.prank(validator, validator);
         amm.setValidatorToken(address(validatorToken));
@@ -242,7 +198,6 @@ contract FeeManagerTest is BaseTest {
 
         uint256 validatorBalanceBefore = validatorToken.balanceOf(validator);
         uint256 maxAmount = 100e18;
-        uint256 actualUsed = 80e18;
 
         bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
         (uint128 reservesBefore0, uint128 reservesBefore1) = amm.pools(poolId);
@@ -251,7 +206,6 @@ contract FeeManagerTest is BaseTest {
         vm.coinbase(validator);
 
         try amm.collectFeePreTx(user, address(userToken), maxAmount) {
-            amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
             amm.executeBlock();
             vm.stopPrank();
 
@@ -290,14 +244,11 @@ contract FeeManagerTest is BaseTest {
         vm.stopPrank();
 
         uint256 maxAmount = 100e18;
-        uint256 actualUsed = 80e18;
 
         vm.startPrank(address(0));
         vm.coinbase(validator);
 
         try amm.collectFeePreTx(user, address(userToken), maxAmount) {
-            amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
-
             uint256 pathUSDBalanceBefore = pathUSD.balanceOf(validator);
             amm.executeBlock();
             vm.stopPrank();
@@ -321,11 +272,8 @@ contract FeeManagerTest is BaseTest {
         vm.prank(address(0));
         vm.coinbase(validator);
 
-        try amm.collectFeePreTx(user, address(userToken), 100e18) {
-            vm.prank(address(0));
-            vm.coinbase(validator);
-            amm.collectFeePostTx(user, 100e18, 80e18, address(userToken));
-        } catch (bytes memory err) {
+        try amm.collectFeePreTx(user, address(userToken), 100e18) { }
+        catch (bytes memory err) {
             bytes4 errorSelector = bytes4(err);
             assertTrue(errorSelector == 0xaa4bc69a);
             return;

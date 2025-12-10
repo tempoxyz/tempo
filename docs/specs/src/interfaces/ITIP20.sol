@@ -201,8 +201,6 @@ interface ITIP20 {
     /// @return success True if the transfer was successful.
     function transfer(address to, uint256 amount) external returns (bool);
 
-    function transferFeePostTx(address to, uint256 refund, uint256 actualUsed) external;
-
     function transferFeePreTx(address from, uint256 amount) external;
 
     /// @notice Transfers tokens from one address to another using allowance.
