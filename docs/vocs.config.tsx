@@ -641,6 +641,27 @@ export default defineConfig({
                   ],
                 },
                 {
+                  text: 'Nonce',
+                  items: [
+                    {
+                      text: 'getNonce',
+                      link: '/sdk/typescript/viem/nonce.getNonce',
+                    },
+                    {
+                      text: 'getNonceKeyCount',
+                      link: '/sdk/typescript/viem/nonce.getNonceKeyCount',
+                    },
+                    {
+                      text: 'watchActiveKeyCountChanged',
+                      link: '/sdk/typescript/viem/nonce.watchActiveKeyCountChanged',
+                    },
+                    {
+                      text: 'watchNonceIncremented',
+                      link: '/sdk/typescript/viem/nonce.watchNonceIncremented',
+                    },
+                  ],
+                },
+                {
                   text: 'Policy',
                   items: [
                     {
@@ -1011,6 +1032,27 @@ export default defineConfig({
                   ],
                 },
                 {
+                  text: 'Nonce',
+                  items: [
+                    {
+                      text: 'getNonce',
+                      link: '/sdk/typescript/wagmi/actions/nonce.getNonce',
+                    },
+                    {
+                      text: 'getNonceKeyCount',
+                      link: '/sdk/typescript/wagmi/actions/nonce.getNonceKeyCount',
+                    },
+                    {
+                      text: 'watchActiveKeyCountChanged',
+                      link: '/sdk/typescript/wagmi/actions/nonce.watchActiveKeyCountChanged',
+                    },
+                    {
+                      text: 'watchNonceIncremented',
+                      link: '/sdk/typescript/wagmi/actions/nonce.watchNonceIncremented',
+                    },
+                  ],
+                },
+                {
                   text: 'Policy',
                   items: [
                     {
@@ -1354,6 +1396,27 @@ export default defineConfig({
                     {
                       text: 'useWatchSetUserToken',
                       link: '/sdk/typescript/wagmi/hooks/fee.useWatchSetUserToken',
+                    },
+                  ],
+                },
+                {
+                  text: 'Nonce',
+                  items: [
+                    {
+                      text: 'useNonce',
+                      link: '/sdk/typescript/wagmi/hooks/nonce.useNonce',
+                    },
+                    {
+                      text: 'useNonceKeyCount',
+                      link: '/sdk/typescript/wagmi/hooks/nonce.useNonceKeyCount',
+                    },
+                    {
+                      text: 'useWatchActiveKeyCountChanged',
+                      link: '/sdk/typescript/wagmi/hooks/nonce.useWatchActiveKeyCountChanged',
+                    },
+                    {
+                      text: 'useWatchNonceIncremented',
+                      link: '/sdk/typescript/wagmi/hooks/nonce.useWatchNonceIncremented',
                     },
                   ],
                 },

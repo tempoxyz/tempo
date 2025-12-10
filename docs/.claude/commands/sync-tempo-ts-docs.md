@@ -779,6 +779,7 @@ Common module categories used in the SDK. The left column shows the lowercase mo
 | `dex` | `Stablecoin DEX` |
 | `faucet` | `Faucet` |
 | `fee` | `Fee` |
+| `nonce` | `Nonce` |
 | `policy` | `Policy` |
 | `reward` | `Reward` |
 | `token` | `Token` |
