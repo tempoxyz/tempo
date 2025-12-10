@@ -127,7 +127,7 @@ To set their preference, validators call the `setValidatorToken` function on the
 feeManager.setValidatorToken(preferredTokenAddress);
 ```
 
-After setting a validator token preference, all fees collected in blocks the validator proposes will be automatically converted to the chosen token (if needed) and transferred to the validator's account.
+After setting a validator token preference, all fees collected in blocks the validator proposes will be automatically converted to the chosen token (if needed). Validators can receive their accumulated fees at any time by calling `distributeFees()`.
 
 On the Andantino testnet, validators currently expect alphaUSD (one of the tokens distributed by the faucet) as their fee token.
 
@@ -164,7 +164,6 @@ Before the transaction executes, the `FeeManager` contract collects the maximum 
   - Checks if the Fee AMM has enough liquidity
   - Executes the fee swap at the fixed rate of **0.9970**
   - Adds the converted amount to the validator's fee balance
-  - Adds the valiator's address to a tracking array, for distribution at end of block
 - If tokens match, adds the fee directly to the validator's fee balance
 
 If any check fails (insufficient balance or insufficient liquidity), the transaction is rejected before execution.
@@ -173,15 +172,9 @@ If any check fails (insufficient balance or insufficient liquidity), the transac
 
 The transaction executes normally. The actual gas consumed may be less than the maximum that was collected, but the user still pays the full `max_fee`.
 
-#### 4. End-of-block distribution
+#### 4. Fee distribution
 
-At the end of each block, the protocol:
-
-1. Calls `executeBlock()` on the FeeManager
-2. Transfers each validator's accumulated fee balance to their account
-3. Clears fee tracking arrays
-
-This step batches the distribution of fees to validators, avoiding the need for extra Transfer events every transaction.
+Validators can receive their accumulated fees at any time by calling `distributeFees(validator)` on the FeeManager. This transfers their fee balance to their address and emits a `FeesDistributed` event.
 
 ### Fee swap mechanics
 
@@ -208,7 +201,7 @@ Here's a complete example of the fee lifecycle:
 6. 0.9970 USDT is added to the validator's fee balance
 7. Transaction executes and uses 0.8 USDC worth of gas (for accounting only)
 8. No refund is issued
-9. At block end, the validator receives their accumulated 0.9970 USDT
+9. Validator calls `distributeFees()` to receive their accumulated 0.9970 USDT
 10. Liquidity providers earn 0.0030 USDT from the 0.3% fee
 
 ### Gas costs
@@ -216,6 +209,5 @@ Here's a complete example of the fee lifecycle:
 The fee conversion process adds minimal overhead to transactions:
 
 - **Pre-transaction**: ~5,000 gas for balance checks, fee swap execution, and fee accounting
-- **Block settlement**: Amortized across all transactions in the block
 
 For complete technical specifications on the Fee AMM mechanism, see the [Fee AMM Protocol Specification](/protocol/fees/spec-fee-amm).

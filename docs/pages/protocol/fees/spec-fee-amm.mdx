@@ -10,7 +10,7 @@ This specification defines a system of one-way Automated Market Makers (AMMs) de
 
 Current blockchain fee systems typically require users to hold native tokens for gas payments. This creates friction for users who prefer to transact in stablecoins.
 
-The Fee AMM is a dedicated AMM for trading between stablecoins, which can only be used by the protocol (and by arbitrageurs rebalancing it to keep it balanced). The protocol automatically collects fees and executes fee swaps immediately during pre-transaction processing, converting user tokens to validator tokens at a fixed rate.
+The Fee AMM is a dedicated AMM for trading between stablecoins, which can only be used by the protocol (and by arbitrageurs rebalancing it to keep it balanced). The protocol automatically collects fees and executes fee swaps during pre-transaction processing, converting user tokens to validator tokens at a fixed rate.
 
 ## Specification
 
@@ -118,13 +118,13 @@ function executeFeeSwap(
 ) internal returns (uint256 amountOut)
 ```
 
-Executes a fee swap immediately, converting `userToken` to `validatorToken` at the fixed rate m = 0.9970. Called by `FeeManager.collectFeePreTx` during pre-transaction fee collection. Calculates `amountOut = (amountIn * M) / SCALE`. Reverts if insufficient liquidity. Updates reserves immediately. Access: Internal only (called by FeeManager).
+Executes a fee swap, converting `userToken` to `validatorToken` at the fixed rate m = 0.9970. Called by `FeeManager.collectFeePreTx` during pre-transaction fee collection. Calculates `amountOut = (amountIn * M) / SCALE`. Reverts if insufficient liquidity. Updates reserves immediately. Access: Internal only (called by FeeManager).
 
 #### 2. FeeManager Contract
 
 Tempo introduces a precompiled contract, the `FeeManager`, at the address `0xfeec000000000000000000000000000000000000`.
 
-The `FeeManager` is a singleton contract that implements all the functions of the Fee AMM for every pool. It also handles the collection and accounting of fees during each transaction, stores fee token preferences for users and validators, maintains fee balances per validator, and implements the `executeBlock()` function that transfers accumulated fees to validators at the end of each block.
+The `FeeManager` is a singleton contract that implements all the functions of the Fee AMM for every pool. It also handles the collection and accounting of fees during each transaction, stores fee token preferences for users and validators, and maintains fee balances per validator that can be collected at any time.
 
 ##### Key Functions
 
@@ -148,13 +148,19 @@ function collectFeePreTx(
 ) external
 ```
 
-Called by the protocol before transaction execution. The fee token (`userToken`) is determined by the protocol before calling using logic that considers: explicit tx fee token, setUserToken calls, stored user preference, tx.to if TIP-20. Collects the maximum fee from the user using `transferFeePreTx`. If user token differs from validator token, executes the fee swap immediately via `executeFeeSwap` and adds the output to the validator's fee balance. If tokens match, adds `maxAmount` directly to the validator's fee balance. Adds the validator's address to a tracking array for distribution at end of block. Access: Protocol only (`msg.sender == address(0)`).
+Called by the protocol before transaction execution. The fee token (`userToken`) is determined by the protocol before calling using logic that considers: explicit tx fee token, setUserToken calls, stored user preference, tx.to if TIP-20. Collects the maximum fee from the user using `transferFeePreTx`. If user token differs from validator token, executes the fee swap via `executeFeeSwap` and adds the output to the validator's fee balance. If tokens match, adds `maxAmount` directly to the validator's fee balance. Access: Protocol only (`msg.sender == address(0)`).
 
 ```solidity
-function executeBlock() external
+function distributeFees(address validator) external
 ```
 
-Called once in a system transaction at the end of each block. Transfers accumulated fee balances to all validators who received fees during the block. Clears fee tracking arrays. Access: Protocol only (`msg.sender == address(0)`).
+Allows anyone to trigger the transfer of accumulated fees to a validator. Transfers the validator's fee balance (in their preferred token) to their address. Emits `FeesDistributed` event. Access: Anyone.
+
+```solidity
+function collectedFeesByValidator(address validator) external view returns (uint256)
+```
+
+Returns the accumulated fee balance for a validator that has not yet been collected.
 
 ### Swap Mechanisms
 
@@ -179,14 +185,14 @@ Called once in a system transaction at the end of each block. Transfers accumula
    - Protocol calculates maximum gas needed (`maxAmount = gasLimit * maxFeePerGas`)
    - `FeeManager.collectFeePreTx(user, userToken, maxAmount)` is called:
      - Collects maximum fee from user using `transferFeePreTx()`
-     - If user token differs from validator token, executes fee swap immediately via `executeFeeSwap()`
+     - If user token differs from validator token, executes fee swap via `executeFeeSwap()`
      - Adds fee amount (in validator's token) to the validator's fee balance
    - If any check fails (insufficient balance, insufficient liquidity), transaction is invalid
 
-2. **Block End**:
-   - System transaction calls `FeeManager.executeBlock()`:
-     - Transfers accumulated fee balances to each validator
-     - Clears fee tracking arrays
+2. **Fee Distribution**:
+   - Validators (or anyone on their behalf) can call `distributeFees(validator)` at any time
+   - Transfers the validator's accumulated fee balance to their address
+   - Emits `FeesDistributed` event
 
 ### Events
 
@@ -217,38 +223,11 @@ event Burn(
 )
 event UserTokenSet(address indexed user, address indexed token)
 event ValidatorTokenSet(address indexed validator, address indexed token)
+event FeesDistributed(address indexed validator, address indexed token, uint256 amount)
 ```
 
 `Transfer` events are emitted as usual for transactions, with the exception of paying gas fees via TIP20 tokens. For fee payments, a single `Transfer` event is emitted post execution to represent the actual fee amount consumed (i.e. `gasUsed * gasPrice`).
 
-### System transactions
-
-This specification introduces **system transactions**, with the first being the `executeBlock()` call to the `FeeManager` contract at the end of each block. A system transaction is a legacy transaction with an empty signature (`r = 0`, `s = 0`, `yParity = false`) and with the sender as the 0 address (`0x0000000000000000000000000000000000000000`).
-
-System transactions are only allowed when there is a specific consensus rule allowing them. A block is invalid if any required system transaction is missing or if any extra system transaction is present.
-
-System transactions do not consume block gas, do not increment a sender nonce, do not contribute to block gas limit, and do not pay fees. They may set any gas price and gas limit (as specified by a specific rule), regardless of their execution gas or the block base fee. System transactions must not revert.
-
-#### Execution transaction
-
-Under this specification, exactly one system transaction must appear at the end of every block. It must have the following parameters:
-
-| Field                                | Value / Requirement                                                                                          | Notes / Validation                                                                                                  |
-|--------------------------------------|---------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------|
-| **Type**                              | Legacy transaction                                                                                            |                                                            |
-| **Position in Block**                 | **Last transaction**                                                                                          | Block is **invalid** if absent or not last.                                                                          |
-| **From (sender)**                     | `0x0000000000000000000000000000000000000000`                                                                  | Zero address                                                                                           |
-| **To (recipient)**                    | `0xfeec000000000000000000000000000000000000`                                                                                 | FeeManager precompile.                                                                                  |
-| **Calldata**                          | `0xb306cc70`                                                                                  |  ABI-encoded `executeBlock()`, no arguments.                                                                                                         |
-| **Value**                             | `0`                                                                                                           | No native token transfer.                                                                                             |
-| **Nonce**                             | 0                                                                |                                                                             |
-| **Gas Limit**                         | 0                                                           | Does **not** contribute to block gas accounting.                                                                      |
-| **Gas Price**                         | 0                                                    | Independent of block base fee; does not pay fees.                                                                     |
-| **Signature**                         | `r = 0`, `s = 0`, `yParity = false`                                                                           | Empty signature designates system transaction.                                                                        |
-
-
-The proposer **must** construct and include this transaction when building the block. A block is invalid if the transaction is absent or not in the final position.
-
 ### Gas
 
-Fee swaps are designed to be gas-free from the user perspective. The pre-tx step in each transaction does not cost any gas; nor does the system transaction at the end of each block.
+Fee swaps are designed to be gas-free from the user perspective. The pre-tx step in each transaction does not cost any gas.

@@ -37,6 +37,5 @@ The block body in Tempo retains the canonical Ethereum block body structure, wit
 
 A valid tempo block must contain the following new system transactions
   - **Rewards Registry (start-of-block)** — must be the first transaction in the block body; refreshes validator rewards metadata before user transactions begin.  Detailed specification [here](/protocol/tip20-rewards/spec).
- - **Fee Manager (end-of-block 1/3)** — settles block fee accounting.  Detailed specification [here](/protocol/fees/spec-fee-amm).
- - **Stablecoin DEX (end-of-block 2/3)** — settles stablecoin exchange balances. Detailed specification [here](/protocol/exchange/spec).
-  - **Subblock Metadata (end-of-block 3/3)** — contains metadata about the sub-blocks included in the block. Detailed specification [here](/protocol/blockspace/sub-block-specification).
+ - **Stablecoin DEX (end-of-block 1/2)** — settles stablecoin exchange balances. Detailed specification [here](/protocol/exchange/spec).
+  - **Subblock Metadata (end-of-block 2/2)** — contains metadata about the sub-blocks included in the block. Detailed specification [here](/protocol/blockspace/sub-block-specification).
