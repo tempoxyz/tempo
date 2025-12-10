@@ -47,9 +47,9 @@ pub(super) async fn setup(
     join_all(
         signer_providers
             .iter()
-            .map(|(signer, _)| signer.address())
-            .flat_map(|to| {
+            .flat_map(|(signer, _)| {
                 tokens.iter().map(move |token| {
+                    let to = signer.address();
                     let token = token.clone();
                     Box::pin(async move {
                         let tx = token.mint(to, mint_amount);
