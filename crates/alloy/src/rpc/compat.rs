@@ -181,7 +181,7 @@ fn create_mock_tempo_signature(
         SignatureType::WebAuthn => {
             // Create a dummy WebAuthn signature with the specified size
             // key_data contains the total size of webauthn_data (excluding 128 bytes for public keys)
-            // Default: 200 bytes if no key_data provided
+            // Default: 800 bytes if no key_data provided
 
             // Base clientDataJSON template (50 bytes): {"type":"webauthn.get","challenge":"","origin":""}
             // Authenticator data (37 bytes): 32 rpIdHash + 1 flags + 4 signCount
