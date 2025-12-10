@@ -27,6 +27,11 @@ use serde::{
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "shout_the_secret")]
+pub mod i_reveal_secrets;
+#[cfg(not(feature = "shout_the_secret"))]
+mod i_reveal_secrets;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Peers {
     inner: OrderedAssociated<PublicKey, SocketAddr>,
@@ -194,7 +199,14 @@ impl SigningKey {
     }
 
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), SigningKeyError> {
-        std::fs::write(path, self.to_string()).map_err(SigningKeyErrorKind::Write)?;
+        std::fs::write(
+            path,
+            i_reveal_secrets::shout_this_secret::<true>(
+                self,
+                i_reveal_secrets::i_know_what_i_am_doing().i_swear(),
+            ),
+        )
+        .map_err(SigningKeyErrorKind::Write)?;
         Ok(())
     }
 
@@ -205,7 +217,7 @@ impl SigningKey {
 
 impl Display for SigningKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&const_hex::encode_prefixed(self.inner.encode().as_ref()))
+        f.write_str("XXXXXXXXXXXXX")
     }
 }
 
@@ -256,14 +268,21 @@ impl SigningShare {
     }
 
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), SigningShareError> {
-        std::fs::write(path, self.to_string()).map_err(SigningShareErrorKind::Write)?;
+        std::fs::write(
+            path,
+            i_reveal_secrets::shout_this_secret::<true>(
+                self,
+                i_reveal_secrets::i_know_what_i_am_doing().i_swear(),
+            ),
+        )
+        .map_err(SigningShareErrorKind::Write)?;
         Ok(())
     }
 }
 
 impl Display for SigningShare {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&const_hex::encode_prefixed(self.inner.encode().as_ref()))
+        f.write_str("XXXXXXXXXXXXX")
     }
 }
 

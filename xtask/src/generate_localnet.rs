@@ -5,9 +5,8 @@ use eyre::{OptionExt as _, WrapErr as _, ensure};
 use rand::SeedableRng as _;
 use reth_network_peers::pk2id;
 use secp256k1::SECP256K1;
-use serde::Serialize;
 
-use crate::genesis_args::GenesisArgs;
+use crate::genesis_args::{GenesisArgs, Validator};
 
 /// Generates a config file to run a bunch of validators locally.
 ///
@@ -85,7 +84,7 @@ impl GenerateLocalnet {
         let mut trusted_peers = vec![];
 
         let mut all_configs = vec![];
-        for validator in &consensus_config.validators {
+        for validator in consensus_config.validators {
             let (execution_p2p_signing_key, execution_p2p_identity) = {
                 let (sk, pk) = SECP256K1.generate_keypair(&mut rng);
                 (sk, pk2id(&pk))
@@ -99,18 +98,14 @@ impl GenerateLocalnet {
                 SocketAddr::new(validator.addr.ip(), execution_p2p_port),
             ));
 
-            all_configs.push((
-                validator.clone(),
-                ConfigOutput {
-                    consensus_on_disk_signing_key: validator.signing_key.to_string(),
-                    consensus_on_disk_signing_share: validator.signing_share.to_string(),
+            all_configs.push(ConfigOutput {
+                validator,
 
-                    consensus_p2p_port,
-                    execution_p2p_port,
+                consensus_p2p_port,
+                execution_p2p_port,
 
-                    execution_p2p_disc_key: execution_p2p_signing_key.display_secret().to_string(),
-                },
-            ));
+                execution_p2p_disc_key: execution_p2p_signing_key.display_secret().to_string(),
+            });
         }
 
         let genesis_ser = serde_json::to_string_pretty(&genesis)
@@ -119,8 +114,8 @@ impl GenerateLocalnet {
         std::fs::write(&genesis_dst, &genesis_ser)
             .wrap_err_with(|| format!("failed writing genesis to `{}`", genesis_dst.display()))?;
 
-        for (validator, config) in all_configs.into_iter() {
-            let target_dir = validator.dst_dir(&output);
+        for config in all_configs.into_iter() {
+            let target_dir = config.validator.dst_dir(&output);
             std::fs::create_dir(&target_dir).wrap_err_with(|| {
                 format!(
                     "failed creating target directory to store validator specifici keys at `{}`",
@@ -128,24 +123,29 @@ impl GenerateLocalnet {
                 )
             })?;
 
-            let signing_key_dst = validator.dst_signing_key(&output);
-            std::fs::write(&signing_key_dst, config.consensus_on_disk_signing_key).wrap_err_with(
-                || {
+            let signing_key_dst = config.validator.dst_signing_key(&output);
+            config
+                .validator
+                .signing_key
+                .write_to_file(&signing_key_dst)
+                .wrap_err_with(|| {
                     format!(
                         "failed writing signing key to `{}`",
                         signing_key_dst.display()
                     )
-                },
-            )?;
-            let signing_share_dst = validator.dst_signing_share(&output);
-            std::fs::write(&signing_share_dst, config.consensus_on_disk_signing_share)
+                })?;
+            let signing_share_dst = config.validator.dst_signing_share(&output);
+            config
+                .validator
+                .signing_share
+                .write_to_file(&signing_share_dst)
                 .wrap_err_with(|| {
                     format!(
                         "failed writing signing share to `{}`",
                         signing_share_dst.display()
                     )
                 })?;
-            let enode_key_dst = validator.dst_dir(&output).join("enode.key");
+            let enode_key_dst = config.validator.dst_dir(&output).join("enode.key");
             std::fs::write(&enode_key_dst, config.execution_p2p_disc_key).wrap_err_with(|| {
                 format!(
                     "failed writing signing share to `{}`",
@@ -186,10 +186,9 @@ impl GenerateLocalnet {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub(crate) struct ConfigOutput {
-    consensus_on_disk_signing_key: String,
-    consensus_on_disk_signing_share: String,
+    validator: Validator,
     consensus_p2p_port: u16,
     execution_p2p_port: u16,
     execution_p2p_disc_key: String,

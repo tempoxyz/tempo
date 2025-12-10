@@ -6,6 +6,7 @@ use rand::SeedableRng as _;
 use reth_network_peers::pk2id;
 use secp256k1::SECP256K1;
 use serde::Serialize;
+use tempo_commonware_node_config::i_reveal_secrets;
 
 use crate::genesis_args::GenesisArgs;
 
@@ -117,8 +118,14 @@ impl GenerateDevnet {
                     devmode,
                     node_image_tag: image_tag.clone(),
 
-                    consensus_on_disk_signing_key: validator.signing_key.to_string(),
-                    consensus_on_disk_signing_share: validator.signing_share.to_string(),
+                    consensus_on_disk_signing_key: i_reveal_secrets::shout_this_secret::<true>(
+                        &validator.signing_key,
+                        i_reveal_secrets::i_know_what_i_am_doing().i_swear(),
+                    ),
+                    consensus_on_disk_signing_share: i_reveal_secrets::shout_this_secret::<true>(
+                        &validator.signing_share,
+                        i_reveal_secrets::i_know_what_i_am_doing().i_swear(),
+                    ),
 
                     // FIXME(janis): this should not be zero
                     consensus_fee_recipient: Address::ZERO,
