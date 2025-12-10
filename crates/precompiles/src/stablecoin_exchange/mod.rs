@@ -770,6 +770,8 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
                 .checked_mul(price as u128)
                 .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
                 .ok_or(TempoPrecompileError::under_overflow())?;
+            TIP20Token::from_address(orderbook.quote, self.storage)?
+                .ensure_transfer_authorized(order.maker(), taker)?;
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
         }
 
