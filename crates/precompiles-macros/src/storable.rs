@@ -326,7 +326,13 @@ fn gen_storage_op_impl(fields: &[(&Ident, &Type)], packing: &Ident, op: StorageO
                 }},
                 StorageOp::Delete => quote! {{
                     let target_slot = base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots);
-                    <#ty as crate::storage::Storable>::delete(storage, target_slot, #layout_ctx)?;
+                    if !<#ty as crate::storage::StorableType>::IS_DYNAMIC && #layout_ctx.packed_offset().is_none() {
+                        for offset in 0..<#ty as crate::storage::StorableType>::SLOTS {
+                            storage.store(target_slot + ::alloy::primitives::U256::from(offset), ::alloy::primitives::U256::ZERO)?;
+                        }
+                    } else {
+                        <#ty as crate::storage::Storable>::delete(storage, target_slot, #layout_ctx)?;
+                    }
                 }},
             }
         });

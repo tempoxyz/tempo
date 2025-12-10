@@ -19,6 +19,7 @@ use alloy::primitives::{Address, Bytes, U256, keccak256};
 
 impl StorableType for Bytes {
     const LAYOUT: Layout = Layout::Slots(1);
+    const IS_DYNAMIC: bool = true;
     type Handler = Slot<Self>;
 
     fn handle(slot: U256, ctx: LayoutCtx, address: Address) -> Self::Handler {
@@ -28,6 +29,7 @@ impl StorableType for Bytes {
 
 impl StorableType for String {
     const LAYOUT: Layout = Layout::Slots(1);
+    const IS_DYNAMIC: bool = true;
     type Handler = Slot<Self>;
 
     fn handle(slot: U256, ctx: LayoutCtx, address: Address) -> Self::Handler {

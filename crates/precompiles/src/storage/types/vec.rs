@@ -29,6 +29,7 @@ where
 {
     /// Vec base slot occupies one full storage slot (stores length).
     const LAYOUT: Layout = Layout::Slots(1);
+    const IS_DYNAMIC: bool = true;
     type Handler = VecHandler<T>;
 
     fn handle(slot: U256, _ctx: LayoutCtx, address: Address) -> Self::Handler {
