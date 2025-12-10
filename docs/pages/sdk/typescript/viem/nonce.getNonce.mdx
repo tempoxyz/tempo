@@ -1,8 +1,8 @@
 import ReadAccountParameters from '../../../../snippets/read-account-parameters.mdx'
 
-# `dex.getBalance`
+# `nonce.getNonce`
 
-Gets a user's token balance on the Stablecoin DEX.  
+Gets the nonce for an account and nonce key. This is useful for managing multiple nonce lanes for parallel transaction submission.
 
 ## Usage
 
@@ -11,13 +11,13 @@ Gets a user's token balance on the Stablecoin DEX.
 ```ts twoslash [example.ts]
 import { client } from './viem.config'
 
-const balance = await client.dex.getBalance({
+const nonce = await client.nonce.getNonce({
   account: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
-  token: '0x20c0000000000000000000000000000000000001',
+  nonceKey: 1n,
 })
 
-console.log('DEX balance:', balance)
-// @log: DEX balance: 1000000000n
+console.log('Nonce:', nonce)
+// @log: Nonce: 42n
 ```
 
 ```ts twoslash [viem.config.ts] filename="viem.config.ts"
@@ -32,18 +32,21 @@ console.log('DEX balance:', balance)
 type ReturnType = bigint
 ```
 
+The current nonce value for the given account and nonce key.
+
 ## Parameters
 
 ### account
 
 - **Type:** `Address`
 
-Address of the account.
+Account address to get the nonce for.
 
-### token
+### nonceKey
 
-- **Type:** `Address`
+- **Type:** `bigint`
 
-Address of the token.
+Nonce key (must be > 0, key 0 is reserved for protocol nonces).
 
 <ReadAccountParameters />
+

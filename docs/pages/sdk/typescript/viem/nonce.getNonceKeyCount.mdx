@@ -1,8 +1,8 @@
 import ReadAccountParameters from '../../../../snippets/read-account-parameters.mdx'
 
-# `token.getBalance`
+# `nonce.getNonceKeyCount`
 
-Gets the token balance of an address.
+Gets the number of active nonce keys for an account. Active nonce keys are keys that have been used at least once.
 
 ## Usage
 
@@ -11,13 +11,12 @@ Gets the token balance of an address.
 ```ts twoslash [example.ts]
 import { client } from './viem.config'
 
-const balance = await client.token.getBalance({
+const count = await client.nonce.getNonceKeyCount({
   account: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
-  token: '0x20c0000000000000000000000000000000000000',
 })
 
-console.log('Balance:', balance)
-// @log: Balance: 10500000n
+console.log('Active nonce keys:', count)
+// @log: Active nonce keys: 3n
 ```
 
 ```ts twoslash [viem.config.ts] filename="viem.config.ts"
@@ -29,8 +28,10 @@ console.log('Balance:', balance)
 ## Return Type
 
 ```ts
-type ReturnType = bigint // Balance amount
+type ReturnType = bigint
 ```
+
+The number of active nonce keys for the account.
 
 ## Parameters
 
@@ -38,13 +39,7 @@ type ReturnType = bigint // Balance amount
 
 - **Type:** `Address`
 
-Account address.
-
-### token
-
-- **Type:** `Address | bigint`
-
-Address or ID of the TIP20 token.
+Account address to get the active nonce key count for.
 
 <ReadAccountParameters />
 
