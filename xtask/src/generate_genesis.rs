@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use eyre::{OptionExt, WrapErr as _};
+use eyre::WrapErr as _;
 
 use crate::genesis_args::GenesisArgs;
 
@@ -25,25 +25,19 @@ impl GenerateGenesis {
             .await
             .wrap_err("failed generating genesis")?;
 
-        // Canonicalize output path
-        let output = if output.is_absolute() {
-            output
-        } else {
-            std::env::current_dir()?.join(output)
-        };
-
         let json =
             serde_json::to_string_pretty(&genesis).wrap_err("failed encoding genesis as JSON")?;
 
-        std::fs::create_dir_all(output.parent().ok_or_eyre("no parent for output path")?)
-            .wrap_err_with(|| {
-                format!(
-                    "failed to create directory and parents for `{}`",
-                    output.display()
-                )
-            })?;
-        std::fs::write(&output, json)
-            .wrap_err_with(|| format!("failed writing genesis to file `{}`", output.display()))?;
+        std::fs::create_dir_all(&output).wrap_err_with(|| {
+            format!(
+                "failed to create directory and parents for `{}`",
+                output.display()
+            )
+        })?;
+        let genesis_dst = output.join("genesis.json");
+        std::fs::write(&genesis_dst, json).wrap_err_with(|| {
+            format!("failed writing genesis to file `{}`", genesis_dst.display())
+        })?;
 
         if let Some(consensus_config) = consensus_config {
             println!(
