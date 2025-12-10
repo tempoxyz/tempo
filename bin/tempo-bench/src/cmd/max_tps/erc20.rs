@@ -1,10 +1,9 @@
 use super::*;
 use alloy::sol;
 
-// Generate bindings from artifact
 sol! {
-    #[allow(missing_docs)]
     #[sol(rpc)]
+    #[allow(clippy::too_many_arguments)]
     MockERC20,
     "artifacts/MockERC20.json"
 }
@@ -22,36 +21,35 @@ pub(super) async fn setup(
         .first()
         .ok_or_eyre("No signer providers found")?;
 
-    info!("Deploying ERC-20 tokens");
+    info!(num_tokens, "Deploying ERC-20 tokens");
     let progress = ProgressBar::new(num_tokens as u64);
 
     // Deploy tokens
     let tokens = stream::iter((0..num_tokens).progress_with(progress))
         .map(|i| {
-            let name = format!("BenchToken{}", i);
-            let symbol = format!("BENCH{}", i);
-            deploy_erc20(provider.clone(), name, symbol)
+            MockERC20::deploy(
+                provider.clone(),
+                format!("BenchToken{}", i),
+                format!("BENCH{}", i),
+                18,
+            )
         })
         .buffered(max_concurrent_requests)
         .try_collect::<Vec<_>>()
         .await?;
 
-    let token_addresses: Vec<Address> = tokens
-        .iter()
-        .map(|token| *token.address())
-        .collect();
+    let token_addresses: Vec<Address> = tokens.iter().map(|token| *token.address()).collect();
 
     // Mint tokens to all signers
-    let mint_amount = U256::from(u128::MAX) / U256::from(signer_providers.len());
+    let mint_amount = U256::MAX / U256::from(signer_providers.len());
     info!(%mint_amount, "Minting ERC-20 tokens");
 
     join_all(
         signer_providers
             .iter()
-            .flat_map(|(signer, _)| {
-                tokens.iter().map(move |token| {
-                    let token = token.clone();
-                    let to = signer.address();
+            .map(|(signer, _)| signer.address())
+            .flat_map(|to| {
+                tokens.iter().cloned().map(move |token| {
                     Box::pin(async move {
                         let tx = token.mint(to, mint_amount);
                         tx.send().await
@@ -66,14 +64,4 @@ pub(super) async fn setup(
     .context("Failed to mint ERC-20 tokens")?;
 
     Ok(token_addresses)
-}
-
-async fn deploy_erc20(
-    provider: DynProvider<TempoNetwork>,
-    name: String,
-    symbol: String,
-) -> eyre::Result<MockERC20::MockERC20Instance<DynProvider<TempoNetwork>, TempoNetwork>> {
-    // Deploy with 18 decimals (standard for ERC-20)
-    let contract = MockERC20::deploy(provider, name, symbol, 18u8).await?;
-    Ok(contract)
 }

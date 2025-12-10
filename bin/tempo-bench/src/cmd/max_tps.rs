@@ -296,7 +296,6 @@ impl MaxTpsArgs {
         )
         .await?;
 
-        // Setup ERC-20 tokens if erc20_weight > 0
         let erc20_tokens = if self.erc20_weight > 0.0 {
             let num_erc20_tokens = 2;
             info!(num_erc20_tokens, "Setting up ERC-20 tokens");
