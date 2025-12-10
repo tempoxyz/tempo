@@ -90,7 +90,7 @@ impl TempoPooledTransaction {
 
     /// Returns whether this is a payment transaction.
     ///
-    /// Based on classifier v1: payment if tx.to has TIP20 reserved prefix.
+    /// True if `to` has TIP20 prefix and calldata is a valid `transfer` or `transferWithMemo`.
     pub fn is_payment(&self) -> bool {
         self.is_payment
     }
