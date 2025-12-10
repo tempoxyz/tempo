@@ -1,4 +1,5 @@
 mod dex;
+mod erc20;
 
 use alloy_consensus::Transaction;
 use itertools::Itertools;
@@ -140,6 +141,10 @@ pub struct MaxTpsArgs {
     /// A weight that determines the likelihood of generating a DEX swapExactAmountIn transaction.
     #[arg(long, default_value_t = 0.19)]
     swap_weight: f64,
+
+    /// A weight that determines the likelihood of generating an ERC-20 transfer transaction.
+    #[arg(long, default_value_t = 0.0)]
+    erc20_weight: f64,
 
     /// An amount of receipts to wait for after sending all the transactions.
     #[arg(long, default_value_t = 100)]
@@ -291,11 +296,27 @@ impl MaxTpsArgs {
         )
         .await?;
 
+        // Setup ERC-20 tokens if erc20_weight > 0
+        let erc20_tokens = if self.erc20_weight > 0.0 {
+            let num_erc20_tokens = 2;
+            info!(num_erc20_tokens, "Setting up ERC-20 tokens");
+            erc20::setup(
+                signer_providers,
+                num_erc20_tokens,
+                self.max_concurrent_requests,
+                self.max_concurrent_transactions,
+            )
+            .await?
+        } else {
+            Vec::new()
+        };
+
         // Generate all transactions
         let total_txs = self.tps * self.duration;
         let tip20_weight = (self.tip20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let place_order_weight = (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
+        let erc20_weight = (self.erc20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let transactions = generate_transactions(GenerateTransactionsInput {
             total_txs,
             accounts,
@@ -304,8 +325,10 @@ impl MaxTpsArgs {
             tip20_weight,
             place_order_weight,
             swap_weight,
+            erc20_weight,
             quote_token,
             user_tokens,
+            erc20_tokens,
         })
         .await
         .context("Failed to generate transactions")?;
@@ -500,8 +523,10 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         tip20_weight,
         place_order_weight,
         swap_weight,
+        erc20_weight,
         quote_token,
         user_tokens,
+        erc20_tokens,
     } = input;
 
     let txs_per_sender = total_txs / accounts;
@@ -512,9 +537,9 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
 
     info!(transactions = total_txs, "Generating transactions");
 
-    const TX_TYPES: usize = 3;
+    const TX_TYPES: usize = 4;
     // Weights for random sampling for each transaction type
-    let tx_weights: [u64; TX_TYPES] = [tip20_weight, swap_weight, place_order_weight];
+    let tx_weights: [u64; TX_TYPES] = [tip20_weight, swap_weight, place_order_weight, erc20_weight];
     // Cached gas estimates for each transaction type
     let gas_estimates: [Arc<OnceLock<(u128, u128, u64)>>; TX_TYPES] = Default::default();
 
@@ -522,6 +547,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
     let transfers = Arc::new(AtomicUsize::new(0));
     let swaps = Arc::new(AtomicUsize::new(0));
     let orders = Arc::new(AtomicUsize::new(0));
+    let erc20_transfers = Arc::new(AtomicUsize::new(0));
 
     let builders = ProgressBar::new(total_txs)
         .wrap_stream(stream::iter(
@@ -574,6 +600,16 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                             * TICK_SPACING;
                     exchange
                         .place(token, MIN_ORDER_AMOUNT, true, tick)
+                        .into_transaction_request()
+                }
+                3 => {
+                    erc20_transfers.fetch_add(1, Ordering::Relaxed);
+                    let token_address = erc20_tokens.choose(&mut rand::rng()).copied().unwrap();
+                    let token = erc20::MockERC20::new(token_address, provider.clone());
+
+                    // Transfer minimum possible amount
+                    token
+                        .transfer(Address::random(), U256::ONE)
                         .into_transaction_request()
                 }
                 _ => unreachable!("Only {TX_TYPES} transaction types are supported"),
@@ -908,6 +944,8 @@ struct GenerateTransactionsInput<F: TxFiller<TempoNetwork>> {
     tip20_weight: u64,
     place_order_weight: u64,
     swap_weight: u64,
+    erc20_weight: u64,
     quote_token: Address,
     user_tokens: Vec<Address>,
+    erc20_tokens: Vec<Address>,
 }
