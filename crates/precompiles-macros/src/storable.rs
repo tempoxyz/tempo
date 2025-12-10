@@ -83,10 +83,13 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         },
     );
 
+    // Extract just the types for IS_DYNAMIC calculation
+    let direct_tys: Vec<_> = direct_fields.iter().map(|(_, ty)| *ty).collect();
+
     // Generate load/store/delete implementations for scalar fields only
-    let load_impl = gen_storage_op_impl(&direct_fields, &mod_ident, StorageOp::Load);
-    let store_impl = gen_storage_op_impl(&direct_fields, &mod_ident, StorageOp::Store);
-    let delete_impl = gen_storage_op_impl(&direct_fields, &mod_ident, StorageOp::Delete);
+    let load_impl = gen_load_store_impl(&direct_fields, &mod_ident, true);
+    let store_impl = gen_load_store_impl(&direct_fields, &mod_ident, false);
+    let delete_impl = gen_delete_impl(&direct_fields, &mod_ident);
 
     // Generate handler struct for field access
     let handler_struct = gen_handler_struct(strukt, &layout_fields, &mod_ident);
@@ -100,6 +103,12 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         impl #impl_generics crate::storage::StorableType for #strukt #ty_generics #where_clause {
             // Structs cannot be packed, so they must take full slots
             const LAYOUT: crate::storage::Layout = crate::storage::Layout::Slots(#mod_ident::SLOT_COUNT);
+
+            // A struct is dynamic if any of its fields is dynamic
+            const IS_DYNAMIC: bool = #(
+                <#direct_tys as crate::storage::StorableType>::IS_DYNAMIC
+            )||*;
+
             type Handler = #handler_name;
 
             fn handle(slot: ::alloy::primitives::U256, _ctx: crate::storage::LayoutCtx, address: ::alloy::primitives::Address) -> Self::Handler {
@@ -285,59 +294,88 @@ fn gen_handler_struct(
     }
 }
 
-/// The type of storage operation to generate code for.
-enum StorageOp {
-    Load,
-    Store,
-    Delete,
-}
+/// Generate `fn load()` or `fn store()` implementation.
+fn gen_load_store_impl(
+    fields: &[(&Ident, &Type)],
+    packing: &Ident,
+    is_load: bool,
+) -> TokenStream {
+    let field_ops = fields.iter().enumerate().map(|(idx, (name, ty))| {
+        let (prev_slot_const_ref, next_slot_const_ref) =
+            packing::get_neighbor_slot_refs(idx, fields, packing, |(name, _ty)| name);
 
-/// Generate `fn load()`, `fn store()`, or `fn delete()` implementation.
-fn gen_storage_op_impl(fields: &[(&Ident, &Type)], packing: &Ident, op: StorageOp) -> TokenStream {
-    let field_ops = fields
-        .iter()
-        .enumerate()
-        .map(|(idx, (name, ty))| {
-            let (prev_slot_const_ref, next_slot_const_ref) =
-                packing::get_neighbor_slot_refs(idx, fields, packing, |(name, _ty)| name);
+        // Generate `LayoutCtx` expression with compile-time packing detection
+        let loc_const = PackingConstants::new(name).location();
+        let layout_ctx = packing::gen_layout_ctx_expr(
+            ty,
+            false,
+            quote! { #packing::#loc_const.offset_slots },
+            quote! { #packing::#loc_const.offset_bytes },
+            prev_slot_const_ref,
+            next_slot_const_ref,
+        );
 
-            // Generate `LayoutCtx` expression with compile-time packing detection
-            let loc_const = PackingConstants::new(name).location();
-            let layout_ctx = packing::gen_layout_ctx_expr(
-                ty,
-                false,
-                quote! { #packing::#loc_const.offset_slots },
-                quote! { #packing::#loc_const.offset_bytes },
-                prev_slot_const_ref,
-                next_slot_const_ref,
-            );
-
-            match op {
-                StorageOp::Load => quote! {
-                    let #name = <#ty as crate::storage::Storable>::load(
-                        storage,
-                        base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots),
-                        #layout_ctx
-                    )?;
-                },
-                StorageOp::Store => quote! {{
-                    let target_slot = base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots);
-                    <#ty as crate::storage::Storable>::store(&self.#name, storage, target_slot, #layout_ctx)?;
-                }},
-                StorageOp::Delete => quote! {{
-                    let target_slot = base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots);
-                    if !<#ty as crate::storage::StorableType>::IS_DYNAMIC && #layout_ctx.packed_offset().is_none() {
-                        for offset in 0..<#ty as crate::storage::StorableType>::SLOTS {
-                            storage.store(target_slot + ::alloy::primitives::U256::from(offset), ::alloy::primitives::U256::ZERO)?;
-                        }
-                    } else {
-                        <#ty as crate::storage::Storable>::delete(storage, target_slot, #layout_ctx)?;
-                    }
-                }},
+        if is_load {
+            quote! {
+                let #name = <#ty as crate::storage::Storable>::load(
+                    storage,
+                    base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots),
+                    #layout_ctx
+                )?;
             }
-        });
+        } else {
+            quote! {{
+                let target_slot = base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots);
+                <#ty as crate::storage::Storable>::store(&self.#name, storage, target_slot, #layout_ctx)?;
+            }}
+        }
+    });
 
     quote! {
         #(#field_ops)*
+    }
+}
+
+/// Generate `fn delete()` implementation with optimized slot zeroing.
+///
+/// This function generates a two-phase delete:
+/// 1. Phase 1: Delete dynamic fields first (they need to read their slot to find derived data)
+/// 2. Phase 2: Zero slots that have at least one non-dynamic field (once per slot, not per field)
+fn gen_delete_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
+    // Phase 1: Delete dynamic fields first (they handle their own cleanup including zeroing)
+    let dynamic_deletes = fields.iter().map(|(name, ty)| {
+        let loc_const = PackingConstants::new(name).location();
+        quote! {
+            if <#ty as crate::storage::StorableType>::IS_DYNAMIC {
+                <#ty as crate::storage::Storable>::delete(
+                    storage,
+                    base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots),
+                    crate::storage::LayoutCtx::FULL
+                )?;
+            }
+        }
+    });
+
+    // Phase 2: Zero slots that have at least one non-dynamic field
+    // Generate condition checks for each field: is this field at the current slot and non-dynamic?
+    let has_non_dynamic_checks = fields.iter().map(|(name, ty)| {
+        let loc_const = PackingConstants::new(name).location();
+        quote! {
+            (slot_offset == #packing::#loc_const.offset_slots && !<#ty as crate::storage::StorableType>::IS_DYNAMIC)
+        }
+    });
+
+    quote! {
+        #(#dynamic_deletes)*
+
+        for slot_offset in 0..#packing::SLOT_COUNT {
+            // Only zero this slot if at least one non-dynamic field lives here
+            if #(#has_non_dynamic_checks)||* {
+                storage.store(
+                    base_slot + ::alloy::primitives::U256::from(slot_offset),
+                    ::alloy::primitives::U256::ZERO
+                )?;
+            }
+        }
     }
 }
