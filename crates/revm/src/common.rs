@@ -15,7 +15,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
     storage::{self, Storable, StorableType, double_mapping_slot, slots::mapping_slot},
     tip_fee_manager,
-    tip20::{self, is_tip20_prefix},
+    tip20::{self, ITIP20, is_tip20_prefix},
     tip403_registry,
 };
 use tempo_primitives::TempoTxEnvelope;
@@ -130,12 +130,30 @@ pub trait TempoStateAccess<T> {
             return Ok(stored_user_token);
         }
 
-        // If tx.to() is a TIP-20 token, use that token as the fee token
-        if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied())
-            && tx.calls().all(|(kind, _)| kind.to() == Some(&to))
-            && self.is_valid_fee_token(to, spec)?
-        {
-            return Ok(to);
+        let mut calls = tx.calls();
+        if let Some((kind, input)) = calls.next() {
+            // Must have a single callee
+            if let Some(to) = kind.to() {
+                // Must be a valid TIP-20 token
+                if self.is_valid_fee_token(*to, spec)?
+                // Caller must be a normal EOA
+                && !tx.is_aa()
+                // All calls must target the same TIP-20
+                && tx.calls().all(|(k, _)| k.to() == Some(to))
+                {
+                    // Must be a transfer-like call
+                    if ITIP20::transferCall::abi_decode(input).is_ok()
+                        || ITIP20::transferWithMemoCall::abi_decode(input).is_ok()
+                        || ITIP20::transferFromCall::abi_decode(input).is_ok()
+                        || ITIP20::transferFromWithMemoCall::abi_decode(input).is_ok()
+                        || ITIP20::startRewardCall::abi_decode(input).is_ok()
+                    {
+                        return Ok(*to);
+                    } else {
+                        return Ok(PATH_USD_ADDRESS);
+                    }
+                }
+            }
         }
 
         // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin Exchange,
