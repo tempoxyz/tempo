@@ -561,10 +561,6 @@ export default defineConfig({
                       link: '/sdk/typescript/viem/amm.watchBurn',
                     },
                     {
-                      text: 'watchFeeSwap',
-                      link: '/sdk/typescript/viem/amm.watchFeeSwap',
-                    },
-                    {
                       text: 'watchMint',
                       link: '/sdk/typescript/viem/amm.watchMint',
                     },
@@ -931,10 +927,6 @@ export default defineConfig({
                       link: '/sdk/typescript/wagmi/actions/amm.watchBurn',
                     },
                     {
-                      text: 'watchFeeSwap',
-                      link: '/sdk/typescript/wagmi/actions/amm.watchFeeSwap',
-                    },
-                    {
                       text: 'watchMint',
                       link: '/sdk/typescript/wagmi/actions/amm.watchMint',
                     },
@@ -1276,10 +1268,6 @@ export default defineConfig({
                     {
                       text: 'useWatchBurn',
                       link: '/sdk/typescript/wagmi/hooks/amm.useWatchBurn',
-                    },
-                    {
-                      text: 'useWatchFeeSwap',
-                      link: '/sdk/typescript/wagmi/hooks/amm.useWatchFeeSwap',
                     },
                     {
                       text: 'useWatchMint',
@@ -1629,13 +1617,13 @@ export default defineConfig({
     process.env['DISABLE_TWOSLASH']! === 'true'
       ? false
       : {
-          compilerOptions: {
-            moduleResolution: ModuleResolutionKind.Bundler,
-          },
-          extraFiles: {
-            'twoslash-env.d.ts': twoslashSupportFile,
-          },
+        compilerOptions: {
+          moduleResolution: ModuleResolutionKind.Bundler,
         },
+        extraFiles: {
+          'twoslash-env.d.ts': twoslashSupportFile,
+        },
+      },
   vite: {
     plugins: [
       {

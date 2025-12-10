@@ -18,20 +18,7 @@ contract FeeManager is IFeeManager, FeeAMM {
     mapping(address => address) public userTokens;
 
     // Fee collection tracking per validator (amount in validator's preferred token)
-    mapping(address => uint256) private collectedFeesByValidator;
-
-    // Track validators that have collected fees
-    address[] private validatorsWithFees;
-    mapping(address => bool) private validatorInFeesArray;
-
-    // Track pools that have pending swaps (for reserve updates)
-    // We track token pairs since we need both tokens to execute swaps
-    struct TokenPair {
-        address userToken;
-        address validatorToken;
-    }
-    TokenPair[] private poolsWithFees;
-    mapping(bytes32 => bool) private poolInFeesArray;
+    mapping(address => uint256) public collectedFeesByValidator;
 
     modifier onlyDirectCall() {
         // In the real implementation, the protocol does a check that this is the top frame,
@@ -43,8 +30,8 @@ contract FeeManager is IFeeManager, FeeAMM {
     function setValidatorToken(address token) external onlyDirectCall {
         // prevent changing within the validator's own block to avoid edge cases
         require(msg.sender != block.coinbase, "CANNOT_CHANGE_WITHIN_BLOCK");
-        // prevent changing if validator already has collected fees in this block
-        require(collectedFeesByValidator[msg.sender] == 0, "CANNOT_CHANGE_WITH_PENDING_FEES");
+        // prevent changing if validator has uncollected fees
+        require(collectedFeesByValidator[msg.sender] == 0, "CANNOT_CHANGE_WITH_COLLECTED_FEES");
         _requireUSDTIP20(token);
         validatorTokens[msg.sender] = token;
         emit ValidatorTokenSet(msg.sender, token);
@@ -70,82 +57,35 @@ contract FeeManager is IFeeManager, FeeAMM {
             validatorToken = PATH_USD;
         }
 
-        // If user token is different from validator token, reserve AMM liquidity
-        if (userToken != validatorToken) {
-            reserveLiquidity(userToken, validatorToken, maxAmount);
-        }
-
         // Collect the maximum fee up front from the user
         ITIP20(userToken).transferFeePreTx(user, maxAmount);
-
-        // Track validator for fee distribution
-        if (!validatorInFeesArray[feeRecipient]) {
-            validatorsWithFees.push(feeRecipient);
-            validatorInFeesArray[feeRecipient] = true;
-        }
 
         if (userToken == validatorToken) {
             // Direct fee in validator's preferred token
             collectedFeesByValidator[feeRecipient] += maxAmount;
         } else {
-            // Compute expected output immediately (simplified approach)
-            uint256 expectedOut = (maxAmount * M) / SCALE;
-            collectedFeesByValidator[feeRecipient] += expectedOut;
-
-            // Track pool for swap execution (to update reserves)
-            bytes32 poolId = getPoolId(userToken, validatorToken);
-            if (!poolInFeesArray[poolId]) {
-                poolsWithFees.push(TokenPair(userToken, validatorToken));
-                poolInFeesArray[poolId] = true;
-            }
+            // Execute fee swap via the AMM
+            uint256 amountOut = executeFeeSwap(userToken, validatorToken, maxAmount);
+            collectedFeesByValidator[feeRecipient] += amountOut;
         }
     }
 
-    // This function is called once in a special transaction required by the protocol at the end of each block.
-    // It should never revert. If it does, there is a design flaw in the protocol.
-    function executeBlock() external {
-        require(msg.sender == address(0), "ONLY_PROTOCOL");
+    /// @notice Allows a validator to receive their accumulated fees
+    /// @dev Can be called by anyone, but fees are always sent to the validator
+    /// @param validator The validator address to distribute fees to
+    function distributeFees(address validator) external {
+        uint256 amount = collectedFeesByValidator[validator];
+        if (amount == 0) return;
 
-        // Execute pending swaps for all pools (to update reserves)
-        // Note: We execute swaps per pool, not per validator, since pools are shared
-        for (uint256 i = 0; i < poolsWithFees.length; i++) {
-            TokenPair memory pair = poolsWithFees[i];
-
-            // Check if pool exists and has pending swaps
-            FeeAMM.Pool memory pool = this.getPool(pair.userToken, pair.validatorToken);
-            bytes32 poolId = getPoolId(pair.userToken, pair.validatorToken);
-
-            // Execute swap if there are pending swaps (updates reserves)
-            // Note: We don't use the return value since we've already computed expectedOut
-            if (pendingFeeSwapIn[poolId] > 0) {
-                executePendingFeeSwaps(pair.userToken, pair.validatorToken);
-            }
-
-            // Clear tracking
-            poolInFeesArray[poolId] = false;
+        address validatorToken = validatorTokens[validator];
+        if (validatorToken == address(0)) {
+            validatorToken = PATH_USD;
         }
-        delete poolsWithFees;
 
-        // Distribute fees to all validators
-        for (uint256 i = 0; i < validatorsWithFees.length; i++) {
-            address validator = validatorsWithFees[i];
-            uint256 amount = collectedFeesByValidator[validator];
+        collectedFeesByValidator[validator] = 0;
+        IERC20(validatorToken).transfer(validator, amount);
 
-            if (amount > 0) {
-                address validatorToken = validatorTokens[validator];
-                // Fallback to pathUSD if validator hasn't set one
-                if (validatorToken == address(0)) {
-                    validatorToken = PATH_USD;
-                }
-
-                IERC20(validatorToken).transfer(validator, amount);
-                collectedFeesByValidator[validator] = 0;
-            }
-
-            // Clear tracking
-            validatorInFeesArray[validator] = false;
-        }
-        delete validatorsWithFees;
+        emit FeesDistributed(validator, validatorToken, amount);
     }
 
 }
