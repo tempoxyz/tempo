@@ -7,7 +7,7 @@ import LucideBookOpen from '~icons/lucide/book-open'
 
 # Executing Swaps
 
-Execute swaps between stablecoins on the exchange. Swaps execute immediately against existing orders in the order book, providing instant liquidity for cross-stablecoin payments.
+Execute swaps between stablecoins on the exchange. Swaps execute immediately against existing orders in the orderbook, providing instant liquidity for cross-stablecoin payments.
 
 By the end of this guide you will be able to execute swaps, get price quotes, and manage slippage protection.
 
@@ -382,7 +382,7 @@ function Sell() {
 
 ### Handling insufficient liquidity
 
-Quote requests will fail with an `InsufficientLiquidity` error if there isn't enough liquidity in the order book to satisfy the requested amount.
+Quote requests will fail with an `InsufficientLiquidity` error if there isn't enough liquidity in the orderbook to satisfy the requested amount.
 
 Handle this error when fetching quotes:
 
@@ -431,14 +431,14 @@ Use `minAmountOut` or `maxAmountIn` to protect against unfavorable price movemen
 
 <Card.Container>
   <Card.Link
-    description="Learn about how the Stablecoin Exchange interacts with your balances"
-    href="/documentation/protocol/exchange/exchange-balance"
+    description="Learn about how the Stablecoin DEX interacts with your balances"
+    href="/protocol/exchange/exchange-balance"
     icon={LucideWallet}
     title="Exchange Balance"
   />
   <Card.Link
     description="Learn about the technical details of swap execution"
-    href="/documentation/protocol/exchange/executing-swaps"
+    href="/protocol/exchange/executing-swaps"
     icon={LucideArrowLeftRight}
     title="Swap Execution Details"
   />

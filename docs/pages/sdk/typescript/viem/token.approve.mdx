@@ -54,14 +54,14 @@ const { args }
 
 ```ts
 type ReturnType = {
-  /** Amount of tokens approved */
-  amount: bigint
   /** Address of the token owner */
   owner: Address
-  /** Transaction receipt */
-  receipt: TransactionReceipt
   /** Address of the spender */
   spender: Address
+  /** Amount of tokens approved */
+  amount: bigint
+  /** Transaction receipt */
+  receipt: TransactionReceipt
 }
 ```
 

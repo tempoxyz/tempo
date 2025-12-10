@@ -11,11 +11,10 @@ import { client } from './viem.config'
 
 const unwatch = client.amm.watchFeeSwap({
   onFeeSwap: (args, log) => {
-    console.log('Amount in:', args.amountIn)
-    console.log('Amount out:', args.amountOut)
-    console.log('Recipient:', args.to)
     console.log('User token:', args.userToken)
     console.log('Validator token:', args.validatorToken)
+    console.log('Amount in:', args.amountIn)
+    console.log('Amount out:', args.amountOut)
   },
 })
 
@@ -41,22 +40,20 @@ Returns a function to unsubscribe from the event.
 
 ### onFeeSwap
 
-- **Type:**
+- **Type:** `function`
 
 ```ts
 declare function onFeeSwap(args: Args, log: Log): void
 
 type Args = {
-  /** Amount of user token swapped in */
-  amountIn: bigint
-  /** Amount of validator token received */
-  amountOut: bigint
-  /** Address that received the validator token */
-  to: Address
   /** Address of the user token */
   userToken: Address
   /** Address of the validator token */
   validatorToken: Address
+  /** Amount of user token swapped in */
+  amountIn: bigint
+  /** Amount of validator token received */
+  amountOut: bigint
 }
 ```
 
@@ -64,14 +61,38 @@ Callback to invoke when a fee swap occurs.
 
 ### userToken (optional)
 
-- **Type:** `Address | undefined`
+- **Type:** `Address | bigint`
 
-Filter events by user token address.
+Address or ID of the user token to filter events.
 
 ### validatorToken (optional)
 
-- **Type:** `Address | undefined`
+- **Type:** `Address | bigint`
 
-Filter events by validator token address.
+Address or ID of the validator token to filter events.
+
+### fromBlock (optional)
+
+- **Type:** `bigint`
+
+Block to start listening from.
+
+### onError (optional)
+
+- **Type:** `(error: Error) => void`
+
+The callback to call when an error occurred when trying to get for a new block.
+
+### poll (optional)
+
+- **Type:** `true`
+
+Whether to use polling.
+
+### pollingInterval (optional)
+
+- **Type:** `number`
+
+Polling frequency (in ms). Defaults to Client's pollingInterval config.
 
 

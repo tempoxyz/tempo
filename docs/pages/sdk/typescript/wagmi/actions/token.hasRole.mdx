@@ -2,7 +2,7 @@ import ReadParameters from '../../../../../snippets/read-parameters.mdx'
 
 # `token.hasRole`
 
-Checks if an address has a specific role for a TIP-20 token. [Learn more about token roles](/documentation/protocol/tip403/spec)
+Checks if an address has a specific role for a TIP-20 token. [Learn more about token roles](/protocol/tip403/spec)
 
 ## Usage
 
@@ -12,7 +12,7 @@ Checks if an address has a specific role for a TIP-20 token. [Learn more about t
 import { Actions } from 'tempo.ts/wagmi'
 import { config } from './wagmi.config'
 
-const hasRole = await Actions.token.hasRoleSync(config, {
+const hasRole = await Actions.token.hasRole(config, {
   account: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
   role: 'issuer',
   token: '0x20c0000000000000000000000000000000000011',
@@ -45,7 +45,7 @@ Address to check for the role.
 
 ### role
 
-- **Type:** `TokenRole`
+- **Type:** `"defaultAdmin" | "pause" | "unpause" | "issuer" | "burnBlocked"`
 
 Role to check.
 

@@ -2,7 +2,7 @@ import WriteParameters from '../../../../../snippets/write-parameters.mdx'
 
 # `amm.mint`
 
-Mints liquidity tokens by providing a token pair. [Learn more about the Fee AMM](/documentation/protocol/fees/spec-fee-amm)
+Mints liquidity tokens by providing a token pair. [Learn more about the Fee AMM](/protocol/fees/spec-fee-amm)
 
 ## Usage
 
@@ -15,8 +15,8 @@ import { config } from './wagmi.config'
 
 const { liquidity, receipt } = await Actions.amm.mintSync(config, {
   to: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
-  userToken: '0x20c0000000000000000000000000000000000000',
-  validatorToken: '0x20c0000000000000000000000000000000000001',
+  userTokenAddress: '0x20c0000000000000000000000000000000000000',
+  validatorTokenAddress: '0x20c0000000000000000000000000000000000001',
   validatorTokenAmount: parseUnits('100', 6),
 })
 
@@ -46,8 +46,8 @@ import { config } from './wagmi.config'
 
 const hash = await Actions.amm.mint(config, {
   to: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
-  userToken: '0x20c0000000000000000000000000000000000000',
-  validatorToken: '0x20c0000000000000000000000000000000000001',
+  userTokenAddress: '0x20c0000000000000000000000000000000000000',
+  validatorTokenAddress: '0x20c0000000000000000000000000000000000001',
   validatorTokenAmount: parseUnits('100', 6),
 })
 const receipt = await waitForTransactionReceipt(config, { hash })
@@ -85,17 +85,17 @@ type ReturnType = {
 
 Address to mint the liquidity tokens to.
 
-### userToken
+### userTokenAddress
 
 - **Type:** `Address | bigint`
 
-Address or ID of the user token.
+User token address.
 
-### validatorToken
+### validatorTokenAddress
 
 - **Type:** `Address | bigint`
 
-Address or ID of the validator token.
+Validator token address.
 
 ### validatorTokenAmount
 

@@ -1,0 +1,41 @@
+import LucideFileText from '~icons/lucide/file-text'
+import LucideShield from '~icons/lucide/shield'
+import LucideUsers from '~icons/lucide/users'
+import LucideLock from '~icons/lucide/lock'
+import LucideSettings from '~icons/lucide/settings'
+import * as Card from "../../../components/Card.tsx"
+
+# TIP-403 Policy Registry
+
+## What is TIP-403?
+
+TIP-403 is Tempo's policy registry system that enables TIP-20 tokens to enforce access control. Instead of each token implementing its own logic, TIP-403 provides a registry where policies can be created once and shared across multiple tokens.
+
+## Links
+
+<Card.Container>
+  <Card.Link
+    description="Learn how TIP-403 works and its features"
+    href="/protocol/tip403/spec"
+    icon={LucideFileText}
+    title="TIP-403 Specification"
+  />
+  <Card.Link
+    description="Manage your stablecoin's permissions, supply, and compliance settings"
+    href="/guide/issuance/manage-stablecoin"
+    icon={LucideSettings}
+    title="Guide: Manage Your Stablecoin"
+  />
+  <Card.Link
+    description="Solidity reference implementation of the TIP-403 standard"
+    href="https://github.com/tempoxyz/tempo/blob/main/docs/specs/src/TIP403Registry.sol"
+    icon={LucideFileText}
+    title="Reference Implementation"
+  />
+  <Card.Link
+    description="Rust implementation in the Tempo client"
+    href="https://github.com/tempoxyz/tempo/tree/main/crates/precompiles/src/tip403_registry"
+    icon={LucideFileText}
+    title="Rust Implementation"
+  />
+</Card.Container>

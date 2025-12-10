@@ -1,21 +1,37 @@
-import { Faucet } from '../../components/Faucet.tsx'
+---
+mipd: true
+---
+
 import * as Demo from '../../components/guides/Demo.tsx'
-import { ConnectWallet } from '../../components/ConnectWallet.tsx'
+import * as Step from '../../components/guides/steps'
+import * as Token from '../../components/guides/tokens'
+
 
 ## Faucet
 
 Get test stablecoins funded to your account using the form below after you connect your wallet.
 
-If you do not have a browser wallet, see how to use [Passkeys to create a wallet](/guide/use-accounts/embed-passkeys).
+<Demo.Container name="Use the Faucet" footerVariant="balances" tokens={[Token.pathUsd, Token.alphaUsd, Token.betaUsd, Token.thetaUsd]} balanceSource="wallet">
+  <Step.ConnectWallet stepNumber={1} />
+  <Step.AddFundsToWallet stepNumber={2} />
+  <Step.AddTokensToWallet stepNumber={3} />
+  <Step.SetFeeToken stepNumber={4} last />
+</Demo.Container>
 
-<ConnectWallet />
-<Faucet />
 
 The faucet funds the following assets.
 
+
 | Asset | Address |Amount|
 |-------|---------|----:|
-| [pathUSD](https://explore.tempo.xyz/address/0x20c0000000000000000000000000000000000000) | `0x20c0000000000000000000000000000000000000` | `1M` |
 | [AlphaUSD](https://explore.tempo.xyz/address/0x20c0000000000000000000000000000000000001) | `0x20c0000000000000000000000000000000000001` | `1M` |
 | [BetaUSD](https://explore.tempo.xyz/address/0x20c0000000000000000000000000000000000002) | `0x20c0000000000000000000000000000000000002` | `1M` |
 | [ThetaUSD](https://explore.tempo.xyz/address/0x20c0000000000000000000000000000000000003)   | `0x20c0000000000000000000000000000000000003` | `1M` |
+
+## Funding others
+
+You can use the faucet to send funds to any address
+
+<Demo.Container name="Send Faucet Funds to Others">
+  <Step.AddFundsToOthers stepNumber={1} last />
+</Demo.Container>

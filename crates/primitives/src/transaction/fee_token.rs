@@ -35,7 +35,7 @@ pub struct TxFeeToken {
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub nonce: u64,
 
-    /// Optional fee token preference (nil means no preference)
+    /// Optional fee token preference (`None` means no preference)
     pub fee_token: Option<Address>,
 
     /// Max Priority fee per gas (EIP-1559)

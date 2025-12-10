@@ -2,7 +2,7 @@ import WriteParameters from '../../../../snippets/write-parameters.mdx'
 
 # `policy.create`
 
-Creates a new transfer policy for token access control. [Learn more about transfer policies](/documentation/protocol/tip403/spec)
+Creates a new transfer policy for token access control. [Learn more about transfer policies](/protocol/tip403/spec)
 
 ## Usage
 
@@ -12,6 +12,7 @@ Creates a new transfer policy for token access control. [Learn more about transf
 import { client } from './viem.config'
 
 const { policyId, policyType, receipt } = await client.policy.createSync({
+  admin: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
   addresses: [
     '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
     '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
@@ -40,6 +41,7 @@ import { Actions } from 'tempo.ts/viem'
 import { client } from './viem.config'
 
 const hash = await client.policy.create({
+  admin: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
   addresses: [
     '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
     '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
@@ -81,11 +83,11 @@ Type of policy to create. A `whitelist` policy only allows listed addresses, whi
 
 Optional array of addresses to initialize the policy with.
 
-### admin (optional)
+### admin
 
 - **Type:** `Address`
 
-Address of the policy admin. Defaults to the caller's address.
+Address of the policy admin.
 
 <WriteParameters />
 

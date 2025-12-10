@@ -38,7 +38,7 @@ In this example, Wagmi is configured to use the Tempo chain and `webAuthn` conne
 
 It is highly recommended to set a `feeToken` on the `tempo` chain, which will be used as the
 default fee token for all transactions. If you do not wish to use a default fee token, you can set
-it to `null` to opt in to Tempo's [default fee token preferences](/documentation/protocol/fees/spec-fee#fee-token-preferences).
+it to `null` to opt in to Tempo's [default fee token preferences](/protocol/fees/spec-fee#fee-token-preferences).
 
 :::
 
@@ -104,7 +104,7 @@ Check out the [TanStack Query docs](https://tanstack.com/query/latest/docs/frame
 ## Use Wagmi Hooks
 
 Now that everything is set up, we can now use regular Wagmi Hooks (e.g. `useSendTransactionSync`) 
-that are decorated with [Tempo properties](/documentation/protocol/transactions/spec-tempo-transaction) 
+that are decorated with [Tempo properties](/protocol/transactions/spec-tempo-transaction) 
 like `calls` (batch transactions), `feePayer` (fee sponsorship), `nonceKey` (concurrent transactions) and more!
 
 :::code-group

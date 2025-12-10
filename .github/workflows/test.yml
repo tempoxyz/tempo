@@ -3,11 +3,7 @@ name: Test
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
   pull_request:
-    paths-ignore:
-      - 'docs/**'
   merge_group:
 
 concurrency:
@@ -46,7 +42,6 @@ jobs:
     name: test
     runs-on: depot-ubuntu-latest-16
     timeout-minutes: 30
-    needs: genesis
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable

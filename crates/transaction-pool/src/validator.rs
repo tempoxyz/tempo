@@ -9,10 +9,7 @@ use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
 };
-use reth_storage_api::{
-    StateProvider, StateProviderFactory,
-    errors::{ProviderError, ProviderResult},
-};
+use reth_storage_api::{StateProvider, StateProviderFactory, errors::ProviderError};
 use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
@@ -20,7 +17,6 @@ use reth_transaction_pool::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, compute_keys_slot,
-    nonce::slots, storage::double_mapping_slot,
 };
 use tempo_primitives::{subblock::has_sub_block_nonce_key_prefix, transaction::TempoTransaction};
 use tempo_revm::TempoStateAccess;
@@ -63,27 +59,6 @@ where
     /// Returns the configured client
     pub fn client(&self) -> &Client {
         self.inner.client()
-    }
-
-    /// Get the 2D nonce from state for (address, nonce_key) and the slot
-    ///
-    /// Returns `(slot, nonce)` for the given address and nonce key.
-    fn get_2d_nonce(
-        &self,
-        state_provider: &impl StateProvider,
-        address: alloy_primitives::Address,
-        nonce_key: U256,
-    ) -> ProviderResult<u64> {
-        // Compute storage slot for 2D nonce
-        // Based on: mapping(address => mapping(uint256 => uint64)) at slot 0
-        let slot = double_mapping_slot(
-            address.as_slice(),
-            nonce_key.to_be_bytes::<32>(),
-            slots::NONCES,
-        );
-        let nonce_value = state_provider.storage(NONCE_PRECOMPILE_ADDRESS, slot.into())?;
-
-        Ok(nonce_value.unwrap_or_default().saturating_to())
     }
 
     /// Check if a transaction requires keychain validation
@@ -369,7 +344,10 @@ where
             }
         }
 
-        match self.inner.validate_one(origin, transaction) {
+        match self
+            .inner
+            .validate_one_with_state_provider(origin, transaction, &state_provider)
+        {
             TransactionValidationOutcome::Valid {
                 balance,
                 mut state_nonce,
@@ -394,12 +372,11 @@ where
                     }
 
                     // This is a 2D nonce transaction - validate against 2D nonce
-                    state_nonce = match self.get_2d_nonce(
-                        &state_provider,
-                        transaction.transaction().sender(),
-                        nonce_key,
+                    state_nonce = match state_provider.storage(
+                        NONCE_PRECOMPILE_ADDRESS,
+                        transaction.transaction().nonce_key_slot().unwrap().into(),
                     ) {
-                        Ok(nonce) => nonce,
+                        Ok(nonce) => nonce.unwrap_or_default().saturating_to(),
                         Err(err) => {
                             return TransactionValidationOutcome::Error(
                                 *transaction.hash(),
