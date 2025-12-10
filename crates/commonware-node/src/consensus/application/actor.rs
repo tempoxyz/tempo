@@ -478,7 +478,7 @@ impl Inner<Init> {
         // Send the proposal parent to reth to cover edge cases when we were not asked to verify it directly.
         if !verify_block(
             context.clone(),
-            round.epoch(),
+            utils::epoch(self.epoch_length, parent.height()),
             self.epoch_length,
             self.execution_node
                 .add_ons_handle
