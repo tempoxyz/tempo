@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/25.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/24.11";
     utils.url = "github:numtide/flake-utils";
     crane.url = "github:ipetkov/crane";
     fenix.url = "github:nix-community/fenix";
@@ -41,6 +41,7 @@
 
         nativeBuildInputs = [
           pkgs.pkg-config
+          pkgs.libgit2
           pkgs.perl
         ];
 
@@ -49,13 +50,6 @@
             pkgs.clang
           ];
           LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
-        };
-
-        withLibgit2 = prev: {
-          buildInputs = prev.buildInputs or [ ] ++ [
-            pkgs.libgit2
-          ];
-          LD_LIBRARY_PATH = "${pkgs.libgit2}/lib";
         };
 
         withMaxPerf = prev: {
@@ -84,7 +78,6 @@
               src = ./.;
               inherit nativeBuildInputs;
               doCheck = false;
-              LD_LIBRARY_PATH = "${pkgs.libgit2}/lib";
             } overrides
           );
 
@@ -94,7 +87,6 @@
           tempo = mkTempo (
             [
               withClang
-              withLibgit2
               withMaxPerf
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
@@ -109,7 +101,6 @@
           let
             overrides = [
               withClang
-              withLibgit2
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
               withMold
@@ -122,6 +113,10 @@
                 rustNightly.rustfmt
                 pkgs.cargo-nextest
               ];
+
+              # Remove the hardening added by nix to fix jmalloc compilation error.
+              # More info: https://github.com/tikv/jemallocator/issues/108
+              hardeningDisable = [ "fortify" ];
 
             } overrides
           );
