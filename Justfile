@@ -3,9 +3,8 @@ cargo_build_binary := if cross_compile == "true" { "cross" } else { "cargo" }
 act_debug_mode := env("ACT", "false")
 
 [group('deps')]
-install-deps:
+install-cross:
     cargo install cross --git https://github.com/cross-rs/cross
-    cargo install cargo-nextest 
 
 [group('build')]
 [doc('Builds all tempo binaries in cargo release mode')]
