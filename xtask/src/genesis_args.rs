@@ -391,7 +391,8 @@ impl GenesisArgs {
 
 fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>> {
     let db = CacheDB::default();
-    let mut env = EvmEnv::default();
+    // revm sets timestamp to 1 by default, override it to 0 for genesis initializations
+    let mut env = EvmEnv::default().with_timestamp(U256::ZERO);
     // Configure EVM for Allegretto hardfork so factory uses correct token_id counter (starts at 0)
     // and accepts address(0) as quote token for the first token
     env.cfg_env = env.cfg_env.with_spec(TempoHardfork::Allegretto);

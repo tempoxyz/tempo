@@ -35,6 +35,32 @@ const { address, hash, id } = await client.sendTransaction({ // [!code focus]
 
 ## How It Works
 
-The account implements the [ERC-7821](https://eips.ethereum.org/EIPS/eip-7821) Executor interface, which provides a standardized way to execute batches of operations with different execution modes and authorization schemes.
+Unlike traditional EVM transactions which only support a single call per transaction, the [Tempo Transaction](/protocol/transactions/spec-tempo-transaction) type natively supports a `calls` vector—enabling multiple operations in a single atomic transaction.
 
-When you send a transaction with multiple calls, Tempo's Default Account Abstraction automatically converts your address to a smart contract wallet on first use (using [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702)), enabling batch execution.
+### Native Protocol Support
+
+Batching is built directly into the transaction type at the protocol level. This means:
+
+- **Atomic execution**: All calls succeed or all calls revert together—no partial failures
+- **Single signature**: Sign once for the entire batch, reducing UX friction
+- **Lower gas costs**: Avoid the overhead of multiple transaction submissions
+- **No smart contract required**: Works with any EOA, no need to deploy a separate batching contract
+
+### Transaction Structure
+
+The `TempoTransaction` includes a `calls` field that accepts a list of operations:
+
+```rust
+pub struct TempoTransaction {
+    // ... other fields
+    calls: Vec<Call>,  // Batch of calls to execute atomically
+    // ...
+}
+
+pub struct Call {
+    to: TxKind,      // Target address or Create for contract deployment
+    value: U256,     // ETH value to send
+    input: Bytes,    // Calldata for the call
+}
+```
+
