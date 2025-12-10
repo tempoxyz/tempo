@@ -467,7 +467,7 @@ impl AccountKeychain {
         new_approval: U256,
     ) -> Result<()> {
         // Get the transaction key for this account
-        let transaction_key = self.transaction_key.read()?;
+        let transaction_key = self.transaction_key.t_read()?;
 
         // If using main key (Address::ZERO), no spending limits apply
         if transaction_key == Address::ZERO {
