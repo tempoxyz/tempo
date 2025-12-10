@@ -3,7 +3,7 @@ mipd: true
 ---
 
 import * as Demo from '../../../components/guides/Demo.tsx'
-import { Faucet } from '../../../components/Faucet.tsx'
+import * as Step from '../../../components/guides/steps'
 import { ConnectWallet } from '../../../components/ConnectWallet.tsx'
 
 # Connect to Wallets
@@ -20,7 +20,7 @@ This guide will walk you through how to set up your application to connect to wa
   footerVariant="source" 
   src="tempoxyz/tempo-ts/tree/main/examples/accounts"
 >
-  <ConnectWallet />
+  <Step.ConnectWallet stepNumber={1} last />
 </Demo.Container>
 
 ## Wagmi Setup
@@ -122,7 +122,7 @@ export const config = createConfig({
 
 After the user has connected to their wallet, we can display the account information and a sign out button.
 
-We will create a new `Example.tsx` component to work in.
+We will create a new `Account.tsx` component to work in.
 
 :::code-group
 
@@ -285,7 +285,7 @@ For example, if you are using MetaMask:
 | **Chain ID** | `42429` |
 | **HTTP URL** | `https://rpc.testnet.tempo.xyz` |
 | **WebSocket URL** | `wss://rpc.testnet.tempo.xyz` |
-| **Block Explorer** | [`https://scout.tempo.xyz`](https://scout.tempo.xyz) |
+| **Block Explorer** | [`https://explore.tempo.xyz`](https://explore.tempo.xyz) |
 
 The official documentation from MetaMask on this process is also available [here](https://support.metamask.io/configure/networks/how-to-add-a-custom-network-rpc#adding-a-network-manually).
 

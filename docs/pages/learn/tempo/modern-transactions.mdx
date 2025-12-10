@@ -14,7 +14,7 @@ On other chains, even when available, these are generally add-on functionalities
 
 ## Batched Payments
 
-Payment processors and platforms often need to send thousands of payments at once (e.g., payroll runs, merchant settlements, customer refunds). Tempo's native account abstraction enables batch transactions where multiple operations execute atomically in a single transaction.
+Payment processors and platforms often need to send thousands of payments at once (e.g., payroll runs, merchant settlements, customer refunds). Tempo supports batch transactions where multiple operations execute atomically in a single transaction.
 
 This unlocks high-volume use cases: orchestrators can submit thousands of payouts as a single operation, rather than submitting them one-by-one and tracking individual success or failure. If any operation in the batch fails, the entire batch reverts, ensuring atomic execution across all payments. This is critical for payment operators who need guaranteed settlement guarantees for their workflows.
 
@@ -34,7 +34,7 @@ Tempo's protocol-level fee sponsorship allows an account to sign a transaction w
 
 ## Scheduled Payments
 
-Tempo's account abstraction transaction type includes scheduling as a protocol feature. Users can specify a time window for transaction execution, and validators will include the transaction when it becomes valid. 
+The Tempo transaction type includes scheduling as a protocol feature. Users can specify a time window for transaction execution, and validators will include the transaction when it becomes valid. 
 
 This enables "set and forget" payment operations directly at the protocol level, enabling recurring payments like subscriptions or scheduled disbursements. No need for external automation services or off-chain infrastructure to manage recurring transactions.
 
