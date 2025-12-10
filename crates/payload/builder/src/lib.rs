@@ -47,8 +47,7 @@ use tempo_consensus::{TEMPO_GENERAL_GAS_DIVISOR, TEMPO_SHARED_GAS_DIVISOR};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, evm::TempoEvm};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_precompiles::{
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
-    stablecoin_exchange::IStablecoinExchange, tip_fee_manager::IFeeManager,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS, tip_fee_manager::IFeeManager,
     tip20_rewards_registry::ITIP20RewardsRegistry,
 };
 use tempo_primitives::{
@@ -145,8 +144,7 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
     ///
     /// Returns a vector of system transactions that must be executed at the end of each block:
     /// 1. Fee manager executeBlock - processes collected fees
-    /// 2. Stablecoin exchange executeBlock - commits pending orders
-    /// 3. Subblocks signatures - validates subblock signatures
+    /// 2. Subblocks signatures - validates subblock signatures
     fn build_seal_block_txs(
         &self,
         block_env: &BlockEnv,
@@ -171,29 +169,6 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
                     to: TIP_FEE_MANAGER_ADDRESS.into(),
                     value: U256::ZERO,
                     input: fee_manager_input,
-                },
-                TEMPO_SYSTEM_TX_SIGNATURE,
-            )),
-            TEMPO_SYSTEM_TX_SENDER,
-        );
-
-        // Build stablecoin exchange system transaction
-        let stablecoin_exchange_input = IStablecoinExchange::executeBlockCall {}
-            .abi_encode()
-            .into_iter()
-            .chain(block_env.number.to_be_bytes_vec())
-            .collect();
-
-        let stablecoin_exchange_tx = Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                TxLegacy {
-                    chain_id,
-                    nonce: 0,
-                    gas_price: 0,
-                    gas_limit: 0,
-                    to: STABLECOIN_EXCHANGE_ADDRESS.into(),
-                    value: U256::ZERO,
-                    input: stablecoin_exchange_input,
                 },
                 TEMPO_SYSTEM_TX_SIGNATURE,
             )),
@@ -226,11 +201,7 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
             TEMPO_SYSTEM_TX_SENDER,
         );
 
-        vec![
-            fee_manager_tx,
-            stablecoin_exchange_tx,
-            subblocks_signatures_tx,
-        ]
+        vec![fee_manager_tx, subblocks_signatures_tx]
     }
 }
 
