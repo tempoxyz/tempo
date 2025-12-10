@@ -123,7 +123,7 @@ Options:
 
 **Examples:**
 
-Run 15 second benchmark with 20k TPS:
+Run 15-second benchmark with 20k TPS:
 
 ```bash
 tempo-bench run-max-tps --duration 15 --tps 20000
@@ -135,7 +135,7 @@ Run benchmark on MacOS:
 tempo-bench run-max-tps --duration 15 --tps 20000 --disable-thread-pinning
 ```
 
-Run benchmark with less workers than the default:
+Run benchmark with fewer workers than the default:
 
 ```bash
 tempo-bench run-max-tps --duration 15 --tps 20 -w 1
