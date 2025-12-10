@@ -475,6 +475,26 @@ impl Inner<Init> {
             return Ok(parent);
         }
 
+        // Send the proposal parent to reth to cover edge cases when we were not asked to verify it directly.
+        if !verify_block(
+            context.clone(),
+            utils::epoch(self.epoch_length, parent.height()),
+            self.epoch_length,
+            self.execution_node
+                .add_ons_handle
+                .beacon_engine_handle
+                .clone(),
+            &parent,
+            // It is safe to not verify the parent of the parent because this block is already notarized.
+            parent.parent_digest(),
+            &self.scheme_provider,
+        )
+        .await
+        .wrap_err("failed verifying block against execution layer")?
+        {
+            eyre::bail!("the proposal parent block is not valid");
+        }
+
         ready(
             self.state
                 .executor_mailbox

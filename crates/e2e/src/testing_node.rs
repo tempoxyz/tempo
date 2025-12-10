@@ -4,7 +4,7 @@ use crate::execution_runtime::{self, ExecutionNode, ExecutionNodeConfig, Executi
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::simulated::{Control, Oracle, SocketManager};
 use commonware_runtime::{Handle, deterministic::Context};
-use reth_db::{DatabaseEnv, mdbx::DatabaseArguments, open_db_read_only};
+use reth_db::{Database, DatabaseEnv, mdbx::DatabaseArguments, open_db_read_only};
 use reth_ethereum::{
     provider::{
         DatabaseProviderFactory, ProviderFactory,
@@ -16,7 +16,7 @@ use reth_node_builder::NodeTypesWithDBAdapter;
 use std::{path::PathBuf, sync::Arc};
 use tempo_commonware_node::consensus;
 use tempo_node::node::TempoNode;
-use tracing::debug;
+use tracing::{debug, instrument};
 
 /// A testing node that can start and stop both consensus and execution layers.
 pub struct TestingNode {
@@ -118,6 +118,7 @@ impl TestingNode {
     ///
     /// # Panics
     /// Panics if execution node is already running.
+    #[instrument(skip_all, fields(last_db_block = self.last_db_block_on_stop))]
     async fn start_execution(&mut self) {
         assert!(
             self.execution_node.is_none(),
@@ -261,6 +262,7 @@ impl TestingNode {
     ///
     /// # Panics
     /// Panics if consensus is not running.
+    #[instrument(skip_all)]
     async fn stop_consensus(&mut self) {
         let handle = self
             .consensus_handle
@@ -281,7 +283,9 @@ impl TestingNode {
     ///
     /// # Panics
     /// Panics if execution node is not running.
+    #[instrument(skip_all)]
     async fn stop_execution(&mut self) {
+        debug!(%self.uid, "stopping execution node for testing node");
         let execution_node = self.execution_node.take().unwrap_or_else(|| {
             panic!(
                 "execution node is not running for {}, cannot stop",
@@ -296,9 +300,28 @@ impl TestingNode {
             .expect("failed to get database provider")
             .last_block_number()
             .expect("failed to get last block number from database");
+        tracing::debug!(
+            last_db_block,
+            "storing last block block number to verify restart"
+        );
         self.last_db_block_on_stop = Some(last_db_block);
 
-        execution_node.shutdown().await
+        execution_node.shutdown().await;
+
+        // Acquire a RW transaction and immediately drop it. This blocks until any
+        // pending write transaction completes, ensuring all database writes are
+        // fully flushed. Without this, a pending write could still be in-flight
+        // after shutdown returns, leading to database/static-file inconsistencies
+        // when the node restarts.
+        drop(
+            self.execution_database
+                .as_ref()
+                .expect("database should exist")
+                .tx_mut()
+                .expect("failed to acquire rw transaction"),
+        );
+
+        debug!(%self.uid, "stopped execution node for testing node");
     }
 
     /// Check if both consensus and execution are running
@@ -372,7 +395,7 @@ impl TestingNode {
 
         let provider_factory = ProviderFactory::<NodeTypesWithDBAdapter<TempoNode, _>>::new(
             database,
-            execution_runtime::chainspec_arc(),
+            Arc::new(execution_runtime::chainspec()),
             static_file_provider,
         )
         .expect("failed to create provider factory");
@@ -423,19 +446,14 @@ mod tests {
 
         std::thread::spawn(move || {
             runner.start(|context| async move {
-                let setup = Setup {
-                    how_many_signers: 1,
-                    how_many_verifiers: 0,
-                    seed: 0,
-                    linkage: Link {
+                let setup = Setup::new()
+                    .how_many_signers(1)
+                    .linkage(Link {
                         latency: Duration::from_millis(10),
                         jitter: Duration::from_millis(1),
                         success_rate: 1.0,
-                    },
-                    epoch_length: 100,
-                    connect_execution_layer_nodes: false,
-                    allegretto_in_seconds: None,
-                };
+                    })
+                    .epoch_length(100);
 
                 let (mut nodes, _execution_runtime) =
                     setup_validators(context.clone(), setup).await;

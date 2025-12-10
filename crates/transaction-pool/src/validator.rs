@@ -349,7 +349,10 @@ where
             }
         }
 
-        match self.inner.validate_one(origin, transaction) {
+        match self
+            .inner
+            .validate_one_with_state_provider(origin, transaction, &state_provider)
+        {
             TransactionValidationOutcome::Valid {
                 balance,
                 mut state_nonce,

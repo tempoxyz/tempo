@@ -11381,6 +11381,7 @@ name = "tempo-e2e"
 version = "0.7.3"
 dependencies = [
  "alloy",
+ "alloy-evm",
  "alloy-genesis",
  "alloy-network",
  "alloy-primitives",
@@ -11408,6 +11409,7 @@ dependencies = [
  "tempo-chainspec",
  "tempo-commonware-node",
  "tempo-commonware-node-config",
+ "tempo-dkg-onchain-artifacts",
  "tempo-eyre",
  "tempo-node",
  "tempo-precompiles",
@@ -11751,6 +11753,7 @@ dependencies = [
  "tempo-chainspec",
  "tempo-commonware-node-config",
  "tempo-contracts",
+ "tempo-dkg-onchain-artifacts",
  "tempo-evm",
  "tempo-precompiles",
  "tokio",
