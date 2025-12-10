@@ -280,16 +280,24 @@ impl MaxTpsArgs {
         .await
         .context("Failed to set default fee token")?;
 
-        // Setup DEX
-        let user_tokens = 2;
-        info!(user_tokens, "Setting up DEX");
-        let (quote_token, user_tokens) = dex::setup(
-            signer_providers,
-            user_tokens,
-            self.max_concurrent_requests,
-            self.max_concurrent_transactions,
-        )
-        .await?;
+        let mut quote_token = None;
+        let mut user_tokens: Vec<Address> = Vec::new();
+
+        if self.tip20_weight != 1.0 {
+            let tokens = 2;
+            info!(tokens, "Setting up DEX");
+
+            let (qt, ut) = dex::setup(
+                signer_providers,
+                tokens,
+                self.max_concurrent_requests,
+                self.max_concurrent_transactions,
+            )
+            .await?;
+
+            quote_token = Some(qt);
+            user_tokens = ut;
+        }
 
         // Generate all transactions
         let total_txs = self.tps * self.duration;
@@ -557,8 +565,9 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                     );
 
                     // Swap minimum possible amount
+                    // unwrap is safe here as if a swap txn is needed, there would definitely be a quote token
                     exchange
-                        .quoteSwapExactAmountIn(token, quote_token, 1)
+                        .quoteSwapExactAmountIn(token, quote_token.unwrap(), 1)
                         .into_transaction_request()
                 }
                 2 => {
@@ -908,6 +917,6 @@ struct GenerateTransactionsInput<F: TxFiller<TempoNetwork>> {
     tip20_weight: u64,
     place_order_weight: u64,
     swap_weight: u64,
-    quote_token: Address,
+    quote_token: Option<Address>,
     user_tokens: Vec<Address>,
 }
