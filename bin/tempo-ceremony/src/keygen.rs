@@ -17,7 +17,7 @@ pub struct KeygenArgs {
 
 /// Generate a new keypair, returning (private_key, public_key_hex).
 fn generate() -> (PrivateKey, String) {
-    let private_key = PrivateKey::from_seed(rand::random::<u64>());
+    let private_key = PrivateKey::from_rng(&mut rand::thread_rng());
     let public_key = private_key.public_key();
     let public_hex = const_hex::encode_prefixed(public_key.encode().as_ref());
     (private_key, public_hex)
