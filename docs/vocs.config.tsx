@@ -1678,13 +1678,13 @@ export default defineConfig({
     process.env['DISABLE_TWOSLASH']! === 'true'
       ? false
       : {
-        compilerOptions: {
-          moduleResolution: ModuleResolutionKind.Bundler,
+          compilerOptions: {
+            moduleResolution: ModuleResolutionKind.Bundler,
+          },
+          extraFiles: {
+            'twoslash-env.d.ts': twoslashSupportFile,
+          },
         },
-        extraFiles: {
-          'twoslash-env.d.ts': twoslashSupportFile,
-        },
-      },
   vite: {
     plugins: [
       {
