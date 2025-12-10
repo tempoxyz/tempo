@@ -556,10 +556,15 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             Order::new_ask(order_id, sender, book_key, amount, tick)
         };
 
-        // Store in pending queue. Orders are stored as a DLL at each tick level and are initially
-        // stored without a prev or next pointer. This is considered a "pending" order. Once `execute_block` is called, orders are
-        // linked and then considered "active"
-        self.sstore_orders(order_id, order)?;
+        // Post Allegro Moderato, commit the order to the book immediately rather than storing in a pending state until end of block execution
+        if self.storage.spec().is_allegro_moderato() {
+            self.commit_order_to_book(order, book)?;
+        } else {
+            // Store in pending queue. Orders are stored as a DLL at each tick level and are initially
+            // stored without a prev or next pointer. This is considered a "pending" order. Once `execute_block` is called, orders are
+            // linked and then considered "active"
+            self.sstore_orders(order_id, order)?;
+        }
 
         // Emit OrderPlaced event
         self.storage.emit_event(
@@ -576,6 +581,43 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         )?;
 
         Ok(order_id)
+    }
+
+    /// Commits an order to the specified orderbook, updating tick bits, best bid/ask, and total liquidity
+    fn commit_order_to_book(&mut self, order: Order, orderbook: Orderbook) -> Result<()> {
+        let order_id = order.order_id();
+
+        let mut level =
+            Orderbook::read_tick_level(self, order.book_key(), order.is_bid(), order.tick())?;
+
+        let prev_tail = level.tail;
+        if prev_tail == 0 {
+            level.head = order_id;
+            level.tail = order_id;
+
+            Orderbook::set_tick_bit(self, order.book_key(), order.tick(), order.is_bid())
+                .expect("Tick is valid");
+
+            if order.is_bid() {
+                if order.tick() > orderbook.best_bid_tick {
+                    Orderbook::update_best_bid_tick(self, order.book_key(), order.tick())?;
+                }
+            } else if order.tick() < orderbook.best_ask_tick {
+                Orderbook::update_best_ask_tick(self, order.book_key(), order.tick())?;
+            }
+        } else {
+            Order::update_next_order(self, prev_tail, order_id)?;
+            Order::update_prev_order(self, order_id, prev_tail)?;
+            level.tail = order_id;
+        }
+
+        let new_liquidity = level
+            .total_liquidity
+            .checked_add(order.remaining())
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        level.total_liquidity = new_liquidity;
+
+        Orderbook::write_tick_level(self, order.book_key(), order.is_bid(), order.tick(), level)
     }
 
     /// Place a flip order that auto-flips when filled
@@ -655,8 +697,14 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         let order = Order::new_flip(order_id, sender, book_key, amount, tick, is_bid, flip_tick)
             .expect("Invalid flip tick");
 
-        // Store in pending queue
-        self.sstore_orders(order_id, order)?;
+        // Post Allegro Moderato, commit the order to the book immediately rather than storing in a pending state until end of block execution
+        if self.storage.spec().is_allegro_moderato() {
+            let book = self.sload_books(book_key)?;
+            self.commit_order_to_book(order, book)?;
+        } else {
+            // Store in pending queue
+            self.sstore_orders(order_id, order)?;
+        }
 
         // Emit FlipOrderPlaced event
         self.storage.emit_event(
@@ -714,37 +762,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
         }
 
         let orderbook = self.sload_books(order.book_key())?;
-        let mut level =
-            Orderbook::read_tick_level(self, order.book_key(), order.is_bid(), order.tick())?;
-
-        let prev_tail = level.tail;
-        if prev_tail == 0 {
-            level.head = order_id;
-            level.tail = order_id;
-
-            Orderbook::set_tick_bit(self, order.book_key(), order.tick(), order.is_bid())
-                .expect("Tick is valid");
-
-            if order.is_bid() {
-                if order.tick() > orderbook.best_bid_tick {
-                    Orderbook::update_best_bid_tick(self, order.book_key(), order.tick())?;
-                }
-            } else if order.tick() < orderbook.best_ask_tick {
-                Orderbook::update_best_ask_tick(self, order.book_key(), order.tick())?;
-            }
-        } else {
-            Order::update_next_order(self, prev_tail, order_id)?;
-            Order::update_prev_order(self, order_id, prev_tail)?;
-            level.tail = order_id;
-        }
-
-        let new_liquidity = level
-            .total_liquidity
-            .checked_add(order.remaining())
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        level.total_liquidity = new_liquidity;
-
-        Orderbook::write_tick_level(self, order.book_key(), order.is_bid(), order.tick(), level)
+        self.commit_order_to_book(order, orderbook)
     }
 
     /// Partially fill an order with the specified amount.
