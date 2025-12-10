@@ -15,7 +15,7 @@ use commonware_cryptography::{
     },
     ed25519::{PrivateKey, PublicKey},
 };
-use commonware_utils::set::OrderedAssociated;
+use commonware_utils::set::{Ordered, OrderedAssociated};
 use indexmap::IndexMap;
 use serde::{
     Deserialize,
@@ -41,6 +41,14 @@ impl Peers {
 
     pub fn into_inner(self) -> OrderedAssociated<PublicKey, SocketAddr> {
         self.inner
+    }
+
+    pub fn public_keys(&self) -> &Ordered<PublicKey> {
+        self.inner.keys()
+    }
+
+    pub fn socket_addresses(&self) -> &[SocketAddr] {
+        self.inner.values()
     }
 }
 
