@@ -317,8 +317,12 @@ export default defineConfig({
                 link: '/protocol/transactions/spec-tempo-transaction',
               },
               {
-                text: 'Default Account Abstraction Specification',
-                link: '/protocol/transactions/spec-default-aa',
+                text: 'Account Keychain Precompile Specification',
+                link: '/protocol/transactions/AccountKeychain',
+              },
+              {
+                text: 'Default Delegation Specification',
+                link: '/protocol/transactions/spec-default-delegation',
               },
               {
                 text: 'Rust Implementation',
@@ -1674,13 +1678,13 @@ export default defineConfig({
     process.env['DISABLE_TWOSLASH']! === 'true'
       ? false
       : {
-          compilerOptions: {
-            moduleResolution: ModuleResolutionKind.Bundler,
-          },
-          extraFiles: {
-            'twoslash-env.d.ts': twoslashSupportFile,
-          },
+        compilerOptions: {
+          moduleResolution: ModuleResolutionKind.Bundler,
         },
+        extraFiles: {
+          'twoslash-env.d.ts': twoslashSupportFile,
+        },
+      },
   vite: {
     plugins: [
       {

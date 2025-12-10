@@ -1,20 +1,20 @@
-# Accounts [Default Account Abstraction (Experimental)]
+# Accounts [Default Delegation (Experimental)]
 
 :::warning
 **Note: This feature will likely be deprecated before mainnet launch.** We recommend using the standard [Tempo Transaction](/protocol/transactions/spec-tempo-transaction) type instead if you need smart contract functionality.
 :::
 
-Tempo uses a "Default Account Abstraction" (DAA) model for accounts on the Tempo blockchain. DAA extends the Ethereum account model by allowing any externally owned account (EOA) to be seamlessly upgraded into a smart contract wallet, without requiring user intervention or setup.
+Tempo uses a "Default Delegation" (DD) model for accounts on the Tempo blockchain. DD extends the Ethereum account model by allowing any externally owned account (EOA) to be seamlessly upgraded into a smart contract wallet, without requiring user intervention or setup.
 
 The core mechanism is that, on first use (when an EOA sends its first transaction and has never been used before), the protocol automatically delegates the account to a canonical smart contract implementation by setting its code to a special format. This enables all EOAs to immediately benefit from smart wallet features, while preserving full backward compatibility with legacy ECDSA transactions and not affecting contract accounts.
 
 Additionally, a registrar precompile is introduced to allow anyone to permissionlessly delegate an EOA to the default implementation by proving control of the address via a signature. The default implementation contract is treated as always warm for gas purposes.
 
-Tempo's DAA model is fully compatible with EIP-7702. For a detailed understanding of the underlying delegation format and semantics, see the [EIP-7702 specification](https://eips.ethereum.org/EIPS/eip-7702).
+Tempo's DD model is fully compatible with EIP-7702. For a detailed understanding of the underlying delegation format and semantics, see the [EIP-7702 specification](https://eips.ethereum.org/EIPS/eip-7702).
 
 ## Features
 
-Default Account Abstraction (DAA) allows any EOA to be used as a smart contract wallet.
+Default Delegation (DD) allows any EOA to be used as a smart contract wallet.
 
 It does so through two new behaviors in-protocol:
 
@@ -40,7 +40,7 @@ Additionally, **DEFAULT_7702_IMPL** is treated as **always warm** for gas, like 
 - “Delegated to X” ⇔ `code(account) == EF_PREFIX || X` (exact 7702 format)
 - “Plain EOA” ⇔ `code(account) == EMPTY`
 
-> **Out of scope:** The runtime behavior/ABI of `DEFAULT_7702_IMPL` itself (separate spec). DAA only defines delegation mechanics.
+> **Out of scope:** The runtime behavior/ABI of `DEFAULT_7702_IMPL` itself (separate spec). DD only defines delegation mechanics.
 
 ### 1) Auto-delegation on first use
 
@@ -116,14 +116,14 @@ delegateToDefault(bytes32 hash, uint8 v, bytes32 r, bytes32 s)
 
 - **Legacy ECDSA transactions:** Unchanged validation. The only new effect is auto-delegation on the **first** tx for plain EOAs with `nonce == 0`.
 - **Contracts / codeful accounts:** Never auto-delegated; registrar reverts.
-- **7702 tooling:** Fully compatible; DAA uses the **exact** 7702 delegation bytecode format and override semantics.
+- **7702 tooling:** Fully compatible; DD uses the **exact** 7702 delegation bytecode format and override semantics.
 
 ## Security Considerations
 
 - **Forced delegation by third parties:** Anyone can delegate an EOA via the registrar if they can produce **any** valid signature by that key (by design). This does **not** grant fund control if `DEFAULT_7702_IMPL` respects the original key, but it does change account semantics and may surprise tooling. Accepted as a trade-off.
 - **Signature replay & no domain binding:** Signatures from other chains or contexts can be reused. This is deliberate; downstream apps MUST NOT treat registrar delegation as consent for anything beyond delegation.
 - **Malleability constraints:** Enforce low-`s` and canonical `v` mapping to avoid malleability and recovery edge cases.
-- **CREATE/CREATE2 & contracts at EOA addresses:** DAA never writes code to an account that already has code; changing a contract account’s code via registrar is disallowed (revert). Accounts created as contracts at genesis are unaffected.
+- **CREATE/CREATE2 & contracts at EOA addresses:** DD never writes code to an account that already has code; changing a contract account’s code via registrar is disallowed (revert). Accounts created as contracts at genesis are unaffected.
 
 ## Test Cases (illustrative)
 
@@ -211,7 +211,7 @@ fn is_7702_delegated(code: bytes) -> bool:
 
 ## Deployment / Activation
 - **Genesis:** Insert `DEFAULT_7702_IMPL` as an immutable, predeployed contract at `0x7702c00000000000…` with its code defined by the separate implementation spec.
-- **Fork rules:** DAA is active from genesis on Tempo. Clients must include:
+- **Fork rules:** DD is active from genesis on Tempo. Clients must include:
   - the auto-delegation state transition hook,
   - the DefaultAccountRegistrar precompile at `0x7702ac00000000000…`,
   - the always-warm treatment for `DEFAULT_7702_IMPL`.
