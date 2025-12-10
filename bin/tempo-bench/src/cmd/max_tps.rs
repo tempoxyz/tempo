@@ -543,7 +543,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
     let gas_estimates: [Arc<OnceLock<(u128, u128, u64)>>; TX_TYPES] = Default::default();
 
     // Counters for number of transactions of each type
-    let transfers = Arc::new(AtomicUsize::new(0));
+    let tip20_transfers = Arc::new(AtomicUsize::new(0));
     let swaps = Arc::new(AtomicUsize::new(0));
     let orders = Arc::new(AtomicUsize::new(0));
     let erc20_transfers = Arc::new(AtomicUsize::new(0));
@@ -566,7 +566,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
 
             let mut tx = match tx_index {
                 0 => {
-                    transfers.fetch_add(1, Ordering::Relaxed);
+                    tip20_transfers.fetch_add(1, Ordering::Relaxed);
                     let token = ITIP20Instance::new(token, provider.clone());
 
                     // Transfer minimum possible amount
@@ -665,9 +665,10 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         .await?;
     info!(
         transactions = builders.len(),
-        transfers = transfers.load(Ordering::Relaxed),
+        tip20_transfers = tip20_transfers.load(Ordering::Relaxed),
         swaps = swaps.load(Ordering::Relaxed),
         orders = orders.load(Ordering::Relaxed),
+        erc20_transfers = erc20_transfers.load(Ordering::Relaxed),
         "Generated transactions",
     );
 
@@ -775,6 +776,7 @@ struct BenchmarkMetadata {
     tip20_weight: f64,
     place_order_weight: f64,
     swap_weight: f64,
+    erc20_weight: f64,
 }
 
 #[derive(Serialize)]
@@ -845,6 +847,7 @@ pub async fn generate_report(
         tip20_weight: args.tip20_weight,
         place_order_weight: args.place_order_weight,
         swap_weight: args.swap_weight,
+        erc20_weight: args.erc20_weight,
     };
 
     let report = BenchmarkReport {
