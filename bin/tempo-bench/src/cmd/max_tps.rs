@@ -280,24 +280,20 @@ impl MaxTpsArgs {
         .await
         .context("Failed to set default fee token")?;
 
-        let mut quote_token = None;
-        let mut user_tokens: Vec<Address> = Vec::new();
-
-        if self.tip20_weight != 1.0 {
-            let tokens = 2;
-            info!(tokens, "Setting up DEX");
-
-            let (qt, ut) = dex::setup(
+        let user_tokens = 2;
+        let (quote_token, user_tokens) = if self.place_order_weight > 0.0 && self.swap_weight > 0.0
+        {
+            info!(user_tokens, "Setting up DEX");
+            dex::setup(
                 signer_providers,
-                tokens,
+                user_tokens,
                 self.max_concurrent_requests,
                 self.max_concurrent_transactions,
             )
-            .await?;
-
-            quote_token = Some(qt);
-            user_tokens = ut;
-        }
+            .await?
+        } else {
+            (None, Vec::new())
+        };
 
         // Generate all transactions
         let total_txs = self.tps * self.duration;
@@ -567,7 +563,11 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                     // Swap minimum possible amount
                     // unwrap is safe here as if a swap txn is needed, there would definitely be a quote token
                     exchange
-                        .quoteSwapExactAmountIn(token, quote_token.unwrap(), 1)
+                        .quoteSwapExactAmountIn(
+                            token,
+                            quote_token.expect("Quote token address not present"),
+                            1,
+                        )
                         .into_transaction_request()
                 }
                 2 => {

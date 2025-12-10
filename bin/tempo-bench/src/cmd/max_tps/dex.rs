@@ -14,7 +14,7 @@ pub(super) async fn setup(
     user_tokens: usize,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
-) -> eyre::Result<(Address, Vec<Address>)> {
+) -> eyre::Result<(Option<Address>, Vec<Address>)> {
     // Grab first signer provider
     let (signer, provider) = signer_providers
         .first()
@@ -140,7 +140,7 @@ pub(super) async fn setup(
     .await
     .context("Failed to place flip orders")?;
 
-    Ok((*quote_token.address(), user_token_addresses))
+    Ok((Some(*quote_token.address()), user_token_addresses))
 }
 
 /// Creates a test TIP20 token with issuer role granted to the provided address.
