@@ -295,11 +295,7 @@ fn gen_handler_struct(
 }
 
 /// Generate `fn load()` or `fn store()` implementation.
-fn gen_load_store_impl(
-    fields: &[(&Ident, &Type)],
-    packing: &Ident,
-    is_load: bool,
-) -> TokenStream {
+fn gen_load_store_impl(fields: &[(&Ident, &Type)], packing: &Ident, is_load: bool) -> TokenStream {
     let field_ops = fields.iter().enumerate().map(|(idx, (name, ty))| {
         let (prev_slot_const_ref, next_slot_const_ref) =
             packing::get_neighbor_slot_refs(idx, fields, packing, |(name, _ty)| name);
@@ -336,13 +332,9 @@ fn gen_load_store_impl(
     }
 }
 
-/// Generate `fn delete()` implementation with optimized slot zeroing.
-///
-/// This function generates a two-phase delete:
-/// 1. Phase 1: Delete dynamic fields first (they need to read their slot to find derived data)
-/// 2. Phase 2: Zero slots that have at least one non-dynamic field (once per slot, not per field)
+/// Generate `fn delete()` implementation.
 fn gen_delete_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
-    // Phase 1: Delete dynamic fields first (they handle their own cleanup including zeroing)
+    // Delete dynamic fields using their `Storable` impl so that they handle their own cleanup
     let dynamic_deletes = fields.iter().map(|(name, ty)| {
         let loc_const = PackingConstants::new(name).location();
         quote! {
@@ -356,12 +348,10 @@ fn gen_delete_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
         }
     });
 
-    // Phase 2: Zero slots that have at least one non-dynamic field
-    // Generate condition checks for each field: is this field at the current slot and non-dynamic?
-    let has_non_dynamic_checks = fields.iter().map(|(name, ty)| {
-        let loc_const = PackingConstants::new(name).location();
+    // Bulk clear static slots
+    let has_non_dynamic_checks = fields.iter().map(|(_name, ty)| {
         quote! {
-            (slot_offset == #packing::#loc_const.offset_slots && !<#ty as crate::storage::StorableType>::IS_DYNAMIC)
+            (!<#ty as crate::storage::StorableType>::IS_DYNAMIC)
         }
     });
 
