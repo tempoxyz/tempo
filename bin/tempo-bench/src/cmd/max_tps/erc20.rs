@@ -49,7 +49,8 @@ pub(super) async fn setup(
             .iter()
             .map(|(signer, _)| signer.address())
             .flat_map(|to| {
-                tokens.iter().cloned().map(move |token| {
+                tokens.iter().map(move |token| {
+                    let token = token.clone();
                     Box::pin(async move {
                         let tx = token.mint(to, mint_amount);
                         tx.send().await
