@@ -1,7 +1,10 @@
 use std::net::SocketAddr;
 
 use commonware_codec::{DecodeExt as _, EncodeSize, Read, Write};
-use commonware_consensus::{Block as _, Reporter as _, types::Epoch, utils};
+use commonware_consensus::{
+    Block as _, Reporter as _, simplex::signing_scheme::bls12381_threshold::Scheme, types::Epoch,
+    utils,
+};
 use commonware_cryptography::{
     bls12381::primitives::{group::Share, poly::Public, variant::MinSig},
     ed25519::PublicKey,
@@ -69,6 +72,27 @@ where
                 "at genesis, the epoch must be zero, but genesis reported `{}`",
                 initial_dkg_outcome.epoch
             );
+
+            let our_share = self.config.initial_share.clone();
+            if let Some(our_share) = our_share.clone() {
+                // XXX: explicitly check the signing key matches the public
+                // polynomial. If it does not, commonware silently demotes the
+                // node to a verifier.
+                //
+                // FIXME: replace this once commonware provides logic to not
+                // degrade the node silently.
+                let signer_or_verifier = Scheme::<_, MinSig>::new(
+                    initial_dkg_outcome.participants.clone(),
+                    &initial_dkg_outcome.public,
+                    our_share,
+                );
+                ensure!(
+                    matches!(signer_or_verifier, Scheme::Signer { .. },),
+                    "incorrect signing share provided: the node would not be a \
+                    signer in the ceremony"
+                );
+            }
+
             let initial_validators = validators::read_from_contract(
                 0,
                 &self.config.execution_node,
@@ -79,7 +103,7 @@ where
             .wrap_err("validator config could not be read from genesis block validator config smart contract")?;
 
             // ensure that the peer set written into the smart contract matches
-            // the participants as determinde by the initial DKG outcome.
+            // the participants as determined by the initial DKG outcome.
             let initial_validator_state = ValidatorState::new(initial_validators);
             let peers_as_per_contract = initial_validator_state.resolve_addresses_and_merge_peers();
             ensure!(
