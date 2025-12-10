@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/25.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/24.11";
     utils.url = "github:numtide/flake-utils";
     crane.url = "github:ipetkov/crane";
     fenix.url = "github:nix-community/fenix";
@@ -113,6 +113,10 @@
                 rustNightly.rustfmt
                 pkgs.cargo-nextest
               ];
+
+              # Remove the hardening added by nix to fix jmalloc compilation error.
+              # More info: https://github.com/tikv/jemallocator/issues/108
+              hardeningDisable = [ "fortify" ];
 
             } overrides
           );

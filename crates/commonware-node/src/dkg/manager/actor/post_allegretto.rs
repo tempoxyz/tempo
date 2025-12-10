@@ -1,7 +1,10 @@
 use std::net::SocketAddr;
 
-use commonware_codec::{EncodeSize, Read, Write};
-use commonware_consensus::{Block as _, Reporter as _, types::Epoch, utils};
+use commonware_codec::{DecodeExt as _, EncodeSize, Read, Write};
+use commonware_consensus::{
+    Block as _, Reporter as _, simplex::signing_scheme::bls12381_threshold::Scheme, types::Epoch,
+    utils,
+};
 use commonware_cryptography::{
     bls12381::primitives::{group::Share, poly::Public, variant::MinSig},
     ed25519::PublicKey,
@@ -13,8 +16,10 @@ use commonware_utils::{
     sequence::U64,
     set::{Ordered, OrderedAssociated},
 };
-use eyre::ensure;
+use eyre::{WrapErr as _, ensure};
 use rand_core::CryptoRngCore;
+use reth_ethereum::chainspec::EthChainSpec as _;
+use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::PublicOutcome;
 use tracing::{Span, info, instrument, warn};
 
@@ -25,7 +30,7 @@ use crate::{
         ceremony::{self, Ceremony},
         manager::{
             actor::{DkgOutcome, pre_allegretto},
-            validators::ValidatorState,
+            validators::{self, ValidatorState},
         },
     },
     epoch::{self, is_first_block_in_epoch},
@@ -44,6 +49,100 @@ where
             Peers = OrderedAssociated<PublicKey, SocketAddr>,
         >,
 {
+    #[instrument(skip_all, err)]
+    pub(super) async fn post_allegretto_init(&mut self) -> eyre::Result<()> {
+        let spec = self.config.execution_node.chain_spec();
+        if !self.post_allegretto_metadatas.exists() && spec.is_allegretto_active_at_timestamp(0) {
+            info!(
+                "allegretto hardfork is active at timestamp 0, reading initial validators and public polynomial from genesis block"
+            );
+
+            let initial_dkg_outcome = PublicOutcome::decode(spec.genesis().extra_data.as_ref())
+                .wrap_err_with(|| {
+                    format!(
+                        "failed decoding the genesis.extra_data field as an \
+                        initial DKG outcome; this field must be set and it \
+                        must be decodable; bytes = {}",
+                        spec.genesis().extra_data.len(),
+                    )
+                })?;
+
+            ensure!(
+                initial_dkg_outcome.epoch == 0,
+                "at genesis, the epoch must be zero, but genesis reported `{}`",
+                initial_dkg_outcome.epoch
+            );
+
+            let our_share = self.config.initial_share.clone();
+            if let Some(our_share) = our_share.clone() {
+                // XXX: explicitly check the signing key matches the public
+                // polynomial. If it does not, commonware silently demotes the
+                // node to a verifier.
+                //
+                // FIXME: replace this once commonware provides logic to not
+                // degrade the node silently.
+                let signer_or_verifier = Scheme::<_, MinSig>::new(
+                    initial_dkg_outcome.participants.clone(),
+                    &initial_dkg_outcome.public,
+                    our_share,
+                );
+                ensure!(
+                    matches!(signer_or_verifier, Scheme::Signer { .. },),
+                    "incorrect signing share provided: the node would not be a \
+                    signer in the ceremony"
+                );
+            }
+
+            let initial_validators = validators::read_from_contract(
+                0,
+                &self.config.execution_node,
+                0,
+                self.config.epoch_length,
+            )
+            .await
+            .wrap_err("validator config could not be read from genesis block validator config smart contract")?;
+
+            // ensure that the peer set written into the smart contract matches
+            // the participants as determined by the initial DKG outcome.
+            let initial_validator_state = ValidatorState::new(initial_validators);
+            let peers_as_per_contract = initial_validator_state.resolve_addresses_and_merge_peers();
+            ensure!(
+                peers_as_per_contract.keys() == &initial_dkg_outcome.participants,
+                "the DKG participants stored in the genesis extraData header \
+                don't match the peers determined from the onchain contract of \
+                the genesis block; \
+                extraData.participants = `{:?}; \
+                contract.peers = `{:?}",
+                initial_dkg_outcome.participants,
+                peers_as_per_contract.keys(),
+            );
+
+            info!(
+                initial_public_polynomial = ?initial_dkg_outcome.public,
+                initial_validators = ?peers_as_per_contract,
+                "using public polynomial and validators read from contract",);
+
+            self.post_allegretto_metadatas
+                .epoch_metadata
+                .put_sync(
+                    CURRENT_EPOCH_KEY,
+                    EpochState {
+                        dkg_outcome: DkgOutcome {
+                            dkg_successful: true,
+                            epoch: 0,
+                            participants: initial_dkg_outcome.participants,
+                            public: initial_dkg_outcome.public,
+                            share: self.config.initial_share.clone(),
+                        },
+                        validator_state: initial_validator_state.clone(),
+                    },
+                )
+                .await
+                .expect("persisting epoch state must always work");
+        }
+        Ok(())
+    }
+
     /// Handles a finalized block.
     ///
     /// Some block heights are special cased:
@@ -225,13 +324,18 @@ where
     pub(super) async fn transition_from_static_validator_sets<TReceiver, TSender>(
         &mut self,
         pre_allegretto_epoch_state: pre_allegretto::EpochState,
-        pre_allegretto_validator_state: ValidatorState,
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> eyre::Result<Ceremony<ContextCell<TContext>, TReceiver, TSender>>
     where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
+        let pre_allegretto_validator_state = self
+            .validators_metadata
+            .get(&pre_allegretto_epoch_state.epoch().saturating_sub(1).into())
+            .cloned()
+            .expect("it is enforced at startup that the validator state for epoch-1 is written");
+
         let on_chain_validators = super::read_validator_config_with_retry(
             &self.context,
             &self.config.execution_node,

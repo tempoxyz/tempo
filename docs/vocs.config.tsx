@@ -321,8 +321,8 @@ export default defineConfig({
                 link: '/protocol/transactions/AccountKeychain',
               },
               {
-                text: 'Default Account Abstraction Specification',
-                link: '/protocol/transactions/spec-default-aa',
+                text: 'Default Delegation Specification',
+                link: '/protocol/transactions/spec-default-delegation',
               },
               {
                 text: 'Rust Implementation',
