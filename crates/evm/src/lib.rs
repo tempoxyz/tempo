@@ -4,7 +4,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod assemble;
-use alloy_consensus::{BlockHeader as _, Transaction};
+use alloy_consensus::{BlockHeader as _, Transaction, crypto::RecoveryError};
 use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
@@ -26,8 +26,9 @@ pub use evm::TempoEvmFactory;
 use reth_chainspec::EthChainSpec;
 use reth_evm::{
     self, ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
+    FromRecoveredTx, RecoveredTx, ToTxEnv,
 };
-use reth_primitives_traits::{SealedBlock, SealedHeader, SignerRecoverable};
+use reth_primitives_traits::{SealedBlock, SealedHeader, SignedTransaction};
 use tempo_payload_types::TempoExecutionData;
 use tempo_primitives::{
     Block, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
@@ -37,7 +38,7 @@ use tempo_primitives::{
 use crate::{block::TempoBlockExecutor, evm::TempoEvm};
 use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_revm::evm::TempoContext;
+use tempo_revm::{TempoTxEnv, evm::TempoContext};
 
 pub use tempo_revm::{TempoBlockEnv, TempoHaltReason, TempoStateAccess};
 
@@ -258,10 +259,48 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         &self,
         payload: &TempoExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
-        let transactions = payload.block.body().transactions.clone().into_iter();
-        let convert = |tx: TempoTxEnvelope| tx.try_into_recovered();
+        let block = payload.block.clone();
+        let transactions =
+            (0..payload.block.body().transactions.len()).map(move |i| (block.clone(), i));
 
-        Ok((transactions, convert))
+        Ok((transactions, RecoveredInBlock::new))
+    }
+}
+
+/// A [`reth_evm::execute::ExecutableTxFor`] implementation that contains a pointer to the
+/// block and the transaction index, allowing to prepare a [`TempoTxEnv`] without having to
+/// clone block or transaction.
+#[derive(Clone)]
+struct RecoveredInBlock {
+    block: Arc<SealedBlock<Block>>,
+    index: usize,
+    sender: Address,
+}
+
+impl RecoveredInBlock {
+    fn new((block, index): (Arc<SealedBlock<Block>>, usize)) -> Result<Self, RecoveryError> {
+        let sender = block.body().transactions[index].try_recover()?;
+        Ok(Self {
+            block,
+            index,
+            sender,
+        })
+    }
+}
+
+impl RecoveredTx<TempoTxEnvelope> for RecoveredInBlock {
+    fn tx(&self) -> &TempoTxEnvelope {
+        &self.block.body().transactions[self.index]
+    }
+
+    fn signer(&self) -> &alloy_primitives::Address {
+        &self.sender
+    }
+}
+
+impl ToTxEnv<TempoTxEnv> for RecoveredInBlock {
+    fn to_tx_env(&self) -> TempoTxEnv {
+        TempoTxEnv::from_recovered_tx(self.tx(), *self.signer())
     }
 }
 
