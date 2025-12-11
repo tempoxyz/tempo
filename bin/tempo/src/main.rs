@@ -216,7 +216,7 @@ fn main() -> eyre::Result<()> {
 
         // Initialize Pyroscope profiling if enabled
         #[cfg(feature = "pyroscope")]
-        if args.pyroscope_args.pyroscope_enabled {
+        let pyroscope_agent = if args.pyroscope_args.pyroscope_enabled {
             let agent = pyroscope::PyroscopeAgent::builder(
                 &args.pyroscope_args.server_url,
                 &args.pyroscope_args.application_name,
@@ -230,12 +230,16 @@ fn main() -> eyre::Result<()> {
             .build()
             .wrap_err("failed to build Pyroscope agent")?;
 
-            let _agent = agent.start().wrap_err("failed to start Pyroscope agent")?;
+            let agent = agent.start().wrap_err("failed to start Pyroscope agent")?;
             info!(
                 server_url = %args.pyroscope_args.server_url,
                 application_name = %args.pyroscope_args.application_name,
                 "Pyroscope profiling enabled"
             );
+
+            Some(agent)
+        } else {
+            None
         };
 
         let NodeHandle {
@@ -281,6 +285,12 @@ fn main() -> eyre::Result<()> {
                 tracing::info!("received shutdown signal");
             }
         }
+
+        #[cfg(feature = "pyroscope")]
+        if let Some(agent) = pyroscope_agent {
+            agent.shutdown();
+        }
+
         Ok(())
     })
     .wrap_err("execution node failed")?;
