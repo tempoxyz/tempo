@@ -13,27 +13,8 @@ use tempo_precompiles::{
 /// Initialize PathUSD token. For AllegroModerato+, uses the factory flow.
 /// For older specs, initializes directly.
 fn initialize_path_usd(admin: Address) -> Result<()> {
-    if !StorageCtx.spec().is_allegretto() {
-        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-        path_usd.initialize(
-            "PathUSD",
-            "PUSD",
-            "USD",
-            Address::ZERO,
-            admin,
-            Address::ZERO,
-        )
-    } else {
-        let mut factory = TIP20Factory::new();
-        factory.initialize()?;
-        deploy_path_usd(&mut factory, admin)?;
-
-        Ok(())
-    }
-}
-
-/// Deploy PathUSD via the factory. Requires AllegroModerato+ spec and no tokens deployed yet.
-fn deploy_path_usd(factory: &mut TIP20Factory, admin: Address) -> Result<Address> {
+    let mut factory = TIP20Factory::new();
+    factory.initialize()?;
     let token_id = factory.token_id_counter()?;
 
     if !token_id.is_zero() {
@@ -51,7 +32,9 @@ fn deploy_path_usd(factory: &mut TIP20Factory, admin: Address) -> Result<Address
             quoteToken: Address::ZERO,
             admin,
         },
-    )
+    )?;
+
+    Ok(())
 }
 
 fn tip20_metadata(c: &mut Criterion) {
