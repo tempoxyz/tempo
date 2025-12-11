@@ -443,7 +443,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
-        tip20::{ITIP20, token_id_to_address},
+        tip20::ITIP20,
     };
 
     #[test]
@@ -589,23 +589,6 @@ mod tests {
                     FeeManagerError::cannot_change_within_block()
                 ))
             );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_is_tip20_token() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let random = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            // Valid TIP20 address
-            let token_id = rand::random::<u64>();
-            let token = token_id_to_address(token_id);
-            assert!(is_tip20_prefix(token));
-
-            // Random address is not TIP20
-            assert!(!is_tip20_prefix(random));
 
             Ok(())
         })
@@ -781,15 +764,7 @@ mod tests {
             )?;
 
             // Simulate collected fees > actual balance by setting directly
-            fee_manager
-                .collected_fees
-                .at(validator)
-                .write(collected_fees)?;
-            fee_manager
-                .validator_in_fees_array
-                .at(validator)
-                .write(true)?;
-            fee_manager.validators_with_fees.push(validator)?;
+            fee_manager.increment_collected_fees(validator, collected_fees)?;
 
             // Execute block
             let result = fee_manager.execute_block(Address::ZERO, validator);

@@ -1056,9 +1056,8 @@ pub(crate) mod tests {
     /// Initialize a factory and create a single token
     fn setup_factory_with_token(admin: Address, name: &str, symbol: &str) -> Result<u64> {
         initialize_path_usd(admin)?;
-        let mut factory = TIP20Factory::new();
-        factory.initialize()?;
 
+        let mut factory = TIP20Factory::new();
         let token_address = factory.create_token(
             admin,
             ITIP20Factory::createTokenCall {

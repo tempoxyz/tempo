@@ -136,7 +136,7 @@ mod tests {
     use tempo_contracts::precompiles::{TIPAccountRegistrarError, UnknownFunctionSelector};
 
     #[test]
-    fn delegate_to_default_v1_pre_moderato() -> eyre::Result<()> {
+    fn test_delegate_to_default_v1_pre_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             // Pre-Moderato: delegateToDefault(bytes32,bytes) should work
@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn delegate_to_default_v1_rejected_post_moderato() -> eyre::Result<()> {
+    fn test_delegate_to_default_v1_rejected_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         StorageCtx::enter(&mut storage, || {
             // Post-Moderato: delegateToDefault(bytes32,bytes) should be rejected
@@ -214,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn delegate_to_default_v2_post_moderato() -> eyre::Result<()> {
+    fn test_delegate_to_default_v2_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         StorageCtx::enter(&mut storage, || {
             // Post-Moderato: delegateToDefault(bytes,bytes) should work
@@ -252,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn delegate_to_default_v2_rejected_pre_moderato() -> eyre::Result<()> {
+    fn test_delegate_to_default_v2_rejected_pre_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         StorageCtx::enter(&mut storage, || {
             // Pre-Moderato: delegateToDefault(bytes,bytes) should be rejected
@@ -282,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_signature_v1() -> eyre::Result<()> {
+    fn test_malformed_signature_v1() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let hash = alloy::primitives::keccak256(b"test");
@@ -323,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_signature_v1() -> eyre::Result<()> {
+    fn test_invalid_signature_v1() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let hash = alloy::primitives::keccak256(b"test");
@@ -352,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn nonce_gt_zero_v1() -> eyre::Result<()> {
+    fn test_nonce_gt_zero_v1() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let signer = PrivateKeySigner::random();
@@ -387,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn delegate_to_default_v2_different_messages_different_signers() -> eyre::Result<()> {
+    fn test_delegate_to_default_v2_different_messages_different_signers() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         StorageCtx::enter(&mut storage, || {
             let signer = PrivateKeySigner::random();

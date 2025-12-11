@@ -3059,10 +3059,6 @@ mod tests {
                 .with_approval(alice, exchange.address, min_order_amount_x10)
                 .apply()?;
 
-            // Create pairs
-            exchange.create_pair(usdc.address())?;
-            exchange.create_pair(eurc.address())?;
-
             // Place orders to provide liquidity at 1:1 rate (tick 0)
             // For trade USDC -> PathUSD -> EURC:
             // - First hop needs: bid on USDC (someone buying USDC with PathUSD)
@@ -3120,10 +3116,6 @@ mod tests {
                 .with_mint(alice, min_order_amount_x10)
                 .with_approval(alice, exchange.address, min_order_amount_x10)
                 .apply()?;
-
-            // Create pairs (same as previous test)
-            exchange.create_pair(usdc.address())?;
-            exchange.create_pair(eurc.address())?;
 
             // Place orders at 1:1 rate
             exchange.place(alice, usdc.address(), min_order_amount * 5, true, 0)?;
@@ -3183,10 +3175,6 @@ mod tests {
                 .with_mint(alice, min_order_amount_x10)
                 .with_approval(alice, exchange.address, min_order_amount_x10)
                 .apply()?;
-
-            // Create pairs
-            exchange.create_pair(usdc.address())?;
-            exchange.create_pair(eurc.address())?;
 
             // Place liquidity orders at 1:1
             exchange.place(alice, usdc.address(), min_order_amount * 5, true, 0)?;
@@ -3280,10 +3268,6 @@ mod tests {
                 .with_mint(alice, min_order_amount_x10)
                 .with_approval(alice, exchange.address, min_order_amount_x10)
                 .apply()?;
-
-            // Create pairs
-            exchange.create_pair(usdc.address())?;
-            exchange.create_pair(eurc.address())?;
 
             // Place liquidity orders at 1:1
             exchange.place(alice, usdc.address(), min_order_amount * 5, true, 0)?;

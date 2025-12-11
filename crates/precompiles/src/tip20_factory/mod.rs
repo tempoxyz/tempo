@@ -483,4 +483,22 @@ mod tests {
             Ok(())
         })
     }
+
+    #[test]
+    fn test_is_tip20_prefix() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        StorageCtx::enter(&mut storage, || {
+            // Valid TIP20 address
+            let token_id = rand::random::<u64>();
+            let token = token_id_to_address(token_id);
+            assert!(is_tip20_prefix(token));
+
+            // Random address is not TIP20
+            let random = Address::random();
+            assert!(!is_tip20_prefix(random));
+
+            Ok(())
+        })
+    }
 }

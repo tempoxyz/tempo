@@ -643,11 +643,16 @@ mod tests {
     use super::*;
     use crate::{
         PATH_USD_ADDRESS,
-        storage::{PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{
+            ContractStorage, PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider,
+        },
+        test_util::TIP20Setup,
         tip20::{ISSUER_ROLE, tests::initialize_path_usd},
+        tip403_registry::TIP403Registry,
     };
     use alloy::primitives::{Address, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::ITIP403Registry;
 
     #[test]
     fn test_start_reward_pre_moderato() -> eyre::Result<()> {
@@ -1178,6 +1183,205 @@ mod tests {
 
             let alice_info = token.get_user_reward_info(alice)?;
             assert_eq!(alice_info.reward_balance, U256::ZERO);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_cancel_reward_removes_from_registry_post_moderato() -> eyre::Result<()> {
+        // Test with Moderato hardfork - when cancelling the last stream at an end_time,
+        // the token should be removed from the registry
+        // Note that we start with the hardfork at pre-moderato so that scheduled rewards are still
+        // enabled
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            // Setup and start stream in a scope to release the borrow
+            let mint_amount = U256::from(1000e18);
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(admin, mint_amount)
+                .apply()?;
+
+            let reward_amount = U256::from(100e18);
+            let stream_id = token.start_reward(
+                admin,
+                ITIP20::startRewardCall {
+                    amount: reward_amount,
+                    secs: 10,
+                },
+            )?;
+            let stream = token.get_stream(stream_id)?;
+            let end_time = stream.end_time as u128;
+
+            // Update to Moderato to assert post hardfork cancellation behavior
+            StorageCtx.set_spec(TempoHardfork::Moderato);
+
+            // Verify the token is in the registry before cancellation
+            let registry = TIP20RewardsRegistry::new();
+            let count_before = registry.ending_streams.at(end_time).len()?;
+            assert_eq!(
+                count_before, 1,
+                "Registry should have 1 stream before cancellation"
+            );
+
+            // Cancel the stream
+            token.cancel_reward(admin, ITIP20::cancelRewardCall { id: stream_id })?;
+
+            // Verify the token is removed from the registry (post-Moderato behavior)
+            let count_after = registry.ending_streams.at(end_time).len()?;
+            assert_eq!(
+                count_after, 0,
+                "Post-Moderato: Registry should have 0 streams after cancelling the last stream"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_cancel_reward_does_not_remove_from_registry_pre_moderato() -> eyre::Result<()> {
+        // Test with Adagio (pre-Moderato) - token should NOT be removed from registry
+        // even when all streams are cancelled (for consensus compatibility)
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            // Setup and start stream in a scope to release the borrow
+            let mint_amount = U256::from(1000e18);
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(admin, mint_amount)
+                .apply()?;
+
+            let reward_amount = U256::from(100e18);
+            let stream_id = token.start_reward(
+                admin,
+                ITIP20::startRewardCall {
+                    amount: reward_amount,
+                    secs: 10,
+                },
+            )?;
+            let stream = token.get_stream(stream_id)?;
+            let end_time = stream.end_time as u128;
+
+            // Verify the token is in the registry before cancellation
+            let registry = TIP20RewardsRegistry::new();
+            let count_before = registry.ending_streams.at(end_time).len()?;
+            assert_eq!(
+                count_before, 1,
+                "Registry should have 1 stream before cancellation"
+            );
+
+            // Cancel the stream
+            token.cancel_reward(admin, ITIP20::cancelRewardCall { id: stream_id })?;
+
+            // Pre-Moderato: token should NOT be removed from registry
+            let count_after = registry.ending_streams.at(end_time).len()?;
+            assert_eq!(
+                count_after, 1,
+                "Pre-Moderato: Registry should still have 1 stream (not removed for consensus compatibility)"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_scheduled_rewards_disabled_post_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            // Setup and start stream in a scope to release the borrow
+            let mint_amount = U256::from(1000e18);
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(admin, mint_amount)
+                .apply()?;
+
+            let reward_amount = U256::from(100e18);
+            let result = token.start_reward(
+                admin,
+                ITIP20::startRewardCall {
+                    amount: reward_amount,
+                    secs: 10,
+                },
+            );
+
+            assert!(result.is_err());
+            let error = result.unwrap_err();
+            assert!(matches!(
+                error,
+                TempoPrecompileError::TIP20(TIP20Error::ScheduledRewardsDisabled(_))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_cancel_reward_ensure_tip403_is_not_blacklisted() -> eyre::Result<()> {
+        const STREAM_DURATION: u32 = 10;
+
+        // Start at adagio hardfork so reward streams are enabled
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let current_timestamp = storage.timestamp();
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            // create a blacklist policy before token setup
+            let mut tip403_registry = TIP403Registry::new();
+            let policy_id = tip403_registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            // setup token with the blacklist policy and start a reward stream
+            let mut token = TIP20Setup::create("TestToken", "TEST", admin)
+                .with_issuer(admin)
+                .apply()?;
+
+            token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            let mint_amount = U256::from(1000e18);
+            TIP20Setup::config(token.address())
+                .with_mint(admin, mint_amount)
+                .apply()?;
+
+            let reward_amount = U256::from(100e18);
+            let stream_id = token.start_reward(
+                admin,
+                ITIP20::startRewardCall {
+                    amount: reward_amount,
+                    secs: STREAM_DURATION,
+                },
+            )?;
+
+            // blacklist the token address
+            tip403_registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: token.address,
+                    restricted: true,
+                },
+            )?;
+
+            // attempt to cancel the rewards
+            StorageCtx.set_timestamp(current_timestamp + U256::from(STREAM_DURATION - 1));
+            let refund = token.cancel_reward(admin, ITIP20::cancelRewardCall { id: stream_id })?;
+            assert!(matches!(refund, U256::ZERO), "non-zero refund: {refund}");
 
             Ok(())
         })
