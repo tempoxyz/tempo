@@ -349,10 +349,13 @@ fn gen_delete_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
         }
     });
 
-    // Bulk clear static slots
-    let has_non_dynamic_checks = fields.iter().map(|(_name, ty)| {
+    // Bulk clear static slots - only zero slots that contain non-dynamic fields
+    let is_static_slot = fields.iter().map(|(name, ty)| {
+        let loc_const = PackingConstants::new(name).location();
         quote! {
-            (!<#ty as crate::storage::StorableType>::IS_DYNAMIC)
+            (slot_offset >= #packing::#loc_const.offset_slots &&
+             slot_offset < #packing::#loc_const.offset_slots + <#ty as crate::storage::StorableType>::SLOTS &&
+             !<#ty as crate::storage::StorableType>::IS_DYNAMIC)
         }
     });
 
@@ -360,8 +363,8 @@ fn gen_delete_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
         #(#dynamic_deletes)*
 
         for slot_offset in 0..#packing::SLOT_COUNT {
-            // Only zero this slot if at least one non-dynamic field lives here
-            if #(#has_non_dynamic_checks)||* {
+            // Only zero this slot if a static field occupies it
+            if #(#is_static_slot)||* {
                 storage.store(
                     base_slot + ::alloy::primitives::U256::from(slot_offset),
                     ::alloy::primitives::U256::ZERO
