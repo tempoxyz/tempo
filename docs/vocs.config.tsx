@@ -321,8 +321,8 @@ export default defineConfig({
                 link: '/protocol/transactions/AccountKeychain',
               },
               {
-                text: 'Default Account Abstraction Specification',
-                link: '/protocol/transactions/spec-default-aa',
+                text: 'Default Delegation Specification',
+                link: '/protocol/transactions/spec-default-delegation',
               },
               {
                 text: 'Rust Implementation',
@@ -637,6 +637,27 @@ export default defineConfig({
                     {
                       text: 'watchSetUserToken',
                       link: '/sdk/typescript/viem/fee.watchSetUserToken',
+                    },
+                  ],
+                },
+                {
+                  text: 'Nonce',
+                  items: [
+                    {
+                      text: 'getNonce',
+                      link: '/sdk/typescript/viem/nonce.getNonce',
+                    },
+                    {
+                      text: 'getNonceKeyCount',
+                      link: '/sdk/typescript/viem/nonce.getNonceKeyCount',
+                    },
+                    {
+                      text: 'watchActiveKeyCountChanged',
+                      link: '/sdk/typescript/viem/nonce.watchActiveKeyCountChanged',
+                    },
+                    {
+                      text: 'watchNonceIncremented',
+                      link: '/sdk/typescript/viem/nonce.watchNonceIncremented',
                     },
                   ],
                 },
@@ -1011,6 +1032,27 @@ export default defineConfig({
                   ],
                 },
                 {
+                  text: 'Nonce',
+                  items: [
+                    {
+                      text: 'getNonce',
+                      link: '/sdk/typescript/wagmi/actions/nonce.getNonce',
+                    },
+                    {
+                      text: 'getNonceKeyCount',
+                      link: '/sdk/typescript/wagmi/actions/nonce.getNonceKeyCount',
+                    },
+                    {
+                      text: 'watchActiveKeyCountChanged',
+                      link: '/sdk/typescript/wagmi/actions/nonce.watchActiveKeyCountChanged',
+                    },
+                    {
+                      text: 'watchNonceIncremented',
+                      link: '/sdk/typescript/wagmi/actions/nonce.watchNonceIncremented',
+                    },
+                  ],
+                },
+                {
                   text: 'Policy',
                   items: [
                     {
@@ -1358,6 +1400,27 @@ export default defineConfig({
                   ],
                 },
                 {
+                  text: 'Nonce',
+                  items: [
+                    {
+                      text: 'useNonce',
+                      link: '/sdk/typescript/wagmi/hooks/nonce.useNonce',
+                    },
+                    {
+                      text: 'useNonceKeyCount',
+                      link: '/sdk/typescript/wagmi/hooks/nonce.useNonceKeyCount',
+                    },
+                    {
+                      text: 'useWatchActiveKeyCountChanged',
+                      link: '/sdk/typescript/wagmi/hooks/nonce.useWatchActiveKeyCountChanged',
+                    },
+                    {
+                      text: 'useWatchNonceIncremented',
+                      link: '/sdk/typescript/wagmi/hooks/nonce.useWatchNonceIncremented',
+                    },
+                  ],
+                },
+                {
                   text: 'Policy',
                   items: [
                     {
@@ -1678,13 +1741,13 @@ export default defineConfig({
     process.env['DISABLE_TWOSLASH']! === 'true'
       ? false
       : {
-        compilerOptions: {
-          moduleResolution: ModuleResolutionKind.Bundler,
+          compilerOptions: {
+            moduleResolution: ModuleResolutionKind.Bundler,
+          },
+          extraFiles: {
+            'twoslash-env.d.ts': twoslashSupportFile,
+          },
         },
-        extraFiles: {
-          'twoslash-env.d.ts': twoslashSupportFile,
-        },
-      },
   vite: {
     plugins: [
       {

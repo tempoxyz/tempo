@@ -198,7 +198,17 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
-        self.pre_allegretto_init().await;
+        // Emits an error event on return.
+        if self.post_allegretto_init().await.is_err() {
+            return;
+        }
+        // Emits an error event on return.
+        if self.pre_allegretto_init().await.is_err() {
+            return;
+        }
+
+        self.register_previous_epoch_state().await;
+        self.register_current_epoch_state().await;
 
         let (mux, mut ceremony_mux) = mux::Muxer::new(
             self.context.with_label("ceremony_mux"),
@@ -208,8 +218,6 @@ where
         );
         mux.start();
 
-        self.register_previous_epoch_state().await;
-        self.register_current_epoch_state().await;
         let mut ceremony = Some(
             self.start_ceremony_for_current_epoch_state(&mut ceremony_mux)
                 .await,
@@ -453,10 +461,15 @@ where
         }
 
         let new_validator_state = match &epoch_state {
-            // pre allegretto, the validators are always the once known passed in at init.
-            EpochState::PreModerato(_) => {
-                ValidatorState::with_unknown_contract_state(self.config.initial_validators.clone())
-            }
+            EpochState::PreModerato(epoch_state) => self
+                .validators_metadata
+                .get(&epoch_state.epoch().saturating_sub(1).into())
+                .cloned()
+                .expect(
+                    "there must always be a validator state for the previous \
+                    epoch state written for pre-allegretto logic; this is \
+                    ensured at startup",
+                ),
             EpochState::PostModerato(epoch_state) => epoch_state.validator_state.clone(),
         };
 

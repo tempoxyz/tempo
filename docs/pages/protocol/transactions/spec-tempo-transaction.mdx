@@ -2,7 +2,7 @@
 
 ## Abstract
 
-This spec introduces native protocol support for the following account abstraction features, using a new Tempo transaction type -
+This spec introduces native protocol support for the following features, using a new Tempo transaction type:
 
 * WebAuthn/P256 signature validation - enables passkey accounts
 * Parallelizable nonces - allows higher tx throughput for each account
@@ -31,7 +31,7 @@ pub struct TempoTransaction {
     calls: Vec<Call>,                           // Batch of calls to execute atomically
     access_list: AccessList,                    // EIP-2930 access list
 
-    // AA-specific fields
+    // nonce-related fields
     nonce_key: U256,                            // 2D nonce key (0 = protocol nonce, >0 = user nonces)
     nonce: u64,                                 // Current nonce value for the nonce key
 

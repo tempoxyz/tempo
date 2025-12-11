@@ -601,6 +601,11 @@ where
             }
         };
 
+        info!(
+            dealer = %block_outcome.dealer(),
+            "found DKG dealing in block",
+        );
+
         // Ensure the outcome is for the current round.
         ensure!(
             block_outcome.epoch() == self.epoch(),
