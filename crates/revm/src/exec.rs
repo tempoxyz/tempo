@@ -19,6 +19,9 @@ use revm::{
     state::EvmState,
 };
 
+/// Total gas system transactions are allowed to use.
+const SYSTEM_CALL_GAS_LIMIT: u64 = 250_000_000;
+
 impl<DB, I> ExecuteEvm for TempoEvm<DB, I>
 where
     DB: Database,
@@ -99,7 +102,7 @@ where
         data: Bytes,
     ) -> Result<Self::ExecutionResult, Self::Error> {
         let mut tx = TxEnv::new_system_tx_with_caller(caller, system_contract_address, data);
-        tx.set_gas_limit(250_000_000);
+        tx.set_gas_limit(SYSTEM_CALL_GAS_LIMIT);
         self.inner.ctx.set_tx(tx.into());
         let mut h = TempoEvmHandler::new();
         h.run_system_call(self)
@@ -118,7 +121,7 @@ where
         data: Bytes,
     ) -> Result<Self::ExecutionResult, Self::Error> {
         let mut tx = TxEnv::new_system_tx_with_caller(caller, system_contract_address, data);
-        tx.set_gas_limit(250_000_000);
+        tx.set_gas_limit(SYSTEM_CALL_GAS_LIMIT);
         self.inner.ctx.set_tx(tx.into());
         let mut h = TempoEvmHandler::new();
         h.inspect_run_system_call(self)
