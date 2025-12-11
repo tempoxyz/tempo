@@ -494,15 +494,12 @@ where
                 return Ok(BuildOutcome::Cancelled);
             }
 
-            // convert tx to a signed transaction
-            let tx = pool_tx.to_consensus();
-            let is_payment = tx.is_payment();
-
+            let is_payment = pool_tx.transaction.is_payment();
             if is_payment {
                 payment_transactions += 1;
             }
 
-            let tx_rlp_length = tx.inner().length();
+            let tx_rlp_length = pool_tx.transaction.inner().length();
             let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
@@ -516,15 +513,15 @@ where
                 continue;
             }
 
-            let tx_rlp_length = tx.inner().length();
-            let effective_gas_price = tx.effective_gas_price(Some(base_fee));
+            let effective_gas_price = pool_tx.transaction.effective_gas_price(Some(base_fee));
 
             let tx_debug_repr = tracing::enabled!(Level::TRACE)
-                .then(|| format!("{tx:?}"))
+                .then(|| format!("{:?}", pool_tx.transaction))
                 .unwrap_or_default();
 
+            let tx_with_env = pool_tx.transaction.clone().into_with_tx_env();
             let execution_start = Instant::now();
-            let gas_used = match builder.execute_transaction(tx) {
+            let gas_used = match builder.execute_transaction(tx_with_env) {
                 Ok(gas_used) => gas_used,
                 Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                     error,

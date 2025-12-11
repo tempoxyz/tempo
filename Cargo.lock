@@ -11705,6 +11705,7 @@ version = "0.7.4"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
+ "alloy-evm",
  "alloy-primitives",
  "futures",
  "metrics",
@@ -11712,6 +11713,7 @@ dependencies = [
  "reth-chainspec",
  "reth-eth-wire-types",
  "reth-ethereum-primitives",
+ "reth-evm",
  "reth-metrics",
  "reth-primitives-traits",
  "reth-provider",
