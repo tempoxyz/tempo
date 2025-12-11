@@ -142,9 +142,18 @@ Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.co
 
 ## Security
 
-See [`SECURITY.md`](https://github.com/tempoxyz/tempo?tab=security-ov-file). Note: Tempo is still undergoing audit and does not have an active bug bounty. Submissions will not be eligible for a bounty until audits have concluded.
+See SECURITY.md. Note: Tempo is still undergoing audit and does not have an active bug bounty. Submissions will not be eligible for a bounty until audits have concluded.
+
+## Support
+
+If you need help with Tempo, you can:
+
+- Open an issue in this repository for bugs or feature requests.
+- Use the dedicated support repository: https://github.com/tempoxyz/tempo-support
+- Check the documentation at https://docs.tempo.xyz
 
 ## License
+
 
 Licensed under either of [Apache License](./LICENSE-APACHE), Version
 2.0 or [MIT License](./LICENSE-MIT) at your option.
