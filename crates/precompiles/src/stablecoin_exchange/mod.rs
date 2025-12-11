@@ -804,7 +804,9 @@ impl StablecoinExchange {
         let book_handler = self.books.at(book_key);
         // Pre-Allegretto: use order.book_key() for gas compatibility with legacy behavior.
         // This is a patched bug where stale best_tick can cause reading an empty order (order_id=0).
+        // ref: https://github.com/tempoxyz/tempo/issues/1062
         let mut book_handler_order = if self.storage.spec().is_allegretto() {
+            debug_assert_eq!(order.book_key(), book_key);
             book_handler.clone()
         } else {
             self.books.at(order.book_key())
