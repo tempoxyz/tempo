@@ -11687,6 +11687,7 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",
+ "tempo-transaction-pool",
  "thiserror 2.0.17",
  "tracing",
 ]
@@ -11951,6 +11952,7 @@ dependencies = [
  "alloy-eips",
  "alloy-evm",
  "alloy-primitives",
+ "dashmap 6.1.0",
  "futures",
  "metrics",
  "parking_lot",

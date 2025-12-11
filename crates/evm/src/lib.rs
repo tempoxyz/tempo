@@ -4,7 +4,9 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod assemble;
-use alloy_consensus::{BlockHeader as _, Transaction, crypto::RecoveryError};
+use alloy_consensus::{
+    BlockHeader as _, Transaction, crypto::RecoveryError, transaction::TxHashRef,
+};
 use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
@@ -39,6 +41,7 @@ use crate::{block::TempoBlockExecutor, evm::TempoEvm};
 use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_revm::{TempoTxEnv, evm::TempoContext};
+use tempo_transaction_pool::SenderRecoveryCache;
 
 pub use tempo_revm::{TempoBlockEnv, TempoHaltReason, TempoStateAccess};
 
@@ -50,6 +53,9 @@ pub struct TempoEvmConfig {
 
     /// Block assembler
     pub block_assembler: TempoBlockAssembler,
+
+    /// Cache of recovered senders shared with the transaction pool.
+    sender_recovery_cache: SenderRecoveryCache,
 }
 
 impl TempoEvmConfig {
@@ -59,6 +65,22 @@ impl TempoEvmConfig {
         Self {
             inner,
             block_assembler: TempoBlockAssembler::new(chain_spec),
+            sender_recovery_cache: SenderRecoveryCache::default(),
+        }
+    }
+
+    /// Create a new [`TempoEvmConfig`] with the given chain spec, EVM factory, and sender
+    /// recovery cache.
+    pub fn new_with_sender_cache(
+        chain_spec: Arc<TempoChainSpec>,
+        evm_factory: TempoEvmFactory,
+        sender_recovery_cache: SenderRecoveryCache,
+    ) -> Self {
+        let inner = EthEvmConfig::new_with_evm_factory(chain_spec.clone(), evm_factory);
+        Self {
+            inner,
+            block_assembler: TempoBlockAssembler::new(chain_spec),
+            sender_recovery_cache,
         }
     }
 
@@ -259,11 +281,15 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         &self,
         payload: &TempoExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
-        let block = payload.block.clone();
+        let block = Arc::clone(&payload.block);
         let transactions =
             (0..payload.block.body().transactions.len()).map(move |i| (block.clone(), i));
 
-        Ok((transactions, RecoveredInBlock::new))
+        let sender_recovery_cache = self.sender_recovery_cache.clone();
+
+        Ok((transactions, move |input| {
+            RecoveredInBlock::new(input, &sender_recovery_cache)
+        }))
     }
 }
 
@@ -278,8 +304,19 @@ struct RecoveredInBlock {
 }
 
 impl RecoveredInBlock {
-    fn new((block, index): (Arc<SealedBlock<Block>>, usize)) -> Result<Self, RecoveryError> {
-        let sender = block.body().transactions[index].try_recover()?;
+    fn new(
+        (block, index): (Arc<SealedBlock<Block>>, usize),
+        cache: &SenderRecoveryCache,
+    ) -> Result<Self, RecoveryError> {
+        let tx = &block.body().transactions[index];
+        let tx_hash = tx.tx_hash();
+
+        let sender = if let Some(cached_sender) = cache.remove(tx_hash) {
+            cached_sender
+        } else {
+            tx.try_recover()?
+        };
+
         Ok(Self {
             block,
             index,

@@ -18,6 +18,7 @@ tempo-payload-types.workspace = true
 tempo-primitives.workspace = true
 tempo-precompiles.workspace = true
 tempo-revm.workspace = true
+tempo-transaction-pool.workspace = true
 
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true

@@ -3,6 +3,9 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+mod cache;
+pub use cache::SenderRecoveryCache;
+
 pub mod transaction;
 pub mod validator;
 

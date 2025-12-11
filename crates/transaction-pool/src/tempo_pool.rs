@@ -3,8 +3,9 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    amm::AmmLiquidityCache, best::MergeBestTransactions, transaction::TempoPooledTransaction,
-    tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
+    SenderRecoveryCache, amm::AmmLiquidityCache, best::MergeBestTransactions,
+    transaction::TempoPooledTransaction, tt_2d_pool::AA2dPool,
+    validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
 use alloy_primitives::{Address, B256, map::HashMap};
@@ -38,9 +39,12 @@ pub struct TempoTransactionPool<Client> {
     >,
     /// Minimal pool for 2D nonces (nonce_key > 0)
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
+    /// Cache of recovered senders shared with the EVM executor.
+    sender_recovery_cache: SenderRecoveryCache,
 }
 
 impl<Client> TempoTransactionPool<Client> {
+    /// Creates a new [`TempoTransactionPool`].
     pub fn new(
         protocol_pool: Pool<
             TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
@@ -48,11 +52,18 @@ impl<Client> TempoTransactionPool<Client> {
             DiskFileBlobStore,
         >,
         aa_2d_pool: AA2dPool,
+        sender_recovery_cache: SenderRecoveryCache,
     ) -> Self {
         Self {
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
+            sender_recovery_cache,
         }
+    }
+
+    /// Returns a clone of the sender recovery cache.
+    pub fn sender_recovery_cache(&self) -> SenderRecoveryCache {
+        self.sender_recovery_cache.clone()
     }
 }
 impl<Client> TempoTransactionPool<Client>
@@ -119,6 +130,9 @@ where
                 propagate,
                 authorities,
             } => {
+                let tx_hash = *transaction.hash();
+                let sender = transaction.transaction().sender();
+
                 if transaction.transaction().is_aa_2d() {
                     let transaction = transaction.into_transaction();
                     let sender_id = self
@@ -153,9 +167,11 @@ where
                         .inner()
                         .on_new_transaction(added.into_new_transaction_event());
 
+                    self.sender_recovery_cache.insert(tx_hash, sender);
                     Ok(AddedTransactionOutcome { hash, state })
                 } else {
-                    self.protocol_pool
+                    let result = self
+                        .protocol_pool
                         .inner()
                         .add_transactions(
                             origin,
@@ -169,7 +185,12 @@ where
                             }),
                         )
                         .pop()
-                        .unwrap()
+                        .unwrap();
+
+                    if result.is_ok() {
+                        self.sender_recovery_cache.insert(tx_hash, sender);
+                    }
+                    result
                 }
             }
             invalid => {
@@ -190,6 +211,7 @@ impl<Client> Clone for TempoTransactionPool<Client> {
         Self {
             protocol_pool: self.protocol_pool.clone(),
             aa_2d_pool: Arc::clone(&self.aa_2d_pool),
+            sender_recovery_cache: self.sender_recovery_cache.clone(),
         }
     }
 }
@@ -465,6 +487,9 @@ where
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
         let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
         txs.extend(self.protocol_pool.remove_transactions(hashes));
+
+        self.sender_recovery_cache
+            .remove_many(txs.iter().map(|tx| tx.hash()));
         txs
     }
 
@@ -480,6 +505,9 @@ where
             self.protocol_pool
                 .remove_transactions_and_descendants(hashes),
         );
+
+        self.sender_recovery_cache
+            .remove_many(txs.iter().map(|tx| tx.hash()));
         txs
     }
 
@@ -492,6 +520,9 @@ where
             .write()
             .remove_transactions_by_sender(sender);
         txs.extend(self.protocol_pool.remove_transactions_by_sender(sender));
+
+        self.sender_recovery_cache
+            .remove_many(txs.iter().map(|tx| tx.hash()));
         txs
     }
 

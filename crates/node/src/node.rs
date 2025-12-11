@@ -45,7 +45,7 @@ use tempo_payload_builder::TempoPayloadBuilder;
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
-    AA2dPool, AA2dPoolConfig, TempoTransactionPool, amm::AmmLiquidityCache,
+    AA2dPool, AA2dPoolConfig, SenderRecoveryCache, TempoTransactionPool, amm::AmmLiquidityCache,
     validator::TempoTransactionValidator,
 };
 
@@ -66,6 +66,7 @@ impl TempoNodeArgs {
     pub fn pool_builder(&self) -> TempoPoolBuilder {
         TempoPoolBuilder {
             aa_valid_after_max_secs: self.aa_valid_after_max_secs,
+            sender_recovery_cache: SenderRecoveryCache::default(),
         }
     }
 }
@@ -103,10 +104,14 @@ impl TempoNode {
     where
         Node: FullNodeTypes<Types = Self>,
     {
+        let sender_recovery_cache = pool_builder.sender_recovery_cache.clone();
         ComponentsBuilder::default()
             .node_types::<Node>()
             .pool(pool_builder)
-            .executor(TempoExecutorBuilder::default())
+            .executor(
+                TempoExecutorBuilder::default()
+                    .with_sender_recovery_cache(sender_recovery_cache),
+            )
             .payload(BasicPayloadServiceBuilder::default())
             .network(EthereumNetworkBuilder::default())
             .consensus(TempoConsensusBuilder::default())
@@ -239,7 +244,7 @@ where
     type AddOns = TempoAddOns<NodeAdapter<N>>;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
-        Self::components(self.pool_builder)
+        Self::components(self.pool_builder.clone())
     }
 
     fn add_ons(&self) -> Self::AddOns {
@@ -303,9 +308,20 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
 }
 
 /// A regular ethereum evm and executor builder.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 #[non_exhaustive]
-pub struct TempoExecutorBuilder;
+pub struct TempoExecutorBuilder {
+    /// Sender recovery cache shared with the transaction pool.
+    pub sender_recovery_cache: SenderRecoveryCache,
+}
+
+impl TempoExecutorBuilder {
+    /// Sets the sender recovery cache.
+    pub fn with_sender_recovery_cache(mut self, cache: SenderRecoveryCache) -> Self {
+        self.sender_recovery_cache = cache;
+        self
+    }
+}
 
 impl<Node> ExecutorBuilder<Node> for TempoExecutorBuilder
 where
@@ -314,7 +330,11 @@ where
     type EVM = TempoEvmConfig;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        let evm_config = TempoEvmConfig::new(ctx.chain_spec(), TempoEvmFactory::default());
+        let evm_config = TempoEvmConfig::new_with_sender_cache(
+            ctx.chain_spec(),
+            TempoEvmFactory::default(),
+            self.sender_recovery_cache,
+        );
         Ok(evm_config)
     }
 }
@@ -355,17 +375,25 @@ where
 ///
 /// This contains various settings that can be configured and take precedence over the node's
 /// config.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct TempoPoolBuilder {
     /// Maximum allowed `valid_after` offset for AA txs.
     pub aa_valid_after_max_secs: u64,
+    /// Sender recovery cache shared with the EVM executor.
+    pub sender_recovery_cache: SenderRecoveryCache,
 }
 
 impl TempoPoolBuilder {
     /// Sets the maximum allowed `valid_after` offset for AA txs.
-    pub const fn with_aa_tx_valid_after_max_secs(mut self, secs: u64) -> Self {
+    pub fn with_aa_tx_valid_after_max_secs(mut self, secs: u64) -> Self {
         self.aa_valid_after_max_secs = secs;
+        self
+    }
+
+    /// Sets the sender recovery cache.
+    pub fn with_sender_recovery_cache(mut self, cache: SenderRecoveryCache) -> Self {
+        self.sender_recovery_cache = cache;
         self
     }
 }
@@ -374,6 +402,7 @@ impl Default for TempoPoolBuilder {
     fn default() -> Self {
         Self {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            sender_recovery_cache: SenderRecoveryCache::default(),
         }
     }
 }
@@ -455,7 +484,8 @@ where
             .build(blob_store, pool_config.clone());
 
         // Wrap the protocol pool in our hybrid TempoTransactionPool
-        let transaction_pool = TempoTransactionPool::new(protocol_pool, aa_2d_pool);
+        let transaction_pool =
+            TempoTransactionPool::new(protocol_pool, aa_2d_pool, self.sender_recovery_cache);
 
         spawn_maintenance_tasks(ctx, transaction_pool.clone(), &pool_config)?;
 
