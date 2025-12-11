@@ -581,10 +581,20 @@ where
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         // Check that we ended in the System section with all end-of-block system txs seen
+        let block_timestamp = self.evm().block().timestamp.to::<u64>();
+        let is_allegro_moderato = self
+            .inner
+            .spec
+            .is_allegro_moderato_active_at_timestamp(block_timestamp);
+
+        // Post AllegroModerato, stablecoin DEX system tx is no longer required
+        // (orders are immediately active when placed)
+        let expected_seen_stablecoin_dex = !is_allegro_moderato;
+
         if self.section
             != (BlockSection::System {
                 seen_fee_manager: true,
-                seen_stablecoin_dex: true,
+                seen_stablecoin_dex: expected_seen_stablecoin_dex,
                 seen_subblocks_signatures: true,
             })
         {
