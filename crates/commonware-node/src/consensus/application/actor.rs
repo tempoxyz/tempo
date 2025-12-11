@@ -811,7 +811,7 @@ async fn verify_block<TContext: Pacer>(
         .ok_or_eyre("cannot determine participants in the current epoch")?;
     let block = block.clone().into_inner();
     let execution_data = TempoExecutionData {
-        block,
+        block: Arc::new(block),
         validator_set: Some(
             scheme
                 .participants()
