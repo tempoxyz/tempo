@@ -27,7 +27,7 @@ struct Validator {
 }
 
 /// Validator Config precompile for managing consensus validators
-#[contract(Default)]
+#[contract(addr = VALIDATOR_CONFIG_ADDRESS)]
 pub struct ValidatorConfig {
     owner: Address,
     // NOTE(rusowsky): we delete `validator_count`, as that info is available via `validators_array.len()`
@@ -39,10 +39,6 @@ pub struct ValidatorConfig {
 }
 
 impl ValidatorConfig {
-    pub fn new() -> Self {
-        Self::__new(VALIDATOR_CONFIG_ADDRESS)
-    }
-
     /// Initialize the precompile with an owner
     pub fn initialize(&mut self, owner: Address) -> Result<()> {
         trace!(address=%self.address, %owner, "Initializing validator config precompile");

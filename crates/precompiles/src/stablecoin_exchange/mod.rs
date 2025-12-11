@@ -46,7 +46,7 @@ fn calculate_quote_amount_ceil(amount: u128, tick: i16) -> Option<u128> {
     Some(amount.checked_mul(price)?.div_ceil(PRICE_SCALE as u128))
 }
 
-#[contract(Default)]
+#[contract(addr = STABLECOIN_EXCHANGE_ADDRESS)]
 pub struct StablecoinExchange {
     books: Mapping<B256, Orderbook>,
     orders: Mapping<u128, Order>,
@@ -57,10 +57,6 @@ pub struct StablecoinExchange {
 }
 
 impl StablecoinExchange {
-    pub fn new() -> Self {
-        Self::__new(STABLECOIN_EXCHANGE_ADDRESS)
-    }
-
     /// Stablecoin exchange address
     pub fn address(&self) -> Address {
         self.address

@@ -10,7 +10,7 @@ use crate::{
 };
 use alloy::primitives::{Address, U256};
 
-#[contract(Default)]
+#[contract(addr = TIP403_REGISTRY_ADDRESS)]
 pub struct TIP403Registry {
     policy_id_counter: u64,
     policy_data: Mapping<u64, PolicyData>,
@@ -52,13 +52,6 @@ impl PolicyData {
 }
 
 impl TIP403Registry {
-    /// Creates an instance of the precompile.
-    ///
-    /// Caution: This does not initialize the account, see [`Self::initialize`].
-    pub fn new() -> Self {
-        Self::__new(TIP403_REGISTRY_ADDRESS)
-    }
-
     /// Initializes the registry contract.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()

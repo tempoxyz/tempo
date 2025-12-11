@@ -26,17 +26,13 @@ use alloy::primitives::{Address, U256};
 ///
 /// Note: Protocol nonce (key 0) is stored directly in account state, not here.
 /// Only user nonce keys (1-N) are managed by this precompile.
-#[contract(Default)]
+#[contract(addr = NONCE_PRECOMPILE_ADDRESS)]
 pub struct NonceManager {
     nonces: Mapping<Address, Mapping<U256, u64>>,
     active_key_count: Mapping<Address, U256>,
 }
 
 impl NonceManager {
-    pub fn new() -> Self {
-        Self::__new(NONCE_PRECOMPILE_ADDRESS)
-    }
-
     /// Initializes the nonce manager contract.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()

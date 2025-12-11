@@ -15,7 +15,7 @@ use crate::{
 use alloy::primitives::{Address, U256};
 use tracing::trace;
 
-#[contract(Default)]
+#[contract(addr = TIP20_FACTORY_ADDRESS)]
 pub struct TIP20Factory {
     // TODO: It would be nice to have a `#[initial_value=`n`]` macro
     // to mimic setting an initial value in solidity
@@ -24,13 +24,6 @@ pub struct TIP20Factory {
 
 // Precompile functions
 impl TIP20Factory {
-    /// Creates an instance of the precompile.
-    ///
-    /// Caution: This does not initialize the account, see [`Self::initialize`].
-    pub fn new() -> Self {
-        Self::__new(TIP20_FACTORY_ADDRESS)
-    }
-
     /// Initializes the TIP20 factory contract.
     ///
     /// Sets the initial token counter to 1, reserving token ID 0 for the LinkingUSD precompile.

@@ -14,17 +14,10 @@ use tempo_contracts::{
     precompiles::{TIP_ACCOUNT_REGISTRAR, TIPAccountRegistrarError},
 };
 
-#[contract(Default)]
+#[contract(addr = TIP_ACCOUNT_REGISTRAR)]
 pub struct TipAccountRegistrar {}
 
 impl TipAccountRegistrar {
-    /// Creates an instance of the precompile.
-    ///
-    /// Caution: This does not initialize the account, see [`Self::initialize`].
-    pub fn new() -> Self {
-        Self::__new(TIP_ACCOUNT_REGISTRAR)
-    }
-
     /// Initializes the TIP Account Registrar contract
     ///
     /// Ensures the [`TipAccountRegistrar`] account isn't empty and prevents state clear.

@@ -3,7 +3,7 @@ use crate::{
     packing::{self, LayoutField, PackingConstants, SlotAssignment},
 };
 use quote::{format_ident, quote};
-use syn::{Ident, Visibility};
+use syn::{Expr, Ident, Visibility};
 
 /// Generates a public handler field declaration for a storage field
 pub(crate) fn gen_handler_field_decl(field: &LayoutField<'_>) -> proc_macro2::TokenStream {
@@ -123,6 +123,7 @@ pub(crate) fn gen_struct(
 pub(crate) fn gen_constructor(
     name: &Ident,
     allocated_fields: &[LayoutField<'_>],
+    address: Option<&Expr>,
 ) -> proc_macro2::TokenStream {
     // Generate handler initializations for each field using the shared helper
     let field_inits = allocated_fields
@@ -130,8 +131,22 @@ pub(crate) fn gen_constructor(
         .enumerate()
         .map(|(idx, field)| gen_handler_field_init(field, idx, allocated_fields, None));
 
+    // Generate `pub fn new()` when address is provided
+    let new_fn = address.map(|addr| {
+        quote! {
+            /// Creates an instance of the precompile.
+            ///
+            /// Caution: This does not initialize the account, see [`Self::initialize`].
+            pub fn new() -> Self {
+                Self::__new(#addr)
+            }
+        }
+    });
+
     quote! {
         impl #name {
+            #new_fn
+
             #[inline(always)]
             fn __new(address: ::alloy::primitives::Address) -> Self {
                 // Run collision detection checks in debug builds

@@ -17,7 +17,7 @@ use tempo_precompiles_macros::contract;
 
 /// TIPRewardsRegistry precompile that tracks stream end times
 /// Maps timestamp -> Vec of token addresses with streams ending at that time
-#[contract(Default)]
+#[contract(addr = TIP20_REWARDS_REGISTRY_ADDRESS)]
 pub struct TIP20RewardsRegistry {
     last_updated_timestamp: u128,
     ending_streams: Mapping<u128, Vec<Address>>,
@@ -25,13 +25,6 @@ pub struct TIP20RewardsRegistry {
 }
 
 impl TIP20RewardsRegistry {
-    /// Creates an instance of the precompile.
-    ///
-    /// Caution: This does not initialize the account, see [`Self::initialize`].
-    pub fn new() -> Self {
-        Self::__new(TIP20_REWARDS_REGISTRY_ADDRESS)
-    }
-
     /// Initializes the TIP20 rewards registry contract.
     ///
     /// Ensures the [`TIP20RewardsRegistry`] account isn't empty and prevents state clear.

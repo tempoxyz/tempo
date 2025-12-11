@@ -37,7 +37,7 @@ impl StorageKey for TokenPair {
     }
 }
 
-#[contract(Default)]
+#[contract(addr = TIP_FEE_MANAGER_ADDRESS)]
 pub struct TipFeeManager {
     validator_tokens: Mapping<Address, Address>,
     user_tokens: Mapping<Address, Address>,
@@ -59,13 +59,6 @@ impl TipFeeManager {
     pub const FEE_BPS: u64 = 25; // 0.25% fee
     pub const BASIS_POINTS: u64 = 10000;
     pub const MINIMUM_BALANCE: U256 = uint!(1_000_000_000_U256); // 1e9
-
-    /// Creates an instance of the precompile.
-    ///
-    /// Caution: This does not initialize the account, see [`Self::initialize`].
-    pub fn new() -> Self {
-        Self::__new(TIP_FEE_MANAGER_ADDRESS)
-    }
 
     /// Initializes the contract
     ///

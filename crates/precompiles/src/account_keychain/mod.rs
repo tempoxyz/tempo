@@ -52,7 +52,7 @@ impl AuthorizedKey {
 }
 
 /// Account Keychain contract for managing authorized keys
-#[contract(Default)]
+#[contract(addr = ACCOUNT_KEYCHAIN_ADDRESS)]
 pub struct AccountKeychain {
     // keys[account][keyId] -> AuthorizedKey
     keys: Mapping<Address, Mapping<Address, AuthorizedKey>>,
@@ -67,13 +67,6 @@ pub struct AccountKeychain {
 }
 
 impl AccountKeychain {
-    /// Creates an instance of the precompile.
-    ///
-    /// Caution: This does not initialize the account, see [`Self::initialize`].
-    pub fn new() -> Self {
-        Self::__new(ACCOUNT_KEYCHAIN_ADDRESS)
-    }
-
     /// Create a hash key for spending limits mapping from account and keyId
     fn spending_limit_key(account: Address, key_id: Address) -> B256 {
         use alloy::primitives::keccak256;
