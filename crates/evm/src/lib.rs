@@ -267,7 +267,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
     }
 }
 
-/// A [`reth_evm::execute::ExecutableTxFor`] implementation that contains a pointer to the 
+/// A [`reth_evm::execute::ExecutableTxFor`] implementation that contains a pointer to the
 /// block and the transaction index, allowing to prepare a [`TempoTxEnv`] without having to
 /// clone block or transaction.
 #[derive(Clone)]
