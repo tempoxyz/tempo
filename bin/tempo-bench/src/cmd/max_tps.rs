@@ -297,7 +297,7 @@ impl MaxTpsArgs {
         .await?;
 
         let erc20_tokens = if self.erc20_weight > 0.0 {
-            let num_erc20_tokens = 2;
+            let num_erc20_tokens = 1;
             info!(num_erc20_tokens, "Setting up ERC-20 tokens");
             erc20::setup(
                 signer_providers,
