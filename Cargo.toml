@@ -233,6 +233,8 @@ tracing-subscriber = "0.3.19"
 criterion = "0.7.0"
 test-case = "3"
 secp256k1 = "0.30.0"
+pyroscope = "0.5.8"
+pyroscope_pprofrs = "0.2.10"
 
 # build deps
 vergen = "9"
