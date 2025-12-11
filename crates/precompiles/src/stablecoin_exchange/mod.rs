@@ -807,8 +807,16 @@ impl StablecoinExchange {
         mut level: TickLevel,
         taker: Address,
     ) -> Result<(u128, Option<(TickLevel, Order)>)> {
-        let mut book_handler = self.books.at(book_key);
-        let orderbook = book_handler.read()?;
+        let book_handler = self.books.at(book_key);
+        // Pre-Allegretto: use order.book_key() for gas compatibility with legacy behavior.
+        // This is a patched bug where stale best_tick can cause reading an empty order (order_id=0).
+        let mut book_handler_order = if self.storage.spec().is_allegretto() {
+            book_handler.clone()
+        } else {
+            self.books.at(order.book_key())
+        };
+
+        let orderbook = book_handler_order.read()?;
         let price = tick_to_price(order.tick());
         let fill_amount = order.remaining();
 
@@ -853,7 +861,7 @@ impl StablecoinExchange {
             book_handler
                 .handle_tick_level(order.tick(), order.is_bid())
                 .delete()?;
-            book_handler.delete_tick_bit(order.tick(), order.is_bid())?;
+            book_handler_order.delete_tick_bit(order.tick(), order.is_bid())?;
 
             let (tick, has_liquidity) =
                 book_handler.next_initialized_tick(order.tick(), order.is_bid());
@@ -892,7 +900,7 @@ impl StablecoinExchange {
                 .ok_or(TempoPrecompileError::under_overflow())?;
             level.total_liquidity = new_liquidity;
 
-            book_handler
+            book_handler_order
                 .handle_tick_level(order.tick(), order.is_bid())
                 .write(level)?;
 

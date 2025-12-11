@@ -221,6 +221,7 @@ fn gen_handler_struct(
         /// Type-safe handler for accessing `#struct_name` in storage.
         ///
         /// Provides individual field access via public fields and whole-struct operations.
+        #[derive(Debug, Clone)]
         pub struct #handler_name {
             address: ::alloy::primitives::Address,
             base_slot: ::alloy::primitives::U256,
