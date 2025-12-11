@@ -14,19 +14,15 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{collections::HashSet, time::Duration};
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, tip_fee_manager::ITIPFeeAMM,
-    tip20::token_id_to_address, tip20_factory::ITIP20Factory,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+    tip_fee_manager::ITIPFeeAMM::{self, ITIPFeeAMMInstance},
+    tip20::token_id_to_address,
+    tip20_factory::ITIP20Factory,
 };
 use tempo_telemetry_util::error_field;
 use tracing::{debug, error, info, instrument};
 
 use crate::monitor;
-
-#[derive(PartialEq, Eq, Hash)]
-struct Pair {
-    pub token_a: Address,
-    pub token_b: Address,
-}
 
 /// Duration in seconds to mute a token after an InsufficientBalance error
 const TOKEN_MUTE_DURATION_SECS: u64 = 300; // 5 minutes
@@ -49,6 +45,12 @@ pub struct SimpleArbArgs {
     /// Prometheus port for metrics
     #[arg(long, default_value_t = 8000)]
     metrics_port: u64,
+}
+
+#[derive(PartialEq, Eq, Hash)]
+struct Pair {
+    pub token_a: Address,
+    pub token_b: Address,
 }
 
 #[instrument(skip(provider))]
@@ -75,9 +77,173 @@ async fn fetch_all_pairs<P: Provider>(provider: P) -> eyre::Result<HashSet<Pair>
     Ok(pairs)
 }
 
-// funciton initial_rebalance() {
+async fn initial_rebalance<P: Provider>(
+    fee_amm: &ITIPFeeAMMInstance<P>,
+    pairs: &HashSet<Pair>,
+    signer_address: &Address,
+) -> eyre::Result<()> {
+    for pair in pairs.iter() {
+        // Get current pool state
+        let pool = fee_amm
+            .getPool(pair.token_a, pair.token_b)
+            .call()
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "failed to fetch pool for tokens {}, {}",
+                    pair.token_a, pair.token_b
+                )
+            })?;
 
-// }
+        if pool.reserveUserToken > 0
+            && let Err(e) = fee_amm
+                .rebalanceSwap(
+                    pair.token_a,
+                    pair.token_b,
+                    U256::from(pool.reserveUserToken),
+                    *signer_address,
+                )
+                .send()
+                .await
+        {
+            error!(
+                token_a = %pair.token_a,
+                token_b = %pair.token_b,
+                amount = %pool.reserveUserToken,
+                err = error_field(&e),
+                "Failed to send initial rebalance transaction"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn continue_rebalancing<P: Provider>(
+    fee_amm: &ITIPFeeAMMInstance<P>,
+    pairs: &HashSet<Pair>,
+    signer_address: &Address,
+    poll_interval: u64,
+) -> eyre::Result<()> {
+    // if there was insufficient balance for a token it's added to muted map so rebalances will be skipped until stored timestamp
+    let mut muted: HashMap<Address, u64> = HashMap::new();
+
+    // NOTE: currently this is a very simple approach that checks all pools every `n`
+    // milliseconds. While this should ensure pools are always balanced within a few blocks,
+    // this can be updated to listen to events and only rebalance pools that have been swapped.
+    loop {
+        // Clean up expired muted entries
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        muted.retain(|_, &mut unmute_time| unmute_time > current_time);
+
+        for pair in pairs.iter() {
+            // Check if token is muted
+            if let Some(&unmute_time) = muted.get(&pair.token_b) {
+                if unmute_time > current_time {
+                    debug!(
+                        token = %pair.token_b,
+                        unmute_time = unmute_time,
+                        "Skipping muted token"
+                    );
+                    continue;
+                }
+            }
+
+            // Get current pool state
+            let pool = fee_amm
+                .getPool(pair.token_a, pair.token_b)
+                .call()
+                .await
+                .wrap_err_with(|| {
+                    format!(
+                        "failed to fetch pool for tokens {:?}, {:?}",
+                        pair.token_a, pair.token_b
+                    )
+                })?;
+
+            if pool.reserveUserToken > 0 {
+                let mut pending_txs = vec![];
+
+                match fee_amm
+                    .rebalanceSwap(
+                        pair.token_a,
+                        pair.token_b,
+                        U256::from(pool.reserveUserToken),
+                        *signer_address,
+                    )
+                    .send()
+                    .await
+                {
+                    Ok(tx) => {
+                        pending_txs.push(tx);
+                    }
+
+                    Err(e) => {
+                        let error_msg = format!("{:?}", e);
+
+                        error!(
+                            token_a = %pair.token_a,
+                            token_b = %pair.token_b,
+                            amount = %pool.reserveUserToken,
+                            err = error_field(&e),
+                            "Failed to send rebalance transaction"
+                        );
+
+                        counter!("tempo_arb_bot_failed_transactions", "error" => "tx_send")
+                            .increment(1);
+
+                        // If this is an InsufficientBalance error, add token to muted list
+                        if error_msg.contains("InsufficientBalance") {
+                            let unmute_time = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs()
+                                + TOKEN_MUTE_DURATION_SECS;
+
+                            muted.insert(pair.token_b, unmute_time);
+
+                            info!(
+                                token = %pair.token_b,
+                                unmute_time = unmute_time,
+                                "Token muted due to InsufficientBalance error"
+                            );
+                        }
+                    }
+                }
+
+                // Await all receipts with timeout
+                for tx in pending_txs {
+                    match tokio::time::timeout(
+                        Duration::from_secs(poll_interval * 2),
+                        tx.get_receipt(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(_)) => {
+                            debug!("Tx receipt received successfully");
+                            counter!("tempo_arb_bot_successful_transactions").increment(1);
+                        }
+                        Ok(Err(e)) => {
+                            error!(err = error_field(&e), "Failed to get tx receipt");
+                            counter!("tempo_arb_bot_failed_transactions", "error" => "fetch_receipt")
+                                    .increment(1);
+                        }
+                        Err(_) => {
+                            error!("Timeout waiting for tx receipt");
+                            counter!("tempo_arb_bot_failed_transactions", "error" => "receipt_timeout")
+                                    .increment(1);
+                        }
+                    }
+                }
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(poll_interval)).await;
+        debug!("Polling interval elapsed, checking pools for rebalancing");
+    }
+}
 
 impl SimpleArbArgs {
     pub async fn run(self) -> eyre::Result<()> {
@@ -130,158 +296,8 @@ impl SimpleArbArgs {
         let pairs = fetch_all_pairs(provider.clone()).await?;
 
         info!("Rebalancing initial pools...");
-        for pair in pairs.iter() {
-            // Get current pool state
-            let pool = fee_amm
-                .getPool(pair.token_a, pair.token_b)
-                .call()
-                .await
-                .wrap_err_with(|| {
-                    format!(
-                        "failed to fetch pool for tokens {}, {}",
-                        pair.token_a, pair.token_b
-                    )
-                })?;
-
-            if pool.reserveUserToken > 0
-                && let Err(e) = fee_amm
-                    .rebalanceSwap(
-                        pair.token_a,
-                        pair.token_b,
-                        U256::from(pool.reserveUserToken),
-                        signer_address,
-                    )
-                    .send()
-                    .await
-            {
-                error!(
-                    token_a = %pair.token_a,
-                    token_b = %pair.token_b,
-                    amount = %pool.reserveUserToken,
-                    err = error_field(&e),
-                    "Failed to send initial rebalance transaction"
-                );
-            }
-        }
-
-        // if there was insufficient balance for a token it's added to muted map so rebalances will be skipped until stored timestamp
-        let mut muted: HashMap<Address, u64> = HashMap::new();
-
-        // NOTE: currently this is a very simple approach that checks all pools every `n`
-        // milliseconds. While this should ensure pools are always balanced within a few blocks,
-        // this can be updated to listen to events and only rebalance pools that have been swapped.
-        loop {
-            // Clean up expired muted entries
-            let current_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-            muted.retain(|_, &mut unmute_time| unmute_time > current_time);
-
-            for pair in pairs.iter() {
-                // Check if token is muted
-                if let Some(&unmute_time) = muted.get(&pair.token_b) {
-                    if unmute_time > current_time {
-                        debug!(
-                            token = %pair.token_b,
-                            unmute_time = unmute_time,
-                            "Skipping muted token"
-                        );
-                        continue;
-                    }
-                }
-
-                // Get current pool state
-                let pool = fee_amm
-                    .getPool(pair.token_a, pair.token_b)
-                    .call()
-                    .await
-                    .wrap_err_with(|| {
-                        format!(
-                            "failed to fetch pool for tokens {:?}, {:?}",
-                            pair.token_a, pair.token_b
-                        )
-                    })?;
-
-                if pool.reserveUserToken > 0 {
-                    let mut pending_txs = vec![];
-
-                    match fee_amm
-                        .rebalanceSwap(
-                            pair.token_a,
-                            pair.token_b,
-                            U256::from(pool.reserveUserToken),
-                            signer_address,
-                        )
-                        .send()
-                        .await
-                    {
-                        Ok(tx) => {
-                            pending_txs.push(tx);
-                        }
-
-                        Err(e) => {
-                            let error_msg = format!("{:?}", e);
-
-                            error!(
-                                token_a = %pair.token_a,
-                                token_b = %pair.token_b,
-                                amount = %pool.reserveUserToken,
-                                err = error_field(&e),
-                                "Failed to send rebalance transaction"
-                            );
-
-                            counter!("tempo_arb_bot_failed_transactions", "error" => "tx_send")
-                                .increment(1);
-
-                            // If this is an InsufficientBalance error, add token to muted list
-                            if error_msg.contains("InsufficientBalance") {
-                                let unmute_time = SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_secs()
-                                    + TOKEN_MUTE_DURATION_SECS;
-
-                                muted.insert(pair.token_b, unmute_time);
-
-                                info!(
-                                    token = %pair.token_b,
-                                    unmute_time = unmute_time,
-                                    "Token muted due to InsufficientBalance error"
-                                );
-                            }
-                        }
-                    }
-
-                    // Await all receipts with timeout
-                    for tx in pending_txs {
-                        match tokio::time::timeout(
-                            Duration::from_secs(self.poll_interval * 2),
-                            tx.get_receipt(),
-                        )
-                        .await
-                        {
-                            Ok(Ok(_)) => {
-                                debug!("Tx receipt received successfully");
-                                counter!("tempo_arb_bot_successful_transactions").increment(1);
-                            }
-                            Ok(Err(e)) => {
-                                error!(err = error_field(&e), "Failed to get tx receipt");
-                                counter!("tempo_arb_bot_failed_transactions", "error" => "fetch_receipt")
-                                    .increment(1);
-                            }
-                            Err(_) => {
-                                error!("Timeout waiting for tx receipt");
-                                counter!("tempo_arb_bot_failed_transactions", "error" => "receipt_timeout")
-                                    .increment(1);
-                            }
-                        }
-                    }
-                }
-            }
-
-            tokio::time::sleep(Duration::from_secs(self.poll_interval)).await;
-            debug!("Polling interval elapsed, checking pools for rebalancing");
-        }
+        initial_rebalance(&fee_amm, &pairs, &signer_address).await?;
+        continue_rebalancing(&fee_amm, &pairs, &signer_address, self.poll_interval).await?;
+        Ok(())
     }
 }
