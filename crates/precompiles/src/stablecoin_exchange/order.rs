@@ -363,7 +363,6 @@ mod tests {
         assert!(order.is_bid());
         assert_eq!(order.amount(), 1000);
         assert_eq!(order.remaining(), 1000);
-        assert!(order.is_bid());
         assert!(!order.is_ask());
         assert_eq!(order.tick(), 5);
         assert!(!order.is_flip());
@@ -375,7 +374,6 @@ mod tests {
         let order = Order::new_ask(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5);
 
         assert_eq!(order.order_id(), 1);
-        assert!(!order.is_bid());
         assert!(!order.is_bid());
         assert!(order.is_ask());
         assert!(!order.is_flip());
