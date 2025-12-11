@@ -61,6 +61,31 @@ struct TempoArgs {
 
     #[command(flatten)]
     pub node_args: TempoNodeArgs,
+
+    #[command(flatten)]
+    #[cfg(feature = "pyroscope")]
+    pub pyroscope_args: PyroscopeArgs,
+}
+
+/// Command line arguments for configuring Pyroscope continuous profiling.
+#[cfg(feature = "pyroscope")]
+#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
+struct PyroscopeArgs {
+    /// Enable Pyroscope continuous profiling
+    #[arg(long = "pyroscope.enabled", default_value_t = false)]
+    pub pyroscope_enabled: bool,
+
+    /// Pyroscope server URL
+    #[arg(long = "pyroscope.server-url", default_value = "http://localhost:4040")]
+    pub server_url: String,
+
+    /// Application name for Pyroscope
+    #[arg(long = "pyroscope.application-name", default_value = "tempo")]
+    pub application_name: String,
+
+    /// Sample rate for profiling (default: 100 Hz)
+    #[arg(long = "pyroscope.sample-rate", default_value_t = 100)]
+    pub sample_rate: u32,
 }
 
 fn main() -> eyre::Result<()> {
@@ -188,6 +213,30 @@ fn main() -> eyre::Result<()> {
             .consensus
             .public_key()?
             .map(|key| B256::from_slice(key.as_ref()));
+
+        // Initialize Pyroscope profiling if enabled
+        #[cfg(feature = "pyroscope")]
+        if args.pyroscope_args.pyroscope_enabled {
+            let agent = pyroscope::PyroscopeAgent::builder(
+                &args.pyroscope_args.server_url,
+                &args.pyroscope_args.application_name,
+            )
+            .backend(pyroscope_pprofrs::pprof_backend(
+                pyroscope_pprofrs::PprofConfig::new()
+                    .sample_rate(args.pyroscope_args.sample_rate)
+                    .report_thread_id()
+                    .report_thread_name(),
+            ))
+            .build()
+            .wrap_err("failed to build Pyroscope agent")?;
+
+            let _agent = agent.start().wrap_err("failed to start Pyroscope agent")?;
+            info!(
+                server_url = %args.pyroscope_args.server_url,
+                application_name = %args.pyroscope_args.application_name,
+                "Pyroscope profiling enabled"
+            );
+        };
 
         let NodeHandle {
             node,
