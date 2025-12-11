@@ -144,6 +144,17 @@ Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.co
 
 See [`SECURITY.md`](https://github.com/tempoxyz/tempo?tab=security-ov-file). Note: Tempo is still undergoing audit and does not have an active bug bounty. Submissions will not be eligible for a bounty until audits have concluded.
 
+## Development Setup
+
+To contribute to Tempo locally, you can:
+
+1. Clone the repository.
+2. Install Rust using `rustup` (https://www.rust-lang.org/tools/install).
+3. Run `cargo build` to compile the project.
+4. Use `cargo test` to run the test suite.
+
+This section helps new contributors quickly set up a development environment.
+
 ## License
 
 Licensed under either of [Apache License](./LICENSE-APACHE), Version
