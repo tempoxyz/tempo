@@ -402,11 +402,11 @@ where
                         gas_limit: block_gas_limit,
                         parent_beacon_block_root: attributes.parent_beacon_block_root(),
                         withdrawals: Some(attributes.withdrawals().clone()),
+                        extra_data: attributes.extra_data().clone(),
                     },
                     general_gas_limit,
                     shared_gas_limit,
                     timestamp_millis_part: attributes.timestamp_millis_part(),
-                    extra_data: attributes.extra_data().clone(),
                     subblock_fee_recipients,
                 },
             )

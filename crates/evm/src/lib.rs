@@ -198,9 +198,9 @@ impl ConfigureEvm for TempoEvmConfig {
                 // no ommers in tempo
                 ommers: &[],
                 withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
+                extra_data: block.extra_data().clone(),
             },
             general_gas_limit: block.header().general_gas_limit,
-            extra_data: block.header().extra_data().clone(),
             shared_gas_limit: block.header().gas_limit()
                 / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
             // Not available when we only have a block body.
@@ -220,9 +220,9 @@ impl ConfigureEvm for TempoEvmConfig {
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
                 ommers: &[],
                 withdrawals: attributes.inner.withdrawals.map(Cow::Owned),
+                extra_data: attributes.inner.extra_data,
             },
             general_gas_limit: attributes.general_gas_limit,
-            extra_data: attributes.extra_data,
             shared_gas_limit: attributes.inner.gas_limit
                 / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
             // Fine to not validate during block building.
