@@ -148,7 +148,7 @@ impl Orderbook {
 }
 
 impl OrderbookHandler {
-    pub fn handle_tick_level(&self, tick: i16, is_bid: bool) -> TickLevelHandler {
+    pub fn get_tick_level_handler(&self, tick: i16, is_bid: bool) -> TickLevelHandler {
         if is_bid {
             self.bids.at(tick)
         } else {
@@ -156,7 +156,7 @@ impl OrderbookHandler {
         }
     }
 
-    fn handle_tick_bit(&self, tick: i16, is_bid: bool) -> Result<Slot<U256>> {
+    fn get_tick_bit_handler(&self, tick: i16, is_bid: bool) -> Result<Slot<U256>> {
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
             return Err(StablecoinExchangeError::invalid_tick().into());
         }
@@ -172,7 +172,7 @@ impl OrderbookHandler {
 
     /// Set bit in bitmap to mark tick as active
     pub fn set_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<()> {
-        let mut bitmap = self.handle_tick_bit(tick, is_bid)?;
+        let mut bitmap = self.get_tick_bit_handler(tick, is_bid)?;
 
         // Read current bitmap word
         let current_word = bitmap.read()?;
@@ -187,7 +187,7 @@ impl OrderbookHandler {
 
     /// Clear bit in bitmap to mark tick as inactive
     pub fn delete_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<()> {
-        let mut bitmap = self.handle_tick_bit(tick, is_bid)?;
+        let mut bitmap = self.get_tick_bit_handler(tick, is_bid)?;
 
         // Read current bitmap word
         let current_word = bitmap.read()?;
@@ -202,7 +202,7 @@ impl OrderbookHandler {
 
     /// Check if a tick is initialized (has orders)
     pub fn is_tick_initialized(&self, tick: i16, is_bid: bool) -> Result<bool> {
-        let bitmap = self.handle_tick_bit(tick, is_bid)?;
+        let bitmap = self.get_tick_bit_handler(tick, is_bid)?;
 
         // Read current bitmap word
         let word = bitmap.read()?;

@@ -404,7 +404,7 @@ impl StablecoinExchange {
         let book_key = compute_book_key(base, quote);
         self.books
             .at(book_key)
-            .handle_tick_level(tick, is_bid)
+            .get_tick_level_handler(tick, is_bid)
             .read()
     }
 
@@ -694,7 +694,7 @@ impl StablecoinExchange {
         }
 
         let mut book_handler = self.books.at(order.book_key);
-        let mut level_handler = book_handler.handle_tick_level(order.tick(), order.is_bid());
+        let mut level_handler = book_handler.get_tick_level_handler(order.tick(), order.is_bid());
         let orderbook = book_handler.read()?;
         let mut level = level_handler.read()?;
 
@@ -780,7 +780,7 @@ impl StablecoinExchange {
         level.total_liquidity = new_liquidity;
 
         book_handler
-            .handle_tick_level(order.tick(), order.is_bid())
+            .get_tick_level_handler(order.tick(), order.is_bid())
             .write(*level)?;
 
         // Emit OrderFilled event for partial fill
@@ -851,7 +851,7 @@ impl StablecoinExchange {
         // Advance tick if liquidity is exhausted
         let next_tick_info = if order.next() == 0 {
             book_handler
-                .handle_tick_level(order.tick(), order.is_bid())
+                .get_tick_level_handler(order.tick(), order.is_bid())
                 .delete()?;
             book_handler_order.delete_tick_bit(order.tick(), order.is_bid())?;
 
@@ -874,7 +874,7 @@ impl StablecoinExchange {
                 None
             } else {
                 let new_level = book_handler
-                    .handle_tick_level(tick, order.is_bid())
+                    .get_tick_level_handler(tick, order.is_bid())
                     .read()?;
                 let new_order = self.orders.at(new_level.head).read()?;
 
@@ -893,7 +893,7 @@ impl StablecoinExchange {
             level.total_liquidity = new_liquidity;
 
             book_handler_order
-                .handle_tick_level(order.tick(), order.is_bid())
+                .get_tick_level_handler(order.tick(), order.is_bid())
                 .write(level)?;
 
             let new_order = self.orders.at(order.next()).read()?;
@@ -1201,7 +1201,9 @@ impl StablecoinExchange {
             orderbook.best_ask_tick
         };
 
-        book_handler.handle_tick_level(current_tick, is_bid).read()
+        book_handler
+            .get_tick_level_handler(current_tick, is_bid)
+            .read()
     }
 
     /// Cancel an order and refund tokens to maker
@@ -1267,7 +1269,7 @@ impl StablecoinExchange {
     /// Cancel an active order (already in the orderbook)
     fn cancel_active_order(&mut self, order: Order) -> Result<()> {
         let mut book_handler = self.books.at(order.book_key());
-        let mut level_handler = book_handler.handle_tick_level(order.tick(), order.is_bid());
+        let mut level_handler = book_handler.get_tick_level_handler(order.tick(), order.is_bid());
         let mut level = level_handler.read()?;
 
         // Update linked list
@@ -1386,7 +1388,7 @@ impl StablecoinExchange {
 
         while remaining_out > 0 {
             let level = book_handler
-                .handle_tick_level(current_tick, is_bid)
+                .get_tick_level_handler(current_tick, is_bid)
                 .read()?;
 
             // If no liquidity at this level, move to next tick
@@ -1585,7 +1587,7 @@ impl StablecoinExchange {
 
         while remaining_in > 0 {
             let level = book_handler
-                .handle_tick_level(current_tick, is_bid)
+                .get_tick_level_handler(current_tick, is_bid)
                 .read()?;
 
             // If no liquidity at this level, move to next tick
@@ -2014,7 +2016,7 @@ mod tests {
             // Verify the order is not yet in the active orderbook
             let book_key = compute_book_key(base_token, quote_token);
             let book_handler = exchange.books.at(book_key);
-            let level = book_handler.handle_tick_level(tick, true).read()?;
+            let level = book_handler.get_tick_level_handler(tick, true).read()?;
             assert_eq!(level.head, 0);
             assert_eq!(level.tail, 0);
             assert_eq!(level.total_liquidity, 0);
@@ -2076,7 +2078,7 @@ mod tests {
 
             let book_key = compute_book_key(base_token, quote_token);
             let book_handler = exchange.books.at(book_key);
-            let level = book_handler.handle_tick_level(tick, false).read()?;
+            let level = book_handler.get_tick_level_handler(tick, false).read()?;
             assert_eq!(level.head, 0);
             assert_eq!(level.tail, 0);
             assert_eq!(level.total_liquidity, 0);
@@ -2249,7 +2251,7 @@ mod tests {
             // Verify the order is not yet in the active orderbook
             let book_key = compute_book_key(base_token, quote_token);
             let book_handler = exchange.books.at(book_key);
-            let level = book_handler.handle_tick_level(tick, true).read()?;
+            let level = book_handler.get_tick_level_handler(tick, true).read()?;
             assert_eq!(level.head, 0);
             assert_eq!(level.tail, 0);
             assert_eq!(level.total_liquidity, 0);
@@ -2382,7 +2384,7 @@ mod tests {
             // Verify tick level is empty before execute_block
             let book_key = compute_book_key(base_token, quote_token);
             let book_handler = exchange.books.at(book_key);
-            let level_before = book_handler.handle_tick_level(tick, true).read()?;
+            let level_before = book_handler.get_tick_level_handler(tick, true).read()?;
             assert_eq!(level_before.head, 0);
             assert_eq!(level_before.tail, 0);
             assert_eq!(level_before.total_liquidity, 0);
@@ -2403,7 +2405,7 @@ mod tests {
             assert_eq!(order_1.next(), 0);
 
             // Assert tick level is updated
-            let level_after = book_handler.handle_tick_level(tick, true).read()?;
+            let level_after = book_handler.get_tick_level_handler(tick, true).read()?;
             assert_eq!(level_after.head, order_0.order_id());
             assert_eq!(level_after.tail, order_1.order_id());
             assert_eq!(level_after.total_liquidity, min_order_amount * 2);
