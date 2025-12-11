@@ -516,10 +516,13 @@ where
 
             let mut acc_info = acc.account_info().unwrap_or_default();
 
-            let correct_code_hash = tempo_contracts::contracts::CREATEX_POST_ALLEGRO_MODERATO_BYTECODE_HASH;
+            let correct_code_hash =
+                tempo_contracts::contracts::CREATEX_POST_ALLEGRO_MODERATO_BYTECODE_HASH;
             if acc_info.code_hash != correct_code_hash {
                 acc_info.code_hash = correct_code_hash;
-                acc_info.code = Some(Bytecode::new_legacy(tempo_contracts::contracts::CREATEX_POST_ALLEGRO_MODERATO_BYTECODE));
+                acc_info.code = Some(Bytecode::new_legacy(
+                    tempo_contracts::contracts::CREATEX_POST_ALLEGRO_MODERATO_BYTECODE,
+                ));
 
                 let mut revm_acc: Account = acc_info.into();
                 revm_acc.mark_touch();
