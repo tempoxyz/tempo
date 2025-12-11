@@ -7,7 +7,7 @@ import type { Client, Transport } from 'viem'
 import { parseUnits } from 'viem'
 import { mnemonicToAccount } from 'viem/accounts'
 import { useBlockNumber, useClient, useConnection } from 'wagmi'
-import { Button, Step } from '../../Demo'
+import { Button, ExplorerLink, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
@@ -16,6 +16,7 @@ export function AddFundsToWallet(props: DemoStepProps) {
   const { address, connector } = useConnection()
   const hasNonWebAuthnWallet = Boolean(address && connector?.id !== 'webAuthn')
   const queryClient = useQueryClient()
+  const [txHash, setTxHash] = React.useState<string | undefined>(undefined)
 
   const { data: balance, refetch: balanceRefetch } = Hooks.token.useGetBalance({
     account: address,
@@ -39,13 +40,15 @@ export function AddFundsToWallet(props: DemoStepProps) {
       if (!address) throw new Error('account.address not found')
       if (!client) throw new Error('client not found')
 
-      if (import.meta.env.VITE_LOCAL !== 'true')
-        await Actions.faucet.fundSync(
+      if (import.meta.env.VITE_LOCAL !== 'true') {
+        const receipts = await Actions.faucet.fundSync(
           client as unknown as Client<Transport, Chain.Chain<null>>,
           { account: address },
-        )
-      else {
-        await Actions.token.transferSync(
+        ) as any
+        // fundSync returns an array of receipts
+        return receipts?.[0]?.transactionHash
+      } else {
+        const result = await Actions.token.transferSync(
           client as unknown as Client<Transport, Chain.Chain<null>>,
           {
             account: mnemonicToAccount(
@@ -55,10 +58,15 @@ export function AddFundsToWallet(props: DemoStepProps) {
             to: address,
             token: alphaUsd,
           },
-        )
+        ) as any
+        return result?.receipt?.transactionHash
       }
-      await new Promise((resolve) => setTimeout(resolve, 400))
-      queryClient.refetchQueries({ queryKey: ['getBalance'] })
+    },
+    onSuccess: (hash) => {
+      if (hash) {
+        setTxHash(hash)
+      }
+      queryClient.invalidateQueries({ queryKey: ['getBalance'] })
     },
   })
 
@@ -73,15 +81,21 @@ export function AddFundsToWallet(props: DemoStepProps) {
   const actions = React.useMemo(() => {
     if (balance && balance > 0n)
       return (
-        <Button
-          disabled={!hasNonWebAuthnWallet || fundAccount.isPending}
-          variant="default"
-          className="text-[14px] -tracking-[2%] font-normal"
-          onClick={() => fundAccount.mutate()}
-          type="button"
-        >
-          {fundAccount.isPending ? 'Adding funds' : 'Add more funds'}
-        </Button>
+        <div className="flex gap-2 items-center flex-wrap">
+          {txHash && <ExplorerLink hash={txHash} />}
+          <Button
+            disabled={!hasNonWebAuthnWallet || fundAccount.isPending}
+            variant="default"
+            className="text-[14px] -tracking-[2%] font-normal"
+            onClick={() => {
+              setTxHash(undefined)
+              fundAccount.mutate()
+            }}
+            type="button"
+          >
+            {fundAccount.isPending ? 'Adding funds' : 'Add more funds'}
+          </Button>
+        </div>
       )
     return (
       <Button
@@ -89,12 +103,15 @@ export function AddFundsToWallet(props: DemoStepProps) {
         variant={hasNonWebAuthnWallet ? 'accent' : 'default'}
         className="text-[14px] -tracking-[2%] font-normal"
         type="button"
-        onClick={() => fundAccount.mutate()}
+        onClick={() => {
+          setTxHash(undefined)
+          fundAccount.mutate()
+        }}
       >
         {fundAccount.isPending ? 'Adding funds' : 'Add funds'}
       </Button>
     )
-  }, [hasNonWebAuthnWallet, balance, fundAccount.isPending])
+  }, [hasNonWebAuthnWallet, balance, fundAccount.isPending, txHash])
 
   return (
     <Step

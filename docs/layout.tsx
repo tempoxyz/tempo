@@ -17,23 +17,28 @@ const queryClient = new QueryClient({
   },
 })
 
+const configCache = new Map<boolean, ReturnType<typeof WagmiConfig.getConfig>>()
+
 export default function Layout(
   props: React.PropsWithChildren<{
     path: string
     frontmatter?: { mipd?: boolean }
   }>,
 ) {
-  const config = React.useMemo(
-    () =>
-      WagmiConfig.getConfig({
-        multiInjectedProviderDiscovery: Boolean(props.frontmatter?.mipd),
-      }),
-    [props.frontmatter?.mipd],
-  )
+  const mipd = Boolean(props.frontmatter?.mipd)
+  
+  const config = React.useMemo(() => {
+    if (!configCache.has(mipd)) {
+      configCache.set(mipd, WagmiConfig.getConfig({
+        multiInjectedProviderDiscovery: mipd,
+      }))
+    }
+    return configCache.get(mipd)!
+  }, [mipd])
 
   return (
     <>
-      <WagmiProvider config={config}>
+      <WagmiProvider config={config} reconnectOnMount>
         <QueryClientProvider client={queryClient}>
           <NuqsAdapter>
             <DemoContextProvider>{props.children}</DemoContextProvider>
