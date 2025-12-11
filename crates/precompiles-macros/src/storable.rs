@@ -353,8 +353,8 @@ fn gen_delete_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
     let is_static_slot = fields.iter().map(|(name, ty)| {
         let loc_const = PackingConstants::new(name).location();
         quote! {
-            (slot_offset >= #packing::#loc_const.offset_slots &&
-             slot_offset < #packing::#loc_const.offset_slots + <#ty as crate::storage::StorableType>::SLOTS &&
+            ((#packing::#loc_const.offset_slots..#packing::#loc_const.offset_slots + <#ty as crate::storage::StorableType>::SLOTS)
+                .contains(&slot_offset) &&
              !<#ty as crate::storage::StorableType>::IS_DYNAMIC)
         }
     });
