@@ -489,7 +489,7 @@ impl StorageOps for PackedSlot {
 mod tests {
     use super::*;
     use crate::{
-        storage::{Handler, StorageContext},
+        storage::{Handler, StorageCtx},
         test_util::{gen_word_from, setup_storage},
     };
     use alloy::primitives::Address;
@@ -645,7 +645,7 @@ mod tests {
     fn test_vec_empty() {
         let (mut storage, address) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let len_slot = U256::random();
 
             let data: Vec<u8> = vec![];
@@ -662,7 +662,7 @@ mod tests {
     fn test_vec_nested() {
         let (mut storage, address) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let len_slot = U256::random();
 
             // Nested Vec<Vec<u8>>
@@ -679,7 +679,7 @@ mod tests {
     fn test_vec_bool_packing() {
         let (mut storage, address) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let len_slot = U256::random();
             let mut slot = Slot::<Vec<bool>>::new(len_slot, address);
 
@@ -717,7 +717,7 @@ mod tests {
     fn test_vec_u8_explicit_slot_packing() {
         let (mut storage, address) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let len_slot = U256::from(2000);
             let data = vec![10u8, 20, 30, 40, 50];
 
@@ -770,7 +770,7 @@ mod tests {
     fn test_vec_u16_slot_boundary() {
         let (mut storage, address) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let len_slot = U256::from(2100);
             let mut vec_slot = Slot::<Vec<u16>>::new(len_slot, address);
 
@@ -855,7 +855,7 @@ mod tests {
     fn test_vec_u8_partial_slot_fill() {
         let (mut storage, address) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let len_slot = U256::from(2200);
 
             // Store 35 u8 elements (values 1-35):
@@ -944,7 +944,7 @@ mod tests {
     fn test_vec_u256_individual_slots() {
         let (mut storage, address) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let len_slot = U256::from(2300);
 
             // Store 3 U256 values (each should occupy its own slot)
@@ -979,7 +979,7 @@ mod tests {
     fn test_vec_address_unpacked_slots() {
         let (mut storage, address) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let len_slot = U256::from(2400);
 
             // Store 3 addresses (each 20 bytes, but 32 % 20 != 0, so unpacked)
@@ -1044,7 +1044,7 @@ mod tests {
     fn test_vec_struct_slot_allocation() {
         let (mut storage, address) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let len_slot = U256::from(2500);
 
             // Store Vec<TestStruct> with 3 single-slot structs
@@ -1134,7 +1134,7 @@ mod tests {
 
         let (mut storage, address) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let len_slot = U256::from(2550);
 
             // Store 3 SmallStruct elements
@@ -1221,7 +1221,7 @@ mod tests {
     fn test_vec_length_slot_isolation() {
         let (mut storage, address) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let len_slot = U256::from(2600);
 
             // Store a vec with 3 u8 elements
@@ -1274,7 +1274,7 @@ mod tests {
     fn test_vec_overwrite_cleanup() {
         let (mut storage, address) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let len_slot = U256::from(2700);
             let mut vec_slot = Slot::<Vec<u8>>::new(len_slot, address);
 
@@ -1358,7 +1358,7 @@ mod tests {
     //     }
 
     //     let (mut storage, address) = setup_storage();
-    //     // MIGRATION TODO: This test needs to be migrated to StorageContext::enter pattern
+    //     // MIGRATION TODO: This test needs to be migrated to StorageCtx::enter pattern
 
     //     let len_slot = U256::from(2700);
 
@@ -1380,7 +1380,7 @@ mod tests {
     fn test_vec_handler_read_write() {
         let (mut storage, address) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let len_slot = U256::random();
             let mut handler = VecHandler::<U256>::new(len_slot, address);
 
@@ -1397,7 +1397,7 @@ mod tests {
     fn test_vec_handler_delete() {
         let (mut storage, address) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let len_slot = U256::random();
             let mut handler = VecHandler::<u8>::new(len_slot, address);
 
@@ -1424,7 +1424,7 @@ mod tests {
     fn test_vec_handler_at_read_write() {
         let (mut storage, address) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let len_slot = U256::random();
             let handler = VecHandler::<U256>::new(len_slot, address);
 
@@ -1458,7 +1458,7 @@ mod tests {
     fn test_vec_handler_push_pop() {
         let (mut storage, address) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let len_slot = U256::random();
             let handler = VecHandler::<U256>::new(len_slot, address);
 
@@ -1487,7 +1487,7 @@ mod tests {
     fn test_vec_handler_len() {
         let (mut storage, address) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let len_slot = U256::random();
             let handler = VecHandler::<Address>::new(len_slot, address);
 
@@ -1514,7 +1514,7 @@ mod tests {
     fn test_vec_handler_push_pop_packed_types() {
         let (mut storage, address) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let len_slot = U256::random();
             let handler = VecHandler::<u8>::new(len_slot, address);
 
@@ -1610,7 +1610,7 @@ mod tests {
         fn proptest_vec_u8_roundtrip(data in arb_u8_vec(100), len_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
 
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let data_len = data.len();
             let mut vec_slot = Slot::<Vec<u8>>::new(len_slot, address);
 
@@ -1644,7 +1644,7 @@ mod tests {
         fn proptest_vec_u16_roundtrip(data in arb_u16_vec(100), len_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
 
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let data_len = data.len();
             let mut vec_slot = Slot::<Vec<u16>>::new(len_slot, address);
 
@@ -1678,7 +1678,7 @@ mod tests {
         fn proptest_vec_u32_roundtrip(data in arb_u32_vec(100), len_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
 
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let data_len = data.len();
             let mut vec_slot = Slot::<Vec<u32>>::new(len_slot, address);
 
@@ -1712,7 +1712,7 @@ mod tests {
         fn proptest_vec_u64_roundtrip(data in arb_u64_vec(100), len_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
 
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let data_len = data.len();
             let mut vec_slot = Slot::<Vec<u64>>::new(len_slot, address);
 
@@ -1746,7 +1746,7 @@ mod tests {
         fn proptest_vec_u128_roundtrip(data in arb_u128_vec(50), len_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
 
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let data_len = data.len();
             let mut vec_slot = Slot::<Vec<u128>>::new(len_slot, address);
 
@@ -1780,7 +1780,7 @@ mod tests {
         fn proptest_vec_u256_roundtrip(data in arb_u256_vec(50), len_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
 
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let data_len = data.len();
             let mut vec_slot = Slot::<Vec<U256>>::new(len_slot, address);
 
@@ -1812,7 +1812,7 @@ mod tests {
         fn proptest_vec_address_roundtrip(data in arb_address_vec(50), len_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
 
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let data_len = data.len();
             let mut vec_slot = Slot::<Vec<Address>>::new(len_slot, address);
 
@@ -1845,7 +1845,7 @@ mod tests {
         fn proptest_vec_delete(data in arb_u8_vec(100), len_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
 
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let mut vec_slot = Slot::<Vec<u8>>::new(len_slot, address);
 
             // Store data
@@ -1878,7 +1878,7 @@ mod tests {
         fn proptest_vec_struct_roundtrip(data in arb_test_struct_vec(50), len_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
 
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let data_len = data.len();
             let mut vec_slot = Slot::<Vec<TestStruct>>::new(len_slot, address);
 

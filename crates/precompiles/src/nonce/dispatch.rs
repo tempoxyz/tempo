@@ -40,7 +40,7 @@ impl Precompile for NonceManager {
 mod tests {
     use super::*;
     use crate::{
-        storage::{StorageContext, hashmap::HashMapStorageProvider},
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
     use tempo_contracts::precompiles::INonce::INonceCalls;
@@ -48,7 +48,7 @@ mod tests {
     #[test]
     fn test_nonce_selector_coverage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut nonce_manager = NonceManager::new();
 
             let unsupported = check_selector_coverage(

@@ -17,7 +17,7 @@ fn test_round_trip_operations_in_contract() {
     let (mut storage, address) = setup_storage();
     let mut layout = Layout::__new(address);
 
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         let original_block = TestBlock {
             field1: U256::from(789),
             field2: U256::from(987),
@@ -92,7 +92,7 @@ proptest! {
         let (mut storage, address) = setup_storage();
         let mut layout = Layout::__new(address);
 
-        StorageContext::enter(&mut storage, || -> Result<(), TestCaseError> {
+        StorageCtx::enter(&mut storage, || -> Result<(), TestCaseError> {
             // Round 1: Store and load
             layout.block.write(block_val.clone())?;
             layout.profile.write(profile_val.clone())?;
@@ -157,7 +157,7 @@ proptest! {
         let (mut storage, address) = setup_storage();
         let mut layout = Layout::__new(address);
 
-        StorageContext::enter(&mut storage, || -> Result<(), TestCaseError> {
+        StorageCtx::enter(&mut storage, || -> Result<(), TestCaseError> {
             // Round 1: Write proptest values
             layout.vec_two.write(two_slots.clone())?;
             layout.vec_three.write(three_slots.clone())?;

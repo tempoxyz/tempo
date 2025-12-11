@@ -66,7 +66,7 @@ mod tests {
     use super::*;
     use crate::{
         expect_precompile_revert,
-        storage::{StorageContext, hashmap::HashMapStorageProvider},
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
     use alloy::{
@@ -83,7 +83,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let sender = Address::random();
         let owner = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();
 
             // Initialize with owner
@@ -106,7 +106,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         let owner = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();
 
             // Initialize with owner
@@ -133,7 +133,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         let validator_addr = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();
 
             // Initialize with owner
@@ -174,7 +174,7 @@ mod tests {
         let owner = Address::random();
         let non_owner = Address::random();
         let validator_addr = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();
 
             // Initialize with owner
@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();
 
             let unsupported = check_selector_coverage(

@@ -454,7 +454,7 @@ mod tests {
     use crate::{
         TIP_FEE_MANAGER_ADDRESS,
         error::TempoPrecompileError,
-        storage::{ContractStorage, StorageContext, hashmap::HashMapStorageProvider},
+        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
         tip20::{ITIP20, token_id_to_address},
     };
@@ -463,7 +463,7 @@ mod tests {
     fn test_set_user_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let user = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let token = TIP20Setup::create("Test", "TST", user).apply()?;
 
             let mut fee_manager = TipFeeManager::new();
@@ -485,7 +485,7 @@ mod tests {
     fn test_set_user_token_cannot_be_path_usd_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let user = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let path_usd = TIP20Setup::path_usd(user).apply()?;
             let mut fee_manager = TipFeeManager::new();
 
@@ -504,7 +504,7 @@ mod tests {
     fn test_set_user_token_allows_path_usd_pre_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let user = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let path_usd = TIP20Setup::path_usd(user).apply()?;
             let mut fee_manager = TipFeeManager::new();
 
@@ -527,7 +527,7 @@ mod tests {
         let validator = Address::random();
         let admin = Address::random();
         let beneficiary = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let token = TIP20Setup::create("Test", "TST", admin).apply()?;
             let mut fee_manager = TipFeeManager::new();
 
@@ -562,7 +562,7 @@ mod tests {
         let validator = Address::random();
         let beneficiary = Address::random();
         let admin = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let token = TIP20Setup::create("Test", "TST", admin).apply()?;
             let mut fee_manager = TipFeeManager::new();
 
@@ -611,7 +611,7 @@ mod tests {
     fn test_is_tip20_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let random = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             // Valid TIP20 address
             let token_id = rand::random::<u64>();
             let token = token_id_to_address(token_id);
@@ -630,7 +630,7 @@ mod tests {
         let user = Address::random();
         let validator = Address::random();
         let beneficiary = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let max_amount = U256::from(10000);
 
             let token = TIP20Setup::create("Test", "TST", user)
@@ -675,7 +675,7 @@ mod tests {
         let admin = Address::random();
         let validator = Address::random();
         let beneficiary = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let actual_used = U256::from(6000);
             let refund_amount = U256::from(4000);
 
@@ -733,7 +733,7 @@ mod tests {
         let user = Address::random();
         let validator = Address::random();
         let beneficiary = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             // Create a non-USD token
             let non_usd_token = TIP20Setup::create("NonUSD", "EUR", admin)
                 .currency("EUR")
@@ -771,7 +771,7 @@ mod tests {
         let admin = Address::random();
         let validator = Address::random();
         let beneficiary = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             // Simulate attack: collected fees = 1000, but actual balance = 500
             let collected_fees = U256::from(1000);
             let balance = U256::from(500);

@@ -22,7 +22,7 @@ fn test_array_storage() {
     let (mut storage, address) = setup_storage();
     let mut layout = Layout::__new(address);
 
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         // Verify actual slot assignments
         assert_eq!(layout.field_a.slot(), U256::ZERO);
         assert_eq!(layout.small_array.base_slot(), U256::from(10));
@@ -126,7 +126,7 @@ fn test_array_element_access() {
     let (mut storage, address) = setup_storage();
     let mut layout = Layout::__new(address);
 
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         // Test packed array element access (u8 elements, T::BYTES = 1 <= 16)
         let small_data = [42u8; 32];
         layout.small_array.write(small_data).unwrap();
@@ -230,7 +230,7 @@ proptest! {
         let (mut storage, address) = setup_storage();
         let mut layout = Layout::__new(address);
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             // Store random values
             layout.field_a.write(field_a_val)?;
         layout.small_array.write(small_array)?;

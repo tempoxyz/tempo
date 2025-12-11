@@ -303,7 +303,7 @@ impl From<Order> for IStablecoinExchange::Order {
 mod tests {
     use crate::{
         stablecoin_exchange::StablecoinExchange,
-        storage::{Handler, StorageContext, hashmap::HashMapStorageProvider},
+        storage::{Handler, StorageCtx, hashmap::HashMapStorageProvider},
     };
 
     use super::*;
@@ -563,7 +563,7 @@ mod tests {
     #[test]
     fn test_store_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let exchange = StablecoinExchange::new();
 
             let id = 42;
@@ -590,7 +590,7 @@ mod tests {
     #[test]
     fn test_delete_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let exchange = StablecoinExchange::new();
 
             let id = 42;

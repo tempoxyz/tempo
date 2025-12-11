@@ -78,7 +78,7 @@ impl StorageKey for Address {
 mod tests {
     use super::*;
     use crate::{
-        storage::{Handler, PrecompileStorageProvider, StorageContext},
+        storage::{Handler, PrecompileStorageProvider, StorageCtx},
         test_util::{gen_word_from, setup_storage},
     };
     use proptest::prelude::*;
@@ -110,7 +110,7 @@ mod tests {
         #[test]
         fn test_address(addr in arb_address(), base_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let mut slot = Address::handle(base_slot, LayoutCtx::FULL, address);
 
                 // Verify store → load roundtrip
@@ -133,7 +133,7 @@ mod tests {
         #[test]
         fn test_bool_values(b in any::<bool>(), base_slot in arb_safe_slot()) {
             let (mut storage, address) = setup_storage();
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let mut slot = bool::handle(base_slot, LayoutCtx::FULL, address);
 
                 // Verify store → load roundtrip
@@ -254,7 +254,7 @@ mod tests {
 
         // Test u8 at offset 0
         let val0: u8 = 0x42;
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot0 = u8::handle(base_slot, LayoutCtx::packed(0), address);
             slot0.write(val0).unwrap();
 
@@ -272,7 +272,7 @@ mod tests {
         storage.sstore(address, base_slot, U256::ZERO).unwrap();
 
         // Verify with Slot read
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot0 = u8::handle(base_slot, LayoutCtx::packed(0), address);
             let cleared_val = slot0.read().unwrap();
             assert_eq!(cleared_val, 0u8);
@@ -280,7 +280,7 @@ mod tests {
 
         // Test u8 at offset 15 (middle)
         let val15: u8 = 0xAB;
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot15 = u8::handle(base_slot + U256::ONE, LayoutCtx::packed(15), address);
             slot15.write(val15).unwrap();
 
@@ -303,7 +303,7 @@ mod tests {
             .unwrap();
 
         // Verify with Slot read
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot15 = u8::handle(base_slot + U256::ONE, LayoutCtx::packed(15), address);
             let cleared_val = slot15.read().unwrap();
             assert_eq!(cleared_val, 0u8);
@@ -311,7 +311,7 @@ mod tests {
 
         // Test u8 at offset 31 (last byte)
         let val31: u8 = 0xFF;
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot31 = u8::handle(base_slot + U256::from(2), LayoutCtx::packed(31), address);
             slot31.write(val31).unwrap();
 
@@ -334,7 +334,7 @@ mod tests {
             .unwrap();
 
         // Verify with Slot read
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot31 = u8::handle(base_slot + U256::from(2), LayoutCtx::packed(31), address);
             let cleared_val = slot31.read().unwrap();
             assert_eq!(cleared_val, 0u8);
@@ -348,7 +348,7 @@ mod tests {
 
         // Test u16 at offset 0
         let val0: u16 = 0x1234;
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot0 = u16::handle(base_slot, LayoutCtx::packed(0), address);
             slot0.write(val0).unwrap();
 
@@ -366,7 +366,7 @@ mod tests {
         storage.sstore(address, base_slot, U256::ZERO).unwrap();
 
         // Verify with Slot read
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot0 = u16::handle(base_slot, LayoutCtx::packed(0), address);
             let cleared_val = slot0.read().unwrap();
             assert_eq!(cleared_val, 0u16);
@@ -374,7 +374,7 @@ mod tests {
 
         // Test u16 at offset 15 (middle)
         let val15: u16 = 0xABCD;
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot15 = u16::handle(base_slot + U256::ONE, LayoutCtx::packed(15), address);
             slot15.write(val15).unwrap();
 
@@ -397,7 +397,7 @@ mod tests {
             .unwrap();
 
         // Verify with Slot read
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot15 = u16::handle(base_slot + U256::ONE, LayoutCtx::packed(15), address);
             let cleared_val = slot15.read().unwrap();
             assert_eq!(cleared_val, 0u16);
@@ -405,7 +405,7 @@ mod tests {
 
         // Test u16 at offset 30 (last 2 bytes)
         let val30: u16 = 0xFFEE;
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot30 = u16::handle(base_slot + U256::from(2), LayoutCtx::packed(30), address);
             slot30.write(val30).unwrap();
 
@@ -428,7 +428,7 @@ mod tests {
             .unwrap();
 
         // Verify with Slot read
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot30 = u16::handle(base_slot + U256::from(2), LayoutCtx::packed(30), address);
             let cleared_val = slot30.read().unwrap();
             assert_eq!(cleared_val, 0u16);
@@ -442,7 +442,7 @@ mod tests {
 
         // Test u32 at offset 0
         let val0: u32 = 0x12345678;
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot0 = u32::handle(base_slot, LayoutCtx::packed(0), address);
             slot0.write(val0).unwrap();
 
@@ -460,7 +460,7 @@ mod tests {
         storage.sstore(address, base_slot, U256::ZERO).unwrap();
 
         // Verify with Slot read
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot0 = u32::handle(base_slot, LayoutCtx::packed(0), address);
             let cleared_val = slot0.read().unwrap();
             assert_eq!(cleared_val, 0u32);
@@ -468,7 +468,7 @@ mod tests {
 
         // Test u32 at offset 14
         let val14: u32 = 0xABCDEF01;
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot14 = u32::handle(base_slot + U256::ONE, LayoutCtx::packed(14), address);
             slot14.write(val14).unwrap();
 
@@ -491,7 +491,7 @@ mod tests {
             .unwrap();
 
         // Verify with Slot read
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot14 = u32::handle(base_slot + U256::ONE, LayoutCtx::packed(14), address);
             let cleared_val = slot14.read().unwrap();
             assert_eq!(cleared_val, 0u32);
@@ -499,7 +499,7 @@ mod tests {
 
         // Test u32 at offset 28 (last 4 bytes)
         let val28: u32 = 0xFFEEDDCC;
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot28 = u32::handle(base_slot + U256::from(2), LayoutCtx::packed(28), address);
             slot28.write(val28).unwrap();
 
@@ -522,7 +522,7 @@ mod tests {
             .unwrap();
 
         // Verify with Slot read
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot28 = u32::handle(base_slot + U256::from(2), LayoutCtx::packed(28), address);
             let cleared_val = slot28.read().unwrap();
             assert_eq!(cleared_val, 0u32);
@@ -536,7 +536,7 @@ mod tests {
 
         // Test u64 at offset 0
         let val0: u64 = 0x123456789ABCDEF0;
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot0 = u64::handle(base_slot, LayoutCtx::packed(0), address);
             slot0.write(val0).unwrap();
 
@@ -554,7 +554,7 @@ mod tests {
         storage.sstore(address, base_slot, U256::ZERO).unwrap();
 
         // Verify with Slot read
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot0 = u64::handle(base_slot, LayoutCtx::packed(0), address);
             let cleared_val = slot0.read().unwrap();
             assert_eq!(cleared_val, 0u64);
@@ -562,7 +562,7 @@ mod tests {
 
         // Test u64 at offset 12 (middle)
         let val12: u64 = 0xFEDCBA9876543210;
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot12 = u64::handle(base_slot + U256::ONE, LayoutCtx::packed(12), address);
             slot12.write(val12).unwrap();
 
@@ -585,7 +585,7 @@ mod tests {
             .unwrap();
 
         // Verify with Slot read
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot12 = u64::handle(base_slot + U256::ONE, LayoutCtx::packed(12), address);
             let cleared_val = slot12.read().unwrap();
             assert_eq!(cleared_val, 0u64);
@@ -593,7 +593,7 @@ mod tests {
 
         // Test u64 at offset 24 (last 8 bytes)
         let val24: u64 = 0xAAAABBBBCCCCDDDD;
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot24 = u64::handle(base_slot + U256::from(2), LayoutCtx::packed(24), address);
             slot24.write(val24).unwrap();
 
@@ -616,7 +616,7 @@ mod tests {
             .unwrap();
 
         // Verify with Slot read
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot24 = u64::handle(base_slot + U256::from(2), LayoutCtx::packed(24), address);
             let cleared_val = slot24.read().unwrap();
             assert_eq!(cleared_val, 0u64);
@@ -630,7 +630,7 @@ mod tests {
 
         // Test u128 at offset 0
         let val0: u128 = 0x123456789ABCDEF0_FEDCBA9876543210;
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot0 = u128::handle(base_slot, LayoutCtx::packed(0), address);
             slot0.write(val0).unwrap();
 
@@ -648,7 +648,7 @@ mod tests {
         storage.sstore(address, base_slot, U256::ZERO).unwrap();
 
         // Verify with Slot read
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot0 = u128::handle(base_slot, LayoutCtx::packed(0), address);
             let cleared_val = slot0.read().unwrap();
             assert_eq!(cleared_val, 0u128);
@@ -656,7 +656,7 @@ mod tests {
 
         // Test u128 at offset 16 (second half of slot)
         let val16: u128 = 0xAAAABBBBCCCCDDDD_1111222233334444;
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot16 = u128::handle(base_slot + U256::ONE, LayoutCtx::packed(16), address);
             slot16.write(val16).unwrap();
 
@@ -679,7 +679,7 @@ mod tests {
             .unwrap();
 
         // Verify with Slot read
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot16 = u128::handle(base_slot + U256::ONE, LayoutCtx::packed(16), address);
             let cleared_val = slot16.read().unwrap();
             assert_eq!(cleared_val, 0u128);
@@ -693,7 +693,7 @@ mod tests {
 
         // Test Address at offset 0
         let addr0 = Address::from([0x12; 20]);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot0 = Address::handle(base_slot, LayoutCtx::packed(0), address);
             slot0.write(addr0).unwrap();
 
@@ -711,7 +711,7 @@ mod tests {
         storage.sstore(address, base_slot, U256::ZERO).unwrap();
 
         // Verify with Slot read
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot0 = Address::handle(base_slot, LayoutCtx::packed(0), address);
             let cleared_val = slot0.read().unwrap();
             assert_eq!(cleared_val, Address::ZERO);
@@ -719,7 +719,7 @@ mod tests {
 
         // Test Address at offset 12 (fits in one slot: 12 + 20 = 32)
         let addr12 = Address::from([0xAB; 20]);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot12 = Address::handle(base_slot + U256::ONE, LayoutCtx::packed(12), address);
             slot12.write(addr12).unwrap();
 
@@ -742,7 +742,7 @@ mod tests {
             .unwrap();
 
         // Verify with Slot read
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot12 = Address::handle(base_slot + U256::ONE, LayoutCtx::packed(12), address);
             let cleared_val = slot12.read().unwrap();
             assert_eq!(cleared_val, Address::ZERO);
@@ -756,7 +756,7 @@ mod tests {
 
         // Test bool at offset 0
         let val0 = true;
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot0 = bool::handle(base_slot, LayoutCtx::packed(0), address);
             slot0.write(val0).unwrap();
 
@@ -774,7 +774,7 @@ mod tests {
         storage.sstore(address, base_slot, U256::ZERO).unwrap();
 
         // Verify with Slot read
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot0 = bool::handle(base_slot, LayoutCtx::packed(0), address);
             let cleared_val = slot0.read().unwrap();
             assert!(!cleared_val);
@@ -782,7 +782,7 @@ mod tests {
 
         // Test bool at offset 31
         let val31 = false;
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot31 = bool::handle(base_slot + U256::ONE, LayoutCtx::packed(31), address);
             slot31.write(val31).unwrap();
 
@@ -805,7 +805,7 @@ mod tests {
             .unwrap();
 
         // Verify with Slot read
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot31 = bool::handle(base_slot + U256::ONE, LayoutCtx::packed(31), address);
             let cleared_val = slot31.read().unwrap();
             assert!(!cleared_val);
@@ -819,7 +819,7 @@ mod tests {
 
         // U256 should always fill entire slot (offset must be 0)
         let val = U256::from(0x123456789ABCDEFu64);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot = Slot::<U256>::new(base_slot, address);
             slot.write(val).unwrap();
         });
@@ -828,7 +828,7 @@ mod tests {
         assert_eq!(loaded_slot, val, "U256 should match slot contents exactly");
 
         // Verify it's stored as-is (no packing)
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot = Slot::<U256>::new(base_slot, address);
             let recovered = slot.read().unwrap();
             assert_eq!(recovered, val, "U256 load failed");
@@ -842,7 +842,7 @@ mod tests {
 
         // Store a u64 value
         let val: u64 = 0x123456789ABCDEF0;
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot = Slot::<u64>::new(base_slot, address);
             slot.write(val).unwrap();
         });
@@ -856,7 +856,7 @@ mod tests {
         );
 
         // Delete the value
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot = Slot::<u64>::new(base_slot, address);
             slot.delete().unwrap();
         });
@@ -866,7 +866,7 @@ mod tests {
         assert_eq!(slot_after, U256::ZERO, "Slot should be zero after delete");
 
         // Verify loading returns zero
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot = Slot::<u64>::new(base_slot, address);
             let loaded = slot.read().unwrap();
             assert_eq!(loaded, 0u64, "Loaded value should be 0 after delete");

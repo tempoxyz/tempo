@@ -126,7 +126,7 @@ impl NonceManager {
 mod tests {
     use crate::{
         error::TempoPrecompileError,
-        storage::{StorageContext, hashmap::HashMapStorageProvider},
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
 
@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn test_get_nonce_returns_zero_for_new_key() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mgr = NonceManager::new();
 
             let account = address!("0x1111111111111111111111111111111111111111");
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn test_get_nonce_rejects_protocol_nonce() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mgr = NonceManager::new();
 
             let account = address!("0x1111111111111111111111111111111111111111");
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn test_increment_nonce() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut mgr = NonceManager::new();
 
             let account = address!("0x1111111111111111111111111111111111111111");
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn test_active_key_count() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut mgr = NonceManager::new();
 
             let account = address!("0x1111111111111111111111111111111111111111");
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn test_different_accounts_independent() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut mgr = NonceManager::new();
 
             let account1 = address!("0x1111111111111111111111111111111111111111");
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn test_active_key_count_event_emitted_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let account = address!("0x1111111111111111111111111111111111111111");
             let nonce_key = U256::from(5);
 
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn test_active_key_count_event_not_emitted_pre_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let account = address!("0x1111111111111111111111111111111111111111");
             let nonce_key = U256::from(5);
 
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn test_increment_nonce_post_allegretto() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let account = address!("0x1111111111111111111111111111111111111111");
             let nonce_key = U256::from(5);
 

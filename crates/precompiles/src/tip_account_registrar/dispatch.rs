@@ -54,7 +54,7 @@ impl Precompile for TipAccountRegistrar {
 mod tests {
     use super::*;
     use crate::{
-        storage::{StorageContext, hashmap::HashMapStorageProvider},
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::check_selector_coverage,
     };
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -63,7 +63,7 @@ mod tests {
     #[test]
     fn test_selector_coverage_pre_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             // Pre-Moderato: v1 signature should be supported, v2 should be unsupported
             let mut registrar = TipAccountRegistrar::new();
 
@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn test_selector_coverage_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             // Post-Moderato: v2 signature should be supported, v1 should be unsupported
             let mut registrar = TipAccountRegistrar::new();
 

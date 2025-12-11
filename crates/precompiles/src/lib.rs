@@ -27,7 +27,7 @@ use crate::{
     nonce::NonceManager,
     path_usd::PathUSD,
     stablecoin_exchange::StablecoinExchange,
-    storage::StorageContext,
+    storage::StorageCtx,
     tip_account_registrar::TipAccountRegistrar,
     tip_fee_manager::TipFeeManager,
     tip20::{TIP20Token, address_to_token_id_unchecked, is_tip20_prefix},
@@ -130,7 +130,7 @@ macro_rules! tempo_precompile {
                 $chain_id,
                 $spec,
             );
-            crate::storage::StorageContext::enter(&mut storage, || {
+            crate::storage::StorageCtx::enter(&mut storage, || {
                 $impl.call($input.data, $input.caller)
             })
         })
@@ -276,7 +276,7 @@ fn mutate_void<T: SolCall>(
 #[inline]
 fn fill_precompile_output(
     mut output: PrecompileOutput,
-    storage: &mut StorageContext,
+    storage: &mut StorageCtx,
 ) -> PrecompileOutput {
     output.gas_used = storage.gas_used();
 

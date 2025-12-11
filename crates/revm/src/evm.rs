@@ -199,7 +199,7 @@ mod tests {
     use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
     use tempo_evm::TempoEvmFactory;
     use tempo_precompiles::{
-        storage::{StorageContext, evm::EvmPrecompileStorageProvider},
+        storage::{StorageCtx, evm::EvmPrecompileStorageProvider},
         test_util::TIP20Setup,
     };
 
@@ -214,7 +214,7 @@ mod tests {
             EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
             &ctx.cfg,
         );
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             TIP20Setup::create("USD", "USD", Address::ZERO)
                 .apply()
                 .unwrap();
@@ -250,7 +250,7 @@ mod tests {
             EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
             &ctx.cfg,
         );
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             TIP20Setup::create("USD", "USD", Address::ZERO)
                 .apply()
                 .unwrap();

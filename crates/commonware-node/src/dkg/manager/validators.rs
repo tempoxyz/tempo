@@ -1,6 +1,5 @@
 use std::{collections::HashMap, net::SocketAddr};
 
-use alloy_evm::EvmInternals;
 use alloy_primitives::Address;
 use commonware_codec::{DecodeExt as _, EncodeSize, RangeCfg, Read, Write, varint::UInt};
 use commonware_consensus::{types::Epoch, utils};
@@ -14,7 +13,7 @@ use reth_provider::{
 };
 use tempo_node::TempoFullNode;
 use tempo_precompiles::{
-    storage::{StorageContext, evm::EvmPrecompileStorageProvider},
+    storage::StorageCtx,
     validator_config::{IValidatorConfig, ValidatorConfig},
 };
 
@@ -89,10 +88,7 @@ pub(super) async fn read_from_contract(
             .wrap_err("failed instantiating evm for genesis block")?;
 
         let ctx = evm.ctx_mut();
-        let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
-
-        StorageContext::enter(&mut provider, || {
+        StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
             let validator_config = ValidatorConfig::new();
             validator_config
                 .get_validators()

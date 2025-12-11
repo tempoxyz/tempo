@@ -1,7 +1,7 @@
 //! Mapping storage tests.
 
 use super::*;
-use tempo_precompiles::storage::{Mapping, StorageContext};
+use tempo_precompiles::storage::{Mapping, StorageCtx};
 
 #[test]
 fn test_mapping() {
@@ -14,7 +14,7 @@ fn test_mapping() {
     let (mut storage, address) = setup_storage();
     let layout = Layout::__new(address);
 
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         let block1 = TestBlock {
             field1: U256::from(111),
             field2: U256::from(222),
@@ -127,7 +127,7 @@ proptest! {
         let (mut storage, address) = setup_storage();
         let layout = Layout::__new(address);
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             // Store to different keys
             layout.address_mapping.at(addr1).write(val1)?;
             layout.address_mapping.at(addr2).write(val2)?;

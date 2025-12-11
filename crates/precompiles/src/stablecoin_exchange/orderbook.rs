@@ -3,7 +3,7 @@
 use crate::{
     error::Result,
     stablecoin_exchange::IStablecoinExchange,
-    storage::{Handler, Mapping, Slot, StorageContext},
+    storage::{Handler, Mapping, Slot, StorageCtx},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use tempo_contracts::precompiles::StablecoinExchangeError;
@@ -226,7 +226,7 @@ impl OrderbookHandler {
     /// Find next initialized ask tick higher than current tick
     fn next_initialized_ask_tick(&self, tick: i16) -> (i16, bool) {
         // Guard against overflow when tick is at or above MAX_TICK
-        if StorageContext.spec().is_allegretto() && tick >= MAX_TICK {
+        if StorageCtx.spec().is_allegretto() && tick >= MAX_TICK {
             return (MAX_TICK, false);
         }
         let mut next_tick = tick + 1;
@@ -242,7 +242,7 @@ impl OrderbookHandler {
     /// Find next initialized bid tick lower than current tick
     fn next_initialized_bid_tick(&self, tick: i16) -> (i16, bool) {
         // Guard against underflow when tick is at or below MIN_TICK
-        if StorageContext.spec().is_allegretto() && tick <= MIN_TICK {
+        if StorageCtx.spec().is_allegretto() && tick <= MIN_TICK {
             return (MIN_TICK, false);
         }
         let mut next_tick = tick - 1;
@@ -465,7 +465,7 @@ mod tests {
         #[test]
         fn test_tick_lifecycle() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let exchange = StablecoinExchange::new();
                 let mut book_handler = exchange.books.at(BOOK_KEY);
 
@@ -507,7 +507,7 @@ mod tests {
         #[test]
         fn test_boundary_ticks() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let exchange = StablecoinExchange::new();
                 let mut book_handler = exchange.books.at(BOOK_KEY);
 
@@ -541,7 +541,7 @@ mod tests {
         #[test]
         fn test_bid_and_ask_separate() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let exchange = StablecoinExchange::new();
                 let mut book_handler = exchange.books.at(BOOK_KEY);
 
@@ -577,7 +577,7 @@ mod tests {
         #[test]
         fn test_ticks_across_word_boundary() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let exchange = StablecoinExchange::new();
                 let mut book_handler = exchange.books.at(BOOK_KEY);
 
@@ -594,7 +594,7 @@ mod tests {
         #[test]
         fn test_ticks_different_words() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let exchange = StablecoinExchange::new();
                 let mut book_handler = exchange.books.at(BOOK_KEY);
 
@@ -640,7 +640,7 @@ mod tests {
         #[test]
         fn test_set_tick_bit_out_of_bounds() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let exchange = StablecoinExchange::new();
                 let mut book_handler = exchange.books.at(BOOK_KEY);
 
@@ -670,7 +670,7 @@ mod tests {
         #[test]
         fn test_clear_tick_bit_out_of_bounds() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let exchange = StablecoinExchange::new();
                 let mut book_handler = exchange.books.at(BOOK_KEY);
 
@@ -700,7 +700,7 @@ mod tests {
         #[test]
         fn test_is_tick_initialized_out_of_bounds() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let exchange = StablecoinExchange::new();
                 let book_handler = exchange.books.at(BOOK_KEY);
 

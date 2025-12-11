@@ -23,7 +23,7 @@ fn test_mixed_slot_allocation() {
     let (mut storage, address) = setup_storage();
     let mut mixed = Layout::__new(address);
 
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         // Set all fields
         mixed.field_a.write(U256::from(1)).unwrap();
         mixed.field_b.write(U256::from(2)).unwrap();
@@ -71,7 +71,7 @@ fn test_default_values() {
     let (mut storage, address) = setup_storage();
     let defaults = Layout::__new(address);
 
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         // Reading uninitialized storage returns zero/default
         assert_eq!(defaults.counter.read().unwrap(), 0);
         assert!(!defaults.flag.read().unwrap());
@@ -110,7 +110,7 @@ fn test_base_slots() {
     let (mut storage, address) = setup_storage();
     let mut layout = Layout::__new(address);
 
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         // Set values to verify slot assignments
         layout.field_a.write(U256::ONE).unwrap();
         layout.field_b.write(U256::from(2)).unwrap();
@@ -168,7 +168,7 @@ fn test_base_slot_with_regular_slot() {
     let (mut storage, address) = setup_storage();
     let mut layout = Layout::__new(address);
 
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         layout.field_a.write(U256::ONE).unwrap();
         layout.field_b.write(U256::from(2)).unwrap();
         layout.field_c.write(U256::from(3)).unwrap();
@@ -212,7 +212,7 @@ fn test_string_literal_slots() {
     let (mut storage, address) = setup_storage();
     let mut layout = Layout::__new(address);
 
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         // Set value
         layout.field.write(U256::ONE).unwrap();
 

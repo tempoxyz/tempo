@@ -226,7 +226,7 @@ impl Precompile for PathUSD {
 mod tests {
     use super::*;
     use crate::{
-        storage::{StorageContext, hashmap::HashMapStorageProvider},
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage, setup_storage},
         tip20::tests::initialize_path_usd,
     };
@@ -243,7 +243,7 @@ mod tests {
     fn path_usd_test_selector_coverage_pre_allegretto() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(Address::random())?;
 
             let mut path_usd = PathUSD::new();
@@ -269,7 +269,7 @@ mod tests {
     fn path_usd_test_selector_coverage_post_allegretto() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(Address::random())?;
 
             let mut path_usd = PathUSD::new();
@@ -295,7 +295,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let sender = Address::random();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut token = PathUSD::new();
             token.initialize(sender)?;
 
@@ -320,7 +320,7 @@ mod tests {
         let sender = Address::random();
         let recipient = Address::random();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut token = PathUSD::new();
             token.initialize(sender)?;
 
@@ -339,7 +339,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let sender = Address::random();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut token = PathUSD::new();
             token.initialize(sender)?;
 
@@ -359,7 +359,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let sender = Address::random();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut token = PathUSD::new();
             token.initialize(sender)?;
 
@@ -379,7 +379,7 @@ mod tests {
         let (mut storage, sender) = setup_storage();
         storage.set_spec(TempoHardfork::Moderato);
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut token = PathUSD::new();
             token.initialize(sender)?;
 
@@ -402,7 +402,7 @@ mod tests {
         let (mut storage, sender) = setup_storage();
         storage.set_spec(TempoHardfork::Allegretto);
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut token = PathUSD::new();
             token.initialize(sender)?;
 

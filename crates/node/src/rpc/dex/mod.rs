@@ -15,7 +15,7 @@ use tempo_precompiles::{
         Order as PrecompileOrder, Orderbook as PrecompileOrderbook, StablecoinExchange, TickLevel,
         orderbook::{OrderbookHandler, compute_book_key},
     },
-    storage::{ContractStorage, Handler, StorageContext, evm::EvmPrecompileStorageProvider},
+    storage::{ContractStorage, Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
 };
 use tempo_primitives::TempoHeader;
 
@@ -194,7 +194,7 @@ impl<
         let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
         let mut storage = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
 
-        StorageContext::enter(&mut storage, f)
+        StorageCtx::enter(&mut storage, f)
     }
 
     /// Creates a `StablecoinExchange` instance at the given block.
@@ -434,14 +434,14 @@ pub struct BookIterator<'b> {
     /// Orderbook handler
     handler: OrderbookHandler,
     /// Inner precompile storage
-    storage: StorageContext,
+    storage: StorageCtx,
 }
 
 impl<'b> ContractStorage for BookIterator<'b> {
     fn address(&self) -> Address {
         self.exchange_address
     }
-    fn storage(&mut self) -> &mut StorageContext {
+    fn storage(&mut self) -> &mut StorageCtx {
         &mut self.storage
     }
 }
@@ -464,7 +464,7 @@ impl<'b> BookIterator<'b> {
             starting_order,
             orderbook,
             handler: StablecoinExchange::new().books.at(book_key),
-            storage: StorageContext::default(),
+            storage: StorageCtx::default(),
         }
     }
 

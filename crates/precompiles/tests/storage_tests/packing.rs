@@ -4,7 +4,7 @@
 //! verifying that fields are correctly packed into slots according to Solidity's rules.
 
 use tempo_precompiles::{
-    storage::{Layout, StorableType, StorageContext},
+    storage::{Layout, StorableType, StorageCtx},
     test_util::gen_word_from,
 };
 
@@ -201,7 +201,7 @@ proptest! {
         })
     ) {
         let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             test_store_load::<Rule1Test>(&address, base_slot, &value1)?;
             test_update::<Rule1Test>(&address, base_slot + U256::from(1000), &value1, &value2)?;
             test_delete::<Rule1Test>(&address, base_slot + U256::from(2000), &value1)
@@ -218,7 +218,7 @@ proptest! {
         })
     ) {
         let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             test_store_load::<Rule2Test>(&address, base_slot, &value1)?;
             test_update::<Rule2Test>(&address, base_slot + U256::from(1000), &value1, &value2)?;
             test_delete::<Rule2Test>(&address, base_slot + U256::from(2000), &value1)
@@ -235,7 +235,7 @@ proptest! {
         })
     ) {
         let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             test_store_load::<Rule3TestFull>(&address, base_slot, &value1)?;
             test_update::<Rule3TestFull>(&address, base_slot + U256::from(1000), &value1, &value2)?;
             test_delete::<Rule3TestFull>(&address, base_slot + U256::from(2000), &value1)
@@ -252,7 +252,7 @@ proptest! {
         })
     ) {
         let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             test_store_load::<Rule3TestPartial>(&address, base_slot, &value1)?;
             test_update::<Rule3TestPartial>(&address, base_slot + U256::from(1000), &value1, &value2)?;
             test_delete::<Rule3TestPartial>(&address, base_slot + U256::from(2000), &value1)
@@ -269,7 +269,7 @@ proptest! {
         })
     ) {
         let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             test_store_load::<Rule4Test>(&address, base_slot, &value1)?;
             test_update::<Rule4Test>(&address, base_slot + U256::from(1000), &value1, &value2)?;
             test_delete::<Rule4Test>(&address, base_slot + U256::from(2000), &value1)
@@ -290,7 +290,7 @@ proptest! {
         })
     ) {
         let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             test_store_load::<PackedTwo>(&address, base_slot, &value1)?;
             test_update::<PackedTwo>(&address, base_slot + U256::from(1000), &value1, &value2)?;
             test_delete::<PackedTwo>(&address, base_slot + U256::from(2000), &value1)
@@ -307,7 +307,7 @@ proptest! {
         })
     ) {
         let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             test_store_load::<PackedThree>(&address, base_slot, &value1)?;
             test_update::<PackedThree>(&address, base_slot + U256::from(1000), &value1, &value2)?;
             test_delete::<PackedThree>(&address, base_slot + U256::from(2000), &value1)
@@ -324,7 +324,7 @@ proptest! {
         })
     ) {
         let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             test_store_load::<PartiallyPacked>(&address, base_slot, &value1)?;
             test_update::<PartiallyPacked>(&address, base_slot + U256::from(1000), &value1, &value2)?;
             test_delete::<PartiallyPacked>(&address, base_slot + U256::from(2000), &value1)
@@ -345,7 +345,7 @@ proptest! {
         })
     ) {
         let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             test_store_load::<WithNestedStruct>(&address, base_slot, &value1)?;
             test_update::<WithNestedStruct>(&address, base_slot + U256::from(1000), &value1, &value2)?;
             test_delete::<WithNestedStruct>(&address, base_slot + U256::from(2000), &value1)
@@ -362,7 +362,7 @@ proptest! {
         })
     ) {
         let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             test_store_load::<DeepNested>(&address, base_slot, &value1)?;
             test_update::<DeepNested>(&address, base_slot + U256::from(1000), &value1, &value2)?;
             test_delete::<DeepNested>(&address, base_slot + U256::from(2000), &value1)
@@ -373,7 +373,7 @@ proptest! {
 #[test]
 fn test_packed_two_slot_contents() {
     let (mut storage, address) = setup_storage();
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         let base_slot = U256::random();
 
         // Write the struct to storage
@@ -403,7 +403,7 @@ fn test_packed_two_slot_contents() {
 #[test]
 fn test_packed_three_slot_contents() {
     let (mut storage, address) = setup_storage();
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         let base_slot = U256::random();
 
         let value = PackedThree {
@@ -439,7 +439,7 @@ fn test_packed_three_slot_contents() {
 #[test]
 fn test_rule2_slot_contents() {
     let (mut storage, address) = setup_storage();
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         let base_slot = U256::random();
 
         let value = Rule2Test {
@@ -478,7 +478,7 @@ fn test_rule2_slot_contents() {
 #[test]
 fn test_partially_packed_slot_contents() {
     let (mut storage, address) = setup_storage();
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         let base_slot = U256::random();
 
         let value = PartiallyPacked {
@@ -531,7 +531,7 @@ fn test_partially_packed_slot_contents() {
 #[test]
 fn test_partial_update_preserves_adjacent_fields() {
     let (mut storage, address) = setup_storage();
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         let base_slot = U256::random();
 
         // Store initial value with all fields set
@@ -574,7 +574,7 @@ fn test_partial_update_preserves_adjacent_fields() {
 #[test]
 fn test_delete_zeros_all_slots() {
     let (mut storage, address) = setup_storage();
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         let base_slot = U256::random();
 
         let value = PartiallyPacked {
@@ -643,7 +643,7 @@ fn test_delete_zeros_all_slots() {
 #[test]
 fn test_slot_boundary_at_32_bytes() {
     let (mut storage, address) = setup_storage();
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         let base_slot = U256::random();
 
         let value = ExactFit {

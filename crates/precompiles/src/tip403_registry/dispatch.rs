@@ -76,7 +76,7 @@ impl Precompile for TIP403Registry {
 mod tests {
     use super::*;
     use crate::{
-        storage::{StorageContext, hashmap::HashMapStorageProvider},
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
     use alloy::sol_types::SolValue;
@@ -87,7 +87,7 @@ mod tests {
     fn test_is_authorized_precompile() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let user = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
             // Test policy 1 (always allow)
@@ -109,7 +109,7 @@ mod tests {
     fn test_create_policy_precompile() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
             let call = ITIP403Registry::createPolicyCall {
@@ -133,7 +133,7 @@ mod tests {
     fn test_policy_id_counter_initialization() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
             // Get initial counter
@@ -154,7 +154,7 @@ mod tests {
         let account1 = Address::random();
         let account2 = Address::random();
         let other_account = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
             let accounts = vec![account1, account2];
@@ -210,7 +210,7 @@ mod tests {
         let admin = Address::random();
         let blocked_account = Address::random();
         let allowed_account = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
             // Create blacklist policy
@@ -291,7 +291,7 @@ mod tests {
         let admin = Address::random();
         let account1 = Address::random();
         let account2 = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
             // Create whitelist policy
@@ -377,7 +377,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let new_admin = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
             // Create a policy
@@ -426,7 +426,7 @@ mod tests {
     fn test_special_policy_ids() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let user = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
             // Test policy 0 (always deny)
@@ -451,7 +451,7 @@ mod tests {
     fn test_invalid_selector() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let sender = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
             // Test with invalid selector - should return Ok with reverted status
@@ -473,7 +473,7 @@ mod tests {
     fn test_create_multiple_policies() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
             // Create multiple policies with different types
@@ -513,7 +513,7 @@ mod tests {
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
             let unsupported = check_selector_coverage(

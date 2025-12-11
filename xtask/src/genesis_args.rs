@@ -10,7 +10,7 @@ use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use rayon::prelude::*;
 use reth_evm::{
-    EvmEnv, EvmFactory, EvmInternals,
+    EvmEnv, EvmFactory,
     revm::{
         database::{CacheDB, EmptyDB},
         inspector::JournalExt,
@@ -35,7 +35,7 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS,
     nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
-    storage::{ContractStorage, StorageContext, evm::EvmPrecompileStorageProvider},
+    storage::{ContractStorage, StorageCtx},
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token, address_to_token_id_unchecked},
     tip20_factory::TIP20Factory,
@@ -457,10 +457,9 @@ fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>> {
 /// Initializes the TIP20Factory contract (should be called once before creating any tokens)
 fn initialize_tip20_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
-    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-
-    StorageContext::enter(&mut provider, || TIP20Factory::new().initialize())?;
+    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
+        TIP20Factory::new().initialize()
+    })?;
     Ok(())
 }
 
@@ -472,10 +471,7 @@ fn create_path_usd_token(
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
-    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-
-    StorageContext::enter(&mut provider, || {
+    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
         // Create PathUSD through factory with address(0) as quote token (required for first token post-Allegretto)
         let token_address = TIP20Factory::new()
             .create_token(
@@ -529,10 +525,7 @@ fn create_and_mint_token(
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<(u64, Address)> {
     let ctx = evm.ctx_mut();
-    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-
-    StorageContext::enter(&mut provider, || {
+    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
         let mut factory = TIP20Factory::new();
         assert!(
             factory
@@ -594,9 +587,9 @@ fn create_and_mint_token(
 
 fn initialize_tip20_rewards_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
-    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-    StorageContext::enter(&mut provider, || TIP20RewardsRegistry::new().initialize())?;
+    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
+        TIP20RewardsRegistry::new().initialize()
+    })?;
 
     Ok(())
 }
@@ -609,10 +602,7 @@ fn initialize_fee_manager(
 ) {
     // Update the beneficiary since the validator can't set the validator fee token for themselves
     let ctx = evm.ctx_mut();
-    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-
-    StorageContext::enter(&mut provider, || {
+    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
         let mut fee_manager = TipFeeManager::new();
         fee_manager
             .initialize()
@@ -647,27 +637,27 @@ fn initialize_fee_manager(
 /// Initializes the [`TIP403Registry`] contract.
 fn initialize_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
-    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-    StorageContext::enter(&mut provider, || TIP403Registry::new().initialize())?;
+    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
+        TIP403Registry::new().initialize()
+    })?;
 
     Ok(())
 }
 
 fn initialize_stablecoin_exchange(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
-    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-    StorageContext::enter(&mut provider, || StablecoinExchange::new().initialize())?;
+    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
+        StablecoinExchange::new().initialize()
+    })?;
 
     Ok(())
 }
 
 fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
-    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-    StorageContext::enter(&mut provider, || NonceManager::new().initialize())?;
+    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
+        NonceManager::new().initialize()
+    })?;
 
     Ok(())
 }
@@ -684,9 +674,7 @@ fn initialize_validator_config(
     no_validators_in_genesis: bool,
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
-    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-    StorageContext::enter(&mut provider, || {
+    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
         let mut validator_config = ValidatorConfig::new();
         validator_config
             .initialize(admin)
@@ -798,9 +786,7 @@ fn mint_pairwise_liquidity(
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) {
     let ctx = evm.ctx_mut();
-    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-    let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-    StorageContext::enter(&mut provider, || {
+    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
         let mut fee_manager = TipFeeManager::new();
 
         for b_token_address in b_tokens {

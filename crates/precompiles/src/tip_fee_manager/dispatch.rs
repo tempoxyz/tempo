@@ -170,7 +170,7 @@ mod tests {
     use super::*;
     use crate::{
         Precompile, TIP_FEE_MANAGER_ADDRESS, expect_precompile_revert,
-        storage::{ContractStorage, StorageContext, hashmap::HashMapStorageProvider},
+        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
         tip_fee_manager::{
             FeeManagerError,
@@ -192,7 +192,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let validator = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let token = TIP20Setup::create("TestToken", "TST", admin).apply()?;
             let mut fee_manager = TipFeeManager::new();
 
@@ -218,7 +218,7 @@ mod tests {
     fn test_set_validator_token_zero_address() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let validator = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut fee_manager = TipFeeManager::new();
 
             let calldata = IFeeManager::setValidatorTokenCall {
@@ -237,7 +237,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let user = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let token = TIP20Setup::create("TestToken", "TST", admin).apply()?;
             let mut fee_manager = TipFeeManager::new();
 
@@ -263,7 +263,7 @@ mod tests {
     fn test_set_user_token_zero_address() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let user = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut fee_manager = TipFeeManager::new();
 
             let calldata = IFeeManager::setUserTokenCall {
@@ -283,7 +283,7 @@ mod tests {
         let token_a = Address::random();
         let token_b = Address::random();
         let sender = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut fee_manager = TipFeeManager::new();
 
             let calldata = ITIPFeeAMM::getPoolIdCall {
@@ -308,7 +308,7 @@ mod tests {
         let token_a = Address::random();
         let token_b = Address::random();
         let sender = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut fee_manager = TipFeeManager::new();
 
             // Get pool using ITIPFeeAMM interface
@@ -335,7 +335,7 @@ mod tests {
         let token_a = Address::random();
         let token_b = Address::random();
         let sender = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut fee_manager = TipFeeManager::new();
 
             // Get pool ID with tokens in order (a, b)
@@ -368,7 +368,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let user = Address::random();
         let validator = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut fee_manager = TipFeeManager::new();
 
             // Test setValidatorToken with zero address
@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn test_execute_block() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut fee_manager = TipFeeManager::new();
 
             // Call executeBlock (only system contract can call, so sender = Address::ZERO)
@@ -407,7 +407,7 @@ mod tests {
     #[test]
     fn test_tip_fee_manager_selector_coverage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut fee_manager = TipFeeManager::new();
 
             let fee_manager_unsupported = check_selector_coverage(
@@ -435,7 +435,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let user = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let user_token = TIP20Setup::create("UserToken", "UTK", admin)
                 .with_issuer(admin)
                 .with_mint(user, U256::from(1000000_u64))
@@ -513,7 +513,7 @@ mod tests {
     fn test_unknown_selector_error_pre_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let sender = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut fee_manager = TipFeeManager::new();
 
             // Call with an unknown selector
@@ -533,7 +533,7 @@ mod tests {
     fn test_unknown_selector_error_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let sender = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut fee_manager = TipFeeManager::new();
 
             // Call with an unknown selector
@@ -566,7 +566,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         let admin = Address::random();
         let user = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let user_token = TIP20Setup::create("UserToken", "UTK", admin)
                 .with_issuer(admin)
                 .with_mint(user, U256::from(1000000_u64))

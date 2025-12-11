@@ -144,7 +144,7 @@ mod tests {
     use alloy::primitives::keccak256;
 
     use super::*;
-    use crate::{error::TempoPrecompileError, storage::StorageContext, test_util::setup_storage};
+    use crate::{error::TempoPrecompileError, storage::StorageCtx, test_util::setup_storage};
 
     #[test]
     fn test_role_contract_grant_and_check() -> eyre::Result<()> {
@@ -153,7 +153,7 @@ mod tests {
         let custom_role = keccak256(b"CUSTOM_ROLE");
         let token_id = 1;
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Token::new(token_id);
 
             // Initialize and grant admin
@@ -203,7 +203,7 @@ mod tests {
         let admin_role = keccak256(b"ADMIN_ROLE");
         let token_id = 1;
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Token::new(token_id);
             // Initialize and grant admin
             token.initialize(
@@ -239,7 +239,7 @@ mod tests {
         let custom_role = keccak256(b"CUSTOM_ROLE");
         let token_id = 1;
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Token::new(token_id);
             token.initialize(
                 "name",
@@ -268,7 +268,7 @@ mod tests {
         let custom_role = keccak256(b"CUSTOM_ROLE");
         let token_id = 1;
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Token::new(token_id);
             token.initialize(
                 "name",

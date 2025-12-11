@@ -11,7 +11,7 @@ fn test_string() {
     }
 
     let (mut storage, address) = setup_storage();
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         let mut layout = Layout::__new(address);
 
         // Test empty string
@@ -59,7 +59,7 @@ proptest! {
         }
 
         let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut layout = Layout::__new(address);
 
             // Store arbitrary strings

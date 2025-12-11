@@ -12,7 +12,7 @@ use alloy::{
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
     transports::http::reqwest::Url,
 };
-use alloy_evm::{EvmFactory as _, EvmInternals, revm::inspector::JournalExt as _};
+use alloy_evm::{EvmFactory as _, revm::inspector::JournalExt as _};
 use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256};
 use commonware_codec::Encode;
@@ -58,7 +58,7 @@ use tempo_node::{
 };
 use tempo_precompiles::{
     VALIDATOR_CONFIG_ADDRESS,
-    storage::{StorageContext, evm::EvmPrecompileStorageProvider},
+    storage::StorageCtx,
     validator_config::{IValidatorConfig, ValidatorConfig},
 };
 
@@ -181,12 +181,8 @@ impl Builder {
                 let mut evm = setup_tempo_evm();
 
                 {
-                    let ctx = evm.ctx_mut();
-                    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-                    let mut provider =
-                        EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-
-                    StorageContext::enter(&mut provider, || {
+                    let cx = evm.ctx_mut();
+                    StorageCtx::enter_evm(&mut cx.journaled_state, &cx.block, &cx.cfg, || {
                         // TODO(janis): figure out the owner of the test-genesis.json
                         let mut validator_config = ValidatorConfig::new();
                         validator_config

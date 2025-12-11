@@ -2,7 +2,6 @@
 
 use std::{cmp::Ordering, fmt::Debug};
 
-use alloy_evm::EvmInternals;
 use alloy_primitives::{Address, B256, U256, b256};
 use reth_evm::EvmError;
 use revm::{
@@ -37,7 +36,7 @@ use tempo_precompiles::{
     account_keychain::{AccountKeychain, TokenLimit, authorizeKeyCall},
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
-    storage::{StorageContext, evm::EvmPrecompileStorageProvider},
+    storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
     tip20::{self, ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
 };
@@ -553,10 +552,7 @@ where
         caller_account.touch();
 
         if !nonce_key.is_zero() {
-            let internals = EvmInternals::new(journal, block);
-            let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
-
-            StorageContext::enter(&mut storage_provider, || {
+            StorageCtx::enter_evm(journal, block, cfg, || {
                 let mut nonce_manager = NonceManager::new();
 
                 if !cfg.is_nonce_check_disabled() {
@@ -689,11 +685,7 @@ where
             }
 
             // Now authorize the key in the precompile
-            let internals = EvmInternals::new(journal, block);
-            let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
-
-            StorageContext::enter(&mut storage_provider, || {
-                let mut keychain = AccountKeychain::new();
+            StorageCtx::enter_precompile(journal, block, cfg, |mut keychain: AccountKeychain| {
                 let access_key_addr = key_auth.key_id;
 
                 // Convert signature type to precompile SignatureType enum
@@ -802,12 +794,7 @@ where
                 .unwrap_or(false);
 
             // Always need to set the transaction key for Keychain signatures
-            let mut storage_provider =
-                EvmPrecompileStorageProvider::new_max_gas(EvmInternals::new(journal, &block), cfg);
-
-            StorageContext::enter(&mut storage_provider, || {
-                let mut keychain = AccountKeychain::new();
-
+            StorageCtx::enter_precompile(journal, block, cfg, |mut keychain: AccountKeychain| {
                 if !is_authorizing_this_key {
                     // Not authorizing this key in the same transaction, so validate it exists now
                     // Validate that user_address has authorized this access key in the keychain
@@ -841,19 +828,14 @@ where
 
         let checkpoint = journal.checkpoint();
 
-        let result = {
-            let mut storage_provider =
-                EvmPrecompileStorageProvider::new_max_gas(EvmInternals::new(journal, &block), cfg);
-
-            StorageContext::enter(&mut storage_provider, || {
-                TipFeeManager::new().collect_fee_pre_tx(
-                    self.fee_payer,
-                    self.fee_token,
-                    gas_balance_spending,
-                    block.beneficiary(),
-                )
-            })
-        };
+        let result = StorageCtx::enter_evm(journal, &block, cfg, || {
+            TipFeeManager::new().collect_fee_pre_tx(
+                self.fee_payer,
+                self.fee_token,
+                gas_balance_spending,
+                block.beneficiary(),
+            )
+        });
 
         if let Err(err) = result {
             // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
@@ -926,12 +908,9 @@ where
 
         // Create storage provider and fee manager
         let (journal, block) = (&mut context.journaled_state, &context.block);
-        let internals = EvmInternals::new(&mut *journal, block);
-        let beneficiary = internals.block_env().beneficiary();
-        let mut storage_provider =
-            EvmPrecompileStorageProvider::new_max_gas(internals, &context.cfg);
+        let beneficiary = block.beneficiary();
 
-        StorageContext::enter(&mut storage_provider, || {
+        StorageCtx::enter_evm(&mut *journal, block, &context.cfg, || {
             let mut fee_manager = TipFeeManager::new();
 
             if !actual_spending.is_zero() || !refund_amount.is_zero() {

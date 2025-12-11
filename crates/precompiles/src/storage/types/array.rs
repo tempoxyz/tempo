@@ -180,7 +180,7 @@ where
 mod tests {
     use super::*;
     use crate::{
-        storage::{Layout, LayoutCtx, PrecompileStorageProvider, StorageContext},
+        storage::{Layout, LayoutCtx, PrecompileStorageProvider, StorageCtx},
         test_util::setup_storage,
     };
     use proptest::prelude::*;
@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(<[u8; 32] as StorableType>::LAYOUT, Layout::Slots(1));
 
         // Store and load
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot = <[u8; 32]>::handle(base_slot, LayoutCtx::FULL, address);
             slot.write(data).unwrap();
             let loaded = slot.read().unwrap();
@@ -233,7 +233,7 @@ mod tests {
         assert_eq!(<[u64; 5] as StorableType>::LAYOUT, Layout::Slots(2));
 
         // Store and load
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot = <[u64; 5]>::handle(base_slot, LayoutCtx::FULL, address);
             slot.write(data).unwrap();
             let loaded = slot.read().unwrap();
@@ -247,7 +247,7 @@ mod tests {
         assert_ne!(slot1, U256::ZERO, "Slot 1 should be non-zero");
 
         // Verify delete clears both slots
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot = <[u64; 5]>::handle(base_slot, LayoutCtx::FULL, address);
             slot.delete().unwrap();
         });
@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(<[u16; 16] as StorableType>::LAYOUT, Layout::Slots(1));
 
         // Store and load
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot = <[u16; 16]>::handle(base_slot, LayoutCtx::FULL, address);
             slot.write(data).unwrap();
             let loaded = slot.read().unwrap();
@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(<[U256; 3] as StorableType>::LAYOUT, Layout::Slots(3));
 
         // Store and load
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot = <[U256; 3]>::handle(base_slot, LayoutCtx::FULL, address);
             slot.write(data).unwrap();
             let loaded = slot.read().unwrap();
@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(<[Address; 3] as StorableType>::LAYOUT, Layout::Slots(3));
 
         // Store and load
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot = <[Address; 3]>::handle(base_slot, LayoutCtx::FULL, address);
             slot.write(data).unwrap();
             let loaded = slot.read().unwrap();
@@ -339,7 +339,7 @@ mod tests {
         assert_eq!(<[u8; 1] as StorableType>::LAYOUT, Layout::Slots(1));
 
         // Store and load
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot = <[u8; 1]>::handle(base_slot, LayoutCtx::FULL, address);
             slot.write(data).unwrap();
             let loaded = slot.read().unwrap();
@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(<[[u8; 4]; 8] as StorableType>::LAYOUT, Layout::Slots(8));
 
         // Store and load
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot = <[[u8; 4]; 8]>::handle(base_slot, LayoutCtx::FULL, address);
             slot.write(data).unwrap();
             let loaded = slot.read().unwrap();
@@ -409,7 +409,7 @@ mod tests {
         assert_eq!(<[[u16; 2]; 8] as StorableType>::LAYOUT, Layout::Slots(8));
 
         // Store and load
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut slot = <[[u16; 2]; 8]>::handle(base_slot, LayoutCtx::FULL, address);
             slot.write(data).unwrap();
             let loaded = slot.read().unwrap();
@@ -435,7 +435,7 @@ mod tests {
             let (mut storage, address) = setup_storage();
 
             // Store and load
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let mut slot = <[u8; 32]>::handle(base_slot, LayoutCtx::FULL, address);
                 slot.write(data).unwrap();
                 let loaded = slot.read().unwrap();
@@ -457,7 +457,7 @@ mod tests {
             let (mut storage, address) = setup_storage();
 
             // Store and load
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let mut slot = <[u16; 16]>::handle(base_slot, LayoutCtx::FULL, address);
                 slot.write(data).unwrap();
                 let loaded = slot.read().unwrap();
@@ -474,7 +474,7 @@ mod tests {
             let (mut storage, address) = setup_storage();
 
             // Store and load
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let mut slot = <[U256; 5]>::handle(base_slot, LayoutCtx::FULL, address);
                 slot.write(data).unwrap();
                 let loaded = slot.read().unwrap();
@@ -489,7 +489,7 @@ mod tests {
             }
 
             // Delete
-            StorageContext::enter(&mut storage, || {
+            StorageCtx::enter(&mut storage, || {
                 let mut slot = <[U256; 5]>::handle(base_slot, LayoutCtx::FULL, address);
                 slot.delete().unwrap();
                 Ok::<(), proptest::test_runner::TestCaseError>(())

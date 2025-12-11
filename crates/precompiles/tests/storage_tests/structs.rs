@@ -4,7 +4,7 @@
 //! verifying that multi-slot structs are correctly handled and that deletion works.
 
 use super::*;
-use tempo_precompiles::storage::{Mapping, StorageContext};
+use tempo_precompiles::storage::{Mapping, StorageCtx};
 
 #[test]
 fn test_struct_storage() {
@@ -20,7 +20,7 @@ fn test_struct_storage() {
 
     let (mut storage, address) = setup_storage();
     let mut layout = Layout::__new(address);
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         // Verify actual slot assignments
         assert_eq!(layout.field_a.slot(), U256::ZERO);
         assert_eq!(layout.field_b.slot(), U256::ONE);
@@ -106,7 +106,7 @@ fn test_delete_struct_field_in_contract() {
 
     let (mut storage, address) = setup_storage();
     let mut layout = Layout::__new(address);
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         let block = TestBlock {
             field1: U256::from(1000),
             field2: U256::from(2000),
@@ -153,7 +153,7 @@ fn test_user_profile_struct_in_contract() {
 
     let (mut storage, address) = setup_storage();
     let mut layout = Layout::__new(address);
-    StorageContext::enter(&mut storage, || {
+    StorageCtx::enter(&mut storage, || {
         let profile = UserProfile {
             owner: test_address(42),
             active: true,
@@ -208,7 +208,7 @@ proptest! {
 
         let (mut storage, address) = setup_storage();
         let mut layout = Layout::__new(address);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             // Store random values
             layout.field_a.write(field_a_val)?;
             layout.block.write(block.clone())?;
@@ -252,7 +252,7 @@ proptest! {
 
         let (mut storage, address) = setup_storage();
         let mut layout = Layout::__new(address);
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             // Store random values
             layout.counter.write(counter_val)?;
             layout.profile.write(profile.clone())?;

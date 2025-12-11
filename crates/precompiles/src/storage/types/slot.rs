@@ -3,9 +3,7 @@ use std::marker::PhantomData;
 
 use crate::{
     error::Result,
-    storage::{
-        FieldLocation, Handler, LayoutCtx, Storable, StorableType, StorageContext, StorageOps,
-    },
+    storage::{FieldLocation, Handler, LayoutCtx, Storable, StorableType, StorageCtx, StorageOps},
 };
 
 /// Type-safe wrapper for a single EVM storage slot.
@@ -118,12 +116,12 @@ impl<T> Slot<T> {
 
 impl<T> StorageOps for Slot<T> {
     fn load(&self, slot: U256) -> Result<U256> {
-        let storage = StorageContext;
+        let storage = StorageCtx;
         storage.sload(self.address, slot)
     }
 
     fn store(&mut self, slot: U256, value: U256) -> Result<()> {
-        let mut storage = StorageContext;
+        let mut storage = StorageCtx;
         storage.sstore(self.address, slot, value)
     }
 }
@@ -137,12 +135,12 @@ struct TransientOps {
 
 impl StorageOps for TransientOps {
     fn load(&self, slot: U256) -> Result<U256> {
-        let storage = StorageContext;
+        let storage = StorageCtx;
         storage.tload(self.address, slot)
     }
 
     fn store(&mut self, slot: U256, value: U256) -> Result<()> {
-        let mut storage = StorageContext;
+        let mut storage = StorageCtx;
         storage.tstore(self.address, slot, value)
     }
 }
@@ -162,7 +160,7 @@ impl<T: Storable> Handler<T> for Slot<T> {
     /// This method delegates to the `Storable::load` implementation,
     /// which may read one or more consecutive slots depending on the type.
     ///
-    /// Uses thread-local storage context initialized by [`StorageContext`].
+    /// Uses thread-local storage context initialized by [`StorageCtx`].
     ///
     /// # Example
     ///
@@ -180,7 +178,7 @@ impl<T: Storable> Handler<T> for Slot<T> {
     /// This method delegates to the `Storable::store` implementation,
     /// which may write one or more consecutive slots depending on the type.
     ///
-    /// Uses thread-local storage context initialized by [`StorageContext`].
+    /// Uses thread-local storage context initialized by [`StorageCtx`].
     ///
     /// # Example
     ///
@@ -198,7 +196,7 @@ impl<T: Storable> Handler<T> for Slot<T> {
     /// This method delegates to the `Storable::delete` implementation,
     /// which sets the appropriate slots to zero.
     ///
-    /// Uses thread-local storage context initialized by [`StorageContext`].
+    /// Uses thread-local storage context initialized by [`StorageCtx`].
     ///
     /// # Example
     ///
@@ -262,7 +260,7 @@ mod tests {
     #[test]
     fn test_slot_number_extraction() -> eyre::Result<()> {
         let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot_0 = Slot::<U256>::new(U256::ZERO, address);
             let slot_1 = Slot::<Address>::new(U256::ONE, address);
             let slot_max = Slot::<bool>::new(U256::MAX, address);
@@ -276,7 +274,7 @@ mod tests {
     #[test]
     fn test_slot_edge_cases() -> eyre::Result<()> {
         let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             // U256::ZERO slot
             let mut slot_zero = Slot::<U256>::new(U256::ZERO, address);
             assert_eq!(slot_zero.slot(), U256::ZERO);
@@ -301,7 +299,7 @@ mod tests {
         let slot_num = U256::random();
         let test_value = U256::random();
 
-        StorageContext::enter(&mut storage, || -> eyre::Result<()> {
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             // U256
             let mut u256_slot = Slot::<U256>::new(slot_num, address);
             u256_slot.write(test_value)?;
@@ -337,7 +335,7 @@ mod tests {
     #[test]
     fn test_slot_default_and_overwrite() -> eyre::Result<()> {
         let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             // Default value is zero
             let mut slot = Slot::<u64>::new(U256::random(), address);
             assert_eq!(slot.read()?, 0);
@@ -358,7 +356,7 @@ mod tests {
         #[test]
         fn proptest_slot_read_write_u256(slot in arb_u256(),value in arb_u256()) {
             let (mut storage, address) = setup_storage();
-            StorageContext::enter(&mut storage, || -> std::result::Result<(), TestCaseError> {
+            StorageCtx::enter(&mut storage, || -> std::result::Result<(), TestCaseError> {
                 let mut slot = Slot::<U256>::new(slot, address);
 
                 // Write and read back
@@ -377,7 +375,7 @@ mod tests {
         #[test]
         fn proptest_slot_read_write_address(slot in arb_u256(),addr_value in arb_address()) {
             let (mut storage, address) = setup_storage();
-            StorageContext::enter(&mut storage, || -> std::result::Result<(), TestCaseError> {
+            StorageCtx::enter(&mut storage, || -> std::result::Result<(), TestCaseError> {
                 let mut slot = Slot::<Address>::new(slot, address);
 
                 // Write and read back
@@ -391,7 +389,7 @@ mod tests {
         #[test]
         fn proptest_slot_isolation(slot1 in arb_u256(), slot2 in arb_u256(), value1 in arb_u256(), value2 in arb_u256()) {
             let (mut storage, address) = setup_storage();
-            StorageContext::enter(&mut storage, || -> std::result::Result<(), TestCaseError> {
+            StorageCtx::enter(&mut storage, || -> std::result::Result<(), TestCaseError> {
                 let mut slot1 = Slot::<U256>::new(slot1, address);
                 let mut slot2 = Slot::<U256>::new(slot2, address);
 
@@ -422,7 +420,7 @@ mod tests {
     #[test]
     fn test_slot_at_offset() -> eyre::Result<()> {
         let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let pair_key = B256::random();
             let base = pair_key.mapping_slot(U256::ZERO);
             let test_addr = Address::random();
@@ -441,7 +439,7 @@ mod tests {
     #[test]
     fn test_multiple_primitive_fields() -> eyre::Result<()> {
         let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let key = B256::random();
             let base = key.mapping_slot(U256::ZERO);
 
@@ -475,7 +473,7 @@ mod tests {
     #[test]
     fn test_transient_ops() -> eyre::Result<()> {
         let (mut storage, address) = setup_storage();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             // U256: default, roundtrip, overwrite, delete
             let mut u256_slot = Slot::<U256>::new(U256::from(1), address);
             assert_eq!(u256_slot.t_read()?, U256::ZERO);
@@ -524,7 +522,7 @@ mod tests {
         let t_value = U256::random();
         let s_value = U256::random();
 
-        StorageContext::enter(&mut storage, || -> eyre::Result<()> {
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut slot = Slot::<U256>::new(slot_num, address);
 
             // Write different values to each storage type
@@ -549,7 +547,7 @@ mod tests {
         storage.clear_transient();
 
         // Transient cleared, persistent remains
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let slot = Slot::<U256>::new(slot_num, address);
             assert_eq!(slot.read()?, s_value);
             assert_eq!(slot.t_read()?, U256::ZERO);

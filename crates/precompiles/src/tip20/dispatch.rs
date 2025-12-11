@@ -260,7 +260,7 @@ mod tests {
     use super::*;
     use crate::{
         PATH_USD_ADDRESS,
-        storage::{StorageContext, hashmap::HashMapStorageProvider},
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::setup_storage,
         tip20::{ISSUER_ROLE, PAUSE_ROLE, TIP20Token, UNPAUSE_ROLE, tests::initialize_path_usd},
     };
@@ -277,7 +277,7 @@ mod tests {
         storage.set_spec(TempoHardfork::Moderato);
         let token_id = 1;
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(sender)?;
             let mut token = TIP20Token::new(token_id);
             token.initialize(
@@ -308,7 +308,7 @@ mod tests {
         let account = Address::random();
         let token_id = 1;
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(admin)?;
 
             let mut token = TIP20Token::new(token_id);
@@ -344,7 +344,7 @@ mod tests {
         let recipient = Address::random();
         let token_id = 1;
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(admin)?;
 
             let mut token = TIP20Token::new(token_id);
@@ -379,7 +379,7 @@ mod tests {
         let transfer_amount = U256::from(300);
         let initial_sender_balance = U256::from(1000);
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(admin)?;
             let mut token = TIP20Token::new(1);
             token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
@@ -437,7 +437,7 @@ mod tests {
         let transfer_amount = U256::from(300);
         let initial_owner_balance = U256::from(1000);
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(admin)?;
             let mut token = TIP20Token::new(1);
             token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
@@ -498,7 +498,7 @@ mod tests {
         let pauser = Address::random();
         let unpauser = Address::random();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(admin)?;
             let mut token = TIP20Token::new(1);
             token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
@@ -531,7 +531,7 @@ mod tests {
         let initial_balance = U256::from(1000);
         let burn_amount = U256::from(300);
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(admin)?;
             let mut token = TIP20Token::new(1);
             token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
@@ -576,7 +576,7 @@ mod tests {
         let (mut storage, admin) = setup_storage();
         let caller = Address::random();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(admin)?;
             let mut token = TIP20Token::new(1);
             token.initialize(
@@ -641,7 +641,7 @@ mod tests {
         let supply_cap = U256::from(1000);
         let mint_amount = U256::from(1001);
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(admin)?;
             let mut token = TIP20Token::new(1);
             token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
@@ -676,7 +676,7 @@ mod tests {
         let user2 = Address::random();
         let unauthorized = Address::random();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(admin)?;
             let mut token = TIP20Token::new(1);
             token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
@@ -726,7 +726,7 @@ mod tests {
         let transfer_amount = U256::from(100);
         let initial_balance = U256::from(500);
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(admin)?;
             let mut token = TIP20Token::new(1);
             token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
@@ -767,7 +767,7 @@ mod tests {
         let non_admin = Address::random();
         let new_policy_id = 42u64;
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(admin)?;
             let mut token = TIP20Token::new(1);
             token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
@@ -798,7 +798,7 @@ mod tests {
 
         let (mut storage, admin) = setup_storage();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
@@ -826,7 +826,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let admin = Address::random();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(admin)?;
             let mut token = TIP20Token::new(1);
             token.initialize(
@@ -857,7 +857,7 @@ mod tests {
         let admin = Address::random();
         let fee_recipient = Address::random();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(admin)?;
             let mut token = TIP20Token::new(1);
             token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, fee_recipient)?;
@@ -878,7 +878,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let admin = Address::random();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(admin)?;
             let mut token = TIP20Token::new(1);
             token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, admin)?;
@@ -904,7 +904,7 @@ mod tests {
         let admin = Address::random();
         let new_recipient = Address::random();
 
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             initialize_path_usd(admin)?;
             let mut token = TIP20Token::new(1);
             token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, admin)?;

@@ -2,7 +2,7 @@
 
 use crate::{
     PATH_USD_ADDRESS, Precompile, Result,
-    storage::{ContractStorage, StorageContext, hashmap::HashMapStorageProvider},
+    storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     tip20::{self, ITIP20, TIP20Token},
     tip20_factory::{self, TIP20Factory},
 };
@@ -246,7 +246,7 @@ impl TIP20Setup {
             .expect("pathUSD is uninitialized and requires an admin");
 
         // In Allegretto, PathUSD is token 0 created via factory with quoteToken=0
-        if StorageContext.spec().is_allegretto() {
+        if StorageCtx.spec().is_allegretto() {
             let mut factory = Self::factory()?;
             factory.create_token(
                 admin,
@@ -361,7 +361,7 @@ impl TIP20Setup {
 /// Checks if a contract at the given address has bytecode deployed.
 #[cfg(any(test, feature = "test-utils"))]
 fn is_initialized(address: Address) -> bool {
-    crate::storage::StorageContext.has_bytecode(address)
+    crate::storage::StorageCtx.has_bytecode(address)
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -369,7 +369,7 @@ fn get_tip20_admin(token: Address) -> Option<Address> {
     use alloy::sol_types::SolEvent;
     use tempo_contracts::precompiles::ITIP20Factory;
 
-    let events = StorageContext.get_events(TIP20_FACTORY_ADDRESS);
+    let events = StorageCtx.get_events(TIP20_FACTORY_ADDRESS);
     for log in events {
         if let Ok(event) = ITIP20Factory::TokenCreated::decode_log_data(log)
             && event.token == token

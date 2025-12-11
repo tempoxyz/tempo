@@ -344,14 +344,14 @@ impl TIP403Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StorageContext, hashmap::HashMapStorageProvider};
+    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::primitives::Address;
 
     #[test]
     fn test_create_policy() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
             // Initial counter should be 2 (skipping special policies)
@@ -383,7 +383,7 @@ mod tests {
     fn test_is_authorized_special_policies() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let user = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let registry = TIP403Registry::new();
 
             // Policy 0 should always reject
@@ -404,7 +404,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let user = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
             // Create whitelist policy
@@ -447,7 +447,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let user = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
             // Create blacklist policy

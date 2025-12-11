@@ -3,7 +3,7 @@ pub mod dispatch;
 use crate::{
     STABLECOIN_EXCHANGE_ADDRESS,
     error::Result,
-    storage::StorageContext,
+    storage::StorageCtx,
     tip20::{ITIP20, TIP20Token},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
@@ -23,7 +23,7 @@ const CURRENCY: &str = "USD";
 
 pub struct PathUSD {
     pub token: TIP20Token,
-    storage: StorageContext,
+    storage: StorageCtx,
 }
 
 impl Default for PathUSD {
@@ -36,7 +36,7 @@ impl PathUSD {
     pub fn new() -> Self {
         Self {
             token: TIP20Token::new(0),
-            storage: StorageContext::default(),
+            storage: StorageCtx::default(),
         }
     }
 
@@ -297,7 +297,7 @@ mod tests {
     //         let (mut storage, admin) = setup_storage();
     //         storage.set_spec(TempoHardfork::Moderato);
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let path_usd = transfer_test_setup(admin)?;
 
     //             assert_eq!(path_usd.name()?, NAME_PRE_ALLEGRETTO);
@@ -312,7 +312,7 @@ mod tests {
     //         let (mut storage, admin) = setup_storage();
     //         storage.set_spec(TempoHardfork::Allegretto);
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let path_usd = transfer_test_setup(admin)?;
 
     //             assert_eq!(path_usd.name()?, NAME_POST_ALLEGRETTO);
@@ -327,7 +327,7 @@ mod tests {
     //         let (mut storage, admin) = setup_storage();
     //         storage.set_spec(TempoHardfork::Moderato);
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = transfer_test_setup(admin)?;
 
     //             let result = path_usd.transfer(
@@ -352,7 +352,7 @@ mod tests {
     //         let (mut storage, admin) = setup_storage();
     //         storage.set_spec(TempoHardfork::Moderato);
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = transfer_test_setup(admin)?;
 
     //             let result = path_usd.transfer_from(
@@ -376,7 +376,7 @@ mod tests {
     //         let (mut storage, admin) = setup_storage();
     //         storage.set_spec(TempoHardfork::Moderato);
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = transfer_test_setup(admin)?;
 
     //             let result = path_usd.transfer_with_memo(
@@ -401,7 +401,7 @@ mod tests {
     //         let (mut storage, admin) = setup_storage();
     //         storage.set_spec(TempoHardfork::Moderato);
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = transfer_test_setup(admin)?;
 
     //             let result = path_usd.transfer_from_with_memo(
@@ -426,7 +426,7 @@ mod tests {
     //     fn test_mint() -> eyre::Result<()> {
     //         let (mut storage, admin) = setup_storage();
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = transfer_test_setup(admin)?;
     //             let recipient = Address::random();
     //             let amount = U256::from(1000);
@@ -454,7 +454,7 @@ mod tests {
     //     fn test_burn() -> eyre::Result<()> {
     //         let (mut storage, admin) = setup_storage();
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let amount = U256::from(1000);
 
@@ -477,7 +477,7 @@ mod tests {
     //     fn test_approve() -> eyre::Result<()> {
     //         let (mut storage, admin) = setup_storage();
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let owner = Address::random();
     //             let spender = Address::random();
@@ -499,7 +499,7 @@ mod tests {
     //     fn test_transfer_with_stablecoin_exchange() -> eyre::Result<()> {
     //         let (mut storage, admin) = setup_storage();
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let recipient = Address::random();
     //             let amount = U256::from(1000);
@@ -548,7 +548,7 @@ mod tests {
     //     fn test_transfer_from_with_stablecoin_exchange() -> eyre::Result<()> {
     //         let (mut storage, admin) = setup_storage();
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let from = Address::random();
     //             let to = Address::random();
@@ -605,7 +605,7 @@ mod tests {
     //     fn test_transfer_with_transfer_role() -> eyre::Result<()> {
     //         let (mut storage, admin) = setup_storage();
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let sender = Address::random();
     //             let recipient = Address::random();
@@ -657,7 +657,7 @@ mod tests {
     //         let amount = U256::from(1000);
     // >>>>>>> 6774db516751df39b24a605e3089ab4ccff7fd3a
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let sender = Address::random();
     //             let recipient = Address::random();
@@ -693,7 +693,7 @@ mod tests {
     //     fn test_transfer_from_with_transfer_role() -> eyre::Result<()> {
     //         let (mut storage, admin) = setup_storage();
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let from = Address::random();
     //             let to = Address::random();
@@ -753,7 +753,7 @@ mod tests {
     //         let amount = U256::from(1000);
     // >>>>>>> 6774db516751df39b24a605e3089ab4ccff7fd3a
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let from = Address::random();
     //             let to = Address::random();
@@ -786,7 +786,7 @@ mod tests {
     //     fn test_transfer_with_memo_with_transfer_role() -> eyre::Result<()> {
     //         let (mut storage, admin) = setup_storage();
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let sender = Address::random();
     //             let recipient = Address::random();
@@ -828,7 +828,7 @@ mod tests {
     //     fn test_transfer_with_memo_with_receive_role() -> eyre::Result<()> {
     //         let (mut storage, admin) = setup_storage();
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let sender = Address::random();
     //             let recipient = Address::random();
@@ -872,7 +872,7 @@ mod tests {
     //     fn test_transfer_from_with_memo_with_stablecoin_exchange() -> eyre::Result<()> {
     //         let (mut storage, admin) = setup_storage();
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let from = Address::random();
     //             let to = Address::random();
@@ -931,7 +931,7 @@ mod tests {
     //     fn test_transfer_from_with_memo_with_transfer_role() -> eyre::Result<()> {
     //         let (mut storage, admin) = setup_storage();
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let from = Address::random();
     //             let to = Address::random();
@@ -986,7 +986,7 @@ mod tests {
     //     fn test_transfer_from_with_memo_with_receive_role() -> eyre::Result<()> {
     //         let (mut storage, admin) = setup_storage();
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let from = Address::random();
     //             let to = Address::random();
@@ -1043,7 +1043,7 @@ mod tests {
     //     fn test_pause_and_unpause() -> eyre::Result<()> {
     //         let (mut storage, admin) = setup_storage();
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let pauser = Address::random();
     //             let unpauser = Address::random();
@@ -1071,7 +1071,7 @@ mod tests {
     //     fn test_role_management() -> eyre::Result<()> {
     //         let (mut storage, admin) = setup_storage();
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let user = Address::random();
 
@@ -1114,7 +1114,7 @@ mod tests {
     //     fn test_supply_cap() -> eyre::Result<()> {
     //         let (mut storage, admin) = setup_storage();
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let recipient = Address::random();
     //             let supply_cap = U256::from(1000);
@@ -1154,7 +1154,7 @@ mod tests {
     //     fn test_invalid_supply_caps() -> eyre::Result<()> {
     //         let (mut storage, admin) = setup_storage();
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let recipient = Address::random();
     //             let supply_cap = U256::from(1000);
@@ -1215,7 +1215,7 @@ mod tests {
     //     fn test_change_transfer_policy_id() -> eyre::Result<()> {
     //         let (mut storage, admin) = setup_storage();
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let new_policy_id = 42u64;
 
@@ -1251,7 +1251,7 @@ mod tests {
     //         let (mut storage, admin) = setup_storage();
     //         storage.set_spec(TempoHardfork::Allegretto);
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let sender = Address::random();
     //             let recipient = Address::random();
@@ -1289,7 +1289,7 @@ mod tests {
     //         let (mut storage, admin) = setup_storage();
     //         storage.set_spec(TempoHardfork::Allegretto);
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let owner = Address::random();
     //             let spender = Address::random();
@@ -1330,7 +1330,7 @@ mod tests {
     //         let (mut storage, admin) = setup_storage();
     //         storage.set_spec(TempoHardfork::Allegretto);
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let sender = Address::random();
     //             let recipient = Address::random();
@@ -1368,7 +1368,7 @@ mod tests {
     //         let (mut storage, admin) = setup_storage();
     //         storage.set_spec(TempoHardfork::Allegretto);
 
-    //         StorageContext::enter(&mut storage, || {
+    //         StorageCtx::enter(&mut storage, || {
     //             let mut path_usd = PathUSD::new();
     //             let owner = Address::random();
     //             let spender = Address::random();

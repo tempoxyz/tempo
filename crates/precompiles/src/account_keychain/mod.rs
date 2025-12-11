@@ -494,7 +494,7 @@ mod tests {
     use super::*;
     use crate::{
         error::TempoPrecompileError,
-        storage::{StorageContext, hashmap::HashMapStorageProvider},
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
     };
     use alloy::primitives::{Address, U256};
     use tempo_contracts::precompiles::IAccountKeychain::SignatureType;
@@ -516,7 +516,7 @@ mod tests {
     fn test_transaction_key_transient_storage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let access_key_addr = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
 
             // Test 1: Initially transaction key should be zero
@@ -563,7 +563,7 @@ mod tests {
         let access_key = Address::random();
         let token = Address::random();
         let other = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             // Initialize the keychain
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
@@ -630,7 +630,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let account = Address::random();
         let key_id = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
 
@@ -695,7 +695,7 @@ mod tests {
         let account = Address::random();
         let key_id_1 = Address::random();
         let key_id_2 = Address::random();
-        StorageContext::enter(&mut storage, || {
+        StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
 
