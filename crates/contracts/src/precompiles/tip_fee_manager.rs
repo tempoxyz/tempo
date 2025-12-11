@@ -34,12 +34,15 @@ sol! {
         // Fee functions
         function getFeeTokenBalance(address sender, address validator) external view returns (address, uint256);
         function executeBlock() external;
-        // NOTE: collectFeePreTx and collectFeePostTx are protocol-internal functions
-        // called directly by the execution handler, not exposed via the dispatch interface.
+        function distributeFees(address validator) external;
+        function collectedFeesByValidator(address validator) external view returns (uint256);
+        // NOTE: collectFeePreTx is a protocol-internal function called directly by the
+        // execution handler, not exposed via the dispatch interface.
 
         // Events
         event UserTokenSet(address indexed user, address indexed token);
         event ValidatorTokenSet(address indexed validator, address indexed token);
+        event FeesDistributed(address indexed validator, address indexed token, uint256 amount);
 
         // Errors
         error OnlyValidator();

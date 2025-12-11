@@ -101,6 +101,16 @@ impl Precompile for TipFeeManager {
                     self.execute_block(s, self.storage.beneficiary())
                 })
             }
+            IFeeManager::distributeFeesCall::SELECTOR => {
+                mutate_void::<IFeeManager::distributeFeesCall>(calldata, msg_sender, |_s, call| {
+                    self.distribute_fees(call.validator)
+                })
+            }
+            IFeeManager::collectedFeesByValidatorCall::SELECTOR => {
+                view::<IFeeManager::collectedFeesByValidatorCall>(calldata, |call| {
+                    self.collected_fees.at(call.validator).read()
+                })
+            }
             ITIPFeeAMM::mintCall::SELECTOR => {
                 mutate::<ITIPFeeAMM::mintCall>(calldata, msg_sender, |s, call| {
                     if self.storage.spec().is_moderato() {

@@ -613,6 +613,47 @@ impl TipFeeManager {
         Ok((amount_user_token, amount_validator_token))
     }
 
+    /// Executes a fee swap immediately, converting userToken to validatorToken at the fixed rate m = 0.9970.
+    /// Called by FeeManager.collectFeePreTx during pre-transaction fee collection.
+    pub fn execute_fee_swap(
+        &mut self,
+        user_token: Address,
+        validator_token: Address,
+        amount_in: U256,
+    ) -> Result<U256> {
+        let pool_id = self.pool_id(user_token, validator_token);
+        let mut pool = self.pools.at(pool_id).read()?;
+
+        // Calculate output at fixed price m = 0.9970
+        let amount_out = compute_amount_out(amount_in)?;
+
+        // Check if there's enough validatorToken available
+        if amount_out > U256::from(pool.reserve_validator_token) {
+            return Err(TIPFeeAMMError::insufficient_liquidity().into());
+        }
+
+        // Update reserves immediately
+        let amount_in_u128: u128 = amount_in
+            .try_into()
+            .map_err(|_| TempoPrecompileError::under_overflow())?;
+        let amount_out_u128: u128 = amount_out
+            .try_into()
+            .map_err(|_| TempoPrecompileError::under_overflow())?;
+
+        pool.reserve_user_token = pool
+            .reserve_user_token
+            .checked_add(amount_in_u128)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        pool.reserve_validator_token = pool
+            .reserve_validator_token
+            .checked_sub(amount_out_u128)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+
+        self.pools.at(pool_id).write(pool)?;
+
+        Ok(amount_out)
+    }
+
     /// Execute all pending fee swaps for a pool
     pub fn execute_pending_fee_swaps(
         &mut self,
@@ -1575,5 +1616,72 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    /// Test execute_fee_swap executes swap immediately and updates reserves
+    #[test]
+    fn test_execute_fee_swap_immediate() -> eyre::Result<()> {
+        let (mut amm, _, user_token, validator_token) = setup_test_amm();
+
+        // Setup pool with 1000 tokens each
+        let liquidity_amount = uint!(1000_U256);
+        let pool_id = setup_pool_with_liquidity(
+            &mut amm,
+            user_token,
+            validator_token,
+            liquidity_amount,
+            liquidity_amount,
+        )?;
+
+        // Execute fee swap for 100 tokens
+        let amount_in = uint!(100_U256);
+        let expected_out = (amount_in * M) / SCALE; // 100 * 9970 / 10000 = 99
+
+        let amount_out = amm.execute_fee_swap(user_token, validator_token, amount_in)?;
+
+        assert_eq!(amount_out, expected_out);
+
+        // Verify reserves updated immediately
+        let pool = amm.sload_pools(pool_id)?;
+        assert_eq!(
+            U256::from(pool.reserve_user_token),
+            liquidity_amount + amount_in
+        );
+        assert_eq!(
+            U256::from(pool.reserve_validator_token),
+            liquidity_amount - expected_out
+        );
+
+        Ok(())
+    }
+
+    /// Test execute_fee_swap fails with insufficient liquidity
+    #[test]
+    fn test_execute_fee_swap_insufficient_liquidity() -> eyre::Result<()> {
+        let (mut amm, _, user_token, validator_token) = setup_test_amm();
+
+        // Setup pool with only 100 tokens each
+        let small_liquidity = uint!(100_U256);
+        setup_pool_with_liquidity(
+            &mut amm,
+            user_token,
+            validator_token,
+            small_liquidity,
+            small_liquidity,
+        )?;
+
+        // Try to swap 200 tokens (would need ~199 output, but only 100 available)
+        let too_large_amount = uint!(200_U256);
+
+        let result = amm.execute_fee_swap(user_token, validator_token, too_large_amount);
+
+        assert!(matches!(
+            result,
+            Err(TempoPrecompileError::TIPFeeAMMError(
+                TIPFeeAMMError::InsufficientLiquidity(_)
+            ))
+        ));
+
+        Ok(())
     }
 }

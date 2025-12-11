@@ -906,6 +906,13 @@ where
             return Ok(());
         }
 
+        // Post-AllegroModerato: fees are collected and swapped immediately in collect_fee_pre_tx.
+        // No refund mechanism - users pay maxAmount upfront. Skip collect_fee_post_tx entirely.
+        if context.cfg.spec.is_allegro_moderato() {
+            return Ok(());
+        }
+
+        // Pre-AllegroModerato: use the old behavior with refunds
         // Create storage provider and fee manager
         let (journal, block) = (&mut context.journaled_state, &context.block);
         let beneficiary = block.beneficiary();
@@ -936,8 +943,11 @@ where
         _evm: &mut Self::Evm,
         _exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
     ) -> Result<(), Self::Error> {
-        // All fee handling (refunds and queuing) is done in reimburse_caller via collectFeePostTx
-        // The actual swap and transfer to validator happens in executeBlock at the end of block processing
+        // Pre-AllegroModerato: fee handling (refunds and queuing) done in reimburse_caller via collectFeePostTx.
+        // The actual swap and transfer to validator happens in executeBlock at the end of block processing.
+        //
+        // Post-AllegroModerato: fees are collected and swapped immediately in collectFeePreTx.
+        // Validators call distributeFees() to claim their accumulated fees.
         Ok(())
     }
 
