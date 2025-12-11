@@ -807,7 +807,7 @@ impl StablecoinExchange {
         mut level: TickLevel,
         taker: Address,
     ) -> Result<(u128, Option<(TickLevel, Order)>)> {
-        let mut book_handler = self.books.at(order.book_key());
+        let mut book_handler = self.books.at(book_key);
         let orderbook = book_handler.read()?;
         let price = tick_to_price(order.tick());
         let fill_amount = order.remaining();
