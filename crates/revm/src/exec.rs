@@ -117,9 +117,9 @@ where
         system_contract_address: Address,
         data: Bytes,
     ) -> Result<Self::ExecutionResult, Self::Error> {
-        self.inner
-            .ctx
-            .set_tx(TxEnv::new_system_tx_with_caller(caller, system_contract_address, data).into());
+        let mut tx = TxEnv::new_system_tx_with_caller(caller, system_contract_address, data);
+        tx.set_gas_limit(250_000_000);
+        self.inner.ctx.set_tx(tx.into());
         let mut h = TempoEvmHandler::new();
         h.inspect_run_system_call(self)
     }
