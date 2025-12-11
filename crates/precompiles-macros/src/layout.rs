@@ -240,3 +240,16 @@ fn gen_collision_checks(allocated_fields: &[LayoutField<'_>]) -> proc_macro2::To
 
     generated
 }
+
+/// Generate a `Default` implementation that calls `Self::new()`.
+///
+/// This is used when `#[contract(Default)]` is specified.
+pub(crate) fn gen_default_impl(name: &Ident) -> proc_macro2::TokenStream {
+    quote! {
+        impl ::core::default::Default for #name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+    }
+}

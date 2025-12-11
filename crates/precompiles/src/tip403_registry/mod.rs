@@ -10,7 +10,7 @@ use crate::{
 };
 use alloy::primitives::{Address, U256};
 
-#[contract]
+#[contract(Default)]
 pub struct TIP403Registry {
     policy_id_counter: u64,
     policy_data: Mapping<u64, PolicyData>,
@@ -48,12 +48,6 @@ impl PolicyData {
 
         insert_packed_value(encoded, &self.admin, A_LOC.offset_bytes, A_LOC.size)
             .expect("unable to insert 'admin'")
-    }
-}
-
-impl Default for TIP403Registry {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

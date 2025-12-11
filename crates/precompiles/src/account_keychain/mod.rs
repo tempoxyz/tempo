@@ -52,7 +52,7 @@ impl AuthorizedKey {
 }
 
 /// Account Keychain contract for managing authorized keys
-#[contract]
+#[contract(Default)]
 pub struct AccountKeychain {
     // keys[account][keyId] -> AuthorizedKey
     keys: Mapping<Address, Mapping<Address, AuthorizedKey>>,
@@ -64,12 +64,6 @@ pub struct AccountKeychain {
     // macro is refactored and has 2 independent layouts (persistent and transient).
     // If new (persistent) storage fields need to be added to the precompile, they must go above this one.
     transaction_key: Address,
-}
-
-impl Default for AccountKeychain {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl AccountKeychain {

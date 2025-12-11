@@ -27,7 +27,7 @@ struct Validator {
 }
 
 /// Validator Config precompile for managing consensus validators
-#[contract]
+#[contract(Default)]
 pub struct ValidatorConfig {
     owner: Address,
     // NOTE(rusowsky): we delete `validator_count`, as that info is available via `validators_array.len()`
@@ -36,12 +36,6 @@ pub struct ValidatorConfig {
     validator_count: u64,
     validators_array: Vec<Address>,
     validators: Mapping<Address, Validator>,
-}
-
-impl Default for ValidatorConfig {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl ValidatorConfig {

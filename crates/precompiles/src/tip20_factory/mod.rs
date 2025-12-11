@@ -15,17 +15,11 @@ use crate::{
 use alloy::primitives::{Address, U256};
 use tracing::trace;
 
-#[contract]
+#[contract(Default)]
 pub struct TIP20Factory {
     // TODO: It would be nice to have a `#[initial_value=`n`]` macro
     // to mimic setting an initial value in solidity
     token_id_counter: U256,
-}
-
-impl Default for TIP20Factory {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 // Precompile functions

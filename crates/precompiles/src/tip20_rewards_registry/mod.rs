@@ -17,17 +17,11 @@ use tempo_precompiles_macros::contract;
 
 /// TIPRewardsRegistry precompile that tracks stream end times
 /// Maps timestamp -> Vec of token addresses with streams ending at that time
-#[contract]
+#[contract(Default)]
 pub struct TIP20RewardsRegistry {
     last_updated_timestamp: u128,
     ending_streams: Mapping<u128, Vec<Address>>,
     stream_index: Mapping<B256, U256>,
-}
-
-impl Default for TIP20RewardsRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl TIP20RewardsRegistry {

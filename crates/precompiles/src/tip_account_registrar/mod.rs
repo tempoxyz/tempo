@@ -14,14 +14,8 @@ use tempo_contracts::{
     precompiles::{TIP_ACCOUNT_REGISTRAR, TIPAccountRegistrarError},
 };
 
-#[contract]
+#[contract(Default)]
 pub struct TipAccountRegistrar {}
-
-impl Default for TipAccountRegistrar {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 impl TipAccountRegistrar {
     /// Creates an instance of the precompile.

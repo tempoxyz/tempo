@@ -37,7 +37,7 @@ impl StorageKey for TokenPair {
     }
 }
 
-#[contract]
+#[contract(Default)]
 pub struct TipFeeManager {
     validator_tokens: Mapping<Address, Address>,
     user_tokens: Mapping<Address, Address>,
@@ -52,12 +52,6 @@ pub struct TipFeeManager {
     pool_in_fees_array: Mapping<TokenPair, bool>,
     validators_with_fees: Vec<Address>,
     validator_in_fees_array: Mapping<Address, bool>,
-}
-
-impl Default for TipFeeManager {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl TipFeeManager {
