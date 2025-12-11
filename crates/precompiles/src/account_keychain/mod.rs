@@ -44,37 +44,10 @@ impl AuthorizedKey {
     /// This is useful for read-only contexts (like pool validation) that don't have
     /// access to PrecompileStorageProvider but need to decode the packed struct.
     pub fn decode_from_slot(slot_value: U256) -> Self {
-        use crate::storage::packing::extract_packed_value;
-        use __packing_authorized_key::{
-            ENFORCE_LIMITS_LOC, EXPIRY_LOC, IS_REVOKED_LOC, SIGNATURE_TYPE_LOC,
-        };
+        use crate::storage::{LayoutCtx, Storable, packing::PackedSlot};
 
-        Self {
-            signature_type: extract_packed_value::<u8>(
-                slot_value,
-                SIGNATURE_TYPE_LOC.offset_bytes,
-                SIGNATURE_TYPE_LOC.size,
-            )
-            .expect("unable to extract 'signature_type'"),
-            expiry: extract_packed_value::<u64>(
-                slot_value,
-                EXPIRY_LOC.offset_bytes,
-                EXPIRY_LOC.size,
-            )
-            .expect("unable to extract 'expiry'"),
-            enforce_limits: extract_packed_value::<bool>(
-                slot_value,
-                ENFORCE_LIMITS_LOC.offset_bytes,
-                ENFORCE_LIMITS_LOC.size,
-            )
-            .expect("unable to extract 'enforce_limits'"),
-            is_revoked: extract_packed_value::<bool>(
-                slot_value,
-                IS_REVOKED_LOC.offset_bytes,
-                IS_REVOKED_LOC.size,
-            )
-            .expect("unable to extract 'is_revoked'"),
-        }
+        Self::load(&PackedSlot(slot_value), U256::ZERO, LayoutCtx::FULL)
+            .expect("unable to decode AuthorizedKey from slot")
     }
 }
 

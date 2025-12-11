@@ -101,11 +101,7 @@ impl AmmLiquidityCache {
             let pool = state_provider
                 .storage(TIP_FEE_MANAGER_ADDRESS, slot.into())?
                 .unwrap_or_default();
-            let reserve = U256::from(
-                Pool::decode_from_slot(pool)
-                    .map_err(|_| ProviderError::InvalidStorageOutput)?
-                    .reserve_validator_token,
-            );
+            let reserve = U256::from(Pool::decode_from_slot(pool).reserve_validator_token);
 
             let mut inner = self.inner.write();
             inner.cache.insert((user_id, token), reserve);
@@ -136,11 +132,8 @@ impl AmmLiquidityCache {
         for (slot, value) in storage.iter() {
             if let Some(pool) = inner.slot_to_pool.get(slot).copied() {
                 // Update AMM pools
-                let validator_reserve = U256::from(
-                    Pool::decode_from_slot(value.present_value)
-                        .expect("unable to decode 'Pool'")
-                        .reserve_validator_token,
-                );
+                let validator_reserve =
+                    U256::from(Pool::decode_from_slot(value.present_value).reserve_validator_token);
                 inner.cache.insert(pool, validator_reserve);
             } else if let Some(validator) = inner.slot_to_validator.get(slot).copied() {
                 // Update validator fee token preferences

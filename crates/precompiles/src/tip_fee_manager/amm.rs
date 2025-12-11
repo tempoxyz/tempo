@@ -50,24 +50,11 @@ pub struct PoolKey {
 
 // TODO(rusowsky): remove this and create a read-only wrapper that is callable from read-only ctx with db access
 impl Pool {
-    pub fn decode_from_slot(slot_value: U256) -> Result<Self> {
-        use crate::storage::packing::extract_packed_value;
-        use __packing_pool::{
-            RESERVE_USER_TOKEN_LOC as U_LOC, RESERVE_VALIDATOR_TOKEN_LOC as V_LOC,
-        };
+    pub fn decode_from_slot(slot_value: U256) -> Self {
+        use crate::storage::{LayoutCtx, Storable, packing::PackedSlot};
 
-        Ok(Self {
-            reserve_user_token: extract_packed_value::<u128>(
-                slot_value,
-                U_LOC.offset_bytes,
-                U_LOC.size,
-            )?,
-            reserve_validator_token: extract_packed_value::<u128>(
-                slot_value,
-                V_LOC.offset_bytes,
-                V_LOC.size,
-            )?,
-        })
+        Self::load(&PackedSlot(slot_value), U256::ZERO, LayoutCtx::FULL)
+            .expect("unable to decode Pool from slot")
     }
 }
 

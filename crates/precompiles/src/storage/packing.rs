@@ -16,8 +16,28 @@ use alloy::primitives::U256;
 
 use crate::{
     error::Result,
-    storage::{Layout, Packable},
+    storage::{Layout, Packable, StorageOps},
 };
+
+/// A helper struct to support packing elements into a single slot. Represents an
+/// in-memory storage slot value.
+///
+/// We used it when we operate on elements that are guaranteed to be packable.
+/// To avoid doing multiple storage reads/writes when packing those elements, we
+/// use this as an intermediate [`StorageOps`] implementation that can be passed to
+/// [`Storable::store`] and [`Storable::load`].
+pub struct PackedSlot(pub U256);
+
+impl StorageOps for PackedSlot {
+    fn load(&self, _slot: U256) -> Result<U256> {
+        Ok(self.0)
+    }
+
+    fn store(&mut self, _slot: U256, value: U256) -> Result<()> {
+        self.0 = value;
+        Ok(())
+    }
+}
 
 /// Location information for a packed field within a storage slot.
 #[derive(Debug, Clone, Copy)]

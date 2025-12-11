@@ -18,7 +18,7 @@ use crate::{
     error::Result,
     storage::{
         Handler, Layout, LayoutCtx, Storable, StorableType, StorageOps,
-        packing::{calc_element_loc, calc_packed_slot_count},
+        packing::{PackedSlot, calc_element_loc, calc_packed_slot_count},
         types::Slot,
     },
 };
@@ -464,25 +464,6 @@ where
     }
 
     Ok(())
-}
-
-/// A helper struct to support packing array elements into a single slot.
-///
-/// We used it when we operate on elements that are guaranteed to be packable.
-/// To avoid doing multiple storage reads/writes when packing those elements, we
-/// use this as an intermediate [`StorageOps`] implementation that can be passed to
-/// [`Storable::store`] and [`Storable::load`].
-struct PackedSlot(U256);
-
-impl StorageOps for PackedSlot {
-    fn load(&self, _slot: U256) -> Result<U256> {
-        Ok(self.0)
-    }
-
-    fn store(&mut self, _slot: U256, value: U256) -> Result<()> {
-        self.0 = value;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
