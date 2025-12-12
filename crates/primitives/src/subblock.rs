@@ -86,8 +86,7 @@ pub struct SubBlock {
 impl SubBlock {
     /// Returns the hash for the signature.
     pub fn signature_hash(&self) -> B256 {
-        let mut buf = Vec::with_capacity(self.length() + 1);
-        buf.put_u8(SUBBLOCK_SIGNATURE_HASH_MAGIC_BYTE);
+        let mut buf = vec![SUBBLOCK_SIGNATURE_HASH_MAGIC_BYTE];
         self.encode(&mut buf);
         keccak256(&buf)
     }
