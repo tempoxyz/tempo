@@ -2,7 +2,7 @@ use commonware_codec::EncodeSize;
 use commonware_runtime::{Clock, ContextCell, Metrics, Storage};
 use commonware_storage::metadata::{self, Metadata};
 use commonware_utils::sequence::U64;
-use eyre::Result;
+use eyre::{Result, WrapErr};
 use tracing::{info, instrument};
 
 use crate::{
@@ -73,11 +73,21 @@ where
 
     let current_epoch = get_current_epoch_for_migration(context, partition_prefix).await;
 
-    migrate_ceremony_metadata(context, partition_prefix, tx, current_epoch).await?;
-    migrate_pre_allegretto_epoch_metadata(context, partition_prefix, tx).await?;
-    migrate_post_allegretto_epoch_metadata(context, partition_prefix, tx).await?;
-    migrate_dkg_outcome_metadata(context, partition_prefix, tx).await?;
-    migrate_validators_metadata(context, partition_prefix, tx, current_epoch).await?;
+    migrate_ceremony_metadata(context, partition_prefix, tx, current_epoch)
+        .await
+        .wrap_err("failed to migrate ceremony metadata")?;
+    migrate_pre_allegretto_epoch_metadata(context, partition_prefix, tx)
+        .await
+        .wrap_err("failed to migrate pre-allegretto epoch metadata")?;
+    migrate_post_allegretto_epoch_metadata(context, partition_prefix, tx)
+        .await
+        .wrap_err("failed to migrate post-allegretto epoch metadata")?;
+    migrate_dkg_outcome_metadata(context, partition_prefix, tx)
+        .await
+        .wrap_err("failed to migrate DKG outcome metadata")?;
+    migrate_validators_metadata(context, partition_prefix, tx, current_epoch)
+        .await
+        .wrap_err("failed to migrate validators metadata")?;
 
     info!("migration completed");
 
