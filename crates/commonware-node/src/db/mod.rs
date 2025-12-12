@@ -220,7 +220,7 @@ where
     /// Check if a key exists in the store.
     ///
     /// This checks pending writes first, then falls back to the database.
-    pub async fn exists<K>(&self, key: K) -> bool
+    pub async fn contains_key<K>(&self, key: K) -> bool
     where
         K: AsRef<[u8]>,
     {
@@ -396,13 +396,13 @@ where
 
     /// Check if a post-allegretto epoch state exists.
     pub async fn has_post_allegretto_state(&mut self) -> bool {
-        self.exists(keys::current_epoch(HardforkRegime::PostAllegretto))
+        self.contains_key(keys::current_epoch(HardforkRegime::PostAllegretto))
             .await
     }
 
     /// Check if a pre-allegretto epoch state exists.
     pub async fn has_pre_allegretto_state(&mut self) -> bool {
-        self.exists(keys::current_epoch(HardforkRegime::PreAllegretto))
+        self.contains_key(keys::current_epoch(HardforkRegime::PreAllegretto))
             .await
     }
 
