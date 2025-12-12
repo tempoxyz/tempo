@@ -4,7 +4,7 @@ use std::{any::Any, collections::HashMap, sync::Arc};
 use alloy_primitives::keccak256;
 use async_lock::RwLock;
 use bytes::Bytes;
-use commonware_codec::{EncodeSize, Read, Write as CodecWrite};
+use commonware_codec::{EncodeSize, Read, Write};
 use commonware_runtime::{Clock, Metrics, Storage};
 use commonware_storage::metadata::Metadata;
 use commonware_utils::sequence::FixedBytes;
@@ -64,7 +64,7 @@ where
     pub async fn get<K, V>(&self, key: K) -> Result<Option<V>, eyre::Error>
     where
         K: AsRef<[u8]>,
-        V: Read<Cfg = ()> + CodecWrite + EncodeSize + Clone + Send + Sync + 'static,
+        V: Read<Cfg = ()> + Write + EncodeSize + Clone + Send + Sync + 'static,
     {
         let key_hash = key_to_b256(key.as_ref());
 
@@ -172,7 +172,7 @@ where
     pub async fn get<K, V>(&self, key: K) -> Result<Option<V>, eyre::Error>
     where
         K: AsRef<[u8]>,
-        V: Read<Cfg = ()> + CodecWrite + EncodeSize + Clone + Send + Sync + 'static,
+        V: Read<Cfg = ()> + Write + EncodeSize + Clone + Send + Sync + 'static,
     {
         let key_hash = key_to_b256(key.as_ref());
 
@@ -199,7 +199,7 @@ where
     pub fn insert<K, V>(&mut self, key: K, value: V)
     where
         K: AsRef<[u8]>,
-        V: CodecWrite + EncodeSize + Send + Sync + 'static,
+        V: Write + EncodeSize + Send + Sync + 'static,
     {
         let key_hash = key_to_b256(key.as_ref());
         self.writes
@@ -467,7 +467,7 @@ pub trait CachedValue: Any + Send + Sync {
 
 impl<T> CachedValue for T
 where
-    T: CodecWrite + EncodeSize + Any + Send + Sync,
+    T: Write + EncodeSize + Any + Send + Sync,
 {
     fn as_any(&self) -> &dyn Any {
         self
@@ -479,7 +479,7 @@ where
 }
 
 /// Serialize a value to Bytes.
-fn serialize_to_bytes<T: CodecWrite + EncodeSize>(value: &T) -> Result<Bytes, eyre::Error> {
+fn serialize_to_bytes<T: Write + EncodeSize>(value: &T) -> Result<Bytes, eyre::Error> {
     let size = value.encode_size();
     let mut buf = Vec::with_capacity(size);
     value.write(&mut buf);
