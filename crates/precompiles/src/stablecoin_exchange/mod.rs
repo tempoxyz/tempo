@@ -257,8 +257,7 @@ impl StablecoinExchange {
         amount: u128,
     ) -> Result<()> {
         if self.storage.spec().is_allegro_moderato() {
-            TIP20Token::from_address(token, self.storage)?
-                .ensure_transfer_authorized(user, self.address)?;
+            TIP20Token::from_address(token)?.ensure_transfer_authorized(user, self.address)?;
         }
 
         let user_balance = self.balance_of(user, token)?;
@@ -4295,56 +4294,57 @@ mod tests {
         use crate::tip403_registry::{ITIP403Registry, TIP403Registry};
 
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize()?;
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
 
-        let alice = Address::random();
-        let admin = Address::random();
+            let alice = Address::random();
+            let admin = Address::random();
 
-        let policy_id = {
-            let mut registry = TIP403Registry::new(exchange.storage);
-            registry.create_policy(
+            // Create a blacklist policy
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
                 admin,
                 ITIP403Registry::createPolicyCall {
                     admin,
                     policyType: ITIP403Registry::PolicyType::BLACKLIST,
                 },
-            )?
-        };
+            )?;
 
-        let mut quote = PathUSD::new(exchange.storage);
-        quote.initialize(admin)?;
-        let quote_address = quote.token.address();
-        quote.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        quote.token.grant_role_internal(alice, *TRANSFER_ROLE)?;
-        quote.token.change_transfer_policy_id(
-            admin,
-            ITIP20::changeTransferPolicyIdCall {
-                newPolicyId: policy_id,
-            },
-        )?;
+            // Setup quote token (PathUSD) with the blacklist policy
+            let mut quote = TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_role(alice, *TRANSFER_ROLE)
+                .apply()?;
 
-        TIP20Factory::new(quote.token.storage()).set_token_id_counter(U256::from(2))?;
+            quote.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
 
-        let mut base = TIP20Token::new(1, quote.token.storage());
-        base.initialize("BASE", "BASE", "USD", quote_address, admin, Address::ZERO)?;
-        base.grant_role_internal(admin, *ISSUER_ROLE)?;
-        let base_address = base.address();
-        base.change_transfer_policy_id(
-            admin,
-            ITIP20::changeTransferPolicyIdCall {
-                newPolicyId: policy_id,
-            },
-        )?;
+            // Setup base token with the blacklist policy
+            let mut base = TIP20Setup::create("BASE", "BASE", admin)
+                .with_issuer(admin)
+                .apply()?;
+            let base_address = base.address();
 
-        exchange.create_pair(base_address)?;
+            base.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
 
-        let internal_balance = MIN_ORDER_AMOUNT * 2;
-        exchange.sstore_balances(alice, base_address, internal_balance)?;
-        assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
+            exchange.create_pair(base_address)?;
 
-        {
-            let mut registry = TIP403Registry::new(exchange.storage);
+            // Set up internal balance for alice
+            let internal_balance = MIN_ORDER_AMOUNT * 2;
+            exchange.set_balance(alice, base_address, internal_balance)?;
+            assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
+
+            // Blacklist alice
             registry.modify_policy_blacklist(
                 admin,
                 ITIP403Registry::modifyPolicyBlacklistCall {
@@ -4357,25 +4357,26 @@ mod tests {
                 policyId: policy_id,
                 user: alice,
             })?);
-        }
 
-        let tick = 0i16;
-        let result = exchange.place(alice, base_address, MIN_ORDER_AMOUNT, false, tick);
+            // Attempt to place order using internal balance - should fail
+            let tick = 0i16;
+            let result = exchange.place(alice, base_address, MIN_ORDER_AMOUNT, false, tick);
 
-        assert!(
-            result.is_err(),
-            "Blacklisted user should not be able to place orders using internal balance"
-        );
-        let err = result.unwrap_err();
-        assert!(
-            matches!(
-                err,
-                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
-            ),
-            "Expected PolicyForbids error, got: {err:?}"
-        );
-        assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
+            assert!(
+                result.is_err(),
+                "Blacklisted user should not be able to place orders using internal balance"
+            );
+            let err = result.unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+                ),
+                "Expected PolicyForbids error, got: {err:?}"
+            );
+            assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
 
-        Ok(())
+            Ok(())
+        })
     }
 }
