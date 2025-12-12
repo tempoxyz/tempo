@@ -14,82 +14,62 @@ fn test_round_trip_operations_in_contract() {
         pub profile: UserProfile,
     }
 
-    let mut s = setup_storage();
+    let (mut storage, address) = setup_storage();
+    let mut layout = Layout::__new(address);
 
-    let original_block = TestBlock {
-        field1: U256::from(789),
-        field2: U256::from(987),
-        field3: 555,
-    };
-    let original_profile = UserProfile {
-        owner: test_address(99),
-        active: true,
-        balance: U256::from(12345),
-    };
+    StorageCtx::enter(&mut storage, || {
+        let original_block = TestBlock {
+            field1: U256::from(789),
+            field2: U256::from(987),
+            field3: 555,
+        };
+        let original_profile = UserProfile {
+            owner: test_address(99),
+            active: true,
+            balance: U256::from(12345),
+        };
 
-    // Round 1: Store and load
-    {
-        let mut layout = Layout::_new(s.address, s.storage());
-        layout.sstore_block(original_block.clone()).unwrap();
-        layout.sstore_profile(original_profile.clone()).unwrap();
-    }
+        // Round 1: Store and load
+        layout.block.write(original_block.clone()).unwrap();
+        layout.profile.write(original_profile.clone()).unwrap();
+        assert_eq!(layout.block.read().unwrap(), original_block);
+        assert_eq!(layout.profile.read().unwrap(), original_profile);
 
-    {
-        let mut layout = Layout::_new(s.address, s.storage());
-        assert_eq!(layout.sload_block().unwrap(), original_block);
-        assert_eq!(layout.sload_profile().unwrap(), original_profile);
-    }
+        // Round 2: Delete and verify defaults
+        layout.block.delete().unwrap();
+        layout.profile.delete().unwrap();
 
-    // Round 2: Delete and verify defaults
-    {
-        let mut layout = Layout::_new(s.address, s.storage());
-        layout.clear_block().unwrap();
-        layout.clear_profile().unwrap();
-    }
+        assert_eq!(layout.block.read().unwrap(), TestBlock::default());
+        assert_eq!(layout.profile.read().unwrap(), UserProfile::default());
 
-    {
-        let mut layout = Layout::_new(s.address, s.storage());
-        assert_eq!(
-            layout.sload_block().unwrap(),
-            TestBlock {
-                field1: U256::ZERO,
-                field2: U256::ZERO,
-                field3: 0,
-            }
-        );
-        assert_eq!(
-            layout.sload_profile().unwrap(),
-            UserProfile {
-                owner: Address::ZERO,
-                active: false,
-                balance: U256::ZERO,
-            }
-        );
-    }
+        // Round 3: Store new values
+        let new_block = TestBlock {
+            field1: U256::from(111),
+            field2: U256::from(222),
+            field3: 333,
+        };
+        let new_profile = UserProfile {
+            owner: test_address(88),
+            active: false,
+            balance: U256::from(54321),
+        };
 
-    // Round 3: Store new values
-    let new_block = TestBlock {
-        field1: U256::from(111),
-        field2: U256::from(222),
-        field3: 333,
-    };
-    let new_profile = UserProfile {
-        owner: test_address(88),
-        active: false,
-        balance: U256::from(54321),
-    };
+        layout.block.write(new_block.clone()).unwrap();
+        layout.profile.write(new_profile.clone()).unwrap();
 
-    {
-        let mut layout = Layout::_new(s.address, s.storage());
-        layout.sstore_block(new_block.clone()).unwrap();
-        layout.sstore_profile(new_profile.clone()).unwrap();
-    }
+        assert_eq!(layout.block.read().unwrap(), new_block);
+        assert_eq!(layout.profile.read().unwrap(), new_profile);
 
-    {
-        let mut layout = Layout::_new(s.address, s.storage());
-        assert_eq!(layout.sload_block().unwrap(), new_block);
-        assert_eq!(layout.sload_profile().unwrap(), new_profile);
-    }
+        // Round 4: Individual field operations
+        let modified_owner = test_address(77);
+        layout.profile.owner.write(modified_owner).unwrap();
+        layout.profile.active.delete().unwrap();
+
+        // Verify individual field reads
+        assert_eq!(layout.profile.owner.read().unwrap(), modified_owner);
+        assert_eq!(layout.profile.active.read().unwrap(), bool::default());
+        assert_eq!(layout.profile.balance.read().unwrap(), new_profile.balance);
+    });
 }
 
 proptest! {
@@ -109,66 +89,125 @@ proptest! {
             pub profile: UserProfile,
         }
 
-        let mut s = setup_storage();
+        let (mut storage, address) = setup_storage();
+        let mut layout = Layout::__new(address);
 
-        // Round 1: Store and load
-        {
-            let mut layout = Layout::_new(s.address, s.storage());
-            layout.sstore_block(block_val.clone())?;
-            layout.sstore_profile(profile_val.clone())?;
-        }
+        StorageCtx::enter(&mut storage, || -> Result<(), TestCaseError> {
+            // Round 1: Store and load
+            layout.block.write(block_val.clone())?;
+            layout.profile.write(profile_val.clone())?;
 
-        {
-            let mut layout = Layout::_new(s.address, s.storage());
-            prop_assert_eq!(layout.sload_block()?, block_val);
-            prop_assert_eq!(layout.sload_profile()?, profile_val);
-        }
+            prop_assert_eq!(layout.block.read()?, block_val);
+            prop_assert_eq!(layout.profile.read()?, profile_val);
 
-        // Round 2: Delete and verify defaults
-        {
-            let mut layout = Layout::_new(s.address, s.storage());
-            layout.clear_block()?;
-            layout.clear_profile()?;
-        }
+            // Round 2: Delete and verify defaults
+            layout.block.delete()?;
+            layout.profile.delete()?;
 
-        {
-            let mut layout = Layout::_new(s.address, s.storage());
-            let default_block = TestBlock {
-                field1: U256::ZERO,
-                field2: U256::ZERO,
-                field3: 0,
+            prop_assert_eq!(layout.block.read()?, TestBlock::default());
+            prop_assert_eq!(layout.profile.read()?, UserProfile::default());
+
+            // Round 3: Store new values (different from original)
+            let new_block = TestBlock {
+                field1: U256::from(111),
+                field2: U256::from(222),
+                field3: 333,
             };
-            let default_profile = UserProfile {
-                owner: Address::ZERO,
+            let new_profile = UserProfile {
+                owner: test_address(88),
                 active: false,
-                balance: U256::ZERO,
+                balance: U256::from(54321),
             };
-            prop_assert_eq!(layout.sload_block()?, default_block);
-            prop_assert_eq!(layout.sload_profile()?, default_profile);
+
+            layout.block.write(new_block.clone())?;
+            layout.profile.write(new_profile.clone())?;
+            prop_assert_eq!(layout.block.read()?, new_block);
+
+            // Round 4: Individual field operations
+            let expected_balance = new_profile.balance;
+            prop_assert_eq!(layout.profile.read()?, new_profile);
+            let modified_owner = test_address(77);
+            layout.profile.owner.write(modified_owner)?;
+            layout.profile.active.delete()?;
+
+            // Verify individual field reads
+            prop_assert_eq!(layout.profile.owner.read()?, modified_owner);
+            prop_assert_eq!(layout.profile.active.read()?, bool::default());
+            prop_assert_eq!(layout.profile.balance.read()?, expected_balance);
+
+            Ok(())
+        })?;
+    }
+
+    /// Roundtrip test for Vec<MultiSlotStruct> with inner packing using push/pop
+    #[test]
+    #[allow(clippy::redundant_clone)]
+    fn proptest_vec_multi_slot_roundtrip(
+        two_slots in prop::collection::vec(arb_packed_two_slot(), 1..5),
+        three_slots in prop::collection::vec(arb_packed_three_slot(), 1..5),
+    ) {
+        #[contract]
+        pub struct Layout {
+            #[slot(100)]
+            pub vec_two: Vec<PackedTwoSlot>,
+            #[slot(200)]
+            pub vec_three: Vec<PackedThreeSlot>,
         }
 
-        // Round 3: Store new values (different from original)
-        let new_block = TestBlock {
-            field1: U256::from(111),
-            field2: U256::from(222),
-            field3: 333,
-        };
-        let new_profile = UserProfile {
-            owner: test_address(88),
-            active: false,
-            balance: U256::from(54321),
-        };
+        let (mut storage, address) = setup_storage();
+        let mut layout = Layout::__new(address);
 
-        {
-            let mut layout = Layout::_new(s.address, s.storage());
-            layout.sstore_block(new_block.clone())?;
-            layout.sstore_profile(new_profile.clone())?;
-        }
+        StorageCtx::enter(&mut storage, || -> Result<(), TestCaseError> {
+            // Round 1: Write proptest values
+            layout.vec_two.write(two_slots.clone())?;
+            layout.vec_three.write(three_slots.clone())?;
 
-        {
-            let mut layout = Layout::_new(s.address, s.storage());
-            prop_assert_eq!(layout.sload_block()?, new_block);
-            prop_assert_eq!(layout.sload_profile()?, new_profile);
-        }
+            prop_assert_eq!(layout.vec_two.len()?, two_slots.len());
+            prop_assert_eq!(layout.vec_three.len()?, three_slots.len());
+            prop_assert_eq!(layout.vec_two.read()?, two_slots.clone());
+            prop_assert_eq!(layout.vec_three.read()?, three_slots.clone());
+
+            // Round 2: Push hardcoded values
+            let extra_two = PackedTwoSlot {
+                value: U256::random(),
+                timestamp: 1234,
+                nonce: 56,
+                owner: Address::random(),
+            };
+            let extra_three = PackedThreeSlot {
+                value: U256::random(),
+                timestamp: 111,
+                start_time: 222,
+                end_time: 333,
+                nonce: 444,
+                owner: Address::random(),
+                active: (U256::random() % U256::from(2)).is_zero(),
+            };
+
+            let two_len_pre_push = layout.vec_two.len()?;
+            let three_len_pre_push = layout.vec_three.len()?;
+            layout.vec_two.push(extra_two.clone())?;
+            layout.vec_three.push(extra_three.clone())?;
+
+            // Verify pushed values
+            prop_assert_eq!(layout.vec_two.len()?, two_slots.len() + 1);
+            prop_assert_eq!(layout.vec_three.len()?, three_slots.len() + 1);
+            prop_assert_eq!(layout.vec_two.at(two_len_pre_push).read()?, extra_two.clone());
+            prop_assert_eq!(layout.vec_three.at(three_len_pre_push).read()?, extra_three.clone());
+
+            // Round 3: Pop hardcoded values (delete last element, decrement length)
+            let pop_two = layout.vec_two.pop()?;
+            let pop_three = layout.vec_three.pop()?;
+            prop_assert_eq!(pop_two, Some(extra_two));
+            prop_assert_eq!(pop_three, Some(extra_three));
+
+            // Verify we're back to proptest values
+            prop_assert_eq!(layout.vec_two.len()?, two_slots.len());
+            prop_assert_eq!(layout.vec_three.len()?, three_slots.len());
+            prop_assert_eq!(layout.vec_two.read()?, two_slots);
+            prop_assert_eq!(layout.vec_three.read()?, three_slots);
+
+            Ok(())
+        })?;
     }
 }

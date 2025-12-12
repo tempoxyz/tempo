@@ -371,7 +371,7 @@ where
             .add_ons_handle
             .beacon_engine_handle
             .new_payload(TempoExecutionData {
-                block,
+                block: Arc::new(block),
                 // can be omitted for finalized blocks
                 validator_set: None,
             })
@@ -418,7 +418,7 @@ where
                 .add_ons_handle
                 .beacon_engine_handle
                 .new_payload(TempoExecutionData {
-                    block: block.into_inner(),
+                    block: Arc::new(block.into_inner()),
                     // can be omitted for finalized blocks
                     validator_set: None,
                 })
