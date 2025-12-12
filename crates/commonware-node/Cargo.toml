@@ -61,3 +61,4 @@ reth-provider.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "sync"] }
 tracing.workspace = true
+pin-project = "1.1.10"

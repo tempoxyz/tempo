@@ -24,7 +24,6 @@ use commonware_storage::metadata::Metadata;
 use commonware_utils::{
     Acknowledgement,
     acknowledgement::Exact,
-    futures::OptionFuture,
     quorum,
     sequence::U64,
     set::{Ordered, OrderedAssociated},
@@ -57,6 +56,7 @@ use crate::{
         },
     },
     epoch,
+    utils::OptionFuture,
 };
 
 mod post_allegretto;
@@ -343,7 +343,9 @@ where
                 }
             }
 
-            select!(
+            // NOTE: Can't use a commonware select! here: the double-fusing of
+            // the notarized block stream causes it to hot-loop.
+            futures::select_biased!(
 
             finalized_block = &mut self.pending_gap => {
                 let PendingFinalizedGap { .. } = self
@@ -527,7 +529,7 @@ where
             round.epoch(),
         );
 
-        match ceremony.new_finalize(parent.1) {
+        match ceremony.finalize(parent.1) {
             Ok(Ok(outcome) | Err(outcome)) => response
                 .send(outcome.to_public_outcome())
                 .map_err(|_| eyre!("failed returning outcome because requester went away")),
@@ -672,7 +674,7 @@ where
             if let Some(pending_requests) =
                 self.pending_dkg_outcome_requests.remove(&pending_digest)
             {
-                match ceremony.new_finalize(pending_digest) {
+                match ceremony.finalize(pending_digest) {
                     Ok(Ok(private) | Err(private)) => {
                         let public = private.to_public_outcome();
                         for response in pending_requests {

@@ -10,6 +10,7 @@ pub mod consensus;
 pub(crate) mod dkg;
 pub(crate) mod epoch;
 pub mod metrics;
+pub(crate) mod utils;
 
 pub(crate) mod subblocks;
 

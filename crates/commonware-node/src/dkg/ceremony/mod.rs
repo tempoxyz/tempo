@@ -658,7 +658,7 @@ where
     /// If the DKG ceremony did not contain all blocks leading up to the target,
     /// the missing ... will be in error position.
     #[instrument(skip_all, fields(epoch = self.epoch()))]
-    pub(super) fn new_finalize(
+    pub(super) fn finalize(
         &self,
         digest: Digest,
     ) -> Result<Result<PrivateOutcome, PrivateOutcome>, HasHoles> {
