@@ -4314,150 +4314,117 @@ mod tests {
 
     #[test]
     fn test_place_order_immediately_active() -> eyre::Result<()> {
-        // Test that orders are immediately active after place() - no execute_block needed
-        // Post Allegro-Moderato hardfork behavior
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize()?;
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
 
-        let alice = Address::random();
-        let admin = Address::random();
-        let min_order_amount = MIN_ORDER_AMOUNT;
-        let tick = 100i16;
+            let admin = Address::random();
+            let alice = Address::random();
+            let min_order_amount = MIN_ORDER_AMOUNT;
+            let tick = 100i16;
 
-        let price = orderbook::tick_to_price(tick);
-        let expected_escrow = (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let price = orderbook::tick_to_price(tick);
+            let expected_escrow =
+                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
 
-        // Initialize quote token (PathUSD)
-        let mut quote = PathUSD::new(exchange.storage);
-        quote.initialize(admin)?;
-        let quote_token = quote.token.address();
-        quote.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        quote.token.grant_role_internal(alice, *TRANSFER_ROLE)?;
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_role(alice, *TRANSFER_ROLE)
+                .with_mint(alice, U256::from(expected_escrow))
+                .with_approval(alice, exchange.address, U256::from(expected_escrow))
+                .apply()?;
 
-        // Set token_id_counter to 2 so that token id 1 is considered valid
-        TIP20Factory::new(quote.token.storage()).set_token_id_counter(U256::from(2))?;
+            let base = TIP20Setup::create("BASE", "BASE", admin).apply()?;
+            let base_token = base.address();
+            let quote_token = base.quote_token()?;
 
-        // Initialize base token
-        let mut base = TIP20Token::new(1, quote.token.storage());
-        base.initialize("BASE", "BASE", "USD", quote_token, admin, Address::ZERO)?;
-        base.grant_role_internal(admin, *ISSUER_ROLE)?;
-        let base_token = base.address();
+            exchange.create_pair(base_token)?;
 
-        // Mint and approve tokens
-        mint_and_approve_quote(
-            exchange.storage,
-            admin,
-            alice,
-            exchange.address,
-            expected_escrow,
-        );
+            let order_id = exchange.place(alice, base_token, min_order_amount, true, tick)?;
 
-        // Create the pair before placing orders
-        exchange.create_pair(base_token)?;
+            assert_eq!(order_id, 1);
 
-        // Place the bid order
-        let order_id = exchange.place(alice, base_token, min_order_amount, true, tick)?;
+            let book_key = compute_book_key(base_token, quote_token);
+            let book_handler = exchange.books.at(book_key);
+            let level = book_handler.get_tick_level_handler(tick, true).read()?;
+            assert_eq!(level.head, order_id, "Order should be head of tick level");
+            assert_eq!(level.tail, order_id, "Order should be tail of tick level");
+            assert_eq!(
+                level.total_liquidity, min_order_amount,
+                "Tick level should have order's liquidity"
+            );
 
-        assert_eq!(order_id, 1);
+            let orderbook = book_handler.read()?;
+            assert_eq!(
+                orderbook.best_bid_tick, tick,
+                "Best bid tick should be updated"
+            );
 
-        // Order should be immediately active - linked into the orderbook
-        let book_key = compute_book_key(base_token, quote_token);
-        let level = Orderbook::read_tick_level(&mut exchange, book_key, true, tick)?;
-        assert_eq!(level.head, order_id, "Order should be head of tick level");
-        assert_eq!(level.tail, order_id, "Order should be tail of tick level");
-        assert_eq!(
-            level.total_liquidity, min_order_amount,
-            "Tick level should have order's liquidity"
-        );
-
-        // Best bid tick should be updated
-        let orderbook = exchange.sload_books(book_key)?;
-        assert_eq!(
-            orderbook.best_bid_tick, tick,
-            "Best bid tick should be updated"
-        );
-
-        Ok(())
+            Ok(())
+        })
     }
 
     #[test]
     fn test_place_flip_order_immediately_active() -> eyre::Result<()> {
-        // Test that flip orders are immediately active after place_flip() - no execute_block needed
-        // Post Allegro-Moderato hardfork behavior
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize()?;
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
 
-        let alice = Address::random();
-        let admin = Address::random();
-        let min_order_amount = MIN_ORDER_AMOUNT;
-        let tick = 100i16;
-        let flip_tick = 200i16;
+            let admin = Address::random();
+            let alice = Address::random();
+            let min_order_amount = MIN_ORDER_AMOUNT;
+            let tick = 100i16;
+            let flip_tick = 200i16;
 
-        let price = orderbook::tick_to_price(tick);
-        let expected_escrow = (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let price = orderbook::tick_to_price(tick);
+            let expected_escrow =
+                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
 
-        // Initialize quote token (PathUSD)
-        let mut quote = PathUSD::new(exchange.storage);
-        quote.initialize(admin)?;
-        let quote_token = quote.token.address();
-        quote.token.grant_role_internal(admin, *ISSUER_ROLE)?;
-        quote.token.grant_role_internal(alice, *TRANSFER_ROLE)?;
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_role(alice, *TRANSFER_ROLE)
+                .with_mint(alice, U256::from(expected_escrow))
+                .with_approval(alice, exchange.address, U256::from(expected_escrow))
+                .apply()?;
 
-        // Set token_id_counter to 2 so that token id 1 is considered valid
-        TIP20Factory::new(quote.token.storage()).set_token_id_counter(U256::from(2))?;
+            let base = TIP20Setup::create("BASE", "BASE", admin).apply()?;
+            let base_token = base.address();
+            let quote_token = base.quote_token()?;
 
-        // Initialize base token
-        let mut base = TIP20Token::new(1, quote.token.storage());
-        base.initialize("BASE", "BASE", "USD", quote_token, admin, Address::ZERO)?;
-        base.grant_role_internal(admin, *ISSUER_ROLE)?;
-        let base_token = base.address();
+            exchange.create_pair(base_token)?;
 
-        // Mint and approve tokens
-        mint_and_approve_quote(
-            exchange.storage,
-            admin,
-            alice,
-            exchange.address,
-            expected_escrow,
-        );
+            let order_id =
+                exchange.place_flip(alice, base_token, min_order_amount, true, tick, flip_tick)?;
 
-        // Create the pair before placing orders
-        exchange.create_pair(base_token)?;
+            assert_eq!(order_id, 1);
 
-        // Place the flip bid order
-        let order_id =
-            exchange.place_flip(alice, base_token, min_order_amount, true, tick, flip_tick)?;
+            let book_key = compute_book_key(base_token, quote_token);
+            let book_handler = exchange.books.at(book_key);
+            let level = book_handler.get_tick_level_handler(tick, true).read()?;
+            assert_eq!(level.head, order_id, "Order should be head of tick level");
+            assert_eq!(level.tail, order_id, "Order should be tail of tick level");
+            assert_eq!(
+                level.total_liquidity, min_order_amount,
+                "Tick level should have order's liquidity"
+            );
 
-        assert_eq!(order_id, 1);
+            let orderbook = book_handler.read()?;
+            assert_eq!(
+                orderbook.best_bid_tick, tick,
+                "Best bid tick should be updated"
+            );
 
-        // Order should be immediately active - linked into the orderbook
-        let book_key = compute_book_key(base_token, quote_token);
-        let level = Orderbook::read_tick_level(&mut exchange, book_key, true, tick)?;
-        assert_eq!(level.head, order_id, "Order should be head of tick level");
-        assert_eq!(level.tail, order_id, "Order should be tail of tick level");
-        assert_eq!(
-            level.total_liquidity, min_order_amount,
-            "Tick level should have order's liquidity"
-        );
+            let stored_order = exchange.orders.at(order_id).read()?;
+            assert!(stored_order.is_flip(), "Order should be a flip order");
+            assert_eq!(
+                stored_order.flip_tick(),
+                flip_tick,
+                "Flip tick should match"
+            );
 
-        // Best bid tick should be updated
-        let orderbook = exchange.sload_books(book_key)?;
-        assert_eq!(
-            orderbook.best_bid_tick, tick,
-            "Best bid tick should be updated"
-        );
-
-        // Verify the order has flip properties
-        let stored_order = exchange.sload_orders(order_id)?;
-        assert!(stored_order.is_flip(), "Order should be a flip order");
-        assert_eq!(
-            stored_order.flip_tick(),
-            flip_tick,
-            "Flip tick should match"
-        );
-
-        Ok(())
+            Ok(())
+        })
     }
 }
