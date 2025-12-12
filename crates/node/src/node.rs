@@ -61,7 +61,7 @@ pub struct TempoNodeArgs {
 
     /// Enable state provider metrics for the payload builder.
     #[arg(long = "builder.state-provider-metrics", default_value_t = false)]
-    pub state_provider_metrics: bool,
+    pub builder_state_provider_metrics: bool,
 }
 
 impl TempoNodeArgs {
@@ -75,7 +75,7 @@ impl TempoNodeArgs {
     /// Returns a [`TempoPayloadBuilderBuilder`] configured from these args.
     pub fn payload_builder_builder(&self) -> TempoPayloadBuilderBuilder {
         TempoPayloadBuilderBuilder {
-            state_provider_metrics: self.state_provider_metrics,
+            state_provider_metrics: self.builder_state_provider_metrics,
         }
     }
 }
