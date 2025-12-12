@@ -358,7 +358,7 @@ where
                 //
                 // Stop? Restart?
                 if let Some(block) = finalized_block {
-                    ceremony.add_finalized_block(block);
+                    ceremony.add_finalized_block(block).await;
                 }
             },
 

@@ -156,7 +156,7 @@ where
 
             // Finalizations happen in strictly sequential order. This means we
             // are guaranteed to have observed the parent.
-            let dkg_outcome = ceremony.new_finalize(block.parent_digest()).expect(
+            let dkg_outcome = ceremony.finalize(block.parent_digest()).expect(
                 "finalizing the ceremony on the boundary using the block's \
                     parent must work - we have observed all finalized blocks up \
                     until here, so we must have observed its parent, too",
@@ -312,8 +312,7 @@ where
             }
         }
 
-        // Emits event on error.
-        let _ = ceremony.add_finalized_block(block.clone());
+        ceremony.add_finalized_block(block.clone()).await;
     }
 
     #[instrument(skip_all, fields(epoch = self.pre_allegretto_metadatas.current_epoch_state().unwrap().epoch()))]

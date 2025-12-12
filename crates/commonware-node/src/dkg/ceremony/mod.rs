@@ -287,8 +287,26 @@ where
         skip_all,
         fields(epoch = self.config.epoch, block.height = block.height()),
     )]
-    pub(super) fn add_finalized_block(&mut self, block: Block) {
-        self.tree_of_dealings.add_finalized(block);
+    pub(super) async fn add_finalized_block(&mut self, block: Block) {
+        if let Some(dealer) = self.tree_of_dealings.add_finalized(block)
+            && self.config.me.public_key() == dealer
+            && let Some(dealer_me) = &mut self.dealer_me
+        {
+            let _ = dealer_me.outcome.take();
+            self.ceremony_metadata
+                .lock()
+                .await
+                .upsert_sync(self.epoch().into(), |info| {
+                    let _ = info.dealing_outcome.take();
+                })
+                .await
+                .expect("must persist deal outcome");
+
+            info!(
+                "found own dealing in a block; removed it from ceremony to \
+                not include it again"
+            );
+        }
     }
 
     #[instrument(

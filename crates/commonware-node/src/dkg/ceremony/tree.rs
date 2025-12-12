@@ -78,14 +78,26 @@ impl TreeOfDealings {
         }
     }
 
+    /// Adds a finalized block to the tree.
+    ///
+    /// Returns the dealer of the dealing, if the block contained one.
     #[instrument(
         skip_all,
         fields(block.height = block.height(), block.digest = %block.digest()),
     )]
-    pub(super) fn add_finalized(&mut self, block: crate::consensus::block::Block) {
+    pub(super) fn add_finalized(
+        &mut self,
+        block: crate::consensus::block::Block,
+    ) -> Option<PublicKey> {
         let block_digest = block.digest();
         let block_height = block.height();
         let block_epoch = commonware_consensus::utils::epoch(self.epoch_length, block_height);
+
+        let reduced_block = ReducedBlock::from_block(block);
+        let dealing = reduced_block
+            .dealing
+            .clone()
+            .map(|dealing| dealing.dealer().clone());
 
         // Ensure the outcome is for the current round.
         if block_epoch != self.epoch {
@@ -94,21 +106,21 @@ impl TreeOfDealings {
                 but tree is tracking dealings in epoch `{}`; ignoring",
                 self.epoch,
             );
-            return;
+            return dealing;
         }
 
-        if self.finalized_by_height.contains_key(&block.height()) {
+        if self.finalized_by_height.contains_key(&block_height) {
             info!("tree already contains block at its height; ignoring");
-            return;
+            return dealing;
         }
-
-        let reduced_block = ReducedBlock::from_block(block);
 
         self.finalized_by_height.insert(block_height, reduced_block);
         self.finalized_by_digest.insert(block_digest, block_height);
 
         self.notarized_by_digest
             .retain(|_, block| block.height > block_height);
+
+        dealing
     }
 
     #[instrument(
