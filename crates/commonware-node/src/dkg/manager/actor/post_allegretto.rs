@@ -126,7 +126,7 @@ where
                     public: initial_dkg_outcome.public,
                     share: self.config.initial_share.clone(),
                 },
-                validator_state: initial_validator_state.clone(),
+                validator_state: initial_validator_state,
             });
         }
         Ok(())

@@ -182,6 +182,9 @@ where
             return;
         }
 
+        self.register_previous_epoch_state(&mut tx).await;
+        self.register_current_epoch_state(&mut tx).await;
+
         let (mux, mut ceremony_mux) = mux::Muxer::new(
             self.context.with_label("ceremony_mux"),
             sender,
@@ -189,9 +192,6 @@ where
             self.config.mailbox_size,
         );
         mux.start();
-
-        self.register_previous_epoch_state(&mut tx).await;
-        self.register_current_epoch_state(&mut tx).await;
 
         let mut ceremony = Some(
             self.start_ceremony_for_current_epoch_state(&mut tx, &mut ceremony_mux)
