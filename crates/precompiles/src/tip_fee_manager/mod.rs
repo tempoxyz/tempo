@@ -97,7 +97,7 @@ impl TipFeeManager {
         // Validate that the token is a valid deployed TIP20
         if self.storage.spec().is_allegro_moderato() {
             // Post-AllegroModerato: use factory's is_tip20 which checks both prefix and counter
-            if !TIP20Factory::new(self.storage).is_tip20(call.token)? {
+            if !TIP20Factory::new().is_tip20(call.token)? {
                 return Err(FeeManagerError::invalid_token().into());
             }
         } else if !is_tip20_prefix(call.token) {
@@ -137,7 +137,7 @@ impl TipFeeManager {
         // Validate that the token is a valid deployed TIP20
         if self.storage.spec().is_allegro_moderato() {
             // Post-AllegroModerato: use factory's is_tip20 which checks both prefix and counter
-            if !TIP20Factory::new(self.storage).is_tip20(call.token)? {
+            if !TIP20Factory::new().is_tip20(call.token)? {
                 return Err(FeeManagerError::invalid_token().into());
             }
         } else if !is_tip20_prefix(call.token) {
