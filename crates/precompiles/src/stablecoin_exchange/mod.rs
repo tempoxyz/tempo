@@ -20,11 +20,14 @@ use crate::{
         MIN_PRICE_PRE_MODERATO, compute_book_key,
     },
     storage::{Mapping, PrecompileStorageProvider, Slot, VecSlotExt},
-    tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
+    tip20::{
+        ITIP20, TIP20Token, address_to_token_id_unchecked, is_tip20_prefix, validate_usd_currency,
+    },
     tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
+use tempo_contracts::precompiles::ITIP20Factory;
 use tempo_precompiles_macros::contract;
 
 /// Minimum order size of $10 USD
@@ -556,7 +559,7 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
             Order::new_ask(order_id, sender, book_key, amount, tick)
         };
 
-        // Post Allegro Moderato, commit the order to the book immediately rather than storing in a pending state until end of block execution
+        //Post Allegro Moderato, commit the order to the book immediately rather than storing in a pending state until end of block execution
         if self.storage.spec().is_allegro_moderato() {
             self.commit_order_to_book(order, book)?;
         } else {
@@ -586,6 +589,9 @@ impl<'a, S: PrecompileStorageProvider> StablecoinExchange<'a, S> {
     /// Commits an order to the specified orderbook, updating tick bits, best bid/ask, and total liquidity
     fn commit_order_to_book(&mut self, order: Order, orderbook: Orderbook) -> Result<()> {
         let order_id = order.order_id();
+
+        // Store the order
+        self.sstore_orders(order_id, order.clone())?;
 
         let mut level =
             Orderbook::read_tick_level(self, order.book_key(), order.is_bid(), order.tick())?;
@@ -1724,7 +1730,7 @@ mod tests {
         error::TempoPrecompileError,
         path_usd::TRANSFER_ROLE,
         storage::{ContractStorage, hashmap::HashMapStorageProvider},
-        tip20::ISSUER_ROLE,
+        tip20::{ISSUER_ROLE, tests::initialize_path_usd},
     };
 
     use super::*;
@@ -1773,36 +1779,48 @@ mod tests {
             .unwrap();
     }
 
-    fn setup_test_tokens<S: PrecompileStorageProvider>(
-        storage: &mut S,
+    fn setup_test_tokens(
+        storage: &mut HashMapStorageProvider,
         admin: Address,
         user: Address,
         exchange_address: Address,
         amount: u128,
     ) -> (Address, Address) {
-        // Initialize quote token (PathUSD)
-        let mut quote = PathUSD::new(storage);
-        quote
-            .initialize(admin)
-            .expect("Quote token initialization failed");
-        let quote_address = quote.token.address();
+        // Initialize PathUSD and factory properly (handles hardfork differences)
+        initialize_path_usd(storage, admin).expect("PathUSD initialization failed");
+        let quote_address = PATH_USD_ADDRESS;
 
         // Grant issuer role to admin for quote token
+        let mut quote = PathUSD::new(storage);
         quote
             .token
             .grant_role_internal(admin, *ISSUER_ROLE)
             .unwrap();
 
-        // Initialize base token
-        let mut base = TIP20Token::new(1, quote.token.storage());
-        base.initialize("BASE", "BASE", "USD", quote_address, admin, Address::ZERO)
-            .expect("Base token initialization failed");
+        // Create base token via factory (properly registers it)
+        let mut factory = TIP20Factory::new(storage);
+        let base_address = factory
+            .create_token(
+                admin,
+                ITIP20Factory::createTokenCall {
+                    name: "BASE".to_string(),
+                    symbol: "BASE".to_string(),
+                    currency: "USD".to_string(),
+                    quoteToken: quote_address,
+                    admin,
+                },
+            )
+            .expect("Base token creation failed");
+
+        let token_id = address_to_token_id_unchecked(base_address);
+
+        // Grant issuer role to admin for base token
+        let mut base = TIP20Token::new(token_id, storage);
         base.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
-        let base_address = base.address();
 
         // Mint and approve tokens for user
         mint_and_approve_quote(storage, admin, user, exchange_address, amount);
-        mint_and_approve_token(storage, 1, admin, user, exchange_address, amount);
+        mint_and_approve_token(storage, token_id, admin, user, exchange_address, amount);
 
         (base_address, quote_address)
     }
