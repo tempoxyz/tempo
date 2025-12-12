@@ -342,8 +342,10 @@ where
 mod tests {
     use super::*;
     use crate::tip20::{ITIP20, TIP20Token};
-    use alloy::primitives::{Address, Bytes, U256};
-    use alloy::sol_types::SolCall;
+    use alloy::{
+        primitives::{Address, Bytes, U256},
+        sol_types::SolCall,
+    };
     use alloy_evm::{
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         precompiles::{Precompile as AlloyEvmPrecompile, PrecompileInput},
@@ -426,7 +428,7 @@ mod tests {
                 let decoded = StaticCallNotAllowed::abi_decode(&output.bytes).unwrap();
                 assert!(matches!(decoded, StaticCallNotAllowed {}));
             }
-            Err(e) => panic!("expected reverted output, got error: {:?}", e),
+            Err(e) => panic!("expected reverted output, got error: {e:?}"),
         }
     }
 }
