@@ -1,6 +1,6 @@
 use eyre::WrapErr;
-use tracing::debug;
 use std::{any::Any, collections::HashMap, sync::Arc};
+use tracing::debug;
 
 use alloy_primitives::keccak256;
 use async_lock::RwLock;

@@ -23,7 +23,7 @@ use commonware_utils::{
     union,
 };
 
-use eyre::{OptionExt as _, eyre};
+use eyre::{OptionExt as _, WrapErr as _, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
@@ -102,9 +102,12 @@ where
         {
             let mut tx = db.read_write();
             super::migrate::maybe_migrate_to_db(&context, &config.partition_prefix, &mut tx)
-                .await?;
+                .await
+                .wrap_err("database migration failed")?;
             tx.set_node_version(env!("CARGO_PKG_VERSION").to_string());
-            tx.commit().await?;
+            tx.commit()
+                .await
+                .wrap_err("failed to commit init transaction")?;
         }
 
         let syncing_players = Gauge::default();
