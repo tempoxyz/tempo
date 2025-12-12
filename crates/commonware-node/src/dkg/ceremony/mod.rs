@@ -897,7 +897,7 @@ struct Dealer {
 ///
 /// Called private because it potentially contains the private key share.
 pub(super) struct PrivateOutcome {
-    /// The epoch for which this outcome is contructed. Usually ceremony.epoch + 1.
+    /// The epoch for which this outcome is constructed. Usually ceremony.epoch + 1.
     pub(super) epoch: Epoch,
 
     /// The participants of the new epoch. If successful, this will the players
@@ -947,7 +947,7 @@ impl Role {
 
     pub(super) fn to_public_polynomial(&self) -> Public<MinSig> {
         match self {
-            Role::Signer { public, .. } | Role::Verifier { public } => public.clone(),
+            Self::Signer { public, .. } | Self::Verifier { public } => public.clone(),
         }
     }
 }

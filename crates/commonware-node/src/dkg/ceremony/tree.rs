@@ -159,7 +159,11 @@ impl TreeOfDealings {
     ///
     /// If the ceremony could not be finalized, the digest of the block for
     /// which there is a gap (as well )
-    /// highest finalized block will be returned ein Error-position.
+    /// highest finalized block will be returned in Error-position.
+    #[expect(
+        clippy::type_complexity,
+        reason = "closely tracks the result of arbiter; should rework this when updating to commonware's dkg2"
+    )]
     pub(super) fn finalize_up_to_digest(
         &self,
         digest: Digest,
@@ -204,7 +208,7 @@ impl TreeOfDealings {
                     match self.notarized_by_digest.get(&block.parent) {
                         Some(b) => block = b,
                         None => {
-                            break Some(block.parent.clone());
+                            break Some(block.parent);
                         }
                     }
                 }
@@ -246,10 +250,10 @@ impl TreeOfDealings {
             )
             .filter_map(|block| block.dealing.as_ref())
         {
-            match self.verify_dealing(dealing) {
+            match self.verify_dealing(dealing).map_err(|err| *err.0) {
                 // Don't disqualify unknown dealers - if unknown dealers are
                 // added to the arbiter it will panic on finalize.
-                Err(VerificationError::UnknownDealer { dealer }) => {
+                Err(VerificationErrorKind::UnknownDealer { dealer }) => {
                     warn!(%dealer, "dealer in dealing was not known");
                 }
                 Err(reason) => {
@@ -276,9 +280,9 @@ impl TreeOfDealings {
 
     fn verify_dealing(&self, dealing: &IntermediateOutcome) -> Result<Vec<u32>, VerificationError> {
         if self.dealers.position(dealing.dealer()).is_none() {
-            return Err(VerificationError::UnknownDealer {
+            Err(VerificationErrorKind::UnknownDealer {
                 dealer: dealing.dealer().clone(),
-            });
+            })?;
         }
 
         // Verify the dealer's signature before considering processing the outcome.
@@ -290,14 +294,14 @@ impl TreeOfDealings {
                 dealing.verify_pre_allegretto(&union(&self.namespace, OUTCOME_NAMESPACE))
             }
         } {
-            return Err(VerificationError::BadDealingSignature);
+            Err(VerificationErrorKind::BadDealingSignature)?;
         }
 
         // Verify all ack signatures
         let mut ack_indices = vec![];
         for ack in dealing.acks() {
             let idx = self.players.position(ack.player()).ok_or_else(|| {
-                VerificationError::UnknownPlayer {
+                VerificationErrorKind::UnknownPlayer {
                     player: ack.player().clone(),
                 }
             })?;
@@ -308,9 +312,9 @@ impl TreeOfDealings {
                 dealing.dealer(),
                 dealing.commitment(),
             ) {
-                return Err(VerificationError::BadAckSignature {
+                Err(VerificationErrorKind::BadAckSignature {
                     player: ack.player().clone(),
-                });
+                })?;
             }
 
             ack_indices.push(idx as u32);
@@ -338,7 +342,17 @@ impl TreeOfDealings {
 }
 
 #[derive(Debug, thiserror::Error)]
-enum VerificationError {
+#[error(transparent)]
+struct VerificationError(Box<VerificationErrorKind>);
+
+impl From<VerificationErrorKind> for VerificationError {
+    fn from(kind: VerificationErrorKind) -> Self {
+        Self(Box::new(kind))
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum VerificationErrorKind {
     #[error(
         "the dealer `{dealer}` recorded in the dealing outcome was not among the dealers of the ceremony"
     )]

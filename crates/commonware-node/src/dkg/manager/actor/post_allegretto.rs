@@ -437,7 +437,7 @@ where
                 DkgOutcome {
                     dkg_successful: true,
                     epoch: new_epoch,
-                    participants: outcome.participants.clone(),
+                    participants: outcome.participants,
                     public,
                     share,
                 }
@@ -452,7 +452,7 @@ where
                 DkgOutcome {
                     dkg_successful: false,
                     epoch: new_epoch,
-                    participants: outcome.participants.clone(),
+                    participants: outcome.participants,
                     public,
                     share,
                 }
