@@ -27,6 +27,7 @@ use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, DEFAULT_7702_DELEGATE_ADDRESS,
     MULTICALL_ADDRESS, PERMIT2_ADDRESS, SAFE_DEPLOYER_ADDRESS,
     contracts::ARACHNID_CREATE2_FACTORY_BYTECODE,
+    contracts::CREATEX_POST_ALLEGRO_MODERATO_BYTECODE,
     precompiles::{ITIP20Factory, IValidatorConfig},
 };
 use tempo_dkg_onchain_artifacts::PublicOutcome;
@@ -325,7 +326,7 @@ impl GenesisArgs {
         genesis_alloc.insert(
             CREATEX_ADDRESS,
             GenesisAccount {
-                code: Some(tempo_contracts::CreateX::DEPLOYED_BYTECODE.clone()),
+                code: Some(CREATEX_POST_ALLEGRO_MODERATO_BYTECODE),
                 nonce: Some(1),
                 ..Default::default()
             },
