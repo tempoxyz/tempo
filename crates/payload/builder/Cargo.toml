@@ -22,6 +22,7 @@ tempo-payload-types.workspace = true
 reth-basic-payload-builder.workspace = true
 reth-chainspec.workspace = true
 reth-consensus-common.workspace = true
+reth-engine-tree.workspace = true
 reth-errors.workspace = true
 reth-evm.workspace = true
 reth-metrics.workspace = true
