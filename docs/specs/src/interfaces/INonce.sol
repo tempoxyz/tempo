@@ -14,11 +14,6 @@ interface INonce {
     /// @param newNonce The new nonce value after incrementing
     event NonceIncremented(address indexed account, uint256 indexed nonceKey, uint64 newNonce);
 
-    /// @notice Emitted when the active key count changes for an account
-    /// @param account The account whose active key count changed
-    /// @param newCount The new active key count
-    event ActiveKeyCountChanged(address indexed account, uint256 newCount);
-
     /// @notice Thrown when trying to access protocol nonce (key 0) through the precompile
     /// @dev Protocol nonce should be accessed through account state, not this precompile
     error ProtocolNonceNotSupported();
@@ -34,10 +29,5 @@ interface INonce {
     /// @param nonceKey The nonce key (must be > 0, protocol nonce key 0 not supported)
     /// @return nonce The current nonce value
     function getNonce(address account, uint256 nonceKey) external view returns (uint64 nonce);
-
-    /// @notice Get the number of active nonce keys for an account
-    /// @param account The account address
-    /// @return count The number of nonce keys that have been used (nonce > 0)
-    function getActiveNonceKeyCount(address account) external view returns (uint256 count);
 
 }

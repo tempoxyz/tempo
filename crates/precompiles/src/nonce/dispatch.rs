@@ -25,11 +25,6 @@ impl<S: PrecompileStorageProvider> Precompile for NonceManager<'_, S> {
             INonce::getNonceCall::SELECTOR => {
                 view::<INonce::getNonceCall>(calldata, |call| self.get_nonce(call))
             }
-            INonce::getActiveNonceKeyCountCall::SELECTOR => {
-                view::<INonce::getActiveNonceKeyCountCall>(calldata, |call| {
-                    self.get_active_nonce_key_count(call)
-                })
-            }
             _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 

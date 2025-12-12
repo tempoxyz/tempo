@@ -15,11 +15,9 @@ contract NonceTest is BaseTest {
 
     // Storage slots from Nonce contract
     uint256 private constant NONCES_SLOT = 0;
-    uint256 private constant ACTIVE_KEY_COUNT_SLOT = 1;
 
     // Events from INonce (for event testing, though vm.store won't emit them)
     event NonceIncremented(address indexed account, uint256 indexed nonceKey, uint64 newNonce);
-    event ActiveKeyCountChanged(address indexed account, uint256 newCount);
 
     /// @dev Helper function to increment nonce using direct storage manipulation
     /// This works for both precompile and deployed Solidity contract
@@ -39,18 +37,6 @@ contract NonceTest is BaseTest {
 
         // Read current nonce value
         uint64 currentNonce = uint64(uint256(vm.load(_NONCE, nonceSlot)));
-
-        // If transitioning from 0 to 1, increment active key count
-        if (currentNonce == 0) {
-            // Calculate storage slot for activeKeyCount[account]
-            bytes32 activeCountSlot = keccak256(abi.encode(account, ACTIVE_KEY_COUNT_SLOT));
-
-            // Read current active count
-            uint256 currentCount = uint256(vm.load(_NONCE, activeCountSlot));
-
-            // Increment and store
-            vm.store(_NONCE, activeCountSlot, bytes32(currentCount + 1));
-        }
 
         // Check for overflow
         require(currentNonce < type(uint64).max, "Nonce overflow");
@@ -86,11 +72,6 @@ contract NonceTest is BaseTest {
         }
     }
 
-    function test_GetActiveNonceKeyCount_ReturnsZeroInitially() public view {
-        uint256 count = nonce.getActiveNonceKeyCount(testAlice);
-        assertEq(count, 0, "Initial active key count should be 0");
-    }
-
     // ============ Increment Nonce Tests ============
 
     function test_IncrementNonce_FirstIncrement() public {
@@ -99,7 +80,6 @@ contract NonceTest is BaseTest {
 
         assertEq(newNonce, 1, "First increment should return 1");
         assertEq(nonce.getNonce(testAlice, 5), 1, "Nonce should be stored as 1");
-        assertEq(nonce.getActiveNonceKeyCount(testAlice), 1, "Active key count should be 1");
     }
 
     function test_IncrementNonce_MultipleIncrements() public {
@@ -109,29 +89,24 @@ contract NonceTest is BaseTest {
         }
 
         assertEq(nonce.getNonce(testAlice, 5), 10, "Final nonce should be 10");
-        assertEq(nonce.getActiveNonceKeyCount(testAlice), 1, "Active key count should still be 1");
     }
 
     function test_IncrementNonce_DifferentKeys() public {
         // Increment key 1
         uint64 nonce1 = _incrementNonceViaStorage(testAlice, 1);
         assertEq(nonce1, 1, "Key 1 first nonce should be 1");
-        assertEq(nonce.getActiveNonceKeyCount(testAlice), 1, "Active count should be 1");
 
         // Increment key 2
         uint64 nonce2 = _incrementNonceViaStorage(testAlice, 2);
         assertEq(nonce2, 1, "Key 2 first nonce should be 1");
-        assertEq(nonce.getActiveNonceKeyCount(testAlice), 2, "Active count should be 2");
 
         // Increment key 1 again
         nonce1 = _incrementNonceViaStorage(testAlice, 1);
         assertEq(nonce1, 2, "Key 1 second nonce should be 2");
-        assertEq(nonce.getActiveNonceKeyCount(testAlice), 2, "Active count should still be 2");
 
         // Increment key 3
         uint64 nonce3 = _incrementNonceViaStorage(testAlice, 3);
         assertEq(nonce3, 1, "Key 3 first nonce should be 1");
-        assertEq(nonce.getActiveNonceKeyCount(testAlice), 3, "Active count should be 3");
     }
 
     function test_IncrementNonce_RevertIf_ProtocolKey() public {
@@ -171,8 +146,6 @@ contract NonceTest is BaseTest {
         // Check they're independent
         assertEq(nonce.getNonce(testAlice, 5), 10, "Alice's nonce should be 10");
         assertEq(nonce.getNonce(testBob, 5), 20, "Bob's nonce should be 20");
-        assertEq(nonce.getActiveNonceKeyCount(testAlice), 1, "Alice should have 1 active key");
-        assertEq(nonce.getActiveNonceKeyCount(testBob), 1, "Bob should have 1 active key");
     }
 
     function test_DifferentAccounts_DifferentKeys() public {
@@ -188,51 +161,11 @@ contract NonceTest is BaseTest {
         // Charlie uses key 1
         _incrementNonceViaStorage(testCharlie, 1);
 
-        assertEq(nonce.getActiveNonceKeyCount(testAlice), 3, "Alice should have 3 active keys");
-        assertEq(nonce.getActiveNonceKeyCount(testBob), 2, "Bob should have 2 active keys");
-        assertEq(nonce.getActiveNonceKeyCount(testCharlie), 1, "Charlie should have 1 active key");
-
         // Verify independence
         assertEq(nonce.getNonce(testAlice, 1), 1, "Alice key 1 should be 1");
         assertEq(nonce.getNonce(testCharlie, 1), 1, "Charlie key 1 should be 1");
         assertEq(nonce.getNonce(testAlice, 4), 0, "Alice key 4 should be 0");
         assertEq(nonce.getNonce(testBob, 1), 0, "Bob key 1 should be 0");
-    }
-
-    // ============ Active Key Count Tests ============
-
-    function test_ActiveKeyCount_IncrementsOnlyOnFirstUse() public {
-        assertEq(nonce.getActiveNonceKeyCount(testAlice), 0, "Should start at 0");
-
-        // First use of key 1
-        _incrementNonceViaStorage(testAlice, 1);
-        assertEq(nonce.getActiveNonceKeyCount(testAlice), 1, "Should be 1 after first key");
-
-        // Second use of key 1 (shouldn't increment count)
-        _incrementNonceViaStorage(testAlice, 1);
-        assertEq(nonce.getActiveNonceKeyCount(testAlice), 1, "Should still be 1");
-
-        // Third use of key 1
-        _incrementNonceViaStorage(testAlice, 1);
-        assertEq(nonce.getActiveNonceKeyCount(testAlice), 1, "Should still be 1");
-
-        // First use of key 2
-        _incrementNonceViaStorage(testAlice, 2);
-        assertEq(nonce.getActiveNonceKeyCount(testAlice), 2, "Should be 2 after second key");
-    }
-
-    function test_ActiveKeyCount_MultipleKeys() public {
-        uint256[] memory keys = new uint256[](5);
-        keys[0] = 1;
-        keys[1] = 10;
-        keys[2] = 100;
-        keys[3] = 1000;
-        keys[4] = 10_000;
-
-        for (uint256 i = 0; i < keys.length; i++) {
-            _incrementNonceViaStorage(testAlice, keys[i]);
-            assertEq(nonce.getActiveNonceKeyCount(testAlice), i + 1, "Active count should match");
-        }
     }
 
     // ============ Event Tests ============
@@ -289,43 +222,6 @@ contract NonceTest is BaseTest {
         assertEq(nonce.getNonce(account2, nonceKey), count2, "Account2 nonce should match count2");
     }
 
-    function testFuzz_ActiveKeyCount(address account, uint256[] memory nonceKeys) public {
-        vm.assume(nonceKeys.length > 0 && nonceKeys.length <= 20);
-
-        // Deduplicate and filter nonce keys
-        uint256[] memory uniqueKeys = new uint256[](nonceKeys.length);
-        uint256 uniqueCount = 0;
-
-        for (uint256 i = 0; i < nonceKeys.length; i++) {
-            if (nonceKeys[i] == 0) continue; // Skip protocol nonce
-
-            bool isDuplicate = false;
-            for (uint256 j = 0; j < uniqueCount; j++) {
-                if (uniqueKeys[j] == nonceKeys[i]) {
-                    isDuplicate = true;
-                    break;
-                }
-            }
-
-            if (!isDuplicate) {
-                uniqueKeys[uniqueCount] = nonceKeys[i];
-                uniqueCount++;
-            }
-        }
-
-        // Increment each unique key once
-        for (uint256 i = 0; i < uniqueCount; i++) {
-            _incrementNonceViaStorage(account, uniqueKeys[i]);
-        }
-
-        // Active count should match unique key count
-        assertEq(
-            nonce.getActiveNonceKeyCount(account),
-            uniqueCount,
-            "Active key count should match unique keys used"
-        );
-    }
-
     // ============ Edge Case Tests ============
 
     function test_EdgeCase_MaxNonceKey() public {
@@ -352,8 +248,6 @@ contract NonceTest is BaseTest {
             _incrementNonceViaStorage(testAlice, i);
         }
 
-        assertEq(nonce.getActiveNonceKeyCount(testAlice), 50, "Should track 50 active keys");
-
         // Verify each key has nonce 1
         for (uint256 i = 1; i <= 50; i++) {
             assertEq(nonce.getNonce(testAlice, i), 1, "Each key should have nonce 1");
@@ -372,7 +266,6 @@ contract NonceTest is BaseTest {
 
         assertEq(nonce.getNonce(testAlice, 1), 10, "Key 1 should have nonce 10");
         assertEq(nonce.getNonce(testAlice, 2), 10, "Key 2 should have nonce 10");
-        assertEq(nonce.getActiveNonceKeyCount(testAlice), 2, "Should have 2 active keys");
     }
 
     // ============ Gas Tests ============
@@ -386,21 +279,12 @@ contract NonceTest is BaseTest {
         assertTrue(gasUsed > 0, "Should consume some gas");
     }
 
-    function test_Gas_GetActiveNonceKeyCount() public view {
-        uint256 gasBefore = gasleft();
-        nonce.getActiveNonceKeyCount(testAlice);
-        uint256 gasUsed = gasBefore - gasleft();
-
-        assertTrue(gasUsed > 0, "Should consume some gas");
-    }
-
     function test_Gas_IncrementNonce_FirstTime() public {
         uint256 gasBefore = gasleft();
         _incrementNonceViaStorage(testAlice, 1);
         uint256 gasUsed = gasBefore - gasleft();
 
         assertTrue(gasUsed > 0, "Should consume gas");
-        // First increment should cost more due to active count update
     }
 
     function test_Gas_IncrementNonce_Subsequent() public {
@@ -411,7 +295,6 @@ contract NonceTest is BaseTest {
         uint256 gasUsed = gasBefore - gasleft();
 
         assertTrue(gasUsed > 0, "Should consume gas");
-        // Subsequent increments should cost less (no active count update)
     }
 
 }
