@@ -4,7 +4,7 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 impl Precompile for ValidatorConfig {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address, is_static: bool) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
@@ -31,6 +31,7 @@ impl Precompile for ValidatorConfig {
                 mutate_void::<IValidatorConfig::addValidatorCall>(
                     calldata,
                     msg_sender,
+                    is_static,
                     |s, call| self.add_validator(s, call),
                 )
             }
@@ -38,6 +39,7 @@ impl Precompile for ValidatorConfig {
                 mutate_void::<IValidatorConfig::updateValidatorCall>(
                     calldata,
                     msg_sender,
+                    is_static,
                     |s, call| self.update_validator(s, call),
                 )
             }
@@ -45,13 +47,17 @@ impl Precompile for ValidatorConfig {
                 mutate_void::<IValidatorConfig::changeValidatorStatusCall>(
                     calldata,
                     msg_sender,
+                    is_static,
                     |s, call| self.change_validator_status(s, call),
                 )
             }
             IValidatorConfig::changeOwnerCall::SELECTOR => {
-                mutate_void::<IValidatorConfig::changeOwnerCall>(calldata, msg_sender, |s, call| {
-                    self.change_owner(s, call)
-                })
+                mutate_void::<IValidatorConfig::changeOwnerCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |s, call| self.change_owner(s, call),
+                )
             }
 
             _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),

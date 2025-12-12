@@ -72,7 +72,7 @@ pub fn input_cost(calldata_len: usize) -> u64 {
 }
 
 pub trait Precompile {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
+    fn call(&mut self, calldata: &[u8], msg_sender: Address, is_static: bool) -> PrecompileResult;
 }
 
 pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<TempoHardfork>) {
@@ -126,21 +126,16 @@ macro_rules! tempo_precompile {
                 ));
             }
 
-            if $input.is_static_call() {
-                return Ok(PrecompileOutput::new_reverted(
-                    0,
-                    StaticCallNotAllowed {}.abi_encode().into(),
-                ));
-            }
-
+            let is_static = $input.is_static_call();
             let mut storage = crate::storage::evm::EvmPrecompileStorageProvider::new(
                 $input.internals,
                 $input.gas,
                 $chain_id,
                 $spec,
             );
+
             crate::storage::StorageCtx::enter(&mut storage, || {
-                $impl.call($input.data, $input.caller)
+                $impl.call($input.data, $input.caller, is_static)
             })
         })
     };
@@ -262,8 +257,16 @@ fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> Result<T::Return>) -> 
 pub fn mutate<T: SolCall>(
     calldata: &[u8],
     sender: Address,
+    is_static: bool,
     f: impl FnOnce(Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
+    if is_static {
+        return Ok(PrecompileOutput::new_reverted(
+            0,
+            StaticCallNotAllowed {}.abi_encode().into(),
+        ));
+    }
+
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };
@@ -274,8 +277,16 @@ pub fn mutate<T: SolCall>(
 fn mutate_void<T: SolCall>(
     calldata: &[u8],
     sender: Address,
+    is_static: bool,
     f: impl FnOnce(Address, T) -> Result<()>,
 ) -> PrecompileResult {
+    if is_static {
+        return Ok(PrecompileOutput::new_reverted(
+            0,
+            StaticCallNotAllowed {}.abi_encode().into(),
+        ));
+    }
+
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };
