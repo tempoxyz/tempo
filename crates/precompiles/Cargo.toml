@@ -11,10 +11,6 @@ publish.workspace = true
 [lints]
 workspace = true
 
-[features]
-default = []
-test-utils = []
-
 [dependencies]
 tempo-contracts.workspace = true
 tempo-chainspec.workspace = true
@@ -39,6 +35,10 @@ proptest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempo-evm.workspace = true
+
+[features]
+default = []
+test-utils = ["alloy/getrandom"]
 
 [[test]]
 name = "storage"

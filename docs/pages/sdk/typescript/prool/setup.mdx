@@ -1,19 +1,22 @@
 # Setup
 
-Setup the Tempo extension for Prool by following the steps below.
+Setup infinite pooled Tempo node instances in TypeScript using [`prool`](https://github.com/wevm/prool) by following the steps below.
 
 ::::steps
 
 ## Install
 
-To add Prool to your project, install the required packages:
-
 :::code-group
 ```bash [npm]
-npm i tempo.ts prool
+npm i prool
 ```
+
 ```bash [pnpm]
-pnpm i tempo.ts prool
+pnpm i prool
+```
+
+```bash [bun]
+bun i prool
 ```
 :::
 
@@ -24,14 +27,36 @@ pnpm i tempo.ts prool
 You can programmatically start a Tempo node instance in TypeScript using `Instance.tempo`:
 
 ```ts
+import { Instance, Server } from 'tempo.ts/prool'
+
+const server = Server.create({
+  instance: Instance.tempo(),
+});
+
+// Start the node
+await server.start()
+// Instances available at: 
+// - http://localhost:8545/1
+// - http://localhost:8545/2
+// - http://localhost:8545/3
+// - http://localhost:8545/4
+// - http://localhost:8545/n
+```
+
+:::tip
+You can also set up the Tempo instance using `Instance.tempo` directly if you
+do not need pooling.
+
+```ts
 import { Instance } from 'tempo.ts/prool';
 
-const instance = Instance.tempo();
+const instance = Instance.tempo()
 
-await instance.start();
-// ...
-await instance.stop();
+// Start the node
+await instance.start()
+// Instance available at: http://localhost:8545
 ```
+:::
 
 ## Next Steps
 
