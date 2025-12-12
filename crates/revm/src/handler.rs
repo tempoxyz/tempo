@@ -22,7 +22,8 @@ use revm::{
         Gas, InitialAndFloorGas,
         gas::{
             ACCESS_LIST_ADDRESS, ACCESS_LIST_STORAGE_KEY, CALLVALUE, COLD_ACCOUNT_ACCESS_COST,
-            CREATE, STANDARD_TOKEN_COST, calc_tx_floor_cost, get_tokens_in_calldata, initcode_cost,
+            COLD_SLOAD_COST, CREATE, STANDARD_TOKEN_COST, WARM_SSTORE_RESET, calc_tx_floor_cost,
+            get_tokens_in_calldata, initcode_cost,
         },
         interpreter::EthInterpreter,
     },
@@ -72,8 +73,8 @@ const KEY_AUTH_BASE_GAS: u64 = 27_000;
 /// Gas per spending limit in KeyAuthorization
 const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
 
-/// Gas cost for using an existing 2D nonce key (cold SSTORE on non-zero slot: 2,900 base + 2,100 cold access)
-const EXISTING_NONCE_KEY_GAS: u64 = 5_000;
+/// Gas cost for using an existing 2D nonce key (cold SLOAD + warm SSTORE reset)
+const EXISTING_NONCE_KEY_GAS: u64 = COLD_SLOAD_COST + WARM_SSTORE_RESET;
 
 /// Gas multiplier per active nonce key when creating a new key (compensates for state growth)
 const NEW_NONCE_KEY_MULTIPLIER: u64 = 20_000;
