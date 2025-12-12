@@ -194,7 +194,7 @@ commonware-runtime = "0.0.63"
 commonware-storage = "0.0.63"
 commonware-utils = "0.0.63"
 arbitrary = { version = "1.3", features = ["derive"] }
-async-lock = "3"
+async-lock = "3.4.1"
 async-trait = "0.1"
 auto_impl = "1"
 axum = "0.8.4"
