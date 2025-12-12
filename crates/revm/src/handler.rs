@@ -22,8 +22,8 @@ use revm::{
         Gas, InitialAndFloorGas,
         gas::{
             ACCESS_LIST_ADDRESS, ACCESS_LIST_STORAGE_KEY, CALLVALUE, COLD_ACCOUNT_ACCESS_COST,
-            COLD_SLOAD_COST, CREATE, STANDARD_TOKEN_COST, WARM_SSTORE_RESET, calc_tx_floor_cost,
-            get_tokens_in_calldata, initcode_cost,
+            COLD_SLOAD_COST, CREATE, SSTORE_SET, STANDARD_TOKEN_COST, WARM_SSTORE_RESET,
+            calc_tx_floor_cost, get_tokens_in_calldata, initcode_cost,
         },
         interpreter::EthInterpreter,
     },
@@ -37,10 +37,7 @@ use tempo_contracts::{
 use tempo_precompiles::{
     account_keychain::{AccountKeychain, TokenLimit, authorizeKeyCall},
     error::TempoPrecompileError,
-    nonce::{
-        INonce::{getActiveNonceKeyCountCall, getNonceCall},
-        NonceManager,
-    },
+    nonce::{INonce::getNonceCall, NonceManager},
     storage::{evm::EvmPrecompileStorageProvider, slots::mapping_slot},
     tip_fee_manager::TipFeeManager,
     tip20::{self, ITIP20::InsufficientBalance, TIP20Error},
@@ -76,8 +73,8 @@ const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
 /// Gas cost for using an existing 2D nonce key (cold SLOAD + warm SSTORE reset)
 const EXISTING_NONCE_KEY_GAS: u64 = COLD_SLOAD_COST + WARM_SSTORE_RESET;
 
-/// Gas multiplier per active nonce key when creating a new key (compensates for state growth)
-const NEW_NONCE_KEY_MULTIPLIER: u64 = 20_000;
+/// Gas cost for using a new 2D nonce key (cold SLOAD + SSTORE set for 0 -> non-zero)
+const NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD_COST + SSTORE_SET;
 
 /// Hashed account code of default 7702 delegate deployment
 const DEFAULT_7702_DELEGATE_CODE_HASH: B256 =
@@ -155,8 +152,8 @@ fn calculate_key_authorization_gas(
 ///
 /// Gas schedule (post-AllegroModerato):
 /// - Protocol nonce (key 0): 0 gas (no additional cost)
-/// - Existing user key (nonce > 0): 5,000 gas
-/// - New user key (nonce == 0): (num_active_keys + 1) * 20,000 gas
+/// - Existing user key (nonce > 0): 5,000 gas (cold SLOAD + warm SSTORE reset)
+/// - New user key (nonce == 0): 22,100 gas (cold SLOAD + SSTORE set)
 #[inline]
 fn calculate_2d_nonce_gas(
     nonce_manager: &mut NonceManager<
@@ -178,13 +175,11 @@ fn calculate_2d_nonce_gas(
     })?;
 
     if current_nonce > 0 {
-        // Existing key - fixed cost
+        // Existing key - cold SLOAD + warm SSTORE reset
         Ok(EXISTING_NONCE_KEY_GAS)
     } else {
-        // New key - progressive cost based on number of active keys
-        let active_count = nonce_manager
-            .get_active_nonce_key_count(getActiveNonceKeyCountCall { account: caller })?;
-        Ok((active_count.saturating_to::<u64>() + 1) * NEW_NONCE_KEY_MULTIPLIER)
+        // New key - cold SLOAD + SSTORE set (0 -> non-zero)
+        Ok(NEW_NONCE_KEY_GAS)
     }
 }
 
@@ -2209,38 +2204,22 @@ mod tests {
             calculate_2d_nonce_gas(&mut nm, caller, U256::from(key)).unwrap()
         };
 
-        let incr = |journal: &mut Journal<CacheDB<EmptyDB>>, key: u64| {
-            let internals = reth_evm::EvmInternals::new(journal, &block);
-            let mut storage = EvmPrecompileStorageProvider::new_max_gas(internals, &cfg);
-            NonceManager::new(&mut storage)
-                .increment_nonce(caller, U256::from(key))
-                .unwrap();
-        };
-
         // Protocol nonce (key 0): always 0 gas
         assert_eq!(calc_gas(&mut journal, 0), 0);
 
-        // New key with 0 active keys: (0+1) * 20,000 = 20,000 gas
-        assert_eq!(calc_gas(&mut journal, 1), NEW_NONCE_KEY_MULTIPLIER);
+        // New key (nonce == 0): 22,100 gas (cold SLOAD + SSTORE set)
+        assert_eq!(calc_gas(&mut journal, 1), NEW_NONCE_KEY_GAS);
 
-        // Activate key 1, now existing key: 5,000 gas
-        incr(&mut journal, 1);
-        assert_eq!(calc_gas(&mut journal, 1), EXISTING_NONCE_KEY_GAS);
-
-        // New key with 1 active: (1+1) * 20,000 = 40,000 gas
-        assert_eq!(calc_gas(&mut journal, 2), 2 * NEW_NONCE_KEY_MULTIPLIER);
-
-        // Activate key 2, new key with 2 active: (2+1) * 20,000 = 60,000 gas
-        incr(&mut journal, 2);
-        assert_eq!(calc_gas(&mut journal, 3), 3 * NEW_NONCE_KEY_MULTIPLIER);
-
-        // Activate keys 3-10, test scaling: 10 active -> (10+1) * 20,000 = 220,000 gas
-        for i in 3..=10 {
-            incr(&mut journal, i);
+        // Increment the nonce to make it an existing key
+        {
+            let internals = reth_evm::EvmInternals::new(&mut journal, &block);
+            let mut storage = EvmPrecompileStorageProvider::new_max_gas(internals, &cfg);
+            NonceManager::new(&mut storage)
+                .increment_nonce(caller, U256::from(1))
+                .unwrap();
         }
-        assert_eq!(calc_gas(&mut journal, 11), 11 * NEW_NONCE_KEY_MULTIPLIER);
 
-        // Existing key still 5,000 regardless of active count
-        assert_eq!(calc_gas(&mut journal, 5), EXISTING_NONCE_KEY_GAS);
+        // Existing key (nonce > 0): 5,000 gas (cold SLOAD + warm SSTORE reset)
+        assert_eq!(calc_gas(&mut journal, 1), EXISTING_NONCE_KEY_GAS);
     }
 }
