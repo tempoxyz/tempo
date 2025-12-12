@@ -87,9 +87,9 @@ where
 
         // Initialize the unified metadata database
         let metadata: Metadata<ContextCell<TContext>, FixedBytes<32>, Bytes> = Metadata::init(
-            context.with_label("dkg_db"),
+            context.with_label("database"),
             MetadataConfig {
-                partition: format!("{}_dkg_db", config.partition_prefix),
+                partition: format!("{}_database", config.partition_prefix),
                 codec_config: RangeCfg::from(0..=usize::MAX),
             },
         )
