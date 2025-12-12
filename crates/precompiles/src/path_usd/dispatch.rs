@@ -11,7 +11,7 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::{IPathUSD, TIP20Error};
 
 impl Precompile for PathUSD {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address, is_static: bool) -> PrecompileResult {
         let selector: [u8; 4] = if let Some(bytes) = calldata.get(..4) {
             bytes.try_into().unwrap()
         } else {
@@ -32,7 +32,7 @@ impl Precompile for PathUSD {
             && selector != ITIP20::nameCall::SELECTOR
             && selector != ITIP20::symbolCall::SELECTOR
         {
-            return self.token.call(calldata, msg_sender);
+            return self.token.call(calldata, msg_sender, is_static);
         }
 
         self.token
@@ -90,42 +90,42 @@ impl Precompile for PathUSD {
 
             // Mutating functions that work normally
             ITIP20::approveCall::SELECTOR => {
-                mutate::<ITIP20::approveCall>(calldata, msg_sender, |sender, call| {
+                mutate::<ITIP20::approveCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.approve(sender, call)
                 })
             }
             ITIP20::mintCall::SELECTOR => {
-                mutate_void::<ITIP20::mintCall>(calldata, msg_sender, |sender, call| {
+                mutate_void::<ITIP20::mintCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.mint(sender, call)
                 })
             }
             ITIP20::mintWithMemoCall::SELECTOR => {
-                mutate_void::<ITIP20::mintWithMemoCall>(calldata, msg_sender, |sender, call| {
+                mutate_void::<ITIP20::mintWithMemoCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.token.mint_with_memo(sender, call)
                 })
             }
             ITIP20::burnCall::SELECTOR => {
-                mutate_void::<ITIP20::burnCall>(calldata, msg_sender, |sender, call| {
+                mutate_void::<ITIP20::burnCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.burn(sender, call)
                 })
             }
             ITIP20::burnWithMemoCall::SELECTOR => {
-                mutate_void::<ITIP20::burnWithMemoCall>(calldata, msg_sender, |sender, call| {
+                mutate_void::<ITIP20::burnWithMemoCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.token.burn_with_memo(sender, call)
                 })
             }
             ITIP20::burnBlockedCall::SELECTOR => {
-                mutate_void::<ITIP20::burnBlockedCall>(calldata, msg_sender, |sender, call| {
+                mutate_void::<ITIP20::burnBlockedCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.token.burn_blocked(sender, call)
                 })
             }
             ITIP20::pauseCall::SELECTOR => {
-                mutate_void::<ITIP20::pauseCall>(calldata, msg_sender, |sender, call| {
+                mutate_void::<ITIP20::pauseCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.pause(sender, call)
                 })
             }
             ITIP20::unpauseCall::SELECTOR => {
-                mutate_void::<ITIP20::unpauseCall>(calldata, msg_sender, |sender, call| {
+                mutate_void::<ITIP20::unpauseCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.unpause(sender, call)
                 })
             }
@@ -133,54 +133,55 @@ impl Precompile for PathUSD {
                 mutate_void::<ITIP20::changeTransferPolicyIdCall>(
                     calldata,
                     msg_sender,
+                    is_static,
                     |sender, call| self.token.change_transfer_policy_id(sender, call),
                 )
             }
             ITIP20::setSupplyCapCall::SELECTOR => {
-                mutate_void::<ITIP20::setSupplyCapCall>(calldata, msg_sender, |sender, call| {
+                mutate_void::<ITIP20::setSupplyCapCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.token.set_supply_cap(sender, call)
                 })
             }
 
             // Transfer functions that are disabled for PathUSD
             ITIP20::transferCall::SELECTOR => {
-                mutate::<ITIP20::transferCall>(calldata, msg_sender, |sender, call| {
+                mutate::<ITIP20::transferCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.transfer(sender, call)
                 })
             }
             ITIP20::transferFromCall::SELECTOR => {
-                mutate::<ITIP20::transferFromCall>(calldata, msg_sender, |sender, call| {
+                mutate::<ITIP20::transferFromCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.transfer_from(sender, call)
                 })
             }
             ITIP20::transferWithMemoCall::SELECTOR => {
-                mutate_void::<ITIP20::transferWithMemoCall>(calldata, msg_sender, |sender, call| {
+                mutate_void::<ITIP20::transferWithMemoCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.transfer_with_memo(sender, call)
                 })
             }
             ITIP20::transferFromWithMemoCall::SELECTOR => {
-                mutate::<ITIP20::transferFromWithMemoCall>(calldata, msg_sender, |sender, call| {
+                mutate::<ITIP20::transferFromWithMemoCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.transfer_from_with_memo(sender, call)
                 })
             }
 
             ITIP20::startRewardCall::SELECTOR => {
-                mutate::<ITIP20::startRewardCall>(calldata, msg_sender, |_s, _call| {
+                mutate::<ITIP20::startRewardCall>(calldata, msg_sender, is_static, |_s, _call| {
                     Err(TIP20Error::rewards_disabled().into())
                 })
             }
             ITIP20::setRewardRecipientCall::SELECTOR => {
-                mutate_void::<ITIP20::setRewardRecipientCall>(calldata, msg_sender, |_s, _call| {
+                mutate_void::<ITIP20::setRewardRecipientCall>(calldata, msg_sender, is_static, |_s, _call| {
                     Err(TIP20Error::rewards_disabled().into())
                 })
             }
             ITIP20::cancelRewardCall::SELECTOR => {
-                mutate::<ITIP20::cancelRewardCall>(calldata, msg_sender, |_s, _call| {
+                mutate::<ITIP20::cancelRewardCall>(calldata, msg_sender, is_static, |_s, _call| {
                     Err(TIP20Error::rewards_disabled().into())
                 })
             }
             ITIP20::claimRewardsCall::SELECTOR => {
-                mutate::<ITIP20::claimRewardsCall>(calldata, msg_sender, |_, _| {
+                mutate::<ITIP20::claimRewardsCall>(calldata, msg_sender, is_static, |_, _| {
                     Err(TIP20Error::rewards_disabled().into())
                 })
             }
@@ -195,22 +196,22 @@ impl Precompile for PathUSD {
                 })
             }
             IRolesAuth::grantRoleCall::SELECTOR => {
-                mutate_void::<IRolesAuth::grantRoleCall>(calldata, msg_sender, |sender, call| {
+                mutate_void::<IRolesAuth::grantRoleCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.token.grant_role(sender, call)
                 })
             }
             IRolesAuth::revokeRoleCall::SELECTOR => {
-                mutate_void::<IRolesAuth::revokeRoleCall>(calldata, msg_sender, |sender, call| {
+                mutate_void::<IRolesAuth::revokeRoleCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.token.revoke_role(sender, call)
                 })
             }
             IRolesAuth::renounceRoleCall::SELECTOR => {
-                mutate_void::<IRolesAuth::renounceRoleCall>(calldata, msg_sender, |sender, call| {
+                mutate_void::<IRolesAuth::renounceRoleCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.token.renounce_role(sender, call)
                 })
             }
             IRolesAuth::setRoleAdminCall::SELECTOR => {
-                mutate_void::<IRolesAuth::setRoleAdminCall>(calldata, msg_sender, |sender, call| {
+                mutate_void::<IRolesAuth::setRoleAdminCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.token.set_role_admin(sender, call)
                 })
             }
@@ -305,7 +306,7 @@ mod tests {
             }
             .abi_encode();
 
-            let output = token.call(&calldata, sender)?;
+            let output = token.call(&calldata, sender, false)?;
             assert!(output.reverted);
             let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
             assert_eq!(output.bytes, expected);
@@ -325,7 +326,7 @@ mod tests {
             token.initialize(sender)?;
 
             let calldata = ITIP20::setRewardRecipientCall { recipient }.abi_encode();
-            let output = token.call(&calldata, sender)?;
+            let output = token.call(&calldata, sender, false)?;
             assert!(output.reverted);
             let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
             assert_eq!(output.bytes, expected);
@@ -345,7 +346,7 @@ mod tests {
 
             let calldata = ITIP20::cancelRewardCall { id: 1 }.abi_encode();
 
-            let output = token.call(&calldata, sender)?;
+            let output = token.call(&calldata, sender, false)?;
             assert!(output.reverted);
             let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
             assert_eq!(output.bytes, expected);
@@ -365,7 +366,7 @@ mod tests {
 
             let calldata = ITIP20::claimRewardsCall {}.abi_encode();
 
-            let output = token.call(&calldata, sender)?;
+            let output = token.call(&calldata, sender, false)?;
             assert!(output.reverted);
             let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
             assert_eq!(output.bytes, expected);
@@ -384,12 +385,12 @@ mod tests {
             token.initialize(sender)?;
 
             let name_calldata = ITIP20::nameCall {}.abi_encode();
-            let name_output = token.call(&Bytes::from(name_calldata), sender)?;
+            let name_output = token.call(&Bytes::from(name_calldata), sender, false)?;
             let name = ITIP20::nameCall::abi_decode_returns(&name_output.bytes)?;
             assert_eq!(name, "linkingUSD");
 
             let symbol_calldata = ITIP20::symbolCall {}.abi_encode();
-            let symbol_output = token.call(&Bytes::from(symbol_calldata), sender)?;
+            let symbol_output = token.call(&Bytes::from(symbol_calldata), sender, false)?;
             let symbol = ITIP20::symbolCall::abi_decode_returns(&symbol_output.bytes)?;
             assert_eq!(symbol, "linkingUSD");
 
@@ -407,12 +408,12 @@ mod tests {
             token.initialize(sender)?;
 
             let name_calldata = ITIP20::nameCall {}.abi_encode();
-            let name_output = token.call(&Bytes::from(name_calldata), sender)?;
+            let name_output = token.call(&Bytes::from(name_calldata), sender, false)?;
             let name = ITIP20::nameCall::abi_decode_returns(&name_output.bytes)?;
             assert_eq!(name, "pathUSD");
 
             let symbol_calldata = ITIP20::symbolCall {}.abi_encode();
-            let symbol_output = token.call(&Bytes::from(symbol_calldata), sender)?;
+            let symbol_output = token.call(&Bytes::from(symbol_calldata), sender, false)?;
             let symbol = ITIP20::symbolCall::abi_decode_returns(&symbol_output.bytes)?;
             assert_eq!(symbol, "pathUSD");
 

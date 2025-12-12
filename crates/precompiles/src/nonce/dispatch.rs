@@ -7,7 +7,7 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 use super::INonce;
 
 impl Precompile for NonceManager {
-    fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], _msg_sender: Address, _is_static: bool) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;

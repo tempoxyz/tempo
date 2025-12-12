@@ -341,8 +341,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tip20::TIP20Token;
+    use crate::tip20::{ITIP20, TIP20Token};
     use alloy::primitives::{Address, Bytes, U256};
+    use alloy::sol_types::SolCall;
     use alloy_evm::{
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         precompiles::{Precompile as AlloyEvmPrecompile, PrecompileInput},
@@ -400,11 +401,17 @@ mod tests {
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
 
         let target_address = Address::random();
+        let transfer_calldata = ITIP20::transferCall {
+            to: Address::random(),
+            amount: U256::from(100),
+        }
+        .abi_encode();
+        let calldata = Bytes::from(transfer_calldata);
         let input = PrecompileInput {
-            data: &Bytes::new(),
+            data: &calldata,
             caller: Address::ZERO,
             internals: evm_internals,
-            gas: 0,
+            gas: 100_000,
             is_static: true,
             value: U256::ZERO,
             target_address,
@@ -419,7 +426,7 @@ mod tests {
                 let decoded = StaticCallNotAllowed::abi_decode(&output.bytes).unwrap();
                 assert!(matches!(decoded, StaticCallNotAllowed {}));
             }
-            Err(_) => panic!("expected reverted output"),
+            Err(e) => panic!("expected reverted output, got error: {:?}", e),
         }
     }
 }

@@ -13,7 +13,7 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 impl Precompile for TipFeeManager {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address, is_static: bool) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
@@ -88,21 +88,28 @@ impl Precompile for TipFeeManager {
                 mutate_void::<IFeeManager::setValidatorTokenCall>(
                     calldata,
                     msg_sender,
+                    is_static,
                     |s, call| self.set_validator_token(s, call, self.storage.beneficiary()),
                 )
             }
             IFeeManager::setUserTokenCall::SELECTOR => {
-                mutate_void::<IFeeManager::setUserTokenCall>(calldata, msg_sender, |s, call| {
-                    self.set_user_token(s, call)
-                })
+                mutate_void::<IFeeManager::setUserTokenCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |s, call| self.set_user_token(s, call),
+                )
             }
             IFeeManager::executeBlockCall::SELECTOR => {
-                mutate_void::<IFeeManager::executeBlockCall>(calldata, msg_sender, |s, _call| {
-                    self.execute_block(s, self.storage.beneficiary())
-                })
+                mutate_void::<IFeeManager::executeBlockCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |s, _call| self.execute_block(s, self.storage.beneficiary()),
+                )
             }
             ITIPFeeAMM::mintCall::SELECTOR => {
-                mutate::<ITIPFeeAMM::mintCall>(calldata, msg_sender, |s, call| {
+                mutate::<ITIPFeeAMM::mintCall>(calldata, msg_sender, is_static, |s, call| {
                     if self.storage.spec().is_moderato() {
                         Err(TempoPrecompileError::UnknownFunctionSelector(
                             ITIPFeeAMM::mintCall::SELECTOR,
@@ -120,18 +127,23 @@ impl Precompile for TipFeeManager {
                 })
             }
             ITIPFeeAMM::mintWithValidatorTokenCall::SELECTOR => {
-                mutate::<ITIPFeeAMM::mintWithValidatorTokenCall>(calldata, msg_sender, |s, call| {
-                    self.mint_with_validator_token(
-                        s,
-                        call.userToken,
-                        call.validatorToken,
-                        call.amountValidatorToken,
-                        call.to,
-                    )
-                })
+                mutate::<ITIPFeeAMM::mintWithValidatorTokenCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |s, call| {
+                        self.mint_with_validator_token(
+                            s,
+                            call.userToken,
+                            call.validatorToken,
+                            call.amountValidatorToken,
+                            call.to,
+                        )
+                    },
+                )
             }
             ITIPFeeAMM::burnCall::SELECTOR => {
-                mutate::<ITIPFeeAMM::burnCall>(calldata, msg_sender, |s, call| {
+                mutate::<ITIPFeeAMM::burnCall>(calldata, msg_sender, is_static, |s, call| {
                     let (amount_user_token, amount_validator_token) = self.burn(
                         s,
                         call.userToken,
@@ -147,15 +159,20 @@ impl Precompile for TipFeeManager {
                 })
             }
             ITIPFeeAMM::rebalanceSwapCall::SELECTOR => {
-                mutate::<ITIPFeeAMM::rebalanceSwapCall>(calldata, msg_sender, |s, call| {
-                    self.rebalance_swap(
-                        s,
-                        call.userToken,
-                        call.validatorToken,
-                        call.amountOut,
-                        call.to,
-                    )
-                })
+                mutate::<ITIPFeeAMM::rebalanceSwapCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |s, call| {
+                        self.rebalance_swap(
+                            s,
+                            call.userToken,
+                            call.validatorToken,
+                            call.amountOut,
+                            call.to,
+                        )
+                    },
+                )
             }
 
             _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
@@ -200,12 +217,12 @@ mod tests {
                 token: token.address(),
             }
             .abi_encode();
-            let result = fee_manager.call(&calldata, validator)?;
+            let result = fee_manager.call(&calldata, validator, false)?;
             assert_eq!(result.gas_used, 0);
 
             // Verify token was set
             let calldata = IFeeManager::validatorTokensCall { validator }.abi_encode();
-            let result = fee_manager.call(&calldata, validator)?;
+            let result = fee_manager.call(&calldata, validator, false)?;
             assert_eq!(result.gas_used, 0);
             let returned_token = Address::abi_decode(&result.bytes)?;
             assert_eq!(returned_token, token.address());
@@ -225,7 +242,7 @@ mod tests {
                 token: Address::ZERO,
             }
             .abi_encode();
-            let result = fee_manager.call(&calldata, validator);
+            let result = fee_manager.call(&calldata, validator, false);
             expect_precompile_revert(&result, FeeManagerError::invalid_token());
 
             Ok(())
@@ -245,12 +262,12 @@ mod tests {
                 token: token.address(),
             }
             .abi_encode();
-            let result = fee_manager.call(&calldata, user)?;
+            let result = fee_manager.call(&calldata, user, false)?;
             assert_eq!(result.gas_used, 0);
 
             // Verify token was set
             let calldata = IFeeManager::userTokensCall { user }.abi_encode();
-            let result = fee_manager.call(&calldata, user)?;
+            let result = fee_manager.call(&calldata, user, false)?;
             assert_eq!(result.gas_used, 0);
             let returned_token = Address::abi_decode(&result.bytes)?;
             assert_eq!(returned_token, token.address());
@@ -270,7 +287,7 @@ mod tests {
                 token: Address::ZERO,
             }
             .abi_encode();
-            let result = fee_manager.call(&calldata, user);
+            let result = fee_manager.call(&calldata, user, false);
             expect_precompile_revert(&result, FeeManagerError::invalid_token());
 
             Ok(())
@@ -291,7 +308,7 @@ mod tests {
                 validatorToken: token_b,
             }
             .abi_encode();
-            let result = fee_manager.call(&calldata, sender)?;
+            let result = fee_manager.call(&calldata, sender, false)?;
             assert_eq!(result.gas_used, 0);
 
             let returned_id = B256::abi_decode(&result.bytes)?;
@@ -317,7 +334,7 @@ mod tests {
                 validatorToken: token_b,
             };
             let calldata = get_pool_call.abi_encode();
-            let result = fee_manager.call(&calldata, sender)?;
+            let result = fee_manager.call(&calldata, sender, false)?;
             assert_eq!(result.gas_used, 0);
 
             // Decode and verify pool (should be empty initially)
@@ -344,7 +361,7 @@ mod tests {
                 validatorToken: token_b,
             }
             .abi_encode();
-            let result1 = fee_manager.call(&calldata1, sender)?;
+            let result1 = fee_manager.call(&calldata1, sender, false)?;
             let id1 = B256::abi_decode(&result1.bytes)?;
 
             // Get pool ID with tokens reversed (b, a)
@@ -353,7 +370,7 @@ mod tests {
                 validatorToken: token_a,
             }
             .abi_encode();
-            let result2 = fee_manager.call(&calldata2, sender)?;
+            let result2 = fee_manager.call(&calldata2, sender, false)?;
             let id2 = B256::abi_decode(&result2.bytes)?;
 
             // Pool IDs should be different since tokens are ordered
@@ -375,14 +392,14 @@ mod tests {
             let set_validator_call = IFeeManager::setValidatorTokenCall {
                 token: Address::ZERO,
             };
-            let result = fee_manager.call(&set_validator_call.abi_encode(), validator);
+            let result = fee_manager.call(&set_validator_call.abi_encode(), validator, false);
             expect_precompile_revert(&result, FeeManagerError::invalid_token());
 
             // Test setUserToken with zero address
             let set_user_call = IFeeManager::setUserTokenCall {
                 token: Address::ZERO,
             };
-            let result = fee_manager.call(&set_user_call.abi_encode(), user);
+            let result = fee_manager.call(&set_user_call.abi_encode(), user, false);
             expect_precompile_revert(&result, FeeManagerError::invalid_token());
 
             Ok(())
@@ -397,7 +414,7 @@ mod tests {
 
             // Call executeBlock (only system contract can call, so sender = Address::ZERO)
             let call = IFeeManager::executeBlockCall {};
-            let result = fee_manager.call(&call.abi_encode(), Address::ZERO)?;
+            let result = fee_manager.call(&call.abi_encode(), Address::ZERO, false)?;
             assert_eq!(result.gas_used, 0);
 
             Ok(())
@@ -455,13 +472,13 @@ mod tests {
                 userToken: user_token.address(),
                 validatorToken: validator_token.address(),
             };
-            let pool_id_result = fee_manager.call(&pool_id_call.abi_encode(), user)?;
+            let pool_id_result = fee_manager.call(&pool_id_call.abi_encode(), user, false)?;
             let pool_id = B256::abi_decode(&pool_id_result.bytes)?;
 
             // Check initial total supply
             let initial_supply_call = ITIPFeeAMM::totalSupplyCall { poolId: pool_id };
             let initial_supply_result =
-                fee_manager.call(&initial_supply_call.abi_encode(), user)?;
+                fee_manager.call(&initial_supply_call.abi_encode(), user, false)?;
             let initial_supply = U256::abi_decode(&initial_supply_result.bytes)?;
             assert_eq!(initial_supply, U256::ZERO);
 
@@ -473,7 +490,7 @@ mod tests {
                 amountValidatorToken: amount_validator_token,
                 to: user,
             };
-            let result = fee_manager.call(&call.abi_encode(), user)?;
+            let result = fee_manager.call(&call.abi_encode(), user, false)?;
 
             // For first mint with validator token only, liquidity should be (amount / 2) - MIN_LIQUIDITY
             // MIN_LIQUIDITY = 1000, so (10000 / 2) - 1000 = 4000
@@ -482,7 +499,7 @@ mod tests {
 
             // Check total supply after mint = liquidity + MIN_LIQUIDITY
             let final_supply_call = ITIPFeeAMM::totalSupplyCall { poolId: pool_id };
-            let final_supply_result = fee_manager.call(&final_supply_call.abi_encode(), user)?;
+            let final_supply_result = fee_manager.call(&final_supply_call.abi_encode(), user, false)?;
             let final_supply = U256::abi_decode(&final_supply_result.bytes)?;
             assert_eq!(final_supply, liquidity + MIN_LIQUIDITY);
 
@@ -491,7 +508,7 @@ mod tests {
                 userToken: user_token.address(),
                 validatorToken: validator_token.address(),
             };
-            let pool_result = fee_manager.call(&pool_call.abi_encode(), user)?;
+            let pool_result = fee_manager.call(&pool_call.abi_encode(), user, false)?;
             let pool = ITIPFeeAMM::Pool::abi_decode(&pool_result.bytes)?;
             assert_eq!(pool.reserveUserToken, 0);
             assert_eq!(pool.reserveValidatorToken, 10000);
@@ -501,7 +518,7 @@ mod tests {
                 poolId: pool_id,
                 user,
             };
-            let balance_result = fee_manager.call(&balance_call.abi_encode(), user)?;
+            let balance_result = fee_manager.call(&balance_call.abi_encode(), user, false)?;
             let balance = U256::abi_decode(&balance_result.bytes)?;
             assert_eq!(balance, liquidity);
 
@@ -519,7 +536,7 @@ mod tests {
             // Call with an unknown selector
             let unknown_selector = [0x12, 0x34, 0x56, 0x78];
             let calldata = Bytes::from(unknown_selector);
-            let result = fee_manager.call(&calldata, sender);
+            let result = fee_manager.call(&calldata, sender, false);
 
             // Before Moderato: should return Err(PrecompileError::Other)
             assert!(result.is_err());
@@ -539,7 +556,7 @@ mod tests {
             // Call with an unknown selector
             let unknown_selector = [0x12, 0x34, 0x56, 0x78];
             let calldata = Bytes::from(unknown_selector);
-            let result = fee_manager.call(&calldata, sender);
+            let result = fee_manager.call(&calldata, sender, false);
 
             // After Moderato: should return Ok with reverted status
             assert!(result.is_ok());
@@ -589,7 +606,7 @@ mod tests {
                 to: user,
             };
 
-            let result = fee_manager.call(&call.abi_encode(), user);
+            let result = fee_manager.call(&call.abi_encode(), user, false);
 
             // Should return Ok with reverted status for unknown function selector
             assert!(result.is_ok());

@@ -96,11 +96,11 @@ mod tests {
             validator_config.initialize(owner)?;
 
             // Test invalid selector - should return Ok with reverted status
-            let result = validator_config.call(&[0x12, 0x34, 0x56, 0x78], sender)?;
+            let result = validator_config.call(&[0x12, 0x34, 0x56, 0x78], sender, false)?;
             assert!(result.reverted);
 
             // Test insufficient calldata
-            let result = validator_config.call(&[0x12, 0x34], sender);
+            let result = validator_config.call(&[0x12, 0x34], sender, false);
             assert!(matches!(result, Err(PrecompileError::Other(_))));
 
             Ok(())
@@ -122,7 +122,7 @@ mod tests {
             let owner_call = IValidatorConfig::ownerCall {};
             let calldata = owner_call.abi_encode();
 
-            let result = validator_config.call(&calldata, sender)?;
+            let result = validator_config.call(&calldata, sender, false)?;
             // HashMapStorageProvider does not do gas accounting, so we expect 0 here.
             assert_eq!(result.gas_used, 0);
 
@@ -156,7 +156,7 @@ mod tests {
             };
             let calldata = add_call.abi_encode();
 
-            let result = validator_config.call(&calldata, owner)?;
+            let result = validator_config.call(&calldata, owner, false)?;
 
             // HashMapStorageProvider does not have gas accounting, so we expect 0
             assert_eq!(result.gas_used, 0);
@@ -197,7 +197,7 @@ mod tests {
             };
             let calldata = add_call.abi_encode();
 
-            let result = validator_config.call(&calldata, non_owner);
+            let result = validator_config.call(&calldata, non_owner, false);
             expect_precompile_revert(&result, ValidatorConfigError::unauthorized());
 
             Ok(())
