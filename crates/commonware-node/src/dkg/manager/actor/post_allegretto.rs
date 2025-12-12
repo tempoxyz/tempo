@@ -27,7 +27,7 @@ use crate::{
     consensus::block::Block,
     dkg::{
         HardforkRegime,
-        ceremony::{self, Ceremony},
+        ceremony::{self, Ceremony, PrivateOutcome},
         manager::{
             actor::{DkgOutcome, pre_allegretto},
             validators::{self, ValidatorState},
@@ -38,8 +38,6 @@ use crate::{
 
 const CURRENT_EPOCH_KEY: U64 = U64::new(0);
 const PREVIOUS_EPOCH_KEY: U64 = U64::new(1);
-
-const DKG_OUTCOME_KEY: U64 = U64::new(0);
 
 impl<TContext, TPeerManager> super::Actor<TContext, TPeerManager>
 where
@@ -174,14 +172,14 @@ where
         fields(
             block.derived_epoch = utils::epoch(self.config.epoch_length, block.height()),
             block.height = block.height(),
-            ceremony.epoch = maybe_ceremony.as_ref().map(|c| c.epoch()),
+            ceremony.epoch = %ceremony.epoch(),
         ),
     )]
     pub(super) async fn handle_finalized_post_allegretto<TReceiver, TSender>(
         &mut self,
         cause: Span,
         block: Block,
-        maybe_ceremony: &mut Option<Ceremony<ContextCell<TContext>, TReceiver, TSender>>,
+        ceremony: &mut Ceremony<ContextCell<TContext>, TReceiver, TSender>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
     ) where
         TReceiver: Receiver<PublicKey = PublicKey>,
@@ -204,17 +202,28 @@ where
             return;
         }
 
-        // Special case --- boundary block: report that a new epoch should be
-        // entered, start a new ceremony.
+        // Special case --- boundary block: finalize the ceremony based on the
+        // parent block.
         //
         // Recall, for some epoch length E, the boundary heights are
         // 1E-1, 2E-1, 3E-1, ... for epochs 0, 1, 2.
         //
         // So for E = 100, the boundary heights would be 99, 199, 299, ...
         if utils::is_last_block_in_epoch(self.config.epoch_length, block.height()).is_some() {
-            self.update_and_register_current_epoch_state().await;
+            info!("reached end of epoch - reporting new epoch and starting ceremony");
 
-            maybe_ceremony.replace(self.start_post_allegretto_ceremony(ceremony_mux).await);
+            // Finalizations happen in strictly sequential order. This means we
+            // are guaranteed to have observed the parent.
+            let dkg_outcome = ceremony.new_finalize(block.parent_digest()).expect(
+                "finalizing the ceremony on the boundary using the block's \
+                    parent must work - we have observed all finalized blocks up \
+                    until here, so we must have observed its parent, too",
+            );
+
+            self.update_and_register_current_epoch_state(dkg_outcome)
+                .await;
+
+            *ceremony = self.start_post_allegretto_ceremony(ceremony_mux).await;
             // Early return: start driving the ceremony on the first height of
             // the next epoch.
             return;
@@ -237,13 +246,6 @@ where
             }
         }
 
-        let mut ceremony = maybe_ceremony.take().expect(
-            "past this point a ceremony must always be defined; the only \
-                time a ceremony is not permitted to exist is exactly on the \
-                boundary; did the code after ensure that the ceremony is \
-                returned to its Option?",
-        );
-
         match epoch::relative_position(block.height(), self.config.epoch_length) {
             epoch::RelativePosition::FirstHalf => {
                 let _ = ceremony.distribute_shares().await;
@@ -256,68 +258,12 @@ where
                     .await;
             }
             epoch::RelativePosition::SecondHalf => {
-                let _ = ceremony
-                    .process_dealings_in_block(&block, HardforkRegime::PostAllegretto)
-                    .await;
+                // Nothing special happens in the second half of the epoch.
+                // Should we use these extra blocks to process more messages?
             }
         }
 
-        // XXX: Need to finalize on the pre-to-last height of the epoch so that
-        // the information becomes available on the last height and can be
-        // stored on chain.
-        let is_one_before_boundary =
-            utils::is_last_block_in_epoch(self.config.epoch_length, block.height() + 1).is_some();
-        if !is_one_before_boundary {
-            assert!(
-                maybe_ceremony.replace(ceremony).is_none(),
-                "putting back the ceremony we just took out",
-            );
-            return;
-        }
-
-        info!("on pre-to-last height of epoch; finalizing ceremony");
-
-        let current_epoch = ceremony.epoch();
-
-        let (ceremony_outcome, dkg_successful) = match ceremony.finalize() {
-            Ok(outcome) => {
-                self.metrics.ceremony.one_more_success();
-                info!(
-                    "ceremony was successful; using the new participants, polynomial and secret key"
-                );
-                (outcome, true)
-            }
-            Err(outcome) => {
-                self.metrics.ceremony.one_more_failure();
-                warn!(
-                    "ceremony was a failure; using the old participants, polynomial and secret key"
-                );
-                (outcome, false)
-            }
-        };
-        let (public, share) = ceremony_outcome.role.into_key_pair();
-
-        self.post_allegretto_metadatas
-            .dkg_outcome_metadata
-            .put_sync(
-                DKG_OUTCOME_KEY,
-                DkgOutcome {
-                    dkg_successful,
-                    epoch: current_epoch + 1,
-                    participants: ceremony_outcome.participants,
-                    public,
-                    share,
-                },
-            )
-            .await
-            .expect("must always be able to persist the DKG outcome");
-
-        // Prune older ceremony.
-        if let Some(epoch) = current_epoch.checked_sub(1) {
-            let mut ceremony_metadata = self.ceremony_metadata.lock().await;
-            ceremony_metadata.remove(&epoch.into());
-            ceremony_metadata.sync().await.expect("metadata must sync");
-        }
+        let _ = ceremony.add_finalized_block(block.clone());
     }
 
     #[instrument(skip_all)]
@@ -422,8 +368,10 @@ where
             public: epoch_state.public_polynomial().clone(),
             share: epoch_state.private_share().clone(),
             epoch: epoch_state.epoch(),
+            epoch_length: self.config.epoch_length,
             dealers: epoch_state.dealer_pubkeys(),
             players: epoch_state.player_pubkeys(),
+            hardfork_regime: HardforkRegime::PostAllegretto,
         };
         let ceremony = ceremony::Ceremony::init(
             &mut self.context,
@@ -458,44 +406,58 @@ where
     }
 
     #[instrument(skip_all)]
-    async fn update_and_register_current_epoch_state(&mut self) {
+    async fn update_and_register_current_epoch_state(
+        &mut self,
+        dkg_outcome: Result<PrivateOutcome, PrivateOutcome>,
+    ) {
         let old_epoch_state = self
             .post_allegretto_metadatas
             .epoch_metadata
             .remove(&CURRENT_EPOCH_KEY)
             .expect("there must always exist an epoch state");
 
-        // Remove it?
-        let dkg_outcome = self
-            .post_allegretto_metadatas
-            .dkg_outcome_metadata
-            .get(&DKG_OUTCOME_KEY)
-            .cloned()
-            .expect(
-                "when updating the current epoch state, there must be a DKG \
-                outcome of some ceremony",
-            );
-
-        assert_eq!(
-            old_epoch_state.epoch() + 1,
-            dkg_outcome.epoch,
-            "sanity check: old outcome must be new outcome - 1"
-        );
-
+        let new_epoch = dkg_outcome.as_ref().map_or_else(|e| e.epoch, |o| o.epoch);
         let syncing_players = super::read_validator_config_with_retry(
             &self.context,
             &self.config.execution_node,
-            dkg_outcome.epoch,
+            new_epoch,
             self.config.epoch_length,
         )
         .await;
 
         let mut new_validator_state = old_epoch_state.validator_state.clone();
-        if dkg_outcome.dkg_successful {
-            new_validator_state.push_on_success(syncing_players);
-        } else {
-            new_validator_state.push_on_failure(syncing_players);
-        }
+        let dkg_outcome = match dkg_outcome {
+            Ok(outcome) => {
+                self.metrics.ceremony.one_more_success();
+                info!(
+                    "ceremony was successful; using the new participants, polynomial and secret key"
+                );
+                new_validator_state.push_on_success(syncing_players);
+                let (public, share) = outcome.role.into_key_pair();
+                DkgOutcome {
+                    dkg_successful: true,
+                    epoch: new_epoch,
+                    participants: outcome.participants.clone(),
+                    public,
+                    share,
+                }
+            }
+            Err(outcome) => {
+                self.metrics.ceremony.one_more_failure();
+                warn!(
+                    "ceremony was a failure; using the old participants, polynomial and secret key"
+                );
+                new_validator_state.push_on_failure(syncing_players);
+                let (public, share) = outcome.role.into_key_pair();
+                DkgOutcome {
+                    dkg_successful: false,
+                    epoch: new_epoch,
+                    participants: outcome.participants.clone(),
+                    public,
+                    share,
+                }
+            }
+        };
 
         self.post_allegretto_metadatas.epoch_metadata.put(
             CURRENT_EPOCH_KEY,
@@ -561,10 +523,6 @@ where
     /// Persisted information on the current epoch for DKG ceremonies that were
     /// started after the allegretto hardfork.
     epoch_metadata: Metadata<TContext, U64, EpochState>,
-
-    /// The persisted DKG outcome. This is the result of latest DKG ceremony,
-    /// constructed one height before the boundary height b (on b-1).
-    dkg_outcome_metadata: Metadata<TContext, U64, DkgOutcome>,
 }
 
 impl<TContext> Metadatas<TContext>
@@ -585,20 +543,7 @@ where
         .await
         .expect("must be able to initialize metadata on disk to function");
 
-        let dkg_outcome_metadata = Metadata::init(
-            context.with_label("dkg_outcome_metadata"),
-            commonware_storage::metadata::Config {
-                partition: format!("{partition_prefix}_next_dkg_outcome"),
-                codec_config: (),
-            },
-        )
-        .await
-        .expect("must be able to initialize metadata on disk to function");
-
-        Self {
-            epoch_metadata,
-            dkg_outcome_metadata,
-        }
+        Self { epoch_metadata }
     }
 
     pub(super) fn current_epoch_state(&self) -> Option<&EpochState> {
@@ -607,24 +552,6 @@ where
 
     pub(super) fn previous_epoch_state(&self) -> Option<&EpochState> {
         self.epoch_metadata.get(&PREVIOUS_EPOCH_KEY)
-    }
-
-    pub(super) fn dkg_outcome(&self) -> Option<PublicOutcome> {
-        if let Some(dkg_outcome) = self.dkg_outcome_metadata.get(&DKG_OUTCOME_KEY) {
-            Some(PublicOutcome {
-                epoch: dkg_outcome.epoch,
-                participants: dkg_outcome.participants.clone(),
-                public: dkg_outcome.public.clone(),
-            })
-        } else {
-            self.epoch_metadata
-                .get(&CURRENT_EPOCH_KEY)
-                .map(|epoch_state| PublicOutcome {
-                    epoch: epoch_state.dkg_outcome.epoch,
-                    participants: epoch_state.dkg_outcome.participants.clone(),
-                    public: epoch_state.dkg_outcome.public.clone(),
-                })
-        }
     }
 
     pub(super) fn exists(&self) -> bool {

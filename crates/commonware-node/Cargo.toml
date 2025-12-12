@@ -58,5 +58,6 @@ reth-revm.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
 
+thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "sync"] }
 tracing.workspace = true

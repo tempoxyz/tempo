@@ -1,14 +1,20 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, task::ready, time::Duration};
 
 use commonware_codec::{
     Encode as _, EncodeSize, RangeCfg, Read, ReadExt as _, Write, varint::UInt,
 };
-use commonware_consensus::{Block as _, Reporter, types::Epoch, utils};
+use commonware_consensus::{
+    Block as _, Reporter as _,
+    marshal::Update,
+    types::{Epoch, Round},
+    utils,
+};
 use commonware_cryptography::{
     Signer as _,
     bls12381::primitives::{group::Share, poly::Public, variant::MinSig},
     ed25519::PublicKey,
 };
+use commonware_macros::select;
 use commonware_p2p::{
     Receiver, Sender,
     utils::{mux, mux::MuxHandle},
@@ -16,28 +22,37 @@ use commonware_p2p::{
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics as _, Spawner, Storage, spawn_cell};
 use commonware_storage::metadata::Metadata;
 use commonware_utils::{
-    Acknowledgement, quorum,
+    Acknowledgement,
+    acknowledgement::Exact,
+    futures::OptionFuture,
+    quorum,
     sequence::U64,
     set::{Ordered, OrderedAssociated},
     union,
 };
 
-use eyre::{OptionExt as _, eyre};
-use futures::{StreamExt as _, channel::mpsc, lock::Mutex};
+use eyre::{Context as _, eyre};
+use futures::{
+    FutureExt as _, StreamExt as _,
+    channel::{mpsc, oneshot},
+    future::BoxFuture,
+    lock::Mutex,
+    stream::FuturesUnordered,
+};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
 use tempo_chainspec::hardfork::TempoHardforks as _;
+use tempo_dkg_onchain_artifacts::PublicOutcome;
 use tempo_node::TempoFullNode;
-use tracing::{Span, error, info, instrument, warn};
+use tracing::{Span, debug, error, info, instrument, warn};
 
 use crate::{
-    consensus::block::Block,
+    consensus::{Digest, block::Block},
     dkg::{
-        ceremony,
-        ceremony::{Ceremony, OUTCOME_NAMESPACE},
+        ceremony::{self, Ceremony, HasHoles, OUTCOME_NAMESPACE},
         manager::{
             DecodedValidator,
-            ingress::{Finalize, GetIntermediateDealing, GetOutcome},
+            ingress::{GetIntermediateDealing, GetOutcome},
             validators::{self, ValidatorState},
         },
     },
@@ -88,6 +103,77 @@ where
     /// Handles to the metrics objects that the actor will update during its
     /// runtime.
     metrics: Metrics,
+
+    /// The latest finalized tip the actor is aware of.
+    finalized_tip: Option<(u64, Digest)>,
+
+    gaps: Vec<u64>,
+    pending_gap: OptionFuture<PendingFinalizedGap>,
+    pending_finalized_block: Option<(Span, Block, Exact)>,
+
+    pending_dkg_outcome_requests: HashMap<Digest, Vec<oneshot::Sender<PublicOutcome>>>,
+
+    notarized_fetch_abort_handles: HashMap<Digest, oneshot::Sender<()>>,
+    notarized_fetch_to_requests: HashMap<Digest, Vec<Digest>>,
+    notarized_stream: FuturesUnordered<FetchNotarizedBlock>,
+}
+
+fn fetch_notarized_block(
+    mut marshal: crate::alias::marshal::Mailbox,
+    digest: Digest,
+    round: Option<Round>,
+) -> (oneshot::Sender<()>, FetchNotarizedBlock) {
+    let (tx, mut rx) = oneshot::channel();
+    (
+        tx,
+        FetchNotarizedBlock {
+            digest,
+            req: async move {
+                select!(
+                    _ = &mut rx => {
+                        Err(eyre!("aborted or dropped"))
+                    },
+
+                    block = async move { marshal.subscribe(round, digest).await.await } => {
+                        block.wrap_err("subscription was dropped before a block was received")
+                    },
+                )
+            }
+            .boxed(),
+        },
+    )
+}
+
+struct FetchNotarizedBlock {
+    digest: Digest,
+    req: BoxFuture<'static, eyre::Result<Block>>,
+}
+
+impl Future for FetchNotarizedBlock {
+    type Output = (Digest, eyre::Result<Block>);
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let res = ready!(self.req.poll_unpin(cx));
+        std::task::Poll::Ready((self.digest, res))
+    }
+}
+
+struct PendingFinalizedGap {
+    req: BoxFuture<'static, Option<Block>>,
+}
+
+impl Future for PendingFinalizedGap {
+    type Output = Option<Block>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.req.poll_unpin(cx)
+    }
 }
 
 impl<TContext, TPeerManager> Actor<TContext, TPeerManager>
@@ -188,6 +274,15 @@ where
             pre_allegretto_metadatas,
             validators_metadata,
             metrics,
+            finalized_tip: None,
+            gaps: vec![],
+            pending_gap: None.into(),
+            pending_finalized_block: None,
+
+            pending_dkg_outcome_requests: HashMap::new(),
+            notarized_fetch_to_requests: HashMap::new(),
+            notarized_fetch_abort_handles: HashMap::new(),
+            notarized_stream: FuturesUnordered::new(),
         })
     }
 
@@ -218,67 +313,143 @@ where
         );
         mux.start();
 
-        let mut ceremony = Some(
-            self.start_ceremony_for_current_epoch_state(&mut ceremony_mux)
-                .await,
-        );
+        let mut ceremony = self
+            .start_ceremony_for_current_epoch_state(&mut ceremony_mux)
+            .await;
 
-        while let Some(message) = self.mailbox.next().await {
-            let cause = message.cause;
-            match message.command {
-                super::Command::Finalize(finalize) => {
-                    self.handle_finalized(cause, finalize, &mut ceremony, &mut ceremony_mux)
-                        .await;
-                }
-                super::Command::GetIntermediateDealing(get_ceremony_deal) => {
-                    let _: Result<_, _> = self
-                        .handle_get_intermediate_dealing(
-                            cause,
-                            get_ceremony_deal,
-                            ceremony.as_mut(),
-                        )
-                        .await;
-                }
-                super::Command::GetOutcome(get_ceremony_outcome) => {
-                    let _: Result<_, _> =
-                        self.handle_get_outcome(cause, get_ceremony_outcome).await;
-                }
-
-                // Verifies some DKG dealing based on the current state the DKG manager
-                // is in. This is a request when verifying proposals. It relies on the
-                // fact that a new epoch (and hence a different hardfork regime) will
-                // only be entered once the finalized height of the current epoch was seen.
-                //
-                // Furthermore, extra data headers are only checked for intermediate
-                // dealings up but excluding the last height of an epoch.
-                //
-                // In other words: no dealing will ever have to be verified if it is
-                // for another epoch than the currently latest one.
-                super::Command::VerifyDealing(verify_dealing) => {
-                    let outcome = if self
-                        .post_allegretto_metadatas
-                        .current_epoch_state()
-                        .is_some()
-                    {
-                        verify_dealing
-                            .dealing
-                            .verify(&union(&self.config.namespace, OUTCOME_NAMESPACE))
-                    } else if self
-                        .pre_allegretto_metadatas
-                        .current_epoch_state()
-                        .is_some()
-                    {
-                        verify_dealing.dealing.verify_pre_allegretto(&union(
-                            &self.config.namespace,
-                            OUTCOME_NAMESPACE,
-                        ))
-                    } else {
-                        error!("could not determine if we are running pre- or post allegretto;");
-                        continue;
-                    };
-                    let _ = verify_dealing.response.send(outcome);
+        'events: loop {
+            if self.pending_gap.is_none() {
+                if let Some(gap) = self.gaps.pop() {
+                    self.pending_gap.replace(PendingFinalizedGap {
+                        req: {
+                            let mut marshal = self.config.marshal.clone();
+                            async move { marshal.get_block(gap).await }
+                        }
+                        .boxed(),
+                    });
+                } else if let Some((cause, block, ack)) = self.pending_finalized_block.take() {
+                    debug!(
+                        height = block.height(),
+                        "gaps filled; processing deferred finalized block now",
+                    );
+                    self.handle_finalized_block(
+                        cause,
+                        block,
+                        ack,
+                        &mut ceremony,
+                        &mut ceremony_mux,
+                    )
+                    .await;
                 }
             }
+
+            select!(
+
+            finalized_block = &mut self.pending_gap => {
+                let PendingFinalizedGap { .. } = self
+                    .pending_gap
+                    .take()
+                    .expect("must be present if resolved");
+
+                // NOTE: marshal not having the finalized block even though it
+                // tried forwarding a later block is exceedingly strange.
+                //
+                // Stop? Restart?
+                if let Some(block) = finalized_block {
+                    ceremony.add_finalized_block(block);
+                }
+            },
+
+            notarized_block = self.notarized_stream.next() => {
+                match notarized_block {
+                    Some((digest, res)) => {
+                        self.handle_notarized_block(digest, res, &mut ceremony);
+                    }
+                    // Fused streams resolve once on exhaustion but will be
+                    // disabled in the next iteration of the loop - unless a new
+                    // future is pushed into them.
+                    None => {
+                        debug!("all notarized subscriptions completed");
+                    }
+                }
+            },
+
+            message = self.mailbox.next() => {
+                let Some(message) = message else {
+                    break 'events;
+                };
+                let cause = message.cause;
+                match message.command {
+                    super::Command::Finalized(update) => match *update {
+                        Update::Tip(height, digest) => self.finalized_tip = Some((height, digest)),
+                        Update::Block(block, ack) => {
+                            self.handle_finalized_block(
+                                cause,
+                                block,
+                                ack,
+                                &mut ceremony,
+                                &mut ceremony_mux,
+                            )
+                            .await;
+                        }
+                    },
+
+                    super::Command::GetIntermediateDealing(get_ceremony_deal) => {
+                        let _: Result<_, _> = self
+                            .handle_get_intermediate_dealing(
+                                cause,
+                                get_ceremony_deal,
+                                &mut ceremony,
+                            )
+                            .await;
+                    }
+                    super::Command::GetOutcome(get_ceremony_outcome) => {
+                        let _: Result<_, _> =
+                            self.handle_get_outcome(
+                                cause,
+                                &mut ceremony,
+                                get_ceremony_outcome,
+                            ).await;
+                    }
+
+                    // Verifies some DKG dealing based on the current state the DKG manager
+                    // is in. This is a request when verifying proposals. It relies on the
+                    // fact that a new epoch (and hence a different hardfork regime) will
+                    // only be entered once the finalized height of the current epoch was seen.
+                    //
+                    // Furthermore, extra data headers are only checked for intermediate
+                    // dealings up but excluding the last height of an epoch.
+                    //
+                    // In other words: no dealing will ever have to be verified if it is
+                    // for another epoch than the currently latest one.
+                    super::Command::VerifyDealing(verify_dealing) => {
+                        let outcome = if self
+                            .post_allegretto_metadatas
+                            .current_epoch_state()
+                            .is_some()
+                        {
+                            verify_dealing
+                                .dealing
+                                .verify(&union(&self.config.namespace, OUTCOME_NAMESPACE))
+                        } else if self
+                            .pre_allegretto_metadatas
+                            .current_epoch_state()
+                            .is_some()
+                        {
+                            verify_dealing.dealing.verify_pre_allegretto(&union(
+                                &self.config.namespace,
+                                OUTCOME_NAMESPACE,
+                            ))
+                        } else {
+                            error!("could not determine if we are running pre- or post allegretto;");
+                            continue;
+                        };
+                        let _ = verify_dealing.response.send(outcome);
+                    }
+                }
+            }
+
+            );
         }
     }
 
@@ -297,7 +468,7 @@ where
         skip_all,
         fields(
             request.epoch = epoch,
-            ceremony.epoch = ceremony.as_ref().map(|c| c.epoch()),
+            ceremony.epoch = %ceremony.epoch(),
         ),
         err,
     )]
@@ -305,14 +476,12 @@ where
         &mut self,
         cause: Span,
         GetIntermediateDealing { epoch, response }: GetIntermediateDealing,
-        ceremony: Option<&mut Ceremony<ContextCell<TContext>, TReceiver, TSender>>,
+        ceremony: &mut Ceremony<ContextCell<TContext>, TReceiver, TSender>,
     ) -> eyre::Result<()>
     where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let ceremony =
-            ceremony.ok_or_eyre("no ceremony running, can't serve intermediate dealings")?;
         let mut outcome = None;
 
         'get_outcome: {
@@ -336,26 +505,61 @@ where
         skip_all,
         err,
     )]
-    async fn handle_get_outcome(
+    async fn handle_get_outcome<TReceiver, TSender>(
         &mut self,
         cause: Span,
-        GetOutcome { response }: GetOutcome,
-    ) -> eyre::Result<()> {
-        let outcome = if let Some(outcome) = self.post_allegretto_metadatas.dkg_outcome() {
-            outcome
-        } else if let Some(outcome) = self.pre_allegretto_metadatas.dkg_outcome() {
-            outcome
-        } else {
-            return Err(eyre!(
-                "no DKG outcome was found in state, even though it must exist \
-                - derived from the epoch state from either the pre- or \
-                post-allegretto logic"
-            ));
-        };
+        ceremony: &mut Ceremony<ContextCell<TContext>, TReceiver, TSender>,
+        GetOutcome {
+            parent,
+            round,
+            response,
+        }: GetOutcome,
+    ) -> eyre::Result<()>
+    where
+        TReceiver: Receiver<PublicKey = PublicKey>,
+        TSender: Sender<PublicKey = PublicKey>,
+    {
+        eyre::ensure!(
+            round.epoch() == ceremony.epoch(),
+            "currently active ceremony is for epoch `{}`, but DKG outcome was \
+            requested for epoch `{}`",
+            ceremony.epoch(),
+            round.epoch(),
+        );
 
-        response
-            .send(outcome)
-            .map_err(|_| eyre!("failed returning outcome because requester went away"))
+        match ceremony.new_finalize(parent.1) {
+            Ok(Ok(outcome) | Err(outcome)) => response
+                .send(outcome.to_public_outcome())
+                .map_err(|_| eyre!("failed returning outcome because requester went away")),
+            Err(ceremony::HasHoles { notarized_hole }) => {
+                info!(
+                    "could not yet serve DKG outcome because holes were found; \
+                    fetching holes and queueing response once they are plugged"
+                );
+                let round =
+                    (notarized_hole == parent.1).then_some(Round::new(round.epoch(), parent.0));
+                if !self
+                    .notarized_fetch_abort_handles
+                    .contains_key(&notarized_hole)
+                {
+                    let (abort, fut) =
+                        fetch_notarized_block(self.config.marshal.clone(), notarized_hole, round);
+                    self.notarized_stream.push(fut);
+                    self.notarized_fetch_abort_handles
+                        .insert(notarized_hole, abort);
+                }
+                self.notarized_fetch_to_requests
+                    .entry(notarized_hole)
+                    .or_default()
+                    .push(parent.1);
+                self.pending_dkg_outcome_requests
+                    .entry(parent.1)
+                    .or_default()
+                    .push(response);
+
+                Ok(())
+            }
+        }
     }
 
     /// Handles a finalized block.
@@ -389,30 +593,123 @@ where
         fields(
             block.derived_epoch = utils::epoch(self.config.epoch_length, block.height()),
             block.height = block.height(),
-            ceremony.epoch = maybe_ceremony.as_ref().map(|c| c.epoch()),
+            ceremony.epoch = ceremony.epoch(),
         ),
     )]
-    async fn handle_finalized<TReceiver, TSender>(
+    async fn handle_finalized_block<TReceiver, TSender>(
         &mut self,
         cause: Span,
-        Finalize {
-            block,
-            acknowledgment,
-        }: Finalize,
-        maybe_ceremony: &mut Option<Ceremony<ContextCell<TContext>, TReceiver, TSender>>,
+        block: Block,
+        acknowledgement: Exact,
+        ceremony: &mut Ceremony<ContextCell<TContext>, TReceiver, TSender>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
     ) where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
+        self.find_gaps_in_ceremony(block.height(), ceremony);
+        if !self.gaps.is_empty() {
+            debug!(
+                n_gaps = self.gaps.len(),
+                "found finalized block gaps in ceremony; deferring \
+                processing of block and filling gaps first",
+            );
+            assert!(
+                self.pending_finalized_block
+                    .replace((cause, block, acknowledgement))
+                    .is_none(),
+                "new finalized blocks must never be processed if a \
+                deferred one exists",
+            );
+            return;
+        }
+
         if self.is_running_post_allegretto(&block) {
-            self.handle_finalized_post_allegretto(cause, *block, maybe_ceremony, ceremony_mux)
+            self.handle_finalized_post_allegretto(cause, block, ceremony, ceremony_mux)
                 .await;
         } else {
-            self.handle_finalized_pre_allegretto(cause, *block, maybe_ceremony, ceremony_mux)
+            self.handle_finalized_pre_allegretto(cause, block, ceremony, ceremony_mux)
                 .await;
         }
-        acknowledgment.acknowledge();
+        acknowledgement.acknowledge();
+    }
+
+    /// Handles a notarization by registering it in the currently running ceremony.
+    // TODO: this would be a candidate to establish follows-from relations
+    #[instrument(
+        skip_all,
+        // fields(
+        //     notarization.epoch = notarization.epoch(),
+        //     notarization.digest = %notarization.proposal.payload,
+        //     ceremony.epoch = ceremony.epoch(),
+        // ),
+    )]
+    fn handle_notarized_block<TReceiver, TSender>(
+        &mut self,
+        digest: Digest,
+        res: eyre::Result<Block>,
+        ceremony: &mut Ceremony<ContextCell<TContext>, TReceiver, TSender>,
+    ) where
+        TReceiver: Receiver<PublicKey = PublicKey>,
+        TSender: Sender<PublicKey = PublicKey>,
+    {
+        self.notarized_fetch_abort_handles.remove(&digest);
+        let original_requests = self
+            .notarized_fetch_to_requests
+            .remove(&digest)
+            .unwrap_or_default();
+        let Ok(block) = res else {
+            // Plugging the hole failed. Drop all related requests.
+            for req in original_requests {
+                self.pending_dkg_outcome_requests.remove(&req);
+            }
+            return;
+        };
+
+        ceremony.add_notarized_block(block);
+
+        for pending_digest in original_requests {
+            if let Some(pending_requests) =
+                self.pending_dkg_outcome_requests.remove(&pending_digest)
+            {
+                match ceremony.new_finalize(pending_digest) {
+                    Ok(Ok(private) | Err(private)) => {
+                        let public = private.to_public_outcome();
+                        for response in pending_requests {
+                            let _ = response.send(public.clone());
+                        }
+                    }
+                    // TODO: merge fetching here and in `handle_get_outcome`
+                    Err(HasHoles { notarized_hole }) => {
+                        info!(
+                            %notarized_hole,
+                            "could not yet serve DKG outcome because holes \
+                            were found; fetching holes and queueing response \
+                            once they are plugged"
+                        );
+                        if !self
+                            .notarized_fetch_abort_handles
+                            .contains_key(&notarized_hole)
+                        {
+                            let (abort, fut) = fetch_notarized_block(
+                                self.config.marshal.clone(),
+                                notarized_hole,
+                                None,
+                            );
+                            self.notarized_stream.push(fut);
+                            self.notarized_fetch_abort_handles
+                                .insert(notarized_hole, abort);
+                        }
+                        self.notarized_fetch_to_requests
+                            .entry(notarized_hole)
+                            .or_default()
+                            .push(pending_digest);
+                        self.pending_dkg_outcome_requests
+                            .insert(pending_digest, pending_requests);
+                    }
+                }
+            }
+        }
     }
 
     /// Starts a new ceremony for the epoch state tracked by the actor.
@@ -622,6 +919,17 @@ where
         } else {
             panic!("either pre- or post-allegretto current-epoch-state should exist")
         }
+    }
+
+    fn find_gaps_in_ceremony<TReceiver, TSender>(
+        &mut self,
+        height: u64,
+        ceremony: &Ceremony<ContextCell<TContext>, TReceiver, TSender>,
+    ) where
+        TReceiver: Receiver<PublicKey = PublicKey>,
+        TSender: Sender<PublicKey = PublicKey>,
+    {
+        self.gaps = ceremony.find_gaps_up_to_height(height);
     }
 }
 

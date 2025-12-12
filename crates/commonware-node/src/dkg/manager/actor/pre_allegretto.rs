@@ -17,7 +17,6 @@ use commonware_utils::{
 use eyre::{OptionExt as _, WrapErr as _};
 use rand_core::CryptoRngCore;
 use tempo_chainspec::hardfork::TempoHardforks;
-use tempo_dkg_onchain_artifacts::PublicOutcome;
 use tracing::{Span, info, instrument, warn};
 
 use crate::{
@@ -145,80 +144,128 @@ where
         &mut self,
         cause: Span,
         block: Block,
-        maybe_ceremony: &mut Option<Ceremony<ContextCell<TContext>, TReceiver, TSender>>,
+        ceremony: &mut Ceremony<ContextCell<TContext>, TReceiver, TSender>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
     ) where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
         // Special case the last height.
-        //
-        // On the last height, the new ("current") ceremony can be entered
-        // because that is what provides the "genesis" of the new epoch.
-        if let Some(block_epoch) =
-            utils::is_last_block_in_epoch(self.config.epoch_length, block.height())
-        {
-            let epoch_state = self.current_epoch_state();
-            if block_epoch + 1 == epoch_state.epoch() {
-                if self
-                    .config
-                    .execution_node
-                    .chain_spec()
-                    .is_allegretto_active_at_timestamp(block.timestamp())
-                {
+        if utils::is_last_block_in_epoch(self.config.epoch_length, block.height()).is_some() {
+            info!("reached end of epoch - reporting new epoch and starting ceremony");
+
+            // Finalizations happen in strictly sequential order. This means we
+            // are guaranteed to have observed the parent.
+            let dkg_outcome = ceremony.new_finalize(block.parent_digest()).expect(
+                "finalizing the ceremony on the boundary using the block's \
+                    parent must work - we have observed all finalized blocks up \
+                    until here, so we must have observed its parent, too",
+            );
+
+            let outcome = match dkg_outcome {
+                Ok(outcome) => {
+                    self.metrics.ceremony.one_more_success();
                     info!(
-                        "block timestamp is after allegretto hardfork; attempting \
+                        "ceremony was successful; using the new participants, polynomial and secret key"
+                    );
+                    outcome
+                }
+                Err(outcome) => {
+                    self.metrics.ceremony.one_more_failure();
+                    warn!(
+                        "ceremony was a failure; using the old participants, polynomial and secret key"
+                    );
+                    outcome
+                }
+            };
+            let (public, share) = outcome.role.into_key_pair();
+
+            let old_epoch_state = self
+                .pre_allegretto_metadatas
+                .epoch_metadata
+                .remove(&CURRENT_EPOCH_KEY)
+                .expect("there must always be a current epoch state");
+
+            let next_epoch = old_epoch_state.epoch + 1;
+
+            self.pre_allegretto_metadatas
+                .epoch_metadata
+                .put(PREVIOUS_EPOCH_KEY, old_epoch_state);
+
+            let new_epoch_state = EpochState {
+                epoch: next_epoch,
+                participants: outcome.participants,
+                public,
+                share,
+            };
+            self.pre_allegretto_metadatas
+                .epoch_metadata
+                .put(CURRENT_EPOCH_KEY, new_epoch_state.clone());
+
+            self.pre_allegretto_metadatas
+                .epoch_metadata
+                .sync()
+                .await
+                .expect("must always be able to write epoch state to disk");
+
+            // Prune older ceremony.
+            if let Some(epoch) = new_epoch_state.epoch.checked_sub(2) {
+                let mut ceremony_metadata = self.ceremony_metadata.lock().await;
+                ceremony_metadata.remove(&epoch.into());
+                ceremony_metadata.sync().await.expect("metadata must sync");
+            }
+
+            let epoch_state = self.current_epoch_state();
+            if self
+                .config
+                .execution_node
+                .chain_spec()
+                .is_allegretto_active_at_timestamp(block.timestamp())
+            {
+                info!(
+                    "block timestamp is after allegretto hardfork; attempting \
                         to transition to dynamic validator sets by reading validators \
                         from smart contract",
-                    );
-                    match self
-                        .transition_to_dynamic_validator_sets(ceremony_mux)
-                        .await
-                    {
-                        Ok(ceremony) => {
-                            maybe_ceremony.replace(ceremony);
-                            info!(
-                                "transitioning to dynamic validator sets was successful; \
+                );
+                match self
+                    .transition_to_dynamic_validator_sets(ceremony_mux)
+                    .await
+                {
+                    Ok(new_ceremony) => {
+                        *ceremony = new_ceremony;
+                        info!(
+                            "transitioning to dynamic validator sets was successful; \
                                 deleting current pre-allegretto epoch state and leaving \
                                 DKG logic to the post-hardfork routines",
-                            );
-                            self.pre_allegretto_metadatas
-                                .delete_current_epoch_state()
-                                .await;
-                            return;
-                        }
-                        Err(error) => {
-                            self.metrics.failed_allegretto_transitions.inc();
-                            warn!(
-                                %error,
-                                "transitioning to dynamic validator sets was not \
-                                successful; will attempt again next epoch"
-                            );
-                        }
+                        );
+                        self.pre_allegretto_metadatas
+                            .delete_current_epoch_state()
+                            .await;
+                        return;
+                    }
+                    Err(error) => {
+                        self.metrics.failed_allegretto_transitions.inc();
+                        warn!(
+                            %error,
+                            "transitioning to dynamic validator sets was not \
+                            successful; will attempt again next epoch"
+                        );
                     }
                 }
-
-                // NOTE: This acts as restart protection: on pre-allegretto,
-                // CURRENT_EPOCH_KEY is updated on the block *last height - 1*.
-                // If a node restarts, it immediately starts a ceremony for
-                // CURRENT_EPOCH_KEY, and then starts processing *last height*.
-                //
-                // This attempt to create a ceremony with the same mux subchannel
-                // and fail.
-                if maybe_ceremony.is_none()
-                    || maybe_ceremony
-                        .as_ref()
-                        .is_some_and(|ceremony| ceremony.epoch() != epoch_state.epoch())
-                {
-                    maybe_ceremony.replace(self.start_pre_allegretto_ceremony(ceremony_mux).await);
-                }
-                self.register_current_epoch_state().await;
-            } else {
-                warn!(
-                    "block was a boundary block, but not the last block of the \
-                    previous epoch; ignoring it"
-                );
             }
+
+            // NOTE: This acts as restart protection: on pre-allegretto,
+            // CURRENT_EPOCH_KEY is updated on the block *last height - 1*.
+            // If a node restarts, it immediately starts a ceremony for
+            // CURRENT_EPOCH_KEY, and then starts processing *last height*.
+            //
+            // This attempt to create a ceremony with the same mux subchannel
+            // and fail.
+            if ceremony.epoch() != epoch_state.epoch() {
+                *ceremony = self.start_pre_allegretto_ceremony(ceremony_mux).await;
+            }
+            self.register_current_epoch_state().await;
+
             return;
         }
 
@@ -248,10 +295,6 @@ where
                 .expect("must always be able to persist state");
         }
 
-        let mut ceremony = maybe_ceremony
-            .take()
-            .expect("a ceremony must always exist except for the last block");
-
         match epoch::relative_position(block.height(), self.config.epoch_length) {
             epoch::RelativePosition::FirstHalf => {
                 let _ = ceremony.distribute_shares().await;
@@ -264,80 +307,13 @@ where
                     .await;
             }
             epoch::RelativePosition::SecondHalf => {
-                let _ = ceremony
-                    .process_dealings_in_block(&block, HardforkRegime::PreAllegretto)
-                    .await;
+                // Nothing special happens in the second half of the epoch. All
+                // blocks are checked for dealings for the entire epoch.
             }
         }
 
-        let is_one_before_boundary =
-            utils::is_last_block_in_epoch(self.config.epoch_length, block.height() + 1).is_some();
-
-        if !is_one_before_boundary {
-            assert!(
-                maybe_ceremony.replace(ceremony).is_none(),
-                "ceremony was taken out of the option and is being put back"
-            );
-            return;
-        }
-
-        // XXX: Need to finalize on the pre-to-last height of the epoch so that
-        // the information becomes available on the last height and can be
-        // stored on chain.
-        info!("on pre-to-last height of epoch; finalizing ceremony");
-
-        let next_epoch = ceremony.epoch() + 1;
-
-        let ceremony_outcome = match ceremony.finalize() {
-            Ok(outcome) => {
-                self.metrics.ceremony.one_more_success();
-                info!(
-                    "ceremony was successful; using the new participants, polynomial and secret key"
-                );
-                outcome
-            }
-            Err(outcome) => {
-                self.metrics.ceremony.one_more_failure();
-                warn!(
-                    "ceremony was a failure; using the old participants, polynomial and secret key"
-                );
-                outcome
-            }
-        };
-        let (public, share) = ceremony_outcome.role.into_key_pair();
-
-        let old_epoch_state = self
-            .pre_allegretto_metadatas
-            .epoch_metadata
-            .remove(&CURRENT_EPOCH_KEY)
-            .expect("there must always be a current epoch state");
-
-        self.pre_allegretto_metadatas
-            .epoch_metadata
-            .put(PREVIOUS_EPOCH_KEY, old_epoch_state);
-
-        let new_epoch_state = EpochState {
-            epoch: next_epoch,
-            participants: ceremony_outcome.participants,
-            public,
-            share,
-        };
-        self.pre_allegretto_metadatas
-            .epoch_metadata
-            .put(CURRENT_EPOCH_KEY, new_epoch_state.clone());
-
-        self.pre_allegretto_metadatas
-            .epoch_metadata
-            .sync()
-            .await
-            .expect("must always be able to write epoch state to disk");
-
-        // Prune older ceremony.
-        if let Some(epoch) = new_epoch_state.epoch.checked_sub(2) {
-            let mut ceremony_metadata = self.ceremony_metadata.lock().await;
-            ceremony_metadata.remove(&epoch.into());
-            ceremony_metadata.sync().await.expect("metadata must sync");
-        }
+        // Emits event on error.
+        let _ = ceremony.add_finalized_block(block.clone());
     }
 
     #[instrument(skip_all, fields(epoch = self.pre_allegretto_metadatas.current_epoch_state().unwrap().epoch()))]
@@ -360,8 +336,10 @@ where
             public: epoch_state.public.clone(),
             share: epoch_state.share.clone(),
             epoch: epoch_state.epoch,
+            epoch_length: self.config.epoch_length,
             dealers: epoch_state.participants.clone(),
             players: epoch_state.participants.clone(),
+            hardfork_regime: HardforkRegime::PreAllegretto,
         };
 
         let ceremony = ceremony::Ceremony::init(
@@ -444,15 +422,6 @@ where
         .expect("must be able to initialize metadata on disk to function");
 
         Self { epoch_metadata }
-    }
-
-    pub(super) fn dkg_outcome(&self) -> Option<PublicOutcome> {
-        let epoch_state = self.current_epoch_state()?;
-        Some(PublicOutcome {
-            epoch: epoch_state.epoch(),
-            participants: epoch_state.participants().clone(),
-            public: epoch_state.public_polynomial().clone(),
-        })
     }
 
     pub(super) fn previous_epoch_state(&self) -> Option<&EpochState> {
