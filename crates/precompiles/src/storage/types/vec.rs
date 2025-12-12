@@ -1539,6 +1539,34 @@ mod tests {
         });
     }
 
+    #[test]
+    fn test_vec_handler_at_oob_check() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let len_slot = U256::random();
+            let handler = VecHandler::<U256>::new(len_slot, address);
+
+            // Empty vec - any index should return None
+            assert!(handler.at(0)?.is_none());
+
+            // Push 2 elements
+            handler.push(U256::from(10))?;
+            handler.push(U256::from(20))?;
+
+            // Valid indices should return Some and read the correct values
+            assert!(handler.at(0)?.is_some());
+            assert!(handler.at(1)?.is_some());
+            assert_eq!(handler.at(0)?.unwrap().read()?, U256::from(10));
+            assert_eq!(handler.at(1)?.unwrap().read()?, U256::from(20));
+
+            // OOB indices should return None
+            assert!(handler.at(3)?.is_none());
+
+            Ok(())
+        })
+    }
+
     // -- PROPTEST STRATEGIES ------------------------------------------------------
 
     prop_compose! {
