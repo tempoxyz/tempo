@@ -178,7 +178,7 @@ impl TreeOfDealings {
         // finalized blocks, put the path of digests into `notarized_digests`.
         //
         // If no path exists (if there is a hole), return that.
-        let mut notarized_digests = Vec::new();
+        let mut path_of_notarized_digests = Vec::new();
         if finalized_height.is_none() {
             let height_to_reach = self.finalized_by_height.last_key_value().map_or_else(
                 || first_block_in_epoch(self.epoch_length, self.epoch),
@@ -187,12 +187,15 @@ impl TreeOfDealings {
 
             let notarized_hole = if let Some(mut block) = self.notarized_by_digest.get(&digest) {
                 loop {
-                    notarized_digests.push(block.digest);
+                    path_of_notarized_digests.push(block.digest);
                     if block.height <= height_to_reach {
                         if height_to_reach != first_block_in_epoch(self.epoch_length, self.epoch) {
                             assert_eq!(
-                                self.finalized_by_height[&(height_to_reach + 1)].digest,
-                                block.digest,
+                                self.finalized_by_height[&(height_to_reach - 1)].digest,
+                                block.parent,
+                                "height_to_reach is latest_finalized.height + 1; \
+                                this means that block.parent == latest_finalized.digest;
+                                if that is not the case something is terribly wrong"
                             );
                         }
 
@@ -215,7 +218,7 @@ impl TreeOfDealings {
             }
 
             assert!(
-                !notarized_digests.is_empty(),
+                !path_of_notarized_digests.is_empty(),
                 "if the digest is not among finalized, and if there are no holes, \
                 then the list of notarized digests to talk cannot be empty"
             );
@@ -234,7 +237,7 @@ impl TreeOfDealings {
             .range(range)
             .map(|(_, block)| block)
             .chain(
-                notarized_digests
+                path_of_notarized_digests
                     .into_iter()
                     .rev()
                     // NOTE: Infallible; notarized_digests was populated from
