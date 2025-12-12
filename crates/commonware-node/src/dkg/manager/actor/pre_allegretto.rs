@@ -19,7 +19,7 @@ use tracing::{Span, info, instrument, warn};
 
 use crate::{
     consensus::block::Block,
-    db::Tx,
+    db::ReadWriteTransaction,
     dkg::{
         HardforkRegime, RegimeEpochState,
         ceremony::{self, Ceremony},
@@ -47,7 +47,7 @@ where
     #[instrument(skip_all, err)]
     pub(super) async fn pre_allegretto_init(
         &mut self,
-        tx: &mut Tx<ContextCell<TContext>>,
+        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
     ) -> eyre::Result<()> {
         if !tx.has_post_allegretto_state().await {
             let spec = self.config.execution_node.chain_spec();
@@ -128,7 +128,7 @@ where
         block: Block,
         maybe_ceremony: &mut Option<Ceremony<TReceiver, TSender>>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
-        tx: &mut Tx<ContextCell<TContext>>,
+        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
     ) where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
@@ -314,7 +314,7 @@ where
     #[instrument(skip_all, fields(epoch = tracing::field::Empty))]
     pub(super) async fn start_pre_allegretto_ceremony<TReceiver, TSender>(
         &mut self,
-        tx: &mut Tx<ContextCell<TContext>>,
+        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> Ceremony<TReceiver, TSender>
     where
@@ -365,7 +365,7 @@ where
 
     async fn transition_to_dynamic_validator_sets<TReceiver, TSender>(
         &mut self,
-        tx: &mut Tx<ContextCell<TContext>>,
+        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> eyre::Result<Ceremony<TReceiver, TSender>>
     where

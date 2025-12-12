@@ -108,8 +108,8 @@ where
     }
 
     /// Begin a new read-write transaction.
-    pub fn read_write(&self) -> Tx<TContext> {
-        Tx::new(self.clone())
+    pub fn read_write(&self) -> ReadWriteTransaction<TContext> {
+        ReadWriteTransaction::new(self.clone())
     }
 }
 
@@ -132,7 +132,7 @@ where
 /// tx.remove("old_data");
 /// tx.commit().await?;  // All changes serialized and applied atomically
 /// ```
-pub struct Tx<TContext>
+pub struct ReadWriteTransaction<TContext>
 where
     TContext: Clock + Metrics + Storage,
 {
@@ -150,7 +150,7 @@ where
     writes: HashMap<B256, Option<Box<dyn CachedValue>>>,
 }
 
-impl<TContext> Tx<TContext>
+impl<TContext> ReadWriteTransaction<TContext>
 where
     TContext: Clock + Metrics + Storage,
 {

@@ -21,7 +21,7 @@ use tracing::{Span, info, instrument, warn};
 
 use crate::{
     consensus::block::Block,
-    db::Tx,
+    db::ReadWriteTransaction,
     dkg::{
         HardforkRegime, RegimeEpochState,
         ceremony::{self, Ceremony},
@@ -44,7 +44,7 @@ where
     #[instrument(skip_all, err)]
     pub(super) async fn post_allegretto_init(
         &mut self,
-        tx: &mut Tx<ContextCell<TContext>>,
+        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
     ) -> eyre::Result<()> {
         let spec = self.config.execution_node.chain_spec();
         if !tx.has_post_allegretto_state().await && spec.is_allegretto_active_at_timestamp(0) {
@@ -172,7 +172,7 @@ where
         block: Block,
         maybe_ceremony: &mut Option<Ceremony<TReceiver, TSender>>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
-        tx: &mut Tx<ContextCell<TContext>>,
+        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
     ) where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
@@ -307,7 +307,7 @@ where
     #[instrument(skip_all)]
     pub(super) async fn transition_from_static_validator_sets<TReceiver, TSender>(
         &mut self,
-        tx: &mut Tx<ContextCell<TContext>>,
+        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
         pre_allegretto_epoch_state: pre_allegretto::EpochState,
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> eyre::Result<Ceremony<TReceiver, TSender>>
@@ -388,7 +388,7 @@ where
     #[instrument(skip_all, fields(epoch = tracing::field::Empty))]
     pub(super) async fn start_post_allegretto_ceremony<TReceiver, TSender>(
         &mut self,
-        tx: &mut Tx<ContextCell<TContext>>,
+        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> Ceremony<TReceiver, TSender>
     where
@@ -448,7 +448,7 @@ where
     #[instrument(skip_all)]
     async fn update_and_register_current_epoch_state(
         &mut self,
-        tx: &mut Tx<ContextCell<TContext>>,
+        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
     ) {
         let old_epoch_state: EpochState = tx
             .get_epoch()
@@ -501,7 +501,7 @@ where
     /// Reports that a new epoch was fully entered, that the previous epoch can be ended.
     async fn enter_current_epoch_and_remove_old_state(
         &mut self,
-        tx: &mut Tx<ContextCell<TContext>>,
+        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
     ) {
         let epoch_to_shutdown =
             if let Ok(Some(old_epoch_state)) = tx.get_previous_epoch::<EpochState>().await {

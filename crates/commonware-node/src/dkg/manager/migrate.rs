@@ -6,7 +6,7 @@ use eyre::Result;
 use tracing::info;
 
 use crate::{
-    db::Tx,
+    db::ReadWriteTransaction,
     dkg::{
         ceremony,
         manager::{
@@ -58,7 +58,7 @@ where
 pub(super) async fn maybe_migrate_to_db<TContext>(
     context: &ContextCell<TContext>,
     partition_prefix: &str,
-    tx: &mut Tx<ContextCell<TContext>>,
+    tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
 ) -> Result<()>
 where
     TContext: Clock + Metrics + Storage,
@@ -117,7 +117,7 @@ where
 async fn migrate_ceremony_metadata<TContext>(
     context: &ContextCell<TContext>,
     partition_prefix: &str,
-    tx: &mut Tx<ContextCell<TContext>>,
+    tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
     current_epoch: Option<u64>,
 ) -> Result<()>
 where
@@ -146,7 +146,7 @@ where
 async fn migrate_pre_allegretto_epoch_metadata<TContext>(
     context: &ContextCell<TContext>,
     partition_prefix: &str,
-    tx: &mut Tx<ContextCell<TContext>>,
+    tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
 ) -> Result<()>
 where
     TContext: Clock + Metrics + Storage,
@@ -167,7 +167,7 @@ where
 async fn migrate_post_allegretto_epoch_metadata<TContext>(
     context: &ContextCell<TContext>,
     partition_prefix: &str,
-    tx: &mut Tx<ContextCell<TContext>>,
+    tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
 ) -> Result<()>
 where
     TContext: Clock + Metrics + Storage,
@@ -188,7 +188,7 @@ where
 /// Helper to migrate current and previous epoch states for a given regime.
 fn migrate_epoch_states<TContext, E>(
     epoch_metadata: &Metadata<ContextCell<TContext>, U64, E>,
-    tx: &mut Tx<ContextCell<TContext>>,
+    tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
     get_epoch: impl Fn(&E) -> u64,
 ) -> Result<()>
 where
@@ -219,7 +219,7 @@ where
 async fn migrate_dkg_outcome_metadata<TContext>(
     context: &ContextCell<TContext>,
     partition_prefix: &str,
-    tx: &mut Tx<ContextCell<TContext>>,
+    tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
 ) -> Result<()>
 where
     TContext: Clock + Metrics + Storage,
@@ -242,7 +242,7 @@ where
 async fn migrate_validators_metadata<TContext>(
     context: &ContextCell<TContext>,
     partition_prefix: &str,
-    tx: &mut Tx<ContextCell<TContext>>,
+    tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
     current_epoch: Option<u64>,
 ) -> Result<()>
 where

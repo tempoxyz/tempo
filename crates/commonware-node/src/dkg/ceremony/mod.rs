@@ -28,7 +28,7 @@ use tracing::{Level, debug, error, info, instrument, warn};
 
 use tempo_dkg_onchain_artifacts::{Ack, IntermediateOutcome};
 
-use crate::{consensus::block::Block, db::Tx, dkg::HardforkRegime};
+use crate::{consensus::block::Block, db::ReadWriteTransaction, dkg::HardforkRegime};
 
 mod payload;
 mod persisted;
@@ -113,7 +113,7 @@ where
     pub(super) async fn init<TContext>(
         context: &mut TContext,
         mux: &mut MuxHandle<TSender, TReceiver>,
-        tx: &mut Tx<TContext>,
+        tx: &mut ReadWriteTransaction<TContext>,
         config: Config,
         metrics: Metrics,
     ) -> eyre::Result<Self>
@@ -296,7 +296,7 @@ where
     #[instrument(skip_all, fields(epoch = self.config.epoch), err)]
     pub(super) async fn distribute_shares<TContext>(
         &mut self,
-        tx: &mut Tx<TContext>,
+        tx: &mut ReadWriteTransaction<TContext>,
     ) -> eyre::Result<()>
     where
         TContext: Clock + RuntimeMetrics + Storage,
@@ -415,7 +415,7 @@ where
     #[instrument(skip_all, fields(epoch = self.epoch()), err)]
     pub(super) async fn process_messages<TContext>(
         &mut self,
-        tx: &mut Tx<TContext>,
+        tx: &mut ReadWriteTransaction<TContext>,
     ) -> eyre::Result<()>
     where
         TContext: Clock + RuntimeMetrics + Storage,
@@ -460,7 +460,7 @@ where
     )]
     async fn process_ack<TContext>(
         &mut self,
-        tx: &mut Tx<TContext>,
+        tx: &mut ReadWriteTransaction<TContext>,
         peer: PublicKey,
         ack: Ack,
     ) -> eyre::Result<&'static str>
@@ -529,7 +529,7 @@ where
     )]
     async fn process_share<TContext>(
         &mut self,
-        tx: &mut Tx<TContext>,
+        tx: &mut ReadWriteTransaction<TContext>,
         peer: PublicKey,
         Share { commitment, share }: Share,
     ) -> eyre::Result<&'static str>
@@ -587,7 +587,7 @@ where
     #[instrument(skip_all, fields(epoch = self.epoch(), block.height = block.height()), err)]
     pub(super) async fn process_dealings_in_block<TContext>(
         &mut self,
-        tx: &mut Tx<TContext>,
+        tx: &mut ReadWriteTransaction<TContext>,
         block: &Block,
         hardfork_regime: HardforkRegime,
     ) -> eyre::Result<()>
@@ -725,7 +725,7 @@ where
     #[instrument(skip_all, fields(epoch = self.epoch()), err)]
     pub(super) async fn construct_intermediate_outcome<TContext>(
         &mut self,
-        tx: &mut Tx<TContext>,
+        tx: &mut ReadWriteTransaction<TContext>,
         hardfork_regime: HardforkRegime,
     ) -> eyre::Result<()>
     where

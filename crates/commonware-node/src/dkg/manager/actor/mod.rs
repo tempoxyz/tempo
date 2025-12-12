@@ -33,7 +33,7 @@ use tracing::{Span, error, info, instrument, warn};
 
 use crate::{
     consensus::block::Block,
-    db::{MetadataDatabase, Tx},
+    db::{MetadataDatabase, ReadWriteTransaction},
     dkg::{
         ceremony::{self, Ceremony, OUTCOME_NAMESPACE},
         manager::{
@@ -405,7 +405,7 @@ where
     #[instrument(skip_all, fields(me = %self.config.me.public_key(), current_epoch = tracing::field::Empty))]
     async fn start_ceremony_for_current_epoch_state<TReceiver, TSender>(
         &mut self,
-        tx: &mut Tx<ContextCell<TContext>>,
+        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> Ceremony<TReceiver, TSender>
     where
@@ -423,7 +423,10 @@ where
     /// Registers the new epoch by reporting to the epoch manager that it should
     /// be entered and registering its peers on the peers manager.
     #[instrument(skip_all, fields(epoch = tracing::field::Empty))]
-    async fn register_current_epoch_state(&mut self, tx: &mut Tx<ContextCell<TContext>>) {
+    async fn register_current_epoch_state(
+        &mut self,
+        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+    ) {
         let epoch_state = self.current_epoch_state(tx).await;
         Span::current().record("epoch", epoch_state.epoch());
 
@@ -492,7 +495,10 @@ where
     ///
     /// Panics if no current epoch state exists on disk.
     #[instrument(skip_all, fields(previous_epoch = tracing::field::Empty))]
-    async fn register_previous_epoch_state(&mut self, tx: &mut Tx<ContextCell<TContext>>) {
+    async fn register_previous_epoch_state(
+        &mut self,
+        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+    ) {
         if let Some(epoch_state) = self.previous_epoch_state(tx).await {
             Span::current().record("previous_epoch", epoch_state.epoch());
             self.config
@@ -558,7 +564,7 @@ where
     async fn is_running_post_allegretto(
         &self,
         block: &Block,
-        tx: &mut Tx<ContextCell<TContext>>,
+        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
     ) -> bool {
         self.config
             .execution_node
@@ -570,7 +576,10 @@ where
     /// Returns the previous epoch state.
     ///
     /// Always prefers the post allegretto state, if it exists.
-    async fn previous_epoch_state(&self, tx: &mut Tx<ContextCell<TContext>>) -> Option<EpochState> {
+    async fn previous_epoch_state(
+        &self,
+        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+    ) -> Option<EpochState> {
         if let Ok(Some(epoch_state)) = tx.get_previous_epoch::<post_allegretto::EpochState>().await
         {
             Some(EpochState::PostModerato(epoch_state))
@@ -591,7 +600,10 @@ where
     ///
     /// Panics if no epoch state exists, neither for the pre- nor post-allegretto
     /// regime. There must always be an epoch state.
-    async fn current_epoch_state(&self, tx: &mut Tx<ContextCell<TContext>>) -> EpochState {
+    async fn current_epoch_state(
+        &self,
+        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+    ) -> EpochState {
         if let Ok(Some(epoch_state)) = tx.get_epoch::<post_allegretto::EpochState>().await {
             EpochState::PostModerato(epoch_state)
         } else if let Ok(Some(epoch_state)) = tx.get_epoch::<pre_allegretto::EpochState>().await {
