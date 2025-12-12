@@ -155,7 +155,10 @@ where
 
         debug!("attempting to read ceremony state from disk");
         // TODO(janis): move this "recovery" logic to a function.
-        let recovered = tx.get_ceremony(config.epoch).await?;
+        let recovered = tx
+            .get_ceremony(config.epoch)
+            .await
+            .wrap_err("failed to read ceremony state from disk")?;
 
         if let Some(recovered) = recovered {
             info!("found a previous ceremony state written to disk; recovering it");
