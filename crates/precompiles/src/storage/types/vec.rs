@@ -261,14 +261,13 @@ where
         T::handle(base_slot, layout_ctx, self.address)
     }
 
-    /// Exactly like `fn at_unchecked(..)` but with an OOB check.
+    /// Exactly like `fn at_unchecked(..)` but with an out-of-bounds check.
     ///
     /// # Returns
     /// - If the SLOAD to read the length fails, throws an error.
     /// - If the index is OOB returns `Ok(None)`.
     /// - Otherwise, returns `Ok(Some(T::Handler))`.
     pub fn at(&self, index: usize) -> Result<Option<T::Handler>> {
-        // Prevent OOB access.
         if index >= self.len()? {
             return Ok(None);
         }
