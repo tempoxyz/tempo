@@ -19,7 +19,7 @@ use tracing::{Span, info, instrument, warn};
 
 use crate::{
     consensus::block::Block,
-    db::{CeremonyStore, DkgEpochStore, Tx, ValidatorsStore},
+    db::Tx,
     dkg::{
         HardforkRegime, RegimeEpochState,
         ceremony::{self, Ceremony},

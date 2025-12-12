@@ -6,7 +6,7 @@ use eyre::Result;
 use tracing::info;
 
 use crate::{
-    db::{CeremonyStore, DkgEpochStore, DkgOutcomeStore, Tx, ValidatorsStore},
+    db::Tx,
     dkg::{
         ceremony,
         manager::{

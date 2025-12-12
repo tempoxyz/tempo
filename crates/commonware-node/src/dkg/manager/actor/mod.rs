@@ -33,7 +33,7 @@ use tracing::{Span, error, info, instrument, warn};
 
 use crate::{
     consensus::block::Block,
-    db::{DkgEpochStore, DkgOutcomeStore, MetadataDatabase, Tx, ValidatorsStore},
+    db::{MetadataDatabase, Tx},
     dkg::{
         ceremony::{self, Ceremony, OUTCOME_NAMESPACE},
         manager::{

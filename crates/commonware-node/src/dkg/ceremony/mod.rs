@@ -28,11 +28,7 @@ use tracing::{Level, debug, error, info, instrument, warn};
 
 use tempo_dkg_onchain_artifacts::{Ack, IntermediateOutcome};
 
-use crate::{
-    consensus::block::Block,
-    db::{CeremonyStore, Tx},
-    dkg::HardforkRegime,
-};
+use crate::{consensus::block::Block, db::Tx, dkg::HardforkRegime};
 
 mod payload;
 mod persisted;
