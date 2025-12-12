@@ -45,12 +45,24 @@ contract FeeAMMTest is BaseTest {
         uint256 amountV = 10_000e18; // above 2*MIN_LIQUIDITY and within alice balance
         uint256 minLiq = 1000; // MIN_LIQUIDITY constant
 
+        // Expected liquidity: amountV/2 - MIN_LIQUIDITY
+        uint256 expectedLiquidity = amountV / 2 - minLiq;
+
+        // Expect Mint event with correct args
+        vm.expectEmit(true, true, true, true);
+        emit IFeeAMM.MintWithValidatorToken(
+            alice, // sender
+            alice, // recipient
+            address(userToken), // userToken
+            address(validatorToken), // validatorToken
+            amountV, // amountValidatorToken
+            expectedLiquidity // liquidity
+        );
+
         vm.prank(alice);
         uint256 liquidity = amm.mint(address(userToken), address(validatorToken), amountV, alice);
 
-        // Expected liquidity: amountV/2 - MIN_LIQUIDITY
-        uint256 expected = amountV / 2 - minLiq;
-        assertEq(liquidity, expected);
+        assertEq(liquidity, expectedLiquidity);
 
         bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
         (uint128 uRes, uint128 vRes) = _reserves(poolId);
@@ -58,8 +70,8 @@ contract FeeAMMTest is BaseTest {
         assertEq(uint256(uRes), 0);
         assertEq(uint256(vRes), amountV);
 
-        assertEq(amm.totalSupply(poolId), expected + minLiq); // includes locked MIN_LIQUIDITY
-        assertEq(amm.liquidityBalances(poolId, alice), expected);
+        assertEq(amm.totalSupply(poolId), expectedLiquidity + minLiq); // includes locked MIN_LIQUIDITY
+        assertEq(amm.liquidityBalances(poolId, alice), expectedLiquidity);
     }
 
     function test_Mint_InitialLiquidity_RevertsIf_TooSmall() public {
