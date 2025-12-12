@@ -104,19 +104,6 @@ impl<T: StorableType, const N: usize> ArrayHandler<T, N> {
         N == 0
     }
 
-    /// Returns a `Handler` for the element at the given index without bounds checking.
-    ///
-    /// The handler is computed on first access and cached for subsequent accesses.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure `index < N`. No bounds check is performed.
-    #[inline]
-    pub fn at_unchecked(&self, index: usize) -> &T::Handler {
-        self.cache
-            .get_or_insert(index, || self.compute_handler(index))
-    }
-
     /// Returns a `Handler` for the element at the given index.
     ///
     /// The returned handler automatically handles packing based on `T::BYTES`.
@@ -128,7 +115,10 @@ impl<T: StorableType, const N: usize> ArrayHandler<T, N> {
         if index >= N {
             return None;
         }
-        Some(self.at_unchecked(index))
+        Some(
+            self.cache
+                .get_or_insert(index, || self.compute_handler(index)),
+        )
     }
 
     /// Computes the handler for a given index (unchecked).
@@ -157,21 +147,20 @@ impl<T: StorableType, const N: usize> Index<usize> for ArrayHandler<T, N> {
 
     /// Returns a reference to the cached handler for the given index.
     ///
-    /// # Panics
-    ///
-    /// Panics if `index >= N`.
+    /// **WARNING:** Panics if OOB. Caller must ensure that the index is valid.
+    /// For gracefully checked access use `.at(index)` instead.
     fn index(&self, index: usize) -> &Self::Output {
         assert!(index < N, "index out of bounds: {index} >= {N}");
-        self.at_unchecked(index)
+        self.cache
+            .get_or_insert(index, || self.compute_handler(index))
     }
 }
 
 impl<T: StorableType, const N: usize> IndexMut<usize> for ArrayHandler<T, N> {
     /// Returns a mutable reference to the cached handler for the given index.
     ///
-    /// # Panics
-    ///
-    /// Panics if `index >= N`.
+    /// **WARNING:** Panics if OOB. Caller must ensure that the index is valid.
+    /// For gracefully checked access use `.at(index)` instead.
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         assert!(index < N, "index out of bounds: {index} >= {N}");
         self.cache

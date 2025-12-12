@@ -126,7 +126,7 @@ where
 /// # Element Access
 ///
 /// Use `at(index)` to get a `Slot<T>` for individual element operations with OOB guarantees.
-/// Use `at_unchecked(index)` for its efficient counterpart without the check.
+/// Use `[index]` for its efficient counterpart without the check.
 /// - For packed elements (T::BYTES ≤ 16): returns a packed `Slot<T>` with byte offsets
 /// - For unpacked elements: returns a full `Slot<T>` for the element's dedicated slot
 ///
@@ -245,21 +245,6 @@ where
         Ok(self.len()? == 0)
     }
 
-    /// Returns a `Handler` for the element at the given index without bounds checking.
-    ///
-    /// The handler is computed on first access and cached for subsequent accesses.
-    /// The returned handler automatically handles packing based on `T::BYTES`.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure `index < len`. No bounds check is performed.
-    #[inline]
-    pub fn at_unchecked(&self, index: usize) -> &T::Handler {
-        self.cache
-            .get_or_insert(index, || self.compute_handler(index))
-    }
-
-    /// Computes the handler for a given index (unchecked).
     #[inline]
     fn compute_handler(&self, index: usize) -> T::Handler {
         let data_start = self.data_slot();
@@ -291,7 +276,10 @@ where
             return Ok(None);
         }
 
-        Ok(Some(self.at_unchecked(index)))
+        Ok(Some(
+            self.cache
+                .get_or_insert(index, || self.compute_handler(index)),
+        ))
     }
 
     /// Pushes a new element to the end of the vector.
@@ -355,10 +343,11 @@ where
 
     /// Returns a reference to the cached handler for the given index (unchecked).
     ///
-    /// **Warning:** This does not check bounds. Caller is responsible for ensuring
-    /// the index is valid. For checked access, use `.at(index)` instead.
+    /// **WARNING:** Does not check bounds. Caller must ensure that the index is valid.
+    /// For checked access use `.at(index)` instead.
     fn index(&self, index: usize) -> &Self::Output {
-        self.at_unchecked(index)
+        self.cache
+            .get_or_insert(index, || self.compute_handler(index))
     }
 }
 
@@ -368,8 +357,8 @@ where
 {
     /// Returns a mutable reference to the cached handler for the given index (unchecked).
     ///
-    /// **Warning:** This does not check bounds. Caller is responsible for ensuring
-    /// the index is valid. For checked access, use `.at(index)` instead.
+    /// **WARNING:** Does not check bounds. Caller must ensure that the index is valid.
+    /// For checked access use `.at(index)` instead.
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         self.cache
             .get_or_insert_mut(index, || self.compute_handler(index))
@@ -599,7 +588,7 @@ mod tests {
 
         // For packed types (u8: 1 byte), elements pack 32 per slot
         // Element at index 5 should be in slot 0, offset 5
-        let elem_slot = handler.at_unchecked(5);
+        let elem_slot = &handler[5];
         let expected_loc = calc_element_loc(5, u8::BYTES);
         assert_eq!(
             elem_slot.slot(),
@@ -608,7 +597,7 @@ mod tests {
         assert_eq!(elem_slot.offset(), Some(expected_loc.offset_bytes));
 
         // Element at index 35 should be in slot 1, offset 3 (35 % 32 = 3)
-        let elem_slot = handler.at_unchecked(35);
+        let elem_slot = &handler[35];
         let expected_loc = calc_element_loc(35, u8::BYTES);
         assert_eq!(
             elem_slot.slot(),
@@ -627,12 +616,12 @@ mod tests {
 
         // For unpacked types (U256: 32 bytes), each element uses a full slot
         // Element at index 0 should be at data_start + 0
-        let elem_slot = handler.at_unchecked(0);
+        let elem_slot = &handler[0];
         assert_eq!(elem_slot.slot(), data_start);
         assert_eq!(elem_slot.offset(), None); // Full slot, no offset
 
         // Element at index 5 should be at data_start + 5
-        let elem_slot = handler.at_unchecked(5);
+        let elem_slot = &handler[5];
         assert_eq!(elem_slot.slot(), data_start + U256::from(5));
         assert_eq!(elem_slot.offset(), None);
     }
@@ -644,8 +633,8 @@ mod tests {
         let handler = VecHandler::<u16>::new(len_slot, address);
 
         // Same index should always produce same slot
-        let slot1 = handler.at_unchecked(10);
-        let slot2 = handler.at_unchecked(10);
+        let slot1 = &handler[10];
+        let slot2 = &handler[10];
 
         assert_eq!(
             slot1.slot(),
@@ -666,8 +655,8 @@ mod tests {
         let handler = VecHandler::<u16>::new(len_slot, address);
 
         // Different indices should produce different slot/offset combinations
-        let slot5 = handler.at_unchecked(5);
-        let slot10 = handler.at_unchecked(10);
+        let slot5 = &handler[5];
+        let slot10 = &handler[10];
 
         // u16 is 2 bytes, so 16 elements per slot
         // Index 5 is in slot 0, offset 10
@@ -676,7 +665,7 @@ mod tests {
         assert_ne!(slot5.offset(), slot10.offset(), "But different offsets");
 
         // Index 16 should be in different slot
-        let slot16 = handler.at_unchecked(16);
+        let slot16 = &handler[16];
         assert_ne!(
             slot5.slot(),
             slot16.slot(),
@@ -1479,9 +1468,9 @@ mod tests {
             vec_slot.write(data).unwrap();
 
             // Test reading individual elements via at()
-            let elem0 = handler.at_unchecked(0).read().unwrap();
-            let elem1 = handler.at_unchecked(1).read().unwrap();
-            let elem2 = handler.at_unchecked(2).read().unwrap();
+            let elem0 = handler[0].read().unwrap();
+            let elem1 = handler[1].read().unwrap();
+            let elem2 = handler[2].read().unwrap();
 
             assert_eq!(elem0, U256::from(10));
             assert_eq!(elem1, U256::from(20));
@@ -1572,7 +1561,7 @@ mod tests {
 
             // Verify values
             for i in 0..35 {
-                let val = handler.at_unchecked(i).read().unwrap();
+                let val = handler[i].read().unwrap();
                 assert_eq!(val, i as u8);
             }
 

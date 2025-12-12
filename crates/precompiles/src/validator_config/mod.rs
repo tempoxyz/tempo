@@ -91,7 +91,7 @@ impl ValidatorConfig {
 
         for i in 0..count {
             // Read validator address from the array at index i
-            let validator_address = self.validators_array.at_unchecked(i as usize).read()?;
+            let validator_address = self.validators_array[i as usize].read()?;
 
             let Validator {
                 public_key,
