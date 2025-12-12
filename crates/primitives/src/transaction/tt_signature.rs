@@ -218,7 +218,7 @@ impl PrimitiveSignature {
             Self::Secp256k1(sig) => {
                 // Standard secp256k1 recovery using alloy's built-in methods
                 // This simultaneously verifies the signature AND recovers the address
-                Ok(sig.recover_address_from_prehash(sig_hash)?)
+                alloy_consensus::crypto::secp256k1::recover_signer(sig, *sig_hash)
             }
             Self::P256(p256_sig) => {
                 // Prepare message hash for verification
