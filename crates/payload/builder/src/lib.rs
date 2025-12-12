@@ -63,7 +63,7 @@ use tempo_transaction_pool::{
     TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
-use tracing::{Level, debug, error, info, instrument, trace, warn};
+use tracing::{Level, error, info, instrument, trace, warn};
 
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
@@ -412,12 +412,16 @@ where
             )
             .map_err(PayloadBuilderError::other)?;
 
+        let execution_start = Instant::now();
+
+        let pre_execution_changes_start = Instant::now();
         builder.apply_pre_execution_changes().map_err(|err| {
             warn!(%err, "failed to apply pre-execution changes");
             PayloadBuilderError::Internal(err.into())
         })?;
-
-        debug!("building new payload");
+        self.metrics
+            .pre_execution_changes_duration_seconds
+            .record(pre_execution_changes_start.elapsed());
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
@@ -454,7 +458,6 @@ where
             .start_block_txs_execution_duration_seconds
             .record(start_block_txs_execution_elapsed);
 
-        let execution_start = Instant::now();
         while let Some(pool_tx) = best_txs.next() {
             // ensure we still have capacity for this transaction
             if cumulative_gas_used + pool_tx.gas_limit() > non_shared_gas_limit {
@@ -577,6 +580,7 @@ where
         // Apply subblock transactions
         for subblock in &subblocks {
             for tx in subblock.transactions_recovered() {
+                let execution_start = Instant::now();
                 if let Err(err) = builder.execute_transaction(tx.cloned()) {
                     if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                         ..
@@ -594,13 +598,12 @@ where
                         return Err(PayloadBuilderError::evm(err));
                     }
                 }
+                self.metrics
+                    .transaction_execution_duration_seconds
+                    .record(execution_start.elapsed());
             }
         }
 
-        let execution_elapsed = execution_start.elapsed();
-        self.metrics
-            .total_transaction_execution_duration_seconds
-            .record(execution_elapsed);
         self.metrics
             .payment_transactions
             .record(payment_transactions as f64);
@@ -611,14 +614,23 @@ where
         // Apply system transactions
         let system_txs_execution_start = Instant::now();
         for system_tx in system_txs {
+            let execution_start = Instant::now();
             builder
                 .execute_transaction(system_tx)
                 .map_err(PayloadBuilderError::evm)?;
+            self.metrics
+                .transaction_execution_duration_seconds
+                .record(execution_start.elapsed());
         }
         let system_txs_execution_elapsed = system_txs_execution_start.elapsed();
         self.metrics
             .system_transactions_execution_duration_seconds
             .record(system_txs_execution_elapsed);
+
+        let execution_elapsed = execution_start.elapsed();
+        self.metrics
+            .total_transaction_execution_duration_seconds
+            .record(execution_elapsed);
 
         let builder_finish_start = Instant::now();
         let BlockBuilderOutcome {
