@@ -185,7 +185,7 @@ impl TipFeeManager {
         // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
 
-let mut tip20_token = TIP20Token::from_address(user_token)?;
+        let mut tip20_token = TIP20Token::from_address(user_token)?;
 
         // Ensure that user and FeeManager are authorized to interact with the token
         tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
@@ -440,11 +440,13 @@ let mut tip20_token = TIP20Token::from_address(user_token)?;
         )?;
 
         // Emit FeesDistributed event
-        self.emit_event(FeeManagerEvent::FeesDistributed(IFeeManager::FeesDistributed {
-            validator,
-            token: validator_token,
-            amount,
-        }))?;
+        self.emit_event(FeeManagerEvent::FeesDistributed(
+            IFeeManager::FeesDistributed {
+                validator,
+                token: validator_token,
+                amount,
+            },
+        ))?;
 
         Ok(())
     }
@@ -505,7 +507,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
-        tip20::ITIP20,
+        tip20::{ITIP20, TIP20Token},
     };
 
     #[test]
@@ -856,115 +858,74 @@ mod tests {
     /// and the output added to collected_fees
     #[test]
     fn test_collect_fee_pre_tx_immediate_swap() -> eyre::Result<()> {
-        use tempo_chainspec::hardfork::TempoHardfork;
-
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::AllegroModerato);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
         let admin = Address::random();
         let user = Address::random();
         let validator = Address::random();
 
-        // Create two different tokens
-        let user_token = token_id_to_address(1);
-        let validator_token = token_id_to_address(2);
+        StorageCtx::enter(&mut storage, || {
+            // Create two different tokens
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::from(10000))
+                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                .apply()?;
 
-        // Initialize tokens
-        {
-            initialize_path_usd(&mut storage, admin)?;
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(10000))
+                .apply()?;
 
-            let mut user_tip20 = TIP20Token::from_address(user_token, &mut storage)?;
-            user_tip20.initialize(
-                "UserToken",
-                "UTK",
-                "USD",
-                PATH_USD_ADDRESS,
-                admin,
-                Address::ZERO,
-            )?;
-            user_tip20.grant_role_internal(admin, *ISSUER_ROLE)?;
-            user_tip20.mint(
-                admin,
-                ITIP20::mintCall {
-                    to: user,
-                    amount: U256::from(10000),
+            let mut fee_manager = TipFeeManager::new();
+
+            // Setup pool with liquidity
+            let pool_id = fee_manager.pool_id(user_token.address(), validator_token.address());
+            fee_manager
+                .pools
+                .at(pool_id)
+                .write(crate::tip_fee_manager::amm::Pool {
+                    reserve_user_token: 10000,
+                    reserve_validator_token: 10000,
+                })?;
+
+            // Set validator's preferred token
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: validator_token.address(),
                 },
-            )?;
-            user_tip20.approve(
-                user,
-                ITIP20::approveCall {
-                    spender: TIP_FEE_MANAGER_ADDRESS,
-                    amount: U256::MAX,
-                },
+                Address::random(),
             )?;
 
-            let mut val_tip20 = TIP20Token::from_address(validator_token, &mut storage)?;
-            val_tip20.initialize(
-                "ValidatorToken",
-                "VTK",
-                "USD",
-                PATH_USD_ADDRESS,
-                admin,
-                Address::ZERO,
-            )?;
-            val_tip20.grant_role_internal(admin, *ISSUER_ROLE)?;
-            // Mint to FeeManager to provide AMM liquidity for validator token output
-            val_tip20.mint(
-                admin,
-                ITIP20::mintCall {
-                    to: TIP_FEE_MANAGER_ADDRESS,
-                    amount: U256::from(10000),
-                },
-            )?;
-        }
+            let max_amount = U256::from(1000);
 
-        let mut fee_manager = TipFeeManager::new(&mut storage);
+            // Call collect_fee_pre_tx
+            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
 
-        // Setup pool with liquidity
-        let pool_id = fee_manager.pool_id(user_token, validator_token);
-        fee_manager.sstore_pools(
-            pool_id,
-            crate::tip_fee_manager::amm::Pool {
-                reserve_user_token: 10000,
-                reserve_validator_token: 10000,
-            },
-        )?;
+            // Post-AllegroModerato: fees should be swapped immediately and added to collected_fees
+            // Expected output: 1000 * 9970 / 10000 = 997
+            let expected_fee_amount = (max_amount * U256::from(9970)) / U256::from(10000);
+            let collected = fee_manager.collected_fees.at(validator).read()?;
+            assert_eq!(
+                collected, expected_fee_amount,
+                "Fees should be swapped and accumulated immediately"
+            );
 
-        // Set validator's preferred token
-        fee_manager.set_validator_token(
-            validator,
-            IFeeManager::setValidatorTokenCall {
-                token: validator_token,
-            },
-            Address::random(),
-        )?;
+            // Pool reserves should be updated immediately
+            let pool = fee_manager.pools.at(pool_id).read()?;
+            assert_eq!(
+                pool.reserve_user_token,
+                10000 + 1000,
+                "User token reserve should increase"
+            );
+            assert_eq!(
+                pool.reserve_validator_token,
+                10000 - 997,
+                "Validator token reserve should decrease"
+            );
 
-        let max_amount = U256::from(1000);
-
-        // Call collect_fee_pre_tx
-        fee_manager.collect_fee_pre_tx(user, user_token, max_amount, validator)?;
-
-        // Post-AllegroModerato: fees should be swapped immediately and added to collected_fees
-        // Expected output: 1000 * 9970 / 10000 = 997
-        let expected_fee_amount = (max_amount * U256::from(9970)) / U256::from(10000);
-        let collected = fee_manager.sload_collected_fees(validator)?;
-        assert_eq!(
-            collected, expected_fee_amount,
-            "Fees should be swapped and accumulated immediately"
-        );
-
-        // Pool reserves should be updated immediately
-        let pool = fee_manager.sload_pools(pool_id)?;
-        assert_eq!(
-            pool.reserve_user_token,
-            10000 + 1000,
-            "User token reserve should increase"
-        );
-        assert_eq!(
-            pool.reserve_validator_token,
-            10000 - 997,
-            "Validator token reserve should decrease"
-        );
-
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Test distribute_fees transfers accumulated fees to validator
@@ -973,63 +934,51 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let validator = Address::random();
-        let token = token_id_to_address(rand::random::<u64>());
 
-        // Initialize token and give fee manager some tokens
-        {
-            initialize_path_usd(&mut storage, admin)?;
-            let mut tip20_token = TIP20Token::from_address(token, &mut storage)?;
-            tip20_token.initialize(
-                "TestToken",
-                "TEST",
-                "USD",
-                PATH_USD_ADDRESS,
-                admin,
-                Address::ZERO,
-            )?;
-            tip20_token.grant_role_internal(admin, *ISSUER_ROLE)?;
-            tip20_token.mint(
-                admin,
-                ITIP20::mintCall {
-                    to: TIP_FEE_MANAGER_ADDRESS,
-                    amount: U256::from(1000),
+        StorageCtx::enter(&mut storage, || {
+            // Initialize token and give fee manager some tokens
+            let token = TIP20Setup::create("TestToken", "TEST", admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(1000))
+                .apply()?;
+
+            let mut fee_manager = TipFeeManager::new();
+
+            // Set validator's preferred token
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: token.address(),
                 },
+                Address::random(), // beneficiary != validator
             )?;
-        }
 
-        let mut fee_manager = TipFeeManager::new(&mut storage);
+            // Simulate accumulated fees
+            let fee_amount = U256::from(500);
+            fee_manager.collected_fees.at(validator).write(fee_amount)?;
 
-        // Set validator's preferred token
-        fee_manager.set_validator_token(
-            validator,
-            IFeeManager::setValidatorTokenCall { token },
-            Address::random(), // beneficiary != validator
-        )?;
+            // Check validator balance before
+            let tip20_token = TIP20Token::from_address(token.address())?;
+            let balance_before =
+                tip20_token.balance_of(ITIP20::balanceOfCall { account: validator })?;
+            assert_eq!(balance_before, U256::ZERO);
 
-        // Simulate accumulated fees
-        let fee_amount = U256::from(500);
-        fee_manager.sstore_collected_fees(validator, fee_amount)?;
+            // Distribute fees
+            let mut fee_manager = TipFeeManager::new();
+            fee_manager.distribute_fees(validator)?;
 
-        // Check validator balance before
-        let mut tip20_token = TIP20Token::from_address(token, &mut storage)?;
-        let balance_before =
-            tip20_token.balance_of(ITIP20::balanceOfCall { account: validator })?;
-        assert_eq!(balance_before, U256::ZERO);
+            // Verify validator received the fees
+            let tip20_token = TIP20Token::from_address(token.address())?;
+            let balance_after =
+                tip20_token.balance_of(ITIP20::balanceOfCall { account: validator })?;
+            assert_eq!(balance_after, fee_amount);
 
-        // Distribute fees
-        let mut fee_manager = TipFeeManager::new(&mut storage);
-        fee_manager.distribute_fees(validator)?;
+            // Verify collected fees cleared
+            let fee_manager = TipFeeManager::new();
+            let remaining = fee_manager.collected_fees.at(validator).read()?;
+            assert_eq!(remaining, U256::ZERO);
 
-        // Verify validator received the fees
-        let mut tip20_token = TIP20Token::from_address(token, &mut storage)?;
-        let balance_after = tip20_token.balance_of(ITIP20::balanceOfCall { account: validator })?;
-        assert_eq!(balance_after, fee_amount);
-
-        // Verify collected fees cleared
-        let mut fee_manager = TipFeeManager::new(&mut storage);
-        let remaining = fee_manager.sload_collected_fees(validator)?;
-        assert_eq!(remaining, U256::ZERO);
-
-        Ok(())
+            Ok(())
+        })
     }
 }

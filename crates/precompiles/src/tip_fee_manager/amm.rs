@@ -1621,67 +1621,91 @@ mod tests {
     /// Test execute_fee_swap executes swap immediately and updates reserves
     #[test]
     fn test_execute_fee_swap_immediate() -> eyre::Result<()> {
-        let (mut amm, _, user_token, validator_token) = setup_test_amm();
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
 
-        // Setup pool with 1000 tokens each
-        let liquidity_amount = uint!(1000_U256);
-        let pool_id = setup_pool_with_liquidity(
-            &mut amm,
-            user_token,
-            validator_token,
-            liquidity_amount,
-            liquidity_amount,
-        )?;
+        StorageCtx::enter(&mut storage, || {
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .apply()?
+                .address();
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .apply()?
+                .address();
 
-        // Execute fee swap for 100 tokens
-        let amount_in = uint!(100_U256);
-        let expected_out = (amount_in * M) / SCALE; // 100 * 9970 / 10000 = 99
+            let mut amm = TipFeeManager::new();
 
-        let amount_out = amm.execute_fee_swap(user_token, validator_token, amount_in)?;
+            // Setup pool with 1000 tokens each
+            let liquidity_amount = uint!(1000_U256);
+            let pool_id = setup_pool_with_liquidity(
+                &mut amm,
+                user_token,
+                validator_token,
+                liquidity_amount,
+                liquidity_amount,
+            )?;
 
-        assert_eq!(amount_out, expected_out);
+            // Execute fee swap for 100 tokens
+            let amount_in = uint!(100_U256);
+            let expected_out = (amount_in * M) / SCALE; // 100 * 9970 / 10000 = 99
 
-        // Verify reserves updated immediately
-        let pool = amm.sload_pools(pool_id)?;
-        assert_eq!(
-            U256::from(pool.reserve_user_token),
-            liquidity_amount + amount_in
-        );
-        assert_eq!(
-            U256::from(pool.reserve_validator_token),
-            liquidity_amount - expected_out
-        );
+            let amount_out = amm.execute_fee_swap(user_token, validator_token, amount_in)?;
 
-        Ok(())
+            assert_eq!(amount_out, expected_out);
+
+            // Verify reserves updated immediately
+            let pool = amm.pools.at(pool_id).read()?;
+            assert_eq!(
+                U256::from(pool.reserve_user_token),
+                liquidity_amount + amount_in
+            );
+            assert_eq!(
+                U256::from(pool.reserve_validator_token),
+                liquidity_amount - expected_out
+            );
+
+            Ok(())
+        })
     }
 
     /// Test execute_fee_swap fails with insufficient liquidity
     #[test]
     fn test_execute_fee_swap_insufficient_liquidity() -> eyre::Result<()> {
-        let (mut amm, _, user_token, validator_token) = setup_test_amm();
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
 
-        // Setup pool with only 100 tokens each
-        let small_liquidity = uint!(100_U256);
-        setup_pool_with_liquidity(
-            &mut amm,
-            user_token,
-            validator_token,
-            small_liquidity,
-            small_liquidity,
-        )?;
+        StorageCtx::enter(&mut storage, || {
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .apply()?
+                .address();
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .apply()?
+                .address();
 
-        // Try to swap 200 tokens (would need ~199 output, but only 100 available)
-        let too_large_amount = uint!(200_U256);
+            let mut amm = TipFeeManager::new();
 
-        let result = amm.execute_fee_swap(user_token, validator_token, too_large_amount);
+            // Setup pool with only 100 tokens each
+            let small_liquidity = uint!(100_U256);
+            setup_pool_with_liquidity(
+                &mut amm,
+                user_token,
+                validator_token,
+                small_liquidity,
+                small_liquidity,
+            )?;
 
-        assert!(matches!(
-            result,
-            Err(TempoPrecompileError::TIPFeeAMMError(
-                TIPFeeAMMError::InsufficientLiquidity(_)
-            ))
-        ));
+            // Try to swap 200 tokens (would need ~199 output, but only 100 available)
+            let too_large_amount = uint!(200_U256);
 
-        Ok(())
+            let result = amm.execute_fee_swap(user_token, validator_token, too_large_amount);
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIPFeeAMMError(
+                    TIPFeeAMMError::InsufficientLiquidity(_)
+                ))
+            ));
+
+            Ok(())
+        })
     }
 }
