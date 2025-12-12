@@ -20,14 +20,11 @@ use crate::{
         MIN_PRICE_PRE_MODERATO, compute_book_key,
     },
     storage::{Mapping, PrecompileStorageProvider, Slot, VecSlotExt},
-    tip20::{
-        ITIP20, TIP20Token, address_to_token_id_unchecked, is_tip20_prefix, validate_usd_currency,
-    },
+    tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
     tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, Bytes, IntoLogData, U256};
 use revm::state::Bytecode;
-use tempo_contracts::precompiles::ITIP20Factory;
 use tempo_precompiles_macros::contract;
 
 /// Minimum order size of $10 USD
@@ -1730,8 +1727,9 @@ mod tests {
         error::TempoPrecompileError,
         path_usd::TRANSFER_ROLE,
         storage::{ContractStorage, hashmap::HashMapStorageProvider},
-        tip20::{ISSUER_ROLE, tests::initialize_path_usd},
+        tip20::{ISSUER_ROLE, address_to_token_id_unchecked, tests::initialize_path_usd},
     };
+    use tempo_contracts::precompiles::ITIP20Factory;
 
     use super::*;
 
