@@ -158,22 +158,20 @@ impl Precompile for TipFeeManager {
                     })
                 })
             }
-            ITIPFeeAMM::rebalanceSwapCall::SELECTOR => {
-                mutate::<ITIPFeeAMM::rebalanceSwapCall>(
-                    calldata,
-                    msg_sender,
-                    is_static,
-                    |s, call| {
-                        self.rebalance_swap(
-                            s,
-                            call.userToken,
-                            call.validatorToken,
-                            call.amountOut,
-                            call.to,
-                        )
-                    },
-                )
-            }
+            ITIPFeeAMM::rebalanceSwapCall::SELECTOR => mutate::<ITIPFeeAMM::rebalanceSwapCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |s, call| {
+                    self.rebalance_swap(
+                        s,
+                        call.userToken,
+                        call.validatorToken,
+                        call.amountOut,
+                        call.to,
+                    )
+                },
+            ),
 
             _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
@@ -499,7 +497,8 @@ mod tests {
 
             // Check total supply after mint = liquidity + MIN_LIQUIDITY
             let final_supply_call = ITIPFeeAMM::totalSupplyCall { poolId: pool_id };
-            let final_supply_result = fee_manager.call(&final_supply_call.abi_encode(), user, false)?;
+            let final_supply_result =
+                fee_manager.call(&final_supply_call.abi_encode(), user, false)?;
             let final_supply = U256::abi_decode(&final_supply_result.bytes)?;
             assert_eq!(final_supply, liquidity + MIN_LIQUIDITY);
 

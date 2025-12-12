@@ -77,7 +77,9 @@ impl Precompile for TIP20Token {
                 })
             }
             ITIP20::approveCall::SELECTOR => {
-                mutate::<ITIP20::approveCall>(calldata, msg_sender, is_static, |s, call| self.approve(s, call))
+                mutate::<ITIP20::approveCall>(calldata, msg_sender, is_static, |s, call| {
+                    self.approve(s, call)
+                })
             }
             ITIP20::changeTransferPolicyIdCall::SELECTOR => {
                 mutate_void::<ITIP20::changeTransferPolicyIdCall>(
@@ -87,11 +89,12 @@ impl Precompile for TIP20Token {
                     |s, call| self.change_transfer_policy_id(s, call),
                 )
             }
-            ITIP20::setSupplyCapCall::SELECTOR => {
-                mutate_void::<ITIP20::setSupplyCapCall>(calldata, msg_sender, is_static, |s, call| {
-                    self.set_supply_cap(s, call)
-                })
-            }
+            ITIP20::setSupplyCapCall::SELECTOR => mutate_void::<ITIP20::setSupplyCapCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |s, call| self.set_supply_cap(s, call),
+            ),
             ITIP20::pauseCall::SELECTOR => {
                 mutate_void::<ITIP20::pauseCall>(calldata, msg_sender, is_static, |s, call| {
                     self.pause(s, call)
@@ -103,9 +106,12 @@ impl Precompile for TIP20Token {
                 })
             }
             ITIP20::setNextQuoteTokenCall::SELECTOR => {
-                mutate_void::<ITIP20::setNextQuoteTokenCall>(calldata, msg_sender, is_static, |s, call| {
-                    self.set_next_quote_token(s, call)
-                })
+                mutate_void::<ITIP20::setNextQuoteTokenCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |s, call| self.set_next_quote_token(s, call),
+                )
             }
             ITIP20::completeQuoteTokenUpdateCall::SELECTOR => {
                 mutate_void::<ITIP20::completeQuoteTokenUpdateCall>(
@@ -134,41 +140,55 @@ impl Precompile for TIP20Token {
                         self.storage.spec(),
                     );
                 }
-                mutate_void::<ITIP20::setFeeRecipientCall>(calldata, msg_sender, is_static, |s, call| {
-                    self.set_fee_recipient(s, call.newRecipient)
-                })
+                mutate_void::<ITIP20::setFeeRecipientCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |s, call| self.set_fee_recipient(s, call.newRecipient),
+                )
             }
 
             ITIP20::mintCall::SELECTOR => {
-                mutate_void::<ITIP20::mintCall>(calldata, msg_sender, is_static, |s, call| self.mint(s, call))
-            }
-            ITIP20::mintWithMemoCall::SELECTOR => {
-                mutate_void::<ITIP20::mintWithMemoCall>(calldata, msg_sender, is_static, |s, call| {
-                    self.mint_with_memo(s, call)
+                mutate_void::<ITIP20::mintCall>(calldata, msg_sender, is_static, |s, call| {
+                    self.mint(s, call)
                 })
             }
+            ITIP20::mintWithMemoCall::SELECTOR => mutate_void::<ITIP20::mintWithMemoCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |s, call| self.mint_with_memo(s, call),
+            ),
             ITIP20::burnCall::SELECTOR => {
-                mutate_void::<ITIP20::burnCall>(calldata, msg_sender, is_static, |s, call| self.burn(s, call))
-            }
-            ITIP20::burnWithMemoCall::SELECTOR => {
-                mutate_void::<ITIP20::burnWithMemoCall>(calldata, msg_sender, is_static, |s, call| {
-                    self.burn_with_memo(s, call)
+                mutate_void::<ITIP20::burnCall>(calldata, msg_sender, is_static, |s, call| {
+                    self.burn(s, call)
                 })
             }
-            ITIP20::burnBlockedCall::SELECTOR => {
-                mutate_void::<ITIP20::burnBlockedCall>(calldata, msg_sender, is_static, |s, call| {
-                    self.burn_blocked(s, call)
-                })
-            }
-            ITIP20::transferWithMemoCall::SELECTOR => {
-                mutate_void::<ITIP20::transferWithMemoCall>(calldata, msg_sender, is_static, |s, call| {
-                    self.transfer_with_memo(s, call)
-                })
-            }
+            ITIP20::burnWithMemoCall::SELECTOR => mutate_void::<ITIP20::burnWithMemoCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |s, call| self.burn_with_memo(s, call),
+            ),
+            ITIP20::burnBlockedCall::SELECTOR => mutate_void::<ITIP20::burnBlockedCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |s, call| self.burn_blocked(s, call),
+            ),
+            ITIP20::transferWithMemoCall::SELECTOR => mutate_void::<ITIP20::transferWithMemoCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |s, call| self.transfer_with_memo(s, call),
+            ),
             ITIP20::transferFromWithMemoCall::SELECTOR => {
-                mutate::<ITIP20::transferFromWithMemoCall>(calldata, msg_sender, is_static, |sender, call| {
-                    self.transfer_from_with_memo(sender, call)
-                })
+                mutate::<ITIP20::transferFromWithMemoCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |sender, call| self.transfer_from_with_memo(sender, call),
+                )
             }
             ITIP20::startRewardCall::SELECTOR => {
                 mutate::<ITIP20::startRewardCall>(calldata, msg_sender, is_static, |s, call| {
@@ -176,9 +196,12 @@ impl Precompile for TIP20Token {
                 })
             }
             ITIP20::setRewardRecipientCall::SELECTOR => {
-                mutate_void::<ITIP20::setRewardRecipientCall>(calldata, msg_sender, is_static, |s, call| {
-                    self.set_reward_recipient(s, call)
-                })
+                mutate_void::<ITIP20::setRewardRecipientCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |s, call| self.set_reward_recipient(s, call),
+                )
             }
             ITIP20::cancelRewardCall::SELECTOR => {
                 mutate::<ITIP20::cancelRewardCall>(calldata, msg_sender, is_static, |s, call| {
@@ -191,11 +214,12 @@ impl Precompile for TIP20Token {
                 })
             }
 
-            ITIP20::finalizeStreamsCall::SELECTOR => {
-                mutate_void::<ITIP20::finalizeStreamsCall>(calldata, msg_sender, is_static, |sender, call| {
-                    self.finalize_streams(sender, call.timestamp as u128)
-                })
-            }
+            ITIP20::finalizeStreamsCall::SELECTOR => mutate_void::<ITIP20::finalizeStreamsCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |sender, call| self.finalize_streams(sender, call.timestamp as u128),
+            ),
 
             ITIP20::totalRewardPerSecondCall::SELECTOR => {
                 view::<ITIP20::totalRewardPerSecondCall>(calldata, |_call| {
@@ -229,26 +253,30 @@ impl Precompile for TIP20Token {
             IRolesAuth::getRoleAdminCall::SELECTOR => {
                 view::<IRolesAuth::getRoleAdminCall>(calldata, |call| self.get_role_admin(call))
             }
-            IRolesAuth::grantRoleCall::SELECTOR => {
-                mutate_void::<IRolesAuth::grantRoleCall>(calldata, msg_sender, is_static, |s, call| {
-                    self.grant_role(s, call)
-                })
-            }
-            IRolesAuth::revokeRoleCall::SELECTOR => {
-                mutate_void::<IRolesAuth::revokeRoleCall>(calldata, msg_sender, is_static, |s, call| {
-                    self.revoke_role(s, call)
-                })
-            }
-            IRolesAuth::renounceRoleCall::SELECTOR => {
-                mutate_void::<IRolesAuth::renounceRoleCall>(calldata, msg_sender, is_static, |s, call| {
-                    self.renounce_role(s, call)
-                })
-            }
-            IRolesAuth::setRoleAdminCall::SELECTOR => {
-                mutate_void::<IRolesAuth::setRoleAdminCall>(calldata, msg_sender, is_static, |s, call| {
-                    self.set_role_admin(s, call)
-                })
-            }
+            IRolesAuth::grantRoleCall::SELECTOR => mutate_void::<IRolesAuth::grantRoleCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |s, call| self.grant_role(s, call),
+            ),
+            IRolesAuth::revokeRoleCall::SELECTOR => mutate_void::<IRolesAuth::revokeRoleCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |s, call| self.revoke_role(s, call),
+            ),
+            IRolesAuth::renounceRoleCall::SELECTOR => mutate_void::<IRolesAuth::renounceRoleCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |s, call| self.renounce_role(s, call),
+            ),
+            IRolesAuth::setRoleAdminCall::SELECTOR => mutate_void::<IRolesAuth::setRoleAdminCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |s, call| self.set_role_admin(s, call),
+            ),
 
             _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };

@@ -33,9 +33,12 @@ impl Precompile for TIP403Registry {
                 view::<ITIP403Registry::isAuthorizedCall>(calldata, |call| self.is_authorized(call))
             }
             ITIP403Registry::createPolicyCall::SELECTOR => {
-                mutate::<ITIP403Registry::createPolicyCall>(calldata, msg_sender, is_static, |s, call| {
-                    self.create_policy(s, call)
-                })
+                mutate::<ITIP403Registry::createPolicyCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |s, call| self.create_policy(s, call),
+                )
             }
             ITIP403Registry::createPolicyWithAccountsCall::SELECTOR => {
                 mutate::<ITIP403Registry::createPolicyWithAccountsCall>(

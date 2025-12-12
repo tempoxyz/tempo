@@ -99,36 +99,40 @@ impl Precompile for PathUSD {
                     self.mint(sender, call)
                 })
             }
-            ITIP20::mintWithMemoCall::SELECTOR => {
-                mutate_void::<ITIP20::mintWithMemoCall>(calldata, msg_sender, is_static, |sender, call| {
-                    self.token.mint_with_memo(sender, call)
-                })
-            }
+            ITIP20::mintWithMemoCall::SELECTOR => mutate_void::<ITIP20::mintWithMemoCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |sender, call| self.token.mint_with_memo(sender, call),
+            ),
             ITIP20::burnCall::SELECTOR => {
                 mutate_void::<ITIP20::burnCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.burn(sender, call)
                 })
             }
-            ITIP20::burnWithMemoCall::SELECTOR => {
-                mutate_void::<ITIP20::burnWithMemoCall>(calldata, msg_sender, is_static, |sender, call| {
-                    self.token.burn_with_memo(sender, call)
-                })
-            }
-            ITIP20::burnBlockedCall::SELECTOR => {
-                mutate_void::<ITIP20::burnBlockedCall>(calldata, msg_sender, is_static, |sender, call| {
-                    self.token.burn_blocked(sender, call)
-                })
-            }
+            ITIP20::burnWithMemoCall::SELECTOR => mutate_void::<ITIP20::burnWithMemoCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |sender, call| self.token.burn_with_memo(sender, call),
+            ),
+            ITIP20::burnBlockedCall::SELECTOR => mutate_void::<ITIP20::burnBlockedCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |sender, call| self.token.burn_blocked(sender, call),
+            ),
             ITIP20::pauseCall::SELECTOR => {
                 mutate_void::<ITIP20::pauseCall>(calldata, msg_sender, is_static, |sender, call| {
                     self.pause(sender, call)
                 })
             }
-            ITIP20::unpauseCall::SELECTOR => {
-                mutate_void::<ITIP20::unpauseCall>(calldata, msg_sender, is_static, |sender, call| {
-                    self.unpause(sender, call)
-                })
-            }
+            ITIP20::unpauseCall::SELECTOR => mutate_void::<ITIP20::unpauseCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |sender, call| self.unpause(sender, call),
+            ),
             ITIP20::changeTransferPolicyIdCall::SELECTOR => {
                 mutate_void::<ITIP20::changeTransferPolicyIdCall>(
                     calldata,
@@ -137,11 +141,12 @@ impl Precompile for PathUSD {
                     |sender, call| self.token.change_transfer_policy_id(sender, call),
                 )
             }
-            ITIP20::setSupplyCapCall::SELECTOR => {
-                mutate_void::<ITIP20::setSupplyCapCall>(calldata, msg_sender, is_static, |sender, call| {
-                    self.token.set_supply_cap(sender, call)
-                })
-            }
+            ITIP20::setSupplyCapCall::SELECTOR => mutate_void::<ITIP20::setSupplyCapCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |sender, call| self.token.set_supply_cap(sender, call),
+            ),
 
             // Transfer functions that are disabled for PathUSD
             ITIP20::transferCall::SELECTOR => {
@@ -149,20 +154,25 @@ impl Precompile for PathUSD {
                     self.transfer(sender, call)
                 })
             }
-            ITIP20::transferFromCall::SELECTOR => {
-                mutate::<ITIP20::transferFromCall>(calldata, msg_sender, is_static, |sender, call| {
-                    self.transfer_from(sender, call)
-                })
-            }
-            ITIP20::transferWithMemoCall::SELECTOR => {
-                mutate_void::<ITIP20::transferWithMemoCall>(calldata, msg_sender, is_static, |sender, call| {
-                    self.transfer_with_memo(sender, call)
-                })
-            }
+            ITIP20::transferFromCall::SELECTOR => mutate::<ITIP20::transferFromCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |sender, call| self.transfer_from(sender, call),
+            ),
+            ITIP20::transferWithMemoCall::SELECTOR => mutate_void::<ITIP20::transferWithMemoCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |sender, call| self.transfer_with_memo(sender, call),
+            ),
             ITIP20::transferFromWithMemoCall::SELECTOR => {
-                mutate::<ITIP20::transferFromWithMemoCall>(calldata, msg_sender, is_static, |sender, call| {
-                    self.transfer_from_with_memo(sender, call)
-                })
+                mutate::<ITIP20::transferFromWithMemoCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |sender, call| self.transfer_from_with_memo(sender, call),
+                )
             }
 
             ITIP20::startRewardCall::SELECTOR => {
@@ -171,9 +181,12 @@ impl Precompile for PathUSD {
                 })
             }
             ITIP20::setRewardRecipientCall::SELECTOR => {
-                mutate_void::<ITIP20::setRewardRecipientCall>(calldata, msg_sender, is_static, |_s, _call| {
-                    Err(TIP20Error::rewards_disabled().into())
-                })
+                mutate_void::<ITIP20::setRewardRecipientCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |_s, _call| Err(TIP20Error::rewards_disabled().into()),
+                )
             }
             ITIP20::cancelRewardCall::SELECTOR => {
                 mutate::<ITIP20::cancelRewardCall>(calldata, msg_sender, is_static, |_s, _call| {
@@ -195,26 +208,30 @@ impl Precompile for PathUSD {
                     self.token.get_role_admin(call)
                 })
             }
-            IRolesAuth::grantRoleCall::SELECTOR => {
-                mutate_void::<IRolesAuth::grantRoleCall>(calldata, msg_sender, is_static, |sender, call| {
-                    self.token.grant_role(sender, call)
-                })
-            }
-            IRolesAuth::revokeRoleCall::SELECTOR => {
-                mutate_void::<IRolesAuth::revokeRoleCall>(calldata, msg_sender, is_static, |sender, call| {
-                    self.token.revoke_role(sender, call)
-                })
-            }
-            IRolesAuth::renounceRoleCall::SELECTOR => {
-                mutate_void::<IRolesAuth::renounceRoleCall>(calldata, msg_sender, is_static, |sender, call| {
-                    self.token.renounce_role(sender, call)
-                })
-            }
-            IRolesAuth::setRoleAdminCall::SELECTOR => {
-                mutate_void::<IRolesAuth::setRoleAdminCall>(calldata, msg_sender, is_static, |sender, call| {
-                    self.token.set_role_admin(sender, call)
-                })
-            }
+            IRolesAuth::grantRoleCall::SELECTOR => mutate_void::<IRolesAuth::grantRoleCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |sender, call| self.token.grant_role(sender, call),
+            ),
+            IRolesAuth::revokeRoleCall::SELECTOR => mutate_void::<IRolesAuth::revokeRoleCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |sender, call| self.token.revoke_role(sender, call),
+            ),
+            IRolesAuth::renounceRoleCall::SELECTOR => mutate_void::<IRolesAuth::renounceRoleCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |sender, call| self.token.renounce_role(sender, call),
+            ),
+            IRolesAuth::setRoleAdminCall::SELECTOR => mutate_void::<IRolesAuth::setRoleAdminCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |sender, call| self.token.set_role_admin(sender, call),
+            ),
 
             _ => Err(PrecompileError::Other("Unknown selector".into())),
         };

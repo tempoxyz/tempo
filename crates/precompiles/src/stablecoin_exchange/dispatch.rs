@@ -25,22 +25,28 @@ impl Precompile for StablecoinExchange {
             .map_err(|_| PrecompileError::Other("Invalid function selector length".into()))?;
 
         let result = match selector {
-            IStablecoinExchange::placeCall::SELECTOR => {
-                mutate::<IStablecoinExchange::placeCall>(calldata, msg_sender, is_static, |s, call| {
-                    self.place(s, call.token, call.amount, call.isBid, call.tick)
-                })
-            }
+            IStablecoinExchange::placeCall::SELECTOR => mutate::<IStablecoinExchange::placeCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |s, call| self.place(s, call.token, call.amount, call.isBid, call.tick),
+            ),
             IStablecoinExchange::placeFlipCall::SELECTOR => {
-                mutate::<IStablecoinExchange::placeFlipCall>(calldata, msg_sender, is_static, |s, call| {
-                    self.place_flip(
-                        s,
-                        call.token,
-                        call.amount,
-                        call.isBid,
-                        call.tick,
-                        call.flipTick,
-                    )
-                })
+                mutate::<IStablecoinExchange::placeFlipCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |s, call| {
+                        self.place_flip(
+                            s,
+                            call.token,
+                            call.amount,
+                            call.isBid,
+                            call.tick,
+                            call.flipTick,
+                        )
+                    },
+                )
             }
 
             IStablecoinExchange::balanceOfCall::SELECTOR => {
@@ -86,19 +92,28 @@ impl Precompile for StablecoinExchange {
             }
 
             IStablecoinExchange::createPairCall::SELECTOR => {
-                mutate::<IStablecoinExchange::createPairCall>(calldata, msg_sender, is_static, |_s, call| {
-                    self.create_pair(call.base)
-                })
+                mutate::<IStablecoinExchange::createPairCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |_s, call| self.create_pair(call.base),
+                )
             }
             IStablecoinExchange::withdrawCall::SELECTOR => {
-                mutate_void::<IStablecoinExchange::withdrawCall>(calldata, msg_sender, is_static, |s, call| {
-                    self.withdraw(s, call.token, call.amount)
-                })
+                mutate_void::<IStablecoinExchange::withdrawCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |s, call| self.withdraw(s, call.token, call.amount),
+                )
             }
             IStablecoinExchange::cancelCall::SELECTOR => {
-                mutate_void::<IStablecoinExchange::cancelCall>(calldata, msg_sender, is_static, |s, call| {
-                    self.cancel(s, call.orderId)
-                })
+                mutate_void::<IStablecoinExchange::cancelCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |s, call| self.cancel(s, call.orderId),
+                )
             }
             IStablecoinExchange::swapExactAmountInCall::SELECTOR => {
                 mutate::<IStablecoinExchange::swapExactAmountInCall>(

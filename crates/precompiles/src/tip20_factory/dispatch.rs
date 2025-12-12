@@ -22,11 +22,12 @@ impl Precompile for TIP20Factory {
             ITIP20Factory::tokenIdCounterCall::SELECTOR => {
                 view::<ITIP20Factory::tokenIdCounterCall>(calldata, |_call| self.token_id_counter())
             }
-            ITIP20Factory::createTokenCall::SELECTOR => {
-                mutate::<ITIP20Factory::createTokenCall>(calldata, msg_sender, is_static, |s, call| {
-                    self.create_token(s, call)
-                })
-            }
+            ITIP20Factory::createTokenCall::SELECTOR => mutate::<ITIP20Factory::createTokenCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |s, call| self.create_token(s, call),
+            ),
             ITIP20Factory::isTIP20Call::SELECTOR => {
                 view::<ITIP20Factory::isTIP20Call>(calldata, |call| self.is_tip20(call.token))
             }
