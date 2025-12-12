@@ -43,13 +43,13 @@ tempo_precompiles_macros::storable_nested_arrays!();
 /// let handler = <[u8; 32] as StorableType>::handle(base_slot, LayoutCtx::FULL);
 ///
 /// // Full array operations
-/// let array = handler.read(&mut storage)?;
-/// handler.write(&mut storage, [1; 32])?;
+/// let array = handler.read()?;
+/// handler.write([1; 32])?;
 ///
 /// // Individual element operations
 /// if let Some(slot) = handler.at(0) {
-///     let elem = slot.read(&mut storage)?;
-///     slot.write(&mut storage, 42)?;
+///     let elem = slot.read()?;
+///     slot.write(42)?;
 /// }
 /// ```
 pub struct ArrayHandler<T, const N: usize>
