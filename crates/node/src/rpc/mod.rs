@@ -288,8 +288,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         {
             let slot = NonceManager::new()
                 .nonces
-                .at(request.from.unwrap_or_default())
-                .at(nonce_key)
+                .at(request.from.unwrap_or_default())[nonce_key]
                 .slot();
             request.nonce = Some(
                 db.storage(NONCE_PRECOMPILE_ADDRESS, slot)

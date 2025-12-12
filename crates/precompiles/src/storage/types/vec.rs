@@ -12,14 +12,17 @@
 //! - Element at index `i` starts at slot `data_start + i * T::SLOTS`
 
 use alloy::primitives::{Address, U256};
-use std::marker::PhantomData;
+use std::{
+    marker::PhantomData,
+    ops::{Index, IndexMut},
+};
 
 use crate::{
     error::Result,
     storage::{
         Handler, Layout, LayoutCtx, Storable, StorableType, StorageOps,
         packing::{PackedSlot, calc_element_loc, calc_packed_slot_count},
-        types::Slot,
+        types::{HandlerCache, Slot},
     },
 };
 
@@ -137,7 +140,7 @@ where
 /// handler.write(&mut storage, vec![1, 2, 3])?;
 ///
 /// // Individual element operations
-/// if let Some(slot) = handler.at(0)? {
+/// if let Some(slot) = handler[0]? {
 ///     let elem = slot.read()?;
 ///     slot.write(42)?;
 /// }
@@ -148,6 +151,7 @@ where
 {
     len_slot: U256,
     address: Address,
+    cache: HandlerCache<usize, T::Handler>,
     _ty: PhantomData<T>,
 }
 
@@ -202,6 +206,7 @@ where
         Self {
             len_slot,
             address,
+            cache: HandlerCache::new(),
             _ty: PhantomData,
         }
     }
@@ -240,11 +245,23 @@ where
         Ok(self.len()? == 0)
     }
 
-    /// Returns a `Slot<T>` accessor for the element at the given index.
+    /// Returns a `Handler` for the element at the given index without bounds checking.
     ///
-    /// The returned `Slot` automatically handles packing based on `T::BYTES`:
+    /// The handler is computed on first access and cached for subsequent accesses.
+    /// The returned handler automatically handles packing based on `T::BYTES`.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `index < len`. No bounds check is performed.
     #[inline]
-    pub fn at_unchecked(&self, index: usize) -> T::Handler {
+    pub fn at_unchecked(&self, index: usize) -> &T::Handler {
+        self.cache
+            .get_or_insert(index, || self.compute_handler(index))
+    }
+
+    /// Computes the handler for a given index (unchecked).
+    #[inline]
+    fn compute_handler(&self, index: usize) -> T::Handler {
         let data_start = self.data_slot();
 
         // Pack small elements into shared slots, use T::SLOTS for multi-slot types
@@ -261,13 +278,15 @@ where
         T::handle(base_slot, layout_ctx, self.address)
     }
 
-    /// Exactly like `fn at_unchecked(..)` but with an out-of-bounds check.
+    /// Returns a `Handler` for the element at the given index with bounds checking.
+    ///
+    /// The handler is computed on first access and cached for subsequent accesses.
     ///
     /// # Returns
-    /// - If the SLOAD to read the length fails, throws an error.
-    /// - If the index is OOB returns `Ok(None)`.
-    /// - Otherwise, returns `Ok(Some(T::Handler))`.
-    pub fn at(&self, index: usize) -> Result<Option<T::Handler>> {
+    /// - If the SLOAD to read the length fails, returns an error.
+    /// - If the index is OOB, returns `Ok(None)`.
+    /// - Otherwise, returns `Ok(Some(&T::Handler))`.
+    pub fn at(&self, index: usize) -> Result<Option<&T::Handler>> {
         if index >= self.len()? {
             return Ok(None);
         }
@@ -287,8 +306,8 @@ where
         // Read current length
         let length = self.len()?;
 
-        // Write element at the end
-        let mut elem_slot = self.at_unchecked(length);
+        // Write element at the end (use compute_handler for mutable access)
+        let mut elem_slot = self.compute_handler(length);
         elem_slot.write(value)?;
 
         // Increment length
@@ -313,8 +332,8 @@ where
         }
         let last_index = length - 1;
 
-        // Read the last element
-        let mut elem_slot = self.at_unchecked(last_index);
+        // Read the last element (use compute_handler for mutable access)
+        let mut elem_slot = self.compute_handler(last_index);
         let element = elem_slot.read()?;
 
         // Zero out the element's storage
@@ -325,6 +344,35 @@ where
         length_slot.write(U256::from(last_index))?;
 
         Ok(Some(element))
+    }
+}
+
+impl<T> Index<usize> for VecHandler<T>
+where
+    T: Storable,
+{
+    type Output = T::Handler;
+
+    /// Returns a reference to the cached handler for the given index (unchecked).
+    ///
+    /// **Warning:** This does not check bounds. Caller is responsible for ensuring
+    /// the index is valid. For checked access, use `.at(index)` instead.
+    fn index(&self, index: usize) -> &Self::Output {
+        self.at_unchecked(index)
+    }
+}
+
+impl<T> IndexMut<usize> for VecHandler<T>
+where
+    T: Storable,
+{
+    /// Returns a mutable reference to the cached handler for the given index (unchecked).
+    ///
+    /// **Warning:** This does not check bounds. Caller is responsible for ensuring
+    /// the index is valid. For checked access, use `.at(index)` instead.
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        self.cache
+            .get_or_insert_mut(index, || self.compute_handler(index))
     }
 }
 
@@ -1547,20 +1595,20 @@ mod tests {
             let handler = VecHandler::<U256>::new(len_slot, address);
 
             // Empty vec - any index should return None
-            assert!(handler.at(0)?.is_none());
+            assert!(handler[0]?.is_none());
 
             // Push 2 elements
             handler.push(U256::from(10))?;
             handler.push(U256::from(20))?;
 
             // Valid indices should return Some and read the correct values
-            assert!(handler.at(0)?.is_some());
-            assert!(handler.at(1)?.is_some());
-            assert_eq!(handler.at(0)?.unwrap().read()?, U256::from(10));
-            assert_eq!(handler.at(1)?.unwrap().read()?, U256::from(20));
+            assert!(handler[0]?.is_some());
+            assert!(handler[1]?.is_some());
+            assert_eq!(handler[0]?.unwrap().read()?, U256::from(10));
+            assert_eq!(handler[1]?.unwrap().read()?, U256::from(20));
 
             // OOB indices should return None
-            assert!(handler.at(3)?.is_none());
+            assert!(handler[3]?.is_none());
 
             Ok(())
         })

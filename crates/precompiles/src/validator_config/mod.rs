@@ -80,7 +80,7 @@ impl ValidatorConfig {
     /// Check if a validator exists by checking if their publicKey is non-zero
     /// Since ed25519 keys cannot be zero, this is a reliable existence check
     fn validator_exists(&self, validator: Address) -> Result<bool> {
-        let validator = self.validators.at(validator).read()?;
+        let validator = self.validators[validator].read()?;
         Ok(!validator.public_key.is_zero())
     }
 
@@ -100,7 +100,7 @@ impl ValidatorConfig {
                 validator_address: _,
                 inbound_address,
                 outbound_address,
-            } = self.validators.at(validator_address).read()?;
+            } = self.validators[validator_address].read()?;
 
             validators.push(IValidatorConfig::Validator {
                 publicKey: public_key,
@@ -156,9 +156,7 @@ impl ValidatorConfig {
             inbound_address: call.inboundAddress,
             outbound_address: call.outboundAddress,
         };
-        self.validators
-            .at(call.newValidatorAddress)
-            .write(validator)?;
+        self.validators[call.newValidatorAddress].write(validator)?;
 
         // Add the validator public key to the validators array
         self.validators_array.push(call.newValidatorAddress)?;
@@ -183,7 +181,7 @@ impl ValidatorConfig {
         }
 
         // Load the current validator info
-        let old_validator = self.validators.at(sender).read()?;
+        let old_validator = self.validators[sender].read()?;
 
         // Check if rotating to a new address
         if call.newValidatorAddress != sender {
@@ -192,12 +190,10 @@ impl ValidatorConfig {
             }
 
             // Update the validators array to point at the new validator address
-            self.validators_array
-                .at_unchecked(old_validator.index as usize)
-                .write(call.newValidatorAddress)?;
+            self.validators_array[old_validator.index as usize].write(call.newValidatorAddress)?;
 
             // Clear the old validator
-            self.validators.at(sender).delete()?;
+            self.validators[sender].delete()?;
         }
 
         ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
@@ -225,9 +221,7 @@ impl ValidatorConfig {
             outbound_address: call.outboundAddress,
         };
 
-        self.validators
-            .at(call.newValidatorAddress)
-            .write(updated_validator)
+        self.validators[call.newValidatorAddress].write(updated_validator)
     }
 
     /// Change validator active status (owner only)
@@ -242,9 +236,9 @@ impl ValidatorConfig {
             return Err(ValidatorConfigError::validator_not_found())?;
         }
 
-        let mut validator = self.validators.at(call.validator).read()?;
+        let mut validator = self.validators[call.validator].read()?;
         validator.active = call.active;
-        self.validators.at(call.validator).write(validator)
+        self.validators[call.validator].write(validator)
     }
 }
 
@@ -684,7 +678,7 @@ mod tests {
             )?;
 
             // Verify old slots are cleared by checking storage directly
-            let validator = validator_config.validators.at(validator1).read()?;
+            let validator = validator_config.validators[validator1].read()?;
 
             // Assert all validator fields are cleared/zeroed
             assert_eq!(

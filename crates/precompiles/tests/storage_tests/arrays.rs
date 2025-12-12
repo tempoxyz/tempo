@@ -75,25 +75,11 @@ fn test_array_storage() {
         assert_eq!(layout.field_d.read().unwrap(), U256::from(4));
 
         // Test individual element access
-        layout.large_array.at(1).unwrap().delete().unwrap();
-        layout
-            .large_array
-            .at(2)
-            .unwrap()
-            .write(U256::from(222))
-            .unwrap();
-        assert_eq!(
-            layout.large_array.at(0).unwrap().read().unwrap(),
-            U256::from(100)
-        );
-        assert_eq!(
-            layout.large_array.at(1).unwrap().read().unwrap(),
-            U256::ZERO
-        );
-        assert_eq!(
-            layout.large_array.at(2).unwrap().read().unwrap(),
-            U256::from(222)
-        );
+        layout.large_array[1].delete().unwrap();
+        layout.large_array[2].write(U256::from(222)).unwrap();
+        assert_eq!(layout.large_array[0].read().unwrap(), U256::from(100));
+        assert_eq!(layout.large_array[1].read().unwrap(), U256::ZERO);
+        assert_eq!(layout.large_array[2].read().unwrap(), U256::from(222));
 
         // Test delete
         layout.large_array.delete().unwrap();
@@ -132,16 +118,16 @@ fn test_array_element_access() {
         layout.small_array.write(small_data).unwrap();
 
         // Read individual elements from packed array
-        assert_eq!(layout.small_array.at(0).unwrap().read().unwrap(), 42_u8);
-        assert_eq!(layout.small_array.at(15).unwrap().read().unwrap(), 42_u8);
-        assert_eq!(layout.small_array.at(31).unwrap().read().unwrap(), 42_u8);
+        assert_eq!(layout.small_array[0].read().unwrap(), 42_u8);
+        assert_eq!(layout.small_array[15].read().unwrap(), 42_u8);
+        assert_eq!(layout.small_array[31].read().unwrap(), 42_u8);
 
         // Write individual element in packed array
-        layout.small_array.at(10).unwrap().write(99u8).unwrap();
-        layout.small_array.at(11).unwrap().delete().unwrap();
-        assert_eq!(layout.small_array.at(9).unwrap().read().unwrap(), 42_u8);
-        assert_eq!(layout.small_array.at(10).unwrap().read().unwrap(), 99_u8);
-        assert_eq!(layout.small_array.at(11).unwrap().read().unwrap(), 0_u8);
+        layout.small_array[10].write(99u8).unwrap();
+        layout.small_array[11].delete().unwrap();
+        assert_eq!(layout.small_array[9].read().unwrap(), 42_u8);
+        assert_eq!(layout.small_array[10].read().unwrap(), 99_u8);
+        assert_eq!(layout.small_array[11].read().unwrap(), 0_u8);
 
         // Test unpacked array element access (U256 elements, T::BYTES = 32 > 16)
         let large_data = [
@@ -154,50 +140,24 @@ fn test_array_element_access() {
         layout.large_array.write(large_data).unwrap();
 
         // Read individual elements from unpacked array
-        assert_eq!(
-            layout.large_array.at(0).unwrap().read().unwrap(),
-            U256::from(100)
-        );
-        assert_eq!(
-            layout.large_array.at(2).unwrap().read().unwrap(),
-            U256::from(300)
-        );
-        assert_eq!(
-            layout.large_array.at(4).unwrap().read().unwrap(),
-            U256::from(500)
-        );
+        assert_eq!(layout.large_array[0].read().unwrap(), U256::from(100));
+        assert_eq!(layout.large_array[2].read().unwrap(), U256::from(300));
+        assert_eq!(layout.large_array[4].read().unwrap(), U256::from(500));
 
         // Write individual element in unpacked array
-        layout
-            .large_array
-            .at(2)
-            .unwrap()
-            .write(U256::from(999))
-            .unwrap();
-        assert_eq!(
-            layout.large_array.at(2).unwrap().read().unwrap(),
-            U256::from(999)
-        );
+        layout.large_array[2].write(U256::from(999)).unwrap();
+        assert_eq!(layout.large_array[2].read().unwrap(), U256::from(999));
         // Verify other elements unchanged
+        assert_eq!(layout.large_array[1].read().unwrap(), U256::from(200));
         assert_eq!(
-            layout.large_array.at(1).unwrap().read().unwrap(),
-            U256::from(200)
-        );
-        assert_eq!(
-            layout.large_array.at(3).unwrap().read().unwrap(),
+            layout.large_array[3].unwrap().read().unwrap(),
             U256::from(400)
         );
 
         // Delete individual element in unpacked array
-        layout.large_array.at(2).unwrap().delete().unwrap();
-        assert_eq!(
-            layout.large_array.at(2).unwrap().read().unwrap(),
-            U256::ZERO
-        );
-        assert_eq!(
-            layout.large_array.at(1).unwrap().read().unwrap(),
-            U256::from(200)
-        );
+        layout.large_array[2].delete().unwrap();
+        assert_eq!(layout.large_array[2].read().unwrap(), U256::ZERO);
+        assert_eq!(layout.large_array[1].read().unwrap(), U256::from(200));
 
         Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
     })
@@ -246,9 +206,9 @@ proptest! {
         prop_assert_eq!(layout.field_c.read()?, field_c_val);
 
         // Test individual element access
-        prop_assert_eq!(layout.large_array.at(2).unwrap().read()?, large_array[2]);
-        layout.small_array.at(5).unwrap().write(small_array[5])?;
-        prop_assert_eq!(layout.small_array.at(5).unwrap().read()?, small_array[5]);
+        prop_assert_eq!(layout.large_array[2].read()?, large_array[2]);
+        layout.small_array[5].write(small_array[5])?;
+        prop_assert_eq!(layout.small_array[5].read()?, small_array[5]);
 
         // Delete property for large_array
         layout.large_array.delete()?;

@@ -99,7 +99,7 @@ impl StablecoinExchange {
 
     /// Get user's balance for a specific token
     pub fn balance_of(&self, user: Address, token: Address) -> Result<u128> {
-        self.balances.at(user).at(token).read()
+        self.balances[user][token].read()
     }
 
     /// Get MIN_PRICE value based on current hardfork
@@ -136,7 +136,7 @@ impl StablecoinExchange {
     /// Fetch order from storage. If the order is currently pending or filled, this function returns
     /// `StablecoinExchangeError::OrderDoesNotExist`
     pub fn get_order(&self, order_id: u128) -> Result<Order> {
-        let order = self.orders.at(order_id).read()?;
+        let order = self.orders[order_id].read()?;
 
         // If the order is not filled and currently active
         if !order.maker().is_zero() && order.order_id() <= self.get_active_order_id()? {
@@ -148,7 +148,7 @@ impl StablecoinExchange {
 
     /// Set user's balance for a specific token
     fn set_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
-        self.balances.at(user).at(token).write(amount)
+        self.balances[user][token].write(amount)
     }
 
     /// Add to user's balance
@@ -402,8 +402,7 @@ impl StablecoinExchange {
     pub fn get_price_level(&self, base: Address, tick: i16, is_bid: bool) -> Result<TickLevel> {
         let quote = TIP20Token::from_address(base)?.quote_token()?;
         let book_key = compute_book_key(base, quote);
-        self.books
-            .at(book_key)
+        self.books[book_key]
             .get_tick_level_handler(tick, is_bid)
             .read()
     }
@@ -420,7 +419,7 @@ impl StablecoinExchange {
 
     /// Get orderbook by pair key
     pub fn books(&self, pair_key: B256) -> Result<Orderbook> {
-        self.books.at(pair_key).read()
+        self.books[pair_key].read()
     }
 
     /// Get all book keys
@@ -452,12 +451,12 @@ impl StablecoinExchange {
 
         let book_key = compute_book_key(base, quote);
 
-        if self.books.at(book_key).read()?.is_initialized() {
+        if self.books[book_key].read()?.is_initialized() {
             return Err(StablecoinExchangeError::pair_already_exists().into());
         }
 
         let book = Orderbook::new(base, quote);
-        self.books.at(book_key).write(book)?;
+        self.books[book_key].write(book)?;
         self.book_keys.push(book_key)?;
 
         // Emit PairCreated event
@@ -498,7 +497,7 @@ impl StablecoinExchange {
         // Compute book_key from token pair
         let book_key = compute_book_key(token, quote_token);
 
-        let book = self.books.at(book_key).read()?;
+        let book = self.books[book_key].read()?;
         self.validate_or_create_pair(&book, token)?;
 
         // Validate tick is within bounds
@@ -545,7 +544,7 @@ impl StablecoinExchange {
         // Store in pending queue. Orders are stored as a DLL at each tick level and are initially
         // stored without a prev or next pointer. This is considered a "pending" order. Once `execute_block` is called, orders are
         // linked and then considered "active"
-        self.orders.at(order_id).write(order)?;
+        self.orders[order_id].write(order)?;
 
         // Emit OrderPlaced event
         self.emit_event(StablecoinExchangeEvents::OrderPlaced(
@@ -583,7 +582,7 @@ impl StablecoinExchange {
 
         // Check book existence (only after Moderato hardfork)
         if self.storage.spec().is_moderato() {
-            let book = self.books.at(book_key).read()?;
+            let book = self.books[book_key].read()?;
             self.validate_or_create_pair(&book, token)?;
         }
 
@@ -640,7 +639,7 @@ impl StablecoinExchange {
             .expect("Invalid flip tick");
 
         // Store in pending queue
-        self.orders.at(order_id).write(order)?;
+        self.orders[order_id].write(order)?;
 
         // Emit FlipOrderPlaced event
         self.emit_event(StablecoinExchangeEvents::FlipOrderPlaced(
@@ -686,16 +685,16 @@ impl StablecoinExchange {
 
     /// Process a single pending order into the active orderbook
     fn process_pending_order(&mut self, order_id: u128) -> Result<()> {
-        let order = self.orders.at(order_id).read()?;
+        let order = self.orders[order_id].read()?;
 
         // If the order is already canceled, return early
         if order.maker().is_zero() {
             return Ok(());
         }
 
-        let mut book_handler = self.books.at(order.book_key);
-        let mut level_handler = book_handler.get_tick_level_handler(order.tick(), order.is_bid());
-        let orderbook = book_handler.read()?;
+        let mut level_handler =
+            self.books[order.book_key()].get_tick_level_handler(order.tick(), order.is_bid());
+        let orderbook = self.books[order.book_key()].read()?;
         let mut level = level_handler.read()?;
 
         let prev_tail = level.tail;
@@ -703,24 +702,22 @@ impl StablecoinExchange {
             level.head = order_id;
             level.tail = order_id;
 
-            book_handler.set_tick_bit(order.tick(), order.is_bid())?;
+            self.books[order.book_key()].set_tick_bit(order.tick(), order.is_bid())?;
 
             if order.is_bid() {
                 if order.tick() > orderbook.best_bid_tick {
-                    self.books
-                        .at(order.book_key())
+                    self.books[order.book_key()]
                         .best_bid_tick
                         .write(order.tick())?;
                 }
             } else if order.tick() < orderbook.best_ask_tick {
-                self.books
-                    .at(order.book_key())
+                self.books[order.book_key()]
                     .best_ask_tick
                     .write(order.tick())?;
             }
         } else {
-            self.orders.at(prev_tail).next.write(order_id)?;
-            self.orders.at(order_id).prev.write(prev_tail)?;
+            self.orders[prev_tail].next.write(order_id)?;
+            self.orders[order_id].prev.write(prev_tail)?;
             level.tail = order_id;
         }
 
@@ -742,14 +739,12 @@ impl StablecoinExchange {
         fill_amount: u128,
         taker: Address,
     ) -> Result<u128> {
-        let book_handler = self.books.at(order.book_key());
-        let orderbook = book_handler.read()?;
+        let orderbook = self.books[order.book_key()].read()?;
         let price = tick_to_price(order.tick());
 
         // Update order remaining amount
         let new_remaining = order.remaining() - fill_amount;
-        self.orders
-            .at(order.order_id())
+        self.orders[order.order_id()]
             .remaining
             .write(new_remaining)?;
 
@@ -779,7 +774,7 @@ impl StablecoinExchange {
             .ok_or(TempoPrecompileError::under_overflow())?;
         level.total_liquidity = new_liquidity;
 
-        book_handler
+        self.books[order.book_key()]
             .get_tick_level_handler(order.tick(), order.is_bid())
             .write(*level)?;
 
@@ -797,18 +792,7 @@ impl StablecoinExchange {
         mut level: TickLevel,
         taker: Address,
     ) -> Result<(u128, Option<(TickLevel, Order)>)> {
-        let book_handler = self.books.at(book_key);
-        // Pre-Allegretto: use order.book_key() for gas compatibility with legacy behavior.
-        // This is a patched bug where stale best_tick can cause reading an empty order (order_id=0).
-        // ref: https://github.com/tempoxyz/tempo/issues/1062
-        let mut book_handler_order = if self.storage.spec().is_allegretto() {
-            debug_assert_eq!(order.book_key(), book_key);
-            book_handler.clone()
-        } else {
-            self.books.at(order.book_key())
-        };
-
-        let orderbook = book_handler_order.read()?;
+        let orderbook = self.books[order.book_key()].read()?;
         let price = tick_to_price(order.tick());
         let fill_amount = order.remaining();
 
@@ -846,26 +830,26 @@ impl StablecoinExchange {
         }
 
         // Delete the filled order
-        self.orders.at(order.order_id()).delete()?;
+        self.orders[order.order_id()].delete()?;
 
         // Advance tick if liquidity is exhausted
         let next_tick_info = if order.next() == 0 {
-            book_handler
+            self.books[book_key]
                 .get_tick_level_handler(order.tick(), order.is_bid())
                 .delete()?;
-            book_handler_order.delete_tick_bit(order.tick(), order.is_bid())?;
+            self.books[order.book_key()].delete_tick_bit(order.tick(), order.is_bid())?;
 
             let (tick, has_liquidity) =
-                book_handler.next_initialized_tick(order.tick(), order.is_bid());
+                self.books[book_key].next_initialized_tick(order.tick(), order.is_bid());
 
             if self.storage.spec().is_allegretto() {
                 // Update best_tick when tick is exhausted
                 if order.is_bid() {
                     let new_best = if has_liquidity { tick } else { i16::MIN };
-                    self.books.at(book_key).best_bid_tick.write(new_best)?;
+                    self.books[book_key].best_bid_tick.write(new_best)?;
                 } else {
                     let new_best = if has_liquidity { tick } else { i16::MAX };
-                    self.books.at(book_key).best_ask_tick.write(new_best)?;
+                    self.books[book_key].best_ask_tick.write(new_best)?;
                 }
             }
 
@@ -873,10 +857,10 @@ impl StablecoinExchange {
                 // No more liquidity at better prices - return None to signal completion
                 None
             } else {
-                let new_level = book_handler
+                let new_level = self.books[book_key]
                     .get_tick_level_handler(tick, order.is_bid())
                     .read()?;
-                let new_order = self.orders.at(new_level.head).read()?;
+                let new_order = self.orders[new_level.head].read()?;
 
                 Some((new_level, new_order))
             }
@@ -884,7 +868,7 @@ impl StablecoinExchange {
             // If there are subsequent orders at tick, advance to next order
             level.head = order.next();
             if self.storage.spec().is_allegretto() {
-                self.orders.at(order.next()).prev.delete()?;
+                self.orders[order.next()].prev.delete()?;
             }
             let new_liquidity = level
                 .total_liquidity
@@ -892,11 +876,11 @@ impl StablecoinExchange {
                 .ok_or(TempoPrecompileError::under_overflow())?;
             level.total_liquidity = new_liquidity;
 
-            book_handler_order
+            self.books[order.book_key()]
                 .get_tick_level_handler(order.tick(), order.is_bid())
                 .write(level)?;
 
-            let new_order = self.orders.at(order.next()).read()?;
+            let new_order = self.orders[order.next()].read()?;
             Some((level, new_order))
         };
 
@@ -912,7 +896,7 @@ impl StablecoinExchange {
         taker: Address,
     ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, bid)?;
-        let mut order = self.orders.at(level.head).read()?;
+        let mut order = self.orders[level.head].read()?;
 
         let mut total_amount_in: u128 = 0;
 
@@ -994,7 +978,7 @@ impl StablecoinExchange {
         taker: Address,
     ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, bid)?;
-        let mut order = self.orders.at(level.head).read()?;
+        let mut order = self.orders[level.head].read()?;
 
         let mut total_amount_in: u128 = 0;
 
@@ -1057,7 +1041,7 @@ impl StablecoinExchange {
         taker: Address,
     ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, bid)?;
-        let mut order = self.orders.at(level.head).read()?;
+        let mut order = self.orders[level.head].read()?;
 
         let mut total_amount_out: u128 = 0;
 
@@ -1141,7 +1125,7 @@ impl StablecoinExchange {
         taker: Address,
     ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, bid)?;
-        let mut order = self.orders.at(level.head).read()?;
+        let mut order = self.orders[level.head].read()?;
 
         let mut total_amount_out: u128 = 0;
         while amount_in > 0 {
@@ -1186,8 +1170,7 @@ impl StablecoinExchange {
 
     /// Helper function to get best tick from orderbook
     fn get_best_price_level(&mut self, book_key: B256, is_bid: bool) -> Result<TickLevel> {
-        let book_handler = self.books.at(book_key);
-        let orderbook = book_handler.read()?;
+        let orderbook = self.books[book_key].read()?;
 
         let current_tick = if is_bid {
             if orderbook.best_bid_tick == i16::MIN {
@@ -1201,7 +1184,7 @@ impl StablecoinExchange {
             orderbook.best_ask_tick
         };
 
-        book_handler
+        self.books[book_key]
             .get_tick_level_handler(current_tick, is_bid)
             .read()
     }
@@ -1209,7 +1192,7 @@ impl StablecoinExchange {
     /// Cancel an order and refund tokens to maker
     /// Only the order maker can cancel their own order
     pub fn cancel(&mut self, sender: Address, order_id: u128) -> Result<()> {
-        let order = self.orders.at(order_id).read()?;
+        let order = self.orders[order_id].read()?;
 
         if order.maker().is_zero() {
             return Err(StablecoinExchangeError::order_does_not_exist().into());
@@ -1237,7 +1220,7 @@ impl StablecoinExchange {
 
     /// Cancel a pending order (not yet in the active orderbook)
     fn cancel_pending_order(&mut self, order: Order) -> Result<()> {
-        let orderbook = self.books.at(order.book_key()).read()?;
+        let orderbook = self.books[order.book_key()].read()?;
         let token = if order.is_bid() {
             orderbook.quote
         } else {
@@ -1256,7 +1239,7 @@ impl StablecoinExchange {
         self.increment_balance(order.maker(), token, refund_amount)?;
 
         // Clear the order from storage
-        self.orders.at(order.order_id()).delete()?;
+        self.orders[order.order_id()].delete()?;
 
         // Emit OrderCancelled event
         self.emit_event(StablecoinExchangeEvents::OrderCancelled(
@@ -1268,19 +1251,19 @@ impl StablecoinExchange {
 
     /// Cancel an active order (already in the orderbook)
     fn cancel_active_order(&mut self, order: Order) -> Result<()> {
-        let mut book_handler = self.books.at(order.book_key());
-        let mut level_handler = book_handler.get_tick_level_handler(order.tick(), order.is_bid());
+        let mut level_handler =
+            self.books[order.book_key()].get_tick_level_handler(order.tick(), order.is_bid());
         let mut level = level_handler.read()?;
 
         // Update linked list
         if order.prev() != 0 {
-            self.orders.at(order.prev()).next.write(order.next())?;
+            self.orders[order.prev()].next.write(order.next())?;
         } else {
             level.head = order.next();
         }
 
         if order.next() != 0 {
-            self.orders.at(order.next()).prev.write(order.prev())?;
+            self.orders[order.next()].prev.write(order.prev())?;
         } else {
             level.tail = order.prev();
         }
@@ -1294,11 +1277,11 @@ impl StablecoinExchange {
 
         // If this was the last order at this tick, clear the bitmap bit
         if level.head == 0 {
-            book_handler.delete_tick_bit(order.tick(), order.is_bid())?;
+            self.books[order.book_key()].delete_tick_bit(order.tick(), order.is_bid())?;
 
             if self.storage.spec().is_allegretto() {
                 // If this was the best tick, update it
-                let orderbook = self.books.at(order.book_key()).read()?;
+                let orderbook = self.books[order.book_key()].read()?;
                 let best_tick = if order.is_bid() {
                     orderbook.best_bid_tick
                 } else {
@@ -1306,21 +1289,15 @@ impl StablecoinExchange {
                 };
 
                 if best_tick == order.tick() {
-                    let (next_tick, has_liquidity) =
-                        book_handler.next_initialized_tick(order.tick(), order.is_bid());
+                    let (next_tick, has_liquidity) = self.books[order.book_key()]
+                        .next_initialized_tick(order.tick(), order.is_bid());
 
                     if order.is_bid() {
                         let new_best = if has_liquidity { next_tick } else { i16::MIN };
-                        self.books
-                            .at(order.book_key())
-                            .best_bid_tick
-                            .write(new_best)?;
+                        self.books[order.book_key()].best_bid_tick.write(new_best)?;
                     } else {
                         let new_best = if has_liquidity { next_tick } else { i16::MAX };
-                        self.books
-                            .at(order.book_key())
-                            .best_ask_tick
-                            .write(new_best)?;
+                        self.books[order.book_key()].best_ask_tick.write(new_best)?;
                     }
                 }
             }
@@ -1329,7 +1306,7 @@ impl StablecoinExchange {
         level_handler.write(level)?;
 
         // Refund tokens to maker
-        let orderbook = self.books.at(order.book_key()).read()?;
+        let orderbook = self.books[order.book_key()].read()?;
         if order.is_bid() {
             // Bid orders are in quote token, refund quote amount
             let price = orderbook::tick_to_price(order.tick());
@@ -1345,7 +1322,7 @@ impl StablecoinExchange {
         }
 
         // Clear the order from storage
-        self.orders.at(order.order_id()).delete()?;
+        self.orders[order.order_id()].delete()?;
 
         // Emit OrderCancelled event
         self.emit_event(StablecoinExchangeEvents::OrderCancelled(
@@ -1371,8 +1348,7 @@ impl StablecoinExchange {
     fn quote_exact_out(&self, book_key: B256, amount_out: u128, is_bid: bool) -> Result<u128> {
         let mut remaining_out = amount_out;
         let mut amount_in = 0u128;
-        let book_handler = self.books.at(book_key);
-        let orderbook = book_handler.read()?;
+        let orderbook = self.books[book_key].read()?;
 
         let mut current_tick = if is_bid {
             orderbook.best_bid_tick
@@ -1387,14 +1363,14 @@ impl StablecoinExchange {
         }
 
         while remaining_out > 0 {
-            let level = book_handler
+            let level = self.books[book_key]
                 .get_tick_level_handler(current_tick, is_bid)
                 .read()?;
 
             // If no liquidity at this level, move to next tick
             if level.total_liquidity == 0 {
                 let (next_tick, initialized) =
-                    book_handler.next_initialized_tick(current_tick, is_bid);
+                    self.books[book_key].next_initialized_tick(current_tick, is_bid);
 
                 if !initialized {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
@@ -1450,7 +1426,7 @@ impl StablecoinExchange {
             // If we exhausted this level or filled our requirement, move to next tick
             if fill_amount == level.total_liquidity {
                 let (next_tick, initialized) =
-                    book_handler.next_initialized_tick(current_tick, is_bid);
+                    self.books[book_key].next_initialized_tick(current_tick, is_bid);
 
                 if !initialized && remaining_out > 0 {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
@@ -1536,7 +1512,7 @@ impl StablecoinExchange {
             let hop_token_out = path[i + 1];
 
             let book_key = compute_book_key(hop_token_in, hop_token_out);
-            let orderbook = self.books.at(book_key).read()?;
+            let orderbook = self.books[book_key].read()?;
 
             // Validate pair exists
             if orderbook.base.is_zero() {
@@ -1569,8 +1545,7 @@ impl StablecoinExchange {
     fn quote_exact_in(&self, book_key: B256, amount_in: u128, is_bid: bool) -> Result<u128> {
         let mut remaining_in = amount_in;
         let mut amount_out = 0u128;
-        let book_handler = self.books.at(book_key);
-        let orderbook = book_handler.read()?;
+        let orderbook = self.books[book_key].read()?;
 
         let mut current_tick = if is_bid {
             orderbook.best_bid_tick
@@ -1586,14 +1561,14 @@ impl StablecoinExchange {
         }
 
         while remaining_in > 0 {
-            let level = book_handler
+            let level = self.books[book_key]
                 .get_tick_level_handler(current_tick, is_bid)
                 .read()?;
 
             // If no liquidity at this level, move to next tick
             if level.total_liquidity == 0 {
                 let (next_tick, initialized) =
-                    book_handler.next_initialized_tick(current_tick, is_bid);
+                    self.books[book_key].next_initialized_tick(current_tick, is_bid);
 
                 if !initialized {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
@@ -1649,7 +1624,7 @@ impl StablecoinExchange {
             // If we exhausted this level, move to next tick
             if fill_amount == level.total_liquidity {
                 let (next_tick, initialized) =
-                    book_handler.next_initialized_tick(current_tick, is_bid);
+                    self.books[book_key].next_initialized_tick(current_tick, is_bid);
 
                 if !initialized && remaining_in > 0 {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
@@ -2003,7 +1978,7 @@ mod tests {
             assert_eq!(exchange.pending_order_id()?, 1);
 
             // Verify the order was stored correctly
-            let stored_order = exchange.orders.at(order_id).read()?;
+            let stored_order = exchange.orders[order_id].read()?;
             assert_eq!(stored_order.maker(), alice);
             assert_eq!(stored_order.amount(), min_order_amount);
             assert_eq!(stored_order.remaining(), min_order_amount);
@@ -2015,8 +1990,9 @@ mod tests {
 
             // Verify the order is not yet in the active orderbook
             let book_key = compute_book_key(base_token, quote_token);
-            let book_handler = exchange.books.at(book_key);
-            let level = book_handler.get_tick_level_handler(tick, true).read()?;
+            let level = exchange.books[book_key]
+                .get_tick_level_handler(tick, true)
+                .read()?;
             assert_eq!(level.head, 0);
             assert_eq!(level.tail, 0);
             assert_eq!(level.total_liquidity, 0);
@@ -2066,7 +2042,7 @@ mod tests {
             assert_eq!(exchange.pending_order_id()?, 1);
 
             // Verify the order was stored correctly
-            let stored_order = exchange.orders.at(order_id).read()?;
+            let stored_order = exchange.orders[order_id].read()?;
             assert_eq!(stored_order.maker(), alice);
             assert_eq!(stored_order.amount(), min_order_amount);
             assert_eq!(stored_order.remaining(), min_order_amount);
@@ -2077,8 +2053,9 @@ mod tests {
             assert_eq!(stored_order.next(), 0);
 
             let book_key = compute_book_key(base_token, quote_token);
-            let book_handler = exchange.books.at(book_key);
-            let level = book_handler.get_tick_level_handler(tick, false).read()?;
+            let level = exchange.books[book_key]
+                .get_tick_level_handler(tick, false)
+                .read()?;
             assert_eq!(level.head, 0);
             assert_eq!(level.tail, 0);
             assert_eq!(level.total_liquidity, 0);
@@ -2237,7 +2214,7 @@ mod tests {
             assert_eq!(exchange.pending_order_id()?, 1);
 
             // Verify the order was stored correctly
-            let stored_order = exchange.orders.at(order_id).read()?;
+            let stored_order = exchange.orders[order_id].read()?;
             assert_eq!(stored_order.maker(), alice);
             assert_eq!(stored_order.amount(), min_order_amount);
             assert_eq!(stored_order.remaining(), min_order_amount);
@@ -2250,8 +2227,9 @@ mod tests {
 
             // Verify the order is not yet in the active orderbook
             let book_key = compute_book_key(base_token, quote_token);
-            let book_handler = exchange.books.at(book_key);
-            let level = book_handler.get_tick_level_handler(tick, true).read()?;
+            let level = exchange.books[book_key]
+                .get_tick_level_handler(tick, true)
+                .read()?;
             assert_eq!(level.head, 0);
             assert_eq!(level.tail, 0);
             assert_eq!(level.total_liquidity, 0);
@@ -2325,7 +2303,7 @@ mod tests {
                 .expect("Cancel pending order should succeed");
 
             // Verify order was deleted
-            let cancelled_order = exchange.orders.at(order_id).read()?;
+            let cancelled_order = exchange.orders[order_id].read()?;
             assert_eq!(cancelled_order.maker(), Address::ZERO);
 
             // Verify tokens were refunded to user's internal balance
@@ -2374,8 +2352,8 @@ mod tests {
             assert_eq!(exchange.pending_order_id()?, 2);
 
             // Verify orders are in pending state
-            let order_0 = exchange.orders.at(order_id_0).read()?;
-            let order_1 = exchange.orders.at(order_id_1).read()?;
+            let order_0 = exchange.orders[order_id_0].read()?;
+            let order_1 = exchange.orders[order_id_1].read()?;
             assert_eq!(order_0.prev(), 0);
             assert_eq!(order_0.next(), 0);
             assert_eq!(order_1.prev(), 0);
@@ -2383,8 +2361,9 @@ mod tests {
 
             // Verify tick level is empty before execute_block
             let book_key = compute_book_key(base_token, quote_token);
-            let book_handler = exchange.books.at(book_key);
-            let level_before = book_handler.get_tick_level_handler(tick, true).read()?;
+            let level_before = exchange.books[book_key]
+                .get_tick_level_handler(tick, true)
+                .read()?;
             assert_eq!(level_before.head, 0);
             assert_eq!(level_before.tail, 0);
             assert_eq!(level_before.total_liquidity, 0);
@@ -2397,21 +2376,23 @@ mod tests {
             assert_eq!(exchange.active_order_id()?, 2);
             assert_eq!(exchange.pending_order_id()?, 2);
 
-            let order_0 = exchange.orders.at(order_id_0).read()?;
-            let order_1 = exchange.orders.at(order_id_1).read()?;
+            let order_0 = exchange.orders[order_id_0].read()?;
+            let order_1 = exchange.orders[order_id_1].read()?;
             assert_eq!(order_0.prev(), 0);
             assert_eq!(order_0.next(), order_1.order_id());
             assert_eq!(order_1.prev(), order_0.order_id());
             assert_eq!(order_1.next(), 0);
 
             // Assert tick level is updated
-            let level_after = book_handler.get_tick_level_handler(tick, true).read()?;
+            let level_after = exchange.books[book_key]
+                .get_tick_level_handler(tick, true)
+                .read()?;
             assert_eq!(level_after.head, order_0.order_id());
             assert_eq!(level_after.tail, order_1.order_id());
             assert_eq!(level_after.total_liquidity, min_order_amount * 2);
 
             // Verify orderbook best bid tick is updated
-            let orderbook = exchange.books.at(book_key).read()?;
+            let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, tick);
 
             Ok(())
@@ -2785,13 +2766,13 @@ mod tests {
                 .expect("Swap should succeed");
 
             // Assert that the order has filled
-            let filled_order = exchange.orders.at(flip_order_id).read()?;
+            let filled_order = exchange.orders[flip_order_id].read()?;
             assert_eq!(filled_order.maker(), Address::ZERO);
 
             let new_order_id = exchange.pending_order_id()?;
             assert_eq!(new_order_id, flip_order_id + 1);
 
-            let new_order = exchange.orders.at(new_order_id).read()?;
+            let new_order = exchange.orders[new_order_id].read()?;
             assert_eq!(new_order.maker(), alice);
             assert_eq!(new_order.tick(), flip_tick);
             assert_eq!(new_order.flip_tick(), tick);
@@ -2872,7 +2853,7 @@ mod tests {
         assert_eq!(book_key, expected_book_key, "Book key should match");
 
         let exchange = StablecoinExchange::new();
-        let orderbook = exchange.books.at(book_key).read()?;
+        let orderbook = exchange.books[book_key].read()?;
         let expected_direction = token_in == orderbook.base;
         assert_eq!(
             base_for_quote, expected_direction,
@@ -3724,8 +3705,8 @@ mod tests {
             exchange.execute_block(Address::ZERO)?;
 
             // Verify linked list is set up correctly
-            let order1 = exchange.orders.at(order1_id).read()?;
-            let order2 = exchange.orders.at(order2_id).read()?;
+            let order1 = exchange.orders[order1_id].read()?;
+            let order2 = exchange.orders[order2_id].read()?;
             assert_eq!(order1.next(), order2_id);
             assert_eq!(order2.prev(), order1_id);
 
@@ -3740,7 +3721,7 @@ mod tests {
             )?;
 
             // After filling order1, order2 should be the new head with prev = 0
-            let order2_after = exchange.orders.at(order2_id).read()?;
+            let order2_after = exchange.orders[order2_id].read()?;
             assert_eq!(
                 order2_after.prev(),
                 0,
@@ -3794,7 +3775,7 @@ mod tests {
             exchange.execute_block(Address::ZERO)?;
 
             // Verify initial best ticks
-            let orderbook = exchange.books.at(book_key).read()?;
+            let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, bid_tick_1);
             assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
@@ -3802,7 +3783,7 @@ mod tests {
             exchange.set_balance(bob, base_token, amount)?;
             exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
             // Verify best_bid_tick moved to tick 90, best_ask_tick unchanged
-            let orderbook = exchange.books.at(book_key).read()?;
+            let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, bid_tick_2);
             assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
@@ -3810,7 +3791,7 @@ mod tests {
             exchange.set_balance(bob, base_token, amount)?;
             exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
             // Verify best_bid_tick is now i16::MIN, best_ask_tick unchanged
-            let orderbook = exchange.books.at(book_key).read()?;
+            let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, i16::MIN);
             assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
@@ -3820,7 +3801,7 @@ mod tests {
             exchange.set_balance(bob, quote_token, quote_needed)?;
             exchange.swap_exact_amount_in(bob, quote_token, base_token, quote_needed, 0)?;
             // Verify best_ask_tick moved to tick 60, best_bid_tick unchanged
-            let orderbook = exchange.books.at(book_key).read()?;
+            let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_ask_tick, ask_tick_2);
             assert_eq!(orderbook.best_bid_tick, i16::MIN);
 
@@ -3870,42 +3851,42 @@ mod tests {
             exchange.execute_block(Address::ZERO)?;
 
             // Verify initial best ticks
-            let orderbook = exchange.books.at(book_key).read()?;
+            let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, bid_tick_1);
             assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
             // Cancel one bid at tick 100
             exchange.cancel(alice, bid_order_1)?;
             // Verify best_bid_tick remains 100, best_ask_tick unchanged
-            let orderbook = exchange.books.at(book_key).read()?;
+            let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, bid_tick_1);
             assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
             // Cancel remaining bid at tick 100
             exchange.cancel(alice, bid_order_2)?;
             // Verify best_bid_tick moved to 90, best_ask_tick unchanged
-            let orderbook = exchange.books.at(book_key).read()?;
+            let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, bid_tick_2);
             assert_eq!(orderbook.best_ask_tick, ask_tick_1);
 
             // Cancel ask at tick 50
             exchange.cancel(alice, ask_order_1)?;
             // Verify best_ask_tick moved to 60, best_bid_tick unchanged
-            let orderbook = exchange.books.at(book_key).read()?;
+            let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, bid_tick_2);
             assert_eq!(orderbook.best_ask_tick, ask_tick_2);
 
             // Cancel bid at tick 90
             exchange.cancel(alice, bid_order_3)?;
             // Verify best_bid_tick is now i16::MIN, best_ask_tick unchanged
-            let orderbook = exchange.books.at(book_key).read()?;
+            let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, i16::MIN);
             assert_eq!(orderbook.best_ask_tick, ask_tick_2);
 
             // Cancel ask at tick 60
             exchange.cancel(alice, ask_order_2)?;
             // Verify best_ask_tick is now i16::MAX, best_bid_tick unchanged
-            let orderbook = exchange.books.at(book_key).read()?;
+            let orderbook = exchange.books[book_key].read()?;
             assert_eq!(orderbook.best_bid_tick, i16::MIN);
             assert_eq!(orderbook.best_ask_tick, i16::MAX);
 
@@ -4135,7 +4116,7 @@ mod tests {
 
             // Before placing order, verify pair doesn't exist
             let book_key = compute_book_key(base_token, quote_token);
-            let book_before = exchange.books.at(book_key).read()?;
+            let book_before = exchange.books[book_key].read()?;
             assert!(book_before.base.is_zero(),);
 
             // Transfer tokens to exchange first
@@ -4152,7 +4133,7 @@ mod tests {
             // Place an order which should also create the pair
             exchange.place(user, base_token, MIN_ORDER_AMOUNT, true, 0)?;
 
-            let book_after = exchange.books.at(book_key).read()?;
+            let book_after = exchange.books[book_key].read()?;
             assert_eq!(book_after.base, base_token);
 
             // Verify PairCreated event was emitted (along with OrderPlaced)
@@ -4188,7 +4169,7 @@ mod tests {
 
             // Before placing flip order, verify pair doesn't exist
             let book_key = compute_book_key(base_token, quote_token);
-            let book_before = exchange.books.at(book_key).read()?;
+            let book_before = exchange.books[book_key].read()?;
             assert!(book_before.base.is_zero(),);
 
             // Transfer tokens to exchange first
@@ -4205,7 +4186,7 @@ mod tests {
             // Place a flip order which should also create the pair
             exchange.place_flip(user, base_token, MIN_ORDER_AMOUNT, true, 0, 10)?;
 
-            let book_after = exchange.books.at(book_key).read()?;
+            let book_after = exchange.books[book_key].read()?;
             assert_eq!(book_after.base, base_token);
 
             // Verify PairCreated event was emitted (along with FlipOrderPlaced)

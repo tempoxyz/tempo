@@ -57,7 +57,7 @@ impl Precompile for TipFeeManager {
                 })
             }
             ITIPFeeAMM::poolsCall::SELECTOR => view::<ITIPFeeAMM::poolsCall>(calldata, |call| {
-                let pool = self.pools.at(call.poolId).read()?;
+                let pool = self.pools[call.poolId].read()?;
 
                 Ok(ITIPFeeAMM::Pool {
                     reserveUserToken: pool.reserve_user_token,
@@ -66,12 +66,12 @@ impl Precompile for TipFeeManager {
             }),
             ITIPFeeAMM::totalSupplyCall::SELECTOR => {
                 view::<ITIPFeeAMM::totalSupplyCall>(calldata, |call| {
-                    self.total_supply.at(call.poolId).read()
+                    self.total_supply[call.poolId].read()
                 })
             }
             ITIPFeeAMM::liquidityBalancesCall::SELECTOR => {
                 view::<ITIPFeeAMM::liquidityBalancesCall>(calldata, |call| {
-                    self.liquidity_balances.at(call.poolId).at(call.user).read()
+                    self.liquidity_balances[call.poolId][call.user].read()
                 })
             }
             ITIPFeeAMM::MCall::SELECTOR => view::<ITIPFeeAMM::MCall>(calldata, |_call| Ok(M)),

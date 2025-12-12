@@ -47,7 +47,7 @@ impl NonceManager {
         }
 
         // For user nonce keys, read from precompile storage
-        self.nonces.at(call.account).at(call.nonceKey).read()
+        self.nonces[call.account][call.nonceKey].read()
     }
 
     /// Get the number of active user nonce keys for an account
@@ -55,7 +55,7 @@ impl NonceManager {
         &self,
         call: INonce::getActiveNonceKeyCountCall,
     ) -> Result<U256> {
-        self.active_key_count.at(call.account).read()
+        self.active_key_count[call.account].read()
     }
 
     /// Internal: Increment nonce for a specific account and nonce key
@@ -64,7 +64,7 @@ impl NonceManager {
             return Err(NonceError::invalid_nonce_key().into());
         }
 
-        let current = self.nonces.at(account).at(nonce_key).read()?;
+        let current = self.nonces[account][nonce_key].read()?;
 
         // If transitioning from 0 to 1, increment active key count
         if current == 0 {
@@ -75,7 +75,7 @@ impl NonceManager {
             .checked_add(1)
             .ok_or_else(NonceError::nonce_overflow)?;
 
-        self.nonces.at(account).at(nonce_key).write(new_nonce)?;
+        self.nonces[account][nonce_key].write(new_nonce)?;
 
         if self.storage.spec().is_allegretto() {
             self.emit_event(NonceEvent::NonceIncremented(INonce::NonceIncremented {
@@ -90,13 +90,13 @@ impl NonceManager {
 
     /// Increment the active key count for an account
     fn increment_active_key_count(&mut self, account: Address) -> Result<()> {
-        let current = self.active_key_count.at(account).read()?;
+        let current = self.active_key_count[account].read()?;
 
         let new_count = current
             .checked_add(U256::ONE)
             .ok_or_else(NonceError::nonce_overflow)?;
 
-        self.active_key_count.at(account).write(new_count)?;
+        self.active_key_count[account].write(new_count)?;
 
         // Emit ActiveKeyCountChanged event (only after Moderato hardfork)
         if self.storage.spec().is_moderato() {

@@ -93,7 +93,7 @@ export function SellSwap({ onSuccess }: { onSuccess?: () => void }) {
           {sendCalls.isSuccess && sendCalls.data && (
             <ExplorerLink
               hash={
-                sendCalls.data.receipts?.at(0)?.transactionHash as `0x${string}`
+                sendCalls.data.receipts?[0]?.transactionHash as `0x${string}`
               }
             />
           )}

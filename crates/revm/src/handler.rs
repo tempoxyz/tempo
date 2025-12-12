@@ -1352,7 +1352,7 @@ mod tests {
 
         // Set up initial balance
         let token_id = tip20::address_to_token_id_unchecked(token);
-        let balance_slot = TIP20Token::new(token_id).balances.at(account).slot();
+        let balance_slot = TIP20Token::new(token_id).balances[account].slot();
         journal.load_account(token)?;
         journal
             .sstore(token, balance_slot, expected_balance)
@@ -1382,7 +1382,7 @@ mod tests {
         let tx_fee_token = Address::random();
 
         // Set validator token
-        let validator_slot = TipFeeManager::new().validator_tokens.at(validator).slot();
+        let validator_slot = TipFeeManager::new().validator_tokens[validator].slot();
         ctx.journaled_state.load_account(TIP_FEE_MANAGER_ADDRESS)?;
         ctx.journaled_state
             .sstore(
@@ -1401,7 +1401,7 @@ mod tests {
         assert_eq!(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, fee_token);
 
         // Set user token
-        let user_slot = TipFeeManager::new().user_tokens.at(user).slot();
+        let user_slot = TipFeeManager::new().user_tokens[user].slot();
         ctx.journaled_state
             .sstore(
                 TIP_FEE_MANAGER_ADDRESS,

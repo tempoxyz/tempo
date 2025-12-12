@@ -167,7 +167,7 @@ pub trait TempoStateAccess<T> {
         } else {
             // Pre-allegretto fall back to the validator fee token preference or the default to the
             // first TIP20 deployed after PathUSD
-            let validator_slot = TipFeeManager::new().validator_tokens.at(validator).slot();
+            let validator_slot = TipFeeManager::new().validator_tokens[validator].slot();
 
             let validator_fee_token = self
                 .sload(TIP_FEE_MANAGER_ADDRESS, validator_slot)?
@@ -274,7 +274,7 @@ pub trait TempoStateAccess<T> {
         let token_id = tip20::address_to_token_id_unchecked(token);
 
         // Query the user's balance in the determined fee token's TIP20 contract
-        let balance_slot = TIP20Token::new(token_id).balances.at(account).slot();
+        let balance_slot = TIP20Token::new(token_id).balances[account].slot();
         // Load fee token account to ensure that we can load storage for it.
         self.basic(token)?;
         self.sload(token, balance_slot)
@@ -433,7 +433,7 @@ mod tests {
 
         // Validator has a token preference set
         let mut db = revm::database::CacheDB::new(EmptyDB::default());
-        let validator_slot = TipFeeManager::new().validator_tokens.at(validator).slot();
+        let validator_slot = TipFeeManager::new().validator_tokens[validator].slot();
         db.insert_account_storage(
             TIP_FEE_MANAGER_ADDRESS,
             validator_slot,

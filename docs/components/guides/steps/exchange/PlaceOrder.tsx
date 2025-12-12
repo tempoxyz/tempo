@@ -94,7 +94,7 @@ export function PlaceOrder(props: DemoStepProps) {
           <div className="ps-5 border-gray4 border-s-2">
             <ExplorerLink
               hash={
-                sendCalls.data.receipts?.at(0)?.transactionHash as `0x${string}`
+                sendCalls.data.receipts?[0]?.transactionHash as `0x${string}`
               }
             />
           </div>

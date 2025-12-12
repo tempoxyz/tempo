@@ -15,6 +15,7 @@ use crate::{
     storage::{StorageOps, packing},
 };
 use alloy::primitives::{Address, U256, keccak256};
+use std::{cell::UnsafeCell, collections::HashMap, hash::Hash};
 
 /// Describes how a type is laid out in EVM storage.
 ///
@@ -308,5 +309,62 @@ pub trait StorageKey {
         buf[padded_len..].copy_from_slice(&slot.to_be_bytes::<32>());
 
         U256::from_be_bytes(keccak256(&buf).0)
+    }
+}
+
+/// Cache for computed handlers with stable references.
+///
+/// Enables `Index` implementations on handlers by storing child handlers and
+/// returning references that remain valid across insertions.
+///
+/// # SAFETY
+///
+/// This type uses `UnsafeCell` for interior mutability. Callers must ensure
+/// that the closure passed to `get_or_insert` isn't reentrant.
+#[derive(Debug, Default)]
+pub(super) struct HandlerCache<K, H> {
+    inner: UnsafeCell<HashMap<K, Box<H>>>,
+}
+
+impl<K, H> HandlerCache<K, H> {
+    /// Creates a new empty handler cache.
+    #[inline]
+    pub(super) fn new() -> Self {
+        Self {
+            inner: UnsafeCell::new(HashMap::new()),
+        }
+    }
+}
+
+impl<K, H> Clone for HandlerCache<K, H> {
+    /// Creates a new empty cache (cached handlers are not cloned).
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+
+impl<K: Hash + Eq, H> HandlerCache<K, H> {
+    /// Returns a reference to a lazily initialized handler for the given key.
+    #[inline]
+    pub(super) fn get_or_insert(&self, key: K, f: impl FnOnce() -> H) -> &H {
+        self.get_or_insert_mut(key, f)
+    }
+
+    /// Returns a mutable reference to a lazily initialized handler for the given key.
+    ///
+    /// # SAFETY
+    ///
+    /// This method is safe to call as long as the closure `f` doesn't re-enter.
+    #[inline]
+    pub(super) fn get_or_insert_mut(&self, key: K, f: impl FnOnce() -> H) -> &mut H {
+        // SAFETY:
+        // 1. Single-threaded access (EVM execution model)
+        // 2. Box ensures stable heap address even when HashMap rehashes
+        // 3. Append-only: we only insert, never remove entries
+        // 4. Caller must ensure `f()` doesn't access (reenter) this cache
+        unsafe {
+            let cache = &mut *self.inner.get();
+            cache.entry(key).or_insert_with(|| Box::new(f()))
+        }
     }
 }

@@ -60,13 +60,13 @@ fn test_struct_storage() {
         let addr3 = test_address(30);
 
         let addr_map = layout.address_mapping;
-        addr_map.at(addr1).write(U256::from(1000)).unwrap();
-        addr_map.at(addr2).write(U256::from(2000)).unwrap();
-        addr_map.at(addr3).write(U256::from(3000)).unwrap();
+        addr_map[addr1].write(U256::from(1000)).unwrap();
+        addr_map[addr2].write(U256::from(2000)).unwrap();
+        addr_map[addr3].write(U256::from(3000)).unwrap();
 
-        assert_eq!(addr_map.at(addr1).read().unwrap(), U256::from(1000));
-        assert_eq!(addr_map.at(addr2).read().unwrap(), U256::from(2000));
-        assert_eq!(addr_map.at(addr3).read().unwrap(), U256::from(3000));
+        assert_eq!(addr_map[addr1].read().unwrap(), U256::from(1000));
+        assert_eq!(addr_map[addr2].read().unwrap(), U256::from(2000));
+        assert_eq!(addr_map[addr3].read().unwrap(), U256::from(3000));
 
         // Test block_mapping with TestBlock values
         let block1 = TestBlock {
@@ -80,15 +80,15 @@ fn test_struct_storage() {
             field3: 666,
         };
 
-        layout.block_mapping.at(1).write(block1.clone()).unwrap();
-        layout.block_mapping.at(2).write(block2.clone()).unwrap();
-        assert_eq!(layout.block_mapping.at(1).read().unwrap(), block1);
-        assert_eq!(layout.block_mapping.at(2).read().unwrap(), block2);
+        layout.block_mapping[1].write(block1.clone()).unwrap();
+        layout.block_mapping[2].write(block2.clone()).unwrap();
+        assert_eq!(layout.block_mapping[1].read().unwrap(), block1);
+        assert_eq!(layout.block_mapping[2].read().unwrap(), block2);
 
         // Verify non-existent keys return default values
-        assert_eq!(addr_map.at(test_address(99)).read().unwrap(), U256::ZERO);
+        assert_eq!(addr_map[test_address(99)].read().unwrap(), U256::ZERO);
         assert_eq!(
-            layout.block_mapping.at(99).read().unwrap(),
+            layout.block_mapping[99].read().unwrap(),
             TestBlock::default()
         );
     });

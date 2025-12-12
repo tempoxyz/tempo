@@ -38,42 +38,34 @@ fn test_mapping() {
         };
 
         // Store multiple entries
-        layout.block_mapping.at(1u64).write(block1.clone()).unwrap();
-        layout.block_mapping.at(2u64).write(block2.clone()).unwrap();
-        layout
-            .profile_mapping
-            .at(test_address(10))
+        layout.block_mapping[1u64].write(block1.clone()).unwrap();
+        layout.block_mapping[2u64].write(block2.clone()).unwrap();
+        layout.profile_mapping[test_address(10)]
             .write(profile1.clone())
             .unwrap();
-        layout
-            .profile_mapping
-            .at(test_address(20))
+        layout.profile_mapping[test_address(20)]
             .write(profile2.clone())
             .unwrap();
 
         // Verify all entries
-        assert_eq!(layout.block_mapping.at(1u64).read().unwrap(), block1);
-        assert_eq!(layout.block_mapping.at(2u64).read().unwrap(), block2);
+        assert_eq!(layout.block_mapping[1u64].read().unwrap(), block1);
+        assert_eq!(layout.block_mapping[2u64].read().unwrap(), block2);
         assert_eq!(
-            layout.profile_mapping.at(test_address(10)).read().unwrap(),
+            layout.profile_mapping[test_address(10)].read().unwrap(),
             profile1
         );
         assert_eq!(
-            layout.profile_mapping.at(test_address(20)).read().unwrap(),
+            layout.profile_mapping[test_address(20)].read().unwrap(),
             profile2
         );
 
         // Delete specific entries
-        layout.block_mapping.at(1u64).delete().unwrap();
-        layout
-            .profile_mapping
-            .at(test_address(10))
-            .delete()
-            .unwrap();
+        layout.block_mapping[1u64].delete().unwrap();
+        layout.profile_mapping[test_address(10)].delete().unwrap();
 
         // Verify deleted entries return defaults
         assert_eq!(
-            layout.block_mapping.at(1u64).read().unwrap(),
+            layout.block_mapping[1u64].read().unwrap(),
             TestBlock {
                 field1: U256::ZERO,
                 field2: U256::ZERO,
@@ -81,7 +73,7 @@ fn test_mapping() {
             }
         );
         assert_eq!(
-            layout.profile_mapping.at(test_address(10)).read().unwrap(),
+            layout.profile_mapping[test_address(10)].read().unwrap(),
             UserProfile {
                 owner: Address::ZERO,
                 active: false,
@@ -90,9 +82,9 @@ fn test_mapping() {
         );
 
         // Verify non-deleted entries are intact
-        assert_eq!(layout.block_mapping.at(2u64).read().unwrap(), block2);
+        assert_eq!(layout.block_mapping[2u64].read().unwrap(), block2);
         assert_eq!(
-            layout.profile_mapping.at(test_address(20)).read().unwrap(),
+            layout.profile_mapping[test_address(20)].read().unwrap(),
             profile2
         );
 
@@ -129,30 +121,30 @@ proptest! {
 
         StorageCtx::enter(&mut storage, || {
             // Store to different keys
-            layout.address_mapping.at(addr1).write(val1)?;
-            layout.address_mapping.at(addr2).write(val2)?;
-            layout.block_mapping.at(100u64).write(block1.clone())?;
-            layout.block_mapping.at(200u64).write(block2.clone())?;
+            layout.address_mapping[addr1].write(val1)?;
+            layout.address_mapping[addr2].write(val2)?;
+            layout.block_mapping[100u64].write(block1.clone())?;
+            layout.block_mapping[200u64].write(block2.clone())?;
 
             // Isolation property: each key has independent storage
-            prop_assert_eq!(layout.address_mapping.at(addr1).read()?, val1);
-            prop_assert_eq!(layout.address_mapping.at(addr2).read()?, val2);
-            prop_assert_eq!(layout.block_mapping.at(100u64).read()?, block1);
-            prop_assert_eq!(layout.block_mapping.at(200u64).read()?, block2.clone());
+            prop_assert_eq!(layout.address_mapping[addr1].read()?, val1);
+            prop_assert_eq!(layout.address_mapping[addr2].read()?, val2);
+            prop_assert_eq!(layout.block_mapping[100u64].read()?, block1);
+            prop_assert_eq!(layout.block_mapping[200u64].read()?, block2.clone());
 
             // Delete one key doesn't affect others
-            layout.address_mapping.at(addr1).delete()?;
-            prop_assert_eq!(layout.address_mapping.at(addr1).read()?, U256::ZERO);
-            prop_assert_eq!(layout.address_mapping.at(addr2).read()?, val2);
+            layout.address_mapping[addr1].delete()?;
+            prop_assert_eq!(layout.address_mapping[addr1].read()?, U256::ZERO);
+            prop_assert_eq!(layout.address_mapping[addr2].read()?, val2);
 
-            layout.block_mapping.at(100u64).delete()?;
+            layout.block_mapping[100u64].delete()?;
             let default_block = TestBlock {
                 field1: U256::ZERO,
                 field2: U256::ZERO,
                 field3: 0,
             };
-            prop_assert_eq!(layout.block_mapping.at(100u64).read()?, default_block);
-            prop_assert_eq!(layout.block_mapping.at(200u64).read()?, block2.clone());
+            prop_assert_eq!(layout.block_mapping[100u64].read()?, default_block);
+            prop_assert_eq!(layout.block_mapping[200u64].read()?, block2.clone());
 
             Ok(())
         })?;

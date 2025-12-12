@@ -20,7 +20,7 @@ use tempo_precompiles_macros::contract;
 #[contract(addr = TIP20_REWARDS_REGISTRY_ADDRESS)]
 pub struct TIP20RewardsRegistry {
     last_updated_timestamp: u128,
-    ending_streams: Mapping<u128, Vec<Address>>,
+    sterams_ending_at: Mapping<u128, Vec<Address>>,
     stream_index: Mapping<B256, U256>,
 }
 
@@ -35,39 +35,35 @@ impl TIP20RewardsRegistry {
     /// Add a token to the registry for a given stream end time
     pub fn add_stream(&mut self, token: Address, end_time: u128) -> Result<()> {
         let stream_key = keccak256((token, end_time).abi_encode());
-        let stream_ending_at = self.ending_streams.at(end_time);
-        let length = stream_ending_at.len()?;
+        let length = self.sterams_ending_at[end_time].len()?;
 
-        self.stream_index.at(stream_key).write(U256::from(length))?;
-        stream_ending_at.push(token)
+        self.stream_index[stream_key].write(U256::from(length))?;
+        self.sterams_ending_at[end_time].push(token)
     }
 
     /// Remove stream before it is finalized
     pub fn remove_stream(&mut self, token: Address, end_time: u128) -> Result<()> {
         let stream_key = keccak256((token, end_time).abi_encode());
-        let index: usize = self.stream_index.at(stream_key).read()?.to();
+        let index: usize = self.stream_index[stream_key].read()?.to();
 
-        let stream_ending_at = self.ending_streams.at(end_time);
-        let length = stream_ending_at.len()?;
+        let length = self.sterams_ending_at[end_time].len()?;
         let last_index = length
             .checked_sub(1)
             .ok_or(TempoPrecompileError::under_overflow())?;
 
         // If removing element that's not the last, swap with last element
         if index != last_index {
-            let last_token = stream_ending_at.at_unchecked(last_index).read()?;
-            stream_ending_at.at_unchecked(index).write(last_token)?;
+            let last_token = self.sterams_ending_at[end_time][last_index].read()?;
+            self.sterams_ending_at[end_time][index].write(last_token)?;
 
             // Update stream_index for the moved element
             let last_stream_key = keccak256((last_token, end_time).abi_encode());
-            self.stream_index
-                .at(last_stream_key)
-                .write(U256::from(index))?;
+            self.stream_index[last_stream_key].write(U256::from(index))?;
         }
 
         // Remove last element and clear its index
-        stream_ending_at.pop()?;
-        self.stream_index.at(stream_key).delete()?;
+        self.sterams_ending_at[end_time].pop()?;
+        self.stream_index[stream_key].delete()?;
 
         Ok(())
     }
@@ -94,7 +90,7 @@ impl TIP20RewardsRegistry {
             .ok_or(TempoPrecompileError::under_overflow())?;
 
         while current_timestamp >= next_timestamp {
-            let tokens = self.ending_streams.at(next_timestamp).read()?;
+            let tokens = self.sterams_ending_at[next_timestamp].read()?;
 
             for token in tokens {
                 let token_id = address_to_token_id_unchecked(token);
@@ -102,11 +98,11 @@ impl TIP20RewardsRegistry {
                 tip20_token.finalize_streams(self.address, next_timestamp)?;
 
                 let stream_key = keccak256((token, next_timestamp).abi_encode());
-                self.stream_index.at(stream_key).delete()?;
+                self.stream_index[stream_key].delete()?;
             }
 
             // Clear all elements from the vec
-            self.ending_streams.at(next_timestamp).delete()?;
+            self.sterams_ending_at[next_timestamp].delete()?;
 
             next_timestamp = next_timestamp
                 .checked_add(1)
@@ -147,23 +143,23 @@ mod tests {
 
             registry.add_stream(token, end_time)?;
 
-            let streams = registry.ending_streams.at(end_time).read()?;
+            let streams = registry.sterams_ending_at[end_time].read()?;
             assert_eq!(streams.len(), 1);
             assert_eq!(streams[0], token);
 
             let stream_key = keccak256((token, end_time).abi_encode());
-            let index = registry.stream_index.at(stream_key).read()?;
+            let index = registry.stream_index[stream_key].read()?;
             assert_eq!(index, U256::ZERO);
 
             registry.add_stream(token2, end_time)?;
 
-            let streams = registry.ending_streams.at(end_time).read()?;
+            let streams = registry.sterams_ending_at[end_time].read()?;
             assert_eq!(streams.len(), 2);
             assert!(streams.contains(&token));
             assert!(streams.contains(&token2));
 
             let stream_key2 = keccak256((token2, end_time).abi_encode());
-            let index2 = registry.stream_index.at(stream_key2).read()?;
+            let index2 = registry.stream_index[stream_key2].read()?;
             assert_eq!(index2, U256::ONE);
 
             Ok(())
@@ -190,7 +186,7 @@ mod tests {
             registry.add_stream(token2, end_time)?;
             registry.add_stream(token3, end_time)?;
 
-            let streams = registry.ending_streams.at(end_time).read()?;
+            let streams = registry.sterams_ending_at[end_time].read()?;
             assert_eq!(streams.len(), 3);
             assert_eq!(streams[0], token1);
             assert_eq!(streams[1], token2);
@@ -198,7 +194,7 @@ mod tests {
 
             registry.remove_stream(token2, end_time)?;
 
-            let streams = registry.ending_streams.at(end_time).read()?;
+            let streams = registry.sterams_ending_at[end_time].read()?;
             assert_eq!(streams.len(), 2);
             assert_eq!(streams[0], token1);
             assert_eq!(streams[1], token3);
@@ -208,22 +204,22 @@ mod tests {
             let stream_key2 = keccak256((token2, end_time).abi_encode());
             let stream_key3 = keccak256((token3, end_time).abi_encode());
 
-            let index1 = registry.stream_index.at(stream_key1).read()?;
-            let index2 = registry.stream_index.at(stream_key2).read()?;
-            let index3 = registry.stream_index.at(stream_key3).read()?;
+            let index1 = registry.stream_index[stream_key1].read()?;
+            let index2 = registry.stream_index[stream_key2].read()?;
+            let index3 = registry.stream_index[stream_key3].read()?;
 
             assert_eq!(index1, U256::ZERO);
             assert_eq!(index2, U256::ZERO);
             assert_eq!(index3, U256::ONE);
 
             registry.remove_stream(token3, end_time)?;
-            let streams = registry.ending_streams.at(end_time).read()?;
+            let streams = registry.sterams_ending_at[end_time].read()?;
             assert_eq!(streams.len(), 1);
             assert_eq!(streams[0], token1);
 
             registry.remove_stream(token1, end_time)?;
 
-            let streams = registry.ending_streams.at(end_time).read()?;
+            let streams = registry.sterams_ending_at[end_time].read()?;
             assert_eq!(streams.len(), 0);
 
             // Test removing non-existent stream
@@ -235,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ending_streams() -> eyre::Result<()> {
+    fn test_sterams_ending_at() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let token1 = Address::random();
         let token2 = Address::random();
@@ -249,27 +245,27 @@ mod tests {
 
             let timestamp = 2000u128;
 
-            let empty_streams = registry.ending_streams.at(timestamp).read()?;
+            let empty_streams = registry.sterams_ending_at[timestamp].read()?;
             assert_eq!(empty_streams.len(), 0);
 
             registry.add_stream(token1, timestamp)?;
             registry.add_stream(token2, timestamp)?;
             registry.add_stream(token3, timestamp)?;
 
-            let streams = registry.ending_streams.at(timestamp).read()?;
+            let streams = registry.sterams_ending_at[timestamp].read()?;
             assert_eq!(streams.len(), 3);
             assert_eq!(streams[0], token1);
             assert_eq!(streams[1], token2);
             assert_eq!(streams[2], token3);
 
             let other_timestamp = 3000u128;
-            let other_streams = registry.ending_streams.at(other_timestamp).read()?;
+            let other_streams = registry.sterams_ending_at[other_timestamp].read()?;
             assert_eq!(other_streams.len(), 0);
 
             registry.add_stream(token4, other_timestamp)?;
 
-            let streams1 = registry.ending_streams.at(timestamp).read()?;
-            let streams2 = registry.ending_streams.at(other_timestamp).read()?;
+            let streams1 = registry.sterams_ending_at[timestamp].read()?;
+            let streams2 = registry.sterams_ending_at[other_timestamp].read()?;
 
             assert_eq!(streams1.len(), 3);
             assert_eq!(streams2.len(), 1);
@@ -322,7 +318,7 @@ mod tests {
 
             // Verify the stream was added to registry at the correct end time
             let end_time = current_time + stream_duration as u128;
-            let streams_before = registry.ending_streams.at(end_time).read()?;
+            let streams_before = registry.sterams_ending_at[end_time].read()?;
             assert_eq!(streams_before.len(), 1);
             assert_eq!(streams_before[0], token_addr);
 
@@ -334,7 +330,7 @@ mod tests {
             assert_eq!(last_updated, end_time);
 
             // Verify streams were cleared from the registry
-            let streams_after = registry.ending_streams.at(end_time).read()?;
+            let streams_after = registry.sterams_ending_at[end_time].read()?;
             assert_eq!(streams_after.len(), 0);
 
             let result = registry.finalize_streams(Address::ZERO);

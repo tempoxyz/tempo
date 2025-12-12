@@ -150,9 +150,9 @@ impl Orderbook {
 impl OrderbookHandler {
     pub fn get_tick_level_handler(&self, tick: i16, is_bid: bool) -> TickLevelHandler {
         if is_bid {
-            self.bids.at(tick)
+            self.bids[tick].clone()
         } else {
-            self.asks.at(tick)
+            self.asks[tick].clone()
         }
     }
 
@@ -164,9 +164,9 @@ impl OrderbookHandler {
         let word_index = tick >> 8;
 
         if is_bid {
-            Ok(self.bid_bitmap.at(word_index))
+            Ok(self.bid_bitmap[word_index].clone())
         } else {
-            Ok(self.ask_bitmap.at(word_index))
+            Ok(self.ask_bitmap[word_index].clone())
         }
     }
 
@@ -468,7 +468,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test full lifecycle (set, check, clear, check) for positive and negative ticks
                 // Include boundary cases, word boundaries, and various representative values
@@ -511,7 +511,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test MIN_TICK
                 book_handler.set_tick_bit(MIN_TICK, true)?;
@@ -546,7 +546,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 let tick = 100;
 
@@ -583,7 +583,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Ticks that span word boundary at 256
                 book_handler.set_tick_bit(255, true)?; // word_index = 0, bit_index = 255
@@ -601,7 +601,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test ticks in different words (both positive and negative)
 
@@ -648,7 +648,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test tick above MAX_TICK
                 let result = book_handler.set_tick_bit(MAX_TICK + 1, true);
@@ -679,7 +679,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test tick above MAX_TICK
                 let result = book_handler.delete_tick_bit(MAX_TICK + 1, true);
@@ -709,7 +709,7 @@ mod tests {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
                 let exchange = StablecoinExchange::new();
-                let book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &exchange.books[BOOK_KEY];
 
                 // Test tick above MAX_TICK
                 let result = book_handler.is_tick_initialized(MAX_TICK + 1, true);

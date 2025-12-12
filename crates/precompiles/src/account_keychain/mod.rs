@@ -99,7 +99,7 @@ impl AccountKeychain {
         }
 
         // Check if key already exists (key exists if expiry > 0)
-        let existing_key = self.keys.at(msg_sender).at(call.keyId).read()?;
+        let existing_key = self.keys[msg_sender][call.keyId].read()?;
         if existing_key.expiry > 0 {
             return Err(AccountKeychainError::key_already_exists().into());
         }
@@ -125,16 +125,13 @@ impl AccountKeychain {
             is_revoked: false,
         };
 
-        self.keys.at(msg_sender).at(call.keyId).write(new_key)?;
+        self.keys[msg_sender][call.keyId].write(new_key)?;
 
         // Set initial spending limits (only if enforce_limits is true)
         if call.enforceLimits {
             let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
             for limit in call.limits {
-                self.spending_limits
-                    .at(limit_key)
-                    .at(limit.token)
-                    .write(limit.amount)?;
+                self.spending_limits[limit_key][limit.token].write(limit.amount)?;
             }
         }
 
@@ -161,7 +158,7 @@ impl AccountKeychain {
             return Err(AccountKeychainError::unauthorized_caller().into());
         }
 
-        let key = self.keys.at(msg_sender).at(call.keyId).read()?;
+        let key = self.keys[msg_sender][call.keyId].read()?;
 
         // Key exists if expiry > 0
         if key.expiry == 0 {
@@ -175,7 +172,7 @@ impl AccountKeychain {
             is_revoked: true,
             ..Default::default()
         };
-        self.keys.at(msg_sender).at(call.keyId).write(revoked_key)?;
+        self.keys[msg_sender][call.keyId].write(revoked_key)?;
 
         // Note: We don't clear spending limits here - they become inaccessible
 
@@ -214,15 +211,12 @@ impl AccountKeychain {
         // If this key had unlimited spending (enforce_limits=false), enable limits now
         if !key.enforce_limits {
             key.enforce_limits = true;
-            self.keys.at(msg_sender).at(call.keyId).write(key)?;
+            self.keys[msg_sender][call.keyId].write(key)?;
         }
 
         // Update the spending limit
         let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
-        self.spending_limits
-            .at(limit_key)
-            .at(call.token)
-            .write(call.newLimit)?;
+        self.spending_limits[limit_key][call.token].write(call.newLimit)?;
 
         // Emit event
         self.emit_event(AccountKeychainEvent::SpendingLimitUpdated(
@@ -237,7 +231,7 @@ impl AccountKeychain {
 
     /// Get key information
     pub fn get_key(&self, call: getKeyCall) -> Result<KeyInfo> {
-        let key = self.keys.at(call.account).at(call.keyId).read()?;
+        let key = self.keys[call.account][call.keyId].read()?;
 
         // Key doesn't exist if expiry == 0, or key has been revoked
         if key.expiry == 0 || key.is_revoked {
@@ -270,7 +264,7 @@ impl AccountKeychain {
     /// Get remaining spending limit
     pub fn get_remaining_limit(&self, call: getRemainingLimitCall) -> Result<U256> {
         let limit_key = Self::spending_limit_key(call.account, call.keyId);
-        self.spending_limits.at(limit_key).at(call.token).read()
+        self.spending_limits[limit_key][call.token].read()
     }
 
     /// Get the transaction key used in the current transaction
@@ -305,7 +299,7 @@ impl AccountKeychain {
     /// Note: This does NOT check expiry against current timestamp.
     /// Callers should check expiry separately if needed.
     fn load_active_key(&self, account: Address, key_id: Address) -> Result<AuthorizedKey> {
-        let key = self.keys.at(account).at(key_id).read()?;
+        let key = self.keys[account][key_id].read()?;
 
         if key.is_revoked {
             return Err(AccountKeychainError::key_already_revoked().into());
@@ -360,17 +354,14 @@ impl AccountKeychain {
 
         // Check and update spending limit
         let limit_key = Self::spending_limit_key(account, key_id);
-        let remaining = self.spending_limits.at(limit_key).at(token).read()?;
+        let remaining = self.spending_limits[limit_key][token].read()?;
 
         if amount > remaining {
             return Err(AccountKeychainError::spending_limit_exceeded().into());
         }
 
         // Update remaining limit
-        self.spending_limits
-            .at(limit_key)
-            .at(token)
-            .write(remaining - amount)
+        self.spending_limits[limit_key][token].write(remaining - amount)
     }
 
     /// Authorize a token transfer with access key spending limits
