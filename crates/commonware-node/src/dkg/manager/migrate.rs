@@ -1,6 +1,6 @@
 use commonware_codec::EncodeSize;
 use commonware_runtime::{Clock, ContextCell, Metrics, Storage};
-use commonware_storage::metadata::{Config as MetadataConfig, Metadata};
+use commonware_storage::metadata::{self, Metadata};
 use commonware_utils::sequence::U64;
 use eyre::Result;
 use tracing::{info, instrument};
@@ -33,7 +33,7 @@ where
 {
     Metadata::init(
         context.with_label(label),
-        MetadataConfig {
+        metadata::Config {
             partition,
             codec_config: (),
         },
