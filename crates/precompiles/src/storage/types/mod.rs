@@ -356,6 +356,7 @@ impl<K: Hash + Eq, H> HandlerCache<K, H> {
     ///
     /// This method is safe to call as long as the closure `f` doesn't re-enter.
     #[inline]
+    #[allow(clippy::mut_from_ref)]
     pub(super) fn get_or_insert_mut(&self, key: K, f: impl FnOnce() -> H) -> &mut H {
         // SAFETY:
         // 1. Single-threaded access (EVM execution model)

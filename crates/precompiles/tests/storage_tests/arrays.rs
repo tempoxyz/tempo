@@ -149,10 +149,7 @@ fn test_array_element_access() {
         assert_eq!(layout.large_array[2].read().unwrap(), U256::from(999));
         // Verify other elements unchanged
         assert_eq!(layout.large_array[1].read().unwrap(), U256::from(200));
-        assert_eq!(
-            layout.large_array[3].unwrap().read().unwrap(),
-            U256::from(400)
-        );
+        assert_eq!(layout.large_array[3].read().unwrap(), U256::from(400));
 
         // Delete individual element in unpacked array
         layout.large_array[2].delete().unwrap();

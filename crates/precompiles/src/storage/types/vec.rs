@@ -1471,7 +1471,7 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let len_slot = U256::random();
-            let handler = VecHandler::<U256>::new(len_slot, address);
+            let mut handler = VecHandler::<U256>::new(len_slot, address);
 
             // Write full vector first
             let data = vec![U256::from(10), U256::from(20), U256::from(30)];
@@ -1488,7 +1488,7 @@ mod tests {
             assert_eq!(elem2, U256::from(30));
 
             // Test writing individual elements via at()
-            handler.at_unchecked(1).write(U256::from(99)).unwrap();
+            handler[1].write(U256::from(99)).unwrap();
 
             // Verify via read
             let updated = handler.read().unwrap();
@@ -1595,20 +1595,20 @@ mod tests {
             let handler = VecHandler::<U256>::new(len_slot, address);
 
             // Empty vec - any index should return None
-            assert!(handler[0]?.is_none());
+            assert!(handler.at(0)?.is_none());
 
             // Push 2 elements
             handler.push(U256::from(10))?;
             handler.push(U256::from(20))?;
 
             // Valid indices should return Some and read the correct values
-            assert!(handler[0]?.is_some());
-            assert!(handler[1]?.is_some());
-            assert_eq!(handler[0]?.unwrap().read()?, U256::from(10));
-            assert_eq!(handler[1]?.unwrap().read()?, U256::from(20));
+            assert!(handler.at(0)?.is_some());
+            assert!(handler.at(1)?.is_some());
+            assert_eq!(handler.at(0)?.unwrap().read()?, U256::from(10));
+            assert_eq!(handler.at(1)?.unwrap().read()?, U256::from(20));
 
             // OOB indices should return None
-            assert!(handler[3]?.is_none());
+            assert!(handler.at(3)?.is_none());
 
             Ok(())
         })

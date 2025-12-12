@@ -12,7 +12,7 @@ fn test_mapping() {
     }
 
     let (mut storage, address) = setup_storage();
-    let layout = Layout::__new(address);
+    let mut layout = Layout::__new(address);
 
     StorageCtx::enter(&mut storage, || {
         let block1 = TestBlock {
@@ -117,7 +117,7 @@ proptest! {
         }
 
         let (mut storage, address) = setup_storage();
-        let layout = Layout::__new(address);
+        let mut layout = Layout::__new(address);
 
         StorageCtx::enter(&mut storage, || {
             // Store to different keys

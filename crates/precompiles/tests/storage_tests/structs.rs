@@ -59,7 +59,7 @@ fn test_struct_storage() {
         let addr2 = test_address(20);
         let addr3 = test_address(30);
 
-        let addr_map = layout.address_mapping;
+        let mut addr_map = layout.address_mapping;
         addr_map[addr1].write(U256::from(1000)).unwrap();
         addr_map[addr2].write(U256::from(2000)).unwrap();
         addr_map[addr3].write(U256::from(3000)).unwrap();
