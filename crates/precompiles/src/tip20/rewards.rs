@@ -1219,7 +1219,7 @@ mod tests {
 
             // Verify the token is in the registry before cancellation
             let registry = TIP20RewardsRegistry::new();
-            let count_before = registry.sterams_ending_at[end_time].len()?;
+            let count_before = registry.streams_ending_at[end_time].len()?;
             assert_eq!(
                 count_before, 1,
                 "Registry should have 1 stream before cancellation"
@@ -1229,7 +1229,7 @@ mod tests {
             token.cancel_reward(admin, ITIP20::cancelRewardCall { id: stream_id })?;
 
             // Verify the token is removed from the registry (post-Moderato behavior)
-            let count_after = registry.sterams_ending_at[end_time].len()?;
+            let count_after = registry.streams_ending_at[end_time].len()?;
             assert_eq!(
                 count_after, 0,
                 "Post-Moderato: Registry should have 0 streams after cancelling the last stream"
@@ -1267,7 +1267,7 @@ mod tests {
 
             // Verify the token is in the registry before cancellation
             let registry = TIP20RewardsRegistry::new();
-            let count_before = registry.sterams_ending_at[end_time].len()?;
+            let count_before = registry.streams_ending_at[end_time].len()?;
             assert_eq!(
                 count_before, 1,
                 "Registry should have 1 stream before cancellation"
@@ -1277,7 +1277,7 @@ mod tests {
             token.cancel_reward(admin, ITIP20::cancelRewardCall { id: stream_id })?;
 
             // Pre-Moderato: token should NOT be removed from registry
-            let count_after = registry.sterams_ending_at[end_time].len()?;
+            let count_after = registry.streams_ending_at[end_time].len()?;
             assert_eq!(
                 count_after, 1,
                 "Pre-Moderato: Registry should still have 1 stream (not removed for consensus compatibility)"
