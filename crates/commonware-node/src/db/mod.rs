@@ -347,7 +347,7 @@ where
 {
     let slice: &[u8] = bytes.as_ref();
     let mut cursor: &[u8] = slice;
-    T::read_cfg(&mut cursor, &()).map_err(|e| eyre::eyre!("deserialization failed: {}", e))
+    T::read_cfg(&mut cursor, &()).wrap_err("deserialization failed")
 }
 
 #[cfg(test)]
