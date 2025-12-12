@@ -139,14 +139,25 @@ impl AccountKeychain {
         }
 
         // Emit event
-        self.emit_event(AccountKeychainEvent::KeyAuthorized(
-            IAccountKeychain::KeyAuthorized {
-                account: msg_sender,
-                publicKey: call.keyId.into_word(),
-                signatureType: signature_type,
-                expiry: call.expiry,
-            },
-        ))
+        if !self.storage.spec().is_allegro_moderato() {
+            self.emit_event(AccountKeychainEvent::KeyAuthorized_1(
+                IAccountKeychain::KeyAuthorized_1 {
+                    account: msg_sender,
+                    publicKey: call.keyId.into_word(),
+                    signatureType: signature_type,
+                    expiry: call.expiry,
+                },
+            ))
+        } else {
+            self.emit_event(AccountKeychainEvent::KeyAuthorized_0(
+                IAccountKeychain::KeyAuthorized_0 {
+                    account: msg_sender,
+                    publicKey: call.keyId,
+                    signatureType: signature_type,
+                    expiry: call.expiry,
+                },
+            ))
+        }
     }
 
     /// Revoke an authorized key
@@ -180,12 +191,21 @@ impl AccountKeychain {
         // Note: We don't clear spending limits here - they become inaccessible
 
         // Emit event
-        self.emit_event(AccountKeychainEvent::KeyRevoked(
-            IAccountKeychain::KeyRevoked {
-                account: msg_sender,
-                publicKey: call.keyId.into_word(),
-            },
-        ))
+        if !self.storage.spec().is_allegro_moderato() {
+            self.emit_event(AccountKeychainEvent::KeyRevoked_1(
+                IAccountKeychain::KeyRevoked_1 {
+                    account: msg_sender,
+                    publicKey: call.keyId.into_word(),
+                },
+            ))
+        } else {
+            self.emit_event(AccountKeychainEvent::KeyRevoked_0(
+                IAccountKeychain::KeyRevoked_0 {
+                    account: msg_sender,
+                    publicKey: call.keyId,
+                },
+            ))
+        }
     }
 
     /// Update spending limit for a key-token pair
@@ -225,14 +245,25 @@ impl AccountKeychain {
             .write(call.newLimit)?;
 
         // Emit event
-        self.emit_event(AccountKeychainEvent::SpendingLimitUpdated(
-            IAccountKeychain::SpendingLimitUpdated {
-                account: msg_sender,
-                publicKey: call.keyId.into_word(),
-                token: call.token,
-                newLimit: call.newLimit,
-            },
-        ))
+        if !self.storage.spec().is_allegro_moderato() {
+            self.emit_event(AccountKeychainEvent::SpendingLimitUpdated_1(
+                IAccountKeychain::SpendingLimitUpdated_1 {
+                    account: msg_sender,
+                    publicKey: call.keyId.into_word(),
+                    token: call.token,
+                    newLimit: call.newLimit,
+                },
+            ))
+        } else {
+            self.emit_event(AccountKeychainEvent::SpendingLimitUpdated_0(
+                IAccountKeychain::SpendingLimitUpdated_0 {
+                    account: msg_sender,
+                    publicKey: call.keyId,
+                    token: call.token,
+                    newLimit: call.newLimit,
+                },
+            ))
+        }
     }
 
     /// Get key information
