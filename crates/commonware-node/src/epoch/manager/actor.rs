@@ -65,7 +65,7 @@ use commonware_runtime::{
 };
 use eyre::{WrapErr as _, ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
-use prometheus_client::metrics::gauge::Gauge;
+use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand::{CryptoRng, Rng};
 use tracing::{Level, Span, error, error_span, info, instrument, warn, warn_span};
 
@@ -108,6 +108,8 @@ where
         let active_epochs = Gauge::default();
         let latest_epoch = Gauge::default();
         let latest_participants = Gauge::default();
+        let how_often_signer = Counter::default();
+        let how_often_verifier = Counter::default();
 
         context.register(
             "active_epochs",
@@ -124,6 +126,16 @@ where
             "the number of participants in the most recently started epoch",
             latest_participants.clone(),
         );
+        context.register(
+            "how_often_signer",
+            "how often a node is a signer; a node is a signer if it has a share",
+            how_often_signer.clone(),
+        );
+        context.register(
+            "how_often_verifier",
+            "how often a node is a verifier; a node is a verifier if it does not have a share",
+            how_often_verifier.clone(),
+        );
 
         Self {
             config,
@@ -133,6 +145,8 @@ where
                 active_epochs,
                 latest_epoch,
                 latest_participants,
+                how_often_signer,
+                how_often_verifier,
             },
             active_epochs: BTreeMap::new(),
         }
@@ -274,12 +288,11 @@ where
     }
 
     #[instrument(
-        follows_from = [cause],
+        parent = &cause,
         skip_all,
         fields(
             %epoch,
             ?public,
-            ?share,
             ?participants,
         ),
         err(level = Level::WARN)
@@ -311,17 +324,21 @@ where
             "an engine for the entered epoch is already running; ignoring",
         );
 
-        self.metrics
-            .latest_participants
-            .set(participants.len() as i64);
-
+        let n_participants = participants.len();
         // Register the new signing scheme with the scheme provider.
         let scheme = if let Some(share) = share {
+            info!("we have a share for this epoch, participating as a signer",);
             Scheme::new(participants, &public, share)
         } else {
+            info!("we don't have a share for this epoch, participating as a verifier",);
             Scheme::verifier(participants, &public)
         };
-        assert!(self.config.scheme_provider.register(epoch, scheme.clone()));
+        assert!(
+            self.config.scheme_provider.register(epoch, scheme.clone()),
+            "a scheme must never be registered twice",
+        );
+
+        let is_signer = matches!(scheme, Scheme::Signer { .. });
 
         let engine = simplex::Engine::new(
             self.context.with_label("consensus_engine"),
@@ -372,13 +389,16 @@ where
 
         info!("started consensus engine backing the epoch");
 
+        self.metrics.latest_participants.set(n_participants as i64);
         self.metrics.active_epochs.inc();
         self.metrics.latest_epoch.set(epoch as i64);
+        self.metrics.how_often_signer.inc_by(is_signer as u64);
+        self.metrics.how_often_verifier.inc_by(!is_signer as u64);
 
         Ok(())
     }
 
-    #[instrument(follows_from = [cause], skip_all, fields(epoch))]
+    #[instrument(parent = &cause, skip_all, fields(epoch))]
     fn exit(&mut self, cause: Span, Exit { epoch }: Exit) {
         if let Some(engine) = self.active_epochs.remove(&epoch) {
             engine.abort();
@@ -501,4 +521,6 @@ struct Metrics {
     active_epochs: Gauge,
     latest_epoch: Gauge,
     latest_participants: Gauge,
+    how_often_signer: Counter,
+    how_often_verifier: Counter,
 }

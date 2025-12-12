@@ -13,9 +13,9 @@ use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
     stablecoin_exchange::{
         Order as PrecompileOrder, Orderbook as PrecompileOrderbook, StablecoinExchange, TickLevel,
-        orderbook::compute_book_key,
+        orderbook::{OrderbookHandler, compute_book_key},
     },
-    storage::{ContractStorage, evm::EvmPrecompileStorageProvider},
+    storage::{ContractStorage, Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
 };
 use tempo_primitives::TempoHeader;
 
@@ -58,14 +58,14 @@ impl<
         &self,
         params: PaginationParams<OrdersFilters>,
     ) -> Result<OrdersResponse, DexApiError> {
-        let response = self.with_storage_at_block(BlockNumberOrTag::Latest.into(), |storage| {
-            let mut exchange = StablecoinExchange::new(storage);
+        let response = self.with_storage_at_block(BlockNumberOrTag::Latest.into(), || {
+            let exchange = StablecoinExchange::new();
             let exchange_address = exchange.address();
 
             // Determine which books to iterate based on filter
             let base_token = params.filters.as_ref().and_then(|f| f.base_token);
             let quote_token = params.filters.as_ref().and_then(|f| f.quote_token);
-            let book_keys = get_book_keys_for_iteration(&mut exchange, base_token, quote_token)?;
+            let book_keys = get_book_keys_for_iteration(&exchange, base_token, quote_token)?;
 
             let is_bid = params
                 .filters
@@ -101,7 +101,6 @@ impl<
                 };
 
                 let book_iterator = BookIterator::new(
-                    exchange.storage(),
                     &orderbook,
                     exchange_address,
                     is_bid,
@@ -169,7 +168,7 @@ impl<
     /// This handles the boilerplate of creating the EVM context and state provider.
     fn with_storage_at_block<F, R>(&self, at: BlockId, f: F) -> Result<R, DexApiError>
     where
-        F: FnOnce(&mut EvmPrecompileStorageProvider<'_>) -> Result<R, DexApiError>,
+        F: FnOnce() -> Result<R, DexApiError>,
     {
         // Get the header for the specified block
         let provider = self.eth_api.provider();
@@ -195,19 +194,17 @@ impl<
         let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
         let mut storage = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
 
-        f(&mut storage)
+        StorageCtx::enter(&mut storage, f)
     }
 
     /// Creates a `StablecoinExchange` instance at the given block.
     /// This builds on `with_storage_at_block` to provide the exchange.
     fn with_exchange_at_block<F, R>(&self, at: BlockId, f: F) -> Result<R, DexApiError>
     where
-        F: FnOnce(
-            &mut StablecoinExchange<'_, EvmPrecompileStorageProvider<'_>>,
-        ) -> Result<R, DexApiError>,
+        F: FnOnce(&mut StablecoinExchange) -> Result<R, DexApiError>,
     {
-        self.with_storage_at_block(at, |storage| {
-            let mut exchange = StablecoinExchange::new(storage);
+        self.with_storage_at_block(at, || {
+            let mut exchange = StablecoinExchange::new();
             f(&mut exchange)
         })
     }
@@ -421,13 +418,11 @@ impl<
 }
 
 /// An iterator over orders for a specific orderbook
-pub struct BookIterator<'a, 'b> {
+pub struct BookIterator<'b> {
     /// Optional filter to apply to orders
     filter: Option<OrdersFilters>,
     /// Whether or not to iterate over bids or asks.
     bids: bool,
-    /// Book key
-    book_key: B256,
     /// Address of the exchange
     exchange_address: Address,
     /// Starting order ID
@@ -436,25 +431,24 @@ pub struct BookIterator<'a, 'b> {
     order: Option<u128>,
     /// Orderbook information
     orderbook: &'b PrecompileOrderbook,
+    /// Orderbook handler
+    handler: OrderbookHandler,
     /// Inner precompile storage
-    storage: &'b mut EvmPrecompileStorageProvider<'a>,
+    storage: StorageCtx,
 }
 
-impl<'a, 'b> ContractStorage for BookIterator<'a, 'b> {
-    type Storage = EvmPrecompileStorageProvider<'a>;
-
+impl<'b> ContractStorage for BookIterator<'b> {
     fn address(&self) -> Address {
         self.exchange_address
     }
-    fn storage(&mut self) -> &mut Self::Storage {
-        self.storage
+    fn storage(&mut self) -> &mut StorageCtx {
+        &mut self.storage
     }
 }
 
-impl<'a, 'b> BookIterator<'a, 'b> {
+impl<'b> BookIterator<'b> {
     /// Create a new book iterator, optionally with the given order ID as the starting order.
     fn new(
-        storage: &'b mut EvmPrecompileStorageProvider<'a>,
         orderbook: &'b PrecompileOrderbook,
         exchange_address: Address,
         bids: bool,
@@ -464,13 +458,13 @@ impl<'a, 'b> BookIterator<'a, 'b> {
         let book_key = compute_book_key(orderbook.base, orderbook.quote);
         Self {
             filter,
-            book_key,
+            bids,
             exchange_address,
             order: None,
             starting_order,
             orderbook,
-            storage,
-            bids,
+            handler: StablecoinExchange::new().books.at(book_key),
+            storage: StorageCtx::default(),
         }
     }
 
@@ -485,26 +479,24 @@ impl<'a, 'b> BookIterator<'a, 'b> {
     }
 
     /// Get a PrecompileOrder from an order ID
-    pub fn get_order(&mut self, order_id: u128) -> Result<PrecompileOrder, DexApiError> {
-        let mut exchange = StablecoinExchange::new(self.storage);
-        exchange
+    pub fn get_order(&self, order_id: u128) -> Result<PrecompileOrder, DexApiError> {
+        StablecoinExchange::new()
             .get_order(order_id)
             .map_err(DexApiError::Precompile)
     }
 
     /// Get a TickLevel from a tick
-    pub fn get_price_level(&mut self, tick: i16) -> Result<TickLevel, DexApiError> {
-        let mut exchange = StablecoinExchange::new(self.storage);
-        exchange
-            .get_price_level(self.orderbook.base, tick, self.bids)
+    pub fn get_price_level(&self, tick: i16) -> Result<TickLevel, DexApiError> {
+        self.handler
+            .get_tick_level_handler(tick, self.bids)
+            .read()
             .map_err(DexApiError::Precompile)
     }
 
     /// Get the next initialized tick after the given tick
     /// Returns None if there are no more ticks
     pub fn get_next_tick(&mut self, tick: i16) -> Option<i16> {
-        let (next_tick, more_ticks) =
-            PrecompileOrderbook::next_initialized_tick(self, self.book_key, self.bids, tick);
+        let (next_tick, more_ticks) = self.handler.next_initialized_tick(tick, self.bids);
 
         if more_ticks { Some(next_tick) } else { None }
     }
@@ -561,7 +553,7 @@ impl<'a, 'b> BookIterator<'a, 'b> {
     }
 }
 
-impl<'a, 'b> Iterator for BookIterator<'a, 'b> {
+impl<'b> Iterator for BookIterator<'b> {
     type Item = Result<PrecompileOrder, DexApiError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -694,7 +686,7 @@ fn parse_orderbook_cursor(cursor: &str) -> Result<B256, DexApiError> {
 /// Gets book keys to iterate over. If both base and quote are specified, returns only that book.
 /// Otherwise returns all book keys (filtering happens later during iteration).
 fn get_book_keys_for_iteration(
-    exchange: &mut StablecoinExchange<'_, EvmPrecompileStorageProvider<'_>>,
+    exchange: &StablecoinExchange,
     base_token: Option<Address>,
     quote_token: Option<Address>,
 ) -> Result<Vec<B256>, DexApiError> {

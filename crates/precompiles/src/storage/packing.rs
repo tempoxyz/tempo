@@ -3,8 +3,8 @@
 //! This module provides helper functions for bit-level manipulation of storage slots,
 //! enabling efficient packing of multiple small values into single 32-byte slots.
 //!
-//! Packing only applies to primitive types where `BYTE_COUNT < 32`. Non-primitives
-//! (structs, fixed-size arrays, dynamic types) have `BYTE_COUNT = SLOT_COUNT * 32`.
+//! Packing only applies to primitive types where `LAYOUT::Bytes(count) && count < 32`.
+//! Non-primitives (structs, fixed-size arrays, dynamic types) have `LAYOUT = Layout::Slot`.
 //!
 //! ## Solidity Compatibility
 //!
@@ -14,12 +14,52 @@
 
 use alloy::primitives::U256;
 
-use crate::{error::Result, storage::Storable};
+use crate::{
+    error::Result,
+    storage::{Layout, Packable, StorageOps},
+};
 
-/// Whether a given amount of bytes should be packed, or not.
-#[inline]
-pub fn is_packable(bytes: usize) -> bool {
-    bytes < 32 && 32 % bytes == 0
+/// A helper struct to support packing elements into a single slot. Represents an
+/// in-memory storage slot value.
+///
+/// We used it when we operate on elements that are guaranteed to be packable.
+/// To avoid doing multiple storage reads/writes when packing those elements, we
+/// use this as an intermediate [`StorageOps`] implementation that can be passed to
+/// `Storable::store` and `Storable::load`.
+pub struct PackedSlot(pub U256);
+
+impl StorageOps for PackedSlot {
+    fn load(&self, _slot: U256) -> Result<U256> {
+        Ok(self.0)
+    }
+
+    fn store(&mut self, _slot: U256, value: U256) -> Result<()> {
+        self.0 = value;
+        Ok(())
+    }
+}
+
+/// Location information for a packed field within a storage slot.
+#[derive(Debug, Clone, Copy)]
+pub struct FieldLocation {
+    /// Offset in slots from the base slot
+    pub offset_slots: usize,
+    /// Offset in bytes within the target slot
+    pub offset_bytes: usize,
+    /// Size of the field in bytes
+    pub size: usize,
+}
+
+impl FieldLocation {
+    /// Create a new field location
+    #[inline]
+    pub const fn new(offset_slots: usize, offset_bytes: usize, size: usize) -> Self {
+        Self {
+            offset_slots,
+            offset_bytes,
+            size,
+        }
+    }
 }
 
 /// Create a bit mask for a value of the given byte size.
@@ -37,11 +77,16 @@ pub fn create_element_mask(byte_count: usize) -> U256 {
 
 /// Extract a packed value from a storage slot at a given byte offset.
 #[inline]
-pub fn extract_packed_value<T: Storable<1>>(
+pub fn extract_packed_value<T: Packable>(
     slot_value: U256,
     offset: usize,
     bytes: usize,
 ) -> Result<T> {
+    debug_assert!(
+        matches!(T::LAYOUT, Layout::Bytes(..)),
+        "Packing is only supported by primitive types"
+    );
+
     // Validate that the value doesn't span slot boundaries
     if offset + bytes > 32 {
         return Err(crate::error::TempoPrecompileError::Fatal(format!(
@@ -54,28 +99,25 @@ pub fn extract_packed_value<T: Storable<1>>(
 
     // Calculate how many bits to shift right to align the value
     let shift_bits = offset * 8;
-
-    // Create mask for the value's bit width
-    let mask = if bytes == 32 {
-        U256::MAX
-    } else {
-        (U256::ONE << (bytes * 8)) - U256::ONE
-    };
+    let mask = create_element_mask(bytes);
 
     // Extract and right-align the value
-    T::from_evm_words([(slot_value >> shift_bits) & mask])
+    T::from_word((slot_value >> shift_bits) & mask)
 }
 
 /// Insert a packed value into a storage slot at a given byte offset.
-///
-/// Offset follows Solidity's convention: offset 0 = rightmost byte (least significant).
 #[inline]
-pub fn insert_packed_value<T: Storable<1>>(
+pub fn insert_packed_value<T: Packable>(
     current: U256,
     value: &T,
     offset: usize,
     bytes: usize,
 ) -> Result<U256> {
+    debug_assert!(
+        matches!(T::LAYOUT, Layout::Bytes(..)),
+        "Packing is only supported by primitive types"
+    );
+
     // Validate that the value doesn't span slot boundaries
     if offset + bytes > 32 {
         return Err(crate::error::TempoPrecompileError::Fatal(format!(
@@ -87,15 +129,11 @@ pub fn insert_packed_value<T: Storable<1>>(
     }
 
     // Encode field to its canonical right-aligned U256 representation
-    let field_value = value.to_evm_words()?[0];
+    let field_value = value.to_word();
 
     // Calculate shift and mask
     let shift_bits = offset * 8;
-    let mask = if bytes == 32 {
-        U256::MAX
-    } else {
-        (U256::ONE << (bytes * 8)) - U256::ONE
-    };
+    let mask = create_element_mask(bytes);
 
     // Clear the bits for this field in the current slot value
     let clear_mask = !(mask << shift_bits);
@@ -139,88 +177,38 @@ pub const fn calc_element_offset(idx: usize, elem_bytes: usize) -> usize {
     (idx * elem_bytes) % 32
 }
 
+/// Calculate the element location within a slot for an array element at index `idx`.
+#[inline]
+pub const fn calc_element_loc(idx: usize, elem_bytes: usize) -> FieldLocation {
+    FieldLocation::new(
+        calc_element_slot(idx, elem_bytes),
+        calc_element_offset(idx, elem_bytes),
+        elem_bytes,
+    )
+}
+
 /// Calculate the total number of slots needed for an array.
 #[inline]
 pub const fn calc_packed_slot_count(n: usize, elem_bytes: usize) -> usize {
     (n * elem_bytes).div_ceil(32)
 }
 
-/// Read a packed field from a struct at a given base slot.
-pub fn read_packed_at<T, S>(
-    storage: &mut S,
-    struct_base_slot: U256,
-    field_offset_slots: usize,
-    field_offset_bytes: usize,
-    field_size_bytes: usize,
-) -> Result<T>
-where
-    S: crate::storage::StorageOps,
-    T: Storable<1>,
-{
-    let slot = struct_base_slot + U256::from(field_offset_slots);
-    let slot_value = storage.sload(slot)?;
-    extract_packed_value::<T>(slot_value, field_offset_bytes, field_size_bytes)
-}
-
-/// Write a packed field to a struct at a given base slot.
-pub fn write_packed_at<T, S>(
-    storage: &mut S,
-    struct_base_slot: U256,
-    field_offset_slots: usize,
-    field_offset_bytes: usize,
-    field_size_bytes: usize,
-    value: &T,
-) -> Result<()>
-where
-    S: crate::storage::StorageOps,
-    T: Storable<1>,
-{
-    let slot = struct_base_slot + U256::from(field_offset_slots);
-    let current = storage.sload(slot)?;
-    let new_value = insert_packed_value(current, value, field_offset_bytes, field_size_bytes)?;
-    storage.sstore(slot, new_value)
-}
-
-/// Clear a packed field in a struct at a given base slot (set to zero).
-pub fn clear_packed_at<S>(
-    storage: &mut S,
-    struct_base_slot: U256,
-    field_offset_slots: usize,
-    field_offset_bytes: usize,
-    field_size_bytes: usize,
-) -> Result<()>
-where
-    S: crate::storage::StorageOps,
-{
-    let slot = struct_base_slot + U256::from(field_offset_slots);
-    let current = storage.sload(slot)?;
-    let cleared = zero_packed_value(current, field_offset_bytes, field_size_bytes)?;
-    storage.sstore(slot, cleared)
-}
-
-/// Extract a field value from a storage slot for testing purposes.
-///
-/// This is a convenience wrapper around `extract_packed_value` that's more
-/// ergonomic for use in test assertions.
-pub fn extract_field<T: Storable<1>>(slot_value: U256, offset: usize, bytes: usize) -> Result<T> {
-    extract_packed_value(slot_value, offset, bytes)
-}
-
-/// Test helper function for constructing U256 slot values from hex string literals.
+/// Test helper function for constructing EVM words from hex string literals.
 ///
 /// Takes an array of hex strings (with or without "0x" prefix), concatenates
 /// them left-to-right, left-pads with zeros to 32 bytes, and returns a U256.
 ///
 /// # Example
 /// ```ignore
-/// let slot = gen_slot_from(&[
+/// let word = gen_word_from(&[
 ///     "0x2a",                                        // 1 byte
 ///     "0x1111111111111111111111111111111111111111",  // 20 bytes
 ///     "0x01",                                        // 1 byte
 /// ]);
 /// // Produces: [10 zeros] [0x2a] [20 bytes of 0x11] [0x01]
 /// ```
-pub fn gen_slot_from(values: &[&str]) -> U256 {
+#[cfg(any(test, feature = "test-utils"))]
+pub fn gen_word_from(values: &[&str]) -> U256 {
     let mut bytes = Vec::new();
 
     for value in values {
@@ -257,6 +245,13 @@ pub fn gen_slot_from(values: &[&str]) -> U256 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        storage::{
+            Handler, StorageCtx,
+            types::{LayoutCtx, Slot},
+        },
+        test_util::{gen_word_from, setup_storage},
+    };
     use alloy::primitives::Address;
 
     // -- HELPER FUNCTION TESTS ----------------------------------------------------
@@ -346,7 +341,7 @@ mod tests {
     #[test]
     fn test_zero_packed_value() {
         // Start with a slot containing multiple packed u8 values
-        let slot = gen_slot_from(&[
+        let slot = gen_word_from(&[
             "0xff", // offset 3 (1 byte)
             "0x56", // offset 2 (1 byte)
             "0x34", // offset 1 (1 byte)
@@ -355,7 +350,7 @@ mod tests {
 
         // Zero out the value at offset 1
         let cleared = zero_packed_value(slot, 1, 1).unwrap();
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0xff", // offset 3 - unchanged
             "0x56", // offset 2 - unchanged
             "0x00", // offset 1 - cleared
@@ -364,26 +359,15 @@ mod tests {
         assert_eq!(cleared, expected, "Should zero offset 1");
 
         // Zero out a u16 (2 bytes) at offset 0
-        let slot = gen_slot_from(&["0x5678", "0x1234"]);
+        let slot = gen_word_from(&["0x5678", "0x1234"]);
         let cleared = zero_packed_value(slot, 0, 2).unwrap();
-        let expected = gen_slot_from(&["0x5678", "0x0000"]);
+        let expected = gen_word_from(&["0x5678", "0x0000"]);
         assert_eq!(cleared, expected, "Should zero u16 at offset 0");
 
         // Zero out the last byte in a slot
-        let slot = gen_slot_from(&["0xff"]);
+        let slot = gen_word_from(&["0xff"]);
         let cleared = zero_packed_value(slot, 0, 1).unwrap();
         assert_eq!(cleared, U256::ZERO, "Should zero entire slot");
-    }
-
-    #[test]
-    fn test_extract_field_wrapper() {
-        let address = Address::random();
-        let mut slot = U256::ZERO;
-        slot = insert_packed_value(slot, &address, 0, 20).unwrap();
-
-        // Use extract_field wrapper
-        let extracted: Address = extract_field(slot, 0, 20).unwrap();
-        assert_eq!(extracted, address);
     }
 
     // -- BOUNDARY VALIDATION ------------------------------------------------------
@@ -450,7 +434,7 @@ mod tests {
     #[test]
     fn test_bool() {
         // single bool
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0x01", // offset 0 (1 byte)
         ]);
 
@@ -462,7 +446,7 @@ mod tests {
         assert!(extract_packed_value::<bool>(slot, 0, 1).unwrap());
 
         // two bools
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0x01", // offset 1 (1 byte)
             "0x01", // offset 0 (1 byte)
         ]);
@@ -483,7 +467,7 @@ mod tests {
         let v3: u8 = 0x56;
         let v4: u8 = u8::MAX;
 
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0xff", // offset 3 (1 byte)
             "0x56", // offset 2 (1 byte)
             "0x34", // offset 1 (1 byte)
@@ -510,7 +494,7 @@ mod tests {
         let v2: u16 = 0x5678;
         let v3: u16 = u16::MAX;
 
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0xffff", // offset 4 (2 bytes)
             "0x5678", // offset 2 (2 bytes)
             "0x1234", // offset 0 (2 bytes)
@@ -533,7 +517,7 @@ mod tests {
         let v1: u32 = 0x12345678;
         let v2: u32 = u32::MAX;
 
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0xffffffff", // offset 4 (4 bytes)
             "0x12345678", // offset 0 (4 bytes)
         ]);
@@ -553,7 +537,7 @@ mod tests {
         let v1: u64 = 0x123456789abcdef0;
         let v2: u64 = u64::MAX;
 
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0xffffffffffffffff", // offset 8 (8 bytes)
             "0x123456789abcdef0", // offset 0 (8 bytes)
         ]);
@@ -573,7 +557,7 @@ mod tests {
         let v1: u128 = 0x123456789abcdef0fedcba9876543210;
         let v2: u128 = u128::MAX;
 
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0xffffffffffffffffffffffffffffffff", // offset 16 (16 bytes)
             "0x123456789abcdef0fedcba9876543210", // offset 0 (16 bytes)
         ]);
@@ -597,7 +581,7 @@ mod tests {
         ]);
 
         let expected =
-            gen_slot_from(&["0x123456789abcdef0fedcba9876543210112233445566778899aabbccddeeff00"]);
+            gen_word_from(&["0x123456789abcdef0fedcba9876543210112233445566778899aabbccddeeff00"]);
 
         let slot = insert_packed_value(U256::ZERO, &value, 0, 32).unwrap();
         assert_eq!(slot, expected, "u256 packing should match Solidity layout");
@@ -619,7 +603,7 @@ mod tests {
         let v3: i8 = 127; // i8::MAX
         let v4: i8 = -1;
 
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0xff", // offset 3: -1 (two's complement)
             "0x7f", // offset 2: 127
             "0x00", // offset 1: 0
@@ -646,7 +630,7 @@ mod tests {
         let v2: i16 = 32767; // i16::MAX
         let v3: i16 = -1;
 
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0xffff", // offset 4: -1 (two's complement)
             "0x7fff", // offset 2: 32767
             "0x8000", // offset 0: -32768 (two's complement)
@@ -669,7 +653,7 @@ mod tests {
         let v1: i32 = -2147483648; // i32::MIN
         let v2: i32 = 2147483647; // i32::MAX
 
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0x7fffffff", // offset 4: i32::MAX
             "0x80000000", // offset 0: i32::MIN (two's complement)
         ]);
@@ -689,7 +673,7 @@ mod tests {
         let v1: i64 = -9223372036854775808; // i64::MIN
         let v2: i64 = 9223372036854775807; // i64::MAX
 
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0x7fffffffffffffff", // offset 8: i64::MAX
             "0x8000000000000000", // offset 0: i64::MIN (two's complement)
         ]);
@@ -709,7 +693,7 @@ mod tests {
         let v1: i128 = -170141183460469231731687303715884105728; // i128::MIN
         let v2: i128 = 170141183460469231731687303715884105727; // i128::MAX
 
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0x7fffffffffffffffffffffffffffffff", // offset 16: i128::MAX
             "0x80000000000000000000000000000000", // offset 0: i128::MIN (two's complement)
         ]);
@@ -731,7 +715,7 @@ mod tests {
         let v3: u32 = 0xddeeff00;
         let v4: u64 = 0x1122334455667788;
 
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0x1122334455667788", // u64 at offset 7 (8 bytes)
             "0xddeeff00",         // u32 at offset 3 (4 bytes)
             "0xbbcc",             // u16 at offset 1 (2 bytes)
@@ -759,7 +743,7 @@ mod tests {
         let addr = Address::from([0x11; 20]);
         let number: u8 = 0x2a;
 
-        let expected = gen_slot_from(&[
+        let expected = gen_word_from(&[
             "0x2a",                                       // offset 21 (1 byte)
             "0x1111111111111111111111111111111111111111", // offset 1 (20 bytes)
             "0x01",                                       // offset 0 (1 byte)
@@ -805,105 +789,77 @@ mod tests {
     }
 
     // -- SLOT PACKED FIELD TESTS ------------------------------------------
-    use crate::storage::hashmap::HashMapStorageProvider;
 
-    /// Test contract struct for packed field tests
-    struct TestContract<'a, S> {
-        address: Address,
-        storage: &'a mut S,
-    }
+    #[test]
+    fn test_packed_at_multiple_types() -> Result<()> {
+        let (mut storage, address) = setup_storage();
+        StorageCtx::enter(&mut storage, || {
+            let struct_base = U256::from(0x2000);
 
-    impl<'a, S: crate::storage::PrecompileStorageProvider> crate::storage::ContractStorage
-        for TestContract<'a, S>
-    {
-        type Storage = S;
+            // Pack multiple types in same slot: bool(1) + u64(8) + u128(16)
+            let flag = true;
+            let timestamp: u64 = 1234567890;
+            let amount: u128 = 999888777666;
 
-        fn address(&self) -> Address {
-            self.address
-        }
+            let mut flag_slot =
+                Slot::<bool>::new_with_ctx(struct_base, LayoutCtx::packed(0), address);
+            flag_slot.write(flag)?;
+            assert_eq!(flag_slot.read()?, flag);
 
-        fn storage(&mut self) -> &mut S {
-            self.storage
-        }
-    }
+            let mut ts_slot = Slot::<u64>::new_with_ctx(struct_base, LayoutCtx::packed(1), address);
+            ts_slot.write(timestamp)?;
+            assert_eq!(ts_slot.read()?, timestamp);
 
-    /// Helper to create a test contract with fresh storage.
-    fn setup_test_contract<'a>(
-        storage: &'a mut HashMapStorageProvider,
-    ) -> TestContract<'a, HashMapStorageProvider> {
-        TestContract {
-            address: Address::random(),
-            storage,
-        }
+            let mut amount_slot =
+                Slot::<u128>::new_with_ctx(struct_base, LayoutCtx::packed(9), address);
+            amount_slot.write(amount)?;
+            assert_eq!(amount_slot.read()?, amount);
+
+            // Clear the middle one
+            amount_slot.delete()?;
+            assert_eq!(flag_slot.read()?, flag);
+            assert_eq!(amount_slot.read()?, 0);
+            assert_eq!(ts_slot.read()?, timestamp);
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_packed_at_multiple_types() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut contract = setup_test_contract(&mut storage);
-        let struct_base = U256::from(0x2000);
+    fn test_packed_at_different_slots() -> Result<()> {
+        let (mut storage, address) = setup_storage();
+        StorageCtx::enter(&mut storage, || {
+            let struct_base = U256::from(0x4000);
 
-        // Pack multiple types in same slot: bool(1) + u64(8) + u128(16)
-        let flag = true;
-        let timestamp: u64 = 1234567890;
-        let amount: u128 = 999888777666;
+            // Field in slot 0 (bool is 1 byte, packable)
+            let flag = false;
+            let mut flag_slot =
+                Slot::<bool>::new_with_ctx(struct_base, LayoutCtx::packed(0), address);
+            flag_slot.write(flag)?;
+            assert_eq!(flag_slot.read()?, flag);
 
-        write_packed_at(&mut contract, struct_base, 0, 0, 1, &flag)?;
-        write_packed_at(&mut contract, struct_base, 0, 1, 8, &timestamp)?;
-        write_packed_at(&mut contract, struct_base, 0, 9, 16, &amount)?;
+            // Field in slot 1 (u128 is 16 bytes, packable)
+            let amount: u128 = 0xdeadbeef;
+            let mut amount_slot = Slot::<u128>::new_with_ctx(
+                struct_base + U256::from(1),
+                LayoutCtx::packed(0),
+                address,
+            );
+            amount_slot.write(amount)?;
+            assert_eq!(amount_slot.read()?, amount);
 
-        // Verify all packed correctly
-        let read_flag = read_packed_at::<bool, _>(&mut contract, struct_base, 0, 0, 1)?;
-        let read_time = read_packed_at::<u64, _>(&mut contract, struct_base, 0, 1, 8)?;
-        let read_amount = read_packed_at::<u128, _>(&mut contract, struct_base, 0, 9, 16)?;
+            // Field in slot 2 (u64 is 8 bytes, packable)
+            let value: u64 = 123456789;
+            let mut value_slot = Slot::<u64>::new_with_ctx(
+                struct_base + U256::from(2),
+                LayoutCtx::packed(0),
+                address,
+            );
+            value_slot.write(value)?;
+            assert_eq!(value_slot.read()?, value);
 
-        assert_eq!(read_flag, flag);
-        assert_eq!(read_time, timestamp);
-        assert_eq!(read_amount, amount);
-
-        // Clear the middle one
-        clear_packed_at(&mut contract, struct_base, 0, 1, 8)?;
-
-        // Verify
-        let read_flag = read_packed_at::<bool, _>(&mut contract, struct_base, 0, 0, 1)?;
-        let read_time = read_packed_at::<u64, _>(&mut contract, struct_base, 0, 1, 8)?;
-        let read_amount = read_packed_at::<u128, _>(&mut contract, struct_base, 0, 9, 16)?;
-
-        assert_eq!(read_flag, flag);
-        assert_eq!(read_time, 0);
-        assert_eq!(read_amount, amount);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_packed_at_different_slots() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let mut contract = setup_test_contract(&mut storage);
-        let struct_base = U256::from(0x4000);
-
-        // Field in slot 0
-        let addr = Address::random();
-        write_packed_at(&mut contract, struct_base, 0, 0, 20, &addr)?;
-
-        // Field in slot 1
-        let value = U256::from(0xdeadbeefu32);
-        write_packed_at(&mut contract, struct_base, 1, 0, 32, &value)?;
-
-        // Field in slot 2
-        let flag = false;
-        write_packed_at(&mut contract, struct_base, 2, 0, 1, &flag)?;
-
-        // Verify all independent
-        let read_addr = read_packed_at::<Address, _>(&mut contract, struct_base, 0, 0, 20)?;
-        let read_val = read_packed_at::<U256, _>(&mut contract, struct_base, 1, 0, 32)?;
-        let read_flag = read_packed_at::<bool, _>(&mut contract, struct_base, 2, 0, 1)?;
-
-        assert_eq!(read_addr, addr);
-        assert_eq!(read_val, value);
-        assert_eq!(read_flag, flag);
-
-        Ok(())
+            Ok(())
+        })
     }
 
     // -- PROPERTY TESTS -----------------------------------------------------------
@@ -1113,10 +1069,6 @@ mod tests {
                 prop_assert_eq!(extracted, expected_flag, "Flag at offset {} mismatch", i);
             }
         }
-    }
-
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(500))]
 
         #[test]
         fn proptest_element_slot_offset_consistency_u8(

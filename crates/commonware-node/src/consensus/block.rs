@@ -10,11 +10,9 @@ use commonware_codec::{DecodeExt as _, EncodeSize, Read, Write};
 use commonware_cryptography::{Committable, Digestible};
 use eyre::WrapErr as _;
 use reth_node_core::primitives::SealedBlock;
-use tracing::info;
+use tempo_dkg_onchain_artifacts::IntermediateOutcome;
 
-use crate::{consensus::Digest, dkg::IntermediateOutcome};
-
-// use crate::consensus::{Finalization, Notarization};
+use crate::consensus::Digest;
 
 /// A Tempo block.
 ///
@@ -26,18 +24,9 @@ use crate::{consensus::Digest, dkg::IntermediateOutcome};
 pub(crate) struct Block(SealedBlock<tempo_primitives::Block>);
 
 impl Block {
-    pub(crate) fn try_read_ceremony_deal_outcome(&self) -> Option<IntermediateOutcome> {
-        if self.header().extra_data().is_empty() {
-            info!("header extraData field was empty");
-            return None;
-        };
-
+    pub(crate) fn try_read_ceremony_deal_outcome(&self) -> eyre::Result<IntermediateOutcome> {
         IntermediateOutcome::decode(&mut self.header().extra_data().as_ref())
             .wrap_err("failed reading ceremony deal outcome from header extra data field")
-            .inspect_err(
-                |error| info!(%error, "treating decode error as deal outcome missing from block"),
-            )
-            .ok()
     }
 
     pub(crate) fn from_execution_block(block: SealedBlock<tempo_primitives::Block>) -> Self {

@@ -1,0 +1,41 @@
+import LucideArrowLeftRight from '~icons/lucide/arrow-left-right'
+import LucideDroplet from '~icons/lucide/droplet'
+import LucideWallet from '~icons/lucide/wallet'
+import LucideCoins from '~icons/lucide/coins'
+import LucideBookOpen from '~icons/lucide/book-open'
+import * as Card from "../../../components/Card.tsx"
+
+# Exchange Stablecoins
+
+Trade between stablecoins on Tempo's enshrined decentralized exchange (DEX). The DEX enables optimal pricing for cross-stablecoin payments while minimizing chain load.
+
+<Card.Container>
+  <Card.Link
+    description="Learn about pathUSD, the root quote token that powers stablecoin interoperability"
+    href="/protocol/exchange/pathUSD"
+    icon={LucideCoins}
+    title="pathUSD"
+  />
+
+  <Card.Link
+    description="Execute swaps between stablecoins"
+    href="/guide/stablecoin-exchange/executing-swaps"
+    icon={LucideArrowLeftRight}
+    title="Executing Swaps"
+  />
+
+  <Card.Link
+    description="Query price levels, individual orders, and liquidity on the onchain orderbook"
+    href="/guide/stablecoin-exchange/view-the-orderbook"
+    icon={LucideBookOpen}
+    title="View the Onchain Orderbook"
+  />
+
+  <Card.Link
+    description="Provide liquidity by placing limit orders or flip orders in the orderbook"
+    href="/guide/stablecoin-exchange/providing-liquidity"
+    icon={LucideDroplet}
+    title="Providing Liquidity"
+  />
+  
+</Card.Container>

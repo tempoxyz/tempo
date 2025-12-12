@@ -1,10 +1,10 @@
-use crate::{Precompile, input_cost, mutate, storage::PrecompileStorageProvider, unknown_selector};
+use crate::{Precompile, fill_precompile_output, input_cost, mutate, unknown_selector};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::tip_account_registrar::{ITipAccountRegistrar, TipAccountRegistrar};
 
-impl<'a, S: PrecompileStorageProvider> Precompile for TipAccountRegistrar<'a, S> {
+impl Precompile for TipAccountRegistrar {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
@@ -46,69 +46,79 @@ impl<'a, S: PrecompileStorageProvider> Precompile for TipAccountRegistrar<'a, S>
             _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
-        result.map(|mut res| {
-            res.gas_used = self.storage.gas_used();
-            res
-        })
+        result.map(|res| fill_precompile_output(res, &mut self.storage))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{storage::hashmap::HashMapStorageProvider, test_util::check_selector_coverage};
+    use crate::{
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::check_selector_coverage,
+    };
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ITipAccountRegistrar::ITipAccountRegistrarCalls;
 
     #[test]
-    fn tip_account_registrar_test_selector_coverage() {
-        use tempo_chainspec::hardfork::TempoHardfork;
+    fn test_selector_coverage_pre_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        StorageCtx::enter(&mut storage, || {
+            // Pre-Moderato: v1 signature should be supported, v2 should be unsupported
+            let mut registrar = TipAccountRegistrar::new();
 
-        // Pre-Moderato: v1 signature should be supported, v2 should be unsupported
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Adagio);
-        let mut registrar = TipAccountRegistrar::new(&mut storage);
+            let unsupported_pre = check_selector_coverage(
+                &mut registrar,
+                ITipAccountRegistrarCalls::SELECTORS,
+                "ITipAccountRegistrar (pre-Moderato)",
+                ITipAccountRegistrarCalls::name_by_selector,
+            );
 
-        let unsupported_pre = check_selector_coverage(
-            &mut registrar,
-            ITipAccountRegistrarCalls::SELECTORS,
-            "ITipAccountRegistrar (pre-Moderato)",
-            ITipAccountRegistrarCalls::name_by_selector,
-        );
+            // Expect exactly one unsupported: delegateToDefault v2 (bytes,bytes)
+            assert_eq!(
+                unsupported_pre.len(),
+                1,
+                "Expected 1 unsupported selector pre-Moderato, got {}",
+                unsupported_pre.len()
+            );
+            assert_eq!(
+                unsupported_pre[0].0,
+                ITipAccountRegistrar::delegateToDefault_1Call::SELECTOR,
+                "Expected delegateToDefault v2 to be unsupported pre-Moderato"
+            );
 
-        // Expect exactly one unsupported: delegateToDefault v2 (bytes,bytes)
-        assert_eq!(
-            unsupported_pre.len(),
-            1,
-            "Expected 1 unsupported selector pre-Moderato, got {}",
-            unsupported_pre.len()
-        );
-        assert_eq!(
-            unsupported_pre[0].0,
-            ITipAccountRegistrar::delegateToDefault_1Call::SELECTOR,
-            "Expected delegateToDefault v2 to be unsupported pre-Moderato"
-        );
+            Ok(())
+        })
+    }
 
-        // Post-Moderato: v2 signature should be supported, v1 should be unsupported
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
-        let mut registrar = TipAccountRegistrar::new(&mut storage);
+    #[test]
+    fn test_selector_coverage_post_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        StorageCtx::enter(&mut storage, || {
+            // Post-Moderato: v2 signature should be supported, v1 should be unsupported
+            let mut registrar = TipAccountRegistrar::new();
 
-        let unsupported_post = check_selector_coverage(
-            &mut registrar,
-            ITipAccountRegistrarCalls::SELECTORS,
-            "ITipAccountRegistrar (post-Moderato)",
-            ITipAccountRegistrarCalls::name_by_selector,
-        );
+            let unsupported_post = check_selector_coverage(
+                &mut registrar,
+                ITipAccountRegistrarCalls::SELECTORS,
+                "ITipAccountRegistrar (post-Moderato)",
+                ITipAccountRegistrarCalls::name_by_selector,
+            );
 
-        // Expect exactly one unsupported: delegateToDefault v1 (bytes32,bytes)
-        assert_eq!(
-            unsupported_post.len(),
-            1,
-            "Expected 1 unsupported selector post-Moderato, got {}",
-            unsupported_post.len()
-        );
-        assert_eq!(
-            unsupported_post[0].0,
-            ITipAccountRegistrar::delegateToDefault_0Call::SELECTOR,
-            "Expected delegateToDefault v1 to be unsupported post-Moderato"
-        );
+            // Expect exactly one unsupported: delegateToDefault v1 (bytes32,bytes)
+            assert_eq!(
+                unsupported_post.len(),
+                1,
+                "Expected 1 unsupported selector post-Moderato, got {}",
+                unsupported_post.len()
+            );
+            assert_eq!(
+                unsupported_post[0].0,
+                ITipAccountRegistrar::delegateToDefault_0Call::SELECTOR,
+                "Expected delegateToDefault v1 to be unsupported post-Moderato"
+            );
+
+            Ok(())
+        })
     }
 }

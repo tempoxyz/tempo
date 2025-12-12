@@ -56,10 +56,7 @@ impl SyntheticLoadGenerator {
         let mut wallet = EthereumWallet::default();
         let mut addresses = Vec::new();
         for index in 0..self.wallet_count {
-            let signer = MnemonicBuilder::english()
-                .phrase(&self.mnemonic)
-                .index(index as u32)?
-                .build()?;
+            let signer = MnemonicBuilder::from_phrase_nth(&self.mnemonic, index as u32);
             addresses.push(signer.address());
             wallet.register_signer(signer);
         }

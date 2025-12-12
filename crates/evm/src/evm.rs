@@ -3,7 +3,7 @@ use alloy_evm::{
     precompiles::PrecompilesMap,
     revm::{
         Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
-        context::result::{EVMError, HaltReason, ResultAndState},
+        context::result::{EVMError, ResultAndState},
         inspector::NoOpInspector,
     },
 };
@@ -11,7 +11,7 @@ use alloy_primitives::{Address, Bytes, Log, TxKind};
 use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_revm::{TempoInvalidTransaction, TempoTxEnv, evm::TempoContext};
+use tempo_revm::{TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, evm::TempoContext};
 
 use crate::TempoBlockEnv;
 
@@ -25,7 +25,7 @@ impl EvmFactory for TempoEvmFactory {
     type Tx = TempoTxEnv;
     type Error<DBError: std::error::Error + Send + Sync + 'static> =
         EVMError<DBError, TempoInvalidTransaction>;
-    type HaltReason = HaltReason;
+    type HaltReason = TempoHaltReason;
     type Spec = TempoHardfork;
     type BlockEnv = TempoBlockEnv;
     type Precompiles = PrecompilesMap;
@@ -139,7 +139,7 @@ where
     type DB = DB;
     type Tx = TempoTxEnv;
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
-    type HaltReason = HaltReason;
+    type HaltReason = TempoHaltReason;
     type Spec = TempoHardfork;
     type BlockEnv = TempoBlockEnv;
     type Precompiles = PrecompilesMap;
@@ -177,7 +177,7 @@ where
                 ..
             } = &mut result.result
             else {
-                return Err(TempoInvalidTransaction::SystemTransactionFailed.into());
+                return Err(TempoInvalidTransaction::SystemTransactionFailed(result.result).into());
             };
 
             *gas_used = 0;

@@ -14,14 +14,15 @@ use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
 use reth_ethereum::evm::primitives::eth::spec::EthExecutorSpec;
 use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
+use tempo_commonware_node_config::{Peers, PublicPolynomial};
 use tempo_primitives::TempoHeader;
 
 pub const TEMPO_BASE_FEE: u64 = 10_000_000_000;
 
 /// Tempo genesis info extracted from genesis extra_fields
-#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct TempoGenesisInfo {
+pub struct TempoGenesisInfo {
     /// Timestamp of Adagio hardfork activation
     #[serde(skip_serializing_if = "Option::is_none")]
     adagio_time: Option<u64>,
@@ -33,6 +34,22 @@ struct TempoGenesisInfo {
     /// Timestamp of Allegretto hardfork activation
     #[serde(skip_serializing_if = "Option::is_none")]
     allegretto_time: Option<u64>,
+
+    /// Timestamp of Allegro-Moderato hardfork activation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allegro_moderato_time: Option<u64>,
+
+    /// The epoch length used by consensus.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    epoch_length: Option<u64>,
+
+    /// The public polynomial all nodes are to use at genesis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public_polynomial: Option<PublicPolynomial>,
+
+    /// The initial set of peers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    validators: Option<Peers>,
 }
 
 impl TempoGenesisInfo {
@@ -43,6 +60,18 @@ impl TempoGenesisInfo {
             .extra_fields
             .deserialize_as::<Self>()
             .unwrap_or_default()
+    }
+
+    pub fn epoch_length(&self) -> Option<u64> {
+        self.epoch_length
+    }
+
+    pub fn public_polynomial(&self) -> &Option<PublicPolynomial> {
+        &self.public_polynomial
+    }
+
+    pub fn validators(&self) -> &Option<Peers> {
+        &self.validators
     }
 }
 
@@ -81,17 +110,13 @@ pub static ANDANTINO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     TempoChainSpec::from_genesis(genesis).into()
 });
 
-/// Development chainspec that extends [`ANDANTINO`] testnet with dev accounts from the vanilla
+/// Development chainspec with funded dev accounts and activated tempo hardforks
+///
+/// `cargo x generate-genesis -o dev.json --accounts 10`
 pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
-    let mut genesis = ANDANTINO.genesis().clone();
-    genesis
-        .alloc
-        .extend(reth_chainspec::DEV.genesis().alloc.clone());
-
-    let mut spec = TempoChainSpec::from_genesis(genesis);
-    // update chainid to dev
-    spec.inner.chain = Chain::dev();
-    spec.into()
+    let genesis: Genesis = serde_json::from_str(include_str!("./genesis/dev.json"))
+        .expect("`./genesis/dev.json` must be present and deserializable");
+    TempoChainSpec::from_genesis(genesis).into()
 });
 
 /// Tempo chain spec type.
@@ -99,26 +124,29 @@ pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
 pub struct TempoChainSpec {
     /// [`ChainSpec`].
     pub inner: ChainSpec<TempoHeader>,
+    pub info: TempoGenesisInfo,
 }
 
 impl TempoChainSpec {
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
         // Extract Tempo genesis info from extra_fields
-        let TempoGenesisInfo {
+        let info @ TempoGenesisInfo {
             adagio_time,
             moderato_time,
             allegretto_time,
+            allegro_moderato_time,
+            ..
         } = TempoGenesisInfo::extract_from(&genesis);
 
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
 
-        // Collect Tempo hardforks to insert
         let tempo_forks = vec![
             (TempoHardfork::Adagio, adagio_time),
             (TempoHardfork::Moderato, moderato_time),
             (TempoHardfork::Allegretto, allegretto_time),
+            (TempoHardfork::AllegroModerato, allegro_moderato_time),
         ]
         .into_iter()
         .filter_map(|(fork, time)| time.map(|time| (fork, ForkCondition::Timestamp(time))));
@@ -132,6 +160,7 @@ impl TempoChainSpec {
                 shared_gas_limit: 0,
                 inner,
             }),
+            info,
         }
     }
 }
@@ -147,6 +176,7 @@ impl From<ChainSpec> for TempoChainSpec {
                 inner,
                 shared_gas_limit: 0,
             }),
+            info: TempoGenesisInfo::default(),
         }
     }
 }
@@ -335,7 +365,8 @@ mod tests {
                 "cancunTime": 0,
                 "adagioTime": 1000,
                 "moderatoTime": 2000,
-                "allegrettoTime": 3000
+                "allegrettoTime": 3000,
+                "allegroModeratoTime": 4000,
             },
             "alloc": {}
         });
@@ -419,6 +450,39 @@ mod tests {
             chainspec.is_allegretto_active_at_timestamp(4000),
             "Allegretto should be active after its activation timestamp"
         );
+
+        // Test AllegroModerato activation
+        let activation = chainspec.fork(TempoHardfork::AllegroModerato);
+        assert_eq!(
+            activation,
+            ForkCondition::Timestamp(4000),
+            "AllegroModerato should be activated at the parsed timestamp from extra_fields"
+        );
+
+        assert!(
+            !chainspec.is_allegro_moderato_active_at_timestamp(0),
+            "AllegroModerato should not be active before its activation timestamp"
+        );
+        assert!(
+            !chainspec.is_allegro_moderato_active_at_timestamp(1000),
+            "AllegroModerato should not be active at Adagio's activation timestamp"
+        );
+        assert!(
+            !chainspec.is_allegro_moderato_active_at_timestamp(2000),
+            "AllegroModerato should not be active at Moderato's activation timestamp"
+        );
+        assert!(
+            !chainspec.is_allegro_moderato_active_at_timestamp(3000),
+            "AllegroModerato should not be active at Allegretto's activation timestamp"
+        );
+        assert!(
+            chainspec.is_allegro_moderato_active_at_timestamp(4000),
+            "AllegroModerato should be active at its activation timestamp"
+        );
+        assert!(
+            chainspec.is_allegro_moderato_active_at_timestamp(5000),
+            "AllegroModerato should be active after its activation timestamp"
+        );
     }
 
     #[test]
@@ -442,7 +506,7 @@ mod tests {
                 "terminalTotalDifficultyPassed": true,
                 "shanghaiTime": 0,
                 "cancunTime": 2000,
-                "adagioTime": 1000
+                "adagioTime": 1000,
             },
             "alloc": {}
         });
@@ -508,7 +572,8 @@ mod tests {
                 "cancunTime": 0,
                 "adagioTime": 1000,
                 "moderatoTime": 2000,
-                "allegrettoTime": 3000
+                "allegrettoTime": 3000,
+                "allegroModeratoTime": 4000
             },
             "alloc": {}
         });
@@ -560,11 +625,25 @@ mod tests {
             "Should return Allegretto at its activation time"
         );
 
-        // After Allegretto
+        // Between Allegretto and AllegroModerato
+        assert_eq!(
+            chainspec.tempo_hardfork_at(3500),
+            TempoHardfork::Allegretto,
+            "Should return Allegretto between Allegretto and AllegroModerato activation"
+        );
+
+        // At AllegroModerato time
         assert_eq!(
             chainspec.tempo_hardfork_at(4000),
-            TempoHardfork::Allegretto,
-            "Should return Allegretto after its activation time"
+            TempoHardfork::AllegroModerato,
+            "Should return AllegroModerato at its activation time"
+        );
+
+        // After AllegroModerato
+        assert_eq!(
+            chainspec.tempo_hardfork_at(5000),
+            TempoHardfork::AllegroModerato,
+            "Should return AllegroModerato after its activation time"
         );
     }
 }

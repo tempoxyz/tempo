@@ -1,6 +1,6 @@
 use crate::{TempoBlockEnv, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
-use alloy_primitives::Log;
+use alloy_primitives::{Log, U256};
 use revm::{
     Context, Inspector,
     context::{CfgEnv, ContextError, Evm, FrameStack},
@@ -33,6 +33,8 @@ pub struct TempoEvm<DB: Database, I> {
     >,
     /// Preserved logs from the last transaction
     pub logs: Vec<Log>,
+    /// The fee collected in `collectFeePreTx` call.
+    pub(crate) collected_fee: U256,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -65,6 +67,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         Self {
             inner,
             logs: Vec::new(),
+            collected_fee: U256::ZERO,
         }
     }
 }
@@ -196,7 +199,8 @@ mod tests {
     use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
     use tempo_evm::TempoEvmFactory;
     use tempo_precompiles::{
-        LINKING_USD_ADDRESS, storage::evm::EvmPrecompileStorageProvider, tip20::TIP20Token,
+        storage::{StorageCtx, evm::EvmPrecompileStorageProvider},
+        test_util::TIP20Setup,
     };
 
     #[test]
@@ -204,18 +208,17 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut tempo_evm = TempoEvmFactory::default().create_evm(db, Default::default());
 
-        // HACK: initialize default fee token and linkingUSD so that fee token validation passes
+        // HACK: initialize default fee token and pathUSD so that fee token validation passes
         let ctx = tempo_evm.ctx_mut();
         let mut storage = EvmPrecompileStorageProvider::new_max_gas(
             EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
             &ctx.cfg,
         );
-        TIP20Token::new(0, &mut storage)
-            .initialize("USD", "USD", "USD", Address::ZERO, Address::ZERO)
-            .unwrap();
-        TIP20Token::new(1, &mut storage)
-            .initialize("USD", "USD", "USD", LINKING_USD_ADDRESS, Address::ZERO)
-            .unwrap();
+        StorageCtx::enter(&mut storage, || {
+            TIP20Setup::create("USD", "USD", Address::ZERO)
+                .apply()
+                .unwrap();
+        });
         drop(storage);
 
         let caller_0 = Address::random();
@@ -247,12 +250,11 @@ mod tests {
             EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
             &ctx.cfg,
         );
-        TIP20Token::new(0, &mut storage)
-            .initialize("USD", "USD", "USD", Address::ZERO, Address::ZERO)
-            .unwrap();
-        TIP20Token::new(1, &mut storage)
-            .initialize("USD", "USD", "USD", LINKING_USD_ADDRESS, Address::ZERO)
-            .unwrap();
+        StorageCtx::enter(&mut storage, || {
+            TIP20Setup::create("USD", "USD", Address::ZERO)
+                .apply()
+                .unwrap();
+        });
         drop(storage);
 
         let contract = Address::random();

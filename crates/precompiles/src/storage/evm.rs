@@ -13,6 +13,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
     chain_id: u64,
     gas_remaining: u64,
+    gas_refunded: i64,
     gas_limit: u64,
     spec: TempoHardfork,
 }
@@ -29,6 +30,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             internals,
             chain_id,
             gas_remaining: gas_limit,
+            gas_refunded: 0,
             gas_limit,
             spec,
         }
@@ -70,10 +72,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
-    fn get_account_info(
+    fn with_account_info(
         &mut self,
         address: Address,
-    ) -> Result<&'_ AccountInfo, TempoPrecompileError> {
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<(), TempoPrecompileError> {
         self.ensure_loaded_account(address)?;
         let account = self.internals.load_account_code(address)?.map(|a| &a.info);
         let is_cold = account.is_cold;
@@ -84,7 +87,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             .checked_sub(revm::interpreter::gas::warm_cold_cost(is_cold))
             .ok_or(TempoPrecompileError::OutOfGas)?;
 
-        Ok(account.data)
+        f(account.data);
+        Ok(())
     }
 
     #[inline]
@@ -102,6 +106,12 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             &result.data,
             result.is_cold,
         ))?;
+
+        // refund gas.
+        self.refund_gas(revm::interpreter::gas::sstore_refund(
+            SpecId::AMSTERDAM,
+            &result.data,
+        ));
 
         Ok(())
     }
@@ -166,8 +176,18 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
+    fn refund_gas(&mut self, gas: i64) {
+        self.gas_refunded = self.gas_refunded.saturating_add(gas);
+    }
+
+    #[inline]
     fn gas_used(&self) -> u64 {
         self.gas_limit - self.gas_remaining
+    }
+
+    #[inline]
+    fn gas_refunded(&self) -> i64 {
+        self.gas_refunded
     }
 
     #[inline]
@@ -245,15 +265,15 @@ mod tests {
         let address = address!("3000000000000000000000000000000000000003");
 
         // Get account info for a new account
-        let account_info = provider.get_account_info(address)?;
-
-        // Should be an empty account
-        assert!(account_info.balance.is_zero());
-        assert_eq!(account_info.nonce, 0);
-        // Note: load_account_code may return empty bytecode as Some(empty) for new accounts
-        if let Some(ref code) = account_info.code {
-            assert!(code.is_empty(), "New account should have empty code");
-        }
+        provider.with_account_info(address, &mut |info| {
+            // Should be an empty account
+            assert!(info.balance.is_zero());
+            assert_eq!(info.nonce, 0);
+            // Note: load_account_code may return empty bytecode as Some(empty) for new accounts
+            if let Some(ref code) = info.code {
+                assert!(code.is_empty(), "New account should have empty code");
+            }
+        })?;
 
         Ok(())
     }

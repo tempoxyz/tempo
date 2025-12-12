@@ -1,21 +1,26 @@
-pub mod aa_authorization;
-pub mod aa_signature;
-pub mod aa_signed;
-pub mod account_abstraction;
 pub mod envelope;
 pub mod fee_token;
+pub mod key_authorization;
+pub mod tempo_transaction;
+pub mod tt_authorization;
+pub mod tt_signature;
+pub mod tt_signed;
 
-pub use aa_authorization::{AASignedAuthorization, MAGIC};
+pub use tt_authorization::{MAGIC, RecoveredTempoAuthorization, TempoSignedAuthorization};
 // Re-export Authorization from alloy for convenience
-pub use aa_signature::{AASignature, derive_p256_address};
-pub use aa_signed::AASigned;
-pub use account_abstraction::{
-    AA_TX_TYPE_ID, Call, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH,
-    SECP256K1_SIGNATURE_LENGTH, SignatureType, TxAA,
+pub use tt_signature::{
+    KeychainSignature, PrimitiveSignature, TempoSignature, derive_p256_address,
 };
+
 pub use alloy_eips::eip7702::Authorization;
 pub use envelope::{TempoTxEnvelope, TempoTxType, TempoTypedTransaction};
 pub use fee_token::{FEE_TOKEN_TX_TYPE_ID, TxFeeToken};
+pub use key_authorization::{KeyAuthorization, SignedKeyAuthorization, TokenLimit};
+pub use tempo_transaction::{
+    Call, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH,
+    SignatureType, TEMPO_TX_TYPE_ID, TempoTransaction,
+};
+pub use tt_signed::AASigned;
 
 use alloy_primitives::{U256, uint};
 

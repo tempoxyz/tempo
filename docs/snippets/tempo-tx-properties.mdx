@@ -1,0 +1,699 @@
+import { Tabs } from '../components/Tabs'
+import PublicTestnetSponsorTip from './public-testnet-sponsor-tip.mdx'
+
+### Configurable Fee Tokens
+
+A fee token is a permissionless [TIP-20 token](/protocol/tip20/overview) that can be used to pay fees on Tempo. 
+
+When a TIP-20 token is passed as the `fee_token` parameter in a transaction, 
+Tempo's [Fee AMM](/protocol/fees/spec-fee-amm) automatically facilitates conversion between the 
+user's preferred fee token and the validator's preferred token. 
+
+<div className="-mt-2" />
+
+<Tabs>
+  <Tabs.Tab value="Viem">
+
+  <div className="h-4" />
+
+    :::code-group
+
+    ```tsx twoslash [example.ts]
+    // @noErrors
+    import { client } from './viem.config'
+
+    const alphaUsd = '0x20c0000000000000000000000000000000000001'
+
+    const receipt = await client.sendTransactionSync({
+      data: '0xdeadbeef',
+      feeToken: alphaUsd, // [!code hl]
+      to: '0xcafebabecafebabecafebabecafebabecafebabe',
+    })
+    ```
+
+    ```tsx twoslash [viem.config.ts]
+    // [!include ~/snippets/viem.config.ts:setup]
+    ```
+
+    :::
+  </Tabs.Tab>
+
+  <Tabs.Tab value="Wagmi">
+
+    <div className="h-4" />
+    
+    :::code-group
+
+    ```tsx twoslash [example.ts]
+    // @noErrors
+    import { useSendTransactionSync } from 'wagmi'
+
+    const { sendTransactionSync } = useSendTransactionSync()
+
+    const alphaUsd = '0x20c0000000000000000000000000000000000001'
+
+    sendTransactionSync({
+      data: '0xdeadbeef',
+      feeToken: alphaUsd, // [!code hl]
+      to: '0xcafebabecafebabecafebabecafebabecafebabe',
+    })
+    ```
+
+    ```tsx twoslash [wagmi.config.ts]
+    // @noErrors
+    // [!include ~/snippets/wagmi.config.ts:setup]
+    ```
+
+    :::
+
+  </Tabs.Tab>
+
+  <Tabs.Tab value="RLP">
+    <div className="h-4" />
+
+    ```tsx
+    rlp([
+      chain_id,
+      max_priority_fee_per_gas,
+      max_fee_per_gas,
+      gas,
+      calls,
+      access_list,
+      nonce_key,
+      nonce,
+      valid_before,
+      valid_after,
+      fee_token, // [!code focus]
+      fee_payer_signature,
+      authorization_list,
+      key_authorization,
+      signature,
+    ])
+    ```
+  </Tabs.Tab>
+
+</Tabs>
+
+:::info
+See a full guide on [paying fees in any stablecoin](/guide/payments/pay-fees-in-any-stablecoin).
+:::
+
+### Fee Sponsorship
+
+Fee sponsorship enables a third party (the fee payer) to pay transaction fees on behalf of the transaction sender. 
+
+The process uses dual signature domains: the sender signs their transaction, and then the fee payer signs 
+over the transaction with a special "fee payer envelope" to commit to paying fees for that specific sender. 
+
+
+<div className="-mt-2" />
+
+<Tabs>
+  <Tabs.Tab value="Viem">
+
+  <div className="h-4" />
+
+    :::code-group
+
+    ```tsx twoslash [example.ts]
+    // @noErrors
+    import { client } from './viem.config'
+
+    const feePayer = privateKeyToAccount('0x...')
+
+    const receipt = await client.sendTransactionSync({
+      data: '0xdeadbeef',
+      feePayer, // [!code hl]
+      to: '0xcafebabecafebabecafebabecafebabecafebabe',
+    })
+    ```
+
+    ```tsx twoslash [viem.config.ts]
+    // [!include ~/snippets/viem.config.ts:setup]
+    ```
+
+    :::
+
+  </Tabs.Tab>
+  <Tabs.Tab value="Wagmi">
+
+    <div className="h-4" />
+    
+    :::code-group
+
+    ```tsx twoslash [example.ts]
+    // @noErrors
+    import { useSendTransactionSync } from 'wagmi'
+
+    export const feePayer = privateKeyToAccount('0x...')
+
+    const { sendTransactionSync } = useSendTransactionSync()
+
+    sendTransactionSync({
+      data: '0xdeadbeef',
+      feePayer, // [!code hl]
+      to: '0xcafebabecafebabecafebabecafebabecafebabe',
+    })
+    ```
+
+    ```tsx twoslash [wagmi.config.ts]
+    // @noErrors
+    // [!include ~/snippets/wagmi.config.ts:setup]
+    ```
+
+    :::
+
+  </Tabs.Tab>
+
+  <Tabs.Tab value="RLP">
+    <div className="h-4" />
+
+    ```tsx
+    // 1. User signs over `user_envelope` // [!code focus]
+    user_envelope = 0x77 ∥ rlp([
+      chain_id,
+      max_priority_fee_per_gas,
+      max_fee_per_gas,
+      gas,
+      calls,
+      access_list,
+      nonce_key,
+      nonce,
+      valid_before,
+      valid_after,
+      fee_token,
+      0x00, // indicate intention for a fee payer // [!code focus]
+      authorization_list,
+      key_authorization
+    ])
+
+    // 2. Fee payer signs over `fee_payer_envelope` // [!code focus]
+    fee_payer_envelope = 0x76 ∥ rlp([
+      chain_id,
+      max_priority_fee_per_gas,
+      max_fee_per_gas,
+      gas,
+      calls,
+      access_list,
+      nonce_key,
+      nonce,
+      valid_before,
+      valid_after,
+      fee_token,
+      sender_address, // scope to sender // [!code focus]
+      authorization_list,
+      key_authorization
+    ])
+
+    // 3. Construct + send off `final_envelope` to the network // [!code focus]
+    final_envelope = 0x77 ∥ rlp([
+      chain_id,
+      max_priority_fee_per_gas,
+      max_fee_per_gas,
+      gas,
+      calls,
+      access_list,
+      nonce_key,
+      nonce,
+      valid_before,
+      valid_after,
+      fee_token,
+      fee_payer_signature, // signature over `fee_payer_envelope` // [!code focus]
+      authorization_list,
+      key_authorization,
+      signature, // signature over `user_envelope` // [!code focus]
+    ])
+    ```
+  </Tabs.Tab>
+</Tabs>
+
+:::tip
+It is also possible to use a remote [Fee Payer Relay](/guide/payments/sponsor-user-fees#fee-payer-relay) instead of a local account.
+:::
+
+<PublicTestnetSponsorTip />
+
+:::info
+See a full guide on [sponsoring fees](/guide/payments/sponsor-user-fees).
+:::
+
+### Batch Calls
+
+Batch calls enable multiple operations to be executed atomically within a single transaction. 
+Instead of sending separate transactions for each operation, you can bundle multiple calls together using the `calls` 
+parameter.
+
+<div className="-mt-2" />
+
+<Tabs>
+  <Tabs.Tab value="Viem">
+
+  <div className="h-4" />
+
+    :::code-group
+
+    ```tsx twoslash [example.ts]
+    // @noErrors
+    import { client } from './viem.config'
+
+    const receipt = await client.sendTransactionSync({
+      calls: [ // [!code hl]
+        { // [!code hl]
+          to: '0xcafebabecafebabecafebabecafebabecafebabe', // [!code hl]
+          data: '0xdeadbeef0000000000000000000000000000000001', // [!code hl]
+        }, // [!code hl]
+        { // [!code hl]
+          to: '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef', // [!code hl]
+          data: '0xcafebabe0000000000000000000000000000000001', // [!code hl]
+        }, // [!code hl]
+        { // [!code hl]
+          to: '0xcafebabecafebabecafebabecafebabecafebabe', // [!code hl]
+          data: '0xdeadbeef0000000000000000000000000000000001', // [!code hl]
+        }, // [!code hl]
+      ] // [!code hl]
+    })
+    ```
+
+    ```tsx twoslash [viem.config.ts]
+    // [!include ~/snippets/viem.config.ts:setup]
+    ```
+
+    :::
+
+  </Tabs.Tab>
+  <Tabs.Tab value="Wagmi">
+
+    <div className="h-4" />
+    
+    :::code-group
+
+    ```tsx twoslash [example.ts]
+    // @noErrors
+    import { useSendTransactionSync } from 'wagmi'
+
+    const { sendTransactionSync } = useSendTransactionSync()
+
+    sendTransactionSync({
+      calls: [ // [!code hl]
+        { // [!code hl]
+          to: '0xcafebabecafebabecafebabecafebabecafebabe', // [!code hl]
+          data: '0xdeadbeef0000000000000000000000000000000001', // [!code hl]
+        }, // [!code hl]
+        { // [!code hl]
+          to: '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef', // [!code hl]
+          data: '0xcafebabe0000000000000000000000000000000001', // [!code hl]
+        }, // [!code hl]
+        { // [!code hl]
+          to: '0xcafebabecafebabecafebabecafebabecafebabe', // [!code hl]
+          data: '0xdeadbeef0000000000000000000000000000000001', // [!code hl]
+        }, // [!code hl]
+      ] // [!code hl]
+    })
+    ```
+
+    ```tsx twoslash [wagmi.config.ts]
+    // @noErrors
+    // [!include ~/snippets/wagmi.config.ts:setup]
+    ```
+
+    :::
+
+  </Tabs.Tab>
+
+  <Tabs.Tab value="RLP">
+    <div className="h-4" />
+
+    ```tsx
+    rlp([
+      chain_id,
+      max_priority_fee_per_gas,
+      max_fee_per_gas,
+      gas,
+      calls, // [!code focus]
+      access_list,
+      nonce_key,
+      nonce,
+      valid_before,
+      valid_after,
+      fee_token,
+      fee_payer_signature,
+      authorization_list,
+      key_authorization,
+      signature,
+    ])
+    ```
+  </Tabs.Tab>
+</Tabs>
+
+### Access Keys
+
+Access keys enable you to delegate signing authority from a primary account to a secondary key, 
+such as device-bound non-extractable [WebCrypto key](https://developer.mozilla.org/en-US/docs/Web/API/CryptoKeyPair). The primary account signs a key authorization that grants the access key permission 
+to sign transactions on its behalf. 
+
+This authorization is then attached to the next transaction (that can be signed by either the primary or the access key), then all
+transactions thereafter can be signed by the access key.
+
+<div className="-mt-2" />
+
+<Tabs>
+  <Tabs.Tab value="Viem">
+
+  <div className="h-4" />
+
+    :::code-group
+
+    ```tsx twoslash [example.ts]
+    // @noErrors
+    import { Account, WebCryptoP256 } from 'tempo.ts/viem'
+    import { client } from './viem.config'
+
+    // 1. Instantiate account.
+    const account = Account.fromSecp256k1('0x...')
+
+    // 2. Generate a non-extractable WebCrypto key pair & instantiate access key.
+    const keyPair = await WebCryptoP256.createKeyPair()
+    const accessKey = Account.fromWebCryptoP256(keyPair, {
+      access: account,
+    })
+
+    // 3. Sign over key authorization with account.
+    const keyAuthorization = await account.signKeyAuthorization(accessKey)
+
+    // 4. Attach key authorization to (next) transaction.
+    const receipt = await client.sendTransactionSync({
+      account: accessKey, // sign transaction with access key // [!code hl]
+      data: '0xdeadbeef0000000000000000000000000000000001',
+      keyAuthorization, // [!code hl]
+      to: '0xcafebabecafebabecafebabecafebabecafebabe',
+    })
+    ```
+
+    ```tsx twoslash [viem.config.ts]
+    // [!include ~/snippets/viem.config.ts:setup]
+    ```
+
+    :::
+
+  </Tabs.Tab>
+  <Tabs.Tab value="Wagmi">
+
+    <div className="h-4" />
+    
+    ```tsx twoslash [example.ts]
+    // @noErrors
+    import { tempo } from 'tempo.ts/chains'
+    import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+    import { createConfig, http } from 'wagmi'
+    
+    export const config = createConfig({
+      connectors: [
+        webAuthn({
+          grantAccessKey: true, // [!code hl]
+          keyManager: KeyManager.localStorage(),
+        }),
+      ],
+      chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+      multiInjectedProviderDiscovery: false,
+      transports: {
+        [tempo.id]: http(),
+      },
+    })
+    ```
+
+  </Tabs.Tab>
+
+  <Tabs.Tab value="RLP">
+    <div className="h-4" />
+
+    ```tsx
+    rlp([
+      chain_id,
+      max_priority_fee_per_gas,
+      max_fee_per_gas,
+      gas,
+      calls,
+      access_list,
+      nonce_key,
+      nonce,
+      valid_before,
+      valid_after,
+      fee_token,
+      fee_payer_signature,
+      authorization_list,
+      key_authorization, // [!code focus]
+      signature,
+    ])
+    ```
+  </Tabs.Tab>
+</Tabs>
+
+:::info
+Learn more about [Access Keys](/protocol/transactions/spec-tempo-transaction#access-keys).
+:::
+
+### Concurrent Transactions
+
+Concurrent transactions enable higher throughput by allowing multiple transactions from the same account to be sent 
+in parallel without waiting for sequential nonce confirmation. 
+
+By using different nonce keys, you can submit multiple transactions simultaneously that don't conflict with each other, 
+enabling parallel execution and significantly improved transaction throughput for high-activity accounts.
+
+<div className="-mt-2" />
+
+<Tabs>
+  <Tabs.Tab value="Viem">
+
+  <div className="h-4" />
+
+    :::code-group
+
+    ```tsx twoslash [example.ts]
+    // @noErrors
+    import { client } from './viem.config'
+
+    const [receipt1, receipt2, receipt3] = await Promise.all([ // [!code hl]
+      client.sendTransactionSync({
+        data: '0xdeadbeef0000000000000000000000000000000001',
+        to: '0xcafebabecafebabecafebabecafebabecafebabe',
+      }),
+      client.sendTransactionSync({
+        data: '0xcafebabe0000000000000000000000000000000001',
+        to: '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+      }),
+      client.sendTransactionSync({
+        data: '0xdeadbeef0000000000000000000000000000000001',
+        to: '0xcafebabecafebabecafebabecafebabecafebabe',
+      }),
+    ])
+    ```
+
+    ```tsx twoslash [viem.config.ts]
+    // [!include ~/snippets/viem.config.ts:setup]
+    ```
+
+    :::
+
+    <div className="h-4" />
+
+    :::code-group
+
+    ```tsx twoslash [example.ts]
+    // @noErrors
+    import { client } from './viem.config'
+
+    const hash1 = await client.sendTransaction({
+      data: '0xdeadbeef0000000000000000000000000000000001',
+      nonceKey: 567n, // [!code hl]
+      to: '0xcafebabecafebabecafebabecafebabecafebabe',
+    })
+    const hash2 = await client.sendTransaction({
+      data: '0xdeadbeef0000000000000000000000000000000001',
+      nonceKey: 789n, // [!code hl]
+      to: '0xcafebabecafebabecafebabecafebabecafebabe',
+    })
+    ```
+
+    ```tsx twoslash [viem.config.ts]
+    // [!include ~/snippets/viem.config.ts:setup]
+    ```
+
+    :::
+
+  </Tabs.Tab>
+  <Tabs.Tab value="Wagmi">
+
+    <div className="h-4" />
+    
+    :::code-group
+
+    ```tsx twoslash [example.ts]
+    // @noErrors
+    import { useSendTransaction } from 'wagmi'
+
+    const { sendTransaction } = useSendTransaction()
+
+    sendTransaction({
+      data: '0xdeadbeef0000000000000000000000000000000001',
+      to: '0xcafebabecafebabecafebabecafebabecafebabe',
+    })
+    sendTransaction({
+      data: '0xdeadbeef0000000000000000000000000000000001',
+      to: '0xcafebabecafebabecafebabecafebabecafebabe',
+    })
+    sendTransaction({
+      data: '0xdeadbeef0000000000000000000000000000000001',
+      to: '0xcafebabecafebabecafebabecafebabecafebabe',
+    })
+    ```
+
+    ```tsx twoslash [wagmi.config.ts]
+    // @noErrors
+    // [!include ~/snippets/wagmi.config.ts:setup]
+    ```
+
+    :::
+
+    <div className="h-4" />
+
+    :::code-group
+
+    ```tsx twoslash [example.ts]
+    // @noErrors
+    import { useSendTransaction } from 'wagmi'
+
+    const { sendTransaction } = useSendTransaction()
+
+    sendTransaction({
+      data: '0xdeadbeef0000000000000000000000000000000001',
+      nonceKey: 567n, // [!code hl]
+      to: '0xcafebabecafebabecafebabecafebabecafebabe',
+    })
+    sendTransaction({
+      data: '0xdeadbeef0000000000000000000000000000000001',
+      nonceKey: 789n, // [!code hl]
+      to: '0xcafebabecafebabecafebabecafebabecafebabe',
+    })
+    ```
+
+    ```tsx twoslash [wagmi.config.ts]
+    // @noErrors
+    // [!include ~/snippets/wagmi.config.ts:setup]
+    ```
+
+    :::
+
+  </Tabs.Tab>
+
+  <Tabs.Tab value="RLP">
+    <div className="h-4" />
+
+    ```tsx
+    rlp([
+      chain_id,
+      max_priority_fee_per_gas,
+      max_fee_per_gas,
+      gas,
+      calls,
+      access_list,
+      nonce_key, // [!code focus]
+      nonce,
+      valid_before,
+      valid_after,
+      fee_token,
+      fee_payer_signature,
+      authorization_list,
+      key_authorization,
+      signature,
+    ])
+    ```
+  </Tabs.Tab>
+</Tabs>
+
+### Scheduled Transactions
+
+Scheduled transactions allow you to sign a transaction in advance and specify a time window for when it can be 
+executed onchain. By setting `validAfter` and `validBefore` timestamps, you define the earliest and latest times 
+the transaction can be included in a block. 
+
+<div className="-mt-2" />
+
+<Tabs>
+  <Tabs.Tab value="Viem">
+
+  <div className="h-4" />
+
+    :::code-group
+
+    ```tsx twoslash [example.ts]
+    // @noErrors
+    import { client } from './viem.config'
+
+    const signature = await client.signTransaction({
+      data: '0xdeadbeef0000000000000000000000000000000001',
+      to: '0xcafebabecafebabecafebabecafebabecafebabe',
+      validAfter: Math.floor(Number(new Date('2026-01-01')) / 1000), // [!code hl]
+      validBefore: Math.floor(Number(new Date('2026-01-02')) / 1000), // [!code hl]
+    })
+    ```
+
+    ```tsx twoslash [viem.config.ts]
+    // [!include ~/snippets/viem.config.ts:setup]
+    ```
+
+    :::
+
+  </Tabs.Tab>
+  <Tabs.Tab value="Wagmi">
+
+    <div className="h-4" />
+    
+    :::code-group
+
+    ```tsx twoslash [example.ts]
+    // @noErrors
+    import { signTransaction } from 'wagmi/actions'
+    import { config } from './wagmi.config'
+
+    const signature = await signTransaction(config, {
+      data: '0xdeadbeef0000000000000000000000000000000001',
+      to: '0xcafebabecafebabecafebabecafebabecafebabe',
+      validAfter: Math.floor(Number(new Date('2026-01-01')) / 1000), // [!code hl]
+      validBefore: Math.floor(Number(new Date('2026-01-02')) / 1000), // [!code hl]
+    })
+    ```
+
+    ```tsx twoslash [wagmi.config.ts]
+    // @noErrors
+    // [!include ~/snippets/wagmi.config.ts:setup]
+    ```
+
+    :::
+
+  </Tabs.Tab>
+
+  <Tabs.Tab value="RLP">
+    <div className="h-4" />
+
+    ```tsx
+    rlp([
+      chain_id,
+      max_priority_fee_per_gas,
+      max_fee_per_gas,
+      gas,
+      calls,
+      access_list,
+      nonce_key,
+      nonce,
+      valid_before, // [!code focus]
+      valid_after, // [!code focus]
+      fee_token,
+      fee_payer_signature,
+      authorization_list,
+      key_authorization,
+      signature,
+    ])
+    ```
+  </Tabs.Tab>
+</Tabs>

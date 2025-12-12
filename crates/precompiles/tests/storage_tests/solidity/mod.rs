@@ -3,8 +3,6 @@
 //! This module tests that the `contract` macro-generated storage layouts match their
 //! Solidity counterparts by comparing against the expected solc-generated outputs.
 
-// TODO(rusowsky): add tests against the actual pre-compiles solidity-equivalent contracts
-
 mod precompiles;
 mod primitives;
 mod utils;
@@ -13,7 +11,7 @@ use super::*;
 use tempo_precompiles_macros::Storable;
 
 // Helper struct for struct test (defined at module level, used in primitives.rs)
-#[derive(Debug, Clone, PartialEq, Eq, Storable)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
 pub(crate) struct TestBlockInner {
     pub field1: U256,
     pub field2: U256,

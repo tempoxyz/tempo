@@ -61,6 +61,8 @@ sol! {
         function burnWithMemo(uint256 amount, bytes32 memo) external;
         function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
         function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external returns (bool);
+        function feeRecipient() external view returns (address);
+        function setFeeRecipient(address newRecipient) external view returns (address);
 
         // Admin Functions
         function changeTransferPolicyId(uint64 newPolicyId) external;
@@ -127,6 +129,7 @@ sol! {
         event RewardScheduled(address indexed funder, uint64 indexed id, uint256 amount, uint32 durationSeconds);
         event RewardCanceled(address indexed funder, uint64 indexed id, uint256 refund);
         event RewardRecipientSet(address indexed holder, address indexed recipient);
+        event FeeRecipientUpdated(address indexed updater, address indexed newRecipient);
 
         // Errors
         error InsufficientBalance(uint256 available, uint256 required, address token);
@@ -148,6 +151,8 @@ sol! {
         error Unauthorized();
         error RewardsDisabled();
         error ScheduledRewardsDisabled();
+        error ProtectedAddress();
+        error InvalidToken();
     }
 }
 
@@ -256,5 +261,15 @@ impl TIP20Error {
     /// Error for when scheduled rewards are disabled post-moderato
     pub const fn scheduled_rewards_disabled() -> Self {
         Self::ScheduledRewardsDisabled(ITIP20::ScheduledRewardsDisabled {})
+    }
+
+    /// Error for operations on protected addresses (like burning `FeeManager` tokens)
+    pub const fn protected_address() -> Self {
+        Self::ProtectedAddress(ITIP20::ProtectedAddress {})
+    }
+
+    /// Error when an address is not a valid TIP20 token
+    pub const fn invalid_token() -> Self {
+        Self::InvalidToken(ITIP20::InvalidToken {})
     }
 }

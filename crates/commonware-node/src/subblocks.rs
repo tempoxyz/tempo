@@ -32,9 +32,12 @@ use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_evm::{Evm, revm::database::State};
 use reth_node_builder::ConfigureEvm;
 use reth_primitives_traits::Recovered;
-use reth_provider::{HeaderProvider, ProviderError, StateProviderBox, StateProviderFactory};
+use reth_provider::{
+    BlockReader, BlockSource, ProviderError, StateProviderBox, StateProviderFactory,
+};
 use reth_revm::database::StateProviderDatabase;
 use std::{
+    pin::Pin,
     sync::{Arc, mpsc::RecvError},
     time::{Duration, Instant},
 };
@@ -45,6 +48,12 @@ use tempo_primitives::{
 use tokio::sync::broadcast;
 use tracing::{Instrument, Level, Span, debug, instrument, warn};
 
+/// Maximum number of stored subblock transactions. Used to prevent DOS attacks.
+///
+/// NOTE: included txs are organically cleared when building the next subblock
+/// because they become invalid once their nonce is used.
+const MAX_SUBBLOCK_TXS: usize = 100_000;
+
 pub(crate) struct Config<TContext> {
     pub(crate) context: TContext,
     pub(crate) signer: PrivateKey,
@@ -52,6 +61,7 @@ pub(crate) struct Config<TContext> {
     pub(crate) node: TempoFullNode,
     pub(crate) fee_recipient: Address,
     pub(crate) time_to_build_subblock: Duration,
+    pub(crate) subblock_broadcast_interval: Duration,
     pub(crate) epoch_length: u64,
 }
 
@@ -73,7 +83,7 @@ pub(crate) struct Actor<TContext> {
     /// Stream of subblock transactions from RPC.
     subblock_transactions_rx: broadcast::Receiver<Recovered<TempoTxEnvelope>>,
     /// Handle to a task building a new subblock.
-    subblock_builder_handle: Option<BuildSubblockTask>,
+    our_subblock: PendingSubblock,
 
     /// Scheme provider to track participants of each epoch.
     scheme_provider: SchemeProvider,
@@ -87,6 +97,8 @@ pub(crate) struct Actor<TContext> {
     fee_recipient: Address,
     /// Timeout for building a subblock.
     time_to_build_subblock: Duration,
+    /// How often to broadcast subblocks to the current proposer.
+    subblock_broadcast_interval: Duration,
     /// Length of an epoch in blocks.
     epoch_length: u64,
 
@@ -108,12 +120,13 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             node,
             fee_recipient,
             time_to_build_subblock,
+            subblock_broadcast_interval,
             epoch_length,
         }: Config<TContext>,
     ) -> Self {
         let (actions_tx, actions_rx) = mpsc::unbounded();
         Self {
-            subblock_builder_handle: None,
+            our_subblock: PendingSubblock::None,
             subblock_transactions_rx: node.add_ons_handle.eth_api().subblock_transactions_rx(),
             scheme_provider,
             actions_tx,
@@ -123,6 +136,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             node,
             fee_recipient,
             time_to_build_subblock,
+            subblock_broadcast_interval,
             epoch_length,
             consensus_tip: None,
             subblocks: Default::default(),
@@ -145,6 +159,12 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         ),
     ) {
         loop {
+            let (subblock_task, broadcast_interval) = match &mut self.our_subblock {
+                PendingSubblock::None => (None, None),
+                PendingSubblock::Task(task) => (Some(task), None),
+                PendingSubblock::Built(built) => (None, Some(&mut built.broadcast_interval)),
+            };
+
             tokio::select! {
                 biased;
 
@@ -158,16 +178,24 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
                 },
                 // Handle messages from the network.
                 Ok((sender, message)) = network_rx.recv() => {
-                    let _ = self.on_network_message(sender, message);
+                    let _ = self.on_network_message(sender, message, &mut network_tx).await;
                 },
                 // Handle built subblocks.
-                subblock = if let Some(task) = self.subblock_builder_handle.as_mut() {
+                subblock = if let Some(task) = subblock_task {
                     (&mut task.handle).fuse()
                 } else {
                     futures::future::Fuse::terminated()
                 } => {
-                    let task = self.subblock_builder_handle.take().unwrap();
-                    self.on_built_subblock(subblock, task.proposer, &mut network_tx).await;
+                    let task = self.our_subblock.take_task().unwrap();
+                    self.on_built_subblock(subblock, task.proposer).await;
+                }
+                // Handle subblocks broadcast.
+                _ = if let Some(broadcast_interval) = broadcast_interval {
+                    broadcast_interval.fuse()
+                } else {
+                    futures::future::Fuse::terminated()
+                } => {
+                    self.broadcast_built_subblock(&mut network_tx).await;
                 }
             }
         }
@@ -195,6 +223,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         }
     }
 
+    #[instrument(skip_all, fields(transaction.tx_hash = %transaction.tx_hash()))]
     fn on_new_subblock_transaction(&self, transaction: Recovered<TempoTxEnvelope>) {
         if !transaction
             .subblock_proposer()
@@ -202,9 +231,11 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         {
             return;
         }
-        self.subblock_transactions
-            .lock()
-            .insert(*transaction.tx_hash(), Arc::new(transaction));
+        let mut txs = self.subblock_transactions.lock();
+        if txs.len() >= MAX_SUBBLOCK_TXS {
+            return;
+        }
+        txs.insert(*transaction.tx_hash(), Arc::new(transaction));
     }
 
     /// Tracking of the current sconsensus state by listening to notarizations and nullifications.
@@ -245,7 +276,11 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             return;
         };
 
-        let Ok(Some(header)) = self.node.provider.header(*tip) else {
+        let Ok(Some(header)) = self
+            .node
+            .provider
+            .find_block_by_hash(*tip, BlockSource::Any)
+        else {
             debug!(?tip, "missing header for the tip block at {tip}");
             return;
         };
@@ -280,11 +315,10 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         debug!(?next_proposer, ?next_round, "determined next proposer");
 
         // Spawn new subblock building task if the current one is assuming different proposer or parent hash.
-        if self
-            .subblock_builder_handle
-            .as_ref()
-            .is_none_or(|task| task.proposer != next_proposer || task.parent_hash != *tip)
+        if self.our_subblock.parent_hash() != Some(*tip)
+            || self.our_subblock.target_proposer() != Some(&next_proposer)
         {
+            debug!(%tip, %next_proposer, "building new subblock");
             self.build_new_subblock(*tip, next_proposer, scheme);
         }
     }
@@ -319,7 +353,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
                 .instrument(span)
             });
 
-        self.subblock_builder_handle = Some(BuildSubblockTask {
+        self.our_subblock = PendingSubblock::Task(BuildSubblockTask {
             handle,
             parent_hash,
             proposer: next_proposer,
@@ -327,9 +361,31 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
     }
 
     #[instrument(skip_all, err(level = Level::WARN), fields(sender = %sender, msg_bytes = message.len()))]
-    fn on_network_message(&mut self, sender: PublicKey, message: bytes::Bytes) -> eyre::Result<()> {
-        let Ok(subblock) = SignedSubBlock::decode(&mut &*message) else {
-            return Err(eyre::eyre!("failed to decode subblock"));
+    async fn on_network_message(
+        &mut self,
+        sender: PublicKey,
+        message: bytes::Bytes,
+        network_tx: &mut impl Sender<PublicKey = PublicKey>,
+    ) -> eyre::Result<()> {
+        let message =
+            SubblocksMessage::decode(message).wrap_err("failed to decode network message")?;
+
+        let subblock = match message {
+            SubblocksMessage::Subblock(subblock) => subblock,
+            // Process acknowledgements
+            SubblocksMessage::Ack(ack) => {
+                if let PendingSubblock::Built(built) = &mut self.our_subblock
+                    && built.proposer == sender
+                    && ack == built.subblock.signature_hash()
+                {
+                    debug!("received acknowledgement from the next proposer");
+                    built.stop_broadcasting();
+                } else {
+                    warn!(%ack, "received invalid acknowledgement");
+                }
+
+                return Ok(());
+            }
         };
 
         let Some(tip) = self.tip() else {
@@ -342,6 +398,21 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             "invalid subblock parent, expected {tip}, got {}",
             subblock.parent_hash
         );
+
+        // Send acknowledgement to the sender.
+        //
+        // We only send it after we've validated the tip to make sure that our view
+        // of the chain matches the one of the view of subblock sender. Otherwise,
+        // we expect to receive the subblock again.
+        let _ = network_tx
+            .send(
+                Recipients::One(sender.clone()),
+                SubblocksMessage::Ack(subblock.signature_hash()).encode(),
+                true,
+            )
+            .await;
+
+        debug!("validating new subblock");
 
         // Spawn task to validate the subblock.
         let node = self.node.clone();
@@ -381,7 +452,6 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         &mut self,
         subblock: Result<RecoveredSubBlock, commonware_runtime::Error>,
         next_proposer: PublicKey,
-        network_tx: &mut impl Sender<PublicKey = PublicKey>,
     ) {
         let subblock = match subblock {
             Ok(subblock) => subblock,
@@ -395,20 +465,43 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             return;
         }
 
+        self.our_subblock = PendingSubblock::Built(BuiltSubblock {
+            subblock,
+            proposer: next_proposer,
+            // ticks immediately
+            broadcast_interval: Box::pin(futures::future::ready(())),
+        });
+    }
+
+    #[instrument(skip_all)]
+    async fn broadcast_built_subblock(
+        &mut self,
+        network_tx: &mut impl Sender<PublicKey = PublicKey>,
+    ) {
+        let PendingSubblock::Built(built) = &mut self.our_subblock else {
+            return;
+        };
+
+        // Schedule next broadcast in `subblock_broadcast_interval`
+        built.broadcast_interval = Box::pin(self.context.sleep(self.subblock_broadcast_interval));
+
         debug!(
-            ?subblock,
-            %next_proposer,
+            ?built.subblock,
+            next_proposer = %built.proposer,
             "sending subblock to the next proposer"
         );
-        if next_proposer != self.signer.public_key() {
+
+        if built.proposer != self.signer.public_key() {
             let _ = network_tx
                 .send(
-                    Recipients::One(next_proposer),
-                    alloy_rlp::encode(&*subblock).into(),
+                    Recipients::One(built.proposer.clone()),
+                    SubblocksMessage::Subblock((*built.subblock).clone()).encode(),
                     true,
                 )
                 .await;
         } else {
+            let subblock = built.subblock.clone();
+            built.stop_broadcasting();
             self.on_validated_subblock(subblock);
         }
     }
@@ -435,6 +528,47 @@ enum Message {
     ValidatedSubblock(RecoveredSubBlock),
 }
 
+/// The current state of our subblock.
+#[derive(Default)]
+enum PendingSubblock {
+    /// No subblock is available.
+    #[default]
+    None,
+    /// Subblock is currently being built.
+    Task(BuildSubblockTask),
+    /// Subblock has been built and is ready to be sent.
+    Built(BuiltSubblock),
+}
+
+impl PendingSubblock {
+    /// Returns the current [`BuildSubblockTask`] if it exists and switches state to [`PendingSubblock::None`].
+    fn take_task(&mut self) -> Option<BuildSubblockTask> {
+        if let Self::Task(task) = std::mem::take(self) {
+            Some(task)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the parent hash of the subblock that was built or is being built.
+    fn parent_hash(&self) -> Option<BlockHash> {
+        match self {
+            Self::Task(task) => Some(task.parent_hash),
+            Self::Built(built) => Some(built.subblock.parent_hash),
+            Self::None => None,
+        }
+    }
+
+    /// Returns the proposer we are going to send the subblock to.
+    fn target_proposer(&self) -> Option<&PublicKey> {
+        match self {
+            Self::Task(task) => Some(&task.proposer),
+            Self::Built(built) => Some(&built.proposer),
+            Self::None => None,
+        }
+    }
+}
+
 /// Task for building a subblock.
 struct BuildSubblockTask {
     /// Handle to the spawned task.
@@ -443,6 +577,53 @@ struct BuildSubblockTask {
     parent_hash: BlockHash,
     /// Proposer we are going to send the subblock to.
     proposer: PublicKey,
+}
+
+/// A built subblock ready to be sent.
+struct BuiltSubblock {
+    /// Subblock that has been built.
+    subblock: RecoveredSubBlock,
+    /// Proposer we are going to send the subblock to.
+    proposer: PublicKey,
+    /// Interval for subblock broadcast.
+    broadcast_interval: Pin<Box<dyn Future<Output = ()> + Send>>,
+}
+
+impl BuiltSubblock {
+    /// Stops broadcasting the subblock once the acknowledgement is received.
+    fn stop_broadcasting(&mut self) {
+        self.broadcast_interval = Box::pin(futures::future::pending());
+    }
+}
+
+/// Network messages used in the subblocks service.
+#[derive(Debug)]
+enum SubblocksMessage {
+    /// A new subblock sent to the proposer.
+    Subblock(SignedSubBlock),
+    /// Acknowledgment about receiving a subblock with given hash.
+    Ack(B256),
+}
+
+impl SubblocksMessage {
+    /// Encodes the message into a [`bytes::Bytes`].
+    fn encode(self) -> bytes::Bytes {
+        match self {
+            Self::Subblock(subblock) => alloy_rlp::encode(&subblock).into(),
+            Self::Ack(hash) => bytes::Bytes::copy_from_slice(hash.as_ref()),
+        }
+    }
+
+    /// Decodes a message from the given [`bytes::Bytes`].
+    fn decode(message: bytes::Bytes) -> alloy_rlp::Result<Self> {
+        if message.len() == 32 {
+            let hash = B256::from_slice(&message);
+            Ok(Self::Ack(hash))
+        } else {
+            let subblock = SignedSubBlock::decode(&mut &*message)?;
+            Ok(Self::Subblock(subblock))
+        }
+    }
 }
 
 /// Handle to the spawned subblocks service.
@@ -486,7 +667,7 @@ fn evm_at_block(
         .build();
     let header = node
         .provider
-        .header(hash)?
+        .find_block_by_hash(hash, BlockSource::Any)?
         .ok_or(ProviderError::BestBlockNotFound)?;
 
     Ok(node.evm_config.evm_for_block(db, &header)?)
@@ -519,11 +700,13 @@ async fn build_subblock(
                 if tx.gas_limit() > gas_left {
                     continue;
                 }
-                if evm.transact_commit(&*tx).is_err() {
+                if let Err(err) = evm.transact_commit(&*tx) {
+                    warn!(%err, tx_hash = %tx_hash, "invalid subblock candidate transaction");
                     // Remove invalid transactions from the set.
                     transactions.lock().swap_remove(&tx_hash);
                     continue;
                 }
+
                 gas_left -= tx.gas_limit();
                 selected_transactions.push(tx.inner().clone());
                 senders.push(tx.signer());

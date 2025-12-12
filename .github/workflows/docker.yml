@@ -6,34 +6,25 @@ on:
       - main
     tags:
       - "v*.*.*"
-  pull_request:
+  merge_group:
   workflow_dispatch:
+    inputs:
+      nightly:
+        description: "Tag nightly"
+        type: boolean
+        default: false
   workflow_call:
+  schedule:
+    - cron: "5 9 * * *"
+    - cron: "30 20 * * *"
 
 env:
   REGISTRY: ghcr.io/tempoxyz
-  IMAGE_NAME: tempo
-
-concurrency:
-  group: docker-${{ github.head_ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-and-push:
-    name: Build and Push Docker Image
+    name: Build and Push Docker Images
     runs-on: depot-ubuntu-latest-16
-    strategy:
-      matrix:
-        binary: 
-          - name: tempo
-            features: "asm-keccak,jemalloc,otlp"
-          - name: tempo-bench
-            features: ""
-            dockerfile: "Dockerfile.bench"
-          - name: tempo-sidecar
-            features: ""
-          - name: tempo-xtask
-            features: ""
     permissions:
       contents: read
       packages: write
@@ -41,13 +32,18 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
       - uses: depot/setup-action@v1
-      - name: Docker metadata
-        id: meta
+
+      - name: Docker metadata for tempo
+        id: meta-tempo
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ matrix.binary.name }}
+          images: ${{ env.REGISTRY }}/tempo
+          bake-target: tempo
           tags: |
+            type=schedule,pattern=nightly
+            type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
@@ -55,27 +51,80 @@ jobs:
             type=edge,branch=main
             type=sha,prefix=sha-
             type=ref,event=pr
+
+      - name: Docker metadata for tempo-bench
+        id: meta-tempo-bench
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/tempo-bench
+          bake-target: tempo-bench
+          tags: |
+            type=schedule,pattern=nightly
+            type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=edge,branch=main
+            type=sha,prefix=sha-
+            type=ref,event=pr
+
+      - name: Docker metadata for tempo-sidecar
+        id: meta-tempo-sidecar
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/tempo-sidecar
+          bake-target: tempo-sidecar
+          tags: |
+            type=schedule,pattern=nightly
+            type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=edge,branch=main
+            type=sha,prefix=sha-
+            type=ref,event=pr
+
+      - name: Docker metadata for tempo-xtask
+        id: meta-tempo-xtask
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/tempo-xtask
+          bake-target: tempo-xtask
+          tags: |
+            type=schedule,pattern=nightly
+            type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=edge,branch=main
+            type=sha,prefix=sha-
+            type=ref,event=pr
+
       - name: Log in to Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
       - id: shortsha
-        run: echo "::set-output name=shortsha::$(echo ${{ github.sha }} | cut -c1-7)"
-      - name: Build and push Docker image
-        uses: depot/build-push-action@v1
+        run: echo "shortsha=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker images
+        uses: depot/bake-action@v1
         with:
-          build-args: |
-            RUST_BINARY=${{ matrix.binary.name }}
-            RUST_FEATURES=${{ matrix.binary.features }}
-            RUST_PROFILE=release
-            VERGEN_GIT_SHA=${{ github.sha }}
-            VERGEN_GIT_SHA_SHORT=${{ steps.shortsha.outputs.shortsha }}
+          files: |
+            docker-bake.hcl
+            ${{ steps.meta-tempo.outputs.bake-file }}
+            ${{ steps.meta-tempo-bench.outputs.bake-file }}
+            ${{ steps.meta-tempo-sidecar.outputs.bake-file }}
+            ${{ steps.meta-tempo-xtask.outputs.bake-file }}
+          targets: default
           project: 0c6tg19qsp
-          context: .
-          file: ${{ matrix.binary.dockerfile || 'Dockerfile' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64
           push: true
+        env:
+          VERGEN_GIT_SHA: ${{ github.sha }}
+          VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}

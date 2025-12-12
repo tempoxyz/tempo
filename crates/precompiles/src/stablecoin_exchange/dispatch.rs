@@ -5,13 +5,12 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::{
-    Precompile, input_cost, mutate, mutate_void,
+    Precompile, fill_precompile_output, input_cost, mutate, mutate_void,
     stablecoin_exchange::{IStablecoinExchange, StablecoinExchange},
-    storage::PrecompileStorageProvider,
     unknown_selector, view,
 };
 
-impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> {
+impl Precompile for StablecoinExchange {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
@@ -158,6 +157,11 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
                     Ok(crate::stablecoin_exchange::MAX_TICK)
                 })
             }
+            IStablecoinExchange::TICK_SPACINGCall::SELECTOR => {
+                view::<IStablecoinExchange::TICK_SPACINGCall>(calldata, |_call| {
+                    Ok(crate::stablecoin_exchange::TICK_SPACING)
+                })
+            }
             IStablecoinExchange::PRICE_SCALECall::SELECTOR => {
                 view::<IStablecoinExchange::PRICE_SCALECall>(calldata, |_call| {
                     Ok(crate::stablecoin_exchange::PRICE_SCALE)
@@ -183,10 +187,7 @@ impl<'a, S: PrecompileStorageProvider> Precompile for StablecoinExchange<'a, S> 
             _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
-        result.map(|mut res| {
-            res.gas_used = self.storage.gas_used();
-            res
-        })
+        result.map(|res| fill_precompile_output(res, &mut self.storage))
     }
 }
 
@@ -196,11 +197,10 @@ mod tests {
     use super::*;
     use crate::{
         Precompile,
-        linking_usd::{LinkingUSD, TRANSFER_ROLE},
+        path_usd::TRANSFER_ROLE,
         stablecoin_exchange::{IStablecoinExchange, MIN_ORDER_AMOUNT, StablecoinExchange},
-        storage::{ContractStorage, PrecompileStorageProvider, hashmap::HashMapStorageProvider},
-        test_util::{assert_full_coverage, check_selector_coverage},
-        tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
+        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
     };
     use alloy::{
         primitives::{Address, Bytes, U256},
@@ -210,483 +210,513 @@ mod tests {
     use tempo_contracts::precompiles::IStablecoinExchange::IStablecoinExchangeCalls;
 
     /// Setup a basic exchange with tokens and liquidity for swap tests
-    fn setup_exchange_with_liquidity<S: PrecompileStorageProvider>(
-        storage: &mut S,
-    ) -> (StablecoinExchange<'_, S>, Address, Address, Address) {
-        let mut exchange = StablecoinExchange::new(storage);
-        exchange.initialize().unwrap();
+    fn setup_exchange_with_liquidity()
+    -> eyre::Result<(StablecoinExchange, Address, Address, Address)> {
+        let mut exchange = StablecoinExchange::new();
+        exchange.initialize()?;
 
         let admin = Address::random();
         let user = Address::random();
         let amount = 200_000_000u128;
 
-        // Initialize quote token (LinkingUSD)
-        let mut quote = LinkingUSD::new(exchange.storage);
-        quote.initialize(admin).unwrap();
+        // Initialize quote token (PathUSD)
+        let quote = TIP20Setup::path_usd(admin)
+            .with_issuer(admin)
+            .with_role(user, *TRANSFER_ROLE)
+            .with_mint(user, U256::from(amount))
+            .with_approval(user, exchange.address, U256::from(amount))
+            .apply()?;
 
-        quote
-            .token
-            .grant_role_internal(admin, *ISSUER_ROLE)
-            .unwrap();
-        quote
-            .token
-            .grant_role_internal(user, *TRANSFER_ROLE)
-            .unwrap();
-
-        quote
-            .mint(
-                admin,
-                ITIP20::mintCall {
-                    to: user,
-                    amount: U256::from(amount),
-                },
-            )
-            .unwrap();
-
-        quote
-            .approve(
-                user,
-                ITIP20::approveCall {
-                    spender: exchange.address,
-                    amount: U256::from(amount),
-                },
-            )
-            .unwrap();
-
-        // Initialize base token
-        let quote_address = quote.token.address();
-        let mut base = TIP20Token::new(1, quote.token.storage());
-        base.initialize("BASE", "BASE", "USD", quote_address, admin)
-            .unwrap();
-
-        base.grant_role_internal(admin, *ISSUER_ROLE).unwrap();
-
-        base.approve(
-            user,
-            ITIP20::approveCall {
-                spender: exchange.address,
-                amount: U256::from(amount),
-            },
-        )
-        .unwrap();
-
-        base.mint(
-            admin,
-            ITIP20::mintCall {
-                to: user,
-                amount: U256::from(amount),
-            },
-        )
-        .unwrap();
-
-        let base_token = base.address();
-        let quote_token = quote.token.address();
+        let base = TIP20Setup::create("USDC", "USDC", admin)
+            .with_issuer(admin)
+            .with_mint(user, U256::from(amount))
+            .with_approval(user, exchange.address, U256::from(amount))
+            .apply()?;
 
         // Create pair and add liquidity
-        exchange.create_pair(base_token).unwrap();
+        exchange.create_pair(base.address())?;
 
         // Place an order to provide liquidity
-        exchange
-            .place(user, base_token, MIN_ORDER_AMOUNT, true, 0)
-            .unwrap();
+        exchange.place(user, base.address(), MIN_ORDER_AMOUNT, true, 0)?;
 
         // Execute block to activate orders
-        exchange.execute_block(Address::ZERO).unwrap();
+        exchange.execute_block(Address::ZERO)?;
 
-        (exchange, base_token, quote_token, user)
+        Ok((exchange, base.address(), quote.address(), user))
     }
 
     #[test]
-    fn test_place_call() {
+    fn test_place_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize().unwrap();
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
 
-        let sender = Address::from([1u8; 20]);
-        let token = Address::from([2u8; 20]);
+            let sender = Address::random();
+            let token = Address::random();
 
-        let call = IStablecoinExchange::placeCall {
-            token,
-            amount: 100u128,
-            isBid: true,
-            tick: 0,
-        };
-        let calldata = call.abi_encode();
+            let call = IStablecoinExchange::placeCall {
+                token,
+                amount: 100u128,
+                isBid: true,
+                tick: 0,
+            };
+            let calldata = call.abi_encode();
 
-        // Should dispatch to place function (may fail due to business logic, but dispatch works)
-        let result = exchange.call(&Bytes::from(calldata), sender);
-        // Ok indicates successful dispatch (either success or TempoPrecompileError)
-        assert!(result.is_ok());
+            // Should dispatch to place function (may fail due to business logic, but dispatch works)
+            let result = exchange.call(&calldata, sender);
+            // Ok indicates successful dispatch (either success or TempoPrecompileError)
+            assert!(result.is_ok());
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_place_flip_call() {
+    fn test_place_flip_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize().unwrap();
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
 
-        let sender = Address::from([1u8; 20]);
-        let token = Address::from([2u8; 20]);
+            let sender = Address::random();
+            let token = Address::random();
 
-        let call = IStablecoinExchange::placeFlipCall {
-            token,
-            amount: 100u128,
-            isBid: true,
-            tick: 0,
-            flipTick: 10,
-        };
-        let calldata = call.abi_encode();
+            let call = IStablecoinExchange::placeFlipCall {
+                token,
+                amount: 100u128,
+                isBid: true,
+                tick: 0,
+                flipTick: 10,
+            };
+            let calldata = call.abi_encode();
 
-        // Should dispatch to place_flip function
-        let result = exchange.call(&Bytes::from(calldata), sender);
-        // Ok indicates successful dispatch (either success or TempoPrecompileError)
-        assert!(result.is_ok());
+            // Should dispatch to place_flip function
+            let result = exchange.call(&calldata, sender);
+            // Ok indicates successful dispatch (either success or TempoPrecompileError)
+            assert!(result.is_ok());
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_balance_of_call() {
+    fn test_balance_of_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize().unwrap();
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
 
-        let sender = Address::from([1u8; 20]);
-        let user = Address::from([2u8; 20]);
-        let token = Address::from([3u8; 20]);
+            let sender = Address::random();
+            let token = Address::random();
+            let user = Address::random();
 
-        let call = IStablecoinExchange::balanceOfCall { user, token };
-        let calldata = call.abi_encode();
+            let call = IStablecoinExchange::balanceOfCall { user, token };
+            let calldata = call.abi_encode();
 
-        // Should dispatch to balance_of function and succeed (returns 0 for uninitialized)
-        let result = exchange.call(&Bytes::from(calldata), sender);
-        assert!(result.is_ok());
+            // Should dispatch to balance_of function and succeed (returns 0 for uninitialized)
+            let result = exchange.call(&calldata, sender);
+            assert!(result.is_ok());
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_min_price_pre_moderato() {
+    fn test_min_price_pre_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize().unwrap();
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
 
-        let sender = Address::ZERO;
-        let call = IStablecoinExchange::MIN_PRICECall {};
-        let calldata = call.abi_encode();
+            let sender = Address::ZERO;
+            let call = IStablecoinExchange::MIN_PRICECall {};
+            let calldata = call.abi_encode();
 
-        let result = exchange.call(&Bytes::from(calldata), sender);
-        assert!(result.is_ok());
+            let result = exchange.call(&calldata, sender);
+            assert!(result.is_ok());
 
-        let output = result.unwrap().bytes;
-        let returned_value = u32::abi_decode(&output).unwrap();
+            let output = result?.bytes;
+            let returned_value = u32::abi_decode(&output)?;
 
-        assert_eq!(
-            returned_value, 67_232,
-            "Pre-moderato MIN_PRICE should be 67_232"
-        );
+            assert_eq!(
+                returned_value, 67_232,
+                "Pre-moderato MIN_PRICE should be 67_232"
+            );
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_min_price_post_moderato() {
+    fn test_min_price_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize().unwrap();
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
 
-        let sender = Address::ZERO;
-        let call = IStablecoinExchange::MIN_PRICECall {};
-        let calldata = call.abi_encode();
+            let sender = Address::ZERO;
+            let call = IStablecoinExchange::MIN_PRICECall {};
+            let calldata = call.abi_encode();
 
-        let result = exchange.call(&Bytes::from(calldata), sender);
-        assert!(result.is_ok());
+            let result = exchange.call(&calldata, sender);
+            assert!(result.is_ok());
 
-        let output = result.unwrap().bytes;
-        let returned_value = u32::abi_decode(&output).unwrap();
+            let output = result?.bytes;
+            let returned_value = u32::abi_decode(&output)?;
 
-        assert_eq!(
-            returned_value, 98_000,
-            "Post-moderato MIN_PRICE should be 98_000"
-        );
+            assert_eq!(
+                returned_value, 98_000,
+                "Post-moderato MIN_PRICE should be 98_000"
+            );
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_max_price_pre_moderato() {
+    fn test_tick_spacing() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let sender = Address::ZERO;
+            let call = IStablecoinExchange::TICK_SPACINGCall {};
+            let calldata = call.abi_encode();
+
+            let result = exchange.call(&calldata, sender);
+            assert!(result.is_ok());
+
+            let output = result?.bytes;
+            let returned_value = i16::abi_decode(&output)?;
+
+            let expected = crate::stablecoin_exchange::TICK_SPACING;
+            assert_eq!(
+                returned_value, expected,
+                "TICK_SPACING should be {expected}"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_max_price_pre_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize().unwrap();
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
 
-        let sender = Address::ZERO;
-        let call = IStablecoinExchange::MAX_PRICECall {};
-        let calldata = call.abi_encode();
+            let sender = Address::ZERO;
+            let call = IStablecoinExchange::MAX_PRICECall {};
+            let calldata = call.abi_encode();
 
-        let result = exchange.call(&Bytes::from(calldata), sender);
-        assert!(result.is_ok());
+            let result = exchange.call(&calldata, sender);
+            assert!(result.is_ok());
 
-        let output = result.unwrap().bytes;
-        let returned_value = u32::abi_decode(&output).unwrap();
+            let output = result?.bytes;
+            let returned_value = u32::abi_decode(&output)?;
 
-        assert_eq!(
-            returned_value, 132_767,
-            "Pre-moderato MAX_PRICE should be 132_767"
-        );
+            assert_eq!(
+                returned_value, 132_767,
+                "Pre-moderato MAX_PRICE should be 132_767"
+            );
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_max_price_post_moderato() {
+    fn test_max_price_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize().unwrap();
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
 
-        let sender = Address::ZERO;
-        let call = IStablecoinExchange::MAX_PRICECall {};
-        let calldata = call.abi_encode();
+            let sender = Address::ZERO;
+            let call = IStablecoinExchange::MAX_PRICECall {};
+            let calldata = call.abi_encode();
 
-        let result = exchange.call(&Bytes::from(calldata), sender);
-        assert!(result.is_ok());
+            let result = exchange.call(&calldata, sender);
+            assert!(result.is_ok());
 
-        let output = result.unwrap().bytes;
-        let returned_value = u32::abi_decode(&output).unwrap();
+            let output = result?.bytes;
+            let returned_value = u32::abi_decode(&output)?;
 
-        assert_eq!(
-            returned_value, 102_000,
-            "Post-moderato MAX_PRICE should be 102_000"
-        );
+            assert_eq!(
+                returned_value, 102_000,
+                "Post-moderato MAX_PRICE should be 102_000"
+            );
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_create_pair_call() {
+    fn test_create_pair_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize().unwrap();
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
 
-        let sender = Address::from([1u8; 20]);
-        let base = Address::from([2u8; 20]);
+            let sender = Address::random();
+            let base = Address::from([2u8; 20]);
 
-        let call = IStablecoinExchange::createPairCall { base };
-        let calldata = call.abi_encode();
+            let call = IStablecoinExchange::createPairCall { base };
+            let calldata = call.abi_encode();
 
-        // Should dispatch to create_pair function
-        let result = exchange.call(&Bytes::from(calldata), sender);
-        // Ok indicates successful dispatch (either success or TempoPrecompileError)
-        assert!(result.is_ok());
+            // Should dispatch to create_pair function
+            let result = exchange.call(&calldata, sender);
+            // Ok indicates successful dispatch (either success or TempoPrecompileError)
+            assert!(result.is_ok());
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_withdraw_call() {
+    fn test_withdraw_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize().unwrap();
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
 
-        let sender = Address::from([1u8; 20]);
-        let token = Address::from([2u8; 20]);
+            let sender = Address::random();
+            let token = Address::random();
 
-        let call = IStablecoinExchange::withdrawCall {
-            token,
-            amount: 100u128,
-        };
-        let calldata = call.abi_encode();
+            let call = IStablecoinExchange::withdrawCall {
+                token,
+                amount: 100u128,
+            };
+            let calldata = call.abi_encode();
 
-        // Should dispatch to withdraw function
-        let result = exchange.call(&Bytes::from(calldata), sender);
-        // Ok indicates successful dispatch (either success or TempoPrecompileError)
-        assert!(result.is_ok());
+            // Should dispatch to withdraw function
+            let result = exchange.call(&calldata, sender);
+            // Ok indicates successful dispatch (either success or TempoPrecompileError)
+            assert!(result.is_ok());
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_cancel_call() {
+    fn test_cancel_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize().unwrap();
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
 
-        let sender = Address::from([1u8; 20]);
+            let sender = Address::random();
 
-        let call = IStablecoinExchange::cancelCall { orderId: 1u128 };
-        let calldata = call.abi_encode();
+            let call = IStablecoinExchange::cancelCall { orderId: 1u128 };
+            let calldata = call.abi_encode();
 
-        // Should dispatch to cancel function
-        let result = exchange.call(&Bytes::from(calldata), sender);
-        // Ok indicates successful dispatch (either success or TempoPrecompileError)
-        assert!(result.is_ok());
+            // Should dispatch to cancel function
+            let result = exchange.call(&calldata, sender);
+            // Ok indicates successful dispatch (either success or TempoPrecompileError)
+            assert!(result.is_ok());
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_swap_exact_amount_in_call() {
+    fn test_swap_exact_amount_in_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let (mut exchange, base_token, quote_token, user) =
-            setup_exchange_with_liquidity(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            let (mut exchange, base_token, quote_token, user) = setup_exchange_with_liquidity()?;
 
-        // Set balance for the swapper
-        exchange
-            .set_balance(user, base_token, 1_000_000u128)
-            .unwrap();
+            // Set balance for the swapper
+            exchange.set_balance(user, base_token, 1_000_000u128)?;
 
-        let call = IStablecoinExchange::swapExactAmountInCall {
-            tokenIn: base_token,
-            tokenOut: quote_token,
-            amountIn: 100_000u128,
-            minAmountOut: 90_000u128,
-        };
-        let calldata = call.abi_encode();
+            let call = IStablecoinExchange::swapExactAmountInCall {
+                tokenIn: base_token,
+                tokenOut: quote_token,
+                amountIn: 100_000u128,
+                minAmountOut: 90_000u128,
+            };
+            let calldata = call.abi_encode();
 
-        // Should dispatch to swap_exact_amount_in function and succeed
-        let result = exchange.call(&Bytes::from(calldata), user);
-        assert!(result.is_ok());
+            // Should dispatch to swap_exact_amount_in function and succeed
+            let result = exchange.call(&calldata, user);
+            assert!(result.is_ok());
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_swap_exact_amount_out_call() {
+    fn test_swap_exact_amount_out_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let (mut exchange, base_token, quote_token, user) =
-            setup_exchange_with_liquidity(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            let (mut exchange, base_token, quote_token, user) = setup_exchange_with_liquidity()?;
 
-        // Place an ask order to provide liquidity for selling base
-        exchange
-            .place(user, base_token, MIN_ORDER_AMOUNT, false, 0)
-            .unwrap();
-        exchange.execute_block(Address::ZERO).unwrap();
+            // Place an ask order to provide liquidity for selling base
+            exchange.place(user, base_token, MIN_ORDER_AMOUNT, false, 0)?;
+            exchange.execute_block(Address::ZERO)?;
 
-        // Set balance for the swapper
-        exchange
-            .set_balance(user, quote_token, 1_000_000u128)
-            .unwrap();
+            // Set balance for the swapper
+            exchange.set_balance(user, quote_token, 1_000_000u128)?;
 
-        let call = IStablecoinExchange::swapExactAmountOutCall {
-            tokenIn: quote_token,
-            tokenOut: base_token,
-            amountOut: 50_000u128,
-            maxAmountIn: 60_000u128,
-        };
-        let calldata = call.abi_encode();
+            let call = IStablecoinExchange::swapExactAmountOutCall {
+                tokenIn: quote_token,
+                tokenOut: base_token,
+                amountOut: 50_000u128,
+                maxAmountIn: 60_000u128,
+            };
+            let calldata = call.abi_encode();
 
-        // Should dispatch to swap_exact_amount_out function and succeed
-        let result = exchange.call(&Bytes::from(calldata), user);
-        assert!(result.is_ok());
+            // Should dispatch to swap_exact_amount_out function and succeed
+            let result = exchange.call(&calldata, user);
+            assert!(result.is_ok());
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_quote_swap_exact_amount_in_call() {
+    fn test_quote_swap_exact_amount_in_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let (mut exchange, base_token, quote_token, _user) =
-            setup_exchange_with_liquidity(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            let (mut exchange, base_token, quote_token, _user) = setup_exchange_with_liquidity()?;
 
-        let sender = Address::random();
+            let sender = Address::random();
 
-        let call = IStablecoinExchange::quoteSwapExactAmountInCall {
-            tokenIn: base_token,
-            tokenOut: quote_token,
-            amountIn: 100_000u128,
-        };
-        let calldata = call.abi_encode();
+            let call = IStablecoinExchange::quoteSwapExactAmountInCall {
+                tokenIn: base_token,
+                tokenOut: quote_token,
+                amountIn: 100_000u128,
+            };
+            let calldata = call.abi_encode();
 
-        // Should dispatch to quote_swap_exact_amount_in function and succeed
-        let result = exchange.call(&Bytes::from(calldata), sender);
-        assert!(result.is_ok());
+            // Should dispatch to quote_swap_exact_amount_in function and succeed
+            let result = exchange.call(&calldata, sender);
+            assert!(result.is_ok());
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_quote_swap_exact_amount_out_call() {
+    fn test_quote_swap_exact_amount_out_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let (mut exchange, base_token, quote_token, user) =
-            setup_exchange_with_liquidity(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            let (mut exchange, base_token, quote_token, user) = setup_exchange_with_liquidity()?;
 
-        // Place an ask order to provide liquidity for selling base
-        exchange
-            .place(user, base_token, MIN_ORDER_AMOUNT, false, 0)
-            .unwrap();
-        exchange.execute_block(Address::ZERO).unwrap();
+            // Place an ask order to provide liquidity for selling base
+            exchange.place(user, base_token, MIN_ORDER_AMOUNT, false, 0)?;
+            exchange.execute_block(Address::ZERO)?;
 
-        let sender = Address::random();
+            let sender = Address::random();
 
-        let call = IStablecoinExchange::quoteSwapExactAmountOutCall {
-            tokenIn: quote_token,
-            tokenOut: base_token,
-            amountOut: 50_000u128,
-        };
-        let calldata = call.abi_encode();
+            let call = IStablecoinExchange::quoteSwapExactAmountOutCall {
+                tokenIn: quote_token,
+                tokenOut: base_token,
+                amountOut: 50_000u128,
+            };
+            let calldata = call.abi_encode();
 
-        // Should dispatch to quote_swap_exact_amount_out function and succeed
-        let result = exchange.call(&Bytes::from(calldata), sender);
-        assert!(result.is_ok());
+            // Should dispatch to quote_swap_exact_amount_out function and succeed
+            let result = exchange.call(&calldata, sender);
+            assert!(result.is_ok());
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_active_order_id_call() {
+    fn test_active_order_id_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize().unwrap();
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
 
-        let sender = Address::random();
+            let sender = Address::random();
 
-        let call = IStablecoinExchange::activeOrderIdCall {};
-        let calldata = call.abi_encode();
+            let call = IStablecoinExchange::activeOrderIdCall {};
+            let calldata = call.abi_encode();
 
-        let result = exchange.call(&Bytes::from(calldata), sender);
-        assert!(result.is_ok());
+            let result = exchange.call(&calldata, sender);
+            assert!(result.is_ok());
 
-        let output = result.unwrap();
-        let active_order_id = u128::abi_decode(&output.bytes).unwrap();
-        assert_eq!(active_order_id, 0); // Should be 0 initially
+            let output = result?;
+            let active_order_id = u128::abi_decode(&output.bytes)?;
+            assert_eq!(active_order_id, 0); // Should be 0 initially
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_pending_order_id_call() {
+    fn test_pending_order_id_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize().unwrap();
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
 
-        let sender = Address::random();
+            let sender = Address::random();
 
-        let call = IStablecoinExchange::pendingOrderIdCall {};
-        let calldata = call.abi_encode();
+            let call = IStablecoinExchange::pendingOrderIdCall {};
+            let calldata = call.abi_encode();
 
-        let result = exchange.call(&Bytes::from(calldata), sender);
-        assert!(result.is_ok());
+            let result = exchange.call(&calldata, sender);
+            assert!(result.is_ok());
 
-        let output = result.unwrap();
-        let pending_order_id = u128::abi_decode(&output.bytes).unwrap();
-        assert_eq!(pending_order_id, 0); // Should be 0 initially
+            let output = result?;
+            let pending_order_id = u128::abi_decode(&output.bytes)?;
+            assert_eq!(pending_order_id, 0); // Should be 0 initially
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_invalid_selector() {
-        use tempo_chainspec::hardfork::TempoHardfork;
+    fn test_invalid_selector() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize().unwrap();
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
 
-        let sender = Address::from([1u8; 20]);
+            let sender = Address::random();
 
-        // Use an invalid selector that doesn't match any function - should return Ok with reverted status
-        let calldata = Bytes::from([0x12, 0x34, 0x56, 0x78]);
+            // Use an invalid selector that doesn't match any function - should return Ok with reverted status
+            let calldata = Bytes::from([0x12, 0x34, 0x56, 0x78]);
 
-        let result = exchange.call(&calldata, sender);
-        assert!(result.is_ok());
-        assert!(result.unwrap().reverted);
+            let result = exchange.call(&calldata, sender);
+            assert!(result.is_ok());
+            assert!(result?.reverted);
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_missing_selector() {
+    fn test_missing_selector() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut exchange = StablecoinExchange::new(&mut storage);
-        exchange.initialize().unwrap();
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
 
-        let sender = Address::from([1u8; 20]);
+            let sender = Address::random();
 
-        // Use calldata that's too short to contain a selector
-        let calldata = Bytes::from([0x12, 0x34]);
+            // Use calldata that's too short to contain a selector
+            let calldata = Bytes::from([0x12, 0x34]);
 
-        let result = exchange.call(&calldata, sender);
-        assert!(matches!(result, Err(PrecompileError::Other(_))));
+            let result = exchange.call(&calldata, sender);
+            assert!(matches!(result, Err(PrecompileError::Other(_))));
+            Ok(())
+        })
     }
 
     #[test]
-    fn stablecoin_exchange_test_selector_coverage() {
+    fn stablecoin_exchange_test_selector_coverage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut exchange = StablecoinExchange::new(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
 
-        let unsupported = check_selector_coverage(
-            &mut exchange,
-            IStablecoinExchangeCalls::SELECTORS,
-            "IStablecoinExchange",
-            IStablecoinExchangeCalls::name_by_selector,
-        );
+            let unsupported = check_selector_coverage(
+                &mut exchange,
+                IStablecoinExchangeCalls::SELECTORS,
+                "IStablecoinExchange",
+                IStablecoinExchangeCalls::name_by_selector,
+            );
 
-        assert_full_coverage([unsupported]);
+            assert_full_coverage([unsupported]);
+
+            Ok(())
+        })
     }
 }

@@ -13,7 +13,9 @@ alloy = { workspace = true, features = [
   "signers",
   "signer-local",
   "signer-mnemonic",
+  "rlp"
 ] }
+alloy-evm.workspace = true
 alloy-genesis.workspace = true
 alloy-primitives.workspace = true
 
@@ -27,7 +29,6 @@ itertools.workspace = true
 
 eyre.workspace = true
 reth-db.workspace = true
-reth-evm.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc", "test-utils", "pool"] }
 reth-network-peers.workspace = true
 reth-node-builder.workspace = true
@@ -36,22 +37,23 @@ reth-node-metrics.workspace = true
 reth-rpc-builder.workspace = true
 
 tempo-chainspec.workspace = true
+tempo-dkg-onchain-artifacts.workspace = true
 tempo-commonware-node.workspace = true
-tempo-eyre.workspace = true
-tempo-evm.workspace = true
+tempo-commonware-node-config.workspace = true
 tempo-node.workspace = true
 tempo-precompiles.workspace = true
 
 futures.workspace = true
-rand.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
+secp256k1.workspace = true
 
 [dev-dependencies]
+commonware-consensus.workspace = true
 commonware-macros.workspace = true
-tempo-contracts.workspace = true
+tempo-eyre.workspace = true
 tracing-subscriber.workspace = true
 
 alloy-network.workspace = true

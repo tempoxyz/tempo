@@ -1,28 +1,11 @@
 use alloy::{
-    network::{Ethereum, EthereumWallet},
+    network::EthereumWallet,
     primitives::{Address, B256, U256},
-    providers::{
-        Identity, ProviderBuilder, RootProvider,
-        fillers::{
-            BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
-            WalletFiller,
-        },
-    },
+    providers::{DynProvider, Provider, ProviderBuilder},
     signers::local::PrivateKeySigner,
 };
 use clap::Args;
-
-type HttpWalletFillProvider = FillProvider<
-    JoinFill<
-        JoinFill<
-            Identity,
-            JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>,
-        >,
-        WalletFiller<EthereumWallet>,
-    >,
-    RootProvider<Ethereum>,
-    Ethereum,
->;
+use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderBuilderExt};
 
 /// Faucet-specific CLI arguments
 #[derive(Debug, Clone, Default, Args, PartialEq, Eq)]
@@ -32,7 +15,7 @@ pub struct FaucetArgs {
     #[arg(long = "faucet.enabled", default_value_t = false)]
     pub enabled: bool,
 
-    /// Faucet funding mnemonic
+    /// Faucet funding private key
     #[arg(
         long = "faucet.private-key",
         requires = "enabled",
@@ -84,11 +67,15 @@ impl FaucetArgs {
         self.amount.expect("No TIP20 token amount provided")
     }
 
-    pub fn provider(&self) -> HttpWalletFillProvider {
-        ProviderBuilder::new().wallet(self.wallet()).connect_http(
-            self.node_address
-                .parse()
-                .expect("Failed to parse node address"),
-        )
+    pub fn provider(&self) -> DynProvider<TempoNetwork> {
+        ProviderBuilder::new_with_network::<TempoNetwork>()
+            .with_random_2d_nonces()
+            .wallet(self.wallet())
+            .connect_http(
+                self.node_address
+                    .parse()
+                    .expect("Failed to parse node address"),
+            )
+            .erased()
     }
 }

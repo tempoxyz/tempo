@@ -1,9 +1,8 @@
-use crate::subblock::PartialValidatorKey;
-
-use super::{aa_signed::AASigned, fee_token::TxFeeToken};
+use super::{fee_token::TxFeeToken, tt_signed::AASigned};
+use crate::{TempoTransaction, subblock::PartialValidatorKey};
 use alloy_consensus::{
-    EthereumTxEnvelope, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy, TxType,
-    TypedTransaction,
+    EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
+    TxLegacy, TxType, TypedTransaction,
     error::{UnsupportedTransactionType, ValueError},
     transaction::Either,
 };
@@ -37,6 +36,7 @@ pub const TEMPO_SYSTEM_TX_SENDER: Address = Address::ZERO;
     serde_cfg(feature = "serde")
 )]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(compact, rlp))]
+#[expect(clippy::large_enum_variant)]
 pub enum TempoTxEnvelope {
     /// Legacy transaction (type 0x00)
     #[envelope(ty = 0)]
@@ -54,8 +54,8 @@ pub enum TempoTxEnvelope {
     #[envelope(ty = 4)]
     Eip7702(Signed<TxEip7702>),
 
-    /// Account Abstraction transaction (type 0x76)
-    #[envelope(ty = 0x76)]
+    /// Tempo transaction (type 0x76)
+    #[envelope(ty = 0x76, typed = TempoTransaction)]
     AA(AASigned),
 
     /// Tempo fee token transaction (type 0x77)
@@ -155,10 +155,12 @@ impl TempoTxEnvelope {
         }
     }
 
-    /// Returns the AA authorization list if present (for AA transactions)
-    pub fn aa_authorization_list(&self) -> Option<&[crate::transaction::AASignedAuthorization]> {
+    /// Returns the Tempo authorization list if present (for Tempo transactions)
+    pub fn tempo_authorization_list(
+        &self,
+    ) -> Option<&[crate::transaction::TempoSignedAuthorization]> {
         match self {
-            Self::AA(tx) => Some(&tx.tx().aa_authorization_list),
+            Self::AA(tx) => Some(&tx.tx().tempo_authorization_list),
             _ => None,
         }
     }
@@ -217,7 +219,7 @@ impl TempoTxEnvelope {
         tx.tx().subblock_proposer()
     }
 
-    /// Returns the [`AASigned`] transaction if this is an AA transaction.
+    /// Returns the [`AASigned`] transaction if this is a Tempo transaction.
     pub fn as_aa(&self) -> Option<&AASigned> {
         match self {
             Self::AA(tx) => Some(tx),
@@ -225,7 +227,12 @@ impl TempoTxEnvelope {
         }
     }
 
-    /// Returns true if this is an AA transaction
+    /// Returns the nonce key of this transaction if it's an [`AASigned`] transaction.
+    pub fn nonce_key(&self) -> Option<U256> {
+        self.as_aa().map(|tx| tx.tx().nonce_key)
+    }
+
+    /// Returns true if this is a Tempo transaction
     pub fn is_aa(&self) -> bool {
         matches!(self, Self::AA(_))
     }
@@ -354,9 +361,65 @@ impl<Eip4844> TryFrom<EthereumTxEnvelope<Eip4844>> for TempoTxEnvelope {
     }
 }
 
+impl From<Signed<TxLegacy>> for TempoTxEnvelope {
+    fn from(value: Signed<TxLegacy>) -> Self {
+        Self::Legacy(value)
+    }
+}
+
+impl From<Signed<TxEip2930>> for TempoTxEnvelope {
+    fn from(value: Signed<TxEip2930>) -> Self {
+        Self::Eip2930(value)
+    }
+}
+
+impl From<Signed<TxEip1559>> for TempoTxEnvelope {
+    fn from(value: Signed<TxEip1559>) -> Self {
+        Self::Eip1559(value)
+    }
+}
+
+impl From<Signed<TxEip7702>> for TempoTxEnvelope {
+    fn from(value: Signed<TxEip7702>) -> Self {
+        Self::Eip7702(value)
+    }
+}
+
 impl From<Signed<TxFeeToken>> for TempoTxEnvelope {
     fn from(value: Signed<TxFeeToken>) -> Self {
         Self::FeeToken(value)
+    }
+}
+
+impl From<AASigned> for TempoTxEnvelope {
+    fn from(value: AASigned) -> Self {
+        Self::AA(value)
+    }
+}
+
+impl TempoTypedTransaction {
+    /// Converts this typed transaction into a signed [`TempoTxEnvelope`]
+    pub fn into_envelope(self, sig: Signature) -> TempoTxEnvelope {
+        match self {
+            Self::Legacy(tx) => tx.into_signed(sig).into(),
+            Self::Eip2930(tx) => tx.into_signed(sig).into(),
+            Self::Eip1559(tx) => tx.into_signed(sig).into(),
+            Self::Eip7702(tx) => tx.into_signed(sig).into(),
+            Self::AA(tx) => tx.into_signed(sig.into()).into(),
+            Self::FeeToken(tx) => tx.into_signed(sig).into(),
+        }
+    }
+
+    /// Returns a dyn mutable reference to the underlying transaction
+    pub fn as_dyn_signable_mut(&mut self) -> &mut dyn SignableTransaction<Signature> {
+        match self {
+            Self::Legacy(tx) => tx,
+            Self::Eip2930(tx) => tx,
+            Self::Eip1559(tx) => tx,
+            Self::Eip7702(tx) => tx,
+            Self::AA(tx) => tx,
+            Self::FeeToken(tx) => tx,
+        }
     }
 }
 
@@ -384,20 +447,20 @@ impl From<TempoTxEnvelope> for TempoTypedTransaction {
             TempoTxEnvelope::Eip1559(tx) => Self::Eip1559(tx.into_parts().0),
             TempoTxEnvelope::Eip7702(tx) => Self::Eip7702(tx.into_parts().0),
             TempoTxEnvelope::FeeToken(tx) => Self::FeeToken(tx.into_parts().0),
-            TempoTxEnvelope::AA(tx) => Self::AA(tx), // AA keeps the signed wrapper due to macro generation
+            TempoTxEnvelope::AA(tx) => Self::AA(tx.into_parts().0),
         }
-    }
-}
-
-impl From<AASigned> for TempoTxEnvelope {
-    fn from(value: AASigned) -> Self {
-        Self::AA(value)
     }
 }
 
 impl From<TxFeeToken> for TempoTypedTransaction {
     fn from(value: TxFeeToken) -> Self {
         Self::FeeToken(value)
+    }
+}
+
+impl From<TempoTransaction> for TempoTypedTransaction {
+    fn from(value: TempoTransaction) -> Self {
+        Self::AA(value)
     }
 }
 
@@ -434,7 +497,7 @@ impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoTxEnvelop
 
 #[cfg(feature = "reth-codec")]
 mod codec {
-    use crate::{AASignature, TxAA};
+    use crate::{TempoSignature, TempoTransaction};
 
     use super::*;
     use alloy_eips::eip2718::EIP7702_TX_TYPE_ID;
@@ -484,10 +547,10 @@ mod codec {
                     (Self::Eip7702(tx), buf)
                 }
                 TempoTxType::AA => {
-                    let (tx, buf) = TxAA::from_compact(buf, buf.len());
-                    // For AA transactions, we need to decode the signature bytes as AASignature
+                    let (tx, buf) = TempoTransaction::from_compact(buf, buf.len());
+                    // For Tempo transactions, we need to decode the signature bytes as TempoSignature
                     let (sig_bytes, buf) = Bytes::from_compact(buf, buf.len());
-                    let aa_sig = AASignature::from_bytes(&sig_bytes)
+                    let aa_sig = TempoSignature::from_bytes(&sig_bytes)
                         .map_err(|e| panic!("Failed to decode AA signature: {e}"))
                         .unwrap();
                     let tx = AASigned::new_unhashed(tx, aa_sig);
@@ -511,7 +574,7 @@ mod codec {
                 Self::Eip7702(tx) => tx.tx().to_compact(buf),
                 Self::AA(tx) => {
                     let mut len = tx.tx().to_compact(buf);
-                    // Also encode the AASignature as Bytes
+                    // Also encode the TempoSignature as Bytes
                     len += tx.signature().to_bytes().to_compact(buf);
                     len
                 }
@@ -554,7 +617,7 @@ mod codec {
                     COMPACT_EXTENDED_IDENTIFIER_FLAG
                 }
                 Self::AA => {
-                    buf.put_u8(crate::transaction::AA_TX_TYPE_ID);
+                    buf.put_u8(crate::transaction::TEMPO_TX_TYPE_ID);
                     COMPACT_EXTENDED_IDENTIFIER_FLAG
                 }
                 Self::FeeToken => {
@@ -578,7 +641,7 @@ mod codec {
                         let extended_identifier = buf.get_u8();
                         match extended_identifier {
                             EIP7702_TX_TYPE_ID => Self::Eip7702,
-                            crate::transaction::AA_TX_TYPE_ID => Self::AA,
+                            crate::transaction::TEMPO_TX_TYPE_ID => Self::AA,
                             crate::transaction::FEE_TOKEN_TX_TYPE_ID => Self::FeeToken,
                             _ => panic!("Unsupported TxType identifier: {extended_identifier}"),
                         }

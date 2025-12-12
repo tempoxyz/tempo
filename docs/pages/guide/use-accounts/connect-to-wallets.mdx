@@ -1,0 +1,295 @@
+---
+mipd: true
+---
+
+import * as Demo from '../../../components/guides/Demo.tsx'
+import * as Step from '../../../components/guides/steps'
+import { ConnectWallet } from '../../../components/ConnectWallet.tsx'
+
+# Connect to Wallets
+
+It is possible to use Tempo with EVM-compatible wallets that support the Tempo network, 
+or support adding custom networks (like MetaMask).
+
+You can use these wallets when building your application on Tempo.
+
+This guide will walk you through how to set up your application to connect to wallets.
+
+<Demo.Container 
+  name="Connect to Wallets" 
+  footerVariant="source" 
+  src="tempoxyz/tempo-ts/tree/main/examples/accounts"
+>
+  <Step.ConnectWallet stepNumber={1} last />
+</Demo.Container>
+
+## Wagmi Setup
+
+::::steps
+
+### Set up Wagmi
+
+Ensure that you have set up your project with Wagmi by following the [guide](/sdk/typescript#wagmi-setup).
+
+### Configure Wagmi
+
+Next, let's ensure Wagmi is configured correctly to connect to wallets.
+
+Ensure we have [`multiInjectedProviderDiscovery`](https://wagmi.sh/react/api/createConfig#multiinjectedproviderdiscovery) set to `true` to display injected browser wallets.
+
+We can also utilize [wallet connectors](https://wagmi.sh/react/api/connectors) from Wagmi like `metaMask` to support mobile devices.
+
+```tsx twoslash [config.ts]
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempo } from 'tempo.ts/chains'
+import { metaMask } from 'wagmi/connectors' // [!code ++]
+
+export const config = createConfig({
+  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  connectors: [metaMask()], // [!code ++]
+  multiInjectedProviderDiscovery: true, // [!code ++]
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+### Display Connect Buttons
+
+After that, we will set up "Connect" buttons so that the user can connect to their wallet.
+
+We will create a new `ConnectWallet.tsx` component to work in.
+
+:::code-group
+
+<div data-title="Preview">
+  <ConnectWallet />
+</div>
+
+<div data-title="">
+  <div />
+</div>
+
+:::
+
+:::code-group
+
+```tsx twoslash [Connect.tsx]
+// @noErrors
+import { useConnect, useConnectors } from 'wagmi'
+
+export function Connect() {
+  const connect = useConnect()
+  const connectors = useConnectors()
+
+  return (
+    <div>
+      {connectors.map((connector) => (
+        <button
+          key={connector.id}
+          onClick={() => connect.connect({ connector })}
+          type="button"
+        >
+          {connector.name}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+```
+
+```tsx twoslash [config.ts] filename="config.ts"
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempo } from 'tempo.ts/chains'
+import { metaMask } from 'wagmi/connectors' // [!code ++]
+
+export const config = createConfig({
+  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  connectors: [metaMask()], // [!code ++]
+  multiInjectedProviderDiscovery: true, // [!code ++]
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::
+
+### Display Account & Sign Out
+
+After the user has connected to their wallet, we can display the account information and a sign out button.
+
+We will create a new `Account.tsx` component to work in.
+
+:::code-group
+
+<div data-title="Preview">
+  <ConnectWallet showAddChain={false} />
+</div>
+
+<div data-title="">
+  <div />
+</div>
+
+:::
+
+:::code-group
+
+```tsx twoslash [Account.tsx]
+// @noErrors
+import { useConnection, useDisconnect } from 'wagmi'
+
+export function Account() {
+  const account = useConnection()
+  const disconnect = useDisconnect()
+
+  return (
+    <div>
+      <div>
+        {account.address?.slice(0, 6)}...{account.address?.slice(-4)}
+      </div>
+      <button onClick={() => disconnect.disconnect()}>
+        Sign out
+      </button>
+    </div>
+  )
+}
+
+```
+
+```tsx twoslash [config.ts] filename="config.ts"
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempo } from 'tempo.ts/chains'
+import { metaMask } from 'wagmi/connectors' // [!code ++]
+
+export const config = createConfig({
+  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  connectors: [metaMask()], // [!code ++]
+  multiInjectedProviderDiscovery: true, // [!code ++]
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::
+
+### Display "Add Tempo" Button
+
+If the wallet is not on the Tempo network, we can display a "Add Tempo" button so that the user can add the network to their wallet.
+
+:::code-group
+
+<div data-title="Preview">
+  <ConnectWallet />
+</div>
+
+<div data-title="">
+  <div />
+</div>
+
+:::
+
+:::code-group
+
+```tsx twoslash [Account.tsx]
+// @noErrors
+import { useConnection, useDisconnect, useSwitchChain } from 'wagmi'
+import { tempo } from 'tempo.ts/chains' // [!code ++]
+
+export function Account() {
+  const account = useConnection()
+  const disconnect = useDisconnect()
+  const switchChain = useSwitchChain() // [!code ++]
+
+  return (
+    <div>
+      <div>
+        {account.address?.slice(0, 6)}...{account.address?.slice(-4)}
+      </div>
+      <button onClick={() => disconnect.disconnect()}>
+        Sign out
+      </button>
+
+      <button // [!code ++]
+        onClick={() => // [!code ++]
+          switchChain.switchChain({ // [!code ++]
+            chainId: tempo.id, // [!code ++]
+            addEthereumChainParameter: { // [!code ++]
+              nativeCurrency: { // [!code ++]
+                name: 'USD', // [!code ++]
+                decimals: 18, // [!code ++]
+                symbol: 'USD', // [!code ++]
+              }, // [!code ++]
+            }, // [!code ++]
+          }) // [!code ++]
+        } // [!code ++]
+      > {/* // [!code ++] */}
+        Add {chain.name} to wallet {/* // [!code ++] */}
+      </button> {/* // [!code ++] */}
+    </div>
+  )
+}
+
+```
+
+```tsx twoslash [config.ts] filename="config.ts"
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempo } from 'tempo.ts/chains'
+import { metaMask } from 'wagmi/connectors' // [!code ++]
+
+export const config = createConfig({
+  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  connectors: [metaMask()], // [!code ++]
+  multiInjectedProviderDiscovery: true, // [!code ++]
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::
+
+::::
+
+## Third-Party Libraries
+
+You can also use a third-party Wallet Connection library to handle the onboarding & connection of wallets.
+
+Such libraries include: [Privy](https://privy.io), [ConnectKit](https://docs.family.co/connectkit), [AppKit](https://reown.com/appkit), [Dynamic](https://dynamic.xyz), and [RainbowKit](https://rainbowkit.com).
+
+The above libraries are all built on top of Wagmi, handle all the edge cases around wallet connection.
+
+:::warning
+It is worth noting that some wallets that are included in the above libraries may not support Tempo yet. We are working on adding support for the majority of wallets.
+:::
+
+## Add to Wallet Manually
+
+You can add Tempo testnet to a wallet that supports custom networks (e.g. MetaMask) manually. 
+
+For example, if you are using MetaMask:
+
+1. Open MetaMask and click on the menu in the top right and select "Networks"
+2. Click "Add a custom network"
+3. Enter the network details:
+
+| **Name** | `Tempo Testnet (Andantino)` |
+|-------------------|-------|
+| **Currency** | `USD` |
+| **Chain ID** | `42429` |
+| **HTTP URL** | `https://rpc.testnet.tempo.xyz` |
+| **WebSocket URL** | `wss://rpc.testnet.tempo.xyz` |
+| **Block Explorer** | [`https://explore.tempo.xyz`](https://explore.tempo.xyz) |
+
+The official documentation from MetaMask on this process is also available [here](https://support.metamask.io/configure/networks/how-to-add-a-custom-network-rpc#adding-a-network-manually).
+
+:::warning
+Note that we recommend using the `symbol` "USD" for the currency symbol, despite there being no native gas token. Existing wallets like MetaMask don't natively support the Tempo network yet, so there are some quirks to the interface.
+You might also need to set `nativeCurrency.decimals` to `18` instead of `6` in some wallets.
+:::

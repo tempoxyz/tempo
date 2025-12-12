@@ -3,6 +3,7 @@
 //! [`alto`]: https://github.com/commonwarexyx/alto
 
 use std::{
+    net::SocketAddr,
     num::{NonZeroU64, NonZeroUsize},
     time::Duration,
 };
@@ -11,11 +12,7 @@ use commonware_broadcast::buffered;
 use commonware_consensus::{Reporters, marshal};
 use commonware_cryptography::{
     Signer as _,
-    bls12381::primitives::{
-        group::Share,
-        poly::Poly,
-        variant::{MinSig, Variant},
-    },
+    bls12381::primitives::group::Share,
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::{Blocker, Receiver, Sender};
@@ -23,11 +20,12 @@ use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::PoolRef,
     spawn_cell,
 };
-use commonware_utils::set::Ordered;
-use eyre::WrapErr as _;
+use commonware_utils::set::OrderedAssociated;
+use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
+use tracing::info;
 
 use crate::{
     config::{BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES, MARSHAL_LIMIT},
@@ -62,32 +60,22 @@ const MAX_REPAIR: NonZeroU64 = NonZeroU64::new(20).expect("value is not zero");
 // XXX: Mostly a one-to-one copy of alto for now. We also put the context in here
 // because there doesn't really seem to be a point putting it into an extra initializer.
 #[derive(Clone)]
-pub struct Builder<
-    TBlocker,
-    TContext,
-    TPeerManager,
-    // TODO: add the indexer. It's part of alto and we have skipped it, for now.
-    // TIndexer,
-> {
+pub struct Builder<TBlocker, TContext, TPeerManager> {
     /// The contextg
     pub context: TContext,
 
     pub fee_recipient: alloy_primitives::Address,
 
-    pub execution_node: TempoFullNode,
+    pub execution_node: Option<TempoFullNode>,
 
     pub blocker: TBlocker,
     pub peer_manager: TPeerManager,
 
     pub partition_prefix: String,
     pub signer: PrivateKey,
-    pub polynomial: Poly<<MinSig as Variant>::Public>,
-    pub share: Share,
-    pub participants: Ordered<PublicKey>,
+    pub share: Option<Share>,
     pub mailbox_size: usize,
     pub deque_size: usize,
-
-    pub epoch_length: u64,
 
     pub time_to_propose: Duration,
     pub time_to_collect_notarizations: Duration,
@@ -97,6 +85,7 @@ pub struct Builder<
     pub views_until_leader_skip: u64,
     pub new_payload_wait_time: Duration,
     pub time_to_build_subblock: Duration,
+    pub subblock_broadcast_interval: Duration,
 }
 
 impl<TBlocker, TContext, TPeerManager> Builder<TBlocker, TContext, TPeerManager>
@@ -111,9 +100,33 @@ where
         + Storage
         + Metrics
         + Network,
-    TPeerManager: commonware_p2p::Manager<PublicKey = PublicKey>,
+    TPeerManager: commonware_p2p::Manager<
+            PublicKey = PublicKey,
+            Peers = OrderedAssociated<PublicKey, SocketAddr>,
+        >,
 {
+    pub fn with_execution_node(mut self, execution_node: TempoFullNode) -> Self {
+        self.execution_node = Some(execution_node);
+        self
+    }
+
     pub async fn try_init(self) -> eyre::Result<Engine<TBlocker, TContext, TPeerManager>> {
+        let execution_node = self
+            .execution_node
+            .clone()
+            .ok_or_eyre("execution_node must be set using with_execution_node()")?;
+
+        let epoch_length = execution_node
+            .chain_spec()
+            .info
+            .epoch_length()
+            .ok_or_eyre("chainspec did not contain epochLength; cannot go on without it")?;
+
+        info!(
+            identity = %self.signer.public_key(),
+            "using public ed25519 verifying key derived from provided private ed25519 signing key",
+        );
+
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
             self.context.with_label("broadcast"),
             buffered::Config {
@@ -133,7 +146,7 @@ where
         // https://github.com/commonwarexyz/monorepo/commit/92870f39b4a9e64a28434b3729ebff5aba67fb4e
         let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
             public_key: self.signer.public_key(),
-            manager: self.peer_manager,
+            manager: self.peer_manager.clone(),
             mailbox_size: self.mailbox_size,
             blocker: self.blocker.clone(),
             requester_config: commonware_p2p::utils::requester::Config {
@@ -151,8 +164,7 @@ where
             self.context.with_label("marshal"),
             marshal::Config {
                 scheme_provider: scheme_provider.clone(),
-                epoch_length: self.epoch_length,
-                // identity: *self.polynomial.constant(),
+                epoch_length,
                 partition_prefix: self.partition_prefix.clone(),
                 mailbox_size: self.mailbox_size,
                 view_retention_timeout: self
@@ -182,10 +194,11 @@ where
             context: self.context.clone(),
             signer: self.signer.clone(),
             scheme_provider: scheme_provider.clone(),
-            node: self.execution_node.clone(),
+            node: execution_node.clone(),
             fee_recipient: self.fee_recipient,
             time_to_build_subblock: self.time_to_build_subblock,
-            epoch_length: self.epoch_length,
+            subblock_broadcast_interval: self.subblock_broadcast_interval,
+            epoch_length,
         });
 
         let (application, application_mailbox) = application::init(super::application::Config {
@@ -194,11 +207,11 @@ where
             fee_recipient: self.fee_recipient,
             mailbox_size: self.mailbox_size,
             marshal: marshal_mailbox.clone(),
-            execution_node: self.execution_node,
+            execution_node: execution_node.clone(),
             new_payload_wait_time: self.new_payload_wait_time,
             subblocks: subblocks.mailbox(),
-            epoch_length: self.epoch_length,
             scheme_provider: scheme_provider.clone(),
+            epoch_length,
         })
         .await
         .wrap_err("failed initializing application actor")?;
@@ -208,12 +221,12 @@ where
                 application: application_mailbox.clone(),
                 blocker: self.blocker.clone(),
                 buffer_pool: buffer_pool.clone(),
-                epoch_length: self.epoch_length,
+                epoch_length,
                 time_for_peer_response: self.time_for_peer_response,
                 time_to_propose: self.time_to_propose,
                 mailbox_size: self.mailbox_size,
                 subblocks: subblocks.mailbox(),
-                marshal: marshal_mailbox,
+                marshal: marshal_mailbox.clone(),
                 scheme_provider: scheme_provider.clone(),
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
@@ -228,17 +241,19 @@ where
             self.context.with_label("dkg_manager"),
             dkg::manager::Config {
                 epoch_manager: epoch_manager_mailbox,
-                epoch_length: self.epoch_length,
-                initial_participants: self.participants.clone(),
-                initial_public: self.polynomial.clone(),
-                initial_share: Some(self.share.clone()),
+                epoch_length,
+                execution_node,
+                initial_share: self.share.clone(),
                 mailbox_size: self.mailbox_size,
+                marshal: marshal_mailbox,
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
+                peer_manager: self.peer_manager.clone(),
             },
         )
-        .await;
+        .await
+        .wrap_err("failed initializing dkg manager")?;
 
         Ok(Engine {
             context: ContextCell::new(self.context),
@@ -274,10 +289,10 @@ where
         + Pacer
         + Spawner
         + Storage,
-    TPeerManager: commonware_p2p::Manager<PublicKey = PublicKey>,
-    // XXX: alto also defines an Indexer trait (not part of commonwarexyz itself); we will
-    // not define it for now.
-    // TIndexer,
+    TPeerManager: commonware_p2p::Manager<
+            PublicKey = PublicKey,
+            Peers = OrderedAssociated<PublicKey, SocketAddr>,
+        >,
 {
     context: ContextCell<TContext>,
 
@@ -286,7 +301,7 @@ where
     broadcast: buffered::Engine<TContext, PublicKey, Block>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
-    dkg_manager: dkg::manager::Actor<TContext>,
+    dkg_manager: dkg::manager::Actor<TContext, TPeerManager>,
     dkg_manager_mailbox: dkg::manager::Mailbox,
 
     /// The core of the application, the glue between commonware-xyz consensus and reth-execution.
@@ -317,7 +332,10 @@ where
         + Pacer
         + Spawner
         + Storage,
-    TPeerManager: commonware_p2p::Manager<PublicKey = PublicKey>,
+    TPeerManager: commonware_p2p::Manager<
+            PublicKey = PublicKey,
+            Peers = OrderedAssociated<PublicKey, SocketAddr>,
+        >,
 {
     #[expect(
         clippy::too_many_arguments,

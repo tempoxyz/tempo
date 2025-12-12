@@ -6,12 +6,11 @@ use tempo_precompiles_macros::{Storable, contract};
 use crate::{
     TIP403_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::PrecompileStorageProvider,
+    storage::{Handler, Mapping},
 };
-use alloy::primitives::{Address, Bytes, IntoLogData};
-use revm::state::Bytecode;
+use alloy::primitives::{Address, U256};
 
-#[contract]
+#[contract(addr = TIP403_REGISTRY_ADDRESS)]
 pub struct TIP403Registry {
     policy_id_counter: u64,
     policy_data: Mapping<u64, PolicyData>,
@@ -25,33 +24,48 @@ pub struct PolicyData {
     pub admin: Address,
 }
 
-impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
-    /// Creates an instance of the precompile.
-    ///
-    /// Caution: This does not initialize the account, see [`Self::initialize`].
-    pub fn new(storage: &'a mut S) -> Self {
-        Self::_new(TIP403_REGISTRY_ADDRESS, storage)
+// NOTE(rusowsky): can be removed once revm uses precompiles rather than directly
+// interacting with storage slots.
+impl PolicyData {
+    pub fn decode_from_slot(slot_value: U256) -> Self {
+        use crate::storage::{LayoutCtx, Storable, packing::PackedSlot};
+
+        // NOTE: fine to expect, as `StorageOps` on `PackedSlot` are infallible
+        Self::load(&PackedSlot(slot_value), U256::ZERO, LayoutCtx::FULL)
+            .expect("unable to decode PoliciData from slot")
     }
 
+    pub fn encode_to_slot(&self) -> U256 {
+        use crate::storage::packing::insert_packed_value;
+        use __packing_policy_data::{ADMIN_LOC as A_LOC, POLICY_TYPE_LOC as PT_LOC};
+
+        let encoded = insert_packed_value(
+            U256::ZERO,
+            &self.policy_type,
+            PT_LOC.offset_bytes,
+            PT_LOC.size,
+        )
+        .expect("unable to insert 'policy_type'");
+
+        insert_packed_value(encoded, &self.admin, A_LOC.offset_bytes, A_LOC.size)
+            .expect("unable to insert 'admin'")
+    }
+}
+
+impl TIP403Registry {
     /// Initializes the registry contract.
     pub fn initialize(&mut self) -> Result<()> {
-        self.storage.set_code(
-            TIP403_REGISTRY_ADDRESS,
-            Bytecode::new_legacy(Bytes::from_static(&[0xef])),
-        )?;
-
-        Ok(())
+        self.__initialize()
     }
 
     // View functions
-    pub fn policy_id_counter(&mut self) -> Result<u64> {
-        let counter_val = self.sload_policy_id_counter()?;
+    pub fn policy_id_counter(&self) -> Result<u64> {
         // Initialize policy ID counter to 2 if it's 0 (skip special policies)
-        Ok(counter_val.max(2))
+        self.policy_id_counter.read().map(|counter| counter.max(2))
     }
 
     pub fn policy_data(
-        &mut self,
+        &self,
         call: ITIP403Registry::policyDataCall,
     ) -> Result<ITIP403Registry::policyDataReturn> {
         let data = self.get_policy_data(call.policyId)?;
@@ -64,7 +78,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
         })
     }
 
-    pub fn is_authorized(&mut self, call: ITIP403Registry::isAuthorizedCall) -> Result<bool> {
+    pub fn is_authorized(&self, call: ITIP403Registry::isAuthorizedCall) -> Result<bool> {
         self.is_authorized_internal(call.policyId, call.user)
     }
 
@@ -77,41 +91,34 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
         let new_policy_id = self.policy_id_counter()?;
 
         // Increment counter
-        self.sstore_policy_id_counter(
+        self.policy_id_counter.write(
             new_policy_id
                 .checked_add(1)
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
         // Store policy data
-        self.sstore_policy_data(
-            new_policy_id,
-            PolicyData {
-                policy_type: call.policyType as u8,
-                admin: call.admin,
-            },
-        )?;
+        self.policy_data.at(new_policy_id).write(PolicyData {
+            policy_type: call.policyType as u8,
+            admin: call.admin,
+        })?;
 
         // Emit events
-        self.storage.emit_event(
-            TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::PolicyCreated(ITIP403Registry::PolicyCreated {
+        self.emit_event(TIP403RegistryEvent::PolicyCreated(
+            ITIP403Registry::PolicyCreated {
                 policyId: new_policy_id,
                 updater: msg_sender,
                 policyType: call.policyType,
-            })
-            .into_log_data(),
-        )?;
+            },
+        ))?;
 
-        self.storage.emit_event(
-            TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::PolicyAdminUpdated(ITIP403Registry::PolicyAdminUpdated {
+        self.emit_event(TIP403RegistryEvent::PolicyAdminUpdated(
+            ITIP403Registry::PolicyAdminUpdated {
                 policyId: new_policy_id,
                 updater: msg_sender,
                 admin: call.admin,
-            })
-            .into_log_data(),
-        )?;
+            },
+        ))?;
 
         Ok(new_policy_id)
     }
@@ -125,7 +132,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
         let new_policy_id = self.policy_id_counter()?;
 
         // Increment counter
-        self.sstore_policy_id_counter(
+        self.policy_id_counter.write(
             new_policy_id
                 .checked_add(1)
                 .ok_or(TempoPrecompileError::under_overflow())?,
@@ -146,28 +153,24 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
 
             match policy_type {
                 ITIP403Registry::PolicyType::WHITELIST => {
-                    self.storage.emit_event(
-                        TIP403_REGISTRY_ADDRESS,
-                        TIP403RegistryEvent::WhitelistUpdated(ITIP403Registry::WhitelistUpdated {
+                    self.emit_event(TIP403RegistryEvent::WhitelistUpdated(
+                        ITIP403Registry::WhitelistUpdated {
                             policyId: new_policy_id,
                             updater: msg_sender,
                             account: *account,
                             allowed: true,
-                        })
-                        .into_log_data(),
-                    )?;
+                        },
+                    ))?;
                 }
                 ITIP403Registry::PolicyType::BLACKLIST => {
-                    self.storage.emit_event(
-                        TIP403_REGISTRY_ADDRESS,
-                        TIP403RegistryEvent::BlacklistUpdated(ITIP403Registry::BlacklistUpdated {
+                    self.emit_event(TIP403RegistryEvent::BlacklistUpdated(
+                        ITIP403Registry::BlacklistUpdated {
                             policyId: new_policy_id,
                             updater: msg_sender,
                             account: *account,
                             restricted: true,
-                        })
-                        .into_log_data(),
-                    )?;
+                        },
+                    ))?;
                 }
                 ITIP403Registry::PolicyType::__Invalid => {
                     return Err(TIP403RegistryError::incompatible_policy_type().into());
@@ -176,25 +179,21 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
         }
 
         // Emit policy creation events
-        self.storage.emit_event(
-            TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::PolicyCreated(ITIP403Registry::PolicyCreated {
+        self.emit_event(TIP403RegistryEvent::PolicyCreated(
+            ITIP403Registry::PolicyCreated {
                 policyId: new_policy_id,
                 updater: msg_sender,
                 policyType: call.policyType,
-            })
-            .into_log_data(),
-        )?;
+            },
+        ))?;
 
-        self.storage.emit_event(
-            TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::PolicyAdminUpdated(ITIP403Registry::PolicyAdminUpdated {
+        self.emit_event(TIP403RegistryEvent::PolicyAdminUpdated(
+            ITIP403Registry::PolicyAdminUpdated {
                 policyId: new_policy_id,
                 updater: msg_sender,
                 admin,
-            })
-            .into_log_data(),
-        )?;
+            },
+        ))?;
 
         Ok(new_policy_id)
     }
@@ -220,15 +219,13 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
             },
         )?;
 
-        self.storage.emit_event(
-            TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::PolicyAdminUpdated(ITIP403Registry::PolicyAdminUpdated {
+        self.emit_event(TIP403RegistryEvent::PolicyAdminUpdated(
+            ITIP403Registry::PolicyAdminUpdated {
                 policyId: call.policyId,
                 updater: msg_sender,
                 admin: call.admin,
-            })
-            .into_log_data(),
-        )
+            },
+        ))
     }
 
     pub fn modify_policy_whitelist(
@@ -250,16 +247,14 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
 
         self.set_policy_set(call.policyId, call.account, call.allowed)?;
 
-        self.storage.emit_event(
-            TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::WhitelistUpdated(ITIP403Registry::WhitelistUpdated {
+        self.emit_event(TIP403RegistryEvent::WhitelistUpdated(
+            ITIP403Registry::WhitelistUpdated {
                 policyId: call.policyId,
                 updater: msg_sender,
                 account: call.account,
                 allowed: call.allowed,
-            })
-            .into_log_data(),
-        )
+            },
+        ))
     }
 
     pub fn modify_policy_blacklist(
@@ -281,32 +276,30 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
 
         self.set_policy_set(call.policyId, call.account, call.restricted)?;
 
-        self.storage.emit_event(
-            TIP403_REGISTRY_ADDRESS,
-            TIP403RegistryEvent::BlacklistUpdated(ITIP403Registry::BlacklistUpdated {
+        self.emit_event(TIP403RegistryEvent::BlacklistUpdated(
+            ITIP403Registry::BlacklistUpdated {
                 policyId: call.policyId,
                 updater: msg_sender,
                 account: call.account,
                 restricted: call.restricted,
-            })
-            .into_log_data(),
-        )
+            },
+        ))
     }
 
     // Internal helper functions
-    fn get_policy_data(&mut self, policy_id: u64) -> Result<PolicyData> {
-        self.sload_policy_data(policy_id)
+    fn get_policy_data(&self, policy_id: u64) -> Result<PolicyData> {
+        self.policy_data.at(policy_id).read()
     }
 
     fn set_policy_data(&mut self, policy_id: u64, data: PolicyData) -> Result<()> {
-        self.sstore_policy_data(policy_id, data)
+        self.policy_data.at(policy_id).write(data)
     }
 
     fn set_policy_set(&mut self, policy_id: u64, account: Address, value: bool) -> Result<()> {
-        self.sstore_policy_set(policy_id, account, value)
+        self.policy_set.at(policy_id).at(account).write(value)
     }
 
-    fn is_authorized_internal(&mut self, policy_id: u64, user: Address) -> Result<bool> {
+    fn is_authorized_internal(&self, policy_id: u64, user: Address) -> Result<bool> {
         // Special case for always-allow and always-reject policies
         if policy_id < 2 {
             // policyId == 0 is the "always-reject" policy
@@ -315,7 +308,7 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
         }
 
         let data = self.get_policy_data(policy_id)?;
-        let is_in_set = self.sload_policy_set(policy_id, user)?;
+        let is_in_set = self.policy_set.at(policy_id).at(user).read()?;
 
         let auth = match data
             .policy_type
@@ -333,133 +326,145 @@ impl<'a, S: PrecompileStorageProvider> TIP403Registry<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use crate::storage::hashmap::HashMapStorageProvider;
-
     use super::*;
+    use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+    use alloy::primitives::Address;
 
     #[test]
     fn test_create_policy() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut registry = TIP403Registry::new(&mut storage);
-        let admin = Address::from([1u8; 20]);
+        let admin = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
 
-        // Initial counter should be 2 (skipping special policies)
-        assert_eq!(registry.policy_id_counter()?, 2);
+            // Initial counter should be 2 (skipping special policies)
+            assert_eq!(registry.policy_id_counter()?, 2);
 
-        // Create a whitelist policy
-        let result = registry.create_policy(
-            admin,
-            ITIP403Registry::createPolicyCall {
+            // Create a whitelist policy
+            let result = registry.create_policy(
                 admin,
-                policyType: ITIP403Registry::PolicyType::WHITELIST,
-            },
-        );
-        assert!(result.is_ok());
-        assert_eq!(result?, 2);
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            );
+            assert!(result.is_ok());
+            assert_eq!(result?, 2);
 
-        // Counter should be incremented
-        assert_eq!(registry.policy_id_counter()?, 3);
+            // Counter should be incremented
+            assert_eq!(registry.policy_id_counter()?, 3);
 
-        // Check policy data
-        let data = registry.policy_data(ITIP403Registry::policyDataCall { policyId: 2 })?;
-        assert_eq!(data.policyType, ITIP403Registry::PolicyType::WHITELIST);
-        assert_eq!(data.admin, admin);
-        Ok(())
+            // Check policy data
+            let data = registry.policy_data(ITIP403Registry::policyDataCall { policyId: 2 })?;
+            assert_eq!(data.policyType, ITIP403Registry::PolicyType::WHITELIST);
+            assert_eq!(data.admin, admin);
+            Ok(())
+        })
     }
 
     #[test]
     fn test_is_authorized_special_policies() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut registry = TIP403Registry::new(&mut storage);
-        let user = Address::from([1u8; 20]);
+        let user = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
 
-        // Policy 0 should always reject
-        assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall { policyId: 0, user })?);
+            // Policy 0 should always reject
+            assert!(
+                !registry.is_authorized(ITIP403Registry::isAuthorizedCall { policyId: 0, user })?
+            );
 
-        // Policy 1 should always allow
-        assert!(registry.is_authorized(ITIP403Registry::isAuthorizedCall { policyId: 1, user })?);
-        Ok(())
+            // Policy 1 should always allow
+            assert!(
+                registry.is_authorized(ITIP403Registry::isAuthorizedCall { policyId: 1, user })?
+            );
+            Ok(())
+        })
     }
 
     #[test]
     fn test_whitelist_policy() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut registry = TIP403Registry::new(&mut storage);
-        let admin = Address::from([1u8; 20]);
-        let user = Address::from([2u8; 20]);
+        let admin = Address::random();
+        let user = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
 
-        // Create whitelist policy
-        let policy_id = registry.create_policy(
-            admin,
-            ITIP403Registry::createPolicyCall {
+            // Create whitelist policy
+            let policy_id = registry.create_policy(
                 admin,
-                policyType: ITIP403Registry::PolicyType::WHITELIST,
-            },
-        )?;
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
 
-        // User should not be authorized initially
-        assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall {
-            policyId: policy_id,
-            user,
-        })?);
-
-        // Add user to whitelist
-        registry.modify_policy_whitelist(
-            admin, // Anyone is authorized with policy 1
-            ITIP403Registry::modifyPolicyWhitelistCall {
+            // User should not be authorized initially
+            assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall {
                 policyId: policy_id,
-                account: user,
-                allowed: true,
-            },
-        )?;
+                user,
+            })?);
 
-        // User should now be authorized
-        assert!(registry.is_authorized(ITIP403Registry::isAuthorizedCall {
-            policyId: policy_id,
-            user,
-        })?);
+            // Add user to whitelist
+            registry.modify_policy_whitelist(
+                admin,
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: policy_id,
+                    account: user,
+                    allowed: true,
+                },
+            )?;
 
-        Ok(())
+            // User should now be authorized
+            assert!(registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+                policyId: policy_id,
+                user,
+            })?);
+
+            Ok(())
+        })
     }
 
     #[test]
     fn test_blacklist_policy() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut registry = TIP403Registry::new(&mut storage);
-        let admin = Address::from([1u8; 20]);
-        let user = Address::from([2u8; 20]);
+        let admin = Address::random();
+        let user = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
 
-        // Create blacklist policy
-        let policy_id = registry.create_policy(
-            admin,
-            ITIP403Registry::createPolicyCall {
+            // Create blacklist policy
+            let policy_id = registry.create_policy(
                 admin,
-                policyType: ITIP403Registry::PolicyType::BLACKLIST,
-            },
-        )?;
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
 
-        // User should be authorized initially (not in blacklist)
-        assert!(registry.is_authorized(ITIP403Registry::isAuthorizedCall {
-            policyId: policy_id,
-            user,
-        })?);
-
-        // Add user to blacklist
-        registry.modify_policy_blacklist(
-            admin,
-            ITIP403Registry::modifyPolicyBlacklistCall {
+            // User should be authorized initially (not in blacklist)
+            assert!(registry.is_authorized(ITIP403Registry::isAuthorizedCall {
                 policyId: policy_id,
-                account: user,
-                restricted: true,
-            },
-        )?;
+                user,
+            })?);
 
-        // User should no longer be authorized
-        assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall {
-            policyId: policy_id,
-            user,
-        })?);
+            // Add user to blacklist
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: user,
+                    restricted: true,
+                },
+            )?;
 
-        Ok(())
+            // User should no longer be authorized
+            assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+                policyId: policy_id,
+                user,
+            })?);
+
+            Ok(())
+        })
     }
 }

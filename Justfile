@@ -21,7 +21,7 @@ build binary extra_args="":
 
 [group('localnet')]
 [doc('Generates a genesis file')]
-genesis accounts="1000" output="genesis.json" profile="maxperf":
+genesis accounts="1000" output="./" profile="maxperf":
     cargo run -p tempo-xtask --profile {{profile}} -- generate-genesis --output {{output}} -a {{accounts}}
 
 [group('localnet')]
@@ -32,7 +32,7 @@ localnet accounts="1000" reset="true" profile="maxperf" features="asm-keccak" ar
     if [[ "{{reset}}" = "true" ]]; then
         rm -r ./localnet/ || true
         mkdir ./localnet/
-        just genesis {{accounts}} ./localnet/genesis.json {{profile}}
+        just genesis {{accounts}} ./localnet {{profile}}
     fi;
     cargo run --bin tempo --profile {{profile}} --features {{features}} -- \
                       node \
@@ -50,13 +50,6 @@ localnet accounts="1000" reset="true" profile="maxperf" features="asm-keccak" ar
                       --builder.max-tasks 8 \
                       --builder.deadline 3 \
                       --log.file.directory ./localnet/logs \
-                      --txpool.pending-max-count 10000000000000 \
-                      --txpool.basefee-max-count 10000000000000 \
-                      --txpool.queued-max-count 10000000000000 \
-                      --txpool.pending-max-size 10000 \
-                      --txpool.basefee-max-size 10000 \
-                      --txpool.queued-max-size 10000 \
-                      --txpool.max-account-slots 500000 \
                       --faucet.enabled \
                       --faucet.private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
                       --faucet.amount 1000000000000 \
@@ -73,3 +66,34 @@ tempo-dev-down: scripts::tempo-dev-down
 feature-test: scripts::auto-7702-delegation  scripts::basic-transfer scripts::registrar-delegation scripts::create-tip20-token scripts::fee-amm
 
 fee-amm: scripts::fee-amm
+
+# Docs commands
+[group('docs')]
+[doc('Install docs dependencies')]
+docs-install:
+    cd docs && bun install
+
+[group('docs')]
+[doc('Start docs dev server')]
+docs-dev:
+    cd docs && bun run dev
+
+[group('docs')]
+[doc('Build docs for production')]
+docs-build:
+    cd docs && bun run build
+
+[group('docs')]
+[doc('Run docs linting and type checks')]
+docs-check:
+    cd docs && bun run check && bun run check:types
+
+[group('docs')]
+[doc('Run Solidity specs tests')]
+docs-specs-test:
+    cd docs/specs && forge test -vvv
+
+[group('docs')]
+[doc('Build Solidity specs')]
+docs-specs-build:
+    cd docs/specs && forge build --sizes

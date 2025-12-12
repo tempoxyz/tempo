@@ -1,0 +1,246 @@
+import * as Demo from '../../../components/guides/Demo.tsx'
+import * as Step from '../../../components/guides/steps'
+import * as Token from '../../../components/guides/tokens'
+
+# Accept a Payment
+
+Accept stablecoin payments in your application. Learn how to receive payments, verify transactions, and reconcile payments using memos.
+
+## Receiving Payments
+
+Payments are automatically credited to the recipient's address when a transfer is executed. You don't need to do anything special to "accept" a payment, it happens automatically onchain.
+
+In this basic receiving demo you can see the balances update after you add funds to your account, using the `getBalance` and `watchEvent` calls documented below.
+
+<Demo.Container name="Receive a Payment" footerVariant="balances" tokens={[Token.alphaUsd, Token.betaUsd, Token.thetaUsd]} src="tempoxyz/tempo-ts/tree/main/examples/payments">
+  <Step.Connect stepNumber={1} />
+  <Step.AddFunds stepNumber={2} last />
+</Demo.Container>
+
+## Verifying Payments
+
+Check if a payment has been received by querying the token balance or listening for transfer events:
+
+### Check Balance
+
+:::code-group
+
+```ts [TypeScript]
+import { client } from './viem.config'
+
+const balance = await client.token.getBalance({
+  token: '0x20c0000000000000000000000000000000000001', // AlphaUSD
+  address: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
+})
+
+console.log('Balance:', balance)
+```
+
+```rust [Rust]
+use alloy::{primitives::address, providers::ProviderBuilder};
+use tempo_alloy::{TempoNetwork, contracts::precompiles::ITIP20};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .connect(&std::env::var("RPC_URL").expect("No RPC URL set"))
+        .await?;
+
+    let balance = ITIP20::new( // [!code focus]
+        address!("0x20c0000000000000000000000000000000000001"), // Alpha USD // [!code focus]
+        provider, // [!code focus]
+    ) // [!code focus]
+    .balanceOf(address!("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb")) // [!code focus]
+    .call() // [!code focus]
+    .await?; // [!code focus]
+
+    Ok(())
+}
+```
+
+:::
+
+### Listen for Transfer Events
+
+:::code-group
+
+```ts [TypeScript]
+import { watchEvent } from 'viem'
+
+// Watch for incoming transfers
+const unwatch = watchEvent(client, {
+  address: '0x20c0000000000000000000000000000000000001',
+  event: {
+    type: 'event',
+    name: 'Transfer',
+    inputs: [
+      { name: 'from', type: 'address', indexed: true },
+      { name: 'to', type: 'address', indexed: true },
+      { name: 'value', type: 'uint256' },
+    ],
+  },
+  onLogs: (logs) => {
+    logs.forEach((log) => {
+      if (log.args.to === yourAddress) {
+        console.log('Received payment:', {
+          from: log.args.from,
+          amount: log.args.value,
+        })
+      }
+    })
+  },
+})
+```
+
+```rust [Rust]
+use alloy::{primitives::address, providers::ProviderBuilder};
+use futures_util::StreamExt;
+use tempo_alloy::{TempoNetwork, contracts::precompiles::ITIP20};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .connect(&std::env::var("RPC_URL").expect("No RPC URL set"))
+        .await?;
+
+    // Watch for incoming transfers // [!code focus]
+    let mut transfers = ITIP20::new( // [!code focus]
+        address!("0x20c0000000000000000000000000000000000001"), // [!code focus]
+        provider, // [!code focus]
+    ) // [!code focus]
+    .Transfer_filter() // [!code focus]
+    .watch() // [!code focus]
+    .await? // [!code focus]
+    .into_stream(); // [!code focus]
+
+    while let Some(Ok((payment, _))) = transfers.next().await { // [!code focus]
+        println!("Received payment: {payment:?}") // [!code focus]
+    } // [!code focus]
+
+    Ok(())
+}
+```
+
+:::
+
+## Payment Reconciliation with Memos
+
+If payments include memos (invoice IDs, order numbers, etc.), you can reconcile them automatically:
+
+:::code-group
+
+```ts [TypeScript]
+// Watch for TransferWithMemo events
+const unwatch = watchEvent(client, {
+  address: tokenAddress,
+  event: {
+    type: 'event',
+    name: 'TransferWithMemo',
+    inputs: [
+      { name: 'from', type: 'address', indexed: true },
+      { name: 'to', type: 'address', indexed: true },
+      { name: 'value', type: 'uint256' },
+      { name: 'memo', type: 'bytes32', indexed: true },
+    ],
+  },
+  onLogs: (logs) => {
+    logs.forEach((log) => {
+      if (log.args.to === yourAddress) {
+        const invoiceId = log.args.memo
+        // Mark invoice as paid in your database
+        markInvoiceAsPaid(invoiceId, log.args.value)
+      }
+    })
+  },
+})
+```
+
+```rust [Rust]
+use alloy::{primitives::address, providers::ProviderBuilder};
+use futures_util::StreamExt;
+use tempo_alloy::{TempoNetwork, contracts::precompiles::ITIP20};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .connect(&std::env::var("RPC_URL").expect("No RPC URL set"))
+        .await?;
+
+    let mut transfers = ITIP20::new( // [!code focus]
+        address!("0x20c0000000000000000000000000000000000001"), // [!code focus]
+        provider, // [!code focus]
+    ) // [!code focus]
+    .TransferWithMemo_filter() // [!code focus]
+    .watch() // [!code focus]
+    .await? // [!code focus]
+    .into_stream(); // [!code focus]
+
+    while let Some(Ok((transfer, _))) = transfers.next().await { // [!code focus]
+        // Mark invoice as paid in your database.
+        let invoice_id = transfer.memo; // [!code focus]
+        mark_invoice_paid(invoice_id).await?; // [!code focus]
+    } // [!code focus]
+
+    Ok(())
+}
+```
+
+:::
+
+## Smart Contract Integration
+
+If you're building a smart contract that accepts payments:
+
+```solidity
+contract PaymentReceiver {
+    ITIP20 public token;
+    mapping(bytes32 => bool) public paidInvoices;
+    
+    event PaymentReceived(
+        address indexed payer,
+        uint256 amount,
+        bytes32 indexed invoiceId
+    );
+    
+    function receivePayment(
+        address payer,
+        uint256 amount,
+        bytes32 invoiceId
+    ) external {
+        require(!paidInvoices[invoiceId], "Invoice already paid");
+        
+        // Transfer tokens from payer to this contract
+        token.transferFrom(payer, address(this), amount);
+        
+        paidInvoices[invoiceId] = true;
+        emit PaymentReceived(payer, amount, invoiceId);
+    }
+}
+```
+
+## Payment Verification Best Practices
+
+1. **Verify onchain**: Always verify payments onchain before marking orders as paid
+2. **Use memos**: Request memos from payers to link payments to invoices or orders
+3. **Check confirmations**: Wait for transaction finality (~1 second on Tempo) before processing
+4. **Handle edge cases**: Account for partial payments, refunds, and failed transactions
+
+## Cross-Stablecoin Payments
+
+If you need to accept payments in a specific stablecoin but receive a different one, use the exchange to swap:
+
+```ts
+// User sends USDC, but you need USDT
+// Swap USDC to USDT using the exchange
+const { receipt } = await client.dex.sellSync({
+  tokenIn: usdcAddress,
+  tokenOut: usdtAddress,
+  amountIn: receivedAmount,
+  minAmountOut: receivedAmount * 99n / 100n, // 1% slippage
+})
+```
+
+## Next Steps
+
+- **[Send a payment](/guide/payments/send-a-payment)** to learn how to send payments
+- Learn more about [Exchange](/guide/stablecoin-exchange) for cross-stablecoin payments

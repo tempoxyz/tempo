@@ -1,0 +1,89 @@
+import { Callout } from 'vocs/components'
+
+# Scheduled Transactions
+
+Execute transactions only within a specific time window using `validAfter` and `validBefore` timestamps.
+
+Scheduled transactions are enabled by the [Tempo Transaction](/protocol/transactions/spec-tempo-transaction) type, which includes optional timestamp fields. These fields are validated by the protocol when the transaction is submitted.
+
+## Setting Time Bounds
+
+You can add optional timestamp fields to your transaction to control when it can be executed. Both `validAfter` and `validBefore` accept Unix timestamps.
+
+For example, to create a transaction that can only execute between Jan 1, 2025 and Jan 2, 2025, you would set `validAfter: 1735689600` and `validBefore: 1735776000` when signing the transaction.
+
+## Time Window Validation
+
+The protocol validates timestamps against the block timestamp:
+
+- **`validAfter`**: Block timestamp must be greater than or equal to this value
+- **`validBefore`**: Block timestamp must be less than or equal to this value
+- **Both optional**: Omit either or both to not restrict that bound
+
+You can use these fields individually or in combination:
+
+- **Only `validAfter`**: Transaction can execute any time after the specified date (e.g., after Jan 1, 2025)
+- **Only `validBefore`**: Transaction must execute by the specified date (e.g., before Jan 2, 2025)
+- **Both**: Transaction has a specific time window for execution
+- **Neither**: No time restrictions
+
+## Examples
+
+### Example: Vesting Schedule
+
+Release tokens at a specific future time by pre-signing a transaction with a future `validAfter` timestamp.
+
+You would sign a token transfer transaction that includes `validAfter: 1767225600` (Jan 1, 2026). The signed transaction can be stored off-chain or given to a third party. When Jan 1, 2026 arrives, anyone can submit the signed transaction to the network, and it will execute. If submitted before that date, validators will reject it.
+
+This enables trustless vesting schedules where the beneficiary holds a pre-signed transaction that becomes valid at a specific future date.
+
+### Example: Time-Limited Offer
+
+You can create an offer that expires if not accepted by setting both `validAfter` and `validBefore` timestamps.
+
+For example, to create an offer valid for 24 hours, you would set `validAfter` to the current timestamp and `validBefore` to 86400 seconds (24 hours) in the future. The signed transaction can only be executed within that 24-hour window. After the expiration time passes, the transaction becomes invalid and cannot be included in a block.
+
+### Example: Delayed Execution
+
+You can sign a transaction now that can only be executed at a future time by setting `validAfter` to a timestamp 7 days in the future.
+
+The signed transaction is then stored (in a database, onchain via a contract, or held by a party). After the 7-day delay period passes, anyone with access to the signed transaction can submit it to the network for execution. The protocol enforces that the transaction cannot be included in a block before the specified time.
+
+This is useful for governance proposals with timelock requirements or delayed contract upgrades.
+
+## Storing Scheduled Transactions
+
+<Callout type="info">
+  **Important**: It is your responsibility to store and manage signed scheduled transactions until their execution time. The protocol validates the time constraints but does not store transactions for you.
+</Callout>
+
+When you create a scheduled transaction, you have several options for storage:
+
+- **Self-custody**: Store the signed transaction in your own database or secure storage until the execution time
+- **Third-party services**: Work with a company that specializes in holding and submitting scheduled transactions at the appropriate time
+- **Smart contracts**: Store the signed transaction onchain in a contract that can submit it when the time window is valid
+
+The Tempo team is actively exploring the design of a protocol-level scheduled transaction feature that would eliminate the need for off-chain storage. If this capability is valuable to your use case, please contact us to share your requirements and help inform the design.
+
+## Mempool Behavior
+
+Validators will reject transactions that are outside their validity window:
+
+- **Too early**: Transactions with `validAfter` in the future won't be included in blocks. The transaction will be rejected if you try to submit it before the specified time.
+- **Too late**: Transactions with `validBefore` in the past will be rejected. Once the expiration time passes, the transaction can no longer be executed.
+
+For example, if you submit a transaction with `validAfter` set to Jan 1, 2026, validators will return an error until that timestamp is reached.
+
+## Combining with Other Features
+
+**Fee sponsorship**: You can combine scheduled transactions with fee sponsorship, where a sponsor pays the fees for a time-locked transaction. The fee payer signs their portion, and the combined transaction becomes valid only within the specified time window.
+
+**Batch transactions**: Multiple operations can be scheduled together to execute atomically within a specific time window. All operations in the batch must succeed or fail together, and the entire batch is subject to the time constraints.
+
+<Callout type="warning">
+  The block timestamp is set by validators and may vary slightly. For critical timing, account for small time variations (±15 seconds).
+</Callout>
+
+## Technical Details
+
+For complete specifications on timestamp validation, see the [Tempo Transaction](/protocol/transactions/spec-tempo-transaction) type specification.

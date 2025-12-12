@@ -22,21 +22,23 @@ use commonware_consensus::{
     types::{Epoch, Round, View},
     utils,
 };
+use commonware_cryptography::ed25519::PublicKey;
 use commonware_macros::select;
 use commonware_runtime::{
     ContextCell, FutureExt as _, Handle, Metrics, Pacer, Spawner, Storage, spawn_cell,
 };
 
 use commonware_utils::SystemTimeExt;
-use eyre::{OptionExt, WrapErr as _, bail, ensure, eyre};
+use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{
     StreamExt as _, TryFutureExt as _,
     channel::{mpsc, oneshot},
-    future::{Either, always_ready, try_join},
+    future::{Either, always_ready, ready, try_join},
 };
 use rand::{CryptoRng, Rng};
 use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::SealedBlock;
+use tempo_dkg_onchain_artifacts::PublicOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 
 use reth_provider::BlockReader as _;
@@ -52,7 +54,6 @@ use super::{
 };
 use crate::{
     consensus::{Digest, block::Block},
-    dkg::PublicOutcome,
     epoch::SchemeProvider,
     subblocks,
 };
@@ -189,7 +190,7 @@ where
             Message::Verify(verify) => {
                 self.context.with_label("verify").spawn({
                     let inner = self.inner.clone();
-                    move |context| inner.handle_verify(verify, context)
+                    move |context| inner.handle_verify(*verify, context)
                 });
             }
         }
@@ -271,7 +272,8 @@ impl Inner<Init> {
                 // TODO(janis): should we panic instead?
                 bail!(
                     "no information on the source block at height `{height}` \
-                    exists yet; this is a problem and will likely cause the consensus engine to not start"
+                    exists yet; this is a problem and will likely cause the \
+                    consensus engine to not start"
                 );
             };
             digest
@@ -312,7 +314,12 @@ impl Inner<Init> {
                 ))
            },
 
-            res = self.clone().propose(context.clone(), parent_view, parent_digest, round) => {
+            res = self.clone().propose(
+                context.clone(),
+                parent_view,
+                parent_digest,
+                round
+            ) => {
                 res.wrap_err("failed creating a proposal")
             }
         )?;
@@ -328,7 +335,8 @@ impl Inner<Init> {
 
         response.send(proposal_digest).map_err(|_| {
             eyre!(
-                "failed returning proposal to consensus engine: response channel was already closed"
+                "failed returning proposal to consensus engine: response \
+                channel was already closed"
             )
         })?;
 
@@ -343,7 +351,8 @@ impl Inner<Init> {
             *lock = Some(proposal.clone());
         }
 
-        // Make sure reth sees the new payload so that in the next round we can verify blocks on top of it.
+        // Make sure reth sees the new payload so that in the next round we can
+        // verify blocks on top of it.
         let is_good = verify_block(
             context,
             round.epoch(),
@@ -363,17 +372,6 @@ impl Inner<Init> {
             eyre::bail!("validation reported that that just-proposed block is invalid");
         }
 
-        if let Err(error) = self
-            .state
-            .executor_mailbox
-            .canonicalize_head(proposal_height, proposal_digest)
-        {
-            warn!(
-                %error,
-                %proposal_digest,
-                "failed making the proposal the head of the canonical chain",
-            );
-        }
         Ok(())
     }
 
@@ -395,12 +393,14 @@ impl Inner<Init> {
             digest = %verify.payload,
             parent.view = verify.parent.0,
             parent.digest = %verify.parent.1,
+            proposer = %verify.proposer,
         ),
     )]
     async fn handle_verify<TContext: Pacer>(mut self, verify: Verify, context: TContext) {
         let Verify {
             parent,
             payload,
+            proposer,
             mut response,
             round,
         } = verify;
@@ -412,7 +412,7 @@ impl Inner<Init> {
                 ))
             },
 
-            res = self.clone().verify(context, parent, payload, round) => {
+            res = self.clone().verify(context, parent, payload, proposer, round) => {
                 res.wrap_err("block verification failed")
             }
         );
@@ -475,18 +475,34 @@ impl Inner<Init> {
             return Ok(parent);
         }
 
-        if let Err(error) = self
-            .state
-            .executor_mailbox
-            .canonicalize_head(parent.height(), parent.digest())
+        // Send the proposal parent to reth to cover edge cases when we were not asked to verify it directly.
+        if !verify_block(
+            context.clone(),
+            utils::epoch(self.epoch_length, parent.height()),
+            self.epoch_length,
+            self.execution_node
+                .add_ons_handle
+                .beacon_engine_handle
+                .clone(),
+            &parent,
+            // It is safe to not verify the parent of the parent because this block is already notarized.
+            parent.parent_digest(),
+            &self.scheme_provider,
+        )
+        .await
+        .wrap_err("failed verifying block against execution layer")?
         {
-            tracing::warn!(
-                %error,
-                parent.height = parent.height(),
-                parent.digest = %parent.digest(),
-                "failed updating canonical head to parent",
-            );
+            eyre::bail!("the proposal parent block is not valid");
         }
+
+        ready(
+            self.state
+                .executor_mailbox
+                .canonicalize_head(parent.height(), parent.digest()),
+        )
+        .and_then(|ack| ack.map_err(eyre::Report::new))
+        .await
+        .wrap_err("failed updating canonical head to parent")?;
 
         // Query DKG manager for ceremony data before building payload
         // This data will be passed to the payload builder via attributes
@@ -497,12 +513,20 @@ impl Inner<Init> {
             let outcome = self
                 .state
                 .dkg_manager
-                .get_public_ceremony_outcome(round.epoch())
+                .get_public_ceremony_outcome()
                 .await
-                .transpose()
-                .ok_or_eyre("public dkg ceremony outcome does not exist")
-                .and_then(|this| this)
                 .wrap_err("failed getting public dkg ceremony outcome")?;
+            ensure!(
+                round.epoch() + 1 == outcome.epoch,
+                "outcome is for epoch `{}`, but we are trying to include the \
+                outcome for epoch `{}`",
+                outcome.epoch,
+                round.epoch() + 1,
+            );
+            info!(
+                outcome.epoch,
+                "received DKG outcome; will include in payload builder attributes",
+            );
             outcome.encode().freeze().into()
         } else {
             // Regular block: try to include intermediate dealing
@@ -590,6 +614,7 @@ impl Inner<Init> {
         context: TContext,
         (parent_view, parent_digest): (View, Digest),
         payload: Digest,
+        proposer: PublicKey,
         round: Round,
     ) -> eyre::Result<(Block, bool)> {
         let genesis_block = self.genesis_block.clone();
@@ -629,42 +654,20 @@ impl Inner<Init> {
             }
         }
 
-        if utils::is_last_block_in_epoch(self.epoch_length, block.height())
-            .is_some_and(|e| e == round.epoch())
+        if let Err(reason) = verify_header_extra_data(
+            &block,
+            &self.state.dkg_manager,
+            self.epoch_length,
+            &proposer,
+        )
+        .await
         {
-            let our_outcome = self
-                .state
-                .dkg_manager
-                .get_public_ceremony_outcome(round.epoch())
-                .await
-                .transpose()
-                .ok_or_eyre("public dkg ceremony outcome does not exist")
-                // TODO(janis): Result::flatten once msrv 1.89
-                .and_then(|this| this)
-                .wrap_err(
-                    "failed getting public dkg ceremony outcome; cannot verify end of epoch block",
-                )?;
-            let block_outcome = match PublicOutcome::decode(block.header().extra_data().as_ref()) {
-                Err(error) => {
-                    warn!(
-                        error = %eyre::Report::new(error),
-                        "cannot decode extra data header field of boundary block as public ceremony outcome; failing block",
-                    );
-                    return Ok((block, false));
-                }
-                Ok(block_outcome) => block_outcome,
-            };
-            if our_outcome != block_outcome {
-                warn!(
-                    our.participants = ?our_outcome.participants,
-                    our.public = ?our_outcome.public,
-                    block.participants = ?block_outcome.participants,
-                    block.public = ?block_outcome.public,
-                    "our public dkg ceremont outcome does not match what's stored in the block; failing block",
-                );
-                return Ok((block, false));
-            }
-        };
+            warn!(
+                %reason,
+                "header extra data could not be verified; failing block",
+            );
+            return Ok((block, false));
+        }
 
         if let Err(error) = self
             .state
@@ -808,7 +811,7 @@ async fn verify_block<TContext: Pacer>(
         .ok_or_eyre("cannot determine participants in the current epoch")?;
     let block = block.clone().into_inner();
     let execution_data = TempoExecutionData {
-        block,
+        block: Arc::new(block),
         validator_set: Some(
             scheme
                 .participants()
@@ -841,6 +844,68 @@ async fn verify_block<TContext: Pacer>(
         }
     }
 }
+
+#[instrument(skip_all, err(Display))]
+async fn verify_header_extra_data(
+    block: &Block,
+    dkg_manager: &crate::dkg::manager::Mailbox,
+    epoch_length: u64,
+    proposer: &PublicKey,
+) -> eyre::Result<()> {
+    if utils::is_last_block_in_epoch(epoch_length, block.height()).is_some() {
+        info!(
+            "on last block of epoch; verifying that the boundary block \
+            contains the correct DKG outcome",
+        );
+        let our_outcome = dkg_manager.get_public_ceremony_outcome().await.wrap_err(
+            "failed getting public dkg ceremony outcome; cannot verify end \
+                of epoch block",
+        )?;
+        let block_outcome = PublicOutcome::decode(block.header().extra_data().as_ref()).wrap_err(
+            "failed decoding extra data header as DKG ceremony \
+                outcome; cannot verify end of epoch block",
+        )?;
+        if our_outcome != block_outcome {
+            // Emit the log here so that it's structured. The error would be annoying to read.
+            warn!(
+                our.epoch = our_outcome.epoch,
+                our.participants = ?our_outcome.participants,
+                our.public = ?our_outcome.public,
+                block.epoch = block_outcome.epoch,
+                block.participants = ?block_outcome.participants,
+                block.public = ?block_outcome.public,
+                "our public dkg ceremony outcome does not match what's stored \
+                in the block",
+            );
+            return Err(eyre!(
+                "our public dkg ceremony outcome does not match what's \
+                stored in the block header extra_data field; they must \
+                match so that the end-of-block is valid",
+            ));
+        }
+    } else if !block.header().extra_data().is_empty()
+        && let Ok(dealing) = block.try_read_ceremony_deal_outcome()
+    {
+        info!("block header extra_data header contained intermediate DKG dealing; verifying it");
+        ensure!(
+            dealing.dealer() == proposer,
+            "proposer `{proposer}` is not the dealer `{}` recorded in the \
+            intermediate DKG dealing",
+            dealing.dealer(),
+        );
+
+        ensure!(
+            dkg_manager
+                .verify_intermediate_dealings(dealing)
+                .await
+                .wrap_err("failed request to verify DKG dealing")?,
+            "signature of intermediate DKG outcome could not be verified",
+        );
+    }
+
+    Ok(())
+}
+
 /// Constructs a [`PayloadId`] from the first 8 bytes of `block_hash`.
 fn payload_id_from_block_hash(block_hash: &B256) -> PayloadId {
     PayloadId::new(

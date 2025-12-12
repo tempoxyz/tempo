@@ -1,0 +1,329 @@
+import LucideCoins from '~icons/lucide/coins'
+import * as Demo from '../../../components/guides/Demo.tsx'
+import * as Step from '../../../components/guides/steps'
+import * as Card from '../../../components/Card.tsx'
+
+# Create a Stablecoin
+
+Create your own stablecoin on Tempo using the [TIP-20 token standard](/protocol/tip20/overview). 
+TIP-20 tokens are designed specifically for payments with built-in compliance features, role-based permissions, 
+and integration with Tempo's payment infrastructure.
+
+## Demo
+
+By the end of this guide, you will be able to create a stablecoin on Tempo.
+
+<Demo.Container name="Create a Stablecoin" footerVariant="source" src="tempoxyz/tempo-ts/tree/main/examples/issuance">
+  <Step.Connect stepNumber={1} />
+  <Step.AddFunds stepNumber={2} />
+  <Step.CreateToken stepNumber={3} last />
+</Demo.Container>
+
+## Steps
+
+::::steps
+
+### Set up Wagmi & integrate accounts
+
+Ensure that you have set up your project with Wagmi and integrated accounts by following either of the guides:
+
+- [Embed Passkey accounts](/guide/use-accounts/embed-passkeys)
+- [Connect to wallets](/guide/use-accounts/connect-to-wallets)
+
+### Add testnet funds¹
+
+Before we send off a transaction to deploy our stablecoin to the Tempo testnet, we need to make sure our account is funded with a stablecoin to cover the transaction fee. 
+
+As we have configured our project to use `AlphaUSD` (`0x20c000…0001`) 
+as the [default fee token](/quickstart/integrate-tempo#default-fee-token), we will need to add some `AlphaUSD` to our account.
+
+Luckily, the built-in Tempo testnet faucet supports funding accounts with `AlphaUSD`.
+
+<Demo.Container name="Add Funds" footerVariant="balances" showBadge={false}>
+  <Step.AddFunds stepNumber={1} last />
+</Demo.Container>
+
+:::code-group
+
+```tsx twoslash [AddFunds.ts]
+// @noErrors
+import { Hooks } from 'tempo.ts/wagmi'
+import { useConnection } from 'wagmi'
+
+export function AddFunds() {
+  const { address } = useConnection()
+  const addFunds = Hooks.faucet.useFund()
+
+  return (
+    <button onClick={() => addFunds.mutate({ account: address })}>
+      Add Funds
+    </button>
+  )
+}
+```
+
+```tsx twoslash [config.ts] filename="config.ts"
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempo } from 'tempo.ts/chains'
+import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+
+export const config = createConfig({
+  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  connectors: [webAuthn({
+    keyManager: KeyManager.localStorage(),
+  })],
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::
+
+:::warning
+¹ It is important to note that the `addFunds` Hook only works on testnets as a convenience feature to get
+started quickly. For production, you will need to onramp & fund your account manually.
+:::
+
+### Add form fields
+
+Now that we have some funds to cover the transaction fee in our account, we can create a stablecoin.
+
+Let's create a new component and add some input fields for the **name** and **symbol** of our stablecoin, as shown in the demo.
+
+<Demo.Container name="Create Form">
+  <Step.AddFunds stepNumber={1} />
+  <Step.CreateToken stepNumber={2} last />
+</Demo.Container>
+
+:::code-group
+
+```tsx twoslash [CreateStablecoin.tsx]
+// @noErrors
+export function CreateStablecoin() {
+  return (
+    <div>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          const formData = new FormData(event.target as HTMLFormElement)
+          const name = formData.get('name') as string
+          const symbol = formData.get('symbol') as string
+        }}
+      >
+        <input type="text" name="name" placeholder="demoUSD" required />
+        <input type="text" name="symbol" placeholder="DEMO" required />
+        <button type="submit">
+          Create
+        </button>
+      </form>
+    </div>
+  )
+}
+```
+
+```tsx twoslash [config.ts] filename="config.ts"
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempo } from 'tempo.ts/chains'
+import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+
+export const config = createConfig({
+  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  connectors: [webAuthn({
+    keyManager: KeyManager.localStorage(),
+  })],
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::
+
+### Add submission logic
+
+Now that we have some input fields, we need to add some logic to handle the submission of the form to create the stablecoin.
+
+After this step, your users will be able to create a stablecoin by clicking the "Create" button!
+
+<Demo.Container name="Create Form">
+  <Step.CreateToken stepNumber={1} last />
+</Demo.Container>
+
+:::code-group
+
+```tsx twoslash [CreateStablecoin.tsx]
+import { Hooks } from 'tempo.ts/wagmi' // [!code ++]
+
+// @noErrors
+export function CreateStablecoin() {
+  const create = Hooks.token.useCreateSync() // [!code ++]
+
+  return (
+    <div>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          const formData = new FormData(event.target as HTMLFormElement)
+          const name = formData.get('name') as string
+          const symbol = formData.get('symbol') as string
+          create.mutate({ // [!code ++]
+            name, // [!code ++]
+            symbol, // [!code ++]
+            currency: 'USD', // [!code ++]
+          }) // [!code ++]
+        }}
+      >
+        <input type="text" name="name" placeholder="demoUSD" required />
+        <input type="text" name="symbol" placeholder="DEMO" required />
+        <button type="submit">
+          Create
+        </button>
+      </form>
+    </div>
+  )
+}
+```
+
+```tsx twoslash [config.ts] filename="config.ts"
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempo } from 'tempo.ts/chains'
+import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+
+export const config = createConfig({
+  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  connectors: [webAuthn({
+    keyManager: KeyManager.localStorage(),
+  })],
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::
+
+### Add success state
+
+Now that users can submit the form and create a stablecoin, let's add a basic success state to display 
+the name of the stablecoin and a link to the transaction receipt.
+
+:::code-group
+
+```tsx twoslash [CreateStablecoin.tsx]
+import { Hooks } from 'tempo.ts/wagmi' 
+
+// @noErrors
+export function CreateStablecoin() {
+  const create = Hooks.token.useCreateSync() 
+
+  return (
+    <div>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          const formData = new FormData(event.target as HTMLFormElement)
+          const name = formData.get('name') as string
+          const symbol = formData.get('symbol') as string
+          create.mutate({ 
+            name, 
+            symbol, 
+            currency: 'USD', 
+          }) 
+        }}
+      >
+        <input type="text" name="name" placeholder="demoUSD" required />
+        <input type="text" name="symbol" placeholder="DEMO" required />
+        <button type="submit">
+          Create
+        </button>
+      </form>
+
+      {create.data && ( // [!code ++]
+        <div> {/* // [!code ++] */}
+          {create.data.name} created successfully! {/* // [!code ++] */}
+          <a href={`https://explore.tempo.xyz/tx/${create.data.receipt.transactionHash}`}> {/* // [!code ++] */}
+            View receipt {/* // [!code ++] */}
+          </a> {/* // [!code ++] */}
+        </div> /* // [!code ++] */
+      )} {/* // [!code ++] */}
+    </div>
+  )
+}
+```
+
+```tsx twoslash [config.ts] filename="config.ts"
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempo } from 'tempo.ts/chains'
+import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+
+export const config = createConfig({
+  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  connectors: [webAuthn({
+    keyManager: KeyManager.localStorage(),
+  })],
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::
+
+### Next steps
+
+Now that you have created your first stablecoin, you can now:
+- learn the [Best Practices](#best-practices) below
+- follow a guide on how to [mint](/guide/issuance/mint-stablecoins) and [more](/guide/issuance/manage-stablecoin) with your stablecoin.
+
+::::
+
+## Best Practices
+
+### Loading State
+
+When the user is creating a stablecoin, we should show loading state to indicate that the process is happening.
+
+We can use the `isPending` property from the `useCreateSync` hook to show pending state to the user on our "Create" button.
+
+```tsx
+<button 
+  disabled={create.isPending} // [!code ++]
+  type="submit"
+>
+  {create.isPending ? 'Creating...' : 'Create'} {/* // [!code ++] */}
+</button>
+```
+
+### Error Handling
+
+If an error unexpectedly occurs, we should display an error message to the user.
+
+We can use the `error` property from the `useCreateSync` hook to show error state to the user.
+
+```tsx twoslash
+// @noErrors
+export function CreateStablecoin() {
+  // ...
+
+  if (create.error) // [!code ++]
+    return <div>Error: {create.error.message}</div> // [!code ++]
+
+  // ...
+}
+```
+
+## Learning Resources
+
+<Card.Container>
+  <Card.Link
+    description="Learn more about TIP-20 tokens on Tempo"
+    href="/protocol/tip20/overview"
+    icon={LucideCoins}
+    title="TIP20 Tokens"
+  />
+</Card.Container>

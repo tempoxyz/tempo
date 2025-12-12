@@ -12,25 +12,11 @@ workspace = true
 
 [dependencies]
 tempo-chainspec.workspace = true
-tempo-commonware-node-config.workspace = true
 tempo-contracts.workspace = true
+tempo-commonware-node-config.workspace = true
+tempo-dkg-onchain-artifacts.workspace = true
 tempo-evm.workspace = true
 tempo-precompiles.workspace = true
-
-alloy-primitives.workspace = true
-camino = "1.1.11"
-clap = { version = "4.5.45", features = ["derive"] }
-commonware-cryptography.workspace = true
-commonware-utils.workspace = true
-eyre.workspace = true
-indexmap.workspace = true
-rand.workspace = true
-reth-evm.workspace = true
-reth-network-peers.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-tokio.workspace = true
-toml.workspace = true
 
 alloy = { workspace = true, features = [
   "genesis",
@@ -39,7 +25,19 @@ alloy = { workspace = true, features = [
   "signer-mnemonic",
   "sol-types",
 ] }
+alloy-primitives.workspace = true
+clap = { version = "4.5.45", features = ["derive"] }
+commonware-codec.workspace = true
+commonware-cryptography.workspace = true
+commonware-utils.workspace = true
+const-hex.workspace = true
+eyre.workspace = true
 indicatif = { workspace = true, features = ["rayon"] }
-itertools = "0.14.0"
+rand.workspace = true
 rayon = "1.10"
-secp256k1 = "0.30.0"
+reth-evm.workspace = true
+reth-network-peers.workspace = true
+secp256k1.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

@@ -2,12 +2,10 @@ use commonware_consensus::{Reporter, marshal::Update, types::Epoch};
 use commonware_utils::acknowledgement::Exact;
 use eyre::WrapErr as _;
 use futures::channel::{mpsc, oneshot};
+use tempo_dkg_onchain_artifacts::{IntermediateOutcome, PublicOutcome};
 use tracing::{Span, warn};
 
-use crate::{
-    consensus::block::Block,
-    dkg::ceremony::{IntermediateOutcome, PublicOutcome},
-};
+use crate::consensus::block::Block;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Mailbox {
@@ -34,16 +32,39 @@ impl Mailbox {
             .wrap_err("actor dropped channel before responding with ceremony deal outcome")
     }
 
-    pub(crate) async fn get_public_ceremony_outcome(
-        &self,
-        epoch: Epoch,
-    ) -> eyre::Result<Option<PublicOutcome>> {
+    pub(crate) async fn get_public_ceremony_outcome(&self) -> eyre::Result<PublicOutcome> {
         let (response, rx) = oneshot::channel();
         self.inner
-            .unbounded_send(Message::in_current_span(GetOutcome { epoch, response }))
+            .unbounded_send(Message::in_current_span(GetOutcome { response }))
             .wrap_err("failed sending message to actor")?;
         rx.await
             .wrap_err("actor dropped channel before responding with ceremony deal outcome")
+    }
+
+    /// Verifies the `dealing` based on the current status of the DKG actor.
+    ///
+    /// This method is intended to be called by the application when verifying
+    /// the dealing placed in a proposal. Because pre- and post-allegretto
+    /// dealings require different verification, this verification relies on two
+    /// assumptions:
+    ///
+    /// 1. only propoosals from the currently running and latest epoch will have
+    ///    to be verified except for the last height.
+    /// 2. DKG dealings are only written into a block up to and excluding the
+    ///    last height of an epoch.
+    pub(crate) async fn verify_intermediate_dealings(
+        &self,
+        dealing: IntermediateOutcome,
+    ) -> eyre::Result<bool> {
+        let (response, rx) = oneshot::channel();
+        self.inner
+            .unbounded_send(Message::in_current_span(VerifyDealing {
+                dealing: dealing.into(),
+                response,
+            }))
+            .wrap_err("failed sending message to actor")?;
+        rx.await
+            .wrap_err("actor dropped channel before responding with ceremony info")
     }
 }
 
@@ -65,6 +86,7 @@ pub(super) enum Command {
     Finalize(Finalize),
     GetIntermediateDealing(GetIntermediateDealing),
     GetOutcome(GetOutcome),
+    VerifyDealing(VerifyDealing),
 }
 
 impl From<Finalize> for Command {
@@ -76,6 +98,12 @@ impl From<Finalize> for Command {
 impl From<GetIntermediateDealing> for Command {
     fn from(value: GetIntermediateDealing) -> Self {
         Self::GetIntermediateDealing(value)
+    }
+}
+
+impl From<VerifyDealing> for Command {
+    fn from(value: VerifyDealing) -> Self {
+        Self::VerifyDealing(value)
     }
 }
 
@@ -96,15 +124,20 @@ pub(super) struct GetIntermediateDealing {
 }
 
 pub(super) struct GetOutcome {
-    pub(super) epoch: Epoch,
-    pub(super) response: oneshot::Sender<Option<PublicOutcome>>,
+    pub(super) response: oneshot::Sender<PublicOutcome>,
+}
+
+pub(super) struct VerifyDealing {
+    pub(super) dealing: Box<IntermediateOutcome>,
+    pub(super) response: oneshot::Sender<bool>,
 }
 
 impl Reporter for Mailbox {
-    type Activity = Update<Block>;
+    type Activity = Update<Block, Exact>;
 
     async fn report(&mut self, update: Self::Activity) {
         let Update::Block(block, acknowledgment) = update else {
+            tracing::trace!("dropping tip update; DKG manager is only interested in blocks");
             return;
         };
         if let Err(error) = self

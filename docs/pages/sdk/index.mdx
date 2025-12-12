@@ -1,0 +1,47 @@
+import LucideCode from '~icons/lucide/code'
+import LucideHammer from '~icons/lucide/hammer'
+import LucideCog from '~icons/lucide/cog'
+import LucideBox from '~icons/lucide/box'
+import * as Card from "../../components/Card.tsx"
+
+## SDKs
+
+Tempo is building clients in multiple languages to make integration as easy as possible.
+
+<Card.Container>
+  <Card.Link
+    description="Build on Tempo using TypeScript"
+    href="/sdk/typescript"
+    icon={LucideCode}
+    title="TypeScript"
+  />
+
+  <Card.Link
+    description="Build on Tempo using Go"
+    href="/sdk/go"
+    icon={LucideBox}
+    title="Go"
+  />
+
+  <Card.Link
+    description="Build on Tempo using Foundry"
+    href="/sdk/foundry"
+    icon={LucideHammer}
+    title="Foundry"
+  />
+
+  <Card.Link
+    description="Build on Tempo using Rust"
+    href="/sdk/rust"
+    icon={LucideCog}
+    title="Rust"
+  />
+</Card.Container>
+
+<Card.Notice
+  icon={LucideCode}
+  title="Need language support?"
+  inline
+>
+  <p>Get in touch with us to <a href="mailto:partners@tempo.xyz">request language support</a> or contribute directly.</p>
+</Card.Notice>

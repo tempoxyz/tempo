@@ -1,5 +1,6 @@
 use crate::{
     TempoBlockEnv, TempoInvalidTransaction, TempoTxEnv,
+    error::TempoHaltReason,
     evm::{TempoContext, TempoEvm},
     handler::TempoEvmHandler,
 };
@@ -7,10 +8,7 @@ use alloy_evm::Database;
 use reth_evm::TransactionEnv;
 use revm::{
     DatabaseCommit, ExecuteCommitEvm, ExecuteEvm,
-    context::{
-        ContextSetters, TxEnv,
-        result::{ExecResultAndState, HaltReason},
-    },
+    context::{ContextSetters, TxEnv, result::ExecResultAndState},
     context_interface::{
         ContextTr, JournalTr,
         result::{EVMError, ExecutionResult},
@@ -21,6 +19,9 @@ use revm::{
     state::EvmState,
 };
 
+/// Total gas system transactions are allowed to use.
+const SYSTEM_CALL_GAS_LIMIT: u64 = 250_000_000;
+
 impl<DB, I> ExecuteEvm for TempoEvm<DB, I>
 where
     DB: Database,
@@ -29,7 +30,7 @@ where
     type Block = TempoBlockEnv;
     type State = EvmState;
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
-    type ExecutionResult = ExecutionResult<HaltReason>;
+    type ExecutionResult = ExecutionResult<TempoHaltReason>;
 
     fn set_block(&mut self, block: Self::Block) {
         self.inner.ctx.set_block(block);
@@ -101,7 +102,7 @@ where
         data: Bytes,
     ) -> Result<Self::ExecutionResult, Self::Error> {
         let mut tx = TxEnv::new_system_tx_with_caller(caller, system_contract_address, data);
-        tx.set_gas_limit(250_000_000);
+        tx.set_gas_limit(SYSTEM_CALL_GAS_LIMIT);
         self.inner.ctx.set_tx(tx.into());
         let mut h = TempoEvmHandler::new();
         h.run_system_call(self)
@@ -119,9 +120,9 @@ where
         system_contract_address: Address,
         data: Bytes,
     ) -> Result<Self::ExecutionResult, Self::Error> {
-        self.inner
-            .ctx
-            .set_tx(TxEnv::new_system_tx_with_caller(caller, system_contract_address, data).into());
+        let mut tx = TxEnv::new_system_tx_with_caller(caller, system_contract_address, data);
+        tx.set_gas_limit(SYSTEM_CALL_GAS_LIMIT);
+        self.inner.ctx.set_tx(tx.into());
         let mut h = TempoEvmHandler::new();
         h.inspect_run_system_call(self)
     }

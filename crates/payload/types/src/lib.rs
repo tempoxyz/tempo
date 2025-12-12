@@ -6,7 +6,8 @@
 mod attrs;
 
 use alloy_primitives::B256;
-pub use attrs::{InterruptHandle, TempoPayloadBuilderAttributes};
+pub use attrs::{InterruptHandle, TempoPayloadAttributes, TempoPayloadBuilderAttributes};
+use std::sync::Arc;
 
 use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
@@ -24,7 +25,7 @@ pub struct TempoPayloadTypes;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TempoExecutionData {
     /// The built block.
-    pub block: SealedBlock<Block>,
+    pub block: Arc<SealedBlock<Block>>,
     /// Validator set active at the time this block was built.
     pub validator_set: Option<Vec<B256>>,
 }
@@ -61,18 +62,22 @@ impl ExecutionPayload for TempoExecutionData {
     fn gas_used(&self) -> u64 {
         self.block.gas_used()
     }
+
+    fn block_access_list(&self) -> Option<&alloy_primitives::Bytes> {
+        None
+    }
 }
 
 impl PayloadTypes for TempoPayloadTypes {
+    type ExecutionData = TempoExecutionData;
+    type BuiltPayload = EthBuiltPayload<TempoPrimitives>;
     type PayloadAttributes =
         <Self::PayloadBuilderAttributes as PayloadBuilderAttributes>::RpcPayloadAttributes;
     type PayloadBuilderAttributes = TempoPayloadBuilderAttributes;
-    type ExecutionData = TempoExecutionData;
-    type BuiltPayload = EthBuiltPayload<TempoPrimitives>;
 
     fn block_to_payload(block: SealedBlock<Block>) -> Self::ExecutionData {
         TempoExecutionData {
-            block,
+            block: Arc::new(block),
             validator_set: None,
         }
     }

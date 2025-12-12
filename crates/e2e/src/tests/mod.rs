@@ -1,7 +1,7 @@
 use commonware_macros::test_traced;
 use reth_ethereum::{rpc::types::engine::ForkchoiceState, storage::BlockReader as _};
 
-use crate::ExecutionRuntime;
+use crate::{ExecutionRuntime, execution_runtime::chainspec};
 
 mod backfill;
 mod dkg;
@@ -28,12 +28,24 @@ fn spawning_execution_node_works() {
     //     .try_init();
     // <rest>
 
-    let runtime = ExecutionRuntime::new();
+    let runtime = ExecutionRuntime::with_chain_spec(chainspec());
     let handle = runtime.handle();
 
     futures::executor::block_on(async move {
+        let config = crate::ExecutionNodeConfig {
+            secret_key: alloy_primitives::B256::random(),
+            trusted_peers: vec![],
+            port: 0,
+        };
+        let db_path = handle.nodes_dir().join("node-1").join("db");
+        std::fs::create_dir_all(&db_path).expect("failed to create database directory");
+        let database = std::sync::Arc::new(
+            reth_db::init_db(db_path, reth_db::mdbx::DatabaseArguments::default())
+                .expect("failed to init database")
+                .with_metrics(),
+        );
         let node = handle
-            .spawn_node("node-1")
+            .spawn_node("node-1", config, database)
             .await
             .expect("a running execution runtime must be able to spawn nodes");
 

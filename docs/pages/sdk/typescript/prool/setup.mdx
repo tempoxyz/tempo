@@ -1,0 +1,69 @@
+# Setup
+
+Setup infinite pooled Tempo node instances in TypeScript using [`prool`](https://github.com/wevm/prool) by following the steps below.
+
+::::steps
+
+## Install
+
+:::code-group
+```bash [npm]
+npm i prool
+```
+
+```bash [pnpm]
+pnpm i prool
+```
+
+```bash [bun]
+bun i prool
+```
+:::
+
+- [Prool](https://github.com/wevm/prool) is a library that provides programmatic HTTP testing instances for Ethereum.
+
+## Create Instance
+
+You can programmatically start a Tempo node instance in TypeScript using `Instance.tempo`:
+
+```ts
+import { Instance, Server } from 'tempo.ts/prool'
+
+const server = Server.create({
+  instance: Instance.tempo(),
+});
+
+// Start the node
+await server.start()
+// Instances available at: 
+// - http://localhost:8545/1
+// - http://localhost:8545/2
+// - http://localhost:8545/3
+// - http://localhost:8545/4
+// - http://localhost:8545/n
+```
+
+:::tip
+You can also set up the Tempo instance using `Instance.tempo` directly if you
+do not need pooling.
+
+```ts
+import { Instance } from 'tempo.ts/prool';
+
+const instance = Instance.tempo()
+
+// Start the node
+await instance.start()
+// Instance available at: http://localhost:8545
+```
+:::
+
+## Next Steps
+
+After you have set up Tempo with Prool, you can now:
+
+- Easily use Tempo in your test suite with Vitest
+- Run Tempo locally alongside your Vite or Next.js development server
+
+::::
+

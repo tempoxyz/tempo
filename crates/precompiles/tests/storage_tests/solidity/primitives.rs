@@ -4,6 +4,8 @@
 //! storage patterns like primitive types, arrays, mappings, structs, and enums.
 
 use super::*;
+use alloy_primitives::{Address, FixedBytes};
+use tempo_precompiles::storage::Mapping;
 use tempo_precompiles_macros::{
     gen_test_fields_layout as layout_fields, gen_test_fields_struct as struct_fields,
 };
@@ -22,10 +24,11 @@ fn test_basic_types_layout() {
     let rust_layout = layout_fields!(field_a, field_b, field_c, field_d);
 
     // Compare against expected layout from Solidity
-    let solc_layout = load_solc_layout(&testdata("basic_types.sol"));
+    let sol_path = testdata("basic_types.sol");
+    let solc_layout = load_solc_layout(&sol_path);
 
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 }
 
@@ -40,10 +43,11 @@ fn test_mixed_slots_layout() {
     let rust_layout = layout_fields!(field_a, field_c);
 
     // Compare against expected layout from Solidity
-    let solc_layout = load_solc_layout(&testdata("mixed_slots.sol"));
+    let sol_path = testdata("mixed_slots.sol");
+    let solc_layout = load_solc_layout(&sol_path);
 
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 }
 
@@ -54,15 +58,24 @@ fn test_arrays_layout() {
         field_a: U256,
         large_array: [U256; 5],
         field_b: U256,
+        nested_array: [[u8; 4]; 8],
+        another_nested_array: [[u16; 2]; 6],
     }
 
-    let rust_layout = layout_fields!(field_a, large_array, field_b);
+    let rust_layout = layout_fields!(
+        field_a,
+        large_array,
+        field_b,
+        nested_array,
+        another_nested_array
+    );
 
     // Compare against expected layout from Solidity
-    let solc_layout = load_solc_layout(&testdata("arrays.sol"));
+    let sol_path = testdata("arrays.sol");
+    let solc_layout = load_solc_layout(&sol_path);
 
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 }
 
@@ -78,10 +91,11 @@ fn test_mappings_layout() {
     let rust_layout = layout_fields!(field_a, address_mapping, uint_mapping);
 
     // Compare against expected layout from Solidity
-    let solc_layout = load_solc_layout(&testdata("mappings.sol"));
+    let sol_path = testdata("mappings.sol");
+    let solc_layout = load_solc_layout(&sol_path);
 
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 }
 
@@ -97,13 +111,14 @@ fn test_structs_layout() {
         field_b: U256,
     }
 
-    let solc_layout = load_solc_layout(&testdata("structs.sol"));
+    let sol_path = testdata("structs.sol");
+    let solc_layout = load_solc_layout(&sol_path);
 
     // Verify top-level fields
     let rust_layout = layout_fields!(field_a, block_data, field_b);
 
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 
     // Verify struct member slots
@@ -111,15 +126,13 @@ fn test_structs_layout() {
     let rust_struct = struct_fields!(base_slot, field1, field2, field3);
 
     if let Err(errors) = compare_struct_members(&solc_layout, "blockData", &rust_struct) {
-        panic!("Struct member layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Struct member layout", errors, &sol_path);
     }
 }
 
 // Test enum storage layout with packing
 #[test]
 fn test_enums_layout() {
-    use alloy::primitives::Address;
-
     #[contract]
     struct Enums {
         field_a: u16,     // 2 bytes - slot 0, offset 0
@@ -130,17 +143,16 @@ fn test_enums_layout() {
     let rust_layout = layout_fields!(field_a, field_b, field_c);
 
     // Compare against expected layout from Solidity
-    let solc_layout = load_solc_layout(&testdata("enum.sol"));
+    let sol_path = testdata("enum.sol");
+    let solc_layout = load_solc_layout(&sol_path);
 
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic!("Layout mismatch:\n{}", errors.join("\n"));
+        panic_layout_mismatch("Layout", errors, &sol_path);
     }
 }
 
 #[test]
 fn test_double_mappings_layout() {
-    use alloy::primitives::FixedBytes;
-
     #[contract]
     struct DoubleMappings {
         field_a: U256,
@@ -151,9 +163,62 @@ fn test_double_mappings_layout() {
     let rust_fields = layout_fields!(field_a, account_role, allowances);
 
     // Compare against expected layout from Solidity
-    let solc_layout = load_solc_layout(&testdata("double_mappings.sol"));
+    let sol_path = testdata("double_mappings.sol");
+    let solc_layout = load_solc_layout(&sol_path);
 
     if let Err(errors) = compare_layouts(&solc_layout, &rust_fields) {
+        panic_layout_mismatch("Layout", errors, &sol_path);
+    }
+}
+
+#[test]
+fn test_multi_slot_arrays_layout() {
+    use crate::storage_tests::{PackedThreeSlot, PackedTwoSlot};
+
+    #[contract]
+    struct MultiSlotArrays {
+        dyn_two_slot: Vec<PackedTwoSlot>,
+        dyn_three_slot: Vec<PackedThreeSlot>,
+    }
+
+    let solc_layout = load_solc_layout(&testdata("multi_slot_arrays.sol"));
+
+    // Verify top-level fields
+    let rust_layout = layout_fields!(dyn_two_slot, dyn_three_slot);
+    if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
         panic!("Layout mismatch:\n{}", errors.join("\n"));
+    }
+
+    // Verify PackedTwoSlot struct member layout
+    {
+        use crate::storage_tests::__packing_packed_two_slot::*;
+        let rust_struct = struct_fields!(slots::DYN_TWO_SLOT, value, timestamp, nonce, owner);
+        if let Err(errors) = compare_struct_members(&solc_layout, "dynTwoSlot", &rust_struct) {
+            panic!(
+                "PackedTwoSlot member layout mismatch:\n{}",
+                errors.join("\n")
+            );
+        }
+    }
+
+    // Verify PackedThreeSlot struct member layout
+    {
+        use crate::storage_tests::__packing_packed_three_slot::*;
+        let rust_struct = struct_fields!(
+            slots::DYN_THREE_SLOT,
+            value,
+            timestamp,
+            start_time,
+            end_time,
+            nonce,
+            owner,
+            active
+        );
+        if let Err(errors) = compare_struct_members(&solc_layout, "dynThreeSlot", &rust_struct) {
+            panic!(
+                "PackedThreeSlot member layout mismatch:\n{}",
+                errors.join("\n")
+            );
+        }
     }
 }

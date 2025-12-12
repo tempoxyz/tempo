@@ -1,0 +1,28 @@
+import { Callout } from 'vocs/components'
+
+# WebAuthn & P256 Signatures
+
+Tempo EOA addresses can be derived from multiple signature types. Allowing you to sign transactions with standard Ethereum wallets, hardware security keys, biometric authentication like Face ID and Touch ID, or even using [passkeys](https://passkeys.dev/).
+
+The supported signature types are:
+### secp256k1
+
+The standard Ethereum signature format. No type identifier needed, this is the default.
+
+### P256
+
+Raw P256 signatures that include the public key coordinates. Identified by type `0x01`.
+
+The `preHash` flag indicates whether the digest should be hashed with SHA256 before verification. Set this to `true` if using Web Crypto API or similar implementations that require pre-hashing.
+
+### WebAuthn
+
+WebAuthn signatures include authenticator data from biometric devices. Identified by type `0x02`.
+
+The verification data contains information from the authenticator (device metadata, user presence flags, etc.).
+
+---
+
+<Callout type="info">
+Additional signature types may be supported in the future. For complete technical specifications, see the [Tempo Transaction](/protocol/transactions/spec-tempo-transaction) protocol documentation.
+</Callout>
