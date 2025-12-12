@@ -360,8 +360,7 @@ where
             .get_all_iter(&tx_hashes)
             .filter_map(|tx| {
                 tx.transaction
-                    .clone()
-                    .try_into_pooled()
+                    .clone_into_pooled()
                     .ok()
                     .map(|tx| tx.into_inner())
             })
@@ -385,7 +384,7 @@ where
                 self.aa_2d_pool
                     .read()
                     .get(&tx_hash)
-                    .and_then(|tx| tx.transaction.clone().try_into_pooled().ok())
+                    .and_then(|tx| tx.transaction.clone_into_pooled().ok())
             })
     }
 
