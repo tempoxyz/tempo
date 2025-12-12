@@ -1,32 +1,32 @@
-import * as React from "react";
-import { Actions, Addresses } from "tempo.ts/viem";
-import { Hooks } from "tempo.ts/wagmi";
-import { type Log, parseUnits } from "viem";
-import { useConnection, useConnectionEffect, useSendCallsSync } from "wagmi";
-import { useDemoContext } from "../../../DemoContext";
-import { Button, ExplorerLink, Step } from "../../Demo";
-import { alphaUsd, pathUsd } from "../../tokens";
-import type { DemoStepProps } from "../types";
+import * as React from 'react'
+import { Actions, Addresses } from 'tempo.ts/viem'
+import { Hooks } from 'tempo.ts/wagmi'
+import { type Log, parseUnits } from 'viem'
+import { useConnection, useConnectionEffect, useSendCallsSync } from 'wagmi'
+import { useDemoContext } from '../../../DemoContext'
+import { Button, ExplorerLink, Step } from '../../Demo'
+import { alphaUsd, pathUsd } from '../../tokens'
+import type { DemoStepProps } from '../types'
 
 export function PlaceOrder(props: DemoStepProps) {
-  const { stepNumber, last = false } = props;
-  const { address } = useConnection();
-  const { setData, clearData, getData } = useDemoContext();
+  const { stepNumber, last = false } = props
+  const { address } = useConnection()
+  const { setData, clearData, getData } = useDemoContext()
 
-  const orderId = getData("orderId");
+  const orderId = getData('orderId')
 
   const { data: metadata } = Hooks.token.useGetMetadata({
     token: alphaUsd,
-  });
+  })
 
-  const sendCalls = useSendCallsSync();
+  const sendCalls = useSendCallsSync()
 
   useConnectionEffect({
     onDisconnect() {
-      sendCalls.reset();
-      clearData("orderId");
+      sendCalls.reset()
+      clearData('orderId')
     },
-  });
+  })
 
   // Extract and store orderId after successful order placement
   React.useEffect(() => {
@@ -36,16 +36,16 @@ export function PlaceOrder(props: DemoStepProps) {
           args: { orderId },
         } = Actions.dex.place.extractEvent(
           sendCalls.data.receipts[0].logs as Log[],
-        );
-        console.log("orderId", orderId);
-        setData("orderId", orderId);
+        )
+        console.log('orderId', orderId)
+        setData('orderId', orderId)
       } catch (error) {
-        console.error("Failed to extract orderId:", error);
+        console.error('Failed to extract orderId:', error)
       }
     }
-  }, [sendCalls.isSuccess, sendCalls.data, setData]);
+  }, [sendCalls.isSuccess, sendCalls.data, setData])
 
-  const amount = parseUnits("100", metadata?.decimals || 6);
+  const amount = parseUnits('100', metadata?.decimals || 6)
 
   const calls = [
     Actions.token.approve.call({
@@ -57,13 +57,13 @@ export function PlaceOrder(props: DemoStepProps) {
       amount,
       tick: 0,
       token: alphaUsd,
-      type: "buy",
+      type: 'buy',
     }),
-  ];
+  ]
 
   const active = React.useMemo(() => {
-    return !!address && !orderId;
-  }, [address, orderId]);
+    return !!address && !orderId
+  }, [address, orderId])
 
   return (
     <Step
@@ -72,18 +72,18 @@ export function PlaceOrder(props: DemoStepProps) {
       actions={
         <Button
           variant={
-            active ? (sendCalls.isSuccess ? "default" : "accent") : "default"
+            active ? (sendCalls.isSuccess ? 'default' : 'accent') : 'default'
           }
           disabled={!active}
           onClick={() => {
             sendCalls.sendCallsSync({
               calls,
-            });
+            })
           }}
           type="button"
           className="text-[14px] -tracking-[2%] font-normal"
         >
-          {sendCalls.isPending ? "Placing Order..." : "Place Order"}
+          {sendCalls.isPending ? 'Placing Order...' : 'Place Order'}
         </Button>
       }
       number={stepNumber}
@@ -101,5 +101,5 @@ export function PlaceOrder(props: DemoStepProps) {
         </div>
       )}
     </Step>
-  );
+  )
 }
