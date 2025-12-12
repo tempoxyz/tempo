@@ -16,6 +16,7 @@ tempo-chainspec.workspace = true
 tempo-primitives = { workspace = true, features = ["serde", "reth-codec"] }
 tempo-revm = { workspace = true, features = ["reth"] }
 tempo-precompiles.workspace = true
+tempo-contracts.workspace = true
 
 reth-transaction-pool.workspace = true
 reth-evm.workspace = true
@@ -33,6 +34,7 @@ alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
 alloy-evm.workspace = true
+alloy-sol-types.workspace = true
 
 futures.workspace = true
 tracing.workspace = true
