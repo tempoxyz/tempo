@@ -14,12 +14,13 @@ use tempo_node::TempoFullNode;
 pub mod actor;
 mod ingress;
 mod migrate;
+pub(super) mod tx;
 pub mod validators;
 
 pub(crate) use actor::Actor;
 pub use actor::DkgOutcome;
 pub(crate) use ingress::Mailbox;
-pub use validators::{DecodedValidator, ValidatorState};
+pub(crate) use validators::ValidatorState;
 
 use ingress::{Command, Message};
 

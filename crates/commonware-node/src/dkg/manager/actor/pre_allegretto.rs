@@ -19,11 +19,10 @@ use tracing::{Span, info, instrument, warn};
 
 use crate::{
     consensus::block::Block,
-    db::ReadWriteTransaction,
     dkg::{
         HardforkRegime, RegimeEpochState,
         ceremony::{self, Ceremony},
-        manager::validators::ValidatorState,
+        manager::{tx::DkgReadWriteTransaction, validators::ValidatorState},
     },
     epoch,
 };
@@ -47,7 +46,7 @@ where
     #[instrument(skip_all, err)]
     pub(super) async fn pre_allegretto_init(
         &mut self,
-        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
     ) -> eyre::Result<()> {
         if !tx.has_post_allegretto_state().await {
             let spec = self.config.execution_node.chain_spec();
@@ -128,7 +127,7 @@ where
         block: Block,
         maybe_ceremony: &mut Option<Ceremony<TReceiver, TSender>>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
-        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
     ) where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
@@ -314,7 +313,7 @@ where
     #[instrument(skip_all, fields(epoch = tracing::field::Empty))]
     pub(super) async fn start_pre_allegretto_ceremony<TReceiver, TSender>(
         &mut self,
-        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> Ceremony<TReceiver, TSender>
     where
@@ -365,7 +364,7 @@ where
 
     async fn transition_to_dynamic_validator_sets<TReceiver, TSender>(
         &mut self,
-        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> eyre::Result<Ceremony<TReceiver, TSender>>
     where
@@ -386,11 +385,11 @@ where
 
 /// The state with all participants, public and private key share for an epoch.
 #[derive(Clone)]
-pub struct EpochState {
-    pub epoch: Epoch,
-    pub participants: Ordered<PublicKey>,
-    pub public: Public<MinSig>,
-    pub share: Option<Share>,
+pub(crate) struct EpochState {
+    pub(crate) epoch: Epoch,
+    pub(crate) participants: Ordered<PublicKey>,
+    pub(crate) public: Public<MinSig>,
+    pub(crate) share: Option<Share>,
 }
 
 impl std::fmt::Debug for EpochState {
@@ -405,19 +404,19 @@ impl std::fmt::Debug for EpochState {
 }
 
 impl EpochState {
-    pub fn epoch(&self) -> Epoch {
+    pub(super) fn epoch(&self) -> Epoch {
         self.epoch
     }
 
-    pub fn participants(&self) -> &Ordered<PublicKey> {
+    pub(super) fn participants(&self) -> &Ordered<PublicKey> {
         &self.participants
     }
 
-    pub fn public_polynomial(&self) -> &Public<MinSig> {
+    pub(super) fn public_polynomial(&self) -> &Public<MinSig> {
         &self.public
     }
 
-    pub fn private_share(&self) -> &Option<Share> {
+    pub(super) fn private_share(&self) -> &Option<Share> {
         &self.share
     }
 }

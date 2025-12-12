@@ -33,13 +33,13 @@ use tracing::{Span, error, info, instrument, warn};
 
 use crate::{
     consensus::block::Block,
-    db::{MetadataDatabase, ReadWriteTransaction},
+    db::MetadataDatabase,
     dkg::{
         ceremony::{self, Ceremony, OUTCOME_NAMESPACE},
         manager::{
-            DecodedValidator,
             ingress::{Finalize, GetIntermediateDealing, GetOutcome},
-            validators::{self, ValidatorState},
+            tx::DkgReadWriteTransaction,
+            validators::{self, DecodedValidator, ValidatorState},
         },
     },
     epoch,
@@ -100,7 +100,7 @@ where
 
         // Run migration from old metadata stores if needed
         {
-            let mut tx = db.read_write();
+            let mut tx = DkgReadWriteTransaction::new(db.read_write());
             super::migrate::maybe_migrate_to_db(&context, &config.partition_prefix, &mut tx)
                 .await
                 .wrap_err("database migration failed")?;
@@ -174,7 +174,7 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
-        let mut tx = self.db.read_write();
+        let mut tx = DkgReadWriteTransaction::new(self.db.read_write());
 
         // Emits an error event on return.
         if self.post_allegretto_init(&mut tx).await.is_err() {
@@ -235,7 +235,7 @@ where
                 // In other words: no dealing will ever have to be verified if it is
                 // for another epoch than the currently latest one.
                 super::Command::VerifyDealing(verify_dealing) => {
-                    let mut tx = self.db.read_write();
+                    let tx = DkgReadWriteTransaction::new(self.db.read_write());
                     let outcome = if tx.has_post_allegretto_state().await {
                         verify_dealing
                             .dealing
@@ -314,7 +314,7 @@ where
         cause: Span,
         GetOutcome { response }: GetOutcome,
     ) -> eyre::Result<()> {
-        let mut tx = self.db.read_write();
+        let mut tx = DkgReadWriteTransaction::new(self.db.read_write());
 
         let outcome = tx.get_public_outcome().await?.ok_or_else(|| {
             eyre!(
@@ -376,9 +376,9 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let mut tx = self.db.read_write();
+        let mut tx = DkgReadWriteTransaction::new(self.db.read_write());
 
-        if self.is_running_post_allegretto(&block, &mut tx).await {
+        if self.is_running_post_allegretto(&block, &tx).await {
             self.handle_finalized_post_allegretto(
                 cause,
                 *block,
@@ -408,7 +408,7 @@ where
     #[instrument(skip_all, fields(me = %self.config.me.public_key(), current_epoch = tracing::field::Empty))]
     async fn start_ceremony_for_current_epoch_state<TReceiver, TSender>(
         &mut self,
-        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> Ceremony<TReceiver, TSender>
     where
@@ -428,7 +428,7 @@ where
     #[instrument(skip_all, fields(epoch = tracing::field::Empty))]
     async fn register_current_epoch_state(
         &mut self,
-        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
     ) {
         let epoch_state = self.current_epoch_state(tx).await;
         Span::current().record("epoch", epoch_state.epoch());
@@ -500,7 +500,7 @@ where
     #[instrument(skip_all, fields(previous_epoch = tracing::field::Empty))]
     async fn register_previous_epoch_state(
         &mut self,
-        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
     ) {
         if let Some(epoch_state) = self.previous_epoch_state(tx).await {
             Span::current().record("previous_epoch", epoch_state.epoch());
@@ -567,7 +567,7 @@ where
     async fn is_running_post_allegretto(
         &self,
         block: &Block,
-        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+        tx: &DkgReadWriteTransaction<ContextCell<TContext>>,
     ) -> bool {
         self.config
             .execution_node
@@ -581,7 +581,7 @@ where
     /// Always prefers the post allegretto state, if it exists.
     async fn previous_epoch_state(
         &self,
-        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+        tx: &DkgReadWriteTransaction<ContextCell<TContext>>,
     ) -> Option<EpochState> {
         if let Ok(Some(epoch_state)) = tx.get_previous_epoch::<post_allegretto::EpochState>().await
         {
@@ -605,7 +605,7 @@ where
     /// regime. There must always be an epoch state.
     async fn current_epoch_state(
         &self,
-        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+        tx: &DkgReadWriteTransaction<ContextCell<TContext>>,
     ) -> EpochState {
         if let Ok(Some(epoch_state)) = tx.get_epoch::<post_allegretto::EpochState>().await {
             EpochState::PostModerato(epoch_state)

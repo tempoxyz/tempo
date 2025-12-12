@@ -130,10 +130,10 @@ async fn decode_from_contract(
 /// 2. the player, that will become dealers in the next ceremony
 /// 3. the syncing players, that will become players in the next ceremony
 #[derive(Clone, Debug)]
-pub struct ValidatorState {
-    pub dealers: OrderedAssociated<PublicKey, DecodedValidator>,
-    pub players: OrderedAssociated<PublicKey, DecodedValidator>,
-    pub syncing_players: OrderedAssociated<PublicKey, DecodedValidator>,
+pub(crate) struct ValidatorState {
+    dealers: OrderedAssociated<PublicKey, DecodedValidator>,
+    players: OrderedAssociated<PublicKey, DecodedValidator>,
+    syncing_players: OrderedAssociated<PublicKey, DecodedValidator>,
 }
 
 impl ValidatorState {
@@ -289,28 +289,28 @@ impl Read for ValidatorState {
 /// `<host>` is either an IPv4 or IPV6 address, or a fully qualified domain name.
 /// `<ip>` is an IPv4 or IPv6 address.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DecodedValidator {
+pub(super) struct DecodedValidator {
     /// The `publicKey` field of the contract. Used by other validators to
     /// identify a peer by verifying the signatures of its p2p messages and
     /// as a dealer/player/participant in DKG ceremonies and consensus for a
     /// given epoch. Part of the set registered with the lookup p2p manager.
-    pub public_key: PublicKey,
+    pub(super) public_key: PublicKey,
     /// The `inboundAddress` field of the contract. Used by other validators
     /// to dial a peer and ensure that messages from that peer are coming from
     /// this address. Part of the set registered with the lookup p2p manager.
-    pub inbound: SocketAddr,
+    pub(super) inbound: SocketAddr,
     /// The `outboundAddress` field of the contract. Currently ignored because
     /// all p2p communication is symmetric (outbound and inbound) via the
     /// `inboundAddress` field.
-    pub outbound: SocketAddr,
+    pub(super) outbound: SocketAddr,
     /// The `index` field of the contract. Not used by consensus and just here
     /// for debugging purposes to identify the contract entry. Emitted in
     /// tracing events.
-    pub index: u64,
+    pub(super) index: u64,
     /// The `address` field of the contract. Not used by consensus and just here
     /// for debugging purposes to identify the contract entry. Emitted in
     /// tracing events.
-    pub address: Address,
+    pub(super) address: Address,
 }
 
 impl DecodedValidator {
@@ -431,10 +431,9 @@ fn last_height_before_epoch(epoch: Epoch, epoch_length: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use crate::dkg::manager::validators::DecodedValidator;
     use commonware_codec::{DecodeExt as _, Encode as _};
     use commonware_cryptography::{PrivateKeyExt, Signer, ed25519::PrivateKey};
-
-    use crate::dkg::manager::DecodedValidator;
 
     #[test]
     fn roundtrip_decoded_validator() {

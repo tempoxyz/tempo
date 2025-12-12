@@ -10,17 +10,6 @@ use commonware_runtime::{Clock, Metrics, Storage};
 use commonware_storage::metadata::Metadata;
 use commonware_utils::sequence::FixedBytes;
 
-use crate::dkg::{
-    HardforkRegime, RegimeEpochState, ceremony,
-    manager::{
-        DkgOutcome, ValidatorState,
-        actor::{post_allegretto, pre_allegretto},
-    },
-};
-use tempo_dkg_onchain_artifacts::PublicOutcome;
-
-mod keys;
-
 type B256 = FixedBytes<32>;
 
 /// Key used to store the node version that last wrote to the database.
@@ -62,7 +51,7 @@ where
     ///
     /// If the value exists in storage but not in cache, it will be deserialized
     /// and added to the cache for future access.
-    pub async fn get<K, V>(&self, key: K) -> Result<Option<V>, eyre::Error>
+    async fn get<K, V>(&self, key: K) -> Result<Option<V>, eyre::Error>
     where
         K: AsRef<[u8]>,
         V: Read<Cfg = ()> + Write + EncodeSize + Clone + Send + Sync + 'static,
@@ -99,7 +88,7 @@ where
     }
 
     /// Get raw bytes from storage without deserialization or caching.
-    pub async fn get_raw<K>(&self, key: K) -> Option<Bytes>
+    async fn get_raw<K>(&self, key: K) -> Option<Bytes>
     where
         K: AsRef<[u8]>,
     {
@@ -267,146 +256,6 @@ where
         self.insert(NODE_VERSION_KEY, version.into_bytes())
     }
 
-    // ── Ceremony Store ──────────────────────────────────────────────────────
-
-    /// Get ceremony state for a specific epoch.
-    pub async fn get_ceremony(&self, epoch: u64) -> Result<Option<ceremony::State>, eyre::Error> {
-        self.get(keys::ceremony(epoch)).await
-    }
-
-    /// Set ceremony state for a specific epoch.
-    pub fn set_ceremony(&mut self, epoch: u64, state: ceremony::State) {
-        self.insert(keys::ceremony(epoch), state)
-    }
-
-    /// Remove ceremony state for a specific epoch.
-    pub fn remove_ceremony(&mut self, epoch: u64) {
-        self.remove(keys::ceremony(epoch))
-    }
-
-    /// Update ceremony state for a specific epoch using a closure.
-    ///
-    /// This reads the current state (or creates a default if none exists).
-    pub async fn update_ceremony<F>(&mut self, epoch: u64, f: F) -> Result<(), eyre::Error>
-    where
-        F: FnOnce(&mut ceremony::State) + Send,
-    {
-        let mut state = self.get_ceremony(epoch).await?.unwrap_or_default();
-        f(&mut state);
-        self.set_ceremony(epoch, state);
-        Ok(())
-    }
-
-    // ── Validators Store ────────────────────────────────────────────────────
-
-    /// Get validators state for a specific epoch.
-    pub async fn get_validators(&self, epoch: u64) -> Result<Option<ValidatorState>, eyre::Error> {
-        self.get(keys::validators(epoch)).await
-    }
-
-    /// Set validators state for a specific epoch.
-    pub fn set_validators(&mut self, epoch: u64, state: ValidatorState) {
-        self.insert(keys::validators(epoch), state)
-    }
-
-    /// Remove validators state for a specific epoch.
-    pub fn remove_validators(&mut self, epoch: u64) {
-        self.remove(keys::validators(epoch))
-    }
-
-    // ── DKG Outcome Store ───────────────────────────────────────────────────
-
-    /// Get the current DKG outcome.
-    pub async fn get_dkg_outcome(&self) -> Result<Option<DkgOutcome>, eyre::Error> {
-        self.get(keys::DKG_OUTCOME).await
-    }
-
-    /// Set the current DKG outcome.
-    pub fn set_dkg_outcome(&mut self, outcome: DkgOutcome) {
-        self.insert(keys::DKG_OUTCOME, outcome)
-    }
-
-    /// Remove the current DKG outcome.
-    pub fn remove_dkg_outcome(&mut self) {
-        self.remove(keys::DKG_OUTCOME)
-    }
-
-    /// Get the public outcome, checking post-allegretto first, then pre-allegretto.
-    ///
-    /// For post-allegretto, this checks `dkg_outcome` first, then falls back to
-    /// the epoch state. For pre-allegretto, it reads from the epoch state directly.
-    pub async fn get_public_outcome(&mut self) -> Result<Option<PublicOutcome>, eyre::Error> {
-        if let Some(dkg_outcome) = self.get_dkg_outcome().await? {
-            return Ok(Some(PublicOutcome {
-                epoch: dkg_outcome.epoch,
-                participants: dkg_outcome.participants,
-                public: dkg_outcome.public,
-            }));
-        }
-
-        if let Some(epoch_state) = self.get_epoch::<post_allegretto::EpochState>().await? {
-            return Ok(Some(PublicOutcome {
-                epoch: epoch_state.dkg_outcome.epoch,
-                participants: epoch_state.dkg_outcome.participants,
-                public: epoch_state.dkg_outcome.public,
-            }));
-        }
-
-        if let Some(epoch_state) = self.get_epoch::<pre_allegretto::EpochState>().await? {
-            return Ok(Some(PublicOutcome {
-                epoch: epoch_state.epoch,
-                participants: epoch_state.participants,
-                public: epoch_state.public,
-            }));
-        }
-
-        Ok(None)
-    }
-
-    // ── DKG Epoch Store ─────────────────────────────────────────────────────
-
-    /// Get the current epoch state for the given hardfork regime.
-    pub async fn get_epoch<S: RegimeEpochState>(&self) -> Result<Option<S>, eyre::Error> {
-        self.get(keys::current_epoch(S::REGIME)).await
-    }
-
-    /// Set the current epoch state for the given hardfork regime.
-    pub fn set_epoch<S: RegimeEpochState>(&mut self, state: S) {
-        self.insert(keys::current_epoch(S::REGIME), state)
-    }
-
-    /// Get the previous epoch state for the given hardfork regime.
-    pub async fn get_previous_epoch<S: RegimeEpochState>(&self) -> Result<Option<S>, eyre::Error> {
-        self.get(keys::previous_epoch(S::REGIME)).await
-    }
-
-    /// Set the previous epoch state for the given hardfork regime.
-    pub fn set_previous_epoch<S: RegimeEpochState>(&mut self, state: S) {
-        self.insert(keys::previous_epoch(S::REGIME), state)
-    }
-
-    /// Remove the previous epoch state for the given hardfork regime.
-    pub fn remove_previous_epoch(&mut self, regime: HardforkRegime) {
-        self.remove(keys::previous_epoch(regime))
-    }
-
-    /// Remove the current epoch state for the given hardfork regime.
-    pub fn remove_epoch(&mut self, regime: HardforkRegime) {
-        self.remove(keys::current_epoch(regime))
-    }
-
-    /// Check if a post-allegretto epoch state exists.
-    pub async fn has_post_allegretto_state(&mut self) -> bool {
-        self.contains_key(keys::current_epoch(HardforkRegime::PostAllegretto))
-            .await
-    }
-
-    /// Check if a pre-allegretto epoch state exists.
-    pub async fn has_pre_allegretto_state(&mut self) -> bool {
-        self.contains_key(keys::current_epoch(HardforkRegime::PreAllegretto))
-            .await
-    }
-
     /// Commit all buffered writes to the store and sync.
     ///
     /// This serializes all pending writes, persists them to storage,
@@ -462,7 +311,7 @@ fn key_to_b256(key: &[u8]) -> B256 {
 /// This trait combines type erasure (via `Any`) with serialization capability,
 /// allowing heterogeneous types to be stored in a single cache while still
 /// supporting serialization at commit time.
-pub trait CachedValue: Any + Send + Sync {
+trait CachedValue: Any + Send + Sync {
     /// Returns self as `&dyn Any` for downcasting.
     fn as_any(&self) -> &dyn Any;
 

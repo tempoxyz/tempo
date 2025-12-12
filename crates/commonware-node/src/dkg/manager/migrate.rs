@@ -5,15 +5,13 @@ use commonware_utils::sequence::U64;
 use eyre::{Result, WrapErr};
 use tracing::{info, instrument};
 
-use crate::{
-    db::ReadWriteTransaction,
-    dkg::{
-        ceremony,
-        manager::{
-            DkgOutcome,
-            actor::{post_allegretto, pre_allegretto},
-            validators::ValidatorState,
-        },
+use crate::dkg::{
+    ceremony,
+    manager::{
+        DkgOutcome,
+        actor::{post_allegretto, pre_allegretto},
+        tx::DkgReadWriteTransaction,
+        validators::ValidatorState,
     },
 };
 
@@ -59,7 +57,7 @@ where
 pub(super) async fn maybe_migrate_to_db<TContext>(
     context: &ContextCell<TContext>,
     partition_prefix: &str,
-    tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+    tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
 ) -> Result<()>
 where
     TContext: Clock + Metrics + Storage,
@@ -128,7 +126,7 @@ where
 async fn migrate_ceremony_metadata<TContext>(
     context: &ContextCell<TContext>,
     partition_prefix: &str,
-    tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+    tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
     current_epoch: Option<u64>,
 ) -> Result<()>
 where
@@ -157,7 +155,7 @@ where
 async fn migrate_pre_allegretto_epoch_metadata<TContext>(
     context: &ContextCell<TContext>,
     partition_prefix: &str,
-    tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+    tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
 ) -> Result<()>
 where
     TContext: Clock + Metrics + Storage,
@@ -178,7 +176,7 @@ where
 async fn migrate_post_allegretto_epoch_metadata<TContext>(
     context: &ContextCell<TContext>,
     partition_prefix: &str,
-    tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+    tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
 ) -> Result<()>
 where
     TContext: Clock + Metrics + Storage,
@@ -199,7 +197,7 @@ where
 /// Helper to migrate current and previous epoch states for a given regime.
 fn migrate_epoch_states<TContext, E>(
     epoch_metadata: &Metadata<ContextCell<TContext>, U64, E>,
-    tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+    tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
     get_epoch: impl Fn(&E) -> u64,
 ) -> Result<()>
 where
@@ -230,7 +228,7 @@ where
 async fn migrate_dkg_outcome_metadata<TContext>(
     context: &ContextCell<TContext>,
     partition_prefix: &str,
-    tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+    tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
 ) -> Result<()>
 where
     TContext: Clock + Metrics + Storage,
@@ -253,7 +251,7 @@ where
 async fn migrate_validators_metadata<TContext>(
     context: &ContextCell<TContext>,
     partition_prefix: &str,
-    tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+    tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
     current_epoch: Option<u64>,
 ) -> Result<()>
 where

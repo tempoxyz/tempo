@@ -21,12 +21,12 @@ use tracing::{Span, info, instrument, warn};
 
 use crate::{
     consensus::block::Block,
-    db::ReadWriteTransaction,
     dkg::{
         HardforkRegime, RegimeEpochState,
         ceremony::{self, Ceremony},
         manager::{
             actor::{DkgOutcome, pre_allegretto},
+            tx::DkgReadWriteTransaction,
             validators::{self, ValidatorState},
         },
     },
@@ -44,7 +44,7 @@ where
     #[instrument(skip_all, err)]
     pub(super) async fn post_allegretto_init(
         &mut self,
-        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
     ) -> eyre::Result<()> {
         let spec = self.config.execution_node.chain_spec();
         if !tx.has_post_allegretto_state().await && spec.is_allegretto_active_at_timestamp(0) {
@@ -172,7 +172,7 @@ where
         block: Block,
         maybe_ceremony: &mut Option<Ceremony<TReceiver, TSender>>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
-        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
     ) where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
@@ -307,7 +307,7 @@ where
     #[instrument(skip_all)]
     pub(super) async fn transition_from_static_validator_sets<TReceiver, TSender>(
         &mut self,
-        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
         pre_allegretto_epoch_state: pre_allegretto::EpochState,
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> eyre::Result<Ceremony<TReceiver, TSender>>
@@ -388,7 +388,7 @@ where
     #[instrument(skip_all, fields(epoch = tracing::field::Empty))]
     pub(super) async fn start_post_allegretto_ceremony<TReceiver, TSender>(
         &mut self,
-        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> Ceremony<TReceiver, TSender>
     where
@@ -448,7 +448,7 @@ where
     #[instrument(skip_all)]
     async fn update_and_register_current_epoch_state(
         &mut self,
-        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
     ) {
         let old_epoch_state: EpochState = tx
             .get_epoch()
@@ -501,7 +501,7 @@ where
     /// Reports that a new epoch was fully entered, that the previous epoch can be ended.
     async fn enter_current_epoch_and_remove_old_state(
         &mut self,
-        tx: &mut ReadWriteTransaction<ContextCell<TContext>>,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
     ) {
         let epoch_to_shutdown =
             if let Ok(Some(old_epoch_state)) = tx.get_previous_epoch::<EpochState>().await {
@@ -537,33 +537,33 @@ where
 ///   the participants in the DKG outcome), the players of the next ceremony,
 ///   and the syncing players, who will be players in the ceremony thereafter.
 #[derive(Clone, Debug)]
-pub struct EpochState {
-    pub dkg_outcome: DkgOutcome,
-    pub validator_state: ValidatorState,
+pub(crate) struct EpochState {
+    pub(crate) dkg_outcome: DkgOutcome,
+    pub(crate) validator_state: ValidatorState,
 }
 
 impl EpochState {
-    pub fn epoch(&self) -> Epoch {
+    pub(crate) fn epoch(&self) -> Epoch {
         self.dkg_outcome.epoch
     }
 
-    pub fn participants(&self) -> &Ordered<PublicKey> {
+    pub(crate) fn participants(&self) -> &Ordered<PublicKey> {
         &self.dkg_outcome.participants
     }
 
-    pub fn public_polynomial(&self) -> &Public<MinSig> {
+    pub(crate) fn public_polynomial(&self) -> &Public<MinSig> {
         &self.dkg_outcome.public
     }
 
-    pub fn private_share(&self) -> &Option<Share> {
+    pub(crate) fn private_share(&self) -> &Option<Share> {
         &self.dkg_outcome.share
     }
 
-    pub fn dealer_pubkeys(&self) -> Ordered<PublicKey> {
+    pub(crate) fn dealer_pubkeys(&self) -> Ordered<PublicKey> {
         self.validator_state.dealer_pubkeys()
     }
 
-    pub fn player_pubkeys(&self) -> Ordered<PublicKey> {
+    pub(crate) fn player_pubkeys(&self) -> Ordered<PublicKey> {
         self.validator_state.player_pubkeys()
     }
 }
