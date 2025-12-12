@@ -3,7 +3,7 @@ use commonware_runtime::{Clock, ContextCell, Metrics, Storage};
 use commonware_storage::metadata::{Config as MetadataConfig, Metadata};
 use commonware_utils::sequence::U64;
 use eyre::Result;
-use tracing::info;
+use tracing::{info, instrument};
 
 use crate::{
     db::ReadWriteTransaction,
@@ -55,6 +55,7 @@ where
 /// 5. `{prefix}_validators` - validator state per epoch
 ///
 /// The caller is responsible for setting the version and committing the transaction.
+#[instrument(skip_all, err)]
 pub(super) async fn maybe_migrate_to_db<TContext>(
     context: &ContextCell<TContext>,
     partition_prefix: &str,
