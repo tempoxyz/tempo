@@ -28,12 +28,10 @@ contract TIP20FactoryTest is BaseTest {
         address expectedAddr =
             address(uint160(0x20C0000000000000000000000000000000000000) | uint160(currentCounter));
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, false, true);
-            emit ITIP20Factory.TokenCreated(
-                expectedAddr, currentCounter, "Euro Token", "EUR", "EUR", ITIP20(_PATH_USD), admin
-            );
-        }
+        vm.expectEmit(true, true, false, true);
+        emit ITIP20Factory.TokenCreated(
+            expectedAddr, currentCounter, "Euro Token", "EUR", "EUR", ITIP20(_PATH_USD), admin
+        );
 
         address eurTokenAddr =
             factory.createToken("Euro Token", "EUR", "EUR", ITIP20(_PATH_USD), admin);
@@ -46,12 +44,10 @@ contract TIP20FactoryTest is BaseTest {
         expectedAddr =
             address(uint160(0x20C0000000000000000000000000000000000000) | uint160(currentCounter));
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, false, true);
-            emit ITIP20Factory.TokenCreated(
-                expectedAddr, currentCounter, "Test", "Test", "EUR", eurToken, admin
-            );
-        }
+        vm.expectEmit(true, true, false, true);
+        emit ITIP20Factory.TokenCreated(
+            expectedAddr, currentCounter, "Test", "Test", "EUR", eurToken, admin
+        );
 
         address tokenAddr = factory.createToken("Test", "Test", "EUR", eurToken, admin);
         ITIP20 nonUSDToken = ITIP20(tokenAddr);

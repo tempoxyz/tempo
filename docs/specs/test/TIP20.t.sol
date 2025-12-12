@@ -56,13 +56,11 @@ contract TIP20Test is BaseTest {
         vm.startPrank(alice);
 
         // Expect both Transfer and TransferWithMemo events
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit Transfer(alice, bob, amount);
+        vm.expectEmit(true, true, true, true);
+        emit Transfer(alice, bob, amount);
 
-            vm.expectEmit(true, true, true, true);
-            emit TransferWithMemo(alice, bob, amount, TEST_MEMO);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit TransferWithMemo(alice, bob, amount, TEST_MEMO);
 
         token.transferWithMemo(bob, amount, TEST_MEMO);
 
@@ -80,17 +78,13 @@ contract TIP20Test is BaseTest {
         vm.startPrank(alice);
 
         // First transfer with TEST_MEMO
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit TransferWithMemo(alice, bob, amount1, TEST_MEMO);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit TransferWithMemo(alice, bob, amount1, TEST_MEMO);
         token.transferWithMemo(bob, amount1, TEST_MEMO);
 
         // Second transfer with ANOTHER_MEMO
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit TransferWithMemo(alice, charlie, amount2, ANOTHER_MEMO);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit TransferWithMemo(alice, charlie, amount2, ANOTHER_MEMO);
         token.transferWithMemo(charlie, amount2, ANOTHER_MEMO);
 
         vm.stopPrank();
@@ -111,13 +105,11 @@ contract TIP20Test is BaseTest {
         vm.startPrank(bob);
 
         // Expect both Transfer and TransferWithMemo events
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit Transfer(alice, charlie, amount);
+        vm.expectEmit(true, true, true, true);
+        emit Transfer(alice, charlie, amount);
 
-            vm.expectEmit(true, true, true, true);
-            emit TransferWithMemo(alice, charlie, amount, TEST_MEMO);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit TransferWithMemo(alice, charlie, amount, TEST_MEMO);
 
         bool success = token.transferFromWithMemo(alice, charlie, amount, TEST_MEMO);
         assertTrue(success);
@@ -322,16 +314,14 @@ contract TIP20Test is BaseTest {
         vm.startPrank(admin);
 
         // Expect Transfer, TransferWithMemo, and Mint events
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit Transfer(address(0), recipient, amount);
+        vm.expectEmit(true, true, true, true);
+        emit Transfer(address(0), recipient, amount);
 
-            vm.expectEmit(true, true, true, true);
-            emit Mint(recipient, amount);
+        vm.expectEmit(true, true, true, true);
+        emit Mint(recipient, amount);
 
-            vm.expectEmit(true, true, true, true);
-            emit TransferWithMemo(address(0), recipient, amount, TEST_MEMO);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit TransferWithMemo(address(0), recipient, amount, TEST_MEMO);
 
         token.mintWithMemo(recipient, amount, TEST_MEMO);
 
@@ -351,16 +341,14 @@ contract TIP20Test is BaseTest {
         token.mint(admin, amount);
 
         // Expect Transfer, TransferWithMemo, and Burn events
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit Transfer(admin, address(0), amount);
+        vm.expectEmit(true, true, true, true);
+        emit Transfer(admin, address(0), amount);
 
-            vm.expectEmit(true, true, true, true);
-            emit Burn(admin, amount);
+        vm.expectEmit(true, true, true, true);
+        emit Burn(admin, amount);
 
-            vm.expectEmit(true, true, true, true);
-            emit TransferWithMemo(admin, address(0), amount, TEST_MEMO);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit TransferWithMemo(admin, address(0), amount, TEST_MEMO);
 
         token.burnWithMemo(amount, TEST_MEMO);
 
@@ -603,10 +591,8 @@ contract TIP20Test is BaseTest {
         vm.startPrank(admin);
 
         // Expect the NextQuoteTokenSet event
-        if (!isTempo) {
-            vm.expectEmit(true, true, false, false);
-            emit NextQuoteTokenSet(admin, anotherToken);
-        }
+        vm.expectEmit(true, true, false, false);
+        emit NextQuoteTokenSet(admin, anotherToken);
 
         token.setNextQuoteToken(anotherToken);
 
@@ -615,10 +601,8 @@ contract TIP20Test is BaseTest {
         assertEq(address(token.quoteToken()), address(linkedToken));
 
         // Expect the QuoteTokenUpdate event
-        if (!isTempo) {
-            vm.expectEmit(true, true, false, false);
-            emit QuoteTokenUpdate(admin, anotherToken);
-        }
+        vm.expectEmit(true, true, false, false);
+        emit QuoteTokenUpdate(admin, anotherToken);
 
         token.completeQuoteTokenUpdate();
 
@@ -1022,10 +1006,8 @@ contract TIP20Test is BaseTest {
     function testSetRewardRecipientOptIn() public {
         vm.startPrank(alice);
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, false, false);
-            emit RewardRecipientSet(alice, alice);
-        }
+        vm.expectEmit(true, true, false, false);
+        emit RewardRecipientSet(alice, alice);
 
         token.setRewardRecipient(alice);
 
@@ -1042,10 +1024,8 @@ contract TIP20Test is BaseTest {
         token.setRewardRecipient(alice);
 
         // Then opt out
-        if (!isTempo) {
-            vm.expectEmit(true, true, false, false);
-            emit RewardRecipientSet(alice, address(0));
-        }
+        vm.expectEmit(true, true, false, false);
+        emit RewardRecipientSet(alice, address(0));
 
         token.setRewardRecipient(address(0));
 
@@ -1059,10 +1039,8 @@ contract TIP20Test is BaseTest {
     function testSetRewardRecipientToDifferentAddress() public {
         vm.startPrank(alice);
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, false, false);
-            emit RewardRecipientSet(alice, bob);
-        }
+        vm.expectEmit(true, true, false, false);
+        emit RewardRecipientSet(alice, bob);
 
         token.setRewardRecipient(bob);
 
@@ -1097,13 +1075,11 @@ contract TIP20Test is BaseTest {
 
         uint256 rewardAmount = 100e18;
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit Transfer(admin, address(token), rewardAmount);
+        vm.expectEmit(true, true, true, true);
+        emit Transfer(admin, address(token), rewardAmount);
 
-            vm.expectEmit(true, true, true, true);
-            emit RewardScheduled(admin, 0, rewardAmount, 0);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit RewardScheduled(admin, 0, rewardAmount, 0);
 
         uint64 id = token.startReward(rewardAmount, 0);
 
@@ -1115,10 +1091,8 @@ contract TIP20Test is BaseTest {
         // Claim the rewards
         uint256 balanceBeforeClaim = token.balanceOf(alice);
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit Transfer(address(token), alice, 100e18);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit Transfer(address(token), alice, 100e18);
 
         vm.prank(alice);
         uint256 rewardBalance = token.claimRewards();
