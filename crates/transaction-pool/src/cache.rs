@@ -2,6 +2,8 @@
 
 use alloy_primitives::{Address, B256};
 use dashmap::DashMap;
+use metrics::Gauge;
+use reth_metrics::Metrics;
 use std::sync::Arc;
 
 /// A cache for storing recovered transaction senders.
@@ -9,25 +11,38 @@ use std::sync::Arc;
 /// This cache is shared between the transaction pool and the EVM executor.
 /// Senders are inserted when transactions are validated in the pool, and
 /// removed when transactions are executed during `newPayload` processing.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct SenderRecoveryCache {
     cache: Arc<DashMap<B256, Address>>,
+    metrics: SenderRecoveryCacheMetrics,
+}
+
+impl std::fmt::Debug for SenderRecoveryCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SenderRecoveryCache")
+            .field("len", &self.cache.len())
+            .finish()
+    }
 }
 
 impl SenderRecoveryCache {
     /// Inserts a sender for the given transaction hash.
     pub fn insert(&self, tx_hash: B256, sender: Address) {
         self.cache.insert(tx_hash, sender);
+        self.metrics.size.increment(1);
     }
 
     /// Removes and returns the sender for the given transaction hash, if present.
     pub fn remove(&self, tx_hash: &B256) -> Option<Address> {
-        self.cache.remove(tx_hash).map(|(_, sender)| sender)
+        let result = self.cache.remove(tx_hash).map(|(_, sender)| sender);
+        self.metrics.size.decrement(1);
+        result
     }
 
     /// Removes multiple entries from the cache.
     pub fn remove_many<'a>(&self, tx_hashes: impl IntoIterator<Item = &'a B256>) {
         for tx_hash in tx_hashes {
+            self.metrics.size.decrement(1);
             self.cache.remove(tx_hash);
         }
     }
@@ -41,6 +56,13 @@ impl SenderRecoveryCache {
     pub fn is_empty(&self) -> bool {
         self.cache.is_empty()
     }
+}
+
+#[derive(Metrics, Clone)]
+#[metrics(scope = "transaction_pool.sender_recovery_cache")]
+struct SenderRecoveryCacheMetrics {
+    /// The current size of the cache.
+    size: Gauge,
 }
 
 #[cfg(test)]
