@@ -173,7 +173,14 @@ where
     ) {
         let mut tx = self.db.read_write();
 
-        self.pre_allegretto_init(&mut tx).await;
+        // Emits an error event on return.
+        if self.post_allegretto_init(&mut tx).await.is_err() {
+            return;
+        }
+        // Emits an error event on return.
+        if self.pre_allegretto_init(&mut tx).await.is_err() {
+            return;
+        }
 
         let (mux, mut ceremony_mux) = mux::Muxer::new(
             self.context.with_label("ceremony_mux"),
@@ -185,6 +192,7 @@ where
 
         self.register_previous_epoch_state(&mut tx).await;
         self.register_current_epoch_state(&mut tx).await;
+
         let mut ceremony = Some(
             self.start_ceremony_for_current_epoch_state(&mut tx, &mut ceremony_mux)
                 .await,
@@ -436,10 +444,15 @@ where
         }
 
         let new_validator_state = match &epoch_state {
-            // pre allegretto, the validators are always the once known passed in at init.
-            EpochState::PreModerato(_) => {
-                ValidatorState::with_unknown_contract_state(self.config.initial_validators.clone())
-            }
+            EpochState::PreModerato(epoch_state) => tx
+                .get_validators(epoch_state.epoch().saturating_sub(1))
+                .await
+                .expect("must be able to read validators")
+                .expect(
+                    "there must always be a validator state for the previous \
+                    epoch state written for pre-allegretto logic; this is \
+                    ensured at startup",
+                ),
             EpochState::PostModerato(epoch_state) => epoch_state.validator_state.clone(),
         };
 

@@ -12,7 +12,7 @@ use commonware_utils::{
     quorum,
     set::{Ordered, OrderedAssociated},
 };
-use eyre::WrapErr as _;
+use eyre::{OptionExt as _, WrapErr as _};
 use rand_core::CryptoRngCore;
 use tempo_chainspec::hardfork::TempoHardforks;
 use tracing::{Span, info, instrument, warn};
@@ -44,23 +44,54 @@ where
     ///
     /// If neither pre- nor post-allegretto artifacts are found, this method
     /// assumes that the node is starting from genesis.
-    pub(super) async fn pre_allegretto_init(&mut self, tx: &mut Tx<ContextCell<TContext>>) {
-        let has_post = tx.has_post_allegretto_state().await;
-        let has_pre = tx.has_pre_allegretto_state().await;
+    #[instrument(skip_all, err)]
+    pub(super) async fn pre_allegretto_init(
+        &mut self,
+        tx: &mut Tx<ContextCell<TContext>>,
+    ) -> eyre::Result<()> {
+        if !tx.has_post_allegretto_state().await {
+            let spec = self.config.execution_node.chain_spec();
+            let public_polynomial = spec
+                .info
+                .public_polynomial()
+                .clone()
+                .ok_or_eyre("chainspec did not contain publicPolynomial; cannot go on without it")?
+                .into_inner();
 
-        if !has_post && !has_pre {
-            tx.set_epoch(EpochState {
-                epoch: 0,
-                participants: self.config.initial_validators.keys().clone(),
-                public: self.config.initial_public_polynomial.clone(),
-                share: self.config.initial_share.clone(),
-            });
+            let validators = spec
+                .info
+                .validators()
+                .clone()
+                .ok_or_eyre("chainspec did not contain validators; cannot go on without them")?
+                .into_inner();
 
+            if !tx.has_pre_allegretto_state().await {
+                tx.set_epoch(EpochState {
+                    epoch: 0,
+                    participants: validators.keys().clone(),
+                    public: public_polynomial,
+                    share: self.config.initial_share.clone(),
+                });
+            }
+
+            // Safeguard when updating from older binaries that might not yet have written
+            // the validators metadata.
+            //
+            // Note that pre-allegretto the validator set never changes.
+            let current_epoch: EpochState = tx
+                .get_epoch()
+                .await?
+                .expect("we ensured above that the epoch state is initialized");
+
+            // Write the validators for the *previous* epoch. This assumes
+            // that after this state is written, self.register_current_epoch_state
+            // is called that will set the validators for the *current* epoch.
             tx.set_validators(
-                0,
-                ValidatorState::with_unknown_contract_state(self.config.initial_validators.clone()),
+                current_epoch.epoch().saturating_sub(1),
+                ValidatorState::with_unknown_contract_state(validators.clone()),
             );
         }
+        Ok(())
     }
 
     /// Handles a finalized block.
@@ -155,19 +186,6 @@ where
                     }
                 }
 
-                self.config
-                    .epoch_manager
-                    .report(
-                        epoch::Enter {
-                            epoch: epoch_state.epoch(),
-                            public: epoch_state.public_polynomial().clone(),
-                            share: epoch_state.private_share().clone(),
-                            participants: epoch_state.participants().clone(),
-                        }
-                        .into(),
-                    )
-                    .await;
-
                 // NOTE: This acts as restart protection: on pre-allegretto,
                 // CURRENT_EPOCH_KEY is updated on the block *last height - 1*.
                 // If a node restarts, it immediately starts a ceremony for
@@ -183,13 +201,7 @@ where
                     maybe_ceremony
                         .replace(self.start_pre_allegretto_ceremony(tx, ceremony_mux).await);
                 }
-
-                tx.set_validators(
-                    epoch_state.epoch(),
-                    ValidatorState::with_unknown_contract_state(
-                        self.config.initial_validators.clone(),
-                    ),
-                );
+                self.register_current_epoch_state(tx).await;
             } else {
                 warn!(
                     "block was a boundary block, but not the last block of the \
@@ -365,10 +377,8 @@ where
                 post-allegretto dynamic validator sets the pre-allegretto epoch \
                 state must exist",
         );
-        let validator_state =
-            ValidatorState::with_unknown_contract_state(self.config.initial_validators.clone());
 
-        self.transition_from_static_validator_sets(tx, epoch_state, validator_state, mux)
+        self.transition_from_static_validator_sets(tx, epoch_state, mux)
             .await
             .wrap_err("hand-over to post-allegretto dynamic validator set logic failed")
     }

@@ -149,23 +149,27 @@ fn gen_rust_unsigned_tests() -> TokenStream {
 
             quote! {
                 #[test]
-                fn #test_name(value in any::<#type_name>(), slot in arb_safe_slot()) {
-                    let mut contract = setup_test_contract();
+                fn #test_name(value in any::<#type_name>(), base_slot in arb_safe_slot()) {
+                    let (mut storage, address) = setup_storage();
+                    StorageCtx::enter(&mut storage, || {
+                        let mut slot = Slot::<#type_name>::new(base_slot, address);
 
-                    // Storage roundtrip
-                    value.store(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                    let loaded = #type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                    assert_eq!(value, loaded, concat!(#label, " storage roundtrip failed"));
+                        // Verify store → load roundtrip
+                        slot.write(value).unwrap();
+                        let loaded = slot.read().unwrap();
+                        assert_eq!(value, loaded, concat!(#label, " roundtrip failed"));
 
-                    // Delete
-                    #type_name::delete(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                    let after_delete = #type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                    assert_eq!(after_delete, 0, concat!(#label, " not zero after delete"));
+                        // Verify delete works
+                        slot.delete().unwrap();
+                        let after_delete = slot.read().unwrap();
+                        assert_eq!(after_delete, 0, concat!(#label, " not zero after delete"));
 
-                    // EVM words roundtrip
-                    let words = value.to_evm_words()?;
-                    let recovered = #type_name::from_evm_words(words)?;
-                    assert_eq!(value, recovered, concat!(#label, " EVM words roundtrip failed"));
+                        // EVM word roundtrip
+                        let word = value.to_word();
+                        let recovered = #type_name::from_word(word).unwrap();
+                        assert_eq!(value, recovered, concat!(#label, " EVM word roundtrip failed"));
+
+                    });
                 }
             }
         })
@@ -194,45 +198,51 @@ fn gen_rust_signed_tests() -> TokenStream {
                 // Positive test
                 quote! {
                     #[test]
-                    fn #pos_test_name(value in 0 as #type_name..=#type_name::MAX, slot in arb_safe_slot()) {
-                        let mut contract = setup_test_contract();
+                    fn #pos_test_name(value in 0 as #type_name..=#type_name::MAX, base_slot in arb_safe_slot()) {
+                        let (mut storage, address) = setup_storage();
+                        StorageCtx::enter(&mut storage, || {
+                            let mut slot = Slot::<#type_name>::new(base_slot, address);
 
-                        // Storage roundtrip
-                        value.store(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                        let loaded = #type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                        assert_eq!(value, loaded, concat!(#label, " positive storage roundtrip failed"));
+                            // Verify store → load roundtrip
+                            slot.write(value).unwrap();
+                            let loaded = slot.read().unwrap();
+                            assert_eq!(value, loaded, concat!(#label, " positive roundtrip failed"));
 
-                        // Delete
-                        #type_name::delete(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                        let after_delete = #type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                        assert_eq!(after_delete, 0, concat!(#label, " not zero after delete"));
+                            // Verify delete works
+                            slot.delete().unwrap();
+                            let after_delete = slot.read().unwrap();
+                            assert_eq!(after_delete, 0, concat!(#label, " not zero after delete"));
 
-                        // EVM words roundtrip
-                        let words = value.to_evm_words()?;
-                        let recovered = #type_name::from_evm_words(words)?;
-                        assert_eq!(value, recovered, concat!(#label, " positive EVM words roundtrip failed"));
+                            // EVM word roundtrip
+                            let word = value.to_word();
+                            let recovered = #type_name::from_word(word).unwrap();
+                            assert_eq!(value, recovered, concat!(#label, " positive EVM word roundtrip failed"));
+                        });
                     }
                 },
                 // Negative test
                 quote! {
                     #[test]
-                    fn #neg_test_name(value in #type_name::MIN..0 as #type_name, slot in arb_safe_slot()) {
-                        let mut contract = setup_test_contract();
+                    fn #neg_test_name(value in #type_name::MIN..0 as #type_name, base_slot in arb_safe_slot()) {
+                        let (mut storage, address) = setup_storage();
+                        StorageCtx::enter(&mut storage, || {
+                            let mut slot = Slot::<#type_name>::new(base_slot, address);
 
-                        // Storage roundtrip
-                        value.store(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                        let loaded = #type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                        assert_eq!(value, loaded, concat!(#label, " negative storage roundtrip failed"));
+                            // Verify store → load roundtrip
+                            slot.write(value).unwrap();
+                            let loaded = slot.read().unwrap();
+                            assert_eq!(value, loaded, concat!(#label, " negative roundtrip failed"));
 
-                        // Delete
-                        #type_name::delete(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                        let after_delete = #type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                        assert_eq!(after_delete, 0, concat!(#label, " not zero after delete"));
+                            // Verify delete works
+                            slot.delete().unwrap();
+                            let after_delete = slot.read().unwrap();
+                            assert_eq!(after_delete, 0, concat!(#label, " not zero after delete"));
 
-                        // EVM words roundtrip
-                        let words = value.to_evm_words()?;
-                        let recovered = #type_name::from_evm_words(words)?;
-                        assert_eq!(value, recovered, concat!(#label, " negative EVM words roundtrip failed"));
+                            // EVM word roundtrip
+                            let word = value.to_word();
+                            let recovered = #type_name::from_word(word).unwrap();
+                            assert_eq!(value, recovered, concat!(#label, " negative EVM word roundtrip failed"));
+                        });
                     }
                 },
             ]
@@ -260,27 +270,31 @@ fn gen_alloy_unsigned_tests() -> TokenStream {
 
             quote! {
                 #[test]
-                fn #test_name(value in #arb_fn(), slot in arb_safe_slot()) {
-                    let mut contract = setup_test_contract();
+                fn #test_name(value in #arb_fn(), base_slot in arb_safe_slot()) {
+                    let (mut storage, address) = setup_storage();
+                    StorageCtx::enter(&mut storage, || {
+                        let mut slot = Slot::<::alloy::primitives::#type_name>::new(base_slot, address);
 
-                    // Storage roundtrip
-                    value.store(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                    let loaded = ::alloy::primitives::#type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                    assert_eq!(value, loaded, concat!(#label, " storage roundtrip failed"));
+                        // Verify store → load roundtrip
+                        slot.write(value).unwrap();
+                        let loaded = slot.read().unwrap();
+                        assert_eq!(value, loaded, concat!(#label, " roundtrip failed"));
 
-                    // Delete
-                    ::alloy::primitives::#type_name::delete(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                    let after_delete = ::alloy::primitives::#type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                    assert_eq!(
-                        after_delete,
-                        ::alloy::primitives::#type_name::ZERO,
-                        concat!(#label, " not zero after delete")
-                    );
+                        // Verify delete works
+                        slot.delete().unwrap();
+                        let after_delete = slot.read().unwrap();
+                        assert_eq!(
+                            after_delete,
+                            ::alloy::primitives::#type_name::ZERO,
+                            concat!(#label, " not zero after delete")
+                        );
 
-                    // EVM words roundtrip
-                    let words = value.to_evm_words()?;
-                    let recovered = ::alloy::primitives::#type_name::from_evm_words(words)?;
-                    assert_eq!(value, recovered, concat!(#label, " EVM words roundtrip failed"));
+                        // EVM word roundtrip
+                        let word = value.to_word();
+                        let recovered = ::alloy::primitives::#type_name::from_word(word).unwrap();
+                        assert_eq!(value, recovered, concat!(#label, " EVM word roundtrip failed"));
+
+                    });
                 }
             }
         })
@@ -311,53 +325,59 @@ fn gen_alloy_signed_tests() -> TokenStream {
                 // Positive test
                 quote! {
                     #[test]
-                    fn #pos_test_name(value in #arb_pos_fn(), slot in arb_safe_slot()) {
-                        let mut contract = setup_test_contract();
+                    fn #pos_test_name(value in #arb_pos_fn(), base_slot in arb_safe_slot()) {
+                        let (mut storage, address) = setup_storage();
+                        StorageCtx::enter(&mut storage, || {
+                            let mut slot = Slot::<::alloy::primitives::#type_name>::new(base_slot, address);
 
-                        // Storage roundtrip
-                        value.store(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                        let loaded = ::alloy::primitives::#type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                        assert_eq!(value, loaded, concat!(#label, " positive storage roundtrip failed"));
+                            // Verify store → load roundtrip
+                            slot.write(value).unwrap();
+                            let loaded = slot.read().unwrap();
+                            assert_eq!(value, loaded, concat!(#label, " positive roundtrip failed"));
 
-                        // Delete
-                        ::alloy::primitives::#type_name::delete(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                        let after_delete = ::alloy::primitives::#type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                        assert_eq!(
-                            after_delete,
-                            ::alloy::primitives::#type_name::ZERO,
-                            concat!(#label, " not zero after delete")
-                        );
+                            // Verify delete works
+                            slot.delete().unwrap();
+                            let after_delete = slot.read().unwrap();
+                            assert_eq!(
+                                after_delete,
+                                ::alloy::primitives::#type_name::ZERO,
+                                concat!(#label, " not zero after delete")
+                            );
 
-                        // EVM words roundtrip
-                        let words = value.to_evm_words()?;
-                        let recovered = ::alloy::primitives::#type_name::from_evm_words(words)?;
-                        assert_eq!(value, recovered, concat!(#label, " positive EVM words roundtrip failed"));
+                            // EVM word roundtrip
+                            let word = value.to_word();
+                            let recovered = ::alloy::primitives::#type_name::from_word(word).unwrap();
+                            assert_eq!(value, recovered, concat!(#label, " positive EVM word roundtrip failed"));
+                        });
                     }
                 },
                 // Negative test
                 quote! {
                     #[test]
-                    fn #neg_test_name(value in #arb_neg_fn(), slot in arb_safe_slot()) {
-                        let mut contract = setup_test_contract();
+                    fn #neg_test_name(value in #arb_neg_fn(), base_slot in arb_safe_slot()) {
+                        let (mut storage, address) = setup_storage();
+                        StorageCtx::enter(&mut storage, || {
+                            let mut slot = Slot::<::alloy::primitives::#type_name>::new(base_slot, address);
 
-                        // Storage roundtrip
-                        value.store(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                        let loaded = ::alloy::primitives::#type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                        assert_eq!(value, loaded, concat!(#label, " negative storage roundtrip failed"));
+                            // Verify store → load roundtrip
+                            slot.write(value).unwrap();
+                            let loaded = slot.read().unwrap();
+                            assert_eq!(value, loaded, concat!(#label, " negative roundtrip failed"));
 
-                        // Delete
-                        ::alloy::primitives::#type_name::delete(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                        let after_delete = ::alloy::primitives::#type_name::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                        assert_eq!(
-                            after_delete,
-                            ::alloy::primitives::#type_name::ZERO,
-                            concat!(#label, " not zero after delete")
-                        );
+                            // Verify delete works
+                            slot.delete().unwrap();
+                            let after_delete = slot.read().unwrap();
+                            assert_eq!(
+                                after_delete,
+                                ::alloy::primitives::#type_name::ZERO,
+                                concat!(#label, " not zero after delete")
+                            );
 
-                        // EVM words roundtrip
-                        let words = value.to_evm_words()?;
-                        let recovered = ::alloy::primitives::#type_name::from_evm_words(words)?;
-                        assert_eq!(value, recovered, concat!(#label, " negative EVM words roundtrip failed"));
+                            // EVM word roundtrip
+                            let word = value.to_word();
+                            let recovered = ::alloy::primitives::#type_name::from_word(word).unwrap();
+                            assert_eq!(value, recovered, concat!(#label, " negative EVM word roundtrip failed"));
+                        });
                     }
                 },
             ]
@@ -383,33 +403,37 @@ fn gen_fixed_bytes_tests() -> TokenStream {
 
             quote! {
                 #[test]
-                fn #test_name(value in #arb_fn(), slot in arb_safe_slot()) {
-                    let mut contract = setup_test_contract();
+                fn #test_name(value in #arb_fn(), base_slot in arb_safe_slot()) {
+                    let (mut storage, address) = setup_storage();
+                    StorageCtx::enter(&mut storage, || {
+                        let mut slot = Slot::<::alloy::primitives::FixedBytes<#size>>::new(base_slot, address);
 
-                    // Storage roundtrip
-                    value.store(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                    let loaded = ::alloy::primitives::FixedBytes::<#size>::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                    assert_eq!(
-                        value, loaded,
-                        concat!("FixedBytes<", stringify!(#size), "> storage roundtrip failed")
-                    );
+                        // Verify store → load roundtrip
+                        slot.write(value).unwrap();
+                        let loaded = slot.read().unwrap();
+                        assert_eq!(
+                            value, loaded,
+                            concat!("FixedBytes<", stringify!(#size), "> roundtrip failed")
+                        );
 
-                    // Delete
-                    ::alloy::primitives::FixedBytes::<#size>::delete(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                    let after_delete = ::alloy::primitives::FixedBytes::<#size>::load(&mut contract, slot, crate::storage::LayoutCtx::FULL)?;
-                    assert_eq!(
-                        after_delete,
-                        ::alloy::primitives::FixedBytes::<#size>::ZERO,
-                        concat!("FixedBytes<", stringify!(#size), "> not zero after delete")
-                    );
+                        // Verify delete works
+                        slot.delete().unwrap();
+                        let after_delete = slot.read().unwrap();
+                        assert_eq!(
+                            after_delete,
+                            ::alloy::primitives::FixedBytes::<#size>::ZERO,
+                            concat!("FixedBytes<", stringify!(#size), "> not zero after delete")
+                        );
 
-                    // EVM words roundtrip
-                    let words = value.to_evm_words()?;
-                    let recovered = ::alloy::primitives::FixedBytes::<#size>::from_evm_words(words)?;
-                    assert_eq!(
-                        value, recovered,
-                        concat!("FixedBytes<", stringify!(#size), "> EVM words roundtrip failed")
-                    );
+                        // EVM word roundtrip
+                        let word = value.to_word();
+                        let recovered = ::alloy::primitives::FixedBytes::<#size>::from_word(word).unwrap();
+                        assert_eq!(
+                            value, recovered,
+                            concat!("FixedBytes<", stringify!(#size), "> EVM word roundtrip failed")
+                        );
+
+                    });
                 }
             }
         })

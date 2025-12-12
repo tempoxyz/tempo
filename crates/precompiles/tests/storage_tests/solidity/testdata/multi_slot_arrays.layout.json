@@ -1,0 +1,168 @@
+{
+  "contracts": {
+    "tests/storage_tests/solidity/testdata/multi_slot_arrays.sol:MultiSlotArrays": {
+      "storage-layout": {
+        "storage": [
+          {
+            "astId": 29,
+            "contract": "tests/storage_tests/solidity/testdata/multi_slot_arrays.sol:MultiSlotArrays",
+            "label": "dynTwoSlot",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_array(t_struct(PackedTwoSlot)10_storage)dyn_storage"
+          },
+          {
+            "astId": 33,
+            "contract": "tests/storage_tests/solidity/testdata/multi_slot_arrays.sol:MultiSlotArrays",
+            "label": "dynThreeSlot",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_array(t_struct(PackedThreeSlot)25_storage)dyn_storage"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "encoding": "inplace",
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_array(t_struct(PackedThreeSlot)25_storage)dyn_storage": {
+            "base": "t_struct(PackedThreeSlot)25_storage",
+            "encoding": "dynamic_array",
+            "label": "struct MultiSlotArrays.PackedThreeSlot[]",
+            "numberOfBytes": "32"
+          },
+          "t_array(t_struct(PackedTwoSlot)10_storage)dyn_storage": {
+            "base": "t_struct(PackedTwoSlot)10_storage",
+            "encoding": "dynamic_array",
+            "label": "struct MultiSlotArrays.PackedTwoSlot[]",
+            "numberOfBytes": "32"
+          },
+          "t_bool": {
+            "encoding": "inplace",
+            "label": "bool",
+            "numberOfBytes": "1"
+          },
+          "t_struct(PackedThreeSlot)25_storage": {
+            "encoding": "inplace",
+            "label": "struct MultiSlotArrays.PackedThreeSlot",
+            "members": [
+              {
+                "astId": 12,
+                "contract": "tests/storage_tests/solidity/testdata/multi_slot_arrays.sol:MultiSlotArrays",
+                "label": "value",
+                "offset": 0,
+                "slot": "0",
+                "type": "t_uint256"
+              },
+              {
+                "astId": 14,
+                "contract": "tests/storage_tests/solidity/testdata/multi_slot_arrays.sol:MultiSlotArrays",
+                "label": "timestamp",
+                "offset": 0,
+                "slot": "1",
+                "type": "t_uint64"
+              },
+              {
+                "astId": 16,
+                "contract": "tests/storage_tests/solidity/testdata/multi_slot_arrays.sol:MultiSlotArrays",
+                "label": "startTime",
+                "offset": 8,
+                "slot": "1",
+                "type": "t_uint64"
+              },
+              {
+                "astId": 18,
+                "contract": "tests/storage_tests/solidity/testdata/multi_slot_arrays.sol:MultiSlotArrays",
+                "label": "endTime",
+                "offset": 16,
+                "slot": "1",
+                "type": "t_uint64"
+              },
+              {
+                "astId": 20,
+                "contract": "tests/storage_tests/solidity/testdata/multi_slot_arrays.sol:MultiSlotArrays",
+                "label": "nonce",
+                "offset": 24,
+                "slot": "1",
+                "type": "t_uint64"
+              },
+              {
+                "astId": 22,
+                "contract": "tests/storage_tests/solidity/testdata/multi_slot_arrays.sol:MultiSlotArrays",
+                "label": "owner",
+                "offset": 0,
+                "slot": "2",
+                "type": "t_address"
+              },
+              {
+                "astId": 24,
+                "contract": "tests/storage_tests/solidity/testdata/multi_slot_arrays.sol:MultiSlotArrays",
+                "label": "active",
+                "offset": 20,
+                "slot": "2",
+                "type": "t_bool"
+              }
+            ],
+            "numberOfBytes": "96"
+          },
+          "t_struct(PackedTwoSlot)10_storage": {
+            "encoding": "inplace",
+            "label": "struct MultiSlotArrays.PackedTwoSlot",
+            "members": [
+              {
+                "astId": 3,
+                "contract": "tests/storage_tests/solidity/testdata/multi_slot_arrays.sol:MultiSlotArrays",
+                "label": "value",
+                "offset": 0,
+                "slot": "0",
+                "type": "t_uint256"
+              },
+              {
+                "astId": 5,
+                "contract": "tests/storage_tests/solidity/testdata/multi_slot_arrays.sol:MultiSlotArrays",
+                "label": "timestamp",
+                "offset": 0,
+                "slot": "1",
+                "type": "t_uint64"
+              },
+              {
+                "astId": 7,
+                "contract": "tests/storage_tests/solidity/testdata/multi_slot_arrays.sol:MultiSlotArrays",
+                "label": "nonce",
+                "offset": 8,
+                "slot": "1",
+                "type": "t_uint32"
+              },
+              {
+                "astId": 9,
+                "contract": "tests/storage_tests/solidity/testdata/multi_slot_arrays.sol:MultiSlotArrays",
+                "label": "owner",
+                "offset": 12,
+                "slot": "1",
+                "type": "t_address"
+              }
+            ],
+            "numberOfBytes": "64"
+          },
+          "t_uint256": {
+            "encoding": "inplace",
+            "label": "uint256",
+            "numberOfBytes": "32"
+          },
+          "t_uint32": {
+            "encoding": "inplace",
+            "label": "uint32",
+            "numberOfBytes": "4"
+          },
+          "t_uint64": {
+            "encoding": "inplace",
+            "label": "uint64",
+            "numberOfBytes": "8"
+          }
+        }
+      }
+    }
+  },
+  "version": "0.8.30+commit.73712a01.Darwin.appleclang"
+}

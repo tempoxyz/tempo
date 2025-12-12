@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use commonware_cryptography::{
-    bls12381::primitives::{group::Share, poly::Public, variant::MinSig},
+    bls12381::primitives::group::Share,
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_runtime::{Clock, Metrics, Spawner, Storage};
@@ -67,18 +67,14 @@ pub(crate) struct Config<TPeerManager> {
     /// rounds.
     pub(crate) partition_prefix: String,
 
-    /// The full execution layer node. Used to read the initial set of peers
-    /// from chainspec.
-    pub(crate) execution_node: TempoFullNode,
-
-    /// The initial participants in the DKG ceremony.
+    /// The full execution layer node. On init, used to read the initial set
+    /// of peers and public polynomial (either from chainspec if running
+    /// pre-allegretto or from the genesis extra_data header and block state if
+    /// post-allegretto).
     ///
-    /// Pre the allegretto hardfork, this initial set are the dealers and players
-    /// in a ceremony.
-    pub(crate) initial_validators: OrderedAssociated<PublicKey, SocketAddr>,
-
-    /// The initial public polynomial, passed in through config.
-    pub(crate) initial_public_polynomial: Public<MinSig>,
+    /// During normal operation, used to read the validator config at the end
+    /// of each epoch.
+    pub(crate) execution_node: TempoFullNode,
 
     /// This node's initial share of the bls12381 private key.
     pub(crate) initial_share: Option<Share>,

@@ -208,7 +208,7 @@ contract AccountKeychainTest is Test {
         vm.expectEmit(true, true, false, true);
         emit IAccountKeychain.KeyAuthorized(
             alice,
-            bytes32(uint256(uint160(aliceAccessKey))),
+            aliceAccessKey,
             1, // P256
             0
         );
@@ -448,16 +448,14 @@ contract MockAccountKeychain is IAccountKeychain {
             }
         }
 
-        emit KeyAuthorized(
-            msg.sender, bytes32(uint256(uint160(keyId))), uint8(signatureType), expiry
-        );
+        emit KeyAuthorized(msg.sender, keyId, uint8(signatureType), expiry);
     }
 
     function revokeKey(address keyId) external {
         keys[msg.sender][keyId].isRevoked = true;
         keys[msg.sender][keyId].expiry = 0;
 
-        emit KeyRevoked(msg.sender, bytes32(uint256(uint160(keyId))));
+        emit KeyRevoked(msg.sender, keyId);
     }
 
     function updateSpendingLimit(address keyId, address token, uint256 newLimit) external {
@@ -465,7 +463,7 @@ contract MockAccountKeychain is IAccountKeychain {
         keys[msg.sender][keyId].enforceLimits = true;
         limits[msg.sender][keyId][token] = newLimit;
 
-        emit SpendingLimitUpdated(msg.sender, bytes32(uint256(uint160(keyId))), token, newLimit);
+        emit SpendingLimitUpdated(msg.sender, keyId, token, newLimit);
     }
 
     function getKey(address account, address keyId) external view returns (KeyInfo memory) {
