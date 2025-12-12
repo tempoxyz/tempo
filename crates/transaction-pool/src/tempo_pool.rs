@@ -60,12 +60,8 @@ impl<Client> TempoTransactionPool<Client> {
             sender_recovery_cache,
         }
     }
-
-    /// Returns a clone of the sender recovery cache.
-    pub fn sender_recovery_cache(&self) -> SenderRecoveryCache {
-        self.sender_recovery_cache.clone()
-    }
 }
+
 impl<Client> TempoTransactionPool<Client>
 where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
