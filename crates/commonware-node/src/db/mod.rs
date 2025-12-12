@@ -26,14 +26,14 @@ type B256 = FixedBytes<32>;
 const NODE_VERSION_KEY: &str = "_node_version";
 
 /// Inner state of the metadata database.
-pub struct MetadataDatabaseInner<TContext>
+struct MetadataDatabaseInner<TContext>
 where
     TContext: Clock + Metrics + Storage,
 {
     /// The underlying metadata store.
-    pub store: Metadata<TContext, B256, Bytes>,
+    store: Metadata<TContext, B256, Bytes>,
     /// Cache to avoid repeated deserialization.
-    pub cache: HashMap<B256, Box<dyn CachedValue>>,
+    cache: HashMap<B256, Box<dyn CachedValue>>,
 }
 
 /// A database wrapper around `Metadata<B256, Bytes>` that provides transactional operations.
@@ -41,7 +41,7 @@ where
 /// The underlying [`Metadata`] storage always keeps all data in memory and persists
 /// it to disk during commit/sync operations.
 #[derive(Clone)]
-pub struct MetadataDatabase<TContext>(pub Arc<RwLock<MetadataDatabaseInner<TContext>>>)
+pub struct MetadataDatabase<TContext>(Arc<RwLock<MetadataDatabaseInner<TContext>>>)
 where
     TContext: Clock + Metrics + Storage;
 
