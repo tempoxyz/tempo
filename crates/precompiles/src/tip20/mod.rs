@@ -355,7 +355,14 @@ impl TIP20Token {
     // Token operations
     /// Mints new tokens to specified address
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
-        self._mint(msg_sender, call.to, call.amount)
+        self._mint(msg_sender, call.to, call.amount)?;
+        if self.storage.spec().is_allegro_moderato() {
+            self.emit_event(TIP20Event::Mint(ITIP20::Mint {
+                to: call.to,
+                amount: call.amount,
+            }))?;
+        }
+        Ok(())
     }
 
     /// Mints new tokens to specified address with memo attached
@@ -378,7 +385,14 @@ impl TIP20Token {
             to: call.to,
             amount: call.amount,
             memo: call.memo,
-        }))
+        }))?;
+        if self.storage.spec().is_allegro_moderato() {
+            self.emit_event(TIP20Event::Mint(ITIP20::Mint {
+                to: call.to,
+                amount: call.amount,
+            }))?;
+        }
+        Ok(())
     }
 
     /// Internal helper to mint new tokens and update balances
@@ -425,12 +439,23 @@ impl TIP20Token {
             amount,
         }))?;
 
-        self.emit_event(TIP20Event::Mint(ITIP20::Mint { to, amount }))
+        // Pre-Allegro Moderato: emit Mint event here
+        if !self.storage.spec().is_allegro_moderato() {
+            self.emit_event(TIP20Event::Mint(ITIP20::Mint { to, amount }))?;
+        }
+        Ok(())
     }
 
     /// Burns tokens from sender's balance and reduces total supply
     pub fn burn(&mut self, msg_sender: Address, call: ITIP20::burnCall) -> Result<()> {
-        self._burn(msg_sender, call.amount)
+        self._burn(msg_sender, call.amount)?;
+        if self.storage.spec().is_allegro_moderato() {
+            self.emit_event(TIP20Event::Burn(ITIP20::Burn {
+                from: msg_sender,
+                amount: call.amount,
+            }))?;
+        }
+        Ok(())
     }
 
     /// Burns tokens from sender's balance with memo attached
@@ -446,7 +471,14 @@ impl TIP20Token {
             to: Address::ZERO,
             amount: call.amount,
             memo: call.memo,
-        }))
+        }))?;
+        if self.storage.spec().is_allegro_moderato() {
+            self.emit_event(TIP20Event::Burn(ITIP20::Burn {
+                from: msg_sender,
+                amount: call.amount,
+            }))?;
+        }
+        Ok(())
     }
 
     /// Burns tokens from blocked addresses that cannot transfer
@@ -513,10 +545,14 @@ impl TIP20Token {
                 ))?;
         self.set_total_supply(new_supply)?;
 
-        self.emit_event(TIP20Event::Burn(ITIP20::Burn {
-            from: msg_sender,
-            amount,
-        }))
+        // Pre-Allegro Moderato: emit Burn event here
+        if !self.storage.spec().is_allegro_moderato() {
+            self.emit_event(TIP20Event::Burn(ITIP20::Burn {
+                from: msg_sender,
+                amount,
+            }))?;
+        }
+        Ok(())
     }
 
     // Standard token functions

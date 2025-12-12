@@ -15,7 +15,7 @@ sol! {
     /// Only the main account key can authorize/revoke keys, while secondary keys
     /// can be used for regular transactions within their spending limits.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc)]
+    #[sol(rpc, abi)]
     interface IAccountKeychain {
         enum SignatureType {
             Secp256k1,
@@ -38,12 +38,21 @@ sol! {
             bool isRevoked;
         }
         /// Emitted when a new key is authorized
+        event KeyAuthorized(address indexed account, address indexed publicKey, uint8 signatureType, uint64 expiry);
+
+        /// Legacy event for backwards compatibility
         event KeyAuthorized(address indexed account, bytes32 indexed publicKey, uint8 signatureType, uint64 expiry);
 
         /// Emitted when a key is revoked
+        event KeyRevoked(address indexed account, address indexed publicKey);
+
+        /// Legacy event for backwards compatibility
         event KeyRevoked(address indexed account, bytes32 indexed publicKey);
 
         /// Emitted when a spending limit is updated
+        event SpendingLimitUpdated(address indexed account, address indexed publicKey, address indexed token, uint256 newLimit);
+
+        /// Legacy event for backwards compatibility
         event SpendingLimitUpdated(address indexed account, bytes32 indexed publicKey, address indexed token, uint256 newLimit);
 
         /// Authorize a new key for the caller's account

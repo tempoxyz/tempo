@@ -55,8 +55,8 @@ impl TIP20RewardsRegistry {
 
         // If removing element that's not the last, swap with last element
         if index != last_index {
-            let last_token = stream_ending_at.at(last_index).read()?;
-            stream_ending_at.at(index).write(last_token)?;
+            let last_token = stream_ending_at.at_unchecked(last_index).read()?;
+            stream_ending_at.at_unchecked(index).write(last_token)?;
 
             // Update stream_index for the moved element
             let last_stream_key = keccak256((last_token, end_time).abi_encode());

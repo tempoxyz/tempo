@@ -122,7 +122,8 @@ where
 ///
 /// # Element Access
 ///
-/// Use `at(index)` to get a `Slot<T>` for individual element operations:
+/// Use `at(index)` to get a `Slot<T>` for individual element operations with OOB guarantees.
+/// Use `at_unchecked(index)` for its efficient counterpart without the check.
 /// - For packed elements (T::BYTES ≤ 16): returns a packed `Slot<T>` with byte offsets
 /// - For unpacked elements: returns a full `Slot<T>` for the element's dedicated slot
 ///
@@ -132,13 +133,14 @@ where
 /// let handler = <Vec<u8> as StorableType>::handle(len_slot, LayoutCtx::FULL);
 ///
 /// // Full vector operations
-/// let vec = handler.read(&mut storage)?;
+/// let vec = handler.read()?;
 /// handler.write(&mut storage, vec![1, 2, 3])?;
 ///
 /// // Individual element operations
-/// let elem = handler.at(0).read(&mut storage)?;
-/// handler.at(1).write(&mut storage, 42)?;
-/// handler.at(2).delete(&mut storage)?;
+/// if let Some(slot) = handler.at(0)? {
+///     let elem = slot.read()?;
+///     slot.write(42)?;
+/// }
 /// ```
 pub struct VecHandler<T>
 where
@@ -242,7 +244,7 @@ where
     ///
     /// The returned `Slot` automatically handles packing based on `T::BYTES`:
     #[inline]
-    pub fn at(&self, index: usize) -> T::Handler {
+    pub fn at_unchecked(&self, index: usize) -> T::Handler {
         let data_start = self.data_slot();
 
         // Pack small elements into shared slots, use T::SLOTS for multi-slot types
@@ -259,6 +261,20 @@ where
         T::handle(base_slot, layout_ctx, self.address)
     }
 
+    /// Exactly like `fn at_unchecked(..)` but with an out-of-bounds check.
+    ///
+    /// # Returns
+    /// - If the SLOAD to read the length fails, throws an error.
+    /// - If the index is OOB returns `Ok(None)`.
+    /// - Otherwise, returns `Ok(Some(T::Handler))`.
+    pub fn at(&self, index: usize) -> Result<Option<T::Handler>> {
+        if index >= self.len()? {
+            return Ok(None);
+        }
+
+        Ok(Some(self.at_unchecked(index)))
+    }
+
     /// Pushes a new element to the end of the vector.
     ///
     /// Automatically increments the length and handles packing for small types.
@@ -272,7 +288,7 @@ where
         let length = self.len()?;
 
         // Write element at the end
-        let mut elem_slot = self.at(length);
+        let mut elem_slot = self.at_unchecked(length);
         elem_slot.write(value)?;
 
         // Increment length
@@ -298,7 +314,7 @@ where
         let last_index = length - 1;
 
         // Read the last element
-        let mut elem_slot = self.at(last_index);
+        let mut elem_slot = self.at_unchecked(last_index);
         let element = elem_slot.read()?;
 
         // Zero out the element's storage
@@ -535,7 +551,7 @@ mod tests {
 
         // For packed types (u8: 1 byte), elements pack 32 per slot
         // Element at index 5 should be in slot 0, offset 5
-        let elem_slot = handler.at(5);
+        let elem_slot = handler.at_unchecked(5);
         let expected_loc = calc_element_loc(5, u8::BYTES);
         assert_eq!(
             elem_slot.slot(),
@@ -544,7 +560,7 @@ mod tests {
         assert_eq!(elem_slot.offset(), Some(expected_loc.offset_bytes));
 
         // Element at index 35 should be in slot 1, offset 3 (35 % 32 = 3)
-        let elem_slot = handler.at(35);
+        let elem_slot = handler.at_unchecked(35);
         let expected_loc = calc_element_loc(35, u8::BYTES);
         assert_eq!(
             elem_slot.slot(),
@@ -563,12 +579,12 @@ mod tests {
 
         // For unpacked types (U256: 32 bytes), each element uses a full slot
         // Element at index 0 should be at data_start + 0
-        let elem_slot = handler.at(0);
+        let elem_slot = handler.at_unchecked(0);
         assert_eq!(elem_slot.slot(), data_start);
         assert_eq!(elem_slot.offset(), None); // Full slot, no offset
 
         // Element at index 5 should be at data_start + 5
-        let elem_slot = handler.at(5);
+        let elem_slot = handler.at_unchecked(5);
         assert_eq!(elem_slot.slot(), data_start + U256::from(5));
         assert_eq!(elem_slot.offset(), None);
     }
@@ -580,8 +596,8 @@ mod tests {
         let handler = VecHandler::<u16>::new(len_slot, address);
 
         // Same index should always produce same slot
-        let slot1 = handler.at(10);
-        let slot2 = handler.at(10);
+        let slot1 = handler.at_unchecked(10);
+        let slot2 = handler.at_unchecked(10);
 
         assert_eq!(
             slot1.slot(),
@@ -602,8 +618,8 @@ mod tests {
         let handler = VecHandler::<u16>::new(len_slot, address);
 
         // Different indices should produce different slot/offset combinations
-        let slot5 = handler.at(5);
-        let slot10 = handler.at(10);
+        let slot5 = handler.at_unchecked(5);
+        let slot10 = handler.at_unchecked(10);
 
         // u16 is 2 bytes, so 16 elements per slot
         // Index 5 is in slot 0, offset 10
@@ -612,7 +628,7 @@ mod tests {
         assert_ne!(slot5.offset(), slot10.offset(), "But different offsets");
 
         // Index 16 should be in different slot
-        let slot16 = handler.at(16);
+        let slot16 = handler.at_unchecked(16);
         assert_ne!(
             slot5.slot(),
             slot16.slot(),
@@ -1415,16 +1431,16 @@ mod tests {
             vec_slot.write(data).unwrap();
 
             // Test reading individual elements via at()
-            let elem0 = handler.at(0).read().unwrap();
-            let elem1 = handler.at(1).read().unwrap();
-            let elem2 = handler.at(2).read().unwrap();
+            let elem0 = handler.at_unchecked(0).read().unwrap();
+            let elem1 = handler.at_unchecked(1).read().unwrap();
+            let elem2 = handler.at_unchecked(2).read().unwrap();
 
             assert_eq!(elem0, U256::from(10));
             assert_eq!(elem1, U256::from(20));
             assert_eq!(elem2, U256::from(30));
 
             // Test writing individual elements via at()
-            handler.at(1).write(U256::from(99)).unwrap();
+            handler.at_unchecked(1).write(U256::from(99)).unwrap();
 
             // Verify via read
             let updated = handler.read().unwrap();
@@ -1508,7 +1524,7 @@ mod tests {
 
             // Verify values
             for i in 0..35 {
-                let val = handler.at(i).read().unwrap();
+                let val = handler.at_unchecked(i).read().unwrap();
                 assert_eq!(val, i as u8);
             }
 
@@ -1520,6 +1536,34 @@ mod tests {
 
             assert_eq!(handler.len().unwrap(), 0);
         });
+    }
+
+    #[test]
+    fn test_vec_handler_at_oob_check() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let len_slot = U256::random();
+            let handler = VecHandler::<U256>::new(len_slot, address);
+
+            // Empty vec - any index should return None
+            assert!(handler.at(0)?.is_none());
+
+            // Push 2 elements
+            handler.push(U256::from(10))?;
+            handler.push(U256::from(20))?;
+
+            // Valid indices should return Some and read the correct values
+            assert!(handler.at(0)?.is_some());
+            assert!(handler.at(1)?.is_some());
+            assert_eq!(handler.at(0)?.unwrap().read()?, U256::from(10));
+            assert_eq!(handler.at(1)?.unwrap().read()?, U256::from(20));
+
+            // OOB indices should return None
+            assert!(handler.at(3)?.is_none());
+
+            Ok(())
+        })
     }
 
     // -- PROPTEST STRATEGIES ------------------------------------------------------

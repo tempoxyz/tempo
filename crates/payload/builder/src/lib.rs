@@ -560,6 +560,16 @@ where
             }
             block_size_used += tx_rlp_length;
         }
+        let total_normal_transaction_execution_elapsed = execution_start.elapsed();
+        self.metrics
+            .total_normal_transaction_execution_duration_seconds
+            .record(total_normal_transaction_execution_elapsed);
+        self.metrics
+            .payment_transactions
+            .record(payment_transactions as f64);
+        self.metrics
+            .payment_transactions_last
+            .set(payment_transactions as f64);
 
         // check if we have a better block or received more subblocks
         if !is_better_payload(best_payload.as_ref(), total_fees)
@@ -574,6 +584,9 @@ where
             });
         }
 
+        let subblocks_start = Instant::now();
+        let subblocks_count = subblocks.len() as f64;
+        let mut subblock_transactions = 0f64;
         // Apply subblock transactions
         for subblock in &subblocks {
             for tx in subblock.transactions_recovered() {
@@ -594,19 +607,22 @@ where
                         return Err(PayloadBuilderError::evm(err));
                     }
                 }
+
+                subblock_transactions += 1.0;
             }
         }
-
-        let execution_elapsed = execution_start.elapsed();
+        let total_subblock_transaction_execution_elapsed = subblocks_start.elapsed();
         self.metrics
-            .total_transaction_execution_duration_seconds
-            .record(execution_elapsed);
+            .total_subblock_transaction_execution_duration_seconds
+            .record(total_subblock_transaction_execution_elapsed);
+        self.metrics.subblocks.record(subblocks_count);
+        self.metrics.subblocks_last.set(subblocks_count);
         self.metrics
-            .payment_transactions
-            .record(payment_transactions as f64);
+            .subblock_transactions
+            .record(subblock_transactions);
         self.metrics
-            .payment_transactions_last
-            .set(payment_transactions as f64);
+            .subblock_transactions_last
+            .set(subblock_transactions);
 
         // Apply system transactions
         let system_txs_execution_start = Instant::now();
@@ -619,6 +635,11 @@ where
         self.metrics
             .system_transactions_execution_duration_seconds
             .record(system_txs_execution_elapsed);
+
+        let total_transaction_execution_elapsed = execution_start.elapsed();
+        self.metrics
+            .total_transaction_execution_duration_seconds
+            .record(total_transaction_execution_elapsed);
 
         let builder_finish_start = Instant::now();
         let BlockBuilderOutcome {
@@ -670,10 +691,14 @@ where
             gas_limit = sealed_block.gas_limit(),
             gas_used,
             extra_data = %sealed_block.extra_data(),
-            total_transactions,
+            subblocks_count,
             payment_transactions,
+            subblock_transactions,
+            total_transactions,
             ?elapsed,
-            ?execution_elapsed,
+            ?total_normal_transaction_execution_elapsed,
+            ?total_subblock_transaction_execution_elapsed,
+            ?total_transaction_execution_elapsed,
             ?builder_finish_elapsed,
             "Built payload"
         );
