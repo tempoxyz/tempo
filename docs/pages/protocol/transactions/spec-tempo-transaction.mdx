@@ -1123,35 +1123,3 @@ Because a single transaction can invalidate multiple others by spending balances
 
 **Assessment:** While this transaction type introduces additional pre-execution validation costs, all costs are bounded to reasonable limits. The mempool complexity issues around cross-transaction dependencies already exist in Ethereum due to 7702 and accounts with code, making static validation inherently difficult. So the incremental cost from this transaction type is acceptable given these existing constraints.
 
-### State Growth and Nonce Garbage Collection
-
-The 2D nonce system introduces some state growth concerns, as each account can create a large number of nonce keys. One discussed solution to this has been garbage collection of nonces after transaction expiry.
-Current spec *intentionally excludes garbage collection* for nonces.
-
-#### Rationale for Excluding Garbage Collection
-
-1. **Not Valuable in Isolation, but future compatible**
-In the current implementation, each new nonce is stored in a precompile storage. So nonce state growth is the exact same problem as general state growth.
-So it is not valuable to enshrine a partial solution just for nonces, until we solve the broader state growth problem.
-
-2. **Gas Model Addresses State Growth**
-Creating new nonce keys incurs 22,100 gas (SSTORE set cost), which provides natural economic pressure against state bloat. We can also introduce a protocol limit of 32 or 64 nonce keys for each account if needed.
-
-3. **Technical Complexity with Nonce Keys**
-It is unclear how garbage collection would work safely with sequence-based nonces
-Example: If a nonce key is at sequence X and a wallet signs for X+1, but X gets garbage collected before submission, the transaction with X+1 would fail unexpectedly
-
-4. **Future Extensibility**
-The specification includes an optional `validBefore` field in the transaction structure
-If garbage collection becomes necessary, this field can be made mandatory
-
-#### State Growth Analysis
-
-**Worst Case Scenario:**
-- An attacker could create many nonce keys by paying 22,100 gas per new key
-- Example: Creating 100 nonce keys would require cumulative gas costs of ~2,210,000 gas
-
-
-**Practical Usage:**
-- Most users will use 1-5 parallel nonce keys for typical parallel transaction patterns
-- The fixed cost per new key (22,100 gas) is reasonable for legitimate use cases
