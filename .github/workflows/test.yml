@@ -76,10 +76,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Build
+        run: RUSTFLAGS="-C target-cpu=native" cargo build --profile profiling --features jemalloc,asm-keccak
       - name: Download snapshot
-        run: cargo run --release --bin tempo download --datadir snap-rexec
+        run: ./target/profiling/tempo download --datadir snap-rexec
       - name: Re-execute snapshot
-        run: cargo run --release --bin tempo re-execute --datadir snap-rexec --num-tasks $(nproc)
+        run: ./target/profiling/tempo re-execute --datadir snap-rexec --num-tasks $(nproc)
 
   test-success:
     name: test success
