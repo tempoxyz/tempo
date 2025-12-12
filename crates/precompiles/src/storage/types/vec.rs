@@ -122,7 +122,8 @@ where
 ///
 /// # Element Access
 ///
-/// Use `at(index)` to get a `Slot<T>` for individual element operations:
+/// Use `at(index)` to get a `Slot<T>` for individual element operations with OOB guarantees.
+/// Use `at_unchecked(index)` for its efficient counterpart without the check.
 /// - For packed elements (T::BYTES ≤ 16): returns a packed `Slot<T>` with byte offsets
 /// - For unpacked elements: returns a full `Slot<T>` for the element's dedicated slot
 ///
@@ -260,9 +261,12 @@ where
         T::handle(base_slot, layout_ctx, self.address)
     }
 
-    /// Returns a `Slot<T>` accessor for the element at the given index unless it is OOB.
+    /// Exactly like `fn at_unchecked(..)` but with an OOB check.
     ///
-    /// The returned `Slot` automatically handles packing based on `T::BYTES`:
+    /// # Returns
+    /// - If the SLOAD to read the length fails, throws an error.
+    /// - If the index is OOB returns `Ok(None)`.
+    /// - Otherwise, returns `Ok(Some(T::Handler))`.
     pub fn at(&self, index: usize) -> Result<Option<T::Handler>> {
         // Prevent OOB access.
         if index >= self.len()? {
