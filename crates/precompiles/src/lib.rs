@@ -389,7 +389,6 @@ mod tests {
         let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
 
         let target_address = Address::random();
-        let bytecode_address = Address::random();
         let input = PrecompileInput {
             data: &Bytes::new(),
             caller: Address::ZERO,
@@ -398,7 +397,7 @@ mod tests {
             is_static: true,
             value: U256::ZERO,
             target_address,
-            bytecode_address,
+            bytecode_address: target_address,
         };
 
         let result = AlloyEvmPrecompile::call(&precompile, input);
