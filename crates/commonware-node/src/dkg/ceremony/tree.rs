@@ -254,14 +254,14 @@ impl TreeOfDealings {
                     arbiter.disqualify(dealing.dealer().clone());
                 }
                 Ok(ack_indices) => {
-                    if let Err(error) = arbiter.commitment(
+                    if let Err(reason) = arbiter.commitment(
                         dealing.dealer().clone(),
                         dealing.commitment().clone(),
                         ack_indices,
                         dealing.reveals().to_vec(),
                     ) {
-                        tracing::error!(
-                            error = %Report::new(error),
+                        tracing::warn!(
+                            reason = %Report::new(reason),
                             "failed tracking dealing in arbiter",
                         );
                     }
