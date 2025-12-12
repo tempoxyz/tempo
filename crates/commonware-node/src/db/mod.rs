@@ -1,4 +1,5 @@
 use eyre::WrapErr;
+use tracing::debug;
 use std::{any::Any, collections::HashMap, sync::Arc};
 
 use alloy_primitives::keccak256;
@@ -415,12 +416,16 @@ where
             return Ok(());
         }
 
+        let inserts = self.writes.values().filter(|v| v.is_some()).count();
+        let deletes = self.writes.len() - inserts;
+        debug!(inserts, deletes, "committing transaction");
+
         let mut db = self.db.0.write().await;
 
         for (key, value_opt) in self.writes {
             match value_opt {
                 Some(cached) => {
-                    let bytes = cached.serialize()?;
+                    let bytes = cached.serialize().wrap_err("failed to serialize value")?;
                     db.store.put(key.clone(), bytes);
                     db.cache.insert(key, cached);
                 }
