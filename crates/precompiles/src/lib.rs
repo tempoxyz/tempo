@@ -28,12 +28,12 @@ use crate::{
     path_usd::PathUSD,
     stablecoin_exchange::StablecoinExchange,
     storage::StorageCtx,
-    tip_account_registrar::TipAccountRegistrar,
-    tip_fee_manager::TipFeeManager,
-    tip20::{TIP20Token, address_to_token_id_unchecked, is_tip20_prefix},
+    tip20::{address_to_token_id_unchecked, is_tip20_prefix, TIP20Token},
     tip20_factory::TIP20Factory,
     tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
+    tip_account_registrar::TipAccountRegistrar,
+    tip_fee_manager::TipFeeManager,
     validator_config::ValidatorConfig,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -53,9 +53,9 @@ use revm::{
 
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO,
-    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP_ACCOUNT_REGISTRAR,
-    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
-    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP20_FACTORY_ADDRESS,
+    TIP20_REWARDS_REGISTRY_ADDRESS, TIP403_REGISTRY_ADDRESS, TIP_ACCOUNT_REGISTRAR,
+    TIP_FEE_MANAGER_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -333,8 +333,8 @@ mod tests {
     use crate::tip20::TIP20Token;
     use alloy::primitives::{Address, Bytes, U256};
     use alloy_evm::{
-        EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         precompiles::{Precompile as AlloyEvmPrecompile, PrecompileInput},
+        EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
     };
     use revm::{
         context::ContextTr,
