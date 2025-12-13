@@ -52,15 +52,15 @@ interface IAccountKeychain {
 
     /// @notice Emitted when a new key is authorized
     event KeyAuthorized(
-        address indexed account, bytes32 indexed publicKey, uint8 signatureType, uint64 expiry
+        address indexed account, address indexed publicKey, uint8 signatureType, uint64 expiry
     );
 
     /// @notice Emitted when a key is revoked
-    event KeyRevoked(address indexed account, bytes32 indexed publicKey);
+    event KeyRevoked(address indexed account, address indexed publicKey);
 
     /// @notice Emitted when a spending limit is updated
     event SpendingLimitUpdated(
-        address indexed account, bytes32 indexed publicKey, address indexed token, uint256 newLimit
+        address indexed account, address indexed publicKey, address indexed token, uint256 newLimit
     );
 
     /*//////////////////////////////////////////////////////////////

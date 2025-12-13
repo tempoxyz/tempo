@@ -173,7 +173,7 @@ impl Consensus<Block> for TempoConsensus {
         let spec_is_allegro_moderato = self
             .inner
             .chain_spec()
-            .is_allegretto_active_at_timestamp(block.timestamp());
+            .is_allegro_moderato_active_at_timestamp(block.timestamp());
         let system_tx_count = if spec_is_allegro_moderato {
             SYSTEM_TX_COUNT_POST_ALLEGRO_MODERATO
         } else {
