@@ -46,7 +46,10 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     calls,
                     key_type,
                     key_data,
+                    is_keychain,
                     tempo_authorization_list,
+                    key_auth_signature_type,
+                    key_auth_num_limits,
                 } = self;
                 let envelope = match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(
                     inner.clone(),
@@ -60,7 +63,10 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             calls,
                             key_type,
                             key_data,
+                            is_keychain,
                             tempo_authorization_list,
+                            key_auth_signature_type,
+                            key_auth_num_limits,
                         }));
                     }
                 };
@@ -74,7 +80,10 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             calls,
                             key_type,
                             key_data,
+                            is_keychain,
                             tempo_authorization_list,
+                            key_auth_signature_type,
+                            key_auth_num_limits,
                         })
                     },
                 )?)
@@ -96,8 +105,11 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             calls,
             key_type,
             key_data,
+            is_keychain,
             tempo_authorization_list,
             nonce_key,
+            key_auth_signature_type,
+            key_auth_num_limits,
         } = self;
         Ok(TempoTxEnv {
             fee_token,
@@ -109,11 +121,21 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             {
                 // Create mock signature for gas estimation
                 // If key_type is not provided, default to secp256k1
+                let is_keychain = is_keychain.unwrap_or(false);
+                // For Keychain signatures, use the caller's address as the root key address
+                let caller_addr = inner.from.unwrap_or_default();
                 let mock_signature = key_type
                     .as_ref()
-                    .map(|kt| create_mock_tempo_signature(kt, key_data.as_ref()))
+                    .map(|kt| {
+                        create_mock_tempo_signature(kt, key_data.as_ref(), is_keychain, caller_addr)
+                    })
                     .unwrap_or_else(|| {
-                        create_mock_tempo_signature(&SignatureType::Secp256k1, None)
+                        create_mock_tempo_signature(
+                            &SignatureType::Secp256k1,
+                            None,
+                            is_keychain,
+                            caller_addr,
+                        )
                     });
 
                 let calls = if !calls.is_empty() {
@@ -136,7 +158,9 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                         .map(RecoveredTempoAuthorization::new)
                         .collect(),
                     nonce_key: nonce_key.unwrap_or_default(),
-                    key_authorization: None,
+                    key_authorization: key_auth_signature_type.map(|sig_type| {
+                        create_mock_key_authorization(sig_type, key_auth_num_limits.unwrap_or(0))
+                    }),
                     signature_hash: B256::ZERO,
                     valid_before: None,
                     valid_after: None,
@@ -151,37 +175,60 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
 }
 
 /// Creates a mock AA signature for gas estimation based on key type hints
+///
+/// - `key_type`: The primitive signature type (secp256k1, P256, WebAuthn)
+/// - `key_data`: Type-specific data (e.g., WebAuthn size)
+/// - `is_keychain`: If true, wraps the signature in a Keychain wrapper (+3,000 gas)
+/// - `caller_addr`: The transaction caller address (used as root key address for Keychain)
 fn create_mock_tempo_signature(
     key_type: &SignatureType,
     key_data: Option<&Bytes>,
+    is_keychain: bool,
+    caller_addr: alloy_primitives::Address,
 ) -> TempoSignature {
+    use tempo_primitives::transaction::tt_signature::{KeychainSignature, TempoSignature};
+
+    let inner_sig = create_mock_primitive_signature(key_type, key_data.cloned());
+
+    if is_keychain {
+        TempoSignature::Keychain(KeychainSignature::new(caller_addr, inner_sig))
+    } else {
+        TempoSignature::Primitive(inner_sig)
+    }
+}
+
+/// Creates a mock primitive signature for gas estimation
+fn create_mock_primitive_signature(
+    sig_type: &SignatureType,
+    key_data: Option<Bytes>,
+) -> tempo_primitives::transaction::tt_signature::PrimitiveSignature {
     use tempo_primitives::transaction::tt_signature::{
-        P256SignatureWithPreHash, PrimitiveSignature, TempoSignature, WebAuthnSignature,
+        P256SignatureWithPreHash, PrimitiveSignature, WebAuthnSignature,
     };
 
-    match key_type {
+    match sig_type {
         SignatureType::Secp256k1 => {
             // Create a dummy secp256k1 signature (65 bytes)
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::new(
+            PrimitiveSignature::Secp256k1(Signature::new(
                 alloy_primitives::U256::ZERO,
                 alloy_primitives::U256::ZERO,
                 false,
-            )))
+            ))
         }
         SignatureType::P256 => {
             // Create a dummy P256 signature
-            TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
+            PrimitiveSignature::P256(P256SignatureWithPreHash {
                 r: alloy_primitives::B256::ZERO,
                 s: alloy_primitives::B256::ZERO,
                 pub_key_x: alloy_primitives::B256::ZERO,
                 pub_key_y: alloy_primitives::B256::ZERO,
                 pre_hash: false,
-            }))
+            })
         }
         SignatureType::WebAuthn => {
             // Create a dummy WebAuthn signature with the specified size
             // key_data contains the total size of webauthn_data (excluding 128 bytes for public keys)
-            // Default: 200 bytes if no key_data provided
+            // Default: 800 bytes if no key_data provided
 
             // Base clientDataJSON template (50 bytes): {"type":"webauthn.get","challenge":"","origin":""}
             // Authenticator data (37 bytes): 32 rpIdHash + 1 flags + 4 signCount
@@ -192,7 +239,7 @@ fn create_mock_tempo_signature(
             const DEFAULT_WEBAUTHN_SIZE: usize = 800; // Default when no key_data provided
 
             // Parse size from key_data, or use default
-            let size = if let Some(data) = key_data {
+            let size = if let Some(data) = key_data.as_ref() {
                 match data.len() {
                     1 => data[0] as usize,
                     2 => u16::from_be_bytes([data[0], data[1]]) as usize,
@@ -224,14 +271,47 @@ fn create_mock_tempo_signature(
             webauthn_data.extend_from_slice(client_json.as_bytes());
             let webauthn_data = Bytes::from(webauthn_data);
 
-            TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
+            PrimitiveSignature::WebAuthn(WebAuthnSignature {
                 webauthn_data,
                 r: alloy_primitives::B256::ZERO,
                 s: alloy_primitives::B256::ZERO,
                 pub_key_x: alloy_primitives::B256::ZERO,
                 pub_key_y: alloy_primitives::B256::ZERO,
-            }))
+            })
         }
+    }
+}
+
+/// Creates a mock KeyAuthorization for gas estimation
+fn create_mock_key_authorization(
+    sig_type: SignatureType,
+    num_limits: u64,
+) -> tempo_primitives::transaction::SignedKeyAuthorization {
+    use alloy_primitives::{Address, U256};
+    use tempo_primitives::transaction::{KeyAuthorization, SignedKeyAuthorization, TokenLimit};
+
+    let limits = if num_limits > 0 {
+        Some(
+            (0..num_limits)
+                .map(|_| TokenLimit {
+                    token: Address::ZERO,
+                    limit: U256::ZERO,
+                })
+                .collect(),
+        )
+    } else {
+        None
+    };
+
+    SignedKeyAuthorization {
+        authorization: KeyAuthorization {
+            chain_id: 0, // 0 = valid on any chain
+            key_type: sig_type,
+            key_id: Address::ZERO,
+            expiry: None,
+            limits,
+        },
+        signature: create_mock_primitive_signature(&sig_type, None),
     }
 }
 

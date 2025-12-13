@@ -866,11 +866,13 @@ Different signature types incur different base transaction costs to reflect thei
 | **secp256k1** | 21,000 | Standard | Includes 3,000 gas for ecrecover precompile |
 | **P256** | 26,000 | 21,000 + 5,000 | Base 21k + additional 5k for P256 verification |
 | **WebAuthn** | 26,000 + variable data cost | 26,000 + (calldata gas for clientDataJSON) | Base P256 cost plus variable cost for clientDataJSON based on size |
+| **Keychain** | Inner signature + 3,000 | primitive_sig_cost + 3,000 | Inner signature cost + key validation overhead (2,100 SLOAD + 900 buffer) |
 
 **Rationale:**
 - The base 21,000 gas for standard transactions already includes the cost of secp256k1 signature verification via ecrecover (3,000 gas)
-- [EIP 7951](https://eips.ethereum.org/EIPS/eip-7951) sets P256 verification cost at 6,900 gas. We add 1,100 gas to account for the additional 65 bytes of signature size (129 bytes total vs 64 bytes for secp256k1), giving 8,000 gas total. Since the base 21k already includes 3,000 gas for ecrecover (which P256 doesn't use), the net additional cost is 8,000 - 3,000 = **5,000 gas**. 
+- [EIP 7951](https://eips.ethereum.org/EIPS/eip-7951) sets P256 verification cost at 6,900 gas. We add 1,100 gas to account for the additional 65 bytes of signature size (129 bytes total vs 64 bytes for secp256k1), giving 8,000 gas total. Since the base 21k already includes 3,000 gas for ecrecover (which P256 doesn't use), the net additional cost is 8,000 - 3,000 = **5,000 gas**.
 - WebAuthn signatures require additional computation to parse and validate the clientDataJSON structure. We cap the total signature size at 2kb. The signature is also  charged using the same gas schedule as calldata (16 gas per non-zero byte, 4 gas per zero byte) to prevent the use of this signature space from spam.
+- Keychain signatures wrap a primitive signature and are used by access keys. They add 3,000 gas to cover key validation during transaction validation (cold SLOAD to verify key exists + processing overhead).
 - Individual per-signature-type gas costs allow us to add more advanced verification methods in the future like multisigs, which could have dynamic gas pricing.
 
 ### Nonce Key Gas Schedule
@@ -905,8 +907,54 @@ Transactions using parallelizable nonces incur additional costs based on the non
 3. **Fair Usage:** Users who need higher parallel execution pay proportionally to their state footprint
 4. **Storage Pattern Alignment:** Costs mirror actual storage operations (cold vs warm access patterns)
 
-### Reference Pseudocode
+### Key Authorization Gas Schedule
+
+When a transaction includes a `key_authorization` field to provision a new access key, additional intrinsic gas is charged to cover signature verification and storage operations. This gas is charged **before execution** as part of the transaction's intrinsic gas cost.
+
+#### Gas Components
+
+| Component | Gas Cost | Notes |
+|-----------|----------|-------|
+| **Signature verification** | 3,000 (secp256k1) / 8,000 (P256) / 8,000 + calldata (WebAuthn) | Verifying the root key's signature on the authorization |
+| **Key storage** | 22,000 | Cold SSTORE to store new key (0→non-zero) |
+| **Overhead buffer** | 5,000 | Buffer for event emission, storage reads, and other overhead |
+| **Per spending limit** | 22,000 each | Cold SSTORE per token limit (0→non-zero) |
+
+**Signature verification rationale:** KeyAuthorization requires an *additional* signature verification beyond the transaction signature. Unlike the transaction signature (where ecrecover cost is included in the base 21k), KeyAuthorization must pay the full verification cost:
+- **secp256k1**: 3,000 gas (ecrecover precompile cost)
+- **P256**: 8,000 gas (6,900 from EIP-7951 + 1,100 for signature size). Note: the transaction signature schedule charges only 5,000 additional gas for P256 because it subtracts the 3,000 ecrecover "savings" already in base 21k. KeyAuthorization pays the full 8,000.
+- **WebAuthn**: 8,000 + calldata gas for webauthn_data
+
+#### Gas Formula
+
 ```
+KEY_AUTH_BASE_GAS = 30,000  # For secp256k1 signature (3,000 + 22,000 + 5,000)
+KEY_AUTH_BASE_GAS = 35,000  # For P256 signature (5,000 + 3,000 + 22,000 + 5,000)
+KEY_AUTH_BASE_GAS = 35,000 + webauthn_calldata_gas  # For WebAuthn signature
+
+PER_LIMIT_GAS = 22,000  # Per spending limit entry
+
+total_key_auth_gas = KEY_AUTH_BASE_GAS + (num_limits * PER_LIMIT_GAS)
+```
+
+#### Examples
+
+| Configuration | Gas Cost | Calculation |
+|--------------|----------|-------------|
+| secp256k1, no limits | 30,000 | Base only |
+| secp256k1, 1 limit | 52,000 | 30,000 + 22,000 |
+| secp256k1, 3 limits | 96,000 | 30,000 + (3 × 22,000) |
+| P256, no limits | 35,000 | Base with P256 verification |
+| P256, 2 limits | 79,000 | 35,000 + (2 × 22,000) |
+
+#### Rationale
+
+1. **Pre-execution charging**: KeyAuthorization is validated and executed during transaction validation (before the EVM runs), so its gas must be included in intrinsic gas
+2. **Storage cost alignment**: The 22,000 gas per storage slot approximates EVM cold SSTORE costs for new slots
+3. **DoS prevention**: Progressive cost based on number of limits prevents abuse through excessive limit creation
+
+### Reference Pseudocode
+```python
 def calculate_calldata_gas(data: bytes) -> uint256:
     """
     Calculate gas cost for calldata based on zero and non-zero bytes
@@ -929,16 +977,87 @@ def calculate_calldata_gas(data: bytes) -> uint256:
 
     return gas
 
+
+def calculate_signature_verification_gas(signature: PrimitiveSignature) -> uint256:
+    """
+    Calculate gas cost for verifying a primitive signature.
+
+    Returns the ADDITIONAL gas beyond the base 21k transaction cost.
+    - secp256k1: 0 (already included in base 21k via ecrecover)
+    - P256: 5,000 (8,000 full cost - 3,000 ecrecover already in base 21k)
+    - WebAuthn: 5,000 + calldata gas for webauthn_data
+    """
+    # P256 full verification cost is 8,000 (6,900 from EIP-7951 + 1,100 for signature size)
+    # But base 21k already includes 3,000 for ecrecover, so additional cost is 5,000
+    P256_ADDITIONAL_GAS = 5_000
+
+    if signature.type == Secp256k1:
+        return 0  # Already included in base 21k
+    elif signature.type == P256:
+        return P256_ADDITIONAL_GAS
+    elif signature.type == WebAuthn:
+        webauthn_data_gas = calculate_calldata_gas(signature.webauthn_data)
+        return P256_ADDITIONAL_GAS + webauthn_data_gas
+    else:
+        revert("Invalid signature type")
+
+
+def calculate_key_authorization_gas(key_auth: SignedKeyAuthorization) -> uint256:
+    """
+    Calculate the intrinsic gas cost for a KeyAuthorization.
+
+    This is charged BEFORE execution as part of transaction validation.
+
+    Args:
+        key_auth: SignedKeyAuthorization with fields:
+            - signature: PrimitiveSignature (root key's signature)
+            - limits: Optional[List[TokenLimit]]
+
+    Returns:
+        gas_cost: uint256
+    """
+    # Constants - KeyAuthorization pays FULL signature verification costs
+    # (not the "additional" costs used for transaction signatures)
+    ECRECOVER_GAS = 3_000   # Full ecrecover cost
+    P256_FULL_GAS = 8_000   # Full P256 cost (6,900 + 1,100)
+    COLD_SSTORE_SET_GAS = 22_000  # Storage cost for new slot
+    OVERHEAD_BUFFER = 5_000  # Buffer for event emission, storage reads, etc.
+
+    gas = 0
+
+    # Step 1: Signature verification cost (full cost, not additional)
+    if key_auth.signature.type == Secp256k1:
+        gas += ECRECOVER_GAS  # 3,000
+    elif key_auth.signature.type == P256:
+        gas += P256_FULL_GAS  # 8,000
+    elif key_auth.signature.type == WebAuthn:
+        webauthn_data_gas = calculate_calldata_gas(key_auth.signature.webauthn_data)
+        gas += P256_FULL_GAS + webauthn_data_gas  # 8,000 + calldata
+
+    # Step 2: Key storage
+    gas += COLD_SSTORE_SET_GAS  # 22,000 - store new key (0 → non-zero)
+
+    # Step 3: Overhead buffer
+    gas += OVERHEAD_BUFFER  # 5,000
+
+    # Step 4: Per-limit storage cost
+    num_limits = len(key_auth.limits) if key_auth.limits else 0
+    gas += num_limits * COLD_SSTORE_SET_GAS  # 22,000 per limit
+
+    return gas
+
+
 def calculate_tempo_tx_base_gas(tx):
     """
     Calculate the base gas cost for a TempoTransaction
 
     Args:
         tx: TempoTransaction object with fields:
-            - signature: bytes (variable length)
+            - signature: TempoSignature (variable length)
             - nonce_key: uint192
             - nonce: uint64
             - sender_address: address
+            - key_authorization: Optional[SignedKeyAuthorization]
 
     Returns:
         total_gas: uint256
@@ -946,25 +1065,22 @@ def calculate_tempo_tx_base_gas(tx):
 
     # Constants
     BASE_TX_GAS = 21_000
-    P256_VERIFY_GAS = 5_000 
     COLD_SSTORE_GAS = 5_000
     NEW_NONCE_KEY_MULTIPLIER = 20_000
+    KEYCHAIN_VALIDATION_GAS = 3_000  # 2,100 SLOAD + 900 processing buffer
 
     # Step 1: Determine signature verification cost
-    sig_length = len(tx.signature)
-
-    if sig_length == 65:  # secp256k1
-        signature_gas = BASE_TX_GAS  # Already includes ecrecover
-    elif sig_length == 129:  # P256
-        signature_gas = BASE_TX_GAS + P256_VERIFY_GAS
-    elif sig_length > 129:  # WebAuthn
-        # WebAuthn signature format: webauthn variable data || r (32) || s (32) || pubKeyX (32) || pubKeyY (32)
-        # Charge calldata gas for everything except the last 128 bytes (r, s, pubKeyX, pubKeyY)
-        webauthn_data = tx.signature[:-128]
-        webauthn_data_gas = calculate_calldata_gas(webauthn_data)
-        signature_gas = BASE_TX_GAS + P256_VERIFY_GAS + webauthn_data_gas
+    # For Keychain signatures, use the inner primitive signature
+    if tx.signature.type == Keychain:
+        inner_sig = tx.signature.inner_signature
     else:
-        revert("Invalid signature length")
+        inner_sig = tx.signature
+
+    signature_gas = BASE_TX_GAS + calculate_signature_verification_gas(inner_sig)
+
+    # Add keychain validation overhead if using access key
+    if tx.signature.type == Keychain:
+        signature_gas += KEYCHAIN_VALIDATION_GAS
 
     # Step 2: Calculate nonce key cost
     if tx.nonce_key == 0:
@@ -982,8 +1098,14 @@ def calculate_tempo_tx_base_gas(tx):
             num_active_keys = num_active_user_keys(tx.sender_address)
             nonce_gas = num_active_keys * NEW_NONCE_KEY_MULTIPLIER
 
-    # Step 3: Calculate total base gas
-    total_gas = signature_gas + nonce_gas
+    # Step 3: Calculate key authorization cost (if present)
+    if tx.key_authorization is not None:
+        key_auth_gas = calculate_key_authorization_gas(tx.key_authorization)
+    else:
+        key_auth_gas = 0
+
+    # Step 4: Calculate total base gas
+    total_gas = signature_gas + nonce_gas + key_auth_gas
 
     return total_gas
 ```

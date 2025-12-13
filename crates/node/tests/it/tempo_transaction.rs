@@ -220,7 +220,7 @@ async fn setup_test_with_funded_account() -> eyre::Result<(
 )> {
     // Setup test node with direct access
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        .allegro_moderato_activated()
         .build_with_node_access()
         .await?;
 
@@ -454,7 +454,7 @@ async fn setup_test_with_p256_funded_account(
 
     // Setup test node with direct access
     let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        .allegro_moderato_activated()
         .build_with_node_access()
         .await?;
 
@@ -1752,7 +1752,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 
     // Setup test node with direct access
     let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        .allegro_moderato_activated()
         .build_with_node_access()
         .await?;
 
@@ -2342,7 +2342,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
 
     // Setup test node
     let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        .allegro_moderato_activated()
         .build_with_node_access()
         .await?;
 
@@ -2662,6 +2662,161 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let (_setup, provider, _signer, signer_addr) = setup_test_with_funded_account().await?;
+    // Keep setup alive for the duration of the test
+    let _ = &_setup;
+
+    println!("\n=== Testing eth_estimateGas with isKeychain and keyAuthSignatureType ===\n");
+    println!("Test address: {signer_addr}");
+
+    let recipient = Address::random();
+
+    // Baseline transaction request (secp256k1, no keychain)
+    let tx_request = serde_json::json!({
+        "from": signer_addr.to_string(),
+        "calls": [{
+            "to": recipient.to_string(),
+            "value": "0x0",
+            "input": "0x"
+        }],
+    });
+
+    // Test 1: Baseline gas (secp256k1, primitive signature)
+    println!("Test 1: Baseline gas (secp256k1, primitive signature)");
+    let baseline_gas: String = provider
+        .raw_request("eth_estimateGas".into(), [tx_request.clone()])
+        .await?;
+    let baseline_gas_u64 = u64::from_str_radix(baseline_gas.trim_start_matches("0x"), 16)?;
+    println!("  Baseline gas: {baseline_gas_u64}");
+
+    // Test 2: Keychain signature (secp256k1 inner) - should add 3,000 gas
+    println!("\nTest 2: Keychain signature (secp256k1 inner)");
+    let mut tx_keychain = tx_request.clone();
+    tx_keychain
+        .as_object_mut()
+        .unwrap()
+        .insert("isKeychain".to_string(), serde_json::json!(true));
+
+    let keychain_gas: String = provider
+        .raw_request("eth_estimateGas".into(), [tx_keychain])
+        .await?;
+    let keychain_gas_u64 = u64::from_str_radix(keychain_gas.trim_start_matches("0x"), 16)?;
+    println!("  Keychain gas: {keychain_gas_u64}");
+
+    let keychain_diff = keychain_gas_u64 as i64 - baseline_gas_u64 as i64;
+    assert!(
+        (2_985..=3_015).contains(&keychain_diff.unsigned_abs()),
+        "Keychain should add ~3,000 gas: actual diff {keychain_diff} (expected 3,000 ±15)"
+    );
+    println!("  ✓ Keychain adds {keychain_diff} gas (expected ~3,000)");
+
+    // Test 3: Keychain signature with P256 inner - should add 3,000 + 5,000 = 8,000 gas
+    println!("\nTest 3: Keychain signature (P256 inner)");
+    let mut tx_keychain_p256 = tx_request.clone();
+    tx_keychain_p256
+        .as_object_mut()
+        .unwrap()
+        .insert("keyType".to_string(), serde_json::json!("p256"));
+    tx_keychain_p256
+        .as_object_mut()
+        .unwrap()
+        .insert("isKeychain".to_string(), serde_json::json!(true));
+
+    let keychain_p256_gas: String = provider
+        .raw_request("eth_estimateGas".into(), [tx_keychain_p256])
+        .await?;
+    let keychain_p256_gas_u64 =
+        u64::from_str_radix(keychain_p256_gas.trim_start_matches("0x"), 16)?;
+    println!("  Keychain P256 gas: {keychain_p256_gas_u64}");
+
+    let keychain_p256_diff = keychain_p256_gas_u64 as i64 - baseline_gas_u64 as i64;
+    // P256 adds 5,000 + Keychain adds 3,000 = 8,000
+    assert!(
+        (7_985..=8_015).contains(&keychain_p256_diff.unsigned_abs()),
+        "Keychain P256 should add ~8,000 gas: actual diff {keychain_p256_diff} (expected 8,000 ±15)"
+    );
+    println!("  ✓ Keychain P256 adds {keychain_p256_diff} gas (expected ~8,000)");
+
+    // Test 4: KeyAuthorization with secp256k1 (no limits)
+    println!("\nTest 4: KeyAuthorization (secp256k1, no limits)");
+    let mut tx_key_auth = tx_request.clone();
+    tx_key_auth.as_object_mut().unwrap().insert(
+        "keyAuthSignatureType".to_string(),
+        serde_json::json!("secp256k1"),
+    );
+
+    let key_auth_gas: String = provider
+        .raw_request("eth_estimateGas".into(), [tx_key_auth])
+        .await?;
+    let key_auth_gas_u64 = u64::from_str_radix(key_auth_gas.trim_start_matches("0x"), 16)?;
+    println!("  KeyAuth gas: {key_auth_gas_u64}");
+
+    // KeyAuth secp256k1 adds ~30,000 gas (27,000 base + 3,000 ecrecover) + some calldata gas
+    let key_auth_diff = key_auth_gas_u64 as i64 - baseline_gas_u64 as i64;
+    assert!(
+        (29_500..=31_000).contains(&key_auth_diff.unsigned_abs()),
+        "KeyAuth secp256k1 should add ~30,000 gas: actual diff {key_auth_diff} (expected 30,000 ±500)"
+    );
+    println!("  ✓ KeyAuth secp256k1 adds {key_auth_diff} gas (expected ~30,000)");
+
+    // Test 5: KeyAuthorization with P256 (no limits)
+    println!("\nTest 5: KeyAuthorization (P256, no limits)");
+    let mut tx_key_auth_p256 = tx_request.clone();
+    tx_key_auth_p256.as_object_mut().unwrap().insert(
+        "keyAuthSignatureType".to_string(),
+        serde_json::json!("p256"),
+    );
+
+    let key_auth_p256_gas: String = provider
+        .raw_request("eth_estimateGas".into(), [tx_key_auth_p256])
+        .await?;
+    let key_auth_p256_gas_u64 =
+        u64::from_str_radix(key_auth_p256_gas.trim_start_matches("0x"), 16)?;
+    println!("  KeyAuth P256 gas: {key_auth_p256_gas_u64}");
+
+    // KeyAuth P256 adds ~35,000 gas (27,000 base + 3,000 ecrecover + 5,000 P256) + calldata gas
+    let key_auth_p256_diff = key_auth_p256_gas_u64 as i64 - baseline_gas_u64 as i64;
+    assert!(
+        (34_500..=36_500).contains(&key_auth_p256_diff.unsigned_abs()),
+        "KeyAuth P256 should add ~35,000 gas: actual diff {key_auth_p256_diff} (expected 35,000 ±1,500)"
+    );
+    println!("  ✓ KeyAuth P256 adds {key_auth_p256_diff} gas (expected ~35,000)");
+
+    // Test 6: KeyAuthorization with spending limits
+    println!("\nTest 6: KeyAuthorization (secp256k1, 3 spending limits)");
+    let mut tx_key_auth_limits = tx_request.clone();
+    tx_key_auth_limits.as_object_mut().unwrap().insert(
+        "keyAuthSignatureType".to_string(),
+        serde_json::json!("secp256k1"),
+    );
+    tx_key_auth_limits
+        .as_object_mut()
+        .unwrap()
+        .insert("keyAuthNumLimits".to_string(), serde_json::json!(3));
+
+    let key_auth_limits_gas: String = provider
+        .raw_request("eth_estimateGas".into(), [tx_key_auth_limits])
+        .await?;
+    let key_auth_limits_gas_u64 =
+        u64::from_str_radix(key_auth_limits_gas.trim_start_matches("0x"), 16)?;
+    println!("  KeyAuth with 3 limits gas: {key_auth_limits_gas_u64}");
+
+    // KeyAuth secp256k1 with 3 limits adds ~96,000 gas (30,000 + 3*22,000) + calldata gas
+    let key_auth_limits_diff = key_auth_limits_gas_u64 as i64 - baseline_gas_u64 as i64;
+    assert!(
+        (95_500..=97_500).contains(&key_auth_limits_diff.unsigned_abs()),
+        "KeyAuth with 3 limits should add ~96,000 gas: actual diff {key_auth_limits_diff} (expected 96,000 ±1,500)"
+    );
+    println!("  ✓ KeyAuth with 3 limits adds {key_auth_limits_diff} gas (expected ~96,000)");
+
+    println!("\n✓ All gas estimation tests passed!");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_tempo_authorization_list() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
@@ -2971,7 +3126,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
 
     // Setup test node
     let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        .allegro_moderato_activated()
         .build_with_node_access()
         .await?;
 
@@ -3420,7 +3575,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        .allegro_moderato_activated()
         .build_with_node_access()
         .await?;
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
@@ -3738,7 +3893,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        .allegro_moderato_activated()
         .build_with_node_access()
         .await?;
     // Use TEST_MNEMONIC account (has balance in DEFAULT_FEE_TOKEN_POST_ALLEGRETTO from genesis)
@@ -4014,7 +4169,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
     println!("\n=== Testing enforce_limits Flag Behavior ===\n");
 
     let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        .allegro_moderato_activated()
         .build_with_node_access()
         .await?;
 
@@ -4273,7 +4428,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
     println!("\n=== Testing Key Expiry Functionality ===\n");
 
     let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        .allegro_moderato_activated()
         .build_with_node_access()
         .await?;
 
@@ -4612,7 +4767,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
     println!("\n=== Testing RPC Validation of Keychain Signatures ===\n");
 
     let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        .allegro_moderato_activated()
         .build_with_node_access()
         .await?;
     let http_url = setup.node.rpc_url();
@@ -5079,7 +5234,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
     use tempo_primitives::transaction::TokenLimit;
 
     let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        .allegro_moderato_activated()
         .build_with_node_access()
         .await?;
 
