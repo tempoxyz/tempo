@@ -1,6 +1,6 @@
 //! [`Engine`] drives the application and is modelled after commonware's [`alto`] toy blockchain.
 //!
-//! [`alto`]: https://github.com/commonwarexyx/alto
+//! [`alto`]: https://github.com/commonwarexyz/alto
 
 use std::{
     net::SocketAddr,
