@@ -31,14 +31,14 @@ fn test_mixed_slot_allocation() {
         mixed.field_d.write(U256::from(4)).unwrap();
 
         let addr_at = Address::random();
-        mixed.field_e.at(addr_at).write(U256::from(5)).unwrap();
+        mixed.field_e[addr_at].write(U256::from(5)).unwrap();
 
         // Verify values
         assert_eq!(mixed.field_a.read().unwrap(), U256::from(1));
         assert_eq!(mixed.field_b.read().unwrap(), U256::from(2));
         assert_eq!(mixed.field_c.read().unwrap(), U256::from(3));
         assert_eq!(mixed.field_d.read().unwrap(), U256::from(4));
-        assert_eq!(mixed.field_e.at(addr_at).read().unwrap(), U256::from(5));
+        assert_eq!(mixed.field_e[addr_at].read().unwrap(), U256::from(5));
 
         // Verify actual slot assignments
         assert_eq!(mixed.field_a.slot(), U256::ZERO);

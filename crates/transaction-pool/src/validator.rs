@@ -138,11 +138,7 @@ where
         }
 
         // Compute storage slot using helper function
-        let storage_slot = AccountKeychain::new()
-            .keys
-            .at(transaction.sender())
-            .at(key_id)
-            .base_slot();
+        let storage_slot = AccountKeychain::new().keys.at(transaction.sender())[key_id].base_slot();
 
         // Read storage slot from state provider
         let slot_value = state_provider

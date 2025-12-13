@@ -325,7 +325,7 @@ fn subblocks_are_included_post_allegretto_with_failing_txs() {
 
                 let sender = tx.signer();
                 let nonce_key = tx.as_aa().unwrap().tx().nonce_key;
-                let nonce_slot = NonceManager::new().nonces.at(sender).at(nonce_key).slot();
+                let nonce_slot = NonceManager::new().nonces.at(sender)[nonce_key].slot();
 
                 let slot = block
                     .execution_outcome()

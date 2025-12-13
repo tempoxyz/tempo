@@ -87,7 +87,7 @@ impl TipFeeManager {
     /// Retrieves a pool for a given `pool_id` from storage
     pub fn get_pool(&self, call: ITIPFeeAMM::getPoolCall) -> Result<Pool> {
         let pool_id = self.pool_id(call.userToken, call.validatorToken);
-        self.pools.at(pool_id).read()
+        self.pools[pool_id].read()
     }
 
     /// Ensures that pool has enough liquidity for a fee swap and reserve that liquidity in `pending_fee_swap_in`.
@@ -112,7 +112,7 @@ impl TipFeeManager {
 
         let total_out_needed = compute_amount_out(U256::from(new_total_pending))?;
 
-        let pool = self.pools.at(pool_id).read()?;
+        let pool = self.pools[pool_id].read()?;
         if total_out_needed > U256::from(pool.reserve_validator_token) {
             return Err(TIPFeeAMMError::insufficient_liquidity().into());
         }
@@ -124,7 +124,7 @@ impl TipFeeManager {
 
     /// Calculate validator token reserve minus pending swaps
     fn get_effective_validator_reserve(&self, pool_id: B256) -> Result<U256> {
-        let pool = self.pools.at(pool_id).read()?;
+        let pool = self.pools[pool_id].read()?;
         let pending_fee_swap_in = self.get_pending_fee_swap_in(pool_id)?;
         let pending_out = compute_amount_out(U256::from(pending_fee_swap_in))?;
 
@@ -135,7 +135,7 @@ impl TipFeeManager {
 
     /// Calculate user token reserve plus pending swaps
     fn get_effective_user_reserve(&self, pool_id: B256) -> Result<U256> {
-        let pool = self.pools.at(pool_id).read()?;
+        let pool = self.pools[pool_id].read()?;
         let pending_fee_swap_in = U256::from(self.get_pending_fee_swap_in(pool_id)?);
 
         U256::from(pool.reserve_user_token)
@@ -180,7 +180,7 @@ impl TipFeeManager {
         validate_usd_currency(validator_token, self.storage)?;
 
         let pool_id = self.pool_id(user_token, validator_token);
-        let mut pool = self.pools.at(pool_id).read()?;
+        let mut pool = self.pools[pool_id].read()?;
 
         // Rebalancing swaps are always from validatorToken to userToken
         // Calculate input and update reserves
@@ -207,7 +207,7 @@ impl TipFeeManager {
             .checked_sub(amount_out)
             .ok_or(TIPFeeAMMError::invalid_amount())?;
 
-        self.pools.at(pool_id).write(pool)?;
+        self.pools[pool_id].write(pool)?;
 
         let amount_in = U256::from(amount_in);
         let amount_out = U256::from(amount_out);
@@ -255,7 +255,7 @@ impl TipFeeManager {
         validate_usd_currency(validator_token, self.storage)?;
 
         let pool_id = self.pool_id(user_token, validator_token);
-        let mut pool = self.pools.at(pool_id).read()?;
+        let mut pool = self.pools[pool_id].read()?;
         let total_supply = self.get_total_supply(pool_id)?;
 
         let liquidity = if total_supply.is_zero() {
@@ -337,7 +337,7 @@ impl TipFeeManager {
             .reserve_validator_token
             .checked_add(validator_amount)
             .ok_or(TIPFeeAMMError::invalid_amount())?;
-        self.pools.at(pool_id).write(pool)?;
+        self.pools[pool_id].write(pool)?;
 
         // Mint LP tokens
         let current_total_supply = self.get_total_supply(pool_id)?;
@@ -387,7 +387,7 @@ impl TipFeeManager {
         validate_usd_currency(validator_token, self.storage)?;
 
         let pool_id = self.pool_id(user_token, validator_token);
-        let mut pool = self.pools.at(pool_id).read()?;
+        let mut pool = self.pools[pool_id].read()?;
         let mut total_supply = self.get_total_supply(pool_id)?;
 
         let liquidity = if pool.reserve_user_token == 0 && pool.reserve_validator_token == 0 {
@@ -450,7 +450,7 @@ impl TipFeeManager {
             .checked_add(validator_amount)
             .ok_or(TIPFeeAMMError::invalid_amount())?;
 
-        self.pools.at(pool_id).write(pool)?;
+        self.pools[pool_id].write(pool)?;
 
         // Mint LP tokens
         self.set_total_supply(
@@ -506,7 +506,7 @@ impl TipFeeManager {
             return Err(TIPFeeAMMError::insufficient_liquidity().into());
         }
 
-        let mut pool = self.pools.at(pool_id).read()?;
+        let mut pool = self.pools[pool_id].read()?;
         // Calculate amounts to return
         let (amount_user_token, amount_validator_token) =
             self.calculate_burn_amounts(&pool, pool_id, liquidity)?;
@@ -543,7 +543,7 @@ impl TipFeeManager {
             .reserve_validator_token
             .checked_sub(validator_amount)
             .ok_or(TIPFeeAMMError::insufficient_reserves())?;
-        self.pools.at(pool_id).write(pool)?;
+        self.pools[pool_id].write(pool)?;
 
         // Transfer tokens to user
         let _ = TIP20Token::from_address(user_token)?.transfer(
@@ -620,7 +620,7 @@ impl TipFeeManager {
         validator_token: Address,
     ) -> Result<U256> {
         let pool_id = self.pool_id(user_token, validator_token);
-        let mut pool = self.pools.at(pool_id).read()?;
+        let mut pool = self.pools[pool_id].read()?;
 
         let amount_in = U256::from(self.get_pending_fee_swap_in(pool_id)?);
         let pending_out = compute_amount_out(amount_in)?;
@@ -640,8 +640,8 @@ impl TipFeeManager {
             .try_into()
             .map_err(|_| TIPFeeAMMError::invalid_amount())?;
 
-        self.pools.at(pool_id).write(pool)?;
-        self.pending_fee_swap_in.at(pool_id).delete()?;
+        self.pools[pool_id].write(pool)?;
+        self.pending_fee_swap_in[pool_id].delete()?;
 
         self.emit_event(TIPFeeAMMEvent::FeeSwap(ITIPFeeAMM::FeeSwap {
             userToken: user_token,
@@ -655,17 +655,17 @@ impl TipFeeManager {
 
     /// Get total supply of LP tokens for a pool
     pub fn get_total_supply(&self, pool_id: B256) -> Result<U256> {
-        self.total_supply.at(pool_id).read()
+        self.total_supply[pool_id].read()
     }
 
     /// Set total supply of LP tokens for a pool
     fn set_total_supply(&mut self, pool_id: B256, total_supply: U256) -> Result<()> {
-        self.total_supply.at(pool_id).write(total_supply)
+        self.total_supply[pool_id].write(total_supply)
     }
 
     /// Get user's LP token balance
     pub fn get_liquidity_balances(&self, pool_id: B256, user: Address) -> Result<U256> {
-        self.liquidity_balances.at(pool_id).at(user).read()
+        self.liquidity_balances[pool_id][user].read()
     }
 
     /// Set user's LP token balance
@@ -675,17 +675,17 @@ impl TipFeeManager {
         user: Address,
         balance: U256,
     ) -> Result<()> {
-        self.liquidity_balances.at(pool_id).at(user).write(balance)
+        self.liquidity_balances[pool_id][user].write(balance)
     }
 
     /// Get pending fee swap amount for a pool
     pub fn get_pending_fee_swap_in(&self, pool_id: B256) -> Result<u128> {
-        self.pending_fee_swap_in.at(pool_id).read()
+        self.pending_fee_swap_in[pool_id].read()
     }
 
     /// Set pending fee swap amount for a pool
     fn set_pending_fee_swap_in(&mut self, pool_id: B256, amount: u128) -> Result<()> {
-        self.pending_fee_swap_in.at(pool_id).write(amount)
+        self.pending_fee_swap_in[pool_id].write(amount)
     }
 }
 
@@ -730,9 +730,9 @@ mod tests {
             reserve_user_token: user_amount.try_into().unwrap(),
             reserve_validator_token: validator_amount.try_into().unwrap(),
         };
-        amm.pools.at(pool_id).write(pool)?;
+        amm.pools[pool_id].write(pool)?;
         let liquidity = sqrt(user_amount * validator_amount);
-        amm.total_supply.at(pool_id).write(liquidity)?;
+        amm.total_supply[pool_id].write(liquidity)?;
         Ok(pool_id)
     }
 
@@ -877,7 +877,7 @@ mod tests {
                 amm.execute_pending_fee_swaps(user_token.address(), validator_token.address())?;
             assert_eq!(actual_out, expected_out, "Output should match expected");
 
-            let pool = amm.pools.at(pool_id).read()?;
+            let pool = amm.pools[pool_id].read()?;
             assert_eq!(
                 U256::from(pool.reserve_user_token),
                 liquidity + amount_in,
@@ -930,7 +930,7 @@ mod tests {
             assert_eq!(total_out, expected_out);
             assert_eq!(amm.get_pending_fee_swap_in(pool_id)?, 0);
 
-            let pool = amm.pools.at(pool_id).read()?;
+            let pool = amm.pools[pool_id].read()?;
             assert_eq!(U256::from(pool.reserve_user_token), initial + total_pending);
             assert_eq!(
                 U256::from(pool.reserve_validator_token),
@@ -969,7 +969,7 @@ mod tests {
             )?;
             amm.execute_pending_fee_swaps(user_token.address(), validator_token.address())?;
 
-            let pool_before = amm.pools.at(pool_id).read()?;
+            let pool_before = amm.pools[pool_id].read()?;
             let x_before = U256::from(pool_before.reserve_user_token);
             let y_before = U256::from(pool_before.reserve_validator_token);
 
@@ -985,7 +985,7 @@ mod tests {
 
             assert!(!amount_in.is_zero(), "Should provide validator tokens");
 
-            let pool_after = amm.pools.at(pool_id).read()?;
+            let pool_after = amm.pools[pool_id].read()?;
             let x_after = U256::from(pool_after.reserve_user_token);
             let y_after = U256::from(pool_after.reserve_validator_token);
 
@@ -1295,7 +1295,7 @@ mod tests {
             assert_eq!(liquidity_1, uint!(4000_U256));
 
             // Verify pool state after first mint
-            let pool_1 = amm.pools.at(pool_id).read()?;
+            let pool_1 = amm.pools[pool_id].read()?;
             assert_eq!(pool_1.reserve_user_token, 0);
             assert_eq!(pool_1.reserve_validator_token, 10000);
 
@@ -1308,7 +1308,7 @@ mod tests {
             );
 
             // Verify LP balance after first mint
-            let lp_balance_1 = amm.liquidity_balances.at(pool_id).at(user).read()?;
+            let lp_balance_1 = amm.liquidity_balances[pool_id][user].read()?;
             assert_eq!(lp_balance_1, liquidity_1);
 
             // Verify validator token balance transferred
@@ -1336,7 +1336,7 @@ mod tests {
             assert_eq!(liquidity_2, uint!(2500_U256));
 
             // Verify pool state after second mint
-            let pool_2 = amm.pools.at(pool_id).read()?;
+            let pool_2 = amm.pools[pool_id].read()?;
             assert_eq!(pool_2.reserve_user_token, 0,);
             assert_eq!(
                 pool_2.reserve_validator_token, 15000,
@@ -1352,11 +1352,11 @@ mod tests {
             );
 
             // Verify first user's LP balance unchanged
-            let lp_balance_1_after = amm.liquidity_balances.at(pool_id).at(user).read()?;
+            let lp_balance_1_after = amm.liquidity_balances[pool_id][user].read()?;
             assert_eq!(lp_balance_1_after, liquidity_1,);
 
             // Verify second user's LP balance
-            let lp_balance_2 = amm.liquidity_balances.at(pool_id).at(user2).read()?;
+            let lp_balance_2 = amm.liquidity_balances[pool_id][user2].read()?;
             assert_eq!(lp_balance_2, liquidity_2);
 
             // Verify events emitted
@@ -1548,7 +1548,7 @@ mod tests {
                 reserve_user_token: 1000,
                 reserve_validator_token,
             };
-            amm.pools.at(pool_id).write(pool)?;
+            amm.pools[pool_id].write(pool)?;
 
             amm.reserve_liquidity(user_token, validator_token, U256::from(210))?;
             amm.reserve_liquidity(user_token, validator_token, U256::from(210))?;
@@ -1566,7 +1566,7 @@ mod tests {
             let amount_out = amm.execute_pending_fee_swaps(user_token, validator_token)?;
             assert_eq!(amount_out, U256::from(418));
 
-            let pool_after = amm.pools.at(pool_id).read()?;
+            let pool_after = amm.pools[pool_id].read()?;
             assert_eq!(
                 pool_after.reserve_validator_token,
                 reserve_validator_token - 418
