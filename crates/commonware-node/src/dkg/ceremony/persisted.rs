@@ -14,7 +14,7 @@ use super::IntermediateOutcome;
 
 /// Information on a ceremony that is persisted to disk.
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
-pub(in crate::dkg) struct State {
+pub(crate) struct State {
     pub(super) num_players: u16,
 
     /// Tracks the local dealing if we participate as a dealer.

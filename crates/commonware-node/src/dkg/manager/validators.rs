@@ -130,7 +130,7 @@ async fn decode_from_contract(
 /// 2. the player, that will become dealers in the next ceremony
 /// 3. the syncing players, that will become players in the next ceremony
 #[derive(Clone, Debug)]
-pub(super) struct ValidatorState {
+pub(crate) struct ValidatorState {
     dealers: OrderedAssociated<PublicKey, DecodedValidator>,
     players: OrderedAssociated<PublicKey, DecodedValidator>,
     syncing_players: OrderedAssociated<PublicKey, DecodedValidator>,
@@ -431,10 +431,9 @@ fn last_height_before_epoch(epoch: Epoch, epoch_length: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use crate::dkg::manager::validators::DecodedValidator;
     use commonware_codec::{DecodeExt as _, Encode as _};
     use commonware_cryptography::{PrivateKeyExt, Signer, ed25519::PrivateKey};
-
-    use crate::dkg::manager::DecodedValidator;
 
     #[test]
     fn roundtrip_decoded_validator() {
