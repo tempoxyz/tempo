@@ -4,11 +4,7 @@
 //! Orders support price-time priority matching, partial fills, and flip orders that
 //! automatically place opposite-side orders when filled.
 
-use crate::{
-    error::TempoPrecompileError,
-    stablecoin_exchange::{IStablecoinExchange, error::OrderError},
-    storage::{Slot, StorageOps, slots::mapping_slot},
-};
+use crate::stablecoin_exchange::{IStablecoinExchange, error::OrderError};
 use alloy::primitives::{Address, B256};
 use tempo_precompiles_macros::Storable;
 
@@ -63,11 +59,6 @@ pub struct Order {
     /// For ask flips: flip_tick must be < tick
     pub flip_tick: i16,
 }
-
-// Helper type to easily interact with u128 fields (order_id, prev, next)
-type OrderId = Slot<u128>;
-// Helper type to easily interact with u128 fields (amount, remaining)
-type OrderAmount = Slot<u128>;
 
 impl Order {
     /// Creates a new order with `prev` and `next` initialized to 0.
@@ -149,38 +140,6 @@ impl Order {
         Ok(Self::new(
             order_id, maker, book_key, amount, tick, is_bid, true, flip_tick,
         ))
-    }
-
-    /// Update the order's remaining value in storage
-    pub fn update_remaining<S: StorageOps>(
-        storage: &mut S,
-        order_id: u128,
-        new_remaining: u128,
-    ) -> Result<(), TempoPrecompileError> {
-        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
-        OrderAmount::new_at_loc(order_base_slot, __packing_order::REMAINING_LOC)
-            .write(storage, new_remaining)?;
-        Ok(())
-    }
-
-    pub fn update_next_order<S: StorageOps>(
-        storage: &mut S,
-        order_id: u128,
-        new_next: u128,
-    ) -> Result<(), TempoPrecompileError> {
-        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
-        OrderId::new_at_loc(order_base_slot, __packing_order::NEXT_LOC).write(storage, new_next)?;
-        Ok(())
-    }
-
-    pub fn update_prev_order<S: StorageOps>(
-        storage: &mut S,
-        order_id: u128,
-        new_prev: u128,
-    ) -> Result<(), TempoPrecompileError> {
-        let order_base_slot = mapping_slot(order_id.to_be_bytes(), super::slots::ORDERS);
-        OrderId::new_at_loc(order_base_slot, __packing_order::PREV_LOC).write(storage, new_prev)?;
-        Ok(())
     }
 
     /// Returns the order ID.
@@ -343,7 +302,8 @@ impl From<Order> for IStablecoinExchange::Order {
 #[cfg(test)]
 mod tests {
     use crate::{
-        stablecoin_exchange::StablecoinExchange, storage::hashmap::HashMapStorageProvider,
+        stablecoin_exchange::StablecoinExchange,
+        storage::{Handler, StorageCtx, hashmap::HashMapStorageProvider},
     };
 
     use super::*;
@@ -603,51 +563,55 @@ mod tests {
     #[test]
     fn test_store_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut exchange = StablecoinExchange::new(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            let exchange = StablecoinExchange::new();
 
-        let id = 42;
-        let order = Order::new_flip(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
-        exchange.sstore_orders(id, order)?;
+            let id = 42;
+            let order = Order::new_flip(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
+            exchange.orders.at(id).write(order)?;
 
-        let loaded_order = exchange.sload_orders(id)?;
-        assert_eq!(loaded_order.order_id(), 42);
-        assert_eq!(loaded_order.maker(), TEST_MAKER);
-        assert_eq!(loaded_order.book_key(), TEST_BOOK_KEY);
-        assert_eq!(loaded_order.amount(), 1000);
-        assert_eq!(loaded_order.remaining(), 1000);
-        assert_eq!(loaded_order.tick(), 5);
-        assert!(loaded_order.is_bid());
-        assert!(loaded_order.is_flip());
-        assert_eq!(loaded_order.flip_tick(), 10);
-        assert_eq!(loaded_order.prev(), 0);
-        assert_eq!(loaded_order.next(), 0);
+            let loaded_order = exchange.orders.at(id).read()?;
+            assert_eq!(loaded_order.order_id(), 42);
+            assert_eq!(loaded_order.maker(), TEST_MAKER);
+            assert_eq!(loaded_order.book_key(), TEST_BOOK_KEY);
+            assert_eq!(loaded_order.amount(), 1000);
+            assert_eq!(loaded_order.remaining(), 1000);
+            assert_eq!(loaded_order.tick(), 5);
+            assert!(loaded_order.is_bid());
+            assert!(loaded_order.is_flip());
+            assert_eq!(loaded_order.flip_tick(), 10);
+            assert_eq!(loaded_order.prev(), 0);
+            assert_eq!(loaded_order.next(), 0);
 
-        Ok(())
+            Ok(())
+        })
     }
 
     #[test]
     fn test_delete_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut exchange = StablecoinExchange::new(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            let exchange = StablecoinExchange::new();
 
-        let id = 42;
-        let order = Order::new_flip(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
-        exchange.sstore_orders(id, order)?;
-        exchange.clear_orders(id)?;
+            let id = 42;
+            let order = Order::new_flip(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
+            exchange.orders.at(id).write(order)?;
+            exchange.orders.at(id).delete()?;
 
-        let deleted_order = exchange.sload_orders(id)?;
-        assert_eq!(deleted_order.order_id(), 0);
-        assert_eq!(deleted_order.maker(), Address::ZERO);
-        assert_eq!(deleted_order.book_key(), B256::ZERO);
-        assert_eq!(deleted_order.amount(), 0);
-        assert_eq!(deleted_order.remaining(), 0);
-        assert_eq!(deleted_order.tick(), 0);
-        assert!(!deleted_order.is_bid());
-        assert!(!deleted_order.is_flip());
-        assert_eq!(deleted_order.flip_tick(), 0);
-        assert_eq!(deleted_order.prev(), 0);
-        assert_eq!(deleted_order.next(), 0);
+            let deleted_order = exchange.orders.at(id).read()?;
+            assert_eq!(deleted_order.order_id(), 0);
+            assert_eq!(deleted_order.maker(), Address::ZERO);
+            assert_eq!(deleted_order.book_key(), B256::ZERO);
+            assert_eq!(deleted_order.amount(), 0);
+            assert_eq!(deleted_order.remaining(), 0);
+            assert_eq!(deleted_order.tick(), 0);
+            assert!(!deleted_order.is_bid());
+            assert!(!deleted_order.is_flip());
+            assert_eq!(deleted_order.flip_tick(), 0);
+            assert_eq!(deleted_order.prev(), 0);
+            assert_eq!(deleted_order.next(), 0);
 
-        Ok(())
+            Ok(())
+        })
     }
 }

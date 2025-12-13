@@ -10,32 +10,37 @@ fn test_string() {
         pub another_string: String,
     }
 
-    let mut s = setup_storage();
-    let mut layout = Layout::_new(s.address, s.storage());
+    let (mut storage, address) = setup_storage();
+    StorageCtx::enter(&mut storage, || {
+        let mut layout = Layout::__new(address);
 
-    // Test empty string
-    layout.sstore_another_string(String::new()).unwrap();
-    assert_eq!(layout.sload_another_string().unwrap(), "");
+        // Test empty string
+        layout.another_string.write(String::new()).unwrap();
+        assert_eq!(layout.another_string.read().unwrap(), "");
 
-    // Test short string
-    let short = "Hello Tempo!".to_string();
-    layout.sstore_one_string(short.clone()).unwrap();
-    assert_eq!(layout.sload_one_string().unwrap(), short);
+        // Test short string
+        let short = "Hello Tempo!".to_string();
+        layout.one_string.write(short.clone()).unwrap();
+        assert_eq!(layout.one_string.read().unwrap(), short);
 
-    // Test max length (31 bytes)
-    let short_max = "a".repeat(31);
-    layout.sstore_one_string(short_max.clone()).unwrap();
-    assert_eq!(layout.sload_one_string().unwrap(), short_max);
+        // Test max length (31 bytes)
+        let short_max = "a".repeat(31);
+        layout.one_string.write(short_max.clone()).unwrap();
+        assert_eq!(layout.one_string.read().unwrap(), short_max);
 
-    // Test long string (32 bytes)
-    let long_min = "b".repeat(32);
-    layout.sstore_one_string(long_min.clone()).unwrap();
-    assert_eq!(layout.sload_one_string().unwrap(), long_min);
+        // Test long string (32 bytes)
+        let long_min = "b".repeat(32);
+        layout.one_string.write(long_min.clone()).unwrap();
+        assert_eq!(layout.one_string.read().unwrap(), long_min);
 
-    // Test long string (100 bytes)
-    let long = "c".repeat(100);
-    layout.sstore_one_string(long.clone()).unwrap();
-    assert_eq!(layout.sload_one_string().unwrap(), long);
+        // Test long string (100 bytes)
+        let long = "c".repeat(100);
+        layout.one_string.write(long.clone()).unwrap();
+        assert_eq!(layout.one_string.read().unwrap(), long);
+
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
+    .unwrap();
 }
 
 proptest! {
@@ -53,24 +58,26 @@ proptest! {
             pub another_string: String,
         }
 
-        let mut s = setup_storage();
-        {
-            let mut layout = Layout::_new(s.address, s.storage());
+        let (mut storage, address) = setup_storage();
+        StorageCtx::enter(&mut storage, || {
+            let mut layout = Layout::__new(address);
 
             // Store arbitrary strings
-            layout.sstore_one_string(str1.clone())?;
-            layout.sstore_another_string(str2.clone())?;
+            layout.one_string.write(str1.clone())?;
+            layout.another_string.write(str2.clone())?;
 
             // Roundtrip property
-            prop_assert_eq!(layout.sload_one_string()?, str1);
-            prop_assert_eq!(layout.sload_another_string()?, str2.clone());
+            prop_assert_eq!(layout.one_string.read()?, str1);
+            prop_assert_eq!(layout.another_string.read()?, str2.clone());
 
             // Delete property
-            layout.clear_one_string()?;
-            prop_assert_eq!(layout.sload_one_string()?, String::new());
+            layout.one_string.delete()?;
+            prop_assert_eq!(layout.one_string.read()?, String::new());
 
             // Other field should be unaffected (isolation)
-            prop_assert_eq!(layout.sload_another_string()?, str2.clone());
-        }
+            prop_assert_eq!(layout.another_string.read()?, str2.clone());
+
+            Ok(())
+        })?;
     }
 }

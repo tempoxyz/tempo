@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use alloy_evm::eth::EthBlockExecutionCtx;
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::{Address, B256};
 use reth_evm::NextBlockEnvAttributes;
 use tempo_primitives::subblock::PartialValidatorKey;
 
@@ -13,8 +13,6 @@ pub struct TempoBlockExecutionCtx<'a> {
     pub inner: EthBlockExecutionCtx<'a>,
     /// Non-payment gas limit for the block.
     pub general_gas_limit: u64,
-    /// DKG ceremony data to include in the block's extra_data header field.
-    pub extra_data: Bytes,
     /// Shared gas limit for the block.
     pub shared_gas_limit: u64,
     /// Validator set for the block.
@@ -42,8 +40,6 @@ pub struct TempoNextBlockEnvAttributes {
     pub shared_gas_limit: u64,
     /// Milliseconds portion of the timestamp.
     pub timestamp_millis_part: u64,
-    /// DKG ceremony data to include in the block's extra_data header field.
-    pub extra_data: Bytes,
     /// Mapping from a subblock validator public key to the fee recipient configured.
     pub subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
 }
@@ -64,7 +60,6 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<tempo_primitives:
             general_gas_limit,
             shared_gas_limit,
             timestamp_millis_part: parent.timestamp_millis_part,
-            extra_data: Bytes::default(),
             subblock_fee_recipients: Default::default(),
         }
     }

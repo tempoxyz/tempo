@@ -19,7 +19,8 @@ use tempo_contracts::precompiles::{
     ITIPFeeAMM, UnknownFunctionSelector,
 };
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP_ACCOUNT_REGISTRAR, storage::slots::mapping_slot, tip20,
+    PATH_USD_ADDRESS, TIP_ACCOUNT_REGISTRAR,
+    tip20::{self, TIP20Token},
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -81,6 +82,7 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
 
     // Setup test token
     let token = setup_test_token(provider.clone(), caller).await?;
+    let token_id = tip20::address_to_token_id_unchecked(*token.address());
 
     // First, mint some tokens to the caller for testing
     // Use u128 range since supply cap is u128::MAX with allegretto
@@ -127,7 +129,7 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
 
     let token_storage_diff = token_diff.storage.clone();
     // Assert sender token balance has changed
-    let slot = mapping_slot(caller, tip20::slots::BALANCES);
+    let slot = TIP20Token::new(token_id).balances.at(caller).slot();
     let sender_balance = token_storage_diff
         .get(&B256::from(slot))
         .expect("Could not get recipient balance delta");
@@ -141,7 +143,7 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     assert_eq!(to.into_u256(), U256::ZERO);
 
     // Assert recipient token balance is changed
-    let slot = mapping_slot(recipient, tip20::slots::BALANCES);
+    let slot = TIP20Token::new(token_id).balances.at(recipient).slot();
     let recipient_balance = token_storage_diff
         .get(&B256::from(slot))
         .expect("Could not get recipient balance delta");

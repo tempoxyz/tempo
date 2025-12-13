@@ -36,6 +36,7 @@ thiserror.workspace = true
 eyre.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
 tempo-evm.workspace = true
+tempo-precompiles = { workspace = true, features = ["test-utils"] }
 
 [features]
 reth = ["dep:reth-storage-api"]
