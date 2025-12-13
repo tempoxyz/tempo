@@ -387,7 +387,7 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
                     "Arrays can only be loaded with LayoutCtx::FULL"
                 );
 
-                use crate::storage::packing::{calc_element_slot, calc_element_offset, extract_packed_value};
+                use crate::storage::packing::{calc_element_slot, calc_element_offset, extract_packed_value, calc_element_offset_and_slot};
                 let base_slot = slot;
                 #load_impl
             }
@@ -399,7 +399,7 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
                     "Arrays can only be stored with LayoutCtx::FULL"
                 );
 
-                use crate::storage::packing::{calc_element_slot, calc_element_offset, insert_packed_value};
+                use crate::storage::packing::{calc_element_slot, calc_element_offset, insert_packed_value,  calc_element_offset_and_slot};
                 let base_slot = slot;
                 #store_impl
             }
@@ -427,8 +427,7 @@ fn gen_packed_array_load(array_size: &usize, elem_byte_count: &usize) -> TokenSt
     quote! {
         let mut result = [Default::default(); #array_size];
         for i in 0..#array_size {
-            let slot_idx = calc_element_slot(i, #elem_byte_count);
-            let offset = calc_element_offset(i, #elem_byte_count);
+            let (slot_idx, offset) = calc_element_offset_and_slot(i, #elem_byte_count);
             let slot_addr = base_slot + U256::from(slot_idx);
             let slot_value = storage.load(slot_addr)?;
             result[i] = extract_packed_value(slot_value, offset, #elem_byte_count)?;
@@ -589,7 +588,7 @@ pub(crate) fn gen_nested_arrays() -> TokenStream {
         let max_outer = 32 / inner_slots.max(1);
 
         for outer in 1..=max_outer.min(32) {
-            all_impls.extend(gen_arrays_for_type(
+            all_impls.extend(gen_arrays_for_type( 
                 quote! { [u8; #inner] },
                 inner_slots * 32, // BYTE_COUNT for [u8; inner]
                 &[outer],
