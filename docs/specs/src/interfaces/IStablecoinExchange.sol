@@ -98,7 +98,7 @@ interface IStablecoinExchange {
 
     function PRICE_SCALE() external view returns (uint32);
 
-    function activeOrderId() external view returns (uint128);
+    function nextOrderId() external view returns (uint128);
 
     function balanceOf(address user, address token) external view returns (uint128);
 
@@ -111,8 +111,6 @@ interface IStablecoinExchange {
 
     function createPair(address base) external returns (bytes32 key);
 
-    function executeBlock() external;
-
     function getTickLevel(address base, int16 tick, bool isBid)
         external
         view
@@ -121,8 +119,6 @@ interface IStablecoinExchange {
     function getOrder(uint128 orderId) external view returns (Order memory);
 
     function pairKey(address tokenA, address tokenB) external pure returns (bytes32 key);
-
-    function pendingOrderId() external view returns (uint128);
 
     function place(address token, uint128 amount, bool isBid, int16 tick)
         external
