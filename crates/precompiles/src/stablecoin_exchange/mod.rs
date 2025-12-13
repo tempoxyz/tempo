@@ -568,7 +568,7 @@ impl StablecoinExchange {
     }
 
     /// Commits an order to the specified orderbook, updating tick bits, best bid/ask, and total liquidity
-    fn commit_order_to_book(&mut self, order: Order) -> Result<()> {
+    fn commit_order_to_book(&mut self, mut order: Order) -> Result<()> {
         let mut book_handler = self.books.at(order.book_key());
         let mut level_handler = book_handler.get_tick_level_handler(order.tick(), order.is_bid());
         let orderbook = book_handler.read()?;
@@ -595,8 +595,13 @@ impl StablecoinExchange {
                     .write(order.tick())?;
             }
         } else {
-            self.orders.at(prev_tail).next.write(order.order_id())?;
-            self.orders.at(order.order_id()).prev.write(prev_tail)?;
+            // Update previous tail's next pointer
+            let mut prev_order = self.orders.at(prev_tail).read()?;
+            prev_order.next = order.order_id();
+            self.orders.at(prev_tail).write(prev_order)?;
+
+            // Set current order's prev pointer
+            order.prev = prev_tail;
             level.tail = order.order_id();
         }
 
@@ -607,7 +612,6 @@ impl StablecoinExchange {
         level.total_liquidity = new_liquidity;
 
         level_handler.write(level)?;
-
         self.orders.at(order.order_id()).write(order)
     }
 
@@ -2426,14 +2430,14 @@ mod tests {
             let order_0 = exchange.orders.at(order_id_0).read()?;
             let order_1 = exchange.orders.at(order_id_1).read()?;
             assert_eq!(order_0.prev(), 0);
-            assert_eq!(order_0.next(), order_1.order_id());
-            assert_eq!(order_1.prev(), order_0.order_id());
+            assert_eq!(order_0.next(), order_id_1);
+            assert_eq!(order_1.prev(), order_id_0);
             assert_eq!(order_1.next(), 0);
 
             // Assert tick level is updated
             let level_after = book_handler.get_tick_level_handler(tick, true).read()?;
-            assert_eq!(level_after.head, order_0.order_id());
-            assert_eq!(level_after.tail, order_1.order_id());
+            assert_eq!(level_after.head, order_id_0);
+            assert_eq!(level_after.tail, order_id_1);
             assert_eq!(level_after.total_liquidity, min_order_amount * 2);
 
             // Verify orderbook best bid tick is updated
