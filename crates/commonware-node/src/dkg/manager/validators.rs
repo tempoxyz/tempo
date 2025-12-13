@@ -23,12 +23,18 @@ use tracing::{Level, info, instrument, warn};
 ///
 /// The validator config for `epoch` is always read from the last height of
 /// `epoch-1`.
+///
+/// If `expected_block_hash` is provided, the function will verify that the block
+/// at the expected height has the given hash. This prevents reading from uncle
+/// blocks in case of a reorg between when the DKG actor reads and when the
+/// application actor finalizes.
 #[instrument(
     skip_all,
     fields(
         attempt = _attempt,
         for_epoch,
         from_block = last_height_before_epoch(for_epoch, epoch_length),
+        ?expected_block_hash,
     ),
     err
 )]
@@ -37,29 +43,52 @@ pub(super) async fn read_from_contract(
     node: &TempoFullNode,
     for_epoch: Epoch,
     epoch_length: u64,
+    expected_block_hash: Option<alloy_primitives::B256>,
 ) -> eyre::Result<OrderedAssociated<PublicKey, DecodedValidator>> {
     let last_height = last_height_before_epoch(for_epoch, epoch_length);
 
-    // Try mapping the block height to a hash tracked by reth.
-    //
-    // First check the canonical chain, then fallback to pending block state.
-    //
-    // Necessary because the DKG and application actors process finalized block concurrently.
-    let block_hash = if let Some(hash) = node
-        .provider
-        .block_hash(last_height)
-        .wrap_err_with(|| format!("failed reading block hash at height `{last_height}`"))?
-    {
-        hash
-    } else if let Some(pending) = node
-        .provider
-        .pending_block_num_hash()
-        .wrap_err("failed reading pending block state")?
-        && pending.number == last_height
-    {
-        pending.hash
+    // If an expected block hash is provided, use it directly to ensure we read
+    // from the correct canonical block and not an uncle block.
+    let block_hash = if let Some(expected_hash) = expected_block_hash {
+        // Verify the block exists and matches the expected height
+        let block_at_height = node
+            .provider
+            .block_hash(last_height)
+            .wrap_err_with(|| format!("failed reading block hash at height `{last_height}`"))?;
+
+        if let Some(actual_hash) = block_at_height {
+            if actual_hash != expected_hash {
+                return Err(eyre::eyre!(
+                    "block hash mismatch at height `{last_height}`: expected `{expected_hash}`, got `{actual_hash}`; \
+                    this may indicate a reorg occurred"
+                ));
+            }
+        }
+        // Use the expected hash even if the block isn't yet canonical
+        expected_hash
     } else {
-        return Err(eyre::eyre!("block not found at height `{last_height}`"));
+        // Fallback to the original behavior when no expected hash is provided.
+        // Try mapping the block height to a hash tracked by reth.
+        //
+        // First check the canonical chain, then fallback to pending block state.
+        //
+        // Necessary because the DKG and application actors process finalized block concurrently.
+        if let Some(hash) = node
+            .provider
+            .block_hash(last_height)
+            .wrap_err_with(|| format!("failed reading block hash at height `{last_height}`"))?
+        {
+            hash
+        } else if let Some(pending) = node
+            .provider
+            .pending_block_num_hash()
+            .wrap_err("failed reading pending block state")?
+            && pending.number == last_height
+        {
+            pending.hash
+        } else {
+            return Err(eyre::eyre!("block not found at height `{last_height}`"));
+        }
     };
 
     let block = node
