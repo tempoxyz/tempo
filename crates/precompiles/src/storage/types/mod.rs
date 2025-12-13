@@ -59,15 +59,7 @@ impl Layout {
     pub const fn bytes(&self) -> usize {
         match self {
             Self::Bytes(n) => *n,
-            Self::Slots(n) => {
-                // Compute n * 32 using repeated addition for const compatibility
-                let (mut i, mut result) = (0, 0);
-                while i < *n {
-                    result += 32;
-                    i += 1;
-                }
-                result
-            }
+            Self::Slots(n) => *n << 32,
         }
     }
 }
