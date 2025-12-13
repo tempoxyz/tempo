@@ -1,18 +1,30 @@
-use commonware_consensus::{Reporter, marshal::Update, types::Epoch};
+use commonware_consensus::{
+    Reporter,
+    marshal::Update,
+    types::{Epoch, Round, View},
+};
 use commonware_utils::acknowledgement::Exact;
 use eyre::WrapErr as _;
 use futures::channel::{mpsc, oneshot};
 use tempo_dkg_onchain_artifacts::{IntermediateOutcome, PublicOutcome};
 use tracing::{Span, warn};
 
-use crate::consensus::block::Block;
+use crate::consensus::{Digest, block::Block};
 
+/// A mailbox to handle finalized blocks.
+///
+/// It implements the `Reporter` trait with associated
+/// `type Activity = Update<Block, Exact>` and is passed to the marshal actor.
 #[derive(Clone, Debug)]
 pub(crate) struct Mailbox {
-    pub(super) inner: mpsc::UnboundedSender<Message>,
+    inner: mpsc::UnboundedSender<Message>,
 }
 
 impl Mailbox {
+    pub(super) fn new(inner: mpsc::UnboundedSender<Message>) -> Self {
+        Self { inner }
+    }
+
     /// Returns the intermediate dealing of this node's ceremony.
     ///
     /// Returns `None` if this node was not a dealer, or if the request is
@@ -32,10 +44,18 @@ impl Mailbox {
             .wrap_err("actor dropped channel before responding with ceremony deal outcome")
     }
 
-    pub(crate) async fn get_public_ceremony_outcome(&self) -> eyre::Result<PublicOutcome> {
+    pub(crate) async fn get_public_ceremony_outcome(
+        &self,
+        parent: (View, Digest),
+        round: Round,
+    ) -> eyre::Result<PublicOutcome> {
         let (response, rx) = oneshot::channel();
         self.inner
-            .unbounded_send(Message::in_current_span(GetOutcome { response }))
+            .unbounded_send(Message::in_current_span(GetOutcome {
+                parent,
+                round,
+                response,
+            }))
             .wrap_err("failed sending message to actor")?;
         rx.await
             .wrap_err("actor dropped channel before responding with ceremony deal outcome")
@@ -83,15 +103,18 @@ impl Message {
 }
 
 pub(super) enum Command {
-    Finalize(Finalize),
+    // From marshal
+    Finalized(Box<Update<Block, Exact>>),
+
+    // From application
     GetIntermediateDealing(GetIntermediateDealing),
     GetOutcome(GetOutcome),
     VerifyDealing(VerifyDealing),
 }
 
-impl From<Finalize> for Command {
-    fn from(value: Finalize) -> Self {
-        Self::Finalize(value)
+impl From<Box<Update<Block, Exact>>> for Command {
+    fn from(value: Box<Update<Block, Exact>>) -> Self {
+        Self::Finalized(value)
     }
 }
 
@@ -113,17 +136,14 @@ impl From<GetOutcome> for Command {
     }
 }
 
-pub(super) struct Finalize {
-    pub(super) block: Box<Block>,
-    pub(super) acknowledgment: Exact,
-}
-
 pub(super) struct GetIntermediateDealing {
     pub(super) epoch: Epoch,
     pub(super) response: oneshot::Sender<Option<IntermediateOutcome>>,
 }
 
 pub(super) struct GetOutcome {
+    pub(super) parent: (View, Digest),
+    pub(super) round: Round,
     pub(super) response: oneshot::Sender<PublicOutcome>,
 }
 
@@ -136,19 +156,12 @@ impl Reporter for Mailbox {
     type Activity = Update<Block, Exact>;
 
     async fn report(&mut self, update: Self::Activity) {
-        let Update::Block(block, acknowledgment) = update else {
-            tracing::trace!("dropping tip update; DKG manager is only interested in blocks");
-            return;
-        };
         if let Err(error) = self
             .inner
-            .unbounded_send(Message::in_current_span(Finalize {
-                block: block.into(),
-                acknowledgment,
-            }))
+            .unbounded_send(Message::in_current_span(Box::new(update)))
             .wrap_err("dkg manager no longer running")
         {
-            warn!(%error, "failed to report finalized block to dkg manager")
+            warn!(%error, "failed to report finalized update to dkg manager")
         }
     }
 }

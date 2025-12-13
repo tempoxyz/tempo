@@ -245,7 +245,7 @@ where
                 execution_node,
                 initial_share: self.share.clone(),
                 mailbox_size: self.mailbox_size,
-                marshal: marshal_mailbox,
+                marshal: marshal_mailbox.clone(),
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),

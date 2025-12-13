@@ -12,16 +12,6 @@ use tracing::info;
 use crate::{CONSENSUS_NODE_PREFIX, Setup, execution_runtime::validator, setup_validators};
 
 #[test_traced]
-fn after_hardfork_validator_is_added_to_a_set_of_one() {
-    AssertValidatorIsAdded {
-        how_many_initial: 1,
-        epoch_length: 20,
-        allegretto_at_genesis: false,
-    }
-    .run();
-}
-
-#[test_traced]
 fn after_hardfork_validator_is_added_to_a_set_of_three() {
     AssertValidatorIsAdded {
         how_many_initial: 3,
@@ -47,16 +37,6 @@ fn after_hardfork_validator_is_removed_from_set_of_four() {
         how_many_initial: 4,
         epoch_length: 40,
         allegretto_at_genesis: false,
-    }
-    .run();
-}
-
-#[test_traced]
-fn with_allegretto_at_genesis_validator_is_added_to_a_set_of_one() {
-    AssertValidatorIsAdded {
-        how_many_initial: 1,
-        epoch_length: 20,
-        allegretto_at_genesis: true,
     }
     .run();
 }

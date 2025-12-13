@@ -308,6 +308,18 @@ fn node_recovers_after_finalizing_ceremony_allegretto_at_genesis_four_validators
     .run()
 }
 
+#[test_traced]
+fn node_recovers_after_finalizing_middle_of_epoch_allegretto_at_genesis_four_validators() {
+    AssertNodeRecoversAfterFinalizingBlock {
+        n_validators: 4,
+        epoch_length: 30,
+        shutdown_after_finalizing: ShutdownAfterFinalizing::MiddleOfEpoch,
+        allegretto_at_genesis: true,
+        await_transition: false,
+    }
+    .run()
+}
+
 // FIXME: needs https://github.com/tempoxyz/tempo/issues/1309
 #[ignore]
 #[test_traced]
@@ -439,19 +451,20 @@ fn node_recovers_after_finalizing_boundary_post_allegretto_four_validators() {
 }
 
 enum ShutdownAfterFinalizing {
-    Ceremony,
     Boundary,
+    Ceremony,
+    MiddleOfEpoch,
 }
 
 impl ShutdownAfterFinalizing {
     fn is_target_height(&self, epoch_length: u64, block_height: u64) -> bool {
-        let target_height = match self {
+        match self {
             // NOTE: ceremonies are finalized on the pre-to-last block, so
             // block + 1 needs to be the boundary / last block.
-            Self::Ceremony => block_height + 1,
-            Self::Boundary => block_height,
-        };
-        is_last_block_in_epoch(epoch_length, target_height).is_some()
+            Self::Ceremony => is_last_block_in_epoch(epoch_length, block_height + 1).is_some(),
+            Self::Boundary => is_last_block_in_epoch(epoch_length, block_height).is_some(),
+            Self::MiddleOfEpoch => block_height.rem_euclid(epoch_length) == epoch_length / 2,
+        }
     }
 }
 
@@ -607,7 +620,7 @@ impl AssertNodeRecoversAfterFinalizingBlock {
                         let mut parts = line.split_whitespace();
                         let _ = parts.next().unwrap();
                         let value = parts.next().unwrap();
-                        if value.parse::<u64>().unwrap() > height {
+                        if value.parse::<u64>().unwrap() > height + 10 {
                             break 'look_for_progress;
                         }
                     }
