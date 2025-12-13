@@ -544,12 +544,12 @@ impl StablecoinExchange {
 
         // Post Allegro Moderato, commit the order to the book immediately rather than storing in a pending state until end of block execution
         if self.storage.spec().is_allegro_moderato() {
-            self.commit_order_to_book(order, book)?;
+            self.commit_order_to_book(order)?;
         } else {
             // Store in pending queue. Orders are stored as a DLL at each tick level and are initially
             // stored without a prev or next pointer. This is considered a "pending" order. Once `execute_block` is called, orders are
             // linked and then considered "active"
-            self.sstore_orders(order_id, order)?;
+            self.orders.at(order_id).write(order)?;
         }
 
         // Emit OrderPlaced event
@@ -568,31 +568,36 @@ impl StablecoinExchange {
     }
 
     /// Commits an order to the specified orderbook, updating tick bits, best bid/ask, and total liquidity
-    fn commit_order_to_book(&mut self, order: Order, orderbook: Orderbook) -> Result<()> {
-        let order_id = order.order_id();
-
-        let mut level =
-            Orderbook::read_tick_level(self, order.book_key(), order.is_bid(), order.tick())?;
+    fn commit_order_to_book(&mut self, order: Order) -> Result<()> {
+        let mut book_handler = self.books.at(order.book_key());
+        let mut level_handler = book_handler.get_tick_level_handler(order.tick(), order.is_bid());
+        let orderbook = book_handler.read()?;
+        let mut level = level_handler.read()?;
 
         let prev_tail = level.tail;
         if prev_tail == 0 {
-            level.head = order_id;
-            level.tail = order_id;
+            level.head = order.order_id();
+            level.tail = order.order_id();
 
-            Orderbook::set_tick_bit(self, order.book_key(), order.tick(), order.is_bid())
-                .expect("Tick is valid");
+            book_handler.set_tick_bit(order.tick(), order.is_bid())?;
 
             if order.is_bid() {
                 if order.tick() > orderbook.best_bid_tick {
-                    Orderbook::update_best_bid_tick(self, order.book_key(), order.tick())?;
+                    self.books
+                        .at(order.book_key())
+                        .best_bid_tick
+                        .write(order.tick())?;
                 }
             } else if order.tick() < orderbook.best_ask_tick {
-                Orderbook::update_best_ask_tick(self, order.book_key(), order.tick())?;
+                self.books
+                    .at(order.book_key())
+                    .best_ask_tick
+                    .write(order.tick())?;
             }
         } else {
-            Order::update_next_order(self, prev_tail, order_id)?;
-            Order::update_prev_order(self, order_id, prev_tail)?;
-            level.tail = order_id;
+            self.orders.at(prev_tail).next.write(order.order_id())?;
+            self.orders.at(order.order_id()).prev.write(prev_tail)?;
+            level.tail = order.order_id();
         }
 
         let new_liquidity = level
@@ -601,7 +606,7 @@ impl StablecoinExchange {
             .ok_or(TempoPrecompileError::under_overflow())?;
         level.total_liquidity = new_liquidity;
 
-        Orderbook::write_tick_level(self, order.book_key(), order.is_bid(), order.tick(), level)
+        level_handler.write(level)
     }
 
     /// Place a flip order that auto-flips when filled
@@ -683,11 +688,11 @@ impl StablecoinExchange {
 
         // Post Allegro Moderato, commit the order to the book immediately rather than storing in a pending state until end of block execution
         if self.storage.spec().is_allegro_moderato() {
-            let book = self.sload_books(book_key)?;
-            self.commit_order_to_book(order, book)?;
+            let book = self.books.at(book_key).read()?;
+            self.commit_order_to_book(order)?;
         } else {
             // Store in pending queue
-            self.sstore_orders(order_id, order)?;
+            self.orders.at(order_id).write(order)?;
         }
 
         // Emit FlipOrderPlaced event
@@ -704,51 +709,6 @@ impl StablecoinExchange {
         ))?;
 
         Ok(order_id)
-    }
-
-    /// Link an order into the active orderbook
-    ///
-    /// This immediately adds the order to the orderbook's doubly-linked list at its tick level,
-    /// updates the tick bitmap, and adjusts best bid/ask ticks if necessary.
-    fn link_order_to_book(&mut self, order: &Order) -> Result<()> {
-        let mut book_handler = self.books.at(order.book_key());
-        let mut level_handler = book_handler.get_tick_level_handler(order.tick(), order.is_bid());
-        let orderbook = book_handler.read()?;
-        let mut level = level_handler.read()?;
-
-        let prev_tail = level.tail;
-        if prev_tail == 0 {
-            level.head = order.order_id();
-            level.tail = order.order_id();
-
-            book_handler.set_tick_bit(order.tick(), order.is_bid())?;
-
-            if order.is_bid() {
-                if order.tick() > orderbook.best_bid_tick {
-                    self.books
-                        .at(order.book_key())
-                        .best_bid_tick
-                        .write(order.tick())?;
-                }
-            } else if order.tick() < orderbook.best_ask_tick {
-                self.books
-                    .at(order.book_key())
-                    .best_ask_tick
-                    .write(order.tick())?;
-            }
-        } else {
-            self.orders.at(prev_tail).next.write(order.order_id())?;
-            self.orders.at(order.order_id()).prev.write(prev_tail)?;
-            level.tail = order.order_id();
-        }
-
-        let new_liquidity = level
-            .total_liquidity
-            .checked_add(order.remaining())
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        level.total_liquidity = new_liquidity;
-
-        level_handler.write(level)
     }
 
     /// Process all pending orders into the active orderbook
@@ -795,8 +755,7 @@ impl StablecoinExchange {
             return Ok(());
         }
 
-        let orderbook = self.sload_books(order.book_key())?;
-        self.commit_order_to_book(order, orderbook)
+        self.commit_order_to_book(order)
     }
 
     /// Partially fill an order with the specified amount.

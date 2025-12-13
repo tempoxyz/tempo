@@ -68,10 +68,8 @@ contract StablecoinExchange is IStablecoinExchange {
     /// User balances
     mapping(address user => mapping(address token => uint128 balance)) internal balances;
 
-    /// Last processed order ID
-    uint128 public activeOrderId;
-    /// Latest pending order ID
-    uint128 public pendingOrderId;
+    /// Next order ID to be assigned
+    uint128 public nextOrderId;
 
     /*//////////////////////////////////////////////////////////////
                               Functions
@@ -158,7 +156,7 @@ contract StablecoinExchange is IStablecoinExchange {
         emit PairCreated(key, base, quote);
     }
 
-    /// @notice Internal function to place order in pending queue
+    /// @notice Internal function to place order and immediately add to orderbook
     /// @param base Base token address
     /// @param quote Quote token address
     /// @param amount Order amount in base token
@@ -167,7 +165,6 @@ contract StablecoinExchange is IStablecoinExchange {
     /// @param isFlip Whether this is a flip order
     /// @param flipTick Target tick for flip (ignored if not flip order)
     /// @return orderId The assigned order ID
-    /// @dev Orders are queued and processed at end of block
     function _placeOrder(
         address base,
         address quote,
@@ -238,8 +235,8 @@ contract StablecoinExchange is IStablecoinExchange {
                 }
             }
         }
-        orderId = pendingOrderId + 1;
-        ++pendingOrderId;
+        orderId = nextOrderId + 1;
+        ++nextOrderId;
 
         orders[orderId] = IStablecoinExchange.Order({
             orderId: orderId,
@@ -255,8 +252,53 @@ contract StablecoinExchange is IStablecoinExchange {
             flipTick: flipTick
         });
 
+        // Immediately link order into the active orderbook
+        _linkOrderToBook(orderId, key, tick, isBid, amount);
+
         emit OrderPlaced(orderId, maker, base, amount, isBid, tick);
         return orderId;
+    }
+
+    /// @notice Link an order into the active orderbook
+    /// @param orderId The order ID to link
+    /// @param bookKey The orderbook key
+    /// @param tick The tick level
+    /// @param isBid Whether this is a bid order
+    /// @param amount The order amount (for liquidity tracking)
+    function _linkOrderToBook(
+        uint128 orderId,
+        bytes32 bookKey,
+        int16 tick,
+        bool isBid,
+        uint128 amount
+    ) internal {
+        Orderbook storage book = books[bookKey];
+        IStablecoinExchange.TickLevel storage level = isBid ? book.bids[tick] : book.asks[tick];
+
+        uint128 prevTail = level.tail;
+        if (prevTail == 0) {
+            level.head = orderId;
+            level.tail = orderId;
+            _setTickBit(bookKey, tick, isBid);
+
+            // Update best bid/ask when new tick becomes active
+            if (isBid) {
+                if (tick > book.bestBidTick) {
+                    book.bestBidTick = tick;
+                }
+            } else {
+                if (tick < book.bestAskTick) {
+                    book.bestAskTick = tick;
+                }
+            }
+        } else {
+            orders[prevTail].next = orderId;
+            orders[orderId].prev = prevTail;
+            level.tail = orderId;
+        }
+
+        // Increment total liquidity for this tick level
+        level.totalLiquidity += amount;
     }
 
     /// @notice Place a limit order on the orderbook
@@ -296,117 +338,45 @@ contract StablecoinExchange is IStablecoinExchange {
 
         Orderbook storage book = books[order.bookKey];
         address token = order.isBid ? book.quote : book.base;
+        bool isBid = order.isBid;
+        IStablecoinExchange.TickLevel storage level =
+            isBid ? book.bids[order.tick] : book.asks[order.tick];
 
-        // If the order is pending, delete it from storage without adjusting the orderbook
-        if (orderId > activeOrderId) {
-            // Credit escrow amount to user's withdrawable balance
-            uint128 escrowAmount;
-            if (order.isBid) {
-                // For bids, escrow quote tokens based on price
-                uint32 price = tickToPrice(order.tick);
-                escrowAmount =
-                    uint128((uint256(order.remaining) * uint256(price)) / uint256(PRICE_SCALE));
-            } else {
-                // For asks, escrow base tokens
-                escrowAmount = order.remaining;
-            }
-            balances[order.maker][token] += escrowAmount;
-
-            delete orders[orderId];
-            emit OrderCancelled(orderId);
-            return;
+        if (order.prev != 0) {
+            orders[order.prev].next = order.next;
         } else {
-            bool isBid = order.isBid;
-            IStablecoinExchange.TickLevel storage level =
-                isBid ? book.bids[order.tick] : book.asks[order.tick];
-
-            if (order.prev != 0) {
-                orders[order.prev].next = order.next;
-            } else {
-                level.head = order.next;
-            }
-
-            if (order.next != 0) {
-                orders[order.next].prev = order.prev;
-            } else {
-                level.tail = order.prev;
-            }
-
-            // Decrement total liquidity
-            level.totalLiquidity -= order.remaining;
-
-            if (level.head == 0) {
-                _clearTickBit(order.bookKey, order.tick, isBid);
-            }
-
-            // Credit escrow amount to user's withdrawable balance
-            uint128 escrowAmount;
-            if (order.isBid) {
-                // For bids, escrow quote tokens based on price
-                uint32 price = tickToPrice(order.tick);
-                escrowAmount =
-                    uint128((uint256(order.remaining) * uint256(price)) / uint256(PRICE_SCALE));
-            } else {
-                // For asks, escrow base tokens
-                escrowAmount = order.remaining;
-            }
-            balances[order.maker][token] += escrowAmount;
-
-            delete orders[orderId];
-
-            emit OrderCancelled(orderId);
-        }
-    }
-
-    // TODO: it might be nice to create some ISystem Tx interface that is used
-    // for contracts that are executed by the protocol at the end of the block.
-    // This makes it easy to distinguish when the protocol is responsible for calling a function
-    // TODO: natspec
-    function executeBlock() external {
-        if (msg.sender != address(0)) revert Unauthorized();
-
-        uint128 orderId = activeOrderId + 1;
-        uint128 pendingId = pendingOrderId;
-
-        for (orderId = orderId; orderId <= pendingId; orderId++) {
-            IStablecoinExchange.Order storage order = orders[orderId];
-
-            // If the order is already canceled, skip
-            if (order.maker == address(0)) continue;
-
-            Orderbook storage book = books[order.bookKey];
-            bool isBid = order.isBid;
-            IStablecoinExchange.TickLevel storage level =
-                isBid ? book.bids[order.tick] : book.asks[order.tick];
-
-            uint128 prevTail = level.tail;
-            if (prevTail == 0) {
-                level.head = orderId;
-                level.tail = orderId;
-                _setTickBit(order.bookKey, order.tick, isBid);
-
-                // Update best bid/ask when new tick becomes active
-                if (isBid) {
-                    if (order.tick > book.bestBidTick) {
-                        book.bestBidTick = order.tick;
-                    }
-                } else {
-                    if (order.tick < book.bestAskTick) {
-                        book.bestAskTick = order.tick;
-                    }
-                }
-            } else {
-                orders[prevTail].next = orderId;
-                order.prev = prevTail;
-                level.tail = orderId;
-            }
-
-            // Increment total liquidity for this tick level
-            level.totalLiquidity += order.remaining;
+            level.head = order.next;
         }
 
-        // Update activeOrderId to last processed order
-        activeOrderId = orderId - 1;
+        if (order.next != 0) {
+            orders[order.next].prev = order.prev;
+        } else {
+            level.tail = order.prev;
+        }
+
+        // Decrement total liquidity
+        level.totalLiquidity -= order.remaining;
+
+        if (level.head == 0) {
+            _clearTickBit(order.bookKey, order.tick, isBid);
+        }
+
+        // Credit escrow amount to user's withdrawable balance
+        uint128 escrowAmount;
+        if (order.isBid) {
+            // For bids, escrow quote tokens based on price
+            uint32 price = tickToPrice(order.tick);
+            escrowAmount =
+                uint128((uint256(order.remaining) * uint256(price)) / uint256(PRICE_SCALE));
+        } else {
+            // For asks, escrow base tokens
+            escrowAmount = order.remaining;
+        }
+        balances[order.maker][token] += escrowAmount;
+
+        delete orders[orderId];
+
+        emit OrderCancelled(orderId);
     }
 
     /// @notice Withdraw tokens from exchange balance
