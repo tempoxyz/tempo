@@ -1,0 +1,77 @@
+{
+  "contracts": {
+    "tests/storage_tests/solidity/testdata/tip20_rewards_registry.sol:TIP20RewardsRegistry": {
+      "storage-layout": {
+        "storage": [
+          {
+            "astId": 5,
+            "contract": "tests/storage_tests/solidity/testdata/tip20_rewards_registry.sol:TIP20RewardsRegistry",
+            "label": "lastUpdatedTimestamp",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_uint128"
+          },
+          {
+            "astId": 11,
+            "contract": "tests/storage_tests/solidity/testdata/tip20_rewards_registry.sol:TIP20RewardsRegistry",
+            "label": "streamsEndingAt",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_mapping(t_uint128,t_array(t_address)dyn_storage)"
+          },
+          {
+            "astId": 16,
+            "contract": "tests/storage_tests/solidity/testdata/tip20_rewards_registry.sol:TIP20RewardsRegistry",
+            "label": "streamIndex",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_mapping(t_bytes32,t_uint256)"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "encoding": "inplace",
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_array(t_address)dyn_storage": {
+            "base": "t_address",
+            "encoding": "dynamic_array",
+            "label": "address[]",
+            "numberOfBytes": "32"
+          },
+          "t_bytes32": {
+            "encoding": "inplace",
+            "label": "bytes32",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_uint256)": {
+            "encoding": "mapping",
+            "key": "t_bytes32",
+            "label": "mapping(bytes32 => uint256)",
+            "numberOfBytes": "32",
+            "value": "t_uint256"
+          },
+          "t_mapping(t_uint128,t_array(t_address)dyn_storage)": {
+            "encoding": "mapping",
+            "key": "t_uint128",
+            "label": "mapping(uint128 => address[])",
+            "numberOfBytes": "32",
+            "value": "t_array(t_address)dyn_storage"
+          },
+          "t_uint128": {
+            "encoding": "inplace",
+            "label": "uint128",
+            "numberOfBytes": "16"
+          },
+          "t_uint256": {
+            "encoding": "inplace",
+            "label": "uint256",
+            "numberOfBytes": "32"
+          }
+        }
+      }
+    }
+  },
+  "version": "0.8.30+commit.73712a01.Darwin.appleclang"
+}
