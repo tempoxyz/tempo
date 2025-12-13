@@ -3,6 +3,7 @@ pragma solidity ^0.8.13;
 
 import { IStablecoinExchange } from "../src/interfaces/IStablecoinExchange.sol";
 import { ITIP20 } from "../src/interfaces/ITIP20.sol";
+import { ITIP403Registry } from "../src/interfaces/ITIP403Registry.sol";
 import { BaseTest } from "./BaseTest.t.sol";
 import { MockTIP20 } from "./mocks/MockTIP20.sol";
 
@@ -1093,6 +1094,105 @@ contract StablecoinExchangeTest is BaseTest {
         } catch {
             // Successfully reverted
         }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                        BLACKLIST INTERNAL BALANCE TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Test that blacklisted users cannot use internal balance to place orders
+    /// @dev This test ensures TIP403 blacklist enforcement on internal balance operations
+    function test_BlacklistedUser_CannotUseInternalBalance() public {
+        // Create a blacklist policy
+        uint64 policyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+
+        // Set the policy on token1
+        vm.prank(admin);
+        token1.changeTransferPolicyId(policyId);
+
+        // Also set the policy on pathUSD (quote token) for bid orders
+        vm.prank(pathUSDAdmin);
+        pathUSD.changeTransferPolicyId(policyId);
+
+        // Give alice some internal balance by placing and canceling an order
+        uint128 orderAmount = MIN_ORDER_AMOUNT * 2;
+        vm.prank(alice);
+        uint128 orderId = exchange.place(address(token1), orderAmount, false, 100);
+
+        vm.prank(alice);
+        exchange.cancel(orderId);
+
+        // Verify alice has internal balance
+        uint128 aliceInternalBalance = exchange.balanceOf(alice, address(token1));
+        assertEq(aliceInternalBalance, orderAmount, "Alice should have internal balance");
+
+        // Blacklist alice
+        vm.prank(admin);
+        registry.modifyPolicyBlacklist(policyId, alice, true);
+
+        // Verify alice is blacklisted
+        assertFalse(registry.isAuthorized(policyId, alice), "Alice should be blacklisted");
+
+        // Try to place an order using internal balance - should fail
+        vm.prank(alice);
+        try exchange.place(address(token1), orderAmount, false, 100) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // Verify alice's internal balance is unchanged
+        assertEq(
+            exchange.balanceOf(alice, address(token1)),
+            aliceInternalBalance,
+            "Alice's internal balance should be unchanged"
+        );
+    }
+
+    /// @notice Test that blacklisted users cannot use internal balance in swaps
+    function test_BlacklistedUser_CannotSwapWithInternalBalance() public {
+        // Setup: Create liquidity for swapping
+        _placeAskOrder(bob, 1000e18, 100);
+        vm.prank(address(0));
+        exchange.executeBlock();
+
+        // Create a blacklist policy
+        uint64 policyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+
+        // Set the policy on pathUSD
+        vm.prank(pathUSDAdmin);
+        pathUSD.changeTransferPolicyId(policyId);
+
+        // Give alice some internal pathUSD balance by placing and canceling a bid order
+        uint128 bidAmount = MIN_ORDER_AMOUNT * 10;
+        vm.prank(alice);
+        uint128 orderId = exchange.place(address(token1), bidAmount, true, 100);
+
+        vm.prank(alice);
+        exchange.cancel(orderId);
+
+        // Verify alice has internal pathUSD balance
+        uint128 aliceInternalBalance = exchange.balanceOf(alice, address(pathUSD));
+        assertGt(aliceInternalBalance, 0, "Alice should have internal pathUSD balance");
+
+        // Blacklist alice
+        vm.prank(admin);
+        registry.modifyPolicyBlacklist(policyId, alice, true);
+
+        // Try to swap using internal balance - should fail
+        vm.prank(alice);
+        try exchange.swapExactAmountIn(address(pathUSD), address(token1), aliceInternalBalance, 0) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // Verify alice's internal balance is unchanged
+        assertEq(
+            exchange.balanceOf(alice, address(pathUSD)),
+            aliceInternalBalance,
+            "Alice's internal balance should be unchanged"
+        );
     }
 
     /*//////////////////////////////////////////////////////////////
