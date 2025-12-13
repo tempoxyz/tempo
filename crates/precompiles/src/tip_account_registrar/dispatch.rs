@@ -5,7 +5,7 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 use crate::tip_account_registrar::{ITipAccountRegistrar, TipAccountRegistrar};
 
 impl Precompile for TipAccountRegistrar {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address, is_static: bool) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
@@ -27,6 +27,7 @@ impl Precompile for TipAccountRegistrar {
                     mutate::<ITipAccountRegistrar::delegateToDefault_0Call>(
                         calldata,
                         msg_sender,
+                        is_static,
                         |_, call| self.delegate_to_default_v1(call),
                     )
                 }
@@ -37,6 +38,7 @@ impl Precompile for TipAccountRegistrar {
                     mutate::<ITipAccountRegistrar::delegateToDefault_1Call>(
                         calldata,
                         msg_sender,
+                        is_static,
                         |_, call| self.delegate_to_default_v2(call),
                     )
                 } else {

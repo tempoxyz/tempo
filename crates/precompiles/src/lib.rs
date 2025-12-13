@@ -72,7 +72,7 @@ pub fn input_cost(calldata_len: usize) -> u64 {
 }
 
 pub trait Precompile {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
+    fn call(&mut self, calldata: &[u8], msg_sender: Address, is_static: bool) -> PrecompileResult;
 }
 
 pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<TempoHardfork>) {
@@ -113,6 +113,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
 
 sol! {
     error DelegateCallNotAllowed();
+    error StaticCallNotAllowed();
 }
 
 macro_rules! tempo_precompile {
@@ -124,14 +125,17 @@ macro_rules! tempo_precompile {
                     DelegateCallNotAllowed {}.abi_encode().into(),
                 ));
             }
+
+            let is_static = $input.is_static_call();
             let mut storage = crate::storage::evm::EvmPrecompileStorageProvider::new(
                 $input.internals,
                 $input.gas,
                 $chain_id,
                 $spec,
             );
+
             crate::storage::StorageCtx::enter(&mut storage, || {
-                $impl.call($input.data, $input.caller)
+                $impl.call($input.data, $input.caller, is_static)
             })
         })
     };
@@ -253,8 +257,16 @@ fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> Result<T::Return>) -> 
 pub fn mutate<T: SolCall>(
     calldata: &[u8],
     sender: Address,
+    is_static: bool,
     f: impl FnOnce(Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
+    if is_static {
+        return Ok(PrecompileOutput::new_reverted(
+            0,
+            StaticCallNotAllowed {}.abi_encode().into(),
+        ));
+    }
+
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };
@@ -265,8 +277,16 @@ pub fn mutate<T: SolCall>(
 fn mutate_void<T: SolCall>(
     calldata: &[u8],
     sender: Address,
+    is_static: bool,
     f: impl FnOnce(Address, T) -> Result<()>,
 ) -> PrecompileResult {
+    if is_static {
+        return Ok(PrecompileOutput::new_reverted(
+            0,
+            StaticCallNotAllowed {}.abi_encode().into(),
+        ));
+    }
+
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };
@@ -321,8 +341,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tip20::TIP20Token;
-    use alloy::primitives::{Address, Bytes, U256};
+    use crate::tip20::{ITIP20, TIP20Token};
+    use alloy::{
+        primitives::{Address, Bytes, U256},
+        sol_types::SolCall,
+    };
     use alloy_evm::{
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         precompiles::{Precompile as AlloyEvmPrecompile, PrecompileInput},
@@ -350,6 +373,7 @@ mod tests {
             caller: Address::ZERO,
             internals: evm_internals,
             gas: 0,
+            is_static: false,
             value: U256::ZERO,
             target_address,
             bytecode_address,
@@ -364,6 +388,47 @@ mod tests {
                 assert!(matches!(decoded, DelegateCallNotAllowed {}));
             }
             Err(_) => panic!("expected reverted output"),
+        }
+    }
+
+    #[test]
+    fn test_precompile_static_call() {
+        let (chain_id, spec) = (1, TempoHardfork::default());
+        let precompile =
+            tempo_precompile!("TIP20Token", chain_id, spec, |input| { TIP20Token::new(1) });
+
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+        let block = evm.block.clone();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+
+        let target_address = Address::random();
+        let transfer_calldata = ITIP20::transferCall {
+            to: Address::random(),
+            amount: U256::from(100),
+        }
+        .abi_encode();
+        let calldata = Bytes::from(transfer_calldata);
+        let input = PrecompileInput {
+            data: &calldata,
+            caller: Address::ZERO,
+            internals: evm_internals,
+            gas: 100_000,
+            is_static: true,
+            value: U256::ZERO,
+            target_address,
+            bytecode_address: target_address,
+        };
+
+        let result = AlloyEvmPrecompile::call(&precompile, input);
+
+        match result {
+            Ok(output) => {
+                assert!(output.reverted);
+                let decoded = StaticCallNotAllowed::abi_decode(&output.bytes).unwrap();
+                assert!(matches!(decoded, StaticCallNotAllowed {}));
+            }
+            Err(e) => panic!("expected reverted output, got error: {e:?}"),
         }
     }
 }

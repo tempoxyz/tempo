@@ -4,7 +4,7 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 impl Precompile for AccountKeychain {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address, is_static: bool) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
@@ -22,6 +22,7 @@ impl Precompile for AccountKeychain {
                 mutate_void::<IAccountKeychain::authorizeKeyCall>(
                     calldata,
                     msg_sender,
+                    is_static,
                     |sender, call| self.authorize_key(sender, call),
                 )
             }
@@ -30,6 +31,7 @@ impl Precompile for AccountKeychain {
                 mutate_void::<IAccountKeychain::revokeKeyCall>(
                     calldata,
                     msg_sender,
+                    is_static,
                     |sender, call| self.revoke_key(sender, call),
                 )
             }
@@ -38,6 +40,7 @@ impl Precompile for AccountKeychain {
                 mutate_void::<IAccountKeychain::updateSpendingLimitCall>(
                     calldata,
                     msg_sender,
+                    is_static,
                     |sender, call| self.update_spending_limit(sender, call),
                 )
             }

@@ -11,7 +11,7 @@ use crate::{
 };
 
 impl Precompile for StablecoinExchange {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address, is_static: bool) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
@@ -25,22 +25,28 @@ impl Precompile for StablecoinExchange {
             .map_err(|_| PrecompileError::Other("Invalid function selector length".into()))?;
 
         let result = match selector {
-            IStablecoinExchange::placeCall::SELECTOR => {
-                mutate::<IStablecoinExchange::placeCall>(calldata, msg_sender, |s, call| {
-                    self.place(s, call.token, call.amount, call.isBid, call.tick)
-                })
-            }
+            IStablecoinExchange::placeCall::SELECTOR => mutate::<IStablecoinExchange::placeCall>(
+                calldata,
+                msg_sender,
+                is_static,
+                |s, call| self.place(s, call.token, call.amount, call.isBid, call.tick),
+            ),
             IStablecoinExchange::placeFlipCall::SELECTOR => {
-                mutate::<IStablecoinExchange::placeFlipCall>(calldata, msg_sender, |s, call| {
-                    self.place_flip(
-                        s,
-                        call.token,
-                        call.amount,
-                        call.isBid,
-                        call.tick,
-                        call.flipTick,
-                    )
-                })
+                mutate::<IStablecoinExchange::placeFlipCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |s, call| {
+                        self.place_flip(
+                            s,
+                            call.token,
+                            call.amount,
+                            call.isBid,
+                            call.tick,
+                            call.flipTick,
+                        )
+                    },
+                )
             }
 
             IStablecoinExchange::balanceOfCall::SELECTOR => {
@@ -86,24 +92,34 @@ impl Precompile for StablecoinExchange {
             }
 
             IStablecoinExchange::createPairCall::SELECTOR => {
-                mutate::<IStablecoinExchange::createPairCall>(calldata, msg_sender, |_s, call| {
-                    self.create_pair(call.base)
-                })
+                mutate::<IStablecoinExchange::createPairCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |_s, call| self.create_pair(call.base),
+                )
             }
             IStablecoinExchange::withdrawCall::SELECTOR => {
-                mutate_void::<IStablecoinExchange::withdrawCall>(calldata, msg_sender, |s, call| {
-                    self.withdraw(s, call.token, call.amount)
-                })
+                mutate_void::<IStablecoinExchange::withdrawCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |s, call| self.withdraw(s, call.token, call.amount),
+                )
             }
             IStablecoinExchange::cancelCall::SELECTOR => {
-                mutate_void::<IStablecoinExchange::cancelCall>(calldata, msg_sender, |s, call| {
-                    self.cancel(s, call.orderId)
-                })
+                mutate_void::<IStablecoinExchange::cancelCall>(
+                    calldata,
+                    msg_sender,
+                    is_static,
+                    |s, call| self.cancel(s, call.orderId),
+                )
             }
             IStablecoinExchange::swapExactAmountInCall::SELECTOR => {
                 mutate::<IStablecoinExchange::swapExactAmountInCall>(
                     calldata,
                     msg_sender,
+                    is_static,
                     |s, call| {
                         self.swap_exact_amount_in(
                             s,
@@ -119,6 +135,7 @@ impl Precompile for StablecoinExchange {
                 mutate::<IStablecoinExchange::swapExactAmountOutCall>(
                     calldata,
                     msg_sender,
+                    is_static,
                     |s, call| {
                         self.swap_exact_amount_out(
                             s,
@@ -144,6 +161,7 @@ impl Precompile for StablecoinExchange {
                 mutate_void::<IStablecoinExchange::executeBlockCall>(
                     calldata,
                     msg_sender,
+                    is_static,
                     |_s, _call| self.execute_block(msg_sender),
                 )
             }
@@ -264,7 +282,7 @@ mod tests {
             let calldata = call.abi_encode();
 
             // Should dispatch to place function (may fail due to business logic, but dispatch works)
-            let result = exchange.call(&calldata, sender);
+            let result = exchange.call(&calldata, sender, false);
             // Ok indicates successful dispatch (either success or TempoPrecompileError)
             assert!(result.is_ok());
 
@@ -292,7 +310,7 @@ mod tests {
             let calldata = call.abi_encode();
 
             // Should dispatch to place_flip function
-            let result = exchange.call(&calldata, sender);
+            let result = exchange.call(&calldata, sender, false);
             // Ok indicates successful dispatch (either success or TempoPrecompileError)
             assert!(result.is_ok());
 
@@ -315,7 +333,7 @@ mod tests {
             let calldata = call.abi_encode();
 
             // Should dispatch to balance_of function and succeed (returns 0 for uninitialized)
-            let result = exchange.call(&calldata, sender);
+            let result = exchange.call(&calldata, sender, false);
             assert!(result.is_ok());
 
             Ok(())
@@ -333,7 +351,7 @@ mod tests {
             let call = IStablecoinExchange::MIN_PRICECall {};
             let calldata = call.abi_encode();
 
-            let result = exchange.call(&calldata, sender);
+            let result = exchange.call(&calldata, sender, false);
             assert!(result.is_ok());
 
             let output = result?.bytes;
@@ -358,7 +376,7 @@ mod tests {
             let call = IStablecoinExchange::MIN_PRICECall {};
             let calldata = call.abi_encode();
 
-            let result = exchange.call(&calldata, sender);
+            let result = exchange.call(&calldata, sender, false);
             assert!(result.is_ok());
 
             let output = result?.bytes;
@@ -383,7 +401,7 @@ mod tests {
             let call = IStablecoinExchange::TICK_SPACINGCall {};
             let calldata = call.abi_encode();
 
-            let result = exchange.call(&calldata, sender);
+            let result = exchange.call(&calldata, sender, false);
             assert!(result.is_ok());
 
             let output = result?.bytes;
@@ -409,7 +427,7 @@ mod tests {
             let call = IStablecoinExchange::MAX_PRICECall {};
             let calldata = call.abi_encode();
 
-            let result = exchange.call(&calldata, sender);
+            let result = exchange.call(&calldata, sender, false);
             assert!(result.is_ok());
 
             let output = result?.bytes;
@@ -434,7 +452,7 @@ mod tests {
             let call = IStablecoinExchange::MAX_PRICECall {};
             let calldata = call.abi_encode();
 
-            let result = exchange.call(&calldata, sender);
+            let result = exchange.call(&calldata, sender, false);
             assert!(result.is_ok());
 
             let output = result?.bytes;
@@ -462,7 +480,7 @@ mod tests {
             let calldata = call.abi_encode();
 
             // Should dispatch to create_pair function
-            let result = exchange.call(&calldata, sender);
+            let result = exchange.call(&calldata, sender, false);
             // Ok indicates successful dispatch (either success or TempoPrecompileError)
             assert!(result.is_ok());
             Ok(())
@@ -486,7 +504,7 @@ mod tests {
             let calldata = call.abi_encode();
 
             // Should dispatch to withdraw function
-            let result = exchange.call(&calldata, sender);
+            let result = exchange.call(&calldata, sender, false);
             // Ok indicates successful dispatch (either success or TempoPrecompileError)
             assert!(result.is_ok());
 
@@ -507,7 +525,7 @@ mod tests {
             let calldata = call.abi_encode();
 
             // Should dispatch to cancel function
-            let result = exchange.call(&calldata, sender);
+            let result = exchange.call(&calldata, sender, false);
             // Ok indicates successful dispatch (either success or TempoPrecompileError)
             assert!(result.is_ok());
             Ok(())
@@ -532,7 +550,7 @@ mod tests {
             let calldata = call.abi_encode();
 
             // Should dispatch to swap_exact_amount_in function and succeed
-            let result = exchange.call(&calldata, user);
+            let result = exchange.call(&calldata, user, false);
             assert!(result.is_ok());
 
             Ok(())
@@ -561,7 +579,7 @@ mod tests {
             let calldata = call.abi_encode();
 
             // Should dispatch to swap_exact_amount_out function and succeed
-            let result = exchange.call(&calldata, user);
+            let result = exchange.call(&calldata, user, false);
             assert!(result.is_ok());
 
             Ok(())
@@ -584,7 +602,7 @@ mod tests {
             let calldata = call.abi_encode();
 
             // Should dispatch to quote_swap_exact_amount_in function and succeed
-            let result = exchange.call(&calldata, sender);
+            let result = exchange.call(&calldata, sender, false);
             assert!(result.is_ok());
 
             Ok(())
@@ -611,7 +629,7 @@ mod tests {
             let calldata = call.abi_encode();
 
             // Should dispatch to quote_swap_exact_amount_out function and succeed
-            let result = exchange.call(&calldata, sender);
+            let result = exchange.call(&calldata, sender, false);
             assert!(result.is_ok());
 
             Ok(())
@@ -630,7 +648,7 @@ mod tests {
             let call = IStablecoinExchange::activeOrderIdCall {};
             let calldata = call.abi_encode();
 
-            let result = exchange.call(&calldata, sender);
+            let result = exchange.call(&calldata, sender, false);
             assert!(result.is_ok());
 
             let output = result?;
@@ -653,7 +671,7 @@ mod tests {
             let call = IStablecoinExchange::pendingOrderIdCall {};
             let calldata = call.abi_encode();
 
-            let result = exchange.call(&calldata, sender);
+            let result = exchange.call(&calldata, sender, false);
             assert!(result.is_ok());
 
             let output = result?;
@@ -676,7 +694,7 @@ mod tests {
             // Use an invalid selector that doesn't match any function - should return Ok with reverted status
             let calldata = Bytes::from([0x12, 0x34, 0x56, 0x78]);
 
-            let result = exchange.call(&calldata, sender);
+            let result = exchange.call(&calldata, sender, false);
             assert!(result.is_ok());
             assert!(result?.reverted);
             Ok(())
@@ -695,7 +713,7 @@ mod tests {
             // Use calldata that's too short to contain a selector
             let calldata = Bytes::from([0x12, 0x34]);
 
-            let result = exchange.call(&calldata, sender);
+            let result = exchange.call(&calldata, sender, false);
             assert!(matches!(result, Err(PrecompileError::Other(_))));
             Ok(())
         })

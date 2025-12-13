@@ -190,7 +190,7 @@ mod tests {
             let calldata = call.abi_encode();
 
             // Should fail with UnknownFunctionSelector after Moderato (ABI-encoded error)
-            let result = registrar.call(&calldata, signer.address());
+            let result = registrar.call(&calldata, signer.address(), false);
             assert!(result.is_ok());
             let output = result.unwrap();
             assert!(output.reverted);
@@ -271,7 +271,7 @@ mod tests {
             let calldata = call.abi_encode();
 
             // Should fail with UnknownFunctionSelector pre-Moderato
-            let result = registrar.call(&calldata, signer.address());
+            let result = registrar.call(&calldata, signer.address(), false);
             assert!(matches!(
                 result,
                 Err(revm::precompile::PrecompileError::Other(ref msg)) if msg.contains("Unknown function selector")

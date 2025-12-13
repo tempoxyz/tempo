@@ -30,7 +30,7 @@ pub fn check_selector_coverage<P: Precompile>(
         // Add some dummy data for functions that require parameters
         calldata.extend_from_slice(&[0u8; 32]);
 
-        let result = precompile.call(&calldata, Address::ZERO);
+        let result = precompile.call(&calldata, Address::ZERO, false);
 
         // Check if we got "Unknown function selector" error (old format)
         let is_unsupported_old = matches!(&result,
