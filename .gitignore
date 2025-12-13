@@ -3,6 +3,10 @@ target
 scripts/logs
 scripts/data
 
+# Benchmarking artifacts (tempo-bench)
+contrib/bench/logs/
+report.json
+
 .DS_Store
 .idea
 **/.env
