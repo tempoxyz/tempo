@@ -14,7 +14,7 @@ use crate::{
     error::Result,
     storage::{StorageOps, packing},
 };
-use alloy::primitives::{Address, U256, keccak256};
+use alloy::primitives::{Address, U256};
 
 /// Describes how a type is laid out in EVM storage.
 ///
@@ -148,6 +148,14 @@ pub trait StorableType {
     /// Dynamic types (`Bytes`, `String`, `Vec`) store data at keccak256-addressed
     /// slots and need special cleanup. Non-dynamic types just zero their slots.
     const IS_DYNAMIC: bool = false;
+
+    /// Storage space identifier for exclusive mappings.
+    ///
+    /// - `0` = shared namespace (keccak256-based mappings, primitives, structs)
+    /// - `1+` = exclusive namespace (`DirectBytes`-based mappings)
+    ///
+    /// The `#[contract]` macro validates that all non-zero values are unique per contract.
+    const STORAGE_SPACE: u8 = 0;
 
     /// The handler type that provides storage access for this type.
     ///
@@ -283,30 +291,8 @@ impl<T: Packable> Storable for T {
 
 /// Trait for types that can be used as storage mapping keys.
 ///
-/// Keys are hashed using keccak256 along with the mapping's base slot
-/// to determine the final storage location. This trait provides the
-/// byte representation used in that hash.
+/// Provides the byte representation used by `HashStrategy` to compute storage slots.
 pub trait StorageKey {
     /// Returns a byte slice for this type.
     fn as_storage_bytes(&self) -> impl AsRef<[u8]>;
-
-    /// Compute storage slot for a mapping with this key.
-    ///
-    /// Left-pads the key to the nearest 32-byte multiple, concatenates
-    /// with the slot, and hashes.
-    fn mapping_slot(&self, slot: U256) -> U256 {
-        let key_bytes = self.as_storage_bytes();
-        let key_bytes = key_bytes.as_ref();
-
-        // Pad key to nearest multiple of 32 bytes
-        let padded_len = key_bytes.len().div_ceil(32) * 32;
-        let mut buf = vec![0u8; padded_len + 32];
-
-        // Left-pad the key bytes
-        buf[padded_len - key_bytes.len()..padded_len].copy_from_slice(key_bytes);
-        // Append slot in big-endian
-        buf[padded_len..].copy_from_slice(&slot.to_be_bytes::<32>());
-
-        U256::from_be_bytes(keccak256(&buf).0)
-    }
 }

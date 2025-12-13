@@ -274,7 +274,7 @@ pub trait TempoStateAccess<T> {
         let token_id = tip20::address_to_token_id_unchecked(token);
 
         // Query the user's balance in the determined fee token's TIP20 contract
-        let balance_slot = TIP20Token::new(token_id).balances.at(account).slot();
+        let balance_slot = TIP20Token::new(token_id).users.at(account).balance.slot();
         // Load fee token account to ensure that we can load storage for it.
         self.basic(token)?;
         self.sload(token, balance_slot)
