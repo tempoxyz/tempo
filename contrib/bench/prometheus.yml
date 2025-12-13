@@ -1,0 +1,44 @@
+global:
+  scrape_interval: 1s
+  evaluation_interval: 1s
+
+scrape_configs:
+  # Reth metrics (execution layer)
+  # Ports: 9001, 9002, 9003, ... (node index)
+  - job_name: 'tempo-reth'
+    static_configs:
+      - targets: ['host.docker.internal:9001']
+        labels:
+          node: 'node-0'
+      - targets: ['host.docker.internal:9002']
+        labels:
+          node: 'node-1'
+      - targets: ['host.docker.internal:9003']
+        labels:
+          node: 'node-2'
+      - targets: ['host.docker.internal:9004']
+        labels:
+          node: 'node-3'
+      - targets: ['host.docker.internal:9005']
+        labels:
+          node: 'node-4'
+
+  # Consensus metrics
+  # Ports: 8002, 8102, 8202, ... (consensus port + 2)
+  - job_name: 'tempo-consensus'
+    static_configs:
+      - targets: ['host.docker.internal:8002']
+        labels:
+          node: 'node-0'
+      - targets: ['host.docker.internal:8102']
+        labels:
+          node: 'node-1'
+      - targets: ['host.docker.internal:8202']
+        labels:
+          node: 'node-2'
+      - targets: ['host.docker.internal:8302']
+        labels:
+          node: 'node-3'
+      - targets: ['host.docker.internal:8402']
+        labels:
+          node: 'node-4'
