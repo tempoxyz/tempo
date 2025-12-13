@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
+import { OptimizedStorageLib } from "./OptimizedStorageLib.sol";
 import { TIP20Factory } from "./TIP20Factory.sol";
 import { TIP403Registry } from "./TIP403Registry.sol";
 import { TIP20RolesAuth } from "./abstracts/TIP20RolesAuth.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
 
 contract TIP20 is ITIP20, TIP20RolesAuth {
+
+    using OptimizedStorageLib for OptimizedStorageLib.AddressUint256Map;
+    using OptimizedStorageLib for OptimizedStorageLib.AddressAddressMap;
 
     TIP403Registry internal constant TIP403_REGISTRY =
         TIP403Registry(0x403c000000000000000000000000000000000000);
@@ -58,6 +62,11 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         // No currency registry; all tokens use 6 decimals by default
 
         hasRole[admin][DEFAULT_ADMIN_ROLE] = true; // Grant admin role to first admin.
+
+        _balances.check();
+        _rewardRecipients.check();
+        _userRewardPerToken.check();
+        _userRewardBalances.check();
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -65,7 +74,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     //////////////////////////////////////////////////////////////*/
 
     uint128 internal _totalSupply;
-    mapping(address => uint256) public balanceOf;
+    OptimizedStorageLib.AddressUint256Map internal _balances;
     mapping(address => mapping(address => uint256)) public allowance;
 
     /*//////////////////////////////////////////////////////////////
@@ -82,14 +91,9 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     uint256 internal constant ACC_PRECISION = 1e18;
     uint256 public globalRewardPerToken;
     uint128 public optedInSupply;
-
-    struct UserRewardInfo {
-        address rewardRecipient;
-        uint256 rewardPerToken;
-        uint256 rewardBalance;
-    }
-
-    mapping(address => UserRewardInfo) public userRewardInfo;
+    OptimizedStorageLib.AddressAddressMap internal _rewardRecipients;
+    OptimizedStorageLib.AddressUint256Map internal _userRewardPerToken;
+    OptimizedStorageLib.AddressUint256Map internal _userRewardBalances;
 
     /*//////////////////////////////////////////////////////////////
                               POLICY ADMINISTRATION
@@ -125,7 +129,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         // check that this does not create a loop, by looping through quote token until we reach the root
         ITIP20 current = nextQuoteToken;
         while (address(current) != address(0)) {
-            if (current == this) revert InvalidQuoteToken();
+            if (address(current) == address(this)) revert InvalidQuoteToken();
             current = current.quoteToken();
         }
 
@@ -263,13 +267,18 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         _transfer(from, to, amount);
     }
 
+    function balanceOf(address user) public view returns (uint256) {
+        return _balances.get(user);
+    }
+
     function totalSupply() public view returns (uint256) {
         return _totalSupply;
     }
 
     function _transfer(address from, address to, uint256 amount) internal {
-        if (amount > balanceOf[from]) {
-            revert InsufficientBalance(balanceOf[from], amount, address(this));
+        uint256 fromBalance = _balances.get(from);
+        if (amount > fromBalance) {
+            revert InsufficientBalance(fromBalance, amount, address(this));
         }
 
         // Handle reward accounting for opted-in sender
@@ -287,8 +296,10 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         }
 
         unchecked {
-            balanceOf[from] -= amount;
-            if (to != address(0)) balanceOf[to] += amount;
+            _balances.set(from, fromBalance - amount);
+            if (to != address(0)) {
+                _balances.set(to, _balances.get(to) + amount);
+            }
         }
 
         emit Transfer(from, to, amount);
@@ -306,7 +317,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
 
         unchecked {
             _totalSupply += uint128(amount);
-            balanceOf[to] += amount;
+            _balances.set(to, _balances.get(to) + amount);
         }
 
         emit Transfer(address(0), to, amount);
@@ -373,8 +384,9 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         require(msg.sender == TIP_FEE_MANAGER_ADDRESS);
         require(from != address(0));
 
-        if (amount > balanceOf[from]) {
-            revert InsufficientBalance(balanceOf[from], amount, address(this));
+        uint256 fromBalance = _balances.get(from);
+        if (amount > fromBalance) {
+            revert InsufficientBalance(fromBalance, amount, address(this));
         }
 
         address fromsRewardRecipient = _updateRewardsAndGetRecipient(from);
@@ -383,8 +395,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         }
 
         unchecked {
-            balanceOf[from] -= amount;
-            balanceOf[TIP_FEE_MANAGER_ADDRESS] += amount;
+            _balances.set(from, fromBalance - amount);
+            _balances.set(TIP_FEE_MANAGER_ADDRESS, _balances.get(TIP_FEE_MANAGER_ADDRESS) + amount);
         }
     }
 
@@ -392,7 +404,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         require(msg.sender == TIP_FEE_MANAGER_ADDRESS);
         require(to != address(0));
 
-        uint256 feeManagerBalance = balanceOf[TIP_FEE_MANAGER_ADDRESS];
+        uint256 feeManagerBalance = _balances.get(TIP_FEE_MANAGER_ADDRESS);
         if (refund > feeManagerBalance) {
             revert InsufficientBalance(feeManagerBalance, refund, address(this));
         }
@@ -403,8 +415,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         }
 
         unchecked {
-            balanceOf[TIP_FEE_MANAGER_ADDRESS] -= refund;
-            balanceOf[to] += refund;
+            _balances.set(TIP_FEE_MANAGER_ADDRESS, feeManagerBalance - refund);
+            _balances.set(to, _balances.get(to) + refund);
         }
 
         emit Transfer(to, TIP_FEE_MANAGER_ADDRESS, actualUsed);
@@ -419,20 +431,21 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         internal
         returns (address rewardRecipient)
     {
-        rewardRecipient = userRewardInfo[user].rewardRecipient;
+        rewardRecipient = _rewardRecipients.get(user);
         uint256 cachedGlobalRewardPerToken = globalRewardPerToken;
-        uint256 rewardPerTokenDelta =
-            cachedGlobalRewardPerToken - userRewardInfo[user].rewardPerToken;
+        uint256 rewardPerTokenDelta = cachedGlobalRewardPerToken - _userRewardPerToken.get(user);
 
         if (rewardPerTokenDelta != 0) {
             // No rewards to update if not opted-in
             if (rewardRecipient != address(0)) {
                 // Balance to update
-                uint256 reward = (uint256(balanceOf[user]) * (rewardPerTokenDelta)) / ACC_PRECISION;
+                uint256 reward = (_balances.get(user) * rewardPerTokenDelta) / ACC_PRECISION;
 
-                userRewardInfo[rewardRecipient].rewardBalance += reward;
+                _userRewardBalances.set(
+                    rewardRecipient, _userRewardBalances.get(rewardRecipient) + reward
+                );
             }
-            userRewardInfo[user].rewardPerToken = cachedGlobalRewardPerToken;
+            _userRewardPerToken.set(user, cachedGlobalRewardPerToken);
         }
     }
 
@@ -479,12 +492,12 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         address oldRewardRecipient = _updateRewardsAndGetRecipient(msg.sender);
         if (oldRewardRecipient != address(0)) {
             if (newRewardRecipient == address(0)) {
-                optedInSupply -= uint128(balanceOf[msg.sender]);
+                optedInSupply -= uint128(_balances.get(msg.sender));
             }
         } else if (newRewardRecipient != address(0)) {
-            optedInSupply += uint128(balanceOf[msg.sender]);
+            optedInSupply += uint128(_balances.get(msg.sender));
         }
-        userRewardInfo[msg.sender].rewardRecipient = newRewardRecipient;
+        _rewardRecipients.set(msg.sender, newRewardRecipient);
 
         emit RewardRecipientSet(msg.sender, newRewardRecipient);
     }
@@ -494,16 +507,16 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
 
         _updateRewardsAndGetRecipient(msg.sender);
 
-        uint256 amount = userRewardInfo[msg.sender].rewardBalance;
-        uint256 selfBalance = balanceOf[address(this)];
+        uint256 amount = _userRewardBalances.get(msg.sender);
+        uint256 selfBalance = _balances.get(address(this));
         maxAmount = (selfBalance > amount ? amount : selfBalance);
-        userRewardInfo[msg.sender].rewardBalance -= maxAmount;
+        _userRewardBalances.set(msg.sender, amount - maxAmount);
 
-        balanceOf[address(this)] -= maxAmount;
-        if (userRewardInfo[msg.sender].rewardRecipient != address(0)) {
+        _balances.set(address(this), selfBalance - maxAmount);
+        if (_rewardRecipients.get(msg.sender) != address(0)) {
             optedInSupply += uint128(maxAmount);
         }
-        balanceOf[msg.sender] += maxAmount;
+        _balances.set(msg.sender, _balances.get(msg.sender) + maxAmount);
 
         emit Transfer(address(this), msg.sender, maxAmount);
     }
@@ -512,5 +525,14 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
                         REWARD DISTRIBUTION VIEWS
     //////////////////////////////////////////////////////////////*/
 
+    function userRewardInfo(address user)
+        external
+        view
+        returns (address rewardRecipient, uint256 rewardPerToken, uint256 rewardBalance)
+    {
+        rewardRecipient = _rewardRecipients.get(user);
+        rewardPerToken = _userRewardPerToken.get(user);
+        rewardBalance = _userRewardBalances.get(user);
+    }
 
     }
