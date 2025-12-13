@@ -86,33 +86,21 @@ impl ValidatorConfig {
 
     /// Get all validators (view function)
     pub fn get_validators(&self) -> Result<Vec<IValidatorConfig::Validator>> {
-        let count = self.validator_count()?;
-        let mut validators = Vec::new();
-
-        for i in 0..count {
-            // Read validator address from the array at index i
-            let validator_address = self.validators_array.at_unchecked(i as usize).read()?;
-
-            let Validator {
-                public_key,
-                active,
-                index,
-                validator_address: _,
-                inbound_address,
-                outbound_address,
-            } = self.validators.at(validator_address).read()?;
-
-            validators.push(IValidatorConfig::Validator {
-                publicKey: public_key,
-                active,
-                index,
-                validatorAddress: validator_address,
-                inboundAddress: inbound_address,
-                outboundAddress: outbound_address,
-            });
-        }
-
-        Ok(validators)
+        self.validators_array
+            .iter()?
+            .map(|v| {
+                let validator_addr = v.read()?;
+                let validator = self.validators.at(validator_addr).read()?;
+                Ok(IValidatorConfig::Validator {
+                    publicKey: validator.public_key,
+                    active: validator.active,
+                    index: validator.index,
+                    validatorAddress: validator.validator_address,
+                    inboundAddress: validator.inbound_address,
+                    outboundAddress: validator.outbound_address,
+                })
+            })
+            .collect()
     }
 
     /// Add a new validator (owner only)

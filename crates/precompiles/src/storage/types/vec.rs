@@ -326,7 +326,45 @@ where
 
         Ok(Some(element))
     }
+
+    /// Returns an iterator over element handlers. Performs a single SLOAD to read length.
+    #[inline]
+    pub fn iter(&self) -> Result<VecIter<'_, T>> {
+        let length = self.len()?;
+        Ok(VecIter {
+            handler: self,
+            length,
+            current: 0,
+        })
+    }
 }
+
+/// Iterator over `Vec<T>` element handlers. Implements [`ExactSizeIterator`].
+pub struct VecIter<'a, T: Storable> {
+    handler: &'a VecHandler<T>,
+    length: usize,
+    current: usize,
+}
+
+impl<'a, T: Storable> Iterator for VecIter<'a, T> {
+    type Item = T::Handler;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current >= self.length {
+            return None;
+        }
+        let handler = self.handler.at_unchecked(self.current);
+        self.current += 1;
+        Some(handler)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.length - self.current;
+        (remaining, Some(remaining))
+    }
+}
+
+impl<T: Storable> ExactSizeIterator for VecIter<'_, T> {}
 
 /// Calculate the starting slot for dynamic array data.
 ///
