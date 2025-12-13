@@ -144,6 +144,18 @@ Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.co
 
 See [`SECURITY.md`](https://github.com/tempoxyz/tempo?tab=security-ov-file). Note: Tempo is still undergoing audit and does not have an active bug bounty. Submissions will not be eligible for a bounty until audits have concluded.
 
+## Code Style
+
+Tempo follows standard Rust formatting and linting conventions:
+
+- Use `cargo fmt` to format code.
+- Use `cargo clippy` before opening a pull request to catch common issues.
+- Keep changes small and focused to simplify reviewing.
+- Follow existing patterns used throughout the codebase.
+
+These guidelines help maintain consistent code quality across contributions.
+
+
 ## License
 
 Licensed under either of [Apache License](./LICENSE-APACHE), Version
