@@ -1,8 +1,8 @@
 import * as React from 'react'
 import {
-  useAccount,
   useChains,
   useConnect,
+  useConnection,
   useConnectors,
   useSwitchChain,
 } from 'wagmi'
@@ -13,7 +13,7 @@ export function ConnectWallet({
 }: {
   showAddChain?: boolean
 }) {
-  const { address, chain, connector } = useAccount()
+  const { address, chain, connector } = useConnection()
   const connect = useConnect()
   const connectors = useConnectors()
   const injectedConnectors = React.useMemo(

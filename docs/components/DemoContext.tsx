@@ -6,7 +6,7 @@ import {
   useState,
 } from 'react'
 import type { Address, PrivateKeyAccount, TransactionReceipt } from 'viem'
-import { useAccountEffect } from 'wagmi'
+import { useConnectionEffect } from 'wagmi'
 
 // Define your allowed keys and their types here
 export interface DemoData {
@@ -71,7 +71,7 @@ export function DemoContextProvider({ children }: DemoContextProviderProps) {
   )
 
   // Clear all data when account disconnects
-  useAccountEffect({
+  useConnectionEffect({
     onDisconnect() {
       setDataState({})
     },
