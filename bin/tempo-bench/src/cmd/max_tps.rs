@@ -12,6 +12,7 @@ use tempo_alloy::{
     TempoNetwork, primitives::TempoTxEnvelope, provider::ext::TempoProviderBuilderExt,
 };
 
+use crate::cmd::{max_tps::dex::create_tokens_for_bench, signer_providers::SignerProviderManager};
 use alloy::{
     consensus::BlockHeader,
     eips::Encodable2718,
@@ -70,8 +71,6 @@ use tokio::{
     time::{Sleep, interval, sleep},
 };
 use tokio_util::sync::CancellationToken;
-
-use crate::cmd::signer_providers::SignerProviderManager;
 
 /// Run maximum TPS throughput benchmarking
 #[derive(Parser, Debug)]
@@ -250,8 +249,8 @@ impl MaxTpsArgs {
             }
         }
 
-        // Grab first provider to call some RPC methods
-        let provider = signer_providers[0].1.clone();
+        // Grab first provider and signer to call some RPC methods
+        let (first_signer, provider) = signer_providers[0].clone();
 
         // Fund accounts from faucet if requested
         if self.faucet {
@@ -285,20 +284,35 @@ impl MaxTpsArgs {
         .await
         .context("Failed to set default fee token")?;
 
-        let user_tokens = 2;
-        let (quote_token, user_tokens) = if self.place_order_weight > 0.0 && self.swap_weight > 0.0
+        let user_token_count = 2;
+        let (quote_token, user_tokens) = if self.place_order_weight > 0.0 || self.swap_weight > 0.0
         {
-            info!(user_tokens, "Setting up DEX");
+            let (quote_token, user_tokens) = create_tokens_for_bench(
+                provider.clone(),
+                first_signer.address(),
+                user_token_count,
+                self.max_concurrent_requests,
+            )
+            .await?;
+
             dex::setup(
                 signer_providers,
-                user_tokens,
+                &quote_token,
+                &user_tokens,
                 self.max_concurrent_requests,
                 self.max_concurrent_transactions,
             )
-            .await?
+            .await?;
+
+            (Some(quote_token), user_tokens)
         } else {
             (None, Vec::new())
         };
+
+        let user_token_addresses = user_tokens
+            .iter()
+            .map(|token| *token.address())
+            .collect::<Vec<_>>();
 
         let erc20_tokens = if self.erc20_weight > 0.0 {
             let num_erc20_tokens = 1;
@@ -329,8 +343,11 @@ impl MaxTpsArgs {
             place_order_weight,
             swap_weight,
             erc20_weight,
-            quote_token,
-            user_tokens,
+            quote_token: quote_token
+                .as_ref()
+                .map(|t| *t.address())
+                .ok_or_eyre("Quote token address not present")?,
+            user_tokens: user_token_addresses,
             erc20_tokens,
         })
         .await
@@ -588,11 +605,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                     // Swap minimum possible amount
                     // unwrap is safe here as if a swap txn is needed, there would definitely be a quote token
                     exchange
-                        .quoteSwapExactAmountIn(
-                            token,
-                            quote_token.expect("Quote token address not present"),
-                            1,
-                        )
+                        .quoteSwapExactAmountIn(token, quote_token, 1)
                         .into_transaction_request()
                 }
                 2 => {

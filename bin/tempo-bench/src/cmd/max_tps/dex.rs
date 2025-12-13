@@ -4,6 +4,30 @@ use indicatif::ProgressIterator;
 use tempo_contracts::precompiles::{IStablecoinExchange, PATH_USD_ADDRESS};
 use tempo_precompiles::tip20::U128_MAX;
 
+/// Creates TIP-20 tokens for benchmarking
+pub async fn create_tokens_for_bench(
+    provider: DynProvider<TempoNetwork>,
+    caller: Address,
+    user_token_count: usize,
+    max_concurrent_requests: usize,
+) -> eyre::Result<(
+    ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>,
+    Vec<ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>>,
+)> {
+    info!(user_tokens = user_token_count, "Creating TIP-20 tokens");
+    let progress = ProgressBar::new(user_token_count as u64 + 1);
+    let quote_token = dex::setup_test_token(provider.clone(), caller, PATH_USD_ADDRESS).await?;
+    progress.inc(1);
+
+    let user_tokens = stream::iter((0..user_token_count).progress_with(progress))
+        .map(|_| dex::setup_test_token(provider.clone(), caller, *quote_token.address()))
+        .buffered(max_concurrent_requests)
+        .try_collect::<Vec<_>>()
+        .await?;
+
+    Ok((quote_token, user_tokens))
+}
+
 /// This method performs a one-time setup for sending a lot of transactions:
 /// * Deploys the specified number of user tokens.
 /// * Creates DEX pairs of user tokens with the quote token.
@@ -11,27 +35,16 @@ use tempo_precompiles::tip20::U128_MAX;
 /// * Seeds initial liquidity by placing DEX flip orders.
 pub(super) async fn setup(
     signer_providers: &[(PrivateKeySigner, DynProvider<TempoNetwork>)],
-    user_tokens: usize,
+    quote_token: &ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>,
+    user_tokens: &[ITIP20Instance<DynProvider<TempoNetwork>, TempoNetwork>],
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
-) -> eyre::Result<(Option<Address>, Vec<Address>)> {
-    // Grab first signer provider
-    let (signer, provider) = signer_providers
+) -> eyre::Result<()> {
+    let provider = signer_providers
         .first()
-        .ok_or_eyre("No signer providers found")?;
-    let caller = signer.address();
-
-    info!(user_tokens, "Creating TIP-20 tokens");
-    let progress = ProgressBar::new(user_tokens as u64 + 1);
-    // Create quote token
-    let quote_token = setup_test_token(provider.clone(), caller, PATH_USD_ADDRESS).await?;
-    progress.inc(1);
-    // Create `user_tokens` tokens
-    let user_tokens = stream::iter((0..user_tokens).progress_with(progress))
-        .map(|_| setup_test_token(provider.clone(), caller, *quote_token.address()))
-        .buffered(max_concurrent_requests)
-        .try_collect::<Vec<_>>()
-        .await?;
+        .ok_or_eyre("No signer providers found")?
+        .1
+        .clone();
 
     let user_token_addresses = user_tokens
         .iter()
@@ -140,7 +153,7 @@ pub(super) async fn setup(
     .await
     .context("Failed to place flip orders")?;
 
-    Ok((Some(*quote_token.address()), user_token_addresses))
+    Ok(())
 }
 
 /// Creates a test TIP20 token with issuer role granted to the provided address.
