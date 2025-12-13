@@ -25,11 +25,7 @@ use reth_evm::{
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::PayloadBuilderAttributes;
 use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
-use reth_revm::{
-    State,
-    context::{Block, BlockEnv},
-    database::StateProviderDatabase,
-};
+use reth_revm::{State, context::Block, database::StateProviderDatabase};
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
@@ -144,38 +140,46 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
     /// Builds system transactions to seal the block.
     ///
     /// Returns a vector of system transactions that must be executed at the end of each block:
-    /// 1. Fee manager executeBlock - processes collected fees
+    /// 1. Fee manager executeBlock - processes collected fees (pre-AllegroModerato only)
     /// 2. Stablecoin exchange executeBlock - commits pending orders
     /// 3. Subblocks signatures - validates subblock signatures
     fn build_seal_block_txs(
         &self,
-        block_env: &BlockEnv,
+        evm: &TempoEvm<impl Database>,
         subblocks: &[RecoveredSubBlock],
     ) -> Vec<Recovered<TempoTxEnvelope>> {
         let chain_id = Some(self.provider.chain_spec().chain().id());
+        let block_env = evm.block();
+        let spec = &evm.ctx().cfg.spec;
 
-        // Build fee manager system transaction
-        let fee_manager_input = IFeeManager::executeBlockCall
-            .abi_encode()
-            .into_iter()
-            .chain(block_env.number.to_be_bytes_vec())
-            .collect();
+        // Build fee manager system transaction (pre-AllegroModerato only)
+        // Post-AllegroModerato: fees are collected and swapped immediately in collectFeePreTx.
+        // Validators call distributeFees() to claim their accumulated fees.
+        let fee_manager_tx = if !spec.is_allegro_moderato() {
+            let fee_manager_input = IFeeManager::executeBlockCall
+                .abi_encode()
+                .into_iter()
+                .chain(block_env.number.to_be_bytes_vec())
+                .collect();
 
-        let fee_manager_tx = Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                TxLegacy {
-                    chain_id,
-                    nonce: 0,
-                    gas_price: 0,
-                    gas_limit: 0,
-                    to: TIP_FEE_MANAGER_ADDRESS.into(),
-                    value: U256::ZERO,
-                    input: fee_manager_input,
-                },
-                TEMPO_SYSTEM_TX_SIGNATURE,
-            )),
-            TEMPO_SYSTEM_TX_SENDER,
-        );
+            Some(Recovered::new_unchecked(
+                TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                    TxLegacy {
+                        chain_id,
+                        nonce: 0,
+                        gas_price: 0,
+                        gas_limit: 0,
+                        to: TIP_FEE_MANAGER_ADDRESS.into(),
+                        value: U256::ZERO,
+                        input: fee_manager_input,
+                    },
+                    TEMPO_SYSTEM_TX_SIGNATURE,
+                )),
+                TEMPO_SYSTEM_TX_SENDER,
+            ))
+        } else {
+            None
+        };
 
         // Build stablecoin exchange system transaction
         let stablecoin_exchange_input = IStablecoinExchange::executeBlockCall {}
@@ -226,11 +230,13 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
             TEMPO_SYSTEM_TX_SENDER,
         );
 
-        vec![
-            fee_manager_tx,
-            stablecoin_exchange_tx,
-            subblocks_signatures_tx,
-        ]
+        let mut txs = Vec::with_capacity(3);
+        if let Some(tx) = fee_manager_tx {
+            txs.push(tx);
+        }
+        txs.push(stablecoin_exchange_tx);
+        txs.push(subblocks_signatures_tx);
+        txs
     }
 }
 
@@ -421,7 +427,7 @@ where
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
-        let system_txs = self.build_seal_block_txs(builder.evm().block(), &subblocks);
+        let system_txs = self.build_seal_block_txs(builder.evm(), &subblocks);
         for tx in &system_txs {
             block_size_used += tx.inner().length();
         }
