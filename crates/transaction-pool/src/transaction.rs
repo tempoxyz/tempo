@@ -9,6 +9,7 @@ use alloy_eips::{
 };
 use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes};
+use alloy_sol_types::SolCall;
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered};
 use reth_transaction_pool::{
@@ -20,7 +21,9 @@ use std::{
     fmt::Debug,
     sync::{Arc, OnceLock},
 };
+use tempo_contracts::precompiles::ITIP20;
 use tempo_precompiles::nonce::NonceManager;
+use tempo_precompiles::tip20::TIP20Token;
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use tempo_revm::TempoTxEnv;
 use thiserror::Error;
@@ -33,10 +36,22 @@ pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached payment classification for efficient block building
     is_payment: bool,
-    /// Cached slot of the 2D nonce, if any.
-    nonce_key_slot: OnceLock<Option<U256>>,
     /// Cached prepared [`TempoTxEnv`] for payload building.
     tx_env: OnceLock<TempoTxEnv>,
+    /// Cached storage slots this tx may access
+    cached_slots: CachedSlots,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CachedSlots {
+    /// Cached slot of the 2D nonce, if any.
+    pub nonce_key: OnceLock<Option<U256>>,
+    /// Cached slot for sender's fee token balance
+    pub fee_token_balance: OnceLock<Option<U256>>,
+    /// Cached slot for TIP-20 transfer sender's balance
+    pub tip20_from_balance: OnceLock<Option<U256>>,
+    /// Cached slot for TIP-20 transfer recipient's balance
+    pub tip20_to_balance: OnceLock<Option<U256>>,
 }
 
 impl TempoPooledTransaction {
@@ -55,8 +70,8 @@ impl TempoPooledTransaction {
                 transaction,
             },
             is_payment,
-            nonce_key_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
+            cached_slots: Default::default(),
         }
     }
 
@@ -82,10 +97,77 @@ impl TempoPooledTransaction {
 
     /// Returns the storage slot for the nonce key of this transaction.
     pub fn nonce_key_slot(&self) -> Option<U256> {
-        *self.nonce_key_slot.get_or_init(|| {
+        *self.cached_slots.nonce_key.get_or_init(|| {
             let nonce_key = self.nonce_key()?;
             let sender = self.sender();
             let slot = NonceManager::new().nonces.at(sender).at(nonce_key).slot();
+            Some(slot)
+        })
+    }
+
+    /// Returns the storage slot for sender's fee token balance if transaction contains fee token
+    pub fn fee_token_balance_slot(&self) -> Option<U256> {
+        *self.cached_slots.fee_token_balance.get_or_init(|| {
+            self.inner.transaction.fee_token().map(|token_address| {
+                let sender = self.sender();
+                TIP20Token::from_address(token_address)
+                    .unwrap()
+                    .balances
+                    .at(sender)
+                    .slot()
+            })
+        })
+    }
+
+    /// Returns the storage slot for the sender's token balance if this is a TIP-20 transfer transaction.
+    ///
+    /// Decodes the transaction payload to extract the sender address.
+    /// For `transfer()` calls, sender is the transaction signer.
+    /// For `transferFrom()` calls, sender is decoded from the calldata.
+    pub fn tip_20_from_balance_slot(&self) -> Option<U256> {
+        *self.cached_slots.tip20_from_balance.get_or_init(|| {
+            if !self.inner.transaction.is_payment() {
+                return None;
+            }
+
+            let token_address = self.to()?;
+
+            // Decode the transfer call to extract the sender address
+            let input = self.input();
+            let tx_sender = self.sender();
+            let (from_addr, _to_addr) = decode_transfer_addresses(input, tx_sender)?;
+
+            let slot = TIP20Token::from_address(token_address)
+                .ok()?
+                .balances
+                .at(from_addr)
+                .slot();
+            Some(slot)
+        })
+    }
+
+    /// Returns the storage slot for the transfer recipient's token balance if this is a TIP-20 transfer transaction.
+    ///
+    /// Decodes the transaction payload to extract the recipient address.
+    /// Supports all transfer methods: `transfer`, `transferWithMemo`, `transferFrom`, and `transferFromWithMemo`.
+    pub fn tip_20_to_balance_slot(&self) -> Option<U256> {
+        *self.cached_slots.tip20_to_balance.get_or_init(|| {
+            if !self.inner.transaction.is_payment() {
+                return None;
+            }
+
+            let token_address = self.to()?;
+
+            // Decode the transfer call to extract the recipient address
+            let input = self.input();
+            let tx_sender = self.sender();
+            let (_from_addr, to_addr) = decode_transfer_addresses(input, tx_sender)?;
+
+            let slot = TIP20Token::from_address(token_address)
+                .ok()?
+                .balances
+                .at(to_addr)
+                .slot();
             Some(slot)
         })
     }
@@ -391,6 +473,37 @@ impl EthPoolTransaction for TempoPooledTransaction {
             self.ty(),
         ))
     }
+}
+
+/// Decodes a TIP-20/ERC-20 transfer call and extracts sender and recipient addresses.
+///
+/// Returns `Some((from, to))` if the calldata is a valid transfer call, `None` otherwise.
+/// Supports: `transfer`, `transferWithMemo`, `transferFrom`, and `transferFromWithMemo`.
+///
+/// For `transfer()` calls, the sender is the transaction signer (`tx_sender` parameter).
+/// For `transferFrom()` calls, the sender is decoded from the calldata.
+fn decode_transfer_addresses(calldata: &Bytes, tx_sender: Address) -> Option<(Address, Address)> {
+    // Try transfer(address,uint256) - sender is tx_sender
+    if let Ok(call) = ITIP20::transferCall::abi_decode(calldata) {
+        return Some((tx_sender, call.to));
+    }
+
+    // Try transferWithMemo(address,uint256,bytes32) - sender is tx_sender
+    if let Ok(call) = ITIP20::transferWithMemoCall::abi_decode(calldata) {
+        return Some((tx_sender, call.to));
+    }
+
+    // Try transferFrom(address,address,uint256) - sender is in calldata
+    if let Ok(call) = ITIP20::transferFromCall::abi_decode(calldata) {
+        return Some((call.from, call.to));
+    }
+
+    // Try transferFromWithMemo(address,address,uint256,bytes32) - sender is in calldata
+    if let Ok(call) = ITIP20::transferFromWithMemoCall::abi_decode(calldata) {
+        return Some((call.from, call.to));
+    }
+
+    None
 }
 
 #[cfg(test)]
