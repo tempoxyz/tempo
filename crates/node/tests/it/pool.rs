@@ -215,7 +215,7 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
     // Advance blocks to trigger the eviction task (new block timestamp >= valid_before)
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    // Verify tx is still there before commiting the new block
+    // Verify tx is still there before committing the new block
     let pooled_txs_before = setup
         .node
         .inner
