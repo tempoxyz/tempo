@@ -71,8 +71,15 @@ def "main node" [
 }
 
 def run-dev-node [accounts: int, samply: bool, reset: bool, profile: string, features: string] {
-    if $reset {
-        print "Resetting localnet data..."
+    let genesis_path = $"($LOCALNET_DIR)/genesis.json"
+    let needs_generation = $reset or (not ($genesis_path | path exists))
+
+    if $needs_generation {
+        if $reset {
+            print "Resetting localnet data..."
+        } else {
+            print "Genesis not found, generating..."
+        }
         rm -rf $LOCALNET_DIR
         mkdir $LOCALNET_DIR
         print $"Generating genesis with ($accounts) accounts..."
@@ -86,10 +93,9 @@ def run-dev-node [accounts: int, samply: bool, reset: bool, profile: string, fea
     }
 
     let tempo_bin = $"./target/($profile)/tempo"
-    let genesis_path = $"($LOCALNET_DIR)/genesis.json"
     let datadir = $"($LOCALNET_DIR)/reth"
     let log_dir = $"($LOCALNET_DIR)/logs"
-    
+
     let base = (build-base-args $genesis_path $datadir $log_dir 8545 9001)
     let dev = (build-dev-args)
     let args = ($base | append $dev)
@@ -108,7 +114,7 @@ def run-consensus-nodes [nodes: int, accounts: int, samply: bool, reset: bool, p
     let needs_generation = $reset or (not ($LOCALNET_DIR | path exists)) or (
         (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' } | length) == 0
     )
-    
+
     if $needs_generation {
         if $reset {
             print "Resetting localnet data..."
@@ -116,18 +122,18 @@ def run-consensus-nodes [nodes: int, accounts: int, samply: bool, reset: bool, p
             print "Localnet not found, generating..."
         }
         rm -rf $LOCALNET_DIR
-        
+
         # Generate validator addresses (port 8000, 8100, 8200, ...)
         # Using 100-port gaps to avoid collisions with system services (e.g., Intuit on 8021)
         let validators = (0..<$nodes | each { |i| $"127.0.0.1:($i * 100 + 8000)" } | str join ",")
-        
+
         print $"Generating localnet with ($accounts) accounts and ($nodes) validators..."
         cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $LOCALNET_DIR --accounts $accounts --validators $validators --force | ignore
     }
 
     # Parse the generated node configs
     let genesis_path = $"($LOCALNET_DIR)/genesis.json"
-    
+
     # Build trusted peers from enode.identity files
     let validator_dirs = (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' })
     let trusted_peers = ($validator_dirs | each { |d|
@@ -136,9 +142,6 @@ def run-consensus-nodes [nodes: int, accounts: int, samply: bool, reset: bool, p
         let identity = (open $"($d)/enode.identity" | str trim)
         $"enode://($identity)@127.0.0.1:($port + 1)"
     } | str join ",")
-    
-    # Get list of validator directories
-    let validator_dirs = (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' })
 
     print $"Found ($validator_dirs | length) validator configs"
 
@@ -171,10 +174,10 @@ def run-consensus-nodes [nodes: int, accounts: int, samply: bool, reset: bool, p
         let show_errors = not $silent
         start-node-job $node.item $genesis_path $trusted_peers $tempo_bin $tail_logs $samply $show_errors
     }
-    
+
     print "All nodes started. Press Ctrl+C to stop."
     print $"Logs: ($LOGS_DIR)/"
-    
+
     # Wait for interrupt
     try {
         loop { sleep 1sec }
@@ -216,11 +219,11 @@ def start-node-job [node_dir: string, genesis_path: string, trusted_peers: strin
     let port = ($addr | split row ":" | get 1 | into int)
     let node_index = (($port - 8000) / 100 | into int)
     let http_port = 8545 + $node_index
-    
+
     let log_dir = $"($LOGS_DIR)/($addr)"
     mkdir $log_dir
     let args = (build-node-args $node_dir $genesis_path $trusted_peers $port $log_dir)
-    
+
     if $tail_logs {
         # Show all logs for this node
         print $"  Node ($addr) -> http://localhost:($http_port) \(logs to stdout\)"
@@ -293,7 +296,7 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
     let signing_key = $"($node_dir)/signing.key"
     let signing_share = $"($node_dir)/signing.share"
     let enode_key = $"($node_dir)/enode.key"
-    
+
     let execution_p2p_port = $port + 1
     let metrics_port = $port + 2
     let authrpc_port = $port + 3
@@ -320,7 +323,7 @@ def build-node-args [node_dir: string, genesis_path: string, trusted_peers: stri
 
     let base = (build-base-args $genesis_path $node_dir $log_dir $http_port $reth_metrics_port)
     let consensus = (build-consensus-args $node_dir $trusted_peers $port)
-    
+
     $base | append $consensus
 }
 
@@ -338,7 +341,7 @@ def main [] {
     print "  --mode <dev|consensus>   Mode (default: dev)"
     print "  --nodes <N>              Number of validators for consensus (default: 3)"
     print "  --accounts <N>           Genesis accounts (default: 1000)"
-    print "  --samply                 Enable samply profiling (foreground node)"
+    print "  --samply                 Enable samply profiling"
     print "  --logs <spec>            Tail logs: 'all' or comma-separated indices (e.g., '1,2')"
     print "  --silent                 Suppress WARN/ERROR log output"
     print "  --reset                  Wipe and regenerate localnet"
