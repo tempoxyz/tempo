@@ -1,0 +1,111 @@
+//! Sender recovery cache for avoiding redundant signature recovery.
+
+use alloy_primitives::{Address, B256};
+use dashmap::DashMap;
+use metrics::{Counter, Gauge};
+use reth_metrics::Metrics;
+use std::sync::Arc;
+
+/// A cache for storing recovered transaction senders.
+///
+/// This cache is shared between the transaction pool and the EVM executor.
+/// Senders are inserted when transactions are validated in the pool, and
+/// removed when transactions are executed and removed from the pool.
+#[derive(Clone, Default)]
+pub struct SenderRecoveryCache {
+    cache: Arc<DashMap<B256, Address>>,
+    metrics: SenderRecoveryCacheMetrics,
+}
+
+impl std::fmt::Debug for SenderRecoveryCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SenderRecoveryCache")
+            .field("len", &self.cache.len())
+            .finish()
+    }
+}
+
+impl SenderRecoveryCache {
+    /// Inserts a sender for the given transaction hash.
+    pub fn insert(&self, tx_hash: B256, sender: Address) {
+        self.cache.insert(tx_hash, sender);
+        self.metrics.size.set(self.cache.len() as f64);
+    }
+
+    /// Returns the sender for the given transaction hash, if present.
+    pub fn get(&self, tx_hash: &B256) -> Option<Address> {
+        let result = self.cache.get(tx_hash).map(|sender| *sender);
+        if result.is_some() {
+            self.metrics.hits.increment(1);
+        } else {
+            self.metrics.misses.increment(1);
+        }
+        result
+    }
+
+    /// Removes multiple entries from the cache.
+    pub fn remove_many<'a>(&self, tx_hashes: impl IntoIterator<Item = &'a B256>) {
+        for tx_hash in tx_hashes {
+            self.cache.remove(tx_hash);
+        }
+        self.metrics.size.set(self.cache.len() as f64);
+    }
+
+    /// Returns the number of cached entries.
+    pub fn len(&self) -> usize {
+        self.cache.len()
+    }
+
+    /// Returns true if the cache is empty.
+    pub fn is_empty(&self) -> bool {
+        self.cache.is_empty()
+    }
+}
+
+#[derive(Metrics, Clone)]
+#[metrics(scope = "transaction_pool.sender_recovery_cache")]
+struct SenderRecoveryCacheMetrics {
+    /// The current size of the cache.
+    size: Gauge,
+    /// Number of cache hits.
+    hits: Counter,
+    /// Number of cache misses.
+    misses: Counter,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_insert_and_get() {
+        let cache = SenderRecoveryCache::default();
+        let tx_hash = B256::repeat_byte(1);
+        let sender = Address::repeat_byte(2);
+
+        cache.insert(tx_hash, sender);
+        assert_eq!(cache.len(), 1);
+
+        let recovered = cache.get(&tx_hash);
+        assert_eq!(recovered, Some(sender));
+    }
+
+    #[test]
+    fn test_remove_many() {
+        let cache = SenderRecoveryCache::default();
+
+        let hashes: Vec<_> = (0..5)
+            .map(|i| {
+                let tx_hash = B256::repeat_byte(i);
+                let sender = Address::repeat_byte(i);
+                cache.insert(tx_hash, sender);
+                tx_hash
+            })
+            .collect();
+
+        assert_eq!(cache.len(), 5);
+
+        cache.remove_many(hashes[0..3].iter());
+        assert_eq!(cache.len(), 2);
+    }
+}

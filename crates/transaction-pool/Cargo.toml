@@ -37,6 +37,7 @@ alloy-evm.workspace = true
 futures.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
+dashmap.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 thiserror.workspace = true
 metrics.workspace = true
