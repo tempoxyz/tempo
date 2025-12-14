@@ -1,8 +1,5 @@
 use crate::monitor::prometheus_metrics;
-use alloy::{
-    primitives::Address,
-    providers::{Provider, ProviderBuilder},
-};
+use alloy::{primitives::Address, providers::ProviderBuilder};
 use clap::Parser;
 use eyre::{Context, Result, eyre};
 use metrics::{counter, describe_counter, describe_gauge, gauge};
