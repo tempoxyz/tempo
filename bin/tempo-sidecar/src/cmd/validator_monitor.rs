@@ -293,16 +293,34 @@ impl ValidatorMonitorArgs {
         let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())
             .context("failed to install SIGINT handler")?;
 
+        // Wait for either a signal or task failure
         tokio::select! {
-            _ = sigterm.recv() => tracing::info!("Received SIGTERM, shutting down gracefully"),
-            _ = sigint.recv() => tracing::info!("Received SIGINT, shutting down gracefully"),
+            _ = sigterm.recv() => {
+                info!("Received SIGTERM, shutting down gracefully");
+            }
+            _ = sigint.recv() => {
+                info!("Received SIGINT, shutting down gracefully");
+            }
+            result = &mut monitor_handle => {
+                match result {
+                    Ok(_) => error!("Monitor task exited unexpectedly"),
+                    Err(e) => error!("Monitor task failed: {}", e),
+                }
+            }
+            result = &mut server_handle => {
+                match result {
+                    Ok(Ok(_)) => error!("Server task exited unexpectedly"),
+                    Ok(Err(e)) => error!("Server task failed: {}", e),
+                    Err(e) => error!("Server task panicked: {}", e),
+                }
+            }
         }
 
-        // Abort tasks
+        // Abort remaining tasks
         monitor_handle.abort();
         server_handle.abort();
 
-        tracing::info!("Shutdown complete");
+        info!("Shutdown complete");
         Ok(())
     }
 }
