@@ -22,6 +22,7 @@ alloy = { workspace = true, default-features = false, features = [
     "signer-mnemonic",
     "rand",
 ] }
+alloy-eips.workspace = true
 tempo-alloy.workspace = true
 eyre.workspace = true
 futures.workspace = true

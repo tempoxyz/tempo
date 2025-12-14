@@ -11916,6 +11916,7 @@ name = "tempo-sidecar"
 version = "0.7.4"
 dependencies = [
  "alloy",
+ "alloy-eips",
  "clap",
  "eyre",
  "futures",
