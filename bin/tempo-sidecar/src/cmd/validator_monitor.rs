@@ -95,7 +95,8 @@ impl ValidatorMonitor {
         for validator in validators {
             let address = validator.validatorAddress;
 
-            // Update or insert validator info
+            // Only upsert - if validator is removed on-chain, it stays in our map
+            // This ensures stale validators continue to affect metrics
             self.validators
                 .entry(address)
                 .and_modify(|v| {
@@ -139,7 +140,8 @@ impl ValidatorMonitor {
 
         // Track blocks since last check (up to history_blocks limit)
         let start_block = self.last_block_number + 1;
-        let end_block = current_block.min(start_block + self.history_blocks);
+        // Ensure end_block is exclusive to avoid scanning history_blocks + 1
+        let end_block = current_block.min(start_block + self.history_blocks - 1);
 
         info!(
             start = start_block,
@@ -180,9 +182,9 @@ impl ValidatorMonitor {
             // Validator status
             gauge!("tempo_validator_active", &labels).set(if validator.active { 1.0 } else { 0.0 });
 
-            // Blocks produced
-            gauge!("tempo_validator_blocks_produced_total", &labels)
-                .set(validator.blocks_produced as f64);
+            // Blocks produced (using counter instead of gauge with _total suffix)
+            counter!("tempo_validator_blocks_produced_total", &labels)
+                .absolute(validator.blocks_produced);
         }
     }
 
