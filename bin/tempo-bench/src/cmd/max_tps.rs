@@ -131,15 +131,15 @@ pub struct MaxTpsArgs {
     benchmark_mode: Option<String>,
 
     /// A weight that determines the likelihood of generating a TIP-20 transfer transaction.
-    #[arg(long, default_value_t = 0.8)]
+    #[arg(long, default_value_t = 1.0)]
     tip20_weight: f64,
 
     /// A weight that determines the likelihood of generating a DEX place transaction.
-    #[arg(long, default_value_t = 0.01)]
+    #[arg(long, default_value_t = 0.0)]
     place_order_weight: f64,
 
     /// A weight that determines the likelihood of generating a DEX swapExactAmountIn transaction.
-    #[arg(long, default_value_t = 0.19)]
+    #[arg(long, default_value_t = 0.0)]
     swap_weight: f64,
 
     /// A weight that determines the likelihood of generating an ERC-20 transfer transaction.
