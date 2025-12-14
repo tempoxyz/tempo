@@ -1,6 +1,5 @@
 use crate::monitor::prometheus_metrics;
 use alloy::{
-    consensus::BlockHeader,
     primitives::Address,
     providers::{Provider, ProviderBuilder},
 };
@@ -37,14 +36,9 @@ pub struct ValidatorMonitorArgs {
     /// Prometheus metrics port
     #[arg(short, long, required = true)]
     port: u16,
-
-    /// Maximum number of blocks to scan per poll interval for block production tracking.
-    /// Set to 0 to disable block production tracking.
-    #[arg(long, default_value_t = 100)]
-    history_blocks: u64,
 }
 
-/// Validator information with tracking data
+/// Validator information
 #[derive(Debug, Clone)]
 struct ValidatorInfo {
     address: Address,
@@ -53,25 +47,20 @@ struct ValidatorInfo {
     index: u64,
     inbound_address: String,
     outbound_address: String,
-    blocks_produced: u64,
 }
 
 pub struct ValidatorMonitor {
     rpc_url: Url,
     poll_interval: u64,
-    history_blocks: u64,
     validators: HashMap<Address, ValidatorInfo>,
-    last_block_number: u64,
 }
 
 impl ValidatorMonitor {
-    pub fn new(rpc_url: Url, poll_interval: u64, history_blocks: u64) -> Self {
+    pub fn new(rpc_url: Url, poll_interval: u64) -> Self {
         Self {
             rpc_url,
             poll_interval,
-            history_blocks,
             validators: HashMap::new(),
-            last_block_number: 0,
         }
     }
 
@@ -114,91 +103,9 @@ impl ValidatorMonitor {
                     index: validator.index,
                     inbound_address: validator.inboundAddress,
                     outbound_address: validator.outboundAddress,
-                    blocks_produced: 0,
                 });
         }
 
-        Ok(())
-    }
-
-    /// Track block production by checking recent blocks
-    #[instrument(name = "validator_monitor::track_block_production", skip(self))]
-    async fn track_block_production(&mut self) -> Result<()> {
-        let provider = ProviderBuilder::new()
-            .connect(self.rpc_url.as_str())
-            .await?;
-
-        let current_block = provider
-            .get_block_number()
-            .await
-            .map_err(|e| eyre!("Failed to get block number: {}", e))?;
-
-        // On first run, just set the last block number
-        if self.last_block_number == 0 {
-            self.last_block_number = current_block.saturating_sub(1);
-            return Ok(());
-        }
-
-        // Skip block tracking if history_blocks is 0
-        if self.history_blocks == 0 {
-            info!("Block production tracking disabled (history_blocks = 0)");
-            self.last_block_number = current_block;
-            return Ok(());
-        }
-
-        // Track blocks since last check (up to history_blocks limit)
-        let start_block = self.last_block_number + 1;
-        // Calculate end_block: scan at most history_blocks
-        let end_block = current_block.min(start_block.saturating_add(self.history_blocks - 1));
-
-        // Handle case where start_block > current_block
-        if start_block > current_block {
-            // Distinguish between "no new blocks" and "chain height decreased"
-            if self.last_block_number == current_block {
-                // No new blocks yet, just wait
-                return Ok(());
-            } else {
-                // Chain height actually decreased - reorg or node reset
-                info!(
-                    last_block = self.last_block_number,
-                    current_block = current_block,
-                    "Chain height decreased (possible reorg/reset), resetting tracking position"
-                );
-                self.last_block_number = current_block;
-                return Ok(());
-            }
-        }
-
-        info!(
-            start = start_block,
-            end = end_block,
-            count = end_block - start_block + 1,
-            "Tracking block production"
-        );
-
-        for block_num in start_block..=end_block {
-            // Get block with transactions to see the beneficiary (validator)
-            match provider.get_block_by_number(block_num.into()).await {
-                Ok(Some(block)) => {
-                    // The block author/beneficiary is the validator who produced this block
-                    let author = block.header.beneficiary();
-                    if let Some(validator) = self.validators.get_mut(&author) {
-                        validator.blocks_produced += 1;
-                    }
-                }
-                Ok(None) => {
-                    error!(block = block_num, "Block not found");
-                    counter!("tempo_validator_monitor_errors", "type" => "block_not_found")
-                        .increment(1);
-                }
-                Err(e) => {
-                    error!(block = block_num, error = %e, "Failed to fetch block");
-                    counter!("tempo_validator_monitor_errors", "type" => "rpc_error").increment(1);
-                }
-            }
-        }
-
-        self.last_block_number = end_block;
         Ok(())
     }
 
@@ -219,10 +126,6 @@ impl ValidatorMonitor {
 
             // Validator status
             gauge!("tempo_validator_active", &labels).set(if validator.active { 1.0 } else { 0.0 });
-
-            // Blocks produced (using gauge since we track absolute count)
-            gauge!("tempo_validator_blocks_produced_total", &labels)
-                .set(validator.blocks_produced as f64);
         }
     }
 
@@ -236,11 +139,6 @@ impl ValidatorMonitor {
                 error!("Failed to update validators: {}", e);
                 counter!("tempo_validator_monitor_errors", "type" => "update_validators")
                     .increment(1);
-            }
-
-            if let Err(e) = self.track_block_production().await {
-                error!("Failed to track block production: {}", e);
-                counter!("tempo_validator_monitor_errors", "type" => "track_blocks").increment(1);
             }
 
             self.update_metrics().await;
@@ -261,8 +159,7 @@ impl ValidatorMonitorArgs {
             .install_recorder()
             .context("failed to install recorder")?;
 
-        let mut monitor =
-            ValidatorMonitor::new(self.rpc_url, self.poll_interval, self.history_blocks);
+        let mut monitor = ValidatorMonitor::new(self.rpc_url, self.poll_interval);
 
         // Describe metrics
         describe_gauge!(
@@ -276,10 +173,6 @@ impl ValidatorMonitorArgs {
         describe_gauge!(
             "tempo_validator_active",
             "Whether the validator is active (1) or inactive (0)"
-        );
-        describe_gauge!(
-            "tempo_validator_blocks_produced_total",
-            "Total number of blocks produced by this validator"
         );
         describe_counter!(
             "tempo_validator_monitor_errors",
