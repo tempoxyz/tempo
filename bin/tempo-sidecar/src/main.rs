@@ -15,5 +15,6 @@ async fn main() -> eyre::Result<()> {
         TempoSidecarSubcommand::SimpleArb(cmd) => cmd.run().await,
         TempoSidecarSubcommand::SyntheticLoad(cmd) => cmd.run().await,
         TempoSidecarSubcommand::TxLatencyMonitor(cmd) => cmd.run().await,
+        TempoSidecarSubcommand::ValidatorMonitor(cmd) => cmd.run().await,
     }
 }

@@ -1,6 +1,6 @@
 use crate::cmd::{
     monitor::MonitorArgs, simple_arb::SimpleArbArgs, synthetic_load::SyntheticLoadArgs,
-    tx_latency::TxLatencyArgs,
+    tx_latency::TxLatencyArgs, validator_monitor::ValidatorMonitorArgs,
 };
 use clap::{Parser, Subcommand};
 
@@ -18,4 +18,5 @@ pub enum TempoSidecarSubcommand {
     SimpleArb(SimpleArbArgs),
     SyntheticLoad(SyntheticLoadArgs),
     TxLatencyMonitor(TxLatencyArgs),
+    ValidatorMonitor(ValidatorMonitorArgs),
 }
