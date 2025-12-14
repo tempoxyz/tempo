@@ -4,7 +4,6 @@ use alloy::{
     primitives::Address,
     providers::{Provider, ProviderBuilder},
 };
-use alloy_eips::BlockNumberOrTag;
 use clap::Parser;
 use eyre::{Context, Result, eyre};
 use metrics::{counter, describe_counter, describe_gauge, gauge};
