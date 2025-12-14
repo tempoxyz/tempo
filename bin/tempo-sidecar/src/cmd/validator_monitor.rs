@@ -26,8 +26,8 @@ pub struct ValidatorMonitorArgs {
     #[arg(short, long, required = true)]
     rpc_url: Url,
 
-    /// Poll interval in seconds
-    #[arg(long, default_value_t = 10)]
+    /// Poll interval in seconds (minimum 1)
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..))]
     poll_interval: u64,
 
     /// Chain ID for metrics labeling
@@ -151,15 +151,22 @@ impl ValidatorMonitor {
         // Calculate end_block: scan at most history_blocks
         let end_block = current_block.min(start_block.saturating_add(self.history_blocks - 1));
 
-        // If start_block > current_block, handle reorg/node reset scenario
+        // Handle case where start_block > current_block
         if start_block > current_block {
-            info!(
-                last_block = self.last_block_number,
-                current_block = current_block,
-                "Chain height decreased (possible reorg/reset), resetting tracking position"
-            );
-            self.last_block_number = current_block;
-            return Ok(());
+            // Distinguish between "no new blocks" and "chain height decreased"
+            if self.last_block_number == current_block {
+                // No new blocks yet, just wait
+                return Ok(());
+            } else {
+                // Chain height actually decreased - reorg or node reset
+                info!(
+                    last_block = self.last_block_number,
+                    current_block = current_block,
+                    "Chain height decreased (possible reorg/reset), resetting tracking position"
+                );
+                self.last_block_number = current_block;
+                return Ok(());
+            }
         }
 
         info!(
