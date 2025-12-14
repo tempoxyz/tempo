@@ -1,6 +1,7 @@
 use crate::monitor::prometheus_metrics;
 use alloy::{
-    primitives::Address,
+    consensus::BlockHeader,
+    primitives::{Address, BlockNumberOrTag},
     providers::{Provider, ProviderBuilder},
 };
 use clap::Parser;
@@ -87,12 +88,11 @@ impl ValidatorMonitor {
             .getValidators()
             .call()
             .await
-            .map_err(|e| eyre!("Failed to fetch validators: {}", e))?
-            ._0;
+            .map_err(|e| eyre!("Failed to fetch validators: {}", e))?;
 
-        info!(count = validators.len(), "Fetched validators");
+        info!(count = validators._0.len(), "Fetched validators");
 
-        for validator in validators {
+        for validator in validators._0 {
             let address = validator.validatorAddress;
 
             // Update or insert validator info
@@ -149,12 +149,14 @@ impl ValidatorMonitor {
 
         for block_num in start_block..=end_block {
             // Get block with transactions to see the beneficiary (validator)
-            if let Ok(Some(block)) = provider.get_block_by_number(block_num.into(), false).await {
+            if let Ok(Some(block)) = provider
+                .get_block_by_number(BlockNumberOrTag::Number(block_num))
+                .await
+            {
                 // The block author/beneficiary is the validator who produced this block
-                if let Some(author) = block.header.miner {
-                    if let Some(validator) = self.validators.get_mut(&author) {
-                        validator.blocks_produced += 1;
-                    }
+                let author = block.header.beneficiary();
+                if let Some(validator) = self.validators.get_mut(&author) {
+                    validator.blocks_produced += 1;
                 }
             }
         }
