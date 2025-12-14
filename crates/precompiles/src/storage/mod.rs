@@ -80,6 +80,9 @@ pub trait PrecompileStorageProvider {
 
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
+
+    /// Returns whether the account at the given address has non-empty bytecode.
+    fn has_code(&mut self, address: Address) -> Result<bool>;
 }
 
 /// Storage operations for a given (contract) address.

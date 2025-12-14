@@ -170,6 +170,11 @@ impl StorageCtx {
     pub fn is_static(&self) -> bool {
         Self::with_storage(|s| s.is_static())
     }
+
+    /// Returns whether the account at the given address has non-empty bytecode.
+    pub fn has_code(&mut self, address: Address) -> Result<bool> {
+        Self::try_with_storage(|s| s.has_code(address))
+    }
 }
 
 impl<'evm> StorageCtx {

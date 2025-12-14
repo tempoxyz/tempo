@@ -120,7 +120,15 @@ macro_rules! tempo_precompile {
                 gas_params.clone(),
             );
             crate::storage::StorageCtx::enter(&mut storage, || {
-                $impl.call($input.data, $input.caller)
+                let mut precompile = $impl;
+                // Lazy initialization: ensure precompile has bytecode before processing calls.
+                // This eliminates the need for manual initialization during genesis generation.
+                if let Err(e) = precompile.__ensure_initialized() {
+                    return Err(PrecompileError::Other(
+                        format!("failed to initialize precompile: {e:?}").into(),
+                    ));
+                }
+                precompile.call($input.data, $input.caller)
             })
         })
     }};
