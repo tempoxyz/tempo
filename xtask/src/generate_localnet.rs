@@ -148,10 +148,7 @@ impl GenerateLocalnet {
                 })?;
             let enode_key_dst = validator.dst_dir(&output).join("enode.key");
             std::fs::write(&enode_key_dst, config.execution_p2p_disc_key).wrap_err_with(|| {
-                format!(
-                    "failed writing enode key to `{}`",
-                    enode_key_dst.display()
-                )
+                format!("failed writing enode key to `{}`", enode_key_dst.display())
             })?;
             let enode_identity_dst = validator.dst_dir(&output).join("enode.identity");
             std::fs::write(&enode_identity_dst, &config.execution_p2p_identity).wrap_err_with(
