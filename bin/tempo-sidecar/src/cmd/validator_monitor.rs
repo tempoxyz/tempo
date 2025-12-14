@@ -281,12 +281,12 @@ impl ValidatorMonitorArgs {
 
         let addr = format!("0.0.0.0:{}", self.port);
 
-        let monitor_handle = tokio::spawn(async move {
+        let mut monitor_handle = tokio::spawn(async move {
             monitor.worker().await;
         });
 
         let server = Server::new(TcpListener::bind(addr));
-        let server_handle = tokio::spawn(async move { server.run(app).await });
+        let mut server_handle = tokio::spawn(async move { server.run(app).await });
 
         let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
             .context("failed to install SIGTERM handler")?;
