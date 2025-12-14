@@ -151,9 +151,14 @@ impl ValidatorMonitor {
         // Calculate end_block: scan at most history_blocks
         let end_block = current_block.min(start_block.saturating_add(self.history_blocks - 1));
 
-        // If start_block > current_block, no blocks to scan
+        // If start_block > current_block, handle reorg/node reset scenario
         if start_block > current_block {
-            info!("No new blocks to scan");
+            info!(
+                last_block = self.last_block_number,
+                current_block = current_block,
+                "Chain height decreased (possible reorg/reset), resetting tracking position"
+            );
+            self.last_block_number = current_block;
             return Ok(());
         }
 
