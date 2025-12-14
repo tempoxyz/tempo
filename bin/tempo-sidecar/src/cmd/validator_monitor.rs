@@ -38,7 +38,8 @@ pub struct ValidatorMonitorArgs {
     #[arg(short, long, required = true)]
     port: u16,
 
-    /// Number of recent blocks to track for block production stats
+    /// Maximum number of blocks to scan per poll interval for block production tracking.
+    /// Set to 0 to disable block production tracking.
     #[arg(long, default_value_t = 100)]
     history_blocks: u64,
 }
@@ -138,26 +139,49 @@ impl ValidatorMonitor {
             return Ok(());
         }
 
+        // Skip block tracking if history_blocks is 0
+        if self.history_blocks == 0 {
+            info!("Block production tracking disabled (history_blocks = 0)");
+            self.last_block_number = current_block;
+            return Ok(());
+        }
+
         // Track blocks since last check (up to history_blocks limit)
         let start_block = self.last_block_number + 1;
-        // Ensure end_block is exclusive to avoid scanning history_blocks + 1
-        // Guard against underflow when history_blocks is 0
-        let end_block =
-            current_block.min(start_block.saturating_add(self.history_blocks.saturating_sub(1)));
+        // Calculate end_block: scan at most history_blocks
+        let end_block = current_block.min(start_block.saturating_add(self.history_blocks - 1));
+
+        // If start_block > current_block, no blocks to scan
+        if start_block > current_block {
+            info!("No new blocks to scan");
+            return Ok(());
+        }
 
         info!(
             start = start_block,
             end = end_block,
+            count = end_block - start_block + 1,
             "Tracking block production"
         );
 
         for block_num in start_block..=end_block {
             // Get block with transactions to see the beneficiary (validator)
-            if let Ok(Some(block)) = provider.get_block_by_number(block_num.into()).await {
-                // The block author/beneficiary is the validator who produced this block
-                let author = block.header.beneficiary();
-                if let Some(validator) = self.validators.get_mut(&author) {
-                    validator.blocks_produced += 1;
+            match provider.get_block_by_number(block_num.into()).await {
+                Ok(Some(block)) => {
+                    // The block author/beneficiary is the validator who produced this block
+                    let author = block.header.beneficiary();
+                    if let Some(validator) = self.validators.get_mut(&author) {
+                        validator.blocks_produced += 1;
+                    }
+                }
+                Ok(None) => {
+                    error!(block = block_num, "Block not found");
+                    counter!("tempo_validator_monitor_errors", "type" => "block_not_found")
+                        .increment(1);
+                }
+                Err(e) => {
+                    error!(block = block_num, error = %e, "Failed to fetch block");
+                    counter!("tempo_validator_monitor_errors", "type" => "rpc_error").increment(1);
                 }
             }
         }
@@ -184,9 +208,9 @@ impl ValidatorMonitor {
             // Validator status
             gauge!("tempo_validator_active", &labels).set(if validator.active { 1.0 } else { 0.0 });
 
-            // Blocks produced (using counter instead of gauge with _total suffix)
-            counter!("tempo_validator_blocks_produced_total", &labels)
-                .absolute(validator.blocks_produced);
+            // Blocks produced (using gauge since we track absolute count)
+            gauge!("tempo_validator_blocks_produced_total", &labels)
+                .set(validator.blocks_produced as f64);
         }
     }
 
@@ -241,7 +265,7 @@ impl ValidatorMonitorArgs {
             "tempo_validator_active",
             "Whether the validator is active (1) or inactive (0)"
         );
-        describe_counter!(
+        describe_gauge!(
             "tempo_validator_blocks_produced_total",
             "Total number of blocks produced by this validator"
         );
