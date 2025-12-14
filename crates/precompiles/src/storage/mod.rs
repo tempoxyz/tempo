@@ -77,6 +77,9 @@ pub trait PrecompileStorageProvider {
 
     /// Returns the currently active hardfork.
     fn spec(&self) -> TempoHardfork;
+
+    /// Returns whether the account at the given address has non-empty bytecode.
+    fn has_code(&mut self, address: Address) -> Result<bool>;
 }
 
 /// Storage operations for a given (contract) address.

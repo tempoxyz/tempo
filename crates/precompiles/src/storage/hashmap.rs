@@ -136,6 +136,11 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     fn spec(&self) -> TempoHardfork {
         self.spec
     }
+
+    fn has_code(&mut self, address: Address) -> Result<bool, TempoPrecompileError> {
+        let account = self.accounts.get(&address);
+        Ok(account.is_some_and(|a| !a.is_empty_code_hash()))
+    }
 }
 
 #[cfg(any(test, feature = "test-utils"))]

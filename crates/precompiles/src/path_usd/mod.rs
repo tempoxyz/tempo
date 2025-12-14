@@ -40,6 +40,13 @@ impl PathUSD {
         }
     }
 
+    /// Lazily initializes the precompile if it hasn't been initialized yet.
+    ///
+    /// Delegates to the underlying TIP20Token's initialization.
+    pub fn __ensure_initialized(&mut self) -> Result<()> {
+        self.token.__ensure_initialized()
+    }
+
     pub fn initialize(&mut self, admin: Address) -> Result<()> {
         let (name, symbol) = if self.storage.spec().is_allegretto() {
             (NAME_POST_ALLEGRETTO, NAME_POST_ALLEGRETTO)
