@@ -141,7 +141,9 @@ impl ValidatorMonitor {
         // Track blocks since last check (up to history_blocks limit)
         let start_block = self.last_block_number + 1;
         // Ensure end_block is exclusive to avoid scanning history_blocks + 1
-        let end_block = current_block.min(start_block + self.history_blocks - 1);
+        // Guard against underflow when history_blocks is 0
+        let end_block =
+            current_block.min(start_block.saturating_add(self.history_blocks.saturating_sub(1)));
 
         info!(
             start = start_block,
@@ -239,7 +241,7 @@ impl ValidatorMonitorArgs {
             "tempo_validator_active",
             "Whether the validator is active (1) or inactive (0)"
         );
-        describe_gauge!(
+        describe_counter!(
             "tempo_validator_blocks_produced_total",
             "Total number of blocks produced by this validator"
         );
