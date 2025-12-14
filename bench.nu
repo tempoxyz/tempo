@@ -297,8 +297,6 @@ def build-dev-args [] {
     [
         "--dev"
         "--dev.block-time" "1sec"
-        "--engine.disable-precompile-cache"
-        "--engine.legacy-state-root"
         "--builder.gaslimit" "3000000000"
         "--builder.max-tasks" "8"
         "--builder.deadline" "3"
