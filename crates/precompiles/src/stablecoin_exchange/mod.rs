@@ -97,6 +97,12 @@ impl StablecoinExchange {
         Ok(next_id)
     }
 
+    /// Get the next order Id
+    fn next_order_id(&mut self) -> Result<u128> {
+        let next_id = self.active_order_id.read()? + 1;
+        Ok(next_id)
+    }
+
     /// Get user's balance for a specific token
     pub fn balance_of(&self, user: Address, token: Address) -> Result<u128> {
         self.balances.at(user).at(token).read()
@@ -418,11 +424,6 @@ impl StablecoinExchange {
         self.pending_order_id.read()
     }
 
-    /// Get nextOrderId (Post Allegro-Moderato)
-    pub fn next_order_id(&self) -> Result<u128> {
-        Ok(self.active_order_id.read()? + 1)
-    }
-
     /// Get orderbook by pair key
     pub fn books(&self, pair_key: B256) -> Result<Orderbook> {
         self.books.at(pair_key).read()
@@ -540,7 +541,7 @@ impl StablecoinExchange {
         self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
 
         // Create the order
-        let order_id = self.increment_pending_order_id()?;
+        let order_id = self.next_order_id()?;
         let order = if is_bid {
             Order::new_bid(order_id, sender, book_key, amount, tick)
         } else {
