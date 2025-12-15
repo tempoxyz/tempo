@@ -69,7 +69,7 @@ jobs:
 
   snapshot-re-execute:
     name: Snapshot re-execution
-    runs-on: depot-ubuntu-latest-16
+    runs-on: depot-ubuntu-latest-32
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
