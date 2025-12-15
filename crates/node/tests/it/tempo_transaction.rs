@@ -32,6 +32,7 @@ use tempo_primitives::{
 };
 
 use crate::utils::{SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
+use tempo_primitives::transaction::tt_signature::normalize_p256_s;
 
 /// Helper function to fund an address with fee tokens
 async fn fund_address_with_fee_tokens(
@@ -362,7 +363,7 @@ fn create_p256_authorization(
 
     let aa_sig = TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
         r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
-        s: alloy::primitives::B256::from_slice(&sig_bytes[32..64]),
+        s: normalize_p256_s(&sig_bytes[32..64]),
         pub_key_x,
         pub_key_y,
         pre_hash: true,
@@ -440,7 +441,7 @@ fn create_webauthn_authorization(
     let aa_sig = TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
         webauthn_data: Bytes::from(webauthn_data),
         r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
-        s: alloy::primitives::B256::from_slice(&sig_bytes[32..64]),
+        s: normalize_p256_s(&sig_bytes[32..64]),
         pub_key_x,
         pub_key_y,
     }));
@@ -634,7 +635,7 @@ fn sign_aa_tx_with_p256_access_key(
 
     let inner_signature = PrimitiveSignature::P256(P256SignatureWithPreHash {
         r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
-        s: alloy::primitives::B256::from_slice(&sig_bytes[32..64]),
+        s: normalize_p256_s(&sig_bytes[32..64]),
         pub_key_x: *access_pub_key_x,
         pub_key_y: *access_pub_key_y,
         pre_hash: true,
@@ -756,7 +757,7 @@ fn sign_aa_tx_p256(
     Ok(TempoSignature::Primitive(PrimitiveSignature::P256(
         P256SignatureWithPreHash {
             r: B256::from_slice(&sig_bytes[0..32]),
-            s: B256::from_slice(&sig_bytes[32..64]),
+            s: normalize_p256_s(&sig_bytes[32..64]),
             pub_key_x,
             pub_key_y,
             pre_hash: true,
@@ -816,7 +817,7 @@ fn sign_aa_tx_webauthn(
         WebAuthnSignature {
             webauthn_data: Bytes::from(webauthn_data),
             r: B256::from_slice(&sig_bytes[0..32]),
-            s: B256::from_slice(&sig_bytes[32..64]),
+            s: normalize_p256_s(&sig_bytes[32..64]),
             pub_key_x,
             pub_key_y,
         },
@@ -3321,7 +3322,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     // Create P256 primitive signature for the inner signature
     let inner_signature = PrimitiveSignature::P256(P256SignatureWithPreHash {
         r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
-        s: alloy::primitives::B256::from_slice(&sig_bytes[32..64]),
+        s: normalize_p256_s(&sig_bytes[32..64]),
         pub_key_x: access_pub_key_x,
         pub_key_y: access_pub_key_y,
         pre_hash: true,
@@ -5124,7 +5125,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
     }
     .into_signed(PrimitiveSignature::P256(P256SignatureWithPreHash {
         r: B256::from_slice(&wrong_sig_bytes[0..32]),
-        s: B256::from_slice(&wrong_sig_bytes[32..64]),
+        s: normalize_p256_s(&wrong_sig_bytes[32..64]),
         pub_key_x: unauthorized_pub_key_x, // pub key of wrong signer
         pub_key_y: unauthorized_pub_key_y,
         pre_hash: true,
