@@ -14,6 +14,7 @@ pub struct HashMapStorageProvider {
     timestamp: U256,
     beneficiary: Address,
     spec: TempoHardfork,
+    is_static: bool,
 }
 
 impl HashMapStorageProvider {
@@ -37,6 +38,7 @@ impl HashMapStorageProvider {
             ),
             beneficiary: Address::ZERO,
             spec,
+            is_static: false,
         }
     }
 
@@ -135,6 +137,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn spec(&self) -> TempoHardfork {
         self.spec
+    }
+
+    fn is_static(&self) -> bool {
+        self.is_static
     }
 }
 
