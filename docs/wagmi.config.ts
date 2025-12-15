@@ -7,7 +7,6 @@ import {
   createConfig,
   createStorage,
   http,
-  noopStorage,
   webSocket,
 } from 'wagmi'
 
@@ -32,8 +31,8 @@ export function getConfig(options: getConfig.Options = {}) {
     ],
     multiInjectedProviderDiscovery,
     storage: createStorage({
-      storage:
-        typeof window !== 'undefined' ? window.localStorage : noopStorage,
+      storage: typeof window !== 'undefined' ? localStorage : undefined,
+      key: 'tempo-docs',
     }),
     transports: {
       [tempoTestnet.id]: withFeePayer(
