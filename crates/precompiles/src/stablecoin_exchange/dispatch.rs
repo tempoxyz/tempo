@@ -80,6 +80,14 @@ impl Precompile for StablecoinExchange {
                 })
             }
             IStablecoinExchange::pendingOrderIdCall::SELECTOR => {
+                if self.storage.spec().is_allegro_moderato() {
+                    return unknown_selector(
+                        selector,
+                        self.storage.gas_used(),
+                        self.storage.spec(),
+                    );
+                }
+
                 view::<IStablecoinExchange::pendingOrderIdCall>(calldata, |_call| {
                     self.pending_order_id()
                 })
@@ -444,6 +452,28 @@ mod tests {
                 returned_value, 102_000,
                 "Post-moderato MAX_PRICE should be 102_000"
             );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_pending_order_id_post_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let sender = Address::ZERO;
+            let call = IStablecoinExchange::pendingOrderIdCall {};
+            let calldata = call.abi_encode();
+
+            let result = exchange.call(&calldata, sender);
+            assert!(matches!(
+                result,
+                Err(revm::precompile::PrecompileError::Other(ref msg)) if msg.contains("Unknown function selector")
+            ));
+
             Ok(())
         })
     }

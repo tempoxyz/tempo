@@ -612,6 +612,8 @@ impl StablecoinExchange {
         level.total_liquidity = new_liquidity;
 
         level_handler.write(level)?;
+        self.set_active_order_id(order.order_id())?;
+
         self.orders.at(order.order_id()).write(order)
     }
 
@@ -4470,6 +4472,9 @@ mod tests {
             assert_eq!(level.tail, 0);
             assert_eq!(level.total_liquidity, 0);
 
+            assert_eq!(exchange.pending_order_id()?, 1);
+            assert_eq!(exchange.active_order_id()?, 0);
+
             Ok(())
         })
     }
@@ -4524,6 +4529,9 @@ mod tests {
             let book = exchange.books.at(book_key).read()?;
             assert_eq!(book.best_bid_tick, tick);
 
+            assert_eq!(exchange.pending_order_id()?, 1);
+            assert_eq!(exchange.active_order_id()?, 1);
+
             Ok(())
         })
     }
@@ -4569,6 +4577,9 @@ mod tests {
             assert_eq!(level.head, 0);
             assert_eq!(level.tail, 0);
             assert_eq!(level.total_liquidity, 0);
+
+            assert_eq!(exchange.pending_order_id()?, 1);
+            assert_eq!(exchange.active_order_id()?, 0);
 
             Ok(())
         })
@@ -4626,6 +4637,9 @@ mod tests {
 
             let book = exchange.books.at(book_key).read()?;
             assert_eq!(book.best_bid_tick, tick);
+
+            assert_eq!(exchange.pending_order_id()?, 1);
+            assert_eq!(exchange.active_order_id()?, 1);
 
             Ok(())
         })
