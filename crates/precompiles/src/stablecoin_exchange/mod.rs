@@ -768,7 +768,44 @@ impl StablecoinExchange {
             return Ok(());
         }
 
-        self.commit_order_to_book(order)
+        let mut book_handler = self.books.at(order.book_key);
+        let mut level_handler = book_handler.get_tick_level_handler(order.tick(), order.is_bid());
+        let orderbook = book_handler.read()?;
+        let mut level = level_handler.read()?;
+
+        let prev_tail = level.tail;
+        if prev_tail == 0 {
+            level.head = order_id;
+            level.tail = order_id;
+
+            book_handler.set_tick_bit(order.tick(), order.is_bid())?;
+
+            if order.is_bid() {
+                if order.tick() > orderbook.best_bid_tick {
+                    self.books
+                        .at(order.book_key())
+                        .best_bid_tick
+                        .write(order.tick())?;
+                }
+            } else if order.tick() < orderbook.best_ask_tick {
+                self.books
+                    .at(order.book_key())
+                    .best_ask_tick
+                    .write(order.tick())?;
+            }
+        } else {
+            self.orders.at(prev_tail).next.write(order_id)?;
+            self.orders.at(order_id).prev.write(prev_tail)?;
+            level.tail = order_id;
+        }
+
+        let new_liquidity = level
+            .total_liquidity
+            .checked_add(order.remaining())
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        level.total_liquidity = new_liquidity;
+
+        level_handler.write(level)
     }
 
     /// Partially fill an order with the specified amount.
