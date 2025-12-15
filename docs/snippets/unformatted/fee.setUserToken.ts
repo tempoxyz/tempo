@@ -1,4 +1,5 @@
 // [!region viem]
+// @errors: 2307
 import { client } from './viem.config'
 
 const { receipt } = await client.fee.setUserTokenSync({
@@ -10,6 +11,7 @@ console.log('Transaction hash:', receipt.transactionHash)
 // [!endregion viem]
 
 // [!region wagmi-hooks]
+// @errors: 2307
 import { Hooks } from 'tempo.ts/wagmi'
 
 const { data: result, mutate } = Hooks.fee.useSetUserTokenSync()

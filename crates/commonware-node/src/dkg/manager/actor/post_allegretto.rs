@@ -123,24 +123,36 @@ where
                 initial_validators = ?peers_as_per_contract,
                 "using public polynomial and validators read from contract",);
 
-            self.post_allegretto_metadatas
-                .epoch_metadata
-                .put_sync(
-                    CURRENT_EPOCH_KEY,
-                    EpochState {
-                        dkg_outcome: DkgOutcome {
-                            dkg_successful: true,
-                            epoch: 0,
-                            participants: initial_dkg_outcome.participants,
-                            public: initial_dkg_outcome.public,
-                            share: self.config.initial_share.clone(),
-                        },
-                        validator_state: initial_validator_state.clone(),
+            self.post_allegretto_metadatas.epoch_metadata.put(
+                CURRENT_EPOCH_KEY,
+                EpochState {
+                    dkg_outcome: DkgOutcome {
+                        dkg_successful: true,
+                        epoch: 0,
+                        participants: initial_dkg_outcome.participants,
+                        public: initial_dkg_outcome.public,
+                        share: self.config.initial_share.clone(),
                     },
-                )
-                .await
-                .expect("persisting epoch state must always work");
+                    validator_state: initial_validator_state,
+                },
+            );
         }
+
+        if self.config.delete_signing_share
+            && let Some(epoch_state) = self
+                .post_allegretto_metadatas
+                .epoch_metadata
+                .get_mut(&CURRENT_EPOCH_KEY)
+        {
+            warn!("delete-signing-share set; deleting signing share");
+            epoch_state.dkg_outcome.share.take();
+        }
+
+        self.post_allegretto_metadatas
+            .epoch_metadata
+            .sync()
+            .await
+            .expect("persisting epoch state must always work");
         Ok(())
     }
 
