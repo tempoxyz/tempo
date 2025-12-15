@@ -194,6 +194,15 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     fn spec(&self) -> TempoHardfork {
         self.spec
     }
+
+    #[inline]
+    fn has_code(&mut self, address: Address) -> Result<bool, TempoPrecompileError> {
+        let mut has_code = false;
+        self.with_account_info(address, &mut |info| {
+            has_code = !info.is_empty_code_hash();
+        })?;
+        Ok(has_code)
+    }
 }
 
 impl From<EvmInternalsError> for TempoPrecompileError {
