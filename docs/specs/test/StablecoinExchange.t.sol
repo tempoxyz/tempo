@@ -814,7 +814,7 @@ contract StablecoinExchangeTest is BaseTest {
         assertEq(exchange.nextOrderId(), numOrders);
 
         // Verify first tick has liquidity (tick 0)
-        (uint128 head, , uint128 liquidity) = exchange.getTickLevel(address(token1), 0, true);
+        (uint128 head,, uint128 liquidity) = exchange.getTickLevel(address(token1), 0, true);
         assertEq(head, 1); // First order
         assertEq(liquidity, minAmount);
     }
@@ -1068,9 +1068,7 @@ contract StablecoinExchangeTest is BaseTest {
     {
         if (!isTempo) {
             vm.expectEmit(true, true, true, true);
-            emit OrderPlaced(
-                exchange.nextOrderId() + 1, user, address(token1), amount, true, tick
-            );
+            emit OrderPlaced(exchange.nextOrderId() + 1, user, address(token1), amount, true, tick);
         }
 
         vm.prank(user);
@@ -1083,9 +1081,7 @@ contract StablecoinExchangeTest is BaseTest {
     {
         if (!isTempo) {
             vm.expectEmit(true, true, true, true);
-            emit OrderPlaced(
-                exchange.nextOrderId() + 1, user, address(token1), amount, false, tick
-            );
+            emit OrderPlaced(exchange.nextOrderId() + 1, user, address(token1), amount, false, tick);
         }
 
         vm.prank(user);
