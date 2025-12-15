@@ -14,7 +14,7 @@
         "cva": "1.0.0-beta.4",
         "monaco-editor": "^0.55.1",
         "nuqs": "^2.8.2",
-        "ox": "~0.9.14",
+        "ox": "^0.10.2",
         "prool": "^0.2.1",
         "react": "latest",
         "react-dom": "latest",
@@ -1588,7 +1588,7 @@
 
     "ora": ["ora@7.0.1", "", { "dependencies": { "chalk": "^5.3.0", "cli-cursor": "^4.0.0", "cli-spinners": "^2.9.0", "is-interactive": "^2.0.0", "is-unicode-supported": "^1.3.0", "log-symbols": "^5.1.0", "stdin-discarder": "^0.1.0", "string-width": "^6.1.0", "strip-ansi": "^7.1.0" } }, "sha512-0TUxTiFJWv+JnjWm4o9yvuskpEJLXTcng8MJuKd+SzAzp2o+OP3HWqNhB4OdJRt1Vsd9/mR0oyaEYlOnL7XIRw=="],
 
-    "ox": ["ox@0.9.14", "", { "dependencies": { "@adraffy/ens-normalize": "^1.11.0", "@noble/ciphers": "^1.3.0", "@noble/curves": "1.9.1", "@noble/hashes": "^1.8.0", "@scure/bip32": "^1.7.0", "@scure/bip39": "^1.6.0", "abitype": "^1.0.9", "eventemitter3": "5.0.1" }, "peerDependencies": { "typescript": ">=5.4.0" }, "optionalPeers": ["typescript"] }, "sha512-lxZYCzGH00WtIPPrqXCrbSW/ZiKjigfII6R0Vu1eH2GpobmcwVheiivbCvsBZzmVZcNpwkabSamPP+ZNtdnKIQ=="],
+    "ox": ["ox@0.10.2", "", { "dependencies": { "@adraffy/ens-normalize": "^1.11.0", "@noble/ciphers": "^1.3.0", "@noble/curves": "1.9.1", "@noble/hashes": "^1.8.0", "@scure/bip32": "^1.7.0", "@scure/bip39": "^1.6.0", "abitype": "^1.0.9", "eventemitter3": "5.0.1" }, "peerDependencies": { "typescript": ">=5.4.0" }, "optionalPeers": ["typescript"] }, "sha512-fsUKAW7Jr64vEwppzKeOHR7mElxTIPgmcf1vgw0mhpWsCbYnPe7G8bM3c5R55lwhV2k67gFANeoSXrk8cAEPuQ=="],
 
     "p-limit": ["p-limit@5.0.0", "", { "dependencies": { "yocto-queue": "^1.0.0" } }, "sha512-/Eaoq+QyLSiXQ4lyYV23f14mZRQcXnxfHrN0vCai+ak9G0pp9iEQukIIZq5NccEvwRB8PUnZT0KsOoDCINS1qQ=="],
 
@@ -2203,8 +2203,6 @@
     "strip-ansi-cjs/ansi-regex": ["ansi-regex@5.0.1", "", {}, "sha512-quJQXlTSUGL2LH9SUXo8VwsY4soanhgo6LNSm84E1LBcE8s3O0wpdiRzyR9z/ZZJMlMWv37qOOb9pdJlMUEKFQ=="],
 
     "strip-literal/js-tokens": ["js-tokens@9.0.1", "", {}, "sha512-mxa9E9ITFOt0ban3j6L5MpjwegGz6lBQmM1IJkWeBZGcMxto50+eWdjC/52xDbS2vy0k7vIMK0Fe2wfL9OQSpQ=="],
-
-    "tempo.ts/ox": ["ox@0.10.2", "", { "dependencies": { "@adraffy/ens-normalize": "^1.11.0", "@noble/ciphers": "^1.3.0", "@noble/curves": "1.9.1", "@noble/hashes": "^1.8.0", "@scure/bip32": "^1.7.0", "@scure/bip39": "^1.6.0", "abitype": "^1.0.9", "eventemitter3": "5.0.1" }, "peerDependencies": { "typescript": ">=5.4.0" }, "optionalPeers": ["typescript"] }, "sha512-fsUKAW7Jr64vEwppzKeOHR7mElxTIPgmcf1vgw0mhpWsCbYnPe7G8bM3c5R55lwhV2k67gFANeoSXrk8cAEPuQ=="],
 
     "update-browserslist-db/picocolors": ["picocolors@1.1.1", "", {}, "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA=="],
 

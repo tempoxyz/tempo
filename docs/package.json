@@ -23,7 +23,7 @@
     "cva": "1.0.0-beta.4",
     "monaco-editor": "^0.55.1",
     "nuqs": "^2.8.2",
-    "ox": "~0.9.14",
+    "ox": "^0.10.2",
     "prool": "^0.2.1",
     "react": "latest",
     "react-dom": "latest",
