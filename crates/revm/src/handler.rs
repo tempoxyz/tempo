@@ -651,7 +651,7 @@ where
 
                 // Calculate 2D nonce gas (only post-AllegroModerato)
                 let gas = if cfg.spec.is_allegro_moderato() {
-                    calculate_2d_nonce_gas(&mut nonce_manager, tx.caller(), nonce_key).map_err(
+                    calculate_2d_nonce_gas(&nonce_manager, tx.caller(), nonce_key).map_err(
                         |err| match err {
                             TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                             err => {
@@ -2200,9 +2200,9 @@ mod tests {
 
         // Protocol nonce (key 0): always 0 gas
         let gas = StorageCtx::enter_evm(&mut journal, &block, &cfg, || {
-            let mut nm = NonceManager::new();
+            let nm = NonceManager::new();
             Ok::<_, EVMError<Infallible, TempoInvalidTransaction>>(
-                calculate_2d_nonce_gas(&mut nm, caller, U256::from(0)).unwrap(),
+                calculate_2d_nonce_gas(&nm, caller, U256::from(0)).unwrap(),
             )
         })
         .unwrap();
@@ -2210,9 +2210,9 @@ mod tests {
 
         // New key (nonce == 0): 22,100 gas (cold SLOAD + SSTORE set)
         let gas = StorageCtx::enter_evm(&mut journal, &block, &cfg, || {
-            let mut nm = NonceManager::new();
+            let nm = NonceManager::new();
             Ok::<_, EVMError<Infallible, TempoInvalidTransaction>>(
-                calculate_2d_nonce_gas(&mut nm, caller, U256::from(1)).unwrap(),
+                calculate_2d_nonce_gas(&nm, caller, U256::from(1)).unwrap(),
             )
         })
         .unwrap();
@@ -2229,9 +2229,9 @@ mod tests {
 
         // Existing key (nonce > 0): 5,000 gas (cold SLOAD + warm SSTORE reset)
         let gas = StorageCtx::enter_evm(&mut journal, &block, &cfg, || {
-            let mut nm = NonceManager::new();
+            let nm = NonceManager::new();
             Ok::<_, EVMError<Infallible, TempoInvalidTransaction>>(
-                calculate_2d_nonce_gas(&mut nm, caller, U256::from(1)).unwrap(),
+                calculate_2d_nonce_gas(&nm, caller, U256::from(1)).unwrap(),
             )
         })
         .unwrap();
