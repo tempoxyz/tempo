@@ -35,22 +35,19 @@ def "main stack down" [] {
 # Kill any running tempo processes and cleanup
 def "main kill" [] {
     print "Killing tempo processes..."
-    # Kill any nushell jobs
-    let jobs = (job list | get id)
-    if ($jobs | length) > 0 {
-        print $"Killing ($jobs | length) background jobs..."
-        for id in $jobs {
-            job kill $id
+
+    # Get samply PIDs first
+    let samply_pids = (ps | where name =~ "samply" | get pid)
+
+    # Kill tempo processes with SIGINT (2) for graceful shutdown
+    let tempo_pids = (ps | where name =~ "tempo" | where name !~ "tempo-bench" | get pid)
+    if ($tempo_pids | length) > 0 {
+        print $"Sending SIGINT to ($tempo_pids | length) tempo processes..."
+        for pid in $tempo_pids {
+            kill -s 2 $pid
         }
     }
-    # Kill any orphaned tempo processes
-    let pids = (ps | where name =~ "tempo" | where name !~ "tempo-bench" | get pid)
-    if ($pids | length) > 0 {
-        print $"Killing ($pids | length) tempo processes..."
-        for pid in $pids {
-            kill $pid
-        }
-    }
+
     # Remove stale IPC socket
     if ("/tmp/reth.ipc" | path exists) {
         rm /tmp/reth.ipc
@@ -89,7 +86,11 @@ def "main node" [
     }
 
     if $mode == "dev" {
-        run-dev-node $accounts $samply $reset $profile $extra_args
+        if $nodes != 3 {
+            print "Error: --nodes is only valid with --mode consensus"
+            exit 1
+        }
+        run-dev-node $accounts $samply $reset $profile $loud $extra_args
     } else if $mode == "consensus" {
         run-consensus-nodes $nodes $accounts $samply $reset $profile $loud $extra_args
     } else {
@@ -98,7 +99,7 @@ def "main node" [
     }
 }
 
-def run-dev-node [accounts: int, samply: bool, reset: bool, profile: string, extra_args: list<string>] {
+def run-dev-node [accounts: int, samply: bool, reset: bool, profile: string, loud: bool, extra_args: list<string>] {
     let genesis_path = $"($LOCALNET_DIR)/genesis.json"
     let needs_generation = $reset or (not ($genesis_path | path exists))
 
@@ -120,7 +121,9 @@ def run-dev-node [accounts: int, samply: bool, reset: bool, profile: string, ext
 
     let base = (build-base-args $genesis_path $datadir $log_dir 8545 9001)
     let dev = (build-dev-args)
-    let args = ($base | append $dev | append $extra_args)
+    # Apply log filter (WARN by default, all if --loud)
+    let log_filter = if $loud { [] } else { ["--log.stdout.filter" "warn"] }
+    let args = ($base | append $dev | append $log_filter | append $extra_args)
 
     mut cmd = [$tempo_bin ...$args];
     if $samply {
@@ -196,9 +199,9 @@ def check-dangling-processes [force: bool] {
         }
         if $should_kill {
             for pid in $pids {
-                kill $pid
+                kill -s 2 $pid
             }
-            print "Killed."
+            print "Sent SIGINT."
         } else {
             print "Aborting."
             exit 1
@@ -222,7 +225,7 @@ def start-node-job [node_dir: string, genesis_path: string, trusted_peers: strin
 
     # Build command (with or without samply)
     let cmd = if $samply {
-        ["samply" "record" "-o" $"($LOCALNET_DIR)/tempo-($port).samply" "--" $tempo_bin] | append $args
+        ["samply" "record" "--" $tempo_bin] | append $args
     } else {
         [$tempo_bin] | append $args
     }
@@ -249,7 +252,7 @@ def run-node-foreground [node_dir: string, genesis_path: string, trusted_peers: 
 
     # Build command (with or without samply)
     let cmd = if $samply {
-        ["samply" "record" "-o" $"($LOCALNET_DIR)/tempo-($port).samply" "--" $tempo_bin] | append $args
+        ["samply" "record" "--" $tempo_bin] | append $args
     } else {
         [$tempo_bin] | append $args
     }
@@ -332,11 +335,12 @@ def build-node-args [node_dir: string, genesis_path: string, trusted_peers: stri
 
 # Run a full benchmark: start stack, nodes, and tempo-bench
 def "main bench" [
+    --mode: string = "consensus"                    # Mode: "dev" or "consensus"
     --preset: string = ""                           # Preset: tip20, erc20, swap, order, tempo-mix
     --tps: int = 10000                              # Target TPS
     --duration: int = 30                            # Duration in seconds
     --accounts: int = 1000                          # Number of accounts
-    --nodes: int = 3                                # Number of consensus nodes
+    --nodes: int = 3                                # Number of consensus nodes (consensus mode only)
     --samply                                        # Profile nodes with samply
     --reset                                         # Reset localnet before starting
     --loud                                          # Show node logs (silent by default)
@@ -345,6 +349,18 @@ def "main bench" [
     --node-args: string = ""                        # Additional node arguments (space-separated)
     --bench-args: string = ""                       # Additional tempo-bench arguments (space-separated)
 ] {
+    # Validate mode
+    if $mode != "dev" and $mode != "consensus" {
+        print $"Unknown mode: ($mode). Use 'dev' or 'consensus'."
+        exit 1
+    }
+
+    # Validate --nodes is only used with consensus mode
+    if $mode == "dev" and $nodes != 3 {
+        print "Error: --nodes is only valid with --mode consensus"
+        exit 1
+    }
+
     # Validate: either preset or bench-args must be provided
     if $preset == "" and $bench_args == "" {
         print "Error: either --preset or --bench-args must be provided"
@@ -371,20 +387,21 @@ def "main bench" [
         run-external ($build_cmd | first) ...($build_cmd | skip 1)
     }
 
-    # Start consensus nodes in background (skip build since we already compiled)
-    print $"Starting ($nodes) consensus nodes..."
+    # Start nodes in background (skip build since we already compiled)
+    let num_nodes = if $mode == "dev" { 1 } else { $nodes }
+    print $"Starting ($num_nodes) ($mode) node\(s\)..."
     # Ensure at least as many accounts as validators for genesis generation (+1 for admin account)
-    let genesis_accounts = ([$accounts $nodes] | math max) + 1
+    let genesis_accounts = ([$accounts $num_nodes] | math max) + 1
     let node_cmd = [
         "nu" "bench.nu" "node"
-        "--mode" "consensus"
-        "--nodes" $"($nodes)"
+        "--mode" $mode
         "--accounts" $"($genesis_accounts)"
         "--skip-build"
         "--force"
         "--profile" $profile
         "--features" $features
     ]
+    | append (if $mode == "consensus" { ["--nodes" $"($nodes)"] } else { [] })
     | append (if $reset { ["--reset"] } else { [] })
     | append (if $samply { ["--samply"] } else { [] })
     | append (if $loud { ["--loud"] } else { [] })
@@ -398,7 +415,7 @@ def "main bench" [
     # Wait for nodes to be ready (give them a moment to start)
     sleep 2sec
     print "Waiting for nodes to be ready..."
-    let rpc_urls = (0..<$nodes | each { |i| $"http://localhost:(8545 + $i)" })
+    let rpc_urls = (0..<$num_nodes | each { |i| $"http://localhost:(8545 + $i)" })
     for url in $rpc_urls {
         wait-for-rpc $url
     }
@@ -438,6 +455,20 @@ def "main bench" [
     # Cleanup
     print "Cleaning up..."
     main kill
+
+    # Wait for samply to finish saving profiles
+    if $samply {
+        print "Waiting for samply to finish..."
+        loop {
+            let samply_running = (ps | where name =~ "samply" | length) > 0
+            if not $samply_running {
+                break
+            }
+            sleep 500ms
+        }
+        print "Samply profiles saved."
+    }
+
     print "Done."
 }
 
@@ -487,11 +518,12 @@ def main [] {
     print "  nu bench.nu node [flags]            Run Tempo node(s)"
     print ""
     print "Bench flags (either --preset or --bench-args required):"
+    print "  --mode <M>               Mode: dev or consensus (default: consensus)"
     print "  --preset <P>             Preset: tip20, erc20, swap, order, tempo-mix"
     print "  --tps <N>                Target TPS (default: 10000)"
     print "  --duration <N>           Duration in seconds (default: 30)"
     print "  --accounts <N>           Number of accounts (default: 1000)"
-    print "  --nodes <N>              Number of consensus nodes (default: 3)"
+    print "  --nodes <N>              Number of consensus nodes (default: 3, consensus mode only)"
     print "  --samply                 Profile nodes with samply"
     print "  --reset                  Reset localnet before starting"
     print "  --loud                   Show all node logs (WARN/ERROR shown by default)"
