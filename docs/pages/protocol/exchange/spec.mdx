@@ -225,5 +225,6 @@ event OrderFilled(uint128 indexed orderId, address indexed maker, address indexe
 - Bounds: `TICK_OUT_OF_BOUNDS`, `FLIP_TICK_OUT_OF_BOUNDS`, `FLIP_TICK_MUST_BE_GREATER_FOR_BID`, `FLIP_TICK_MUST_BE_LESS_FOR_ASK`, "Price out of bounds"
 - Tick spacing: `TICK_NOT_MULTIPLE_OF_SPACING`, `FLIP_TICK_NOT_MULTIPLE_OF_SPACING`
 - Liquidity and limits: `INSUFFICIENT_LIQUIDITY`, `MAX_IN_EXCEEDED`, `INSUFFICIENT_OUTPUT`
-- Authorization: `UNAUTHORIZED` (cancel not by maker), `INSUFFICIENT_BALANCE` (withdraw)
+- Authorization: `UNAUTHORIZED` (cancel not by maker) 
+- Balance: `INSUFFICIENT_BALANCE` (withdraw)
 
