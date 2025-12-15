@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import * as React from 'react'
 import { Actions, Hooks } from 'tempo.ts/wagmi'
-import { isAddress, parseUnits } from 'viem'
+import { parseUnits } from 'viem'
 import {
   useConfig,
   useConnection,
@@ -48,16 +48,23 @@ function TransferResult({
           <span className="text-[13px] text-gray9 mt-1">Sending...</span>
         )}
         {state.status === 'error' && (
-          <span className="text-[13px] text-red-500 mt-1">{state.error}</span>
+          <span className="text-[13px] text-red-500 mt-1">
+            Transfer failed, please try again
+          </span>
         )}
         {state.status === 'success' && state.hash && (
           <ExplorerLink hash={state.hash} />
         )}
       </div>
 
-      {transaction?.nonceKey && (
+      {state.status === 'success' && (
         <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-gray9 pl-2">
-          <span>Nonce Key: {transaction.nonceKey}</span>
+          <span>
+            Nonce Key:{' '}
+            {transaction?.nonceKey ?? (
+              <span className="animate-pulse">Confirming on chain...</span>
+            )}
+          </span>
         </div>
       )}
     </div>
@@ -69,9 +76,8 @@ export function SendParallelPaymentsRandomNonce(props: DemoStepProps) {
   const { address } = useConnection()
   const config = useConfig()
   const queryClient = useQueryClient()
-  const [recipient1, setRecipient1] = React.useState<string>(FAKE_RECIPIENT)
-  const [recipient2, setRecipient2] = React.useState<string>(FAKE_RECIPIENT_2)
   const [expanded, setExpanded] = React.useState(false)
+
   const [transfer1, setTransfer1] = React.useState<TransferState>({
     status: 'idle',
   })
@@ -92,57 +98,54 @@ export function SendParallelPaymentsRandomNonce(props: DemoStepProps) {
     },
   })
 
-  const isValidRecipient1 = recipient1 && isAddress(recipient1)
-  const isValidRecipient2 = recipient2 && isAddress(recipient2)
+  const sendTransfer = (
+    params: Actions.token.transfer.Parameters<typeof config>,
+    setTransfer: React.Dispatch<React.SetStateAction<TransferState>>,
+  ) => {
+    setTransfer({ status: 'pending' })
+    Actions.token
+      .transfer(config, params)
+      .then((hash) => {
+        setTransfer({ status: 'success', hash })
+        queryClient.refetchQueries({ queryKey: ['getBalance'] })
+        balanceRefetch()
+      })
+      .catch((error) => {
+        setTransfer({ status: 'error', error: error.message || 'Failed' })
+      })
+  }
+
+  const handleSendParallel = () => {
+    if (!address) return
+
+    // Send both transfers without blocking
+    // Each call uses nonceKey: 'random' to get independent nonce lanes
+    sendTransfer(
+      {
+        amount: parseUnits('50', 6),
+        to: FAKE_RECIPIENT,
+        token: alphaUsd,
+        nonceKey: 'random',
+      },
+      setTransfer1,
+    )
+
+    sendTransfer(
+      {
+        amount: parseUnits('50', 6),
+        to: FAKE_RECIPIENT_2,
+        token: alphaUsd,
+        nonceKey: 'random',
+      },
+      setTransfer2,
+    )
+  }
+
   const bothSucceeded =
     transfer1.status === 'success' && transfer2.status === 'success'
   const isSending =
     transfer1.status === 'pending' || transfer2.status === 'pending'
   const hasStarted = transfer1.status !== 'idle' || transfer2.status !== 'idle'
-
-  const handleSendParallel = async () => {
-    if (!address) return
-
-    setTransfer1({ status: 'pending' })
-    setTransfer2({ status: 'pending' })
-
-    // Send both payments in parallel using Actions
-    // Each call uses nonceKey: 'random' to get independent nonce lanes
-    const promise1 = Actions.token.transfer(config, {
-      amount: parseUnits('50', 6),
-      to: recipient1 as `0x${string}`,
-      token: alphaUsd,
-      nonceKey: 'random',
-    })
-
-    const promise2 = Actions.token.transfer(config, {
-      amount: parseUnits('50', 6),
-      to: recipient2 as `0x${string}`,
-      token: alphaUsd,
-      nonceKey: 'random',
-    })
-
-    // Handle each promise independently
-    promise1
-      .then((hash) => {
-        setTransfer1({ status: 'success', hash })
-        queryClient.refetchQueries({ queryKey: ['getBalance'] })
-        balanceRefetch()
-      })
-      .catch((error) => {
-        setTransfer1({ status: 'error', error: error.message || 'Failed' })
-      })
-
-    promise2
-      .then((hash) => {
-        setTransfer2({ status: 'success', hash })
-        queryClient.refetchQueries({ queryKey: ['getBalance'] })
-        balanceRefetch()
-      })
-      .catch((error) => {
-        setTransfer2({ status: 'error', error: error.message || 'Failed' })
-      })
-  }
 
   return (
     <Step
@@ -195,12 +198,12 @@ export function SendParallelPaymentsRandomNonce(props: DemoStepProps) {
                     Recipient 1
                   </label>
                   <input
-                    className="h-[34px] border border-gray4 px-3.25 rounded-[50px] text-[14px] font-normal -tracking-[2%] placeholder-gray9 text-black dark:text-white"
+                    className="h-[34px] border border-gray4 px-3.25 rounded-[50px] text-[14px] font-normal -tracking-[2%] placeholder-gray9 text-black dark:text-white disabled:opacity-60 disabled:cursor-not-allowed"
                     data-1p-ignore
                     type="text"
                     name="recipient1"
-                    value={recipient1}
-                    onChange={(e) => setRecipient1(e.target.value)}
+                    value={FAKE_RECIPIENT}
+                    disabled
                     placeholder="0x..."
                   />
                 </div>
@@ -212,12 +215,12 @@ export function SendParallelPaymentsRandomNonce(props: DemoStepProps) {
                     Recipient 2
                   </label>
                   <input
-                    className="h-[34px] border border-gray4 px-3.25 rounded-[50px] text-[14px] font-normal -tracking-[2%] placeholder-gray9 text-black dark:text-white"
+                    className="h-[34px] border border-gray4 px-3.25 rounded-[50px] text-[14px] font-normal -tracking-[2%] placeholder-gray9 text-black dark:text-white disabled:opacity-60 disabled:cursor-not-allowed"
                     data-1p-ignore
                     type="text"
                     name="recipient2"
-                    value={recipient2}
-                    onChange={(e) => setRecipient2(e.target.value)}
+                    value={FAKE_RECIPIENT_2}
+                    disabled
                     placeholder="0x..."
                   />
                 </div>
@@ -225,22 +228,13 @@ export function SendParallelPaymentsRandomNonce(props: DemoStepProps) {
               <div className="flex items-start">
                 <Button
                   variant={
-                    address &&
-                    balance &&
-                    balance >= parseUnits('100', 6) &&
-                    isValidRecipient1 &&
-                    isValidRecipient2
+                    address && balance && balance >= parseUnits('100', 6)
                       ? 'accent'
                       : 'default'
                   }
                   disabled={
-                    !(
-                      address &&
-                      balance &&
-                      balance >= parseUnits('100', 6) &&
-                      isValidRecipient1 &&
-                      isValidRecipient2
-                    ) || isSending
+                    !(address && balance && balance >= parseUnits('100', 6)) ||
+                    isSending
                   }
                   onClick={handleSendParallel}
                   type="button"
