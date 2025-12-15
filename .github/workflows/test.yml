@@ -26,11 +26,11 @@ jobs:
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Generate genesis
-        run: cargo xtask generate-genesis --accounts 100 --output generated-test-genesis.json --coinbase 0xbba20Bb99dA4E103721B754b25071Fc85e7028A1
+        run: cargo xtask generate-genesis --accounts 100 --output generated --coinbase 0xbba20Bb99dA4E103721B754b25071Fc85e7028A1
       - name: Compare with existing test genesis
         run: |
           # Compare the generated genesis with the existing test-genesis.json
-          if ! diff -u crates/node/tests/assets/test-genesis.json generated-test-genesis.json; then
+          if ! diff -u crates/node/tests/assets/test-genesis.json generated/genesis.json; then
             echo "Generated genesis differs from existing test-genesis.json"
             echo "Please update the test-genesis.json file with the generated content"
             exit 1
@@ -42,7 +42,6 @@ jobs:
     name: test
     runs-on: depot-ubuntu-latest-16
     timeout-minutes: 30
-    needs: genesis
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -77,10 +76,46 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Download snapshot
-        run: cargo run --release --bin tempo download --datadir snap-rexec
+      - name: Get latest filename from API
+        id: latest
+        run: |
+          # FILENAME=$(curl -s https://snapshots.tempoxyz.dev/42429/latest.txt)
+          FILENAME=tempo-42429-4554136-1765286766.tar.lz4
+          echo "Latest filename: $FILENAME"
+          echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cached file
+        id: cache-file
+        uses: actions/cache@v4
+        with:
+          path: .cache/snapshots
+          key: snapshots-${{ steps.latest.outputs.filename }}
+
+      - name: Download file if cache miss
+        if: steps.cache-file.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .cache/snapshots
+
+          FILE_NAME='${{ steps.latest.outputs.filename }}'
+          curl -L "https://snapshots.tempoxyz.dev/42429/$FILE_NAME" \
+            -o ".cache/snapshots/$FILE_NAME"
+
+          ls -l .cache/snapshots
+
+      - name: Use the file
+        run: |
+          FILE_NAME='${{ steps.latest.outputs.filename }}'
+          FILE_PATH=".cache/snapshots/$FILE_NAME"
+
+          if [ ! -f "$FILE_PATH" ]; then
+            echo "File not found: $FILE_PATH"
+            exit 1
+          fi
+
+          mkdir snap-rexec
+          lz4 -d -c "$FILE_PATH" | tar -C snap-rexec -xvf -
       - name: Re-execute snapshot
-        run: cargo run --release --bin tempo re-execute --datadir snap-rexec
+        run: cargo run --release --bin tempo re-execute --datadir snap-rexec --to 4500000
 
   test-success:
     name: test success

@@ -10,43 +10,53 @@ use tempo_precompiles::storage::Mapping;
 fn test_mixed_slot_allocation() {
     #[contract]
     pub struct Layout {
-        pub field_a: U256, // Auto: slot 0
+        field_a: U256, // Auto: slot 0
         #[slot(5)]
-        pub field_b: U256, // Explicit: slot 5 (decimal)
-        pub field_c: U256, // Auto: slot 1
+        field_b: U256, // Explicit: slot 5 (decimal)
+        field_c: U256, // Auto: slot 1
         #[slot(0x10)]
-        pub field_d: U256, // Explicit: slot 16 (hex)
+        field_d: U256, // Explicit: slot 16 (hex)
+        #[slot(10)]
+        field_e: Mapping<Address, U256>, // Explicit: slot 10 (decimal)
     }
 
-    let mut s = setup_storage();
-    let mut mixed = Layout::_new(s.address, s.storage());
+    let (mut storage, address) = setup_storage();
+    let mut mixed = Layout::__new(address);
 
-    // Set all fields
-    mixed.sstore_field_a(U256::from(100)).unwrap();
-    mixed.sstore_field_b(U256::from(200)).unwrap();
-    mixed.sstore_field_c(U256::from(300)).unwrap();
-    mixed.sstore_field_d(U256::from(400)).unwrap();
+    StorageCtx::enter(&mut storage, || {
+        // Set all fields
+        mixed.field_a.write(U256::from(1)).unwrap();
+        mixed.field_b.write(U256::from(2)).unwrap();
+        mixed.field_c.write(U256::from(3)).unwrap();
+        mixed.field_d.write(U256::from(4)).unwrap();
 
-    // Verify values
-    assert_eq!(mixed.sload_field_a().unwrap(), U256::from(100));
-    assert_eq!(mixed.sload_field_b().unwrap(), U256::from(200));
-    assert_eq!(mixed.sload_field_c().unwrap(), U256::from(300));
-    assert_eq!(mixed.sload_field_d().unwrap(), U256::from(400));
+        let addr_at = Address::random();
+        mixed.field_e.at(addr_at).write(U256::from(5)).unwrap();
 
-    // Verify actual slot assignments
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(0)),
-        Ok(U256::from(100))
-    ); // field_a
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(5)),
-        Ok(U256::from(200))
-    ); // field_b
-    assert_eq!(s.storage.sload(s.address, U256::ONE), Ok(U256::from(300))); // field_c
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(0x10)),
-        Ok(U256::from(400))
-    ); // field_d (hex slot)
+        // Verify values
+        assert_eq!(mixed.field_a.read().unwrap(), U256::from(1));
+        assert_eq!(mixed.field_b.read().unwrap(), U256::from(2));
+        assert_eq!(mixed.field_c.read().unwrap(), U256::from(3));
+        assert_eq!(mixed.field_d.read().unwrap(), U256::from(4));
+        assert_eq!(mixed.field_e.at(addr_at).read().unwrap(), U256::from(5));
+
+        // Verify actual slot assignments
+        assert_eq!(mixed.field_a.slot(), U256::ZERO);
+        assert_eq!(mixed.field_b.slot(), U256::from(5));
+        assert_eq!(mixed.field_c.slot(), U256::ONE);
+        assert_eq!(mixed.field_d.slot(), U256::from(16));
+        assert_eq!(mixed.field_e.slot(), U256::from(10));
+
+        // Verify the slots module was generated with correct values
+        assert_eq!(slots::FIELD_A, U256::ZERO);
+        assert_eq!(slots::FIELD_B, U256::from(5));
+        assert_eq!(slots::FIELD_C, U256::ONE);
+        assert_eq!(slots::FIELD_D, U256::from(16));
+        assert_eq!(slots::FIELD_E, U256::from(10));
+
+        Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
+    })
+    .unwrap();
 }
 
 #[test]
@@ -58,32 +68,27 @@ fn test_default_values() {
         pub amount: U256,
     }
 
-    let mut s = setup_storage();
-    let mut defaults = Layout::_new(s.address, s.storage());
+    let (mut storage, address) = setup_storage();
+    let defaults = Layout::__new(address);
 
-    // Reading uninitialized storage returns zero/default
-    assert_eq!(defaults.sload_counter().unwrap(), 0);
-    assert!(!defaults.sload_flag().unwrap());
-    assert_eq!(defaults.sload_amount().unwrap(), U256::ZERO);
-}
+    StorageCtx::enter(&mut storage, || {
+        // Reading uninitialized storage returns zero/default
+        assert_eq!(defaults.counter.read().unwrap(), 0);
+        assert!(!defaults.flag.read().unwrap());
+        assert_eq!(defaults.amount.read().unwrap(), U256::ZERO);
 
-#[test]
-fn test_slots_module_generation() {
-    #[contract]
-    pub struct Layout {
-        pub field_a: U256, // Auto: slot 0
-        #[slot(5)]
-        pub field_b: U256, // Explicit: slot 5
-        pub field_c: U256, // Auto: slot 1
-        #[slot(10)]
-        pub mapping_field: Mapping<Address, U256>, // Explicit: slot 10
-    }
+        // Verify actual slot assignments
+        assert_eq!(defaults.counter.slot(), U256::ZERO);
+        assert_eq!(defaults.counter.offset(), Some(0));
+        assert_eq!(defaults.flag.slot(), U256::ZERO);
+        assert_eq!(defaults.flag.offset(), Some(8));
+        assert_eq!(defaults.amount.slot(), U256::ONE);
+        // NOTE(rusowsky): we use the inefficient version for backwards compatibility.
+        assert_eq!(defaults.amount.offset(), Some(0));
 
-    // Verify the slots module was generated with correct values
-    assert_eq!(slots::FIELD_A, U256::from(0));
-    assert_eq!(slots::FIELD_B, U256::from(5));
-    assert_eq!(slots::FIELD_C, U256::ONE);
-    assert_eq!(slots::MAPPING_FIELD, U256::from(10));
+        Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
+    })
+    .unwrap();
 }
 
 #[test]
@@ -102,53 +107,49 @@ fn test_base_slots() {
         pub field_g: U256, // Auto: slot 51
     }
 
-    let mut s = setup_storage();
-    let mut layout = Layout::_new(s.address, s.storage());
+    let (mut storage, address) = setup_storage();
+    let mut layout = Layout::__new(address);
 
-    // Set values to verify slot assignments
-    layout.sstore_field_a(U256::ONE).unwrap();
-    layout.sstore_field_b(U256::from(2)).unwrap();
-    layout.sstore_field_c(U256::from(3)).unwrap();
-    layout.sstore_field_d(U256::from(4)).unwrap();
-    layout.sstore_field_e(U256::from(5)).unwrap();
-    layout.sstore_field_f(U256::from(6)).unwrap();
-    layout.sstore_field_g(U256::from(7)).unwrap();
+    StorageCtx::enter(&mut storage, || {
+        // Set values to verify slot assignments
+        layout.field_a.write(U256::ONE).unwrap();
+        layout.field_b.write(U256::from(2)).unwrap();
+        layout.field_c.write(U256::from(3)).unwrap();
+        layout.field_d.write(U256::from(4)).unwrap();
+        layout.field_e.write(U256::from(5)).unwrap();
+        layout.field_f.write(U256::from(6)).unwrap();
+        layout.field_g.write(U256::from(7)).unwrap();
 
-    // Verify actual slot assignments
-    assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::ONE)); // field_a
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(100)),
-        Ok(U256::from(2))
-    ); // field_b
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(101)),
-        Ok(U256::from(3))
-    ); // field_c
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(200)),
-        Ok(U256::from(4))
-    ); // field_d
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(201)),
-        Ok(U256::from(5))
-    ); // field_e
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(50)),
-        Ok(U256::from(6))
-    ); // field_f
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(51)),
-        Ok(U256::from(7))
-    ); // field_g
+        // Verify values
+        assert_eq!(layout.field_a.read().unwrap(), U256::ONE);
+        assert_eq!(layout.field_b.read().unwrap(), U256::from(2));
+        assert_eq!(layout.field_c.read().unwrap(), U256::from(3));
+        assert_eq!(layout.field_d.read().unwrap(), U256::from(4));
+        assert_eq!(layout.field_e.read().unwrap(), U256::from(5));
+        assert_eq!(layout.field_f.read().unwrap(), U256::from(6));
+        assert_eq!(layout.field_g.read().unwrap(), U256::from(7));
 
-    // Verify slots module
-    assert_eq!(slots::FIELD_A, U256::from(0));
-    assert_eq!(slots::FIELD_B, U256::from(100));
-    assert_eq!(slots::FIELD_C, U256::from(101));
-    assert_eq!(slots::FIELD_D, U256::from(200));
-    assert_eq!(slots::FIELD_E, U256::from(201));
-    assert_eq!(slots::FIELD_F, U256::from(50));
-    assert_eq!(slots::FIELD_G, U256::from(51));
+        // Verify actual slot assignments
+        assert_eq!(layout.field_a.slot(), U256::ZERO);
+        assert_eq!(layout.field_b.slot(), U256::from(100));
+        assert_eq!(layout.field_c.slot(), U256::from(101));
+        assert_eq!(layout.field_d.slot(), U256::from(200));
+        assert_eq!(layout.field_e.slot(), U256::from(201));
+        assert_eq!(layout.field_f.slot(), U256::from(50));
+        assert_eq!(layout.field_g.slot(), U256::from(51));
+
+        // Verify slots module
+        assert_eq!(slots::FIELD_A, U256::from(0));
+        assert_eq!(slots::FIELD_B, U256::from(100));
+        assert_eq!(slots::FIELD_C, U256::from(101));
+        assert_eq!(slots::FIELD_D, U256::from(200));
+        assert_eq!(slots::FIELD_E, U256::from(201));
+        assert_eq!(slots::FIELD_F, U256::from(50));
+        assert_eq!(slots::FIELD_G, U256::from(51));
+
+        Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
+    })
+    .unwrap();
 }
 
 #[test]
@@ -164,40 +165,40 @@ fn test_base_slot_with_regular_slot() {
         pub field_e: U256, // Auto: slot 102
     }
 
-    let mut s = setup_storage();
-    let mut layout = Layout::_new(s.address, s.storage());
+    let (mut storage, address) = setup_storage();
+    let mut layout = Layout::__new(address);
 
-    layout.sstore_field_a(U256::ONE).unwrap();
-    layout.sstore_field_b(U256::from(2)).unwrap();
-    layout.sstore_field_c(U256::from(3)).unwrap();
-    layout.sstore_field_d(U256::from(4)).unwrap();
-    layout.sstore_field_e(U256::from(5)).unwrap();
+    StorageCtx::enter(&mut storage, || {
+        layout.field_a.write(U256::ONE).unwrap();
+        layout.field_b.write(U256::from(2)).unwrap();
+        layout.field_c.write(U256::from(3)).unwrap();
+        layout.field_d.write(U256::from(4)).unwrap();
+        layout.field_e.write(U256::from(5)).unwrap();
 
-    // Verify slot assignments
-    assert_eq!(s.storage.sload(s.address, U256::from(0)), Ok(U256::ONE)); // field_a
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(100)),
-        Ok(U256::from(2))
-    ); // field_b
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(101)),
-        Ok(U256::from(3))
-    ); // field_c
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(50)),
-        Ok(U256::from(4))
-    ); // field_d
-    assert_eq!(
-        s.storage.sload(s.address, U256::from(102)),
-        Ok(U256::from(5))
-    ); // field_e
+        // Verify values
+        assert_eq!(layout.field_a.read().unwrap(), U256::ONE);
+        assert_eq!(layout.field_b.read().unwrap(), U256::from(2));
+        assert_eq!(layout.field_c.read().unwrap(), U256::from(3));
+        assert_eq!(layout.field_d.read().unwrap(), U256::from(4));
+        assert_eq!(layout.field_e.read().unwrap(), U256::from(5));
 
-    // Verify slots module
-    assert_eq!(slots::FIELD_A, U256::from(0));
-    assert_eq!(slots::FIELD_B, U256::from(100));
-    assert_eq!(slots::FIELD_C, U256::from(101));
-    assert_eq!(slots::FIELD_D, U256::from(50));
-    assert_eq!(slots::FIELD_E, U256::from(102));
+        // Verify actual slot assignments
+        assert_eq!(layout.field_a.slot(), U256::ZERO);
+        assert_eq!(layout.field_b.slot(), U256::from(100));
+        assert_eq!(layout.field_c.slot(), U256::from(101));
+        assert_eq!(layout.field_d.slot(), U256::from(50));
+        assert_eq!(layout.field_e.slot(), U256::from(102));
+
+        // Verify slots module
+        assert_eq!(slots::FIELD_A, U256::from(0));
+        assert_eq!(slots::FIELD_B, U256::from(100));
+        assert_eq!(slots::FIELD_C, U256::from(101));
+        assert_eq!(slots::FIELD_D, U256::from(50));
+        assert_eq!(slots::FIELD_E, U256::from(102));
+
+        Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
+    })
+    .unwrap();
 }
 
 #[test]
@@ -208,144 +209,24 @@ fn test_string_literal_slots() {
         pub field: U256, // slot: keccak256("id")
     }
 
-    let mut s = setup_storage();
-    let mut layout = Layout::_new(s.address, s.storage());
+    let (mut storage, address) = setup_storage();
+    let mut layout = Layout::__new(address);
 
-    // Set value
-    layout.sstore_field(U256::ONE).unwrap();
+    StorageCtx::enter(&mut storage, || {
+        // Set value
+        layout.field.write(U256::ONE).unwrap();
 
-    // Verify
-    let slot: U256 = keccak256("id").into();
-    assert_eq!(s.storage.sload(s.address, slot), Ok(U256::ONE)); // field
-    assert_eq!(slots::FIELD, slot);
-}
+        // Verify value
+        assert_eq!(layout.field.read().unwrap(), U256::ONE);
 
-#[test]
-fn test_slot_id_naming_matches_actual_slots() {
-    // Test SlotId type naming: manual slots use SlotN, auto-assigned use SlotForFieldN
-    #[contract]
-    pub struct Layout {
-        pub field_a: U256, // auto → slot 0
-        #[slot(100)]
-        pub field_b: U256, // explicit → slot 100
-        pub field_c: U256, // auto → slot 1
-        #[base_slot(200)]
-        pub field_d: U256, // base → slot 200
-        pub field_e: U256, // auto → slot 201
-        #[slot(0x10)]
-        pub field_f: U256, // hex → slot 16
-    }
+        // Verify slot assignment
+        let slot: U256 = keccak256("id").into();
+        assert_eq!(layout.field.slot(), slot);
+        assert_eq!(slots::FIELD, slot);
 
-    // Verify slot assignments via the slots module constants
-    assert_eq!(slots::FIELD_A, U256::from(0));
-    assert_eq!(slots::FIELD_B, U256::from(100));
-    assert_eq!(slots::FIELD_C, U256::ONE);
-    assert_eq!(slots::FIELD_D, U256::from(200));
-    assert_eq!(slots::FIELD_E, U256::from(201));
-    assert_eq!(slots::FIELD_F, U256::from(16));
-
-    // Verify the slot constants have correct values
-    assert_eq!(slots::FIELD_A, U256::from(0)); // field_a (auto)
-    assert_eq!(slots::FIELD_B, U256::from(100)); // field_b (manual)
-    assert_eq!(slots::FIELD_C, U256::ONE); // field_c (auto)
-    assert_eq!(slots::FIELD_D, U256::from(200)); // field_d (manual)
-    assert_eq!(slots::FIELD_E, U256::from(201)); // field_e (auto)
-    assert_eq!(slots::FIELD_F, U256::from(16)); // field_f (manual)
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(500))]
-
-    /// Property test for mixed slot allocation with random values
-    #[test]
-    fn proptest_mixed_slot_allocation(
-        val_a in arb_u256(),
-        val_b in arb_u256(),
-        val_c in arb_u256(),
-        val_d in arb_u256(),
-    ) {
-        #[contract]
-        pub struct Layout {
-            pub field_a: U256, // Auto: slot 0
-            #[slot(5)]
-            pub field_b: U256, // Explicit: slot 5
-            pub field_c: U256, // Auto: slot 1
-            #[slot(0x10)]
-            pub field_d: U256, // Explicit: slot 16 (hex)
-        }
-
-        let mut s = setup_storage();
-
-        {
-            let mut layout = Layout::_new(s.address, s.storage());
-
-            // Store random values
-            layout.sstore_field_a(val_a)?;
-            layout.sstore_field_b(val_b)?;
-            layout.sstore_field_c(val_c)?;
-            layout.sstore_field_d(val_d)?;
-
-            // Roundtrip property: verify getters return stored values
-            prop_assert_eq!(layout.sload_field_a()?, val_a);
-            prop_assert_eq!(layout.sload_field_b()?, val_b);
-            prop_assert_eq!(layout.sload_field_c()?, val_c);
-            prop_assert_eq!(layout.sload_field_d()?, val_d);
-        }
-
-        // Isolation property: verify actual slot assignments
-        prop_assert_eq!(s.storage.sload(s.address, U256::from(0))?, val_a); // field_a
-        prop_assert_eq!(s.storage.sload(s.address, U256::from(5))?, val_b); // field_b
-        prop_assert_eq!(s.storage.sload(s.address, U256::ONE)?, val_c); // field_c
-        prop_assert_eq!(s.storage.sload(s.address, U256::from(0x10))?, val_d); // field_d
-    }
-
-    /// Property test for base_slot functionality
-    #[test]
-    fn proptest_base_slots(
-        val_a in arb_u256(),
-        val_b in arb_u256(),
-        val_c in arb_u256(),
-        val_d in arb_u256(),
-        val_e in arb_u256(),
-    ) {
-        #[contract]
-        pub struct Layout {
-            pub field_a: U256, // Auto: slot 0
-            #[base_slot(100)]
-            pub field_b: U256, // base_slot: slot 100, counter -> 101
-            pub field_c: U256, // Auto: slot 101
-            #[base_slot(200)]
-            pub field_d: U256, // base_slot: slot 200, counter -> 201
-            pub field_e: U256, // Auto: slot 201
-        }
-
-        let mut s = setup_storage();
-
-        {
-            let mut layout = Layout::_new(s.address, s.storage());
-
-            // Store random values
-            layout.sstore_field_a(val_a)?;
-            layout.sstore_field_b(val_b)?;
-            layout.sstore_field_c(val_c)?;
-            layout.sstore_field_d(val_d)?;
-            layout.sstore_field_e(val_e)?;
-
-            // Roundtrip property
-            prop_assert_eq!(layout.sload_field_a()?, val_a);
-            prop_assert_eq!(layout.sload_field_b()?, val_b);
-            prop_assert_eq!(layout.sload_field_c()?, val_c);
-            prop_assert_eq!(layout.sload_field_d()?, val_d);
-            prop_assert_eq!(layout.sload_field_e()?, val_e);
-        }
-
-        // Isolation property: verify slot assignments
-        prop_assert_eq!(s.storage.sload(s.address, U256::from(0))?, val_a); // field_a
-        prop_assert_eq!(s.storage.sload(s.address, U256::from(100))?, val_b); // field_b
-        prop_assert_eq!(s.storage.sload(s.address, U256::from(101))?, val_c); // field_c
-        prop_assert_eq!(s.storage.sload(s.address, U256::from(200))?, val_d); // field_d
-        prop_assert_eq!(s.storage.sload(s.address, U256::from(201))?, val_e); // field_e
-    }
+        Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
+    })
+    .unwrap();
 }
 
 #[test]
@@ -360,8 +241,8 @@ fn test_collision_same_slot() {
         pub field_b: U256,
     }
 
-    let mut s = setup_storage();
-    let _layout = Layout::_new(s.address, s.storage());
+    let (_, address) = setup_storage();
+    let _layout = Layout::__new(address);
 }
 
 #[test]
@@ -376,8 +257,8 @@ fn test_collision_overlapping_slots_manual() {
         pub colliding_field: U256, // overlaps with large_field
     }
 
-    let mut s = setup_storage();
-    let _layout = Layout::_new(s.address, s.storage());
+    let (_, address) = setup_storage();
+    let _layout = Layout::__new(address);
 }
 
 #[test]
@@ -391,6 +272,6 @@ fn test_collision_overlapping_slots_auto() {
         pub colliding_field: U256, // overlaps with large_field
     }
 
-    let mut s = setup_storage();
-    let _layout = Layout::_new(s.address, s.storage());
+    let (_, address) = setup_storage();
+    let _layout = Layout::__new(address);
 }

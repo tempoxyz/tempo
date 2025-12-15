@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
+import { TIP20Factory } from "./TIP20Factory.sol";
 import { IERC20 } from "./interfaces/IERC20.sol";
 import { IFeeAMM } from "./interfaces/IFeeAMM.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
@@ -12,16 +13,20 @@ contract FeeAMM is IFeeAMM {
     uint256 public constant SCALE = 10_000;
     uint256 public constant MIN_LIQUIDITY = 1000;
 
+    TIP20Factory internal constant TIP20_FACTORY =
+        TIP20Factory(0x20Fc000000000000000000000000000000000000);
+
     mapping(bytes32 => Pool) public pools;
     mapping(bytes32 => uint128) internal pendingFeeSwapIn; // Amount of userToken to be added from fee swaps
     mapping(bytes32 => uint256) public totalSupply; // Total LP tokens for each pool
     mapping(bytes32 => mapping(address => uint256)) public liquidityBalances; // LP token balances
 
     function _requireUSDTIP20(address token) internal view {
-        require(bytes14(bytes20(token)) == 0x20c0000000000000000000000000, "INVALID_TOKEN");
-        require(
-            keccak256(bytes(ITIP20(token).currency())) == keccak256(bytes("USD")), "ONLY_USD_TOKENS"
-        );
+        // Check that the token is a deployed TIP20 (prefix + tokenIdCounter check)
+        if (!TIP20_FACTORY.isTIP20(token)) revert InvalidToken();
+        if (keccak256(bytes(ITIP20(token).currency())) != keccak256(bytes("USD"))) {
+            revert InvalidCurrency();
+        }
     }
 
     function getPoolId(address userToken, address validatorToken) public pure returns (bytes32) {
@@ -106,7 +111,7 @@ contract FeeAMM is IFeeAMM {
         uint256 amountValidatorToken,
         address to
     ) external returns (uint256 liquidity) {
-        require(userToken != validatorToken, "IDENTICAL_ADDRESSES");
+        if (userToken == validatorToken) revert IdenticalAddresses();
 
         _requireUSDTIP20(userToken);
         _requireUSDTIP20(validatorToken);
@@ -156,7 +161,7 @@ contract FeeAMM is IFeeAMM {
 
         Pool storage pool = pools[poolId];
 
-        require(liquidityBalances[poolId][msg.sender] >= liquidity, "INSUFFICIENT_LIQUIDITY");
+        if (liquidityBalances[poolId][msg.sender] < liquidity) revert InsufficientLiquidity();
 
         // Calculate amounts
         (amountUserToken, amountValidatorToken) = _calculateBurnAmounts(pool, poolId, liquidity);

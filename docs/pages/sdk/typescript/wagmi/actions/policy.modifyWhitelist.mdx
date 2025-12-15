@@ -13,7 +13,7 @@ import { Actions } from 'tempo.ts/wagmi'
 import { config } from './wagmi.config'
 
 const { receipt } = await Actions.policy.modifyWhitelistSync(config, {
-  account: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
+  address: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
   allowed: true,
   policyId: 1n,
 })
@@ -42,7 +42,7 @@ import { waitForTransactionReceipt } from 'wagmi/actions'
 import { config } from './wagmi.config'
 
 const hash = await Actions.policy.modifyWhitelist(config, {
-  account: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
+  address: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
   allowed: true,
   policyId: 1n,
 })
@@ -71,11 +71,11 @@ type ReturnType = {
 
 ## Parameters
 
-### account
+### address
 
 - **Type:** `Address`
 
-Address to add or remove from the whitelist.
+Target account address to add or remove from the whitelist.
 
 ### allowed
 

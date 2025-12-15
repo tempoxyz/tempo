@@ -9,18 +9,15 @@ use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
 };
-use reth_storage_api::{
-    StateProvider, StateProviderFactory,
-    errors::{ProviderError, ProviderResult},
-};
+use reth_storage_api::{StateProvider, StateProviderFactory, errors::ProviderError};
 use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, compute_keys_slot,
-    nonce::slots, storage::double_mapping_slot,
+    ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
+    account_keychain::{AccountKeychain, AuthorizedKey},
 };
 use tempo_primitives::{subblock::has_sub_block_nonce_key_prefix, transaction::TempoTransaction};
 use tempo_revm::TempoStateAccess;
@@ -63,27 +60,6 @@ where
     /// Returns the configured client
     pub fn client(&self) -> &Client {
         self.inner.client()
-    }
-
-    /// Get the 2D nonce from state for (address, nonce_key) and the slot
-    ///
-    /// Returns `(slot, nonce)` for the given address and nonce key.
-    fn get_2d_nonce(
-        &self,
-        state_provider: &impl StateProvider,
-        address: alloy_primitives::Address,
-        nonce_key: U256,
-    ) -> ProviderResult<u64> {
-        // Compute storage slot for 2D nonce
-        // Based on: mapping(address => mapping(uint256 => uint64)) at slot 0
-        let slot = double_mapping_slot(
-            address.as_slice(),
-            nonce_key.to_be_bytes::<32>(),
-            slots::NONCES,
-        );
-        let nonce_value = state_provider.storage(NONCE_PRECOMPILE_ADDRESS, slot.into())?;
-
-        Ok(nonce_value.unwrap_or_default().saturating_to())
     }
 
     /// Check if a transaction requires keychain validation
@@ -162,7 +138,11 @@ where
         }
 
         // Compute storage slot using helper function
-        let storage_slot = compute_keys_slot(transaction.sender(), key_id);
+        let storage_slot = AccountKeychain::new()
+            .keys
+            .at(transaction.sender())
+            .at(key_id)
+            .base_slot();
 
         // Read storage slot from state provider
         let slot_value = state_provider
@@ -369,7 +349,10 @@ where
             }
         }
 
-        match self.inner.validate_one(origin, transaction) {
+        match self
+            .inner
+            .validate_one_with_state_provider(origin, transaction, &state_provider)
+        {
             TransactionValidationOutcome::Valid {
                 balance,
                 mut state_nonce,
@@ -394,12 +377,11 @@ where
                     }
 
                     // This is a 2D nonce transaction - validate against 2D nonce
-                    state_nonce = match self.get_2d_nonce(
-                        &state_provider,
-                        transaction.transaction().sender(),
-                        nonce_key,
+                    state_nonce = match state_provider.storage(
+                        NONCE_PRECOMPILE_ADDRESS,
+                        transaction.transaction().nonce_key_slot().unwrap().into(),
                     ) {
-                        Ok(nonce) => nonce,
+                        Ok(nonce) => nonce.unwrap_or_default().saturating_to(),
                         Err(err) => {
                             return TransactionValidationOutcome::Error(
                                 *transaction.hash(),
@@ -419,6 +401,9 @@ where
                         );
                     }
                 }
+
+                // Pre-compute TempoTxEnv to avoid the cost during payload building.
+                transaction.transaction().prepare_tx_env();
 
                 TransactionValidationOutcome::Valid {
                     balance,
@@ -521,6 +506,7 @@ mod tests {
     };
     use std::sync::Arc;
     use tempo_chainspec::spec::ANDANTINO;
+    use tempo_precompiles::tip403_registry::TIP403Registry;
     use tempo_primitives::TempoTxEnvelope;
 
     /// Helper to create a mock sealed block with the given timestamp.
@@ -758,9 +744,8 @@ mod tests {
         use alloy_primitives::{Signature, TxKind, address, uint};
         use tempo_precompiles::{
             TIP403_REGISTRY_ADDRESS,
-            storage::{Storable, double_mapping_slot, mapping_slot},
             tip20::slots as tip20_slots,
-            tip403_registry::{ITIP403Registry, PolicyData, slots as tip403_slots},
+            tip403_registry::{ITIP403Registry, PolicyData},
         };
         use tempo_primitives::transaction::{
             TempoTransaction,
@@ -835,17 +820,17 @@ mod tests {
             policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
             admin: Address::ZERO,
         };
-        let policy_data_slot = mapping_slot(policy_id.to_be_bytes(), tip403_slots::POLICY_DATA);
-        let policy_set_slot =
-            double_mapping_slot(policy_id.to_be_bytes(), fee_payer, tip403_slots::POLICY_SET);
+        let policy_data_slot = TIP403Registry::new().policy_data.at(policy_id).base_slot();
+        let policy_set_slot = TIP403Registry::new()
+            .policy_set
+            .at(policy_id)
+            .at(fee_payer)
+            .slot();
 
         provider.add_account(
             TIP403_REGISTRY_ADDRESS,
             ExtendedAccount::new(0, U256::ZERO).extend_storage([
-                (
-                    policy_data_slot.into(),
-                    policy_data.to_evm_words().unwrap()[0],
-                ),
+                (policy_data_slot.into(), policy_data.encode_to_slot()),
                 (policy_set_slot.into(), U256::from(1)), // in blacklist = true
             ]),
         );

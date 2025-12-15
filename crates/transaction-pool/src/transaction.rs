@@ -7,14 +7,22 @@ use alloy_eips::{
     eip7594::BlobTransactionSidecarVariant,
     eip7702::SignedAuthorization,
 };
+use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes};
+use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered};
 use reth_transaction_pool::{
     EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction, PoolTransaction,
     error::PoolTransactionError,
 };
-use std::{convert::Infallible, fmt::Debug, sync::Arc};
+use std::{
+    convert::Infallible,
+    fmt::Debug,
+    sync::{Arc, OnceLock},
+};
+use tempo_precompiles::nonce::NonceManager;
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
+use tempo_revm::TempoTxEnv;
 use thiserror::Error;
 
 /// Tempo pooled transaction representation.
@@ -25,6 +33,10 @@ pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached payment classification for efficient block building
     is_payment: bool,
+    /// Cached slot of the 2D nonce, if any.
+    nonce_key_slot: OnceLock<Option<U256>>,
+    /// Cached prepared [`TempoTxEnv`] for payload building.
+    tx_env: OnceLock<TempoTxEnv>,
 }
 
 impl TempoPooledTransaction {
@@ -43,6 +55,8 @@ impl TempoPooledTransaction {
                 transaction,
             },
             is_payment,
+            nonce_key_slot: OnceLock::new(),
+            tx_env: OnceLock::new(),
         }
     }
 
@@ -64,6 +78,16 @@ impl TempoPooledTransaction {
     /// Returns the nonce key of this transaction if it's an [`AASigned`](tempo_primitives::AASigned) transaction.
     pub fn nonce_key(&self) -> Option<U256> {
         self.inner.transaction.nonce_key()
+    }
+
+    /// Returns the storage slot for the nonce key of this transaction.
+    pub fn nonce_key_slot(&self) -> Option<U256> {
+        *self.nonce_key_slot.get_or_init(|| {
+            let nonce_key = self.nonce_key()?;
+            let sender = self.sender();
+            let slot = NonceManager::new().nonces.at(sender).at(nonce_key).slot();
+            Some(slot)
+        })
     }
 
     /// Returns whether this is a payment transaction.
@@ -94,6 +118,31 @@ impl TempoPooledTransaction {
             seq_id: sender,
             nonce: self.nonce(),
         })
+    }
+
+    /// Computes the [`TempoTxEnv`] for this transaction.
+    fn tx_env_slow(&self) -> TempoTxEnv {
+        TempoTxEnv::from_recovered_tx(self.inner().inner(), self.sender())
+    }
+
+    /// Pre-computes and caches the [`TempoTxEnv`].
+    ///
+    /// This should be called during validation to prepare the transaction environment
+    /// ahead of time, avoiding it during payload building.
+    pub fn prepare_tx_env(&self) {
+        self.tx_env.get_or_init(|| self.tx_env_slow());
+    }
+
+    /// Returns a [`WithTxEnv`] wrapper containing the cached [`TempoTxEnv`].
+    ///
+    /// If the [`TempoTxEnv`] was pre-computed via [`Self::prepare_tx_env`], the cached
+    /// value is used. Otherwise, it is computed on-demand.
+    pub fn into_with_tx_env(mut self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
+        let tx_env = self.tx_env.take().unwrap_or_else(|| self.tx_env_slow());
+        WithTxEnv {
+            tx_env,
+            tx: Arc::new(self.inner.transaction),
+        }
     }
 }
 
@@ -144,7 +193,7 @@ pub enum TempoPoolTransactionError {
     /// Thrown when we couldn't find a recently used validator token that has enough liquidity
     /// in fee AMM pair with the user token this transaction will pay fees in.
     #[error(
-        "Insufficient liquidity for fee token: {0}, please see https://docs.tempo.xyz/documentation/protocol/fees for more"
+        "Insufficient liquidity for fee token: {0}, please see https://docs.tempo.xyz/protocol/fees for more"
     )]
     InsufficientLiquidity(Address),
 }

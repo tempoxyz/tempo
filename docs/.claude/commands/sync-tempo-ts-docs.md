@@ -151,7 +151,13 @@ Address of the TIP-20 token.
 ```
 
 ### Read action template
+
+**Note:** If the action has a required `account` parameter, use `ReadAccountParameters` instead of `ReadParameters` to avoid duplicate account documentation.
+
 ```mdx
+// Use ReadAccountParameters if action has required 'account' param:
+import ReadAccountParameters from '../../../../snippets/read-account-parameters.mdx'
+// Otherwise use ReadParameters:
 import ReadParameters from '../../../../snippets/read-parameters.mdx'
 
 # `{module}.{functionName}`
@@ -193,6 +199,9 @@ type ReturnType = bigint // or appropriate type
 
 Address of the TIP-20 token.
 
+// If action has required 'account' param:
+<ReadAccountParameters />
+// Otherwise:
 <ReadParameters />
 ```
 
@@ -355,7 +364,13 @@ Address of the TIP-20 token.
 ```
 
 ### Read action template
+
+**Note:** If the action has a required `account` parameter, use `ReadAccountParameters` instead of `ReadParameters` to avoid duplicate account documentation.
+
 ```mdx
+// Use ReadAccountParameters if action has required 'account' param:
+import ReadAccountParameters from '../../../../../snippets/read-account-parameters.mdx'
+// Otherwise use ReadParameters:
 import ReadParameters from '../../../../../snippets/read-parameters.mdx'
 
 # `{module}.{functionName}`
@@ -399,6 +414,9 @@ type ReturnType = bigint // or appropriate type
 
 Address of the TIP-20 token.
 
+// If action has required 'account' param:
+<ReadAccountParameters wagmi />
+// Otherwise:
 <ReadParameters wagmi />
 ```
 
@@ -705,7 +723,7 @@ Edit `vocs.config.tsx` to add entries to the sidebar.
 
 ### Viem Actions sidebar (around line 244-538)
 
-The Actions section contains module categories (AMM, Fee, Policy, Reward, Stablecoin Exchange, Token). Find the appropriate module category and add entries alphabetically within its `items` array:
+The Actions section contains module categories (AMM, Fee, Policy, Reward, Stablecoin DEX, Token). Find the appropriate module category and add entries alphabetically within its `items` array:
 
 ```tsx
 // Find the module category by its text label
@@ -776,9 +794,10 @@ Common module categories used in the SDK. The left column shows the lowercase mo
 | Module (file path) | Sidebar Text Label |
 |--------------------|-------------------|
 | `amm` | `AMM` |
-| `dex` | `Stablecoin Exchange` |
+| `dex` | `Stablecoin DEX` |
 | `faucet` | `Faucet` |
 | `fee` | `Fee` |
+| `nonce` | `Nonce` |
 | `policy` | `Policy` |
 | `reward` | `Reward` |
 | `token` | `Token` |

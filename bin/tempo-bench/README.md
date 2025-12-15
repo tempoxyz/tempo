@@ -90,17 +90,22 @@ Options:
       --tip20-weight <TIP20_WEIGHT>
           A weight that determines the likelihood of generating a TIP-20 transfer transaction
 
-          [default: 0.8]
+          [default: 1]
 
       --place-order-weight <PLACE_ORDER_WEIGHT>
           A weight that determines the likelihood of generating a DEX place transaction
 
-          [default: 0.01]
+          [default: 0]
 
       --swap-weight <SWAP_WEIGHT>
           A weight that determines the likelihood of generating a DEX swapExactAmountIn transaction
 
-          [default: 0.19]
+          [default: 0]
+
+      --erc20-weight <ERC20_WEIGHT>
+          A weight that determines the likelihood of generating an ERC-20 transfer transaction
+
+          [default: 0]
 
       --sample-size <SAMPLE_SIZE>
           An amount of receipts to wait for after sending all the transactions
@@ -116,6 +121,9 @@ Options:
           Clear the transaction pool before running the benchmark.
 
           Calls admin_clearTxpool.
+
+      --disable-2d-nonces
+          Disable 2D nonces
 
   -h, --help
           Print help (see a summary with '-h')

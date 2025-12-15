@@ -242,7 +242,7 @@ function PayWithFeeToken() {
 
 Now that you have made a payment using a desired fee token, you can:
 - Follow a guide on how to [sponsor user fees](/guide/payments/sponsor-user-fees) to enable gasless transactions
-- Learn more about [transaction fees](/documentation/protocol/fees)
+- Learn more about [transaction fees](/protocol/fees)
 
 ::::
 
@@ -328,12 +328,41 @@ const receipt = await client.token.transferSync({
   </Tabs.Tab>
 </Tabs>
 
+# Recipes
+
+## Set user fee token 
+
+You can also set a persistent default fee token for an account, so users don't need to specify `feeToken` on every transaction. Learn more about fee token preferences [here](/protocol/fees/spec-fee#fee-token-preferences).
+
+<Tabs className="-mt-2">
+<Tabs.Tab value="Wagmi">
+
+<div className="h-6" />
+
+```tsx twoslash
+// @noErrors
+// [!include ~/snippets/unformatted/fee.setUserToken.ts:wagmi-hooks]
+```
+
+</Tabs.Tab>
+<Tabs.Tab value="Viem">
+
+<div className="h-6" />
+
+```ts twoslash
+// @noErrors
+// [!include ~/snippets/unformatted/fee.setUserToken.ts:viem]
+```
+
+</Tabs.Tab>
+</Tabs>
+
 ## Learning Resources
 
 <Card.Container>
   <Card.Link
     description="Learn more about transaction fees on Tempo"
-    href="/documentation/protocol/fees"
+    href="/protocol/fees"
     icon={LucideCoins}
     title="Transaction Fees"
   />

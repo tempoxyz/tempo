@@ -15,6 +15,7 @@ alloy = { workspace = true, features = [
   "signer-mnemonic",
   "rlp"
 ] }
+alloy-evm.workspace = true
 alloy-genesis.workspace = true
 alloy-primitives.workspace = true
 
@@ -36,6 +37,7 @@ reth-node-metrics.workspace = true
 reth-rpc-builder.workspace = true
 
 tempo-chainspec.workspace = true
+tempo-dkg-onchain-artifacts.workspace = true
 tempo-commonware-node.workspace = true
 tempo-commonware-node-config.workspace = true
 tempo-node.workspace = true

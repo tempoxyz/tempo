@@ -18,6 +18,11 @@
 | [`fee.useSetUserToken`](/sdk/typescript/wagmi/hooks/fee.useSetUserToken) | Hook for setting the user's default fee token preference |
 | [`fee.useUserToken`](/sdk/typescript/wagmi/hooks/fee.useUserToken) | Hook for getting the user's default fee token preference |
 | [`fee.useWatchSetUserToken`](/sdk/typescript/wagmi/hooks/fee.useWatchSetUserToken) | Hook for watching user token set events |
+| **Nonce Hooks** | |
+| [`nonce.useNonce`](/sdk/typescript/wagmi/hooks/nonce.useNonce) | Hook for getting the nonce for an account and nonce key |
+| [`nonce.useNonceKeyCount`](/sdk/typescript/wagmi/hooks/nonce.useNonceKeyCount) | Hook for getting the number of active nonce keys for an account |
+| [`nonce.useWatchActiveKeyCountChanged`](/sdk/typescript/wagmi/hooks/nonce.useWatchActiveKeyCountChanged) | Hook for watching active key count changed events |
+| [`nonce.useWatchNonceIncremented`](/sdk/typescript/wagmi/hooks/nonce.useWatchNonceIncremented) | Hook for watching nonce incremented events |
 | **Policy Hooks** | |
 | [`policy.useCreate`](#TODO) | Hook for creating a new transfer policy for token access control |
 | [`policy.useData`](#TODO) | Hook for getting the data for a transfer policy, including its type and admin address |
@@ -37,9 +42,9 @@
 | [`reward.useUserRewardInfo`](/sdk/typescript/wagmi/hooks/reward.useUserRewardInfo) | Hook for getting reward information for a specific account |
 | [`reward.useWatchRewardRecipientSet`](/sdk/typescript/wagmi/hooks/reward.useWatchRewardRecipientSet) | Hook for watching reward recipient set events |
 | [`reward.useWatchRewardScheduled`](/sdk/typescript/wagmi/hooks/reward.useWatchRewardScheduled) | Hook for watching reward scheduled events |
-| **Stablecoin Exchange Hooks** | |
-| [`dex.useBalance`](/sdk/typescript/wagmi/hooks/dex.useBalance) | Hook for getting a user's token balance on the Stablecoin Exchange |
-| [`dex.useBuy`](/sdk/typescript/wagmi/hooks/dex.useBuy) | Hook for buying a specific amount of tokens from the Stablecoin Exchange orderbook |
+| **Stablecoin DEX Hooks** | |
+| [`dex.useBalance`](/sdk/typescript/wagmi/hooks/dex.useBalance) | Hook for getting a user's token balance on the Stablecoin DEX |
+| [`dex.useBuy`](/sdk/typescript/wagmi/hooks/dex.useBuy) | Hook for buying a specific amount of tokens from the Stablecoin DEX orderbook |
 | [`dex.useBuyQuote`](/sdk/typescript/wagmi/hooks/dex.useBuyQuote) | Hook for getting the quote for buying a specific amount of tokens |
 | [`dex.useCancel`](/sdk/typescript/wagmi/hooks/dex.useCancel) | Hook for canceling an order from the orderbook |
 | [`dex.useCreatePair`](/sdk/typescript/wagmi/hooks/dex.useCreatePair) | Hook for creating a new trading pair on the DEX |
@@ -47,7 +52,7 @@
 | [`dex.usePlace`](/sdk/typescript/wagmi/hooks/dex.usePlace) | Hook for placing a limit order on the orderbook |
 | [`dex.usePlaceFlip`](/sdk/typescript/wagmi/hooks/dex.usePlaceFlip) | Hook for placing a flip order that automatically flips when filled |
 | [`dex.useTickLevel`](/sdk/typescript/wagmi/hooks/dex.useTickLevel) | Hook for getting the price level information at a specific tick |
-| [`dex.useSell`](/sdk/typescript/wagmi/hooks/dex.useSell) | Hook for selling a specific amount of tokens from the Stablecoin Exchange orderbook |
+| [`dex.useSell`](/sdk/typescript/wagmi/hooks/dex.useSell) | Hook for selling a specific amount of tokens from the Stablecoin DEX orderbook |
 | [`dex.useSellQuote`](/sdk/typescript/wagmi/hooks/dex.useSellQuote) | Hook for getting the quote for selling a specific amount of tokens |
 | [`dex.useWatchFlipOrderPlaced`](/sdk/typescript/wagmi/hooks/dex.useWatchFlipOrderPlaced) | Hook for watching flip order placed events |
 | [`dex.useWatchOrderCancelled`](/sdk/typescript/wagmi/hooks/dex.useWatchOrderCancelled) | Hook for watching order cancelled events |

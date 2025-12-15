@@ -2,7 +2,7 @@ import WriteParameters from '../../../../snippets/write-parameters.mdx'
 
 # `token.create`
 
-Creates a new TIP-20 token, and assigns the admin role to the calling account. [Learn more](/documentation/protocol/tip20/overview)
+Creates a new TIP-20 token, and assigns the admin role to the calling account. [Learn more](/protocol/tip20/overview)
 
 ## Usage
 
@@ -14,6 +14,7 @@ Use the `token.create` action on the Viem `client` to create and deploy a new TI
 import { client } from './viem.config'
 
 const { admin, receipt, token, tokenId } = await client.token.createSync({
+  admin: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
   currency: 'USD',
   name: 'My Company USD',
   symbol: 'CUSD',
@@ -44,6 +45,7 @@ import { Actions } from 'tempo.ts/viem'
 import { client } from './viem.config'
 
 const hash = await client.token.create({
+  admin: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
   currency: 'USD',
   name: 'My Company USD',
   symbol: 'CUSD',
@@ -64,6 +66,8 @@ type ReturnType = {
   currency: string
   /** Name of the token */
   name: string
+  /** Address of the quote token */
+  quoteToken: Address
   /** Transaction receipt */
   receipt: TransactionReceipt
   /** Symbol of the token */
@@ -77,6 +81,12 @@ type ReturnType = {
 
 ## Parameters
 
+### admin
+
+- **Type:** `Address`
+
+Admin address for the token.
+
 ### currency
 
 - **Type:** `string`
@@ -88,6 +98,12 @@ Currency code for the token.
 - **Type:** `string`
 
 Name of the token.
+
+### quoteToken (optional)
+
+- **Type:** `Address | bigint`
+
+Quote token address or ID.
 
 ### symbol
 

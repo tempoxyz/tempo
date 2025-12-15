@@ -83,7 +83,7 @@ shares for that polynomial, one for each player. The combination of all public
 polynomials and private key shares will form a group polynomial with matching
 shares. On success, these will become the threshold keys of the new epoch.
 The *players* of the DKG ceremony are the validators stored in the smart
-contract on-chain. On success, they will become the validators of the next epoch.
+contract onchain. On success, they will become the validators of the next epoch.
 
 For a lower level overview of DKG ceremony and the role of players and dealers,
 see [7]

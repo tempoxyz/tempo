@@ -4,8 +4,8 @@ use alloy_primitives::{Address, B256, TxHash, U256, map::HashMap};
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_tracing::tracing::trace;
 use reth_transaction_pool::{
-    BestTransactions, CoinbaseTipOrdering, PoolResult, PriceBumpConfig, Priority, SubPool,
-    SubPoolLimit, TransactionOrdering, TransactionOrigin, ValidPoolTransaction,
+    BestTransactions, CoinbaseTipOrdering, PoolResult, PoolTransaction, PriceBumpConfig, Priority,
+    SubPool, SubPoolLimit, TransactionOrdering, TransactionOrigin, ValidPoolTransaction,
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
     pool::{AddedPendingTransaction, AddedTransaction, QueuedReason, pending::PendingTransaction},
 };
@@ -21,7 +21,7 @@ use std::{
     sync::Arc,
 };
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::slots, storage::double_mapping_slot};
+use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 
 type Ordering = CoinbaseTipOrdering<TempoPooledTransaction>;
 
@@ -117,7 +117,7 @@ impl AA2dPool {
 
         // Cache the nonce key slot for reverse lookup, if this transaction uses 2D nonce.
         if transaction.transaction.is_aa_2d() {
-            self.record_2d_slot(transaction.sender(), tx_id.seq_id.nonce_key);
+            self.record_2d_slot(&transaction.transaction);
         }
 
         if transaction.nonce() < on_chain_nonce {
@@ -217,7 +217,6 @@ impl AA2dPool {
 
         // Record metrics
         self.metrics.inc_inserted();
-        self.update_metrics();
 
         if inserted_as_pending {
             if !promoted.is_empty() {
@@ -668,13 +667,14 @@ impl AA2dPool {
     }
 
     /// Caches the 2D nonce key slot for the given sender and nonce key.
-    fn record_2d_slot(&mut self, address: Address, nonce_key: U256) {
+    fn record_2d_slot(&mut self, transaction: &TempoPooledTransaction) {
+        let address = transaction.sender();
+        let nonce_key = transaction.nonce_key().unwrap_or_default();
+        let Some(slot) = transaction.nonce_key_slot() else {
+            return;
+        };
+
         trace!(target: "txpool::2d", ?address, ?nonce_key, "recording 2d nonce slot");
-        let slot = double_mapping_slot(
-            address.as_slice(),
-            nonce_key.to_be_bytes::<32>(),
-            slots::NONCES,
-        );
 
         if self
             .address_slots

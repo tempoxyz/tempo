@@ -1,0 +1,148 @@
+import { Callout } from 'vocs/components'
+
+# Executing Swaps
+
+## Swap Functions
+
+The exchange provides two primary swap functions:
+
+### Swap Exact Amount In
+
+Specify the exact amount of tokens you want to sell, and receive at least a minimum amount:
+
+```solidity
+function swapExactAmountIn(
+    address tokenIn,
+    address tokenOut,
+    uint128 amountIn,
+    uint128 minAmountOut
+) external returns (uint128 amountOut)
+```
+
+**Parameters:**
+- `tokenIn` - The token address you're selling
+- `tokenOut` - The token address you're buying
+- `amountIn` - The exact amount of `tokenIn` to sell
+- `minAmountOut` - Minimum amount of `tokenOut` you'll accept (slippage protection)
+
+**Returns:**
+- `amountOut` - The actual amount of `tokenOut` received
+
+**Example:** Swap exactly 1000 USDC for at least 998 USDT:
+```solidity
+uint128 amountOut = exchange.swapExactAmountIn(
+    USDC_ADDRESS,
+    USDT_ADDRESS,
+    1000e6,      // Sell exactly 1000 USDC
+    998e6        // Receive at least 998 USDT
+);
+```
+
+### Swap Exact Amount Out
+
+Specify the exact amount of tokens you want to receive, and pay at most a maximum amount:
+
+```solidity
+function swapExactAmountOut(
+    address tokenIn,
+    address tokenOut,
+    uint128 amountOut,
+    uint128 maxAmountIn
+) external returns (uint128 amountIn)
+```
+
+**Parameters:**
+- `tokenIn` - The token address you're selling
+- `tokenOut` - The token address you're buying
+- `amountOut` - The exact amount of `tokenOut` to receive
+- `maxAmountIn` - Maximum amount of `tokenIn` you'll pay (slippage protection)
+
+**Returns:**
+- `amountIn` - The actual amount of `tokenIn` spent
+
+**Example:** Receive exactly 1000 USDT by spending at most 1002 USDC:
+```solidity
+uint128 amountIn = exchange.swapExactAmountOut(
+    USDC_ADDRESS,
+    USDT_ADDRESS,
+    1000e6,      // Receive exactly 1000 USDT
+    1002e6       // Pay at most 1002 USDC
+);
+```
+
+## Quoting Prices
+
+Before executing a swap, you can query the expected price using view functions that simulate the swap without executing it:
+
+### Quote Exact Amount In
+
+```solidity
+function quoteSwapExactAmountIn(
+    address tokenIn,
+    address tokenOut,
+    uint128 amountIn
+) external view returns (uint128 amountOut)
+```
+
+Returns how much `tokenOut` you would receive for a given `amountIn`.
+
+### Quote Exact Amount Out
+
+```solidity
+function quoteSwapExactAmountOut(
+    address tokenIn,
+    address tokenOut,
+    uint128 amountOut
+) external view returns (uint128 amountIn)
+```
+
+Returns how much `tokenIn` you would need to spend to receive a given `amountOut`.
+
+**Example: Getting a price quote**
+```solidity
+// Check how much USDT you'd get for 1000 USDC
+uint128 expectedOut = exchange.quoteSwapExactAmountIn(
+    USDC_ADDRESS,
+    USDT_ADDRESS,
+    1000e6
+);
+
+// Only execute if the price is acceptable
+if (expectedOut >= 998e6) {
+    exchange.swapExactAmountIn(USDC_ADDRESS, USDT_ADDRESS, 1000e6, 998e6);
+}
+```
+
+## How Swaps Execute
+
+When you call a swap function:
+
+1. **Balance Check**: The contract first checks your balance on the DEX
+2. **Transfer if Needed**: If your DEX balance is insufficient, tokens are transferred from your wallet
+3. **Order Matching**: The DEX walks through orders at each price tick, from best to worst:
+   - Orders are consumed in price-time priority order
+   - Each filled order credits the maker's balance on the DEX
+   - Continues until your swap is complete or limit price is reached
+4. **Slippage Check**: Reverts if `minAmountOut` (or `maxAmountIn`) constraints aren't met
+5. **Settlement**: Your output tokens are transferred to your wallet
+
+<Callout type="warning">
+  Swaps will revert with an `InsufficientLiquidity` error if there isn't enough liquidity in the orderbook to satisfy your slippage constraints.
+</Callout>
+
+## Gas Costs
+
+Swap gas costs scale with the number of orders and ticks your trade crosses:
+
+- Base swap cost (transfers and setup)
+- Per-order cost (for each order filled)
+- Per-tick cost (for each price level crossed)
+- Per-flip cost (if any flip orders are triggered)
+
+Larger swaps that cross more orders will cost more gas, but the cost per unit of volume decreases.
+
+## Token Balances on the DEX
+
+The DEX allows you to track token balances directly within the DEX contract, which saves gas by avoiding ERC-20 transfers on every trade. When you execute a swap, the contract first checks your DEX balance and only transfers from your wallet if needed.
+
+For complete details on checking balances, depositing, withdrawing, and managing your DEX balance, see the [DEX Balance](/protocol/exchange/exchange-balance) page.

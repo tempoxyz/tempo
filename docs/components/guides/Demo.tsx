@@ -5,7 +5,13 @@ import { tempo } from 'tempo.ts/chains'
 import { Hooks } from 'tempo.ts/wagmi'
 import type { Address, BaseError } from 'viem'
 import { formatUnits } from 'viem'
-import { useAccount, useConnect, useConnectors, useDisconnect } from 'wagmi'
+import {
+  useAccount,
+  useConnect,
+  useConnections,
+  useConnectors,
+  useDisconnect,
+} from 'wagmi'
 import LucideCheck from '~icons/lucide/check'
 import LucideCopy from '~icons/lucide/copy'
 import LucideExternalLink from '~icons/lucide/external-link'
@@ -81,6 +87,7 @@ export function Container(
       | {
           footerVariant: 'balances'
           tokens: Address[]
+          balanceSource?: 'webAuthn' | 'wallet' | undefined
         }
       | {
           footerVariant: 'source'
@@ -91,23 +98,47 @@ export function Container(
 ) {
   const { children, name, showBadge = true } = props
   const { address } = useAccount()
+  const connections = useConnections()
   const disconnect = useDisconnect()
   const restart = React.useCallback(() => {
     disconnect.disconnect()
   }, [disconnect.disconnect])
 
+  const balanceAddress = React.useMemo(() => {
+    if (props.footerVariant !== 'balances') return address
+
+    const source = props.balanceSource
+    if (!source) return address
+
+    if (source === 'webAuthn') {
+      const webAuthnConnection = connections.find(
+        (c) => c.connector.id === 'webAuthn',
+      )
+      return webAuthnConnection?.accounts[0]
+    }
+
+    if (source === 'wallet') {
+      const walletConnection = connections.find(
+        (c) => c.connector.id !== 'webAuthn',
+      )
+      return walletConnection?.accounts[0]
+    }
+
+    return address
+  }, [props, address, connections])
+
   const footerElement = React.useMemo(() => {
     if (props.footerVariant === 'balances')
       return (
         <Container.BalancesFooter
-          address={address}
+          address={balanceAddress}
           tokens={props.tokens || [alphaUsd]}
         />
       )
     if (props.footerVariant === 'source')
       return <Container.SourceFooter src={props.src} />
     return null
-  }, [props, address])
+  }, [props, balanceAddress])
 
   return (
     <ParentContainer

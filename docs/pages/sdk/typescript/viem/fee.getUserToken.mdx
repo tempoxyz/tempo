@@ -1,8 +1,8 @@
-import ReadParameters from '../../../../snippets/read-parameters.mdx'
+import ReadAccountParameters from '../../../../snippets/read-account-parameters.mdx'
 
 # `fee.getUserToken`
 
-Gets the user's default fee token preference. [Learn more about fees](/documentation/protocol/fees)
+Gets the user's default fee token preference. [Learn more about fees](/protocol/fees)
 
 ## Usage
 
@@ -35,10 +35,18 @@ type ReturnType = {
   address: Address
   /** ID of the fee token */
   id: bigint
-}
+} | null
 ```
+
+Returns `null` if the user has not set a default fee token.
 
 ## Parameters
 
-<ReadParameters />
+### account
+
+- **Type:** `Address`
+
+Account address.
+
+<ReadAccountParameters />
 

@@ -21,7 +21,7 @@ use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_evm::TempoStateAccess;
-use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce, storage::double_mapping_slot};
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
 pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::{node::TempoNode, rpc::error::TempoEthApiError};
@@ -172,6 +172,11 @@ impl<N: FullNodeTypes<Types = TempoNode>> SpawnBlocking for TempoEthApi<N> {
     fn tracing_task_guard(&self) -> &BlockingTaskGuard {
         self.inner.blocking_task_guard()
     }
+
+    #[inline]
+    fn blocking_io_task_guard(&self) -> &Arc<tokio::sync::Semaphore> {
+        self.inner.blocking_io_task_guard()
+    }
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> LoadPendingBlock for TempoEthApi<N> {
@@ -281,11 +286,11 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
             && request.nonce.is_none()
             && !nonce_key.is_zero()
         {
-            let slot = double_mapping_slot(
-                request.from.unwrap_or_default().as_slice(),
-                nonce_key.to_be_bytes::<32>(),
-                nonce::slots::NONCES,
-            );
+            let slot = NonceManager::new()
+                .nonces
+                .at(request.from.unwrap_or_default())
+                .at(nonce_key)
+                .slot();
             request.nonce = Some(
                 db.storage(NONCE_PRECOMPILE_ADDRESS, slot)
                     .map_err(Into::into)?
