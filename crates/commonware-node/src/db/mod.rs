@@ -1,8 +1,7 @@
 use eyre::WrapErr;
-use std::{any::Any, collections::HashMap, hash::BuildHasher, sync::Arc};
+use std::{any::Any, collections::HashMap, sync::Arc};
 use tracing::debug;
 
-use alloy_primitives::map::FxBuildHasher;
 use async_lock::RwLock;
 use bytes::Bytes;
 use commonware_codec::{EncodeSize, Read, Write};
@@ -289,9 +288,11 @@ where
     }
 }
 
-/// Convert key to U64 using fxhash.
+/// Convert key to U64 using blake3.
 fn key_to_u64(key: &[u8]) -> U64 {
-    U64::new(FxBuildHasher::default().hash_one(key))
+    let hash = blake3::hash(key);
+    let bytes: [u8; 8] = hash.as_bytes()[..8].try_into().unwrap();
+    U64::new(u64::from_le_bytes(bytes))
 }
 
 /// Trait for values that can be cached in the transaction buffer.

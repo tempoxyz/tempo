@@ -11528,6 +11528,7 @@ dependencies = [
  "alloy-rpc-types-engine",
  "async-lock",
  "axum",
+ "blake3",
  "bytes",
  "clap",
  "commonware-broadcast",

@@ -27,6 +27,7 @@ alloy-rlp.workspace = true
 
 async-lock.workspace = true
 axum.workspace = true
+blake3.workspace = true
 bytes.workspace = true
 clap.workspace = true
 
