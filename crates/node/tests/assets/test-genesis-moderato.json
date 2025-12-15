@@ -27,7 +27,7 @@
   "nonce": "0x42",
   "timestamp": "0x0",
   "extraData": "0x74656d706f2d67656e65736973",
-  "gasLimit": "0xf761ef61000",
+  "gasLimit": "0x1dcd6500",
   "difficulty": "0x0",
   "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
   "coinbase": "0xbba20bb99da4e103721b754b25071fc85e7028a1",

@@ -27,7 +27,7 @@ bun i prool
 You can programmatically start a Tempo node instance in TypeScript using `Instance.tempo`:
 
 ```ts
-import { Instance, Server } from 'tempo.ts/prool'
+import { Instance, Server } from 'prool'
 
 const server = Server.create({
   instance: Instance.tempo(),
@@ -48,7 +48,7 @@ You can also set up the Tempo instance using `Instance.tempo` directly if you
 do not need pooling.
 
 ```ts
-import { Instance } from 'tempo.ts/prool';
+import { Instance } from 'prool';
 
 const instance = Instance.tempo()
 
