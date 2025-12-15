@@ -76,8 +76,43 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Download snapshot
-        run: cargo run --release --bin tempo download --datadir snap-rexec
+      - name: Get latest filename from API
+        id: latest
+        run: |
+          FILENAME=$(curl -s https://snapshots.tempoxyz.dev/42429/latest.txt)
+          echo "Latest filename: $FILENAME"
+          echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cached file
+        id: cache-file
+        uses: actions/cache@v4
+        with:
+          path: .cache/snapshots
+          key: snapshots-${{ steps.latest.outputs.filename }}
+
+      - name: Download file if cache miss
+        if: steps.cache-file.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .cache/snapshots
+
+          FILE_NAME='${{ steps.latest.outputs.filename }}'
+          curl -L "https://snapshots.tempoxyz.dev/42429/$FILE_NAME" \
+            -o ".cache/snapshots/$FILE_NAME"
+
+          ls -l .cache/snapshots
+
+      - name: Use the file
+        run: |
+          FILE_NAME='${{ steps.latest.outputs.filename }}'
+          FILE_PATH=".cache/snapshots/$FILE_NAME"
+
+          if [ ! -f "$FILE_PATH" ]; then
+            echo "File not found: $FILE_PATH"
+            exit 1
+          fi
+
+          mkdir snap-rexec
+          lz4 -d -c "$FILE_PATH" | tar -C snap-rexec -xvf -
       - name: Re-execute snapshot
         run: cargo run --release --bin tempo re-execute --datadir snap-rexec --to 4500000
 
