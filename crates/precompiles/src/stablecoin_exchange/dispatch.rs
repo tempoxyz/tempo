@@ -82,9 +82,7 @@ impl Precompile for StablecoinExchange {
                         self.storage.spec(),
                     );
                 }
-                view::<IStablecoinExchange::nextOrderIdCall>(calldata, |_call| {
-                    self.active_order_id()
-                })
+                view::<IStablecoinExchange::nextOrderIdCall>(calldata, |_call| self.next_order_id())
             }
 
             IStablecoinExchange::activeOrderIdCall::SELECTOR => {

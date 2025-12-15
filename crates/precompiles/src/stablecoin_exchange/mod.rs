@@ -408,14 +408,19 @@ impl StablecoinExchange {
             .read()
     }
 
-    /// Get active order ID
+    /// Get active order ID (Pre Allegro-Moderato)
     pub fn active_order_id(&self) -> Result<u128> {
         self.active_order_id.read()
     }
 
-    /// Get pending order ID
+    /// Get pending order ID (Pre Allegro-Moderato)
     pub fn pending_order_id(&self) -> Result<u128> {
         self.pending_order_id.read()
+    }
+
+    /// Get nextOrderId (Post Allegro-Moderato)
+    pub fn next_order_id(&self) -> Result<u128> {
+        Ok(self.active_order_id.read()? + 1)
     }
 
     /// Get orderbook by pair key
