@@ -278,6 +278,7 @@ pub async fn setup_validators(
             peer_manager: oracle.socket_manager(),
             partition_prefix: uid.clone(),
             share,
+            delete_signing_share: false,
             signer: private_key.clone(),
             mailbox_size: 1024,
             deque_size: 10,
