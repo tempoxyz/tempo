@@ -91,15 +91,22 @@ def "main kill" [
     --prompt    # Prompt before killing (for interactive use)
 ] {
     let pids = (find-tempo-pids)
-    if ($pids | length) == 0 {
-        print "No tempo processes found."
+    let has_stale_ipc = ("/tmp/reth.ipc" | path exists)
+
+    if ($pids | length) == 0 and not $has_stale_ipc {
+        print "No tempo processes or stale IPC socket found."
         return
     }
 
-    print $"Found ($pids | length) running tempo process\(es\)."
+    if ($pids | length) > 0 {
+        print $"Found ($pids | length) running tempo process\(es\)."
+    }
+    if $has_stale_ipc {
+        print "Found stale /tmp/reth.ipc socket."
+    }
 
     let should_kill = if $prompt {
-        let answer = (input "Kill them? [Y/n] " | str trim | str downcase)
+        let answer = (input "Clean up? [Y/n] " | str trim | str downcase)
         $answer == "" or $answer == "y" or $answer == "yes"
     } else {
         true
@@ -110,13 +117,15 @@ def "main kill" [
         exit 1
     }
 
-    print $"Sending SIGINT to ($pids | length) tempo processes..."
-    for pid in $pids {
-        kill -s 2 $pid
+    if ($pids | length) > 0 {
+        print $"Sending SIGINT to ($pids | length) tempo processes..."
+        for pid in $pids {
+            kill -s 2 $pid
+        }
     }
 
     # Remove stale IPC socket
-    if ("/tmp/reth.ipc" | path exists) {
+    if $has_stale_ipc {
         rm /tmp/reth.ipc
         print "Removed /tmp/reth.ipc"
     }
@@ -144,9 +153,10 @@ def "main node" [
 ] {
     validate-mode $mode
 
-    # Check for dangling processes
+    # Check for dangling processes or stale IPC socket
     let pids = (find-tempo-pids)
-    if ($pids | length) > 0 {
+    let has_stale_ipc = ("/tmp/reth.ipc" | path exists)
+    if ($pids | length) > 0 or $has_stale_ipc {
         main kill --prompt=($force | not $in)
     }
 
@@ -432,9 +442,9 @@ def "main bench" [
     | append (if $mode == "consensus" { ["--nodes" $"($nodes)"] } else { [] })
     | append (if $reset { ["--reset"] } else { [] })
     | append (if $samply { ["--samply"] } else { [] })
-    | append (if $samply_args != "" { ["--samply-args" $samply_args] } else { [] })
+    | append (if $samply_args != "" { [$"--samply-args=\"($samply_args)\""] } else { [] })
     | append (if $loud { ["--loud"] } else { [] })
-    | append (if $node_args != "" { ["--node-args" $node_args] } else { [] })
+    | append (if $node_args != "" { [$"--node-args=\"($node_args)\""] } else { [] })
 
     # Spawn nodes as a background job (pipe output to show logs)
     let node_cmd_str = ($node_cmd | str join " ")
