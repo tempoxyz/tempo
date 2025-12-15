@@ -651,11 +651,14 @@ where
 
                 // Calculate 2D nonce gas (only post-AllegroModerato)
                 let gas = if cfg.spec.is_allegro_moderato() {
-                    calculate_2d_nonce_gas(&mut nonce_manager, tx.caller(), nonce_key)
-                        .map_err(|err| match err {
+                    calculate_2d_nonce_gas(&mut nonce_manager, tx.caller(), nonce_key).map_err(
+                        |err| match err {
                             TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                            err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
-                        })?
+                            err => {
+                                TempoInvalidTransaction::NonceManagerError(err.to_string()).into()
+                            }
+                        },
+                    )?
                 } else {
                     0
                 };
