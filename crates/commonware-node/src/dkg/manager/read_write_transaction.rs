@@ -21,6 +21,7 @@ fn validators_key(epoch: u64) -> String {
 }
 
 const DKG_OUTCOME_KEY: &str = "dkg_outcome";
+const LAST_PROCESSED_HEIGHT_KEY: &str = "last_processed_height";
 
 fn current_epoch_key(regime: HardforkRegime) -> &'static str {
     match regime {
@@ -63,6 +64,18 @@ where
     /// Commit the transaction.
     pub(super) async fn commit(self) -> Result<(), eyre::Error> {
         self.0.commit().await
+    }
+
+    // ── Replay Protection ────────────────────────────────────────────────────
+
+    /// Get the last processed block height.
+    pub(super) async fn get_last_processed_height(&self) -> Result<Option<u64>, eyre::Error> {
+        self.0.get(LAST_PROCESSED_HEIGHT_KEY).await
+    }
+
+    /// Set the last processed block height.
+    pub(super) fn set_last_processed_height(&mut self, height: u64) {
+        self.0.insert(LAST_PROCESSED_HEIGHT_KEY, height)
     }
 
     // ── Ceremony Store ──────────────────────────────────────────────────────

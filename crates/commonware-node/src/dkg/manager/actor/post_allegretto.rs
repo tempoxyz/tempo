@@ -463,7 +463,7 @@ where
             .expect("must be able to read epoch")
             .expect("there must always exist an epoch state");
 
-        let our_dkg_outcome = tx
+        let mut our_dkg_outcome = tx
             .get_dkg_outcome()
             .await
             .expect("must be able to read dkg outcome")
