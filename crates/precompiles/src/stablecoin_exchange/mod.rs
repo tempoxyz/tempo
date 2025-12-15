@@ -541,7 +541,12 @@ impl StablecoinExchange {
         self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
 
         // Create the order
-        let order_id = self.next_order_id()?;
+        let order_id = if self.storage.spec().is_allegro_moderato() {
+            self.next_order_id()?
+        } else {
+            self.increment_pending_order_id()?
+        };
+
         let order = if is_bid {
             Order::new_bid(order_id, sender, book_key, amount, tick)
         } else {
@@ -696,7 +701,12 @@ impl StablecoinExchange {
         self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
 
         // Create the flip order
-        let order_id = self.increment_pending_order_id()?;
+        let order_id = if self.storage.spec().is_allegro_moderato() {
+            self.next_order_id()?
+        } else {
+            self.increment_pending_order_id()?
+        };
+
         let order = Order::new_flip(order_id, sender, book_key, amount, tick, is_bid, flip_tick)
             .map_err(|_| StablecoinExchangeError::invalid_flip_tick())?;
 
