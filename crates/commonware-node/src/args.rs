@@ -27,7 +27,7 @@ pub struct Args {
     /// shares can be directly manipulated and deleted.
     ///
     /// CAREFUL: this operation is destructive and cannot be reversed.
-    #[arg(long = "consensus.unset-signing-share")]
+    #[arg(long = "consensus.delete-signing-share")]
     pub delete_signing_share: bool,
 
     /// The socket address that will be bound to listen for consensus communication from
