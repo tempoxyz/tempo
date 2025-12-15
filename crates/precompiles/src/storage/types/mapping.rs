@@ -123,7 +123,7 @@ impl<K, V> StorableType for Mapping<K, V> {
 mod tests {
     use super::*;
     use crate::storage::StorageKey;
-    use alloy::primitives::{Address, B256, keccak256};
+    use alloy::primitives::{Address, B256, utils::keccak256_cached};
 
     // Backward compatibility helper to verify the trait impl.
     fn old_mapping_slot<K: AsRef<[u8]>>(key: K, slot: U256) -> U256 {
@@ -131,7 +131,7 @@ mod tests {
         let mut buf = [0u8; 64];
         buf[32 - key.len()..32].copy_from_slice(key);
         buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
-        U256::from_be_bytes(keccak256(buf).0)
+        U256::from_be_bytes(keccak256_cached(buf).0)
     }
 
     #[test]
@@ -146,7 +146,7 @@ mod tests {
         // Slot in big-endian
         buf[32..].copy_from_slice(&base_slot.to_be_bytes::<32>());
 
-        let expected = U256::from_be_bytes(keccak256(buf).0);
+        let expected = U256::from_be_bytes(keccak256_cached(buf).0);
         let computed = key.mapping_slot(base_slot);
 
         assert_eq!(computed, expected, "mapping_slot encoding mismatch");

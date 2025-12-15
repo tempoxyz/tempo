@@ -3,7 +3,9 @@ use alloy_consensus::{
     transaction::{RlpEcdsaDecodableTx, RlpEcdsaEncodableTx},
 };
 use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
-use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256, keccak256};
+use alloy_primitives::{
+    Address, B256, Bytes, ChainId, Signature, TxKind, U256, utils::keccak256_cached,
+};
 use alloy_rlp::{Buf, BufMut, Decodable, EMPTY_STRING_CODE, Encodable};
 use core::mem;
 
@@ -196,7 +198,7 @@ impl TxFeeToken {
             false,
         );
 
-        keccak256(&buf)
+        keccak256_cached(&buf)
     }
 }
 

@@ -8,7 +8,7 @@ use crate::{
     tip20::{TIP20Token, address_to_token_id_unchecked},
 };
 use alloy::{
-    primitives::{Address, B256, U256, keccak256},
+    primitives::{Address, B256, U256, utils::keccak256_cached},
     sol_types::SolValue,
 };
 
@@ -34,7 +34,7 @@ impl TIP20RewardsRegistry {
 
     /// Add a token to the registry for a given stream end time
     pub fn add_stream(&mut self, token: Address, end_time: u128) -> Result<()> {
-        let stream_key = keccak256((token, end_time).abi_encode());
+        let stream_key = keccak256_cached((token, end_time).abi_encode());
         let stream_ending_at = self.ending_streams.at(end_time);
         let length = stream_ending_at.len()?;
 
@@ -44,7 +44,7 @@ impl TIP20RewardsRegistry {
 
     /// Remove stream before it is finalized
     pub fn remove_stream(&mut self, token: Address, end_time: u128) -> Result<()> {
-        let stream_key = keccak256((token, end_time).abi_encode());
+        let stream_key = keccak256_cached((token, end_time).abi_encode());
         let index: usize = self.stream_index.at(stream_key).read()?.to();
 
         let stream_ending_at = self.ending_streams.at(end_time);
@@ -59,7 +59,7 @@ impl TIP20RewardsRegistry {
             stream_ending_at.at_unchecked(index).write(last_token)?;
 
             // Update stream_index for the moved element
-            let last_stream_key = keccak256((last_token, end_time).abi_encode());
+            let last_stream_key = keccak256_cached((last_token, end_time).abi_encode());
             self.stream_index
                 .at(last_stream_key)
                 .write(U256::from(index))?;
@@ -101,7 +101,7 @@ impl TIP20RewardsRegistry {
                 let mut tip20_token = TIP20Token::new(token_id);
                 tip20_token.finalize_streams(self.address, next_timestamp)?;
 
-                let stream_key = keccak256((token, next_timestamp).abi_encode());
+                let stream_key = keccak256_cached((token, next_timestamp).abi_encode());
                 self.stream_index.at(stream_key).delete()?;
             }
 
@@ -151,7 +151,7 @@ mod tests {
             assert_eq!(streams.len(), 1);
             assert_eq!(streams[0], token);
 
-            let stream_key = keccak256((token, end_time).abi_encode());
+            let stream_key = keccak256_cached((token, end_time).abi_encode());
             let index = registry.stream_index.at(stream_key).read()?;
             assert_eq!(index, U256::ZERO);
 
@@ -162,7 +162,7 @@ mod tests {
             assert!(streams.contains(&token));
             assert!(streams.contains(&token2));
 
-            let stream_key2 = keccak256((token2, end_time).abi_encode());
+            let stream_key2 = keccak256_cached((token2, end_time).abi_encode());
             let index2 = registry.stream_index.at(stream_key2).read()?;
             assert_eq!(index2, U256::ONE);
 
@@ -204,9 +204,9 @@ mod tests {
             assert_eq!(streams[1], token3);
 
             // Verify indices are updated correctly
-            let stream_key1 = keccak256((token1, end_time).abi_encode());
-            let stream_key2 = keccak256((token2, end_time).abi_encode());
-            let stream_key3 = keccak256((token3, end_time).abi_encode());
+            let stream_key1 = keccak256_cached((token1, end_time).abi_encode());
+            let stream_key2 = keccak256_cached((token2, end_time).abi_encode());
+            let stream_key3 = keccak256_cached((token3, end_time).abi_encode());
 
             let index1 = registry.stream_index.at(stream_key1).read()?;
             let index2 = registry.stream_index.at(stream_key2).read()?;

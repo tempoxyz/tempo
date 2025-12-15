@@ -1,7 +1,7 @@
 use super::tempo_transaction::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType,
 };
-use alloy_primitives::{Address, B256, Bytes, Signature, keccak256};
+use alloy_primitives::{Address, B256, Bytes, Signature, utils::keccak256_cached};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::{
     EncodedPoint,
@@ -646,7 +646,7 @@ impl From<Signature> for TempoSignature {
 
 /// Derives a P256 address from public key coordinates
 pub fn derive_p256_address(pub_key_x: &B256, pub_key_y: &B256) -> Address {
-    let hash = keccak256([pub_key_x.as_slice(), pub_key_y.as_slice()].concat());
+    let hash = keccak256_cached([pub_key_x.as_slice(), pub_key_y.as_slice()].concat());
 
     // Take last 20 bytes as address
     Address::from_slice(&hash[12..])

@@ -14,7 +14,7 @@ use crate::{
     error::Result,
     storage::{StorageOps, packing},
 };
-use alloy::primitives::{Address, U256, keccak256};
+use alloy::primitives::{Address, U256, utils::keccak256_cached};
 
 /// Describes how a type is laid out in EVM storage.
 ///
@@ -307,6 +307,6 @@ pub trait StorageKey {
         // Append slot in big-endian
         buf[padded_len..].copy_from_slice(&slot.to_be_bytes::<32>());
 
-        U256::from_be_bytes(keccak256(&buf).0)
+        U256::from_be_bytes(keccak256_cached(&buf).0)
     }
 }

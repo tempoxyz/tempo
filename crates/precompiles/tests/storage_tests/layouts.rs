@@ -220,7 +220,7 @@ fn test_string_literal_slots() {
         assert_eq!(layout.field.read().unwrap(), U256::ONE);
 
         // Verify slot assignment
-        let slot: U256 = keccak256("id").into();
+        let slot: U256 = keccak256_cached("id").into();
         assert_eq!(layout.field.slot(), slot);
         assert_eq!(slots::FIELD, slot);
 

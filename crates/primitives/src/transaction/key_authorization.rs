@@ -1,7 +1,7 @@
 use super::SignatureType;
 use crate::transaction::PrimitiveSignature;
 use alloy_consensus::crypto::RecoveryError;
-use alloy_primitives::{Address, B256, U256, keccak256};
+use alloy_primitives::{Address, B256, U256, utils::keccak256_cached};
 use alloy_rlp::Encodable;
 use core::mem;
 use reth_primitives_traits::InMemorySize;
@@ -65,7 +65,7 @@ impl KeyAuthorization {
     pub fn signature_hash(&self) -> B256 {
         let mut buf = Vec::new();
         self.encode(&mut buf);
-        keccak256(&buf)
+        keccak256_cached(&buf)
     }
 
     /// Returns whether this key has unlimited spending (limits is None)

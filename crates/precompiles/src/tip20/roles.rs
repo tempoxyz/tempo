@@ -141,7 +141,7 @@ impl TIP20Token {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::keccak256;
+    use alloy::primitives::utils::keccak256_cached;
 
     use super::*;
     use crate::{error::TempoPrecompileError, storage::StorageCtx, test_util::setup_storage};
@@ -150,7 +150,7 @@ mod tests {
     fn test_role_contract_grant_and_check() -> eyre::Result<()> {
         let (mut storage, admin) = setup_storage();
         let user = Address::random();
-        let custom_role = keccak256(b"CUSTOM_ROLE");
+        let custom_role = keccak256_cached(b"CUSTOM_ROLE");
         let token_id = 1;
 
         StorageCtx::enter(&mut storage, || {
@@ -199,8 +199,8 @@ mod tests {
     #[test]
     fn test_role_admin_functions() -> eyre::Result<()> {
         let (mut storage, admin) = setup_storage();
-        let custom_role = keccak256(b"CUSTOM_ROLE");
-        let admin_role = keccak256(b"ADMIN_ROLE");
+        let custom_role = keccak256_cached(b"CUSTOM_ROLE");
+        let admin_role = keccak256_cached(b"ADMIN_ROLE");
         let token_id = 1;
 
         StorageCtx::enter(&mut storage, || {
@@ -236,7 +236,7 @@ mod tests {
     #[test]
     fn test_renounce_role() -> eyre::Result<()> {
         let (mut storage, user) = setup_storage();
-        let custom_role = keccak256(b"CUSTOM_ROLE");
+        let custom_role = keccak256_cached(b"CUSTOM_ROLE");
         let token_id = 1;
 
         StorageCtx::enter(&mut storage, || {
@@ -265,7 +265,7 @@ mod tests {
     fn test_unauthorized_access() -> eyre::Result<()> {
         let (mut storage, user) = setup_storage();
         let other = Address::random();
-        let custom_role = keccak256(b"CUSTOM_ROLE");
+        let custom_role = keccak256_cached(b"CUSTOM_ROLE");
         let token_id = 1;
 
         StorageCtx::enter(&mut storage, || {

@@ -1,5 +1,5 @@
 use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
-use alloy_primitives::{Address, B256, keccak256};
+use alloy_primitives::{Address, B256, utils::keccak256_cached};
 use alloy_rlp::{BufMut, Decodable, Encodable, Header, Result as RlpResult, length_of_length};
 use core::ops::Deref;
 use std::sync::OnceLock;
@@ -63,7 +63,7 @@ impl TempoSignedAuthorization {
         let mut buf = Vec::new();
         buf.push(MAGIC);
         self.inner.encode(&mut buf);
-        keccak256(buf)
+        keccak256_cached(buf)
     }
 
     /// Recover the authority for the authorization.
@@ -334,7 +334,7 @@ mod tests {
             let mut buf = Vec::new();
             buf.push(MAGIC);
             auth.encode(&mut buf);
-            keccak256(buf)
+            keccak256_cached(buf)
         };
 
         assert_eq!(signed.signature_hash(), expected_hash);

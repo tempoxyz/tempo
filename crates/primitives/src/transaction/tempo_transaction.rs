@@ -1,6 +1,8 @@
 use alloy_consensus::{SignableTransaction, Transaction};
 use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
-use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256, keccak256};
+use alloy_primitives::{
+    Address, B256, Bytes, ChainId, Signature, TxKind, U256, utils::keccak256_cached,
+};
 use alloy_rlp::{Buf, BufMut, Decodable, EMPTY_STRING_CODE, Encodable};
 use core::mem;
 use reth_primitives_traits::InMemorySize;
@@ -291,7 +293,7 @@ impl TempoTransaction {
     pub fn signature_hash(&self) -> B256 {
         let mut buf = Vec::new();
         self.encode_for_signing(&mut buf);
-        keccak256(&buf)
+        keccak256_cached(&buf)
     }
 
     /// Calculate the fee payer signature hash
@@ -318,7 +320,7 @@ impl TempoTransaction {
             false, // skip_fee_token = FALSE - fee payer commits to fee_token!
         );
 
-        keccak256(&buf)
+        keccak256_cached(&buf)
     }
 
     /// Outputs the length of the transaction's fields, without a RLP header.

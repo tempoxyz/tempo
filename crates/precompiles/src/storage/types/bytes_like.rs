@@ -15,7 +15,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{StorageOps, types::*},
 };
-use alloy::primitives::{Address, Bytes, U256, keccak256};
+use alloy::primitives::{Address, Bytes, U256, utils::keccak256_cached};
 
 impl StorableType for Bytes {
     const LAYOUT: Layout = Layout::Slots(1);
@@ -187,7 +187,7 @@ fn delete_bytes_like<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<
 /// For long strings (≥32 bytes), data is stored starting at `keccak256(base_slot)`.
 #[inline]
 fn calc_data_slot(base_slot: U256) -> U256 {
-    U256::from_be_bytes(keccak256(base_slot.to_be_bytes::<32>()).0)
+    U256::from_be_bytes(keccak256_cached(base_slot.to_be_bytes::<32>()).0)
 }
 
 /// Check if a storage slot value represents a long string.
@@ -310,7 +310,7 @@ mod tests {
         let data_slot = calc_data_slot(base_slot);
 
         // Manual computation
-        let expected = U256::from_be_bytes(keccak256(base_slot.to_be_bytes::<32>()).0);
+        let expected = U256::from_be_bytes(keccak256_cached(base_slot.to_be_bytes::<32>()).0);
 
         assert_eq!(
             data_slot, expected,

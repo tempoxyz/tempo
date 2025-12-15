@@ -9,7 +9,7 @@ use alloy_eips::{
     eip2930::AccessList,
     eip7702::SignedAuthorization,
 };
-use alloy_primitives::{B256, Bytes, TxKind, U256};
+use alloy_primitives::{B256, Bytes, TxKind, U256, utils::keccak256_cached};
 use alloy_rlp::{BufMut, Decodable, Encodable};
 use core::{
     fmt::Debug,
@@ -89,7 +89,7 @@ impl AASigned {
     fn compute_hash(&self) -> B256 {
         let mut buf = Vec::new();
         self.eip2718_encode(&mut buf);
-        alloy_primitives::keccak256(&buf)
+        keccak256_cached(&buf)
     }
 
     /// Calculate the signing hash for the transaction.

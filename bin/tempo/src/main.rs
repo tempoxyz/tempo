@@ -91,10 +91,6 @@ struct PyroscopeArgs {
 fn main() -> eyre::Result<()> {
     reth_cli_util::sigsegv_handler::install();
 
-    unsafe {
-        std::env::set_var("KECCAK_CACHE_STATS", "1");
-    }
-
     // XXX: ensures that the error source chain is preserved in
     // tracing-instrument generated error events. That is, this hook ensures
     // that functions instrumented like `#[instrument(err)]` will emit an event
@@ -290,6 +286,11 @@ fn main() -> eyre::Result<()> {
             }
         }
 
+        tracing::warn!(
+            "KECCAK STATS: {}",
+            alloy_primitives::utils::format_keccak_cache_stats()
+        );
+
         #[cfg(feature = "pyroscope")]
         if let Some(agent) = pyroscope_agent {
             agent.shutdown();
@@ -306,8 +307,6 @@ fn main() -> eyre::Result<()> {
         Ok(Err(err)) => eprintln!("consensus task exited with error:\n{err:?}"),
         Err(unwind) => std::panic::resume_unwind(unwind),
     }
-
-    println!("{}", alloy_primitives::utils::format_keccak_cache_stats());
 
     Ok(())
 }

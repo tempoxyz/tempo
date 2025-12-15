@@ -21,7 +21,7 @@ use crate::{
 };
 use alloy::{
     hex,
-    primitives::{Address, B256, U256, keccak256, uint},
+    primitives::{Address, B256, U256, uint, utils::keccak256_cached},
 };
 use std::sync::LazyLock;
 use tempo_precompiles_macros::contract;
@@ -98,10 +98,11 @@ pub struct TIP20Token {
     fee_recipient: Address,
 }
 
-pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"));
-pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_ROLE"));
-pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
-pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
+pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256_cached(b"PAUSE_ROLE"));
+pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256_cached(b"UNPAUSE_ROLE"));
+pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256_cached(b"ISSUER_ROLE"));
+pub static BURN_BLOCKED_ROLE: LazyLock<B256> =
+    LazyLock::new(|| keccak256_cached(b"BURN_BLOCKED_ROLE"));
 
 /// Validates that a token has USD currency
 pub fn validate_usd_currency(token: Address, storage: StorageCtx) -> Result<()> {

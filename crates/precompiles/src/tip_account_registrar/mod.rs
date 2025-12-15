@@ -79,7 +79,7 @@ impl TipAccountRegistrar {
         let ITipAccountRegistrar::delegateToDefault_1Call { message, signature } = call;
 
         // Compute the hash internally from the provided message
-        let hash = alloy::primitives::keccak256(&message);
+        let hash = alloy::primitives::utils::keccak256_cached(&message);
 
         // Reuse v1 logic with the computed hash
         self.delegate_to_default_v1(ITipAccountRegistrar::delegateToDefault_0Call {
@@ -142,7 +142,7 @@ mod tests {
             // Pre-Moderato: delegateToDefault(bytes32,bytes) should work
             let signer = PrivateKeySigner::random();
             let expected_address = signer.address();
-            let hash = alloy::primitives::keccak256(b"test");
+            let hash = alloy::primitives::utils::keccak256_cached(b"test");
 
             let mut registrar = TipAccountRegistrar::new();
 
@@ -176,7 +176,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         StorageCtx::enter(&mut storage, || {
             // Post-Moderato: delegateToDefault(bytes32,bytes) should be rejected
-            let hash = alloy::primitives::keccak256(b"test");
+            let hash = alloy::primitives::utils::keccak256_cached(b"test");
             let mut registrar = TipAccountRegistrar::new();
 
             let signer = PrivateKeySigner::random();
@@ -224,7 +224,7 @@ mod tests {
             let mut registrar = TipAccountRegistrar::new();
 
             let message = b"Hello, Tempo! I want to delegate my account.";
-            let message_hash = alloy::primitives::keccak256(message);
+            let message_hash = alloy::primitives::utils::keccak256_cached(message);
             let signature = signer.sign_hash_sync(&message_hash).unwrap();
 
             let call = ITipAccountRegistrar::delegateToDefault_1Call {
@@ -260,7 +260,7 @@ mod tests {
 
             let signer = PrivateKeySigner::random();
             let message = b"Hello, Tempo!";
-            let message_hash = alloy::primitives::keccak256(message);
+            let message_hash = alloy::primitives::utils::keccak256_cached(message);
             let signature = signer.sign_hash_sync(&message_hash).unwrap();
 
             // Encode the call using the new signature
@@ -285,7 +285,7 @@ mod tests {
     fn test_malformed_signature_v1() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let hash = alloy::primitives::keccak256(b"test");
+            let hash = alloy::primitives::utils::keccak256_cached(b"test");
             let mut registrar = TipAccountRegistrar::new();
 
             // Signature too short
@@ -326,7 +326,7 @@ mod tests {
     fn test_invalid_signature_v1() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let hash = alloy::primitives::keccak256(b"test");
+            let hash = alloy::primitives::utils::keccak256_cached(b"test");
             let mut registrar = TipAccountRegistrar::new();
 
             // Create a signature with an invalid recovery value
@@ -357,7 +357,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let signer = PrivateKeySigner::random();
             let expected_address = signer.address();
-            let hash = alloy::primitives::keccak256(b"test");
+            let hash = alloy::primitives::utils::keccak256_cached(b"test");
 
             let mut registrar = TipAccountRegistrar::new();
 
@@ -397,7 +397,7 @@ mod tests {
 
             // Sign one message
             let message1 = b"Message 1";
-            let hash1 = alloy::primitives::keccak256(message1);
+            let hash1 = alloy::primitives::utils::keccak256_cached(message1);
             let signature1 = signer.sign_hash_sync(&hash1).unwrap();
 
             // Try to reuse the signature for a different message

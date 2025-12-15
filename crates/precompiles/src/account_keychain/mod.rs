@@ -70,11 +70,11 @@ pub struct AccountKeychain {
 impl AccountKeychain {
     /// Create a hash key for spending limits mapping from account and keyId
     fn spending_limit_key(account: Address, key_id: Address) -> B256 {
-        use alloy::primitives::keccak256;
+        use alloy::primitives::utils::keccak256_cached;
         let mut data = [0u8; 40];
         data[..20].copy_from_slice(account.as_slice());
         data[20..].copy_from_slice(key_id.as_slice());
-        keccak256(data)
+        keccak256_cached(data)
     }
 
     /// Initializes the account keychain contract.

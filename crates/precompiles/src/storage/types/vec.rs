@@ -333,7 +333,7 @@ where
 /// For Solidity compatibility, dynamic array data is stored at `keccak256(len_slot)`.
 #[inline]
 pub(crate) fn calc_data_slot(len_slot: U256) -> U256 {
-    U256::from_be_bytes(alloy::primitives::keccak256(len_slot.to_be_bytes::<32>()).0)
+    U256::from_be_bytes(alloy::primitives::utils::keccak256_cached(len_slot.to_be_bytes::<32>()).0)
 }
 
 /// Load packed elements from storage.
@@ -533,7 +533,7 @@ mod tests {
         // Verify data slot matches keccak256(len_slot)
         let data_slot = calc_data_slot(len_slot);
         let expected =
-            U256::from_be_bytes(alloy::primitives::keccak256(len_slot.to_be_bytes::<32>()).0);
+            U256::from_be_bytes(alloy::primitives::utils::keccak256_cached(len_slot.to_be_bytes::<32>()).0);
 
         assert_eq!(
             data_slot, expected,

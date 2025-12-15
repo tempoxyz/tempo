@@ -1,5 +1,7 @@
 use alloy_consensus::{BlockHeader, Header, Sealable};
-use alloy_primitives::{Address, B64, B256, BlockHash, BlockNumber, Bloom, Bytes, U256, keccak256};
+use alloy_primitives::{
+    Address, B64, B256, BlockHash, BlockNumber, Bloom, Bytes, U256, utils::keccak256_cached,
+};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use reth_primitives_traits::InMemorySize;
 
@@ -156,7 +158,7 @@ impl InMemorySize for TempoHeader {
 
 impl Sealable for TempoHeader {
     fn hash_slow(&self) -> B256 {
-        keccak256(alloy_rlp::encode(self))
+        keccak256_cached(alloy_rlp::encode(self))
     }
 }
 

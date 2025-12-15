@@ -5,7 +5,7 @@ use crate::{
     stablecoin_exchange::IStablecoinExchange,
     storage::{Handler, Mapping, Slot, StorageCtx},
 };
-use alloy::primitives::{Address, B256, U256, keccak256};
+use alloy::primitives::{Address, B256, U256, utils::keccak256_cached};
 use tempo_contracts::precompiles::StablecoinExchangeError;
 use tempo_precompiles_macros::Storable;
 
@@ -280,7 +280,7 @@ pub fn compute_book_key(token_a: Address, token_b: Address) -> B256 {
     let mut buf = [0u8; 40];
     buf[..20].copy_from_slice(token_a.as_slice());
     buf[20..].copy_from_slice(token_b.as_slice());
-    keccak256(buf)
+    keccak256_cached(buf)
 }
 
 /// Convert relative tick to scaled price
@@ -447,7 +447,7 @@ mod tests {
         let mut buf = [0u8; 40];
         buf[..20].copy_from_slice(token_a.as_slice());
         buf[20..].copy_from_slice(token_b.as_slice());
-        let expected_hash = keccak256(buf);
+        let expected_hash = keccak256_cached(buf);
 
         assert_eq!(
             key_ab, expected_hash,

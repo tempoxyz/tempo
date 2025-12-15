@@ -4,7 +4,7 @@ use crate::storage::{
     Handler, LayoutCtx, Slot, Storable, StorageCtx, hashmap::HashMapStorageProvider,
     packing::extract_packed_value,
 };
-use alloy::primitives::{Address, U256, keccak256};
+use alloy::primitives::{Address, U256, utils::keccak256_cached};
 use proptest::prelude::*;
 use tempo_precompiles::error;
 use tempo_precompiles_macros::{Storable, contract};

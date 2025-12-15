@@ -1,5 +1,5 @@
 use crate::TempoTxEnvelope;
-use alloy_primitives::{Address, B256, Bytes, U256, keccak256, wrap_fixed_bytes};
+use alloy_primitives::{Address, B256, Bytes, U256, utils::keccak256_cached, wrap_fixed_bytes};
 use alloy_rlp::{BufMut, Decodable, Encodable, RlpDecodable, RlpEncodable};
 use reth_primitives_traits::{Recovered, crypto::RecoveryError};
 
@@ -89,7 +89,7 @@ impl SubBlock {
         let mut buf = Vec::with_capacity(self.length() + 1);
         buf.put_u8(SUBBLOCK_SIGNATURE_HASH_MAGIC_BYTE);
         self.encode(&mut buf);
-        keccak256(&buf)
+        keccak256_cached(&buf)
     }
 
     fn rlp_encode_fields(&self, out: &mut dyn BufMut) {

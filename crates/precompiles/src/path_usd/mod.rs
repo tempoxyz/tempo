@@ -6,14 +6,14 @@ use crate::{
     storage::StorageCtx,
     tip20::{ITIP20, TIP20Token},
 };
-use alloy::primitives::{Address, B256, U256, keccak256};
+use alloy::primitives::{Address, B256, U256, utils::keccak256_cached};
 use std::sync::LazyLock;
 pub use tempo_contracts::precompiles::IPathUSD;
 use tempo_contracts::precompiles::TIP20Error;
 
-pub static TRANSFER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"TRANSFER_ROLE"));
+pub static TRANSFER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256_cached(b"TRANSFER_ROLE"));
 pub static RECEIVE_WITH_MEMO_ROLE: LazyLock<B256> =
-    LazyLock::new(|| keccak256(b"RECEIVE_WITH_MEMO_ROLE"));
+    LazyLock::new(|| keccak256_cached(b"RECEIVE_WITH_MEMO_ROLE"));
 
 /// Name of TIP20 post allegretto. Note that the name and symbol are the same value
 const NAME_POST_ALLEGRETTO: &str = "pathUSD";
