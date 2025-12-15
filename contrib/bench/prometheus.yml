@@ -3,42 +3,46 @@ global:
   evaluation_interval: 1s
 
 scrape_configs:
-  # Reth metrics (execution layer)
-  # Ports: 9001, 9002, 9003, ... (node index)
-  - job_name: 'tempo-reth'
+  # Execution layer metrics (Reth)
+  # Ports: 9001, 9002, 9003, ... (node index + 9001)
+  - job_name: 'tempo-execution-0'
     static_configs:
       - targets: ['host.docker.internal:9001']
-        labels:
-          node: 'node-0'
-      - targets: ['host.docker.internal:9002']
-        labels:
-          node: 'node-1'
-      - targets: ['host.docker.internal:9003']
-        labels:
-          node: 'node-2'
-      - targets: ['host.docker.internal:9004']
-        labels:
-          node: 'node-3'
-      - targets: ['host.docker.internal:9005']
-        labels:
-          node: 'node-4'
 
-  # Consensus metrics
-  # Ports: 8002, 8102, 8202, ... (consensus port + 2)
-  - job_name: 'tempo-consensus'
+  - job_name: 'tempo-execution-1'
+    static_configs:
+      - targets: ['host.docker.internal:9002']
+
+  - job_name: 'tempo-execution-2'
+    static_configs:
+      - targets: ['host.docker.internal:9003']
+
+  - job_name: 'tempo-execution-3'
+    static_configs:
+      - targets: ['host.docker.internal:9004']
+
+  - job_name: 'tempo-execution-4'
+    static_configs:
+      - targets: ['host.docker.internal:9005']
+
+  # Consensus layer metrics
+  # Ports: 8002, 8102, 8202, ... (node index * 100 + 8002)
+  - job_name: 'tempo-consensus-0'
     static_configs:
       - targets: ['host.docker.internal:8002']
-        labels:
-          node: 'node-0'
+
+  - job_name: 'tempo-consensus-1'
+    static_configs:
       - targets: ['host.docker.internal:8102']
-        labels:
-          node: 'node-1'
+
+  - job_name: 'tempo-consensus-2'
+    static_configs:
       - targets: ['host.docker.internal:8202']
-        labels:
-          node: 'node-2'
+
+  - job_name: 'tempo-consensus-3'
+    static_configs:
       - targets: ['host.docker.internal:8302']
-        labels:
-          node: 'node-3'
+
+  - job_name: 'tempo-consensus-4'
+    static_configs:
       - targets: ['host.docker.internal:8402']
-        labels:
-          node: 'node-4'

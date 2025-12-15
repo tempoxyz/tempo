@@ -9,6 +9,15 @@ const RUSTFLAGS = "-C target-cpu=native"
 const DEFAULT_PROFILE = "profiling"
 const DEFAULT_FEATURES = "jemalloc,asm-keccak"
 
+# Preset weight configurations: [tip20, erc20, swap, order]
+const PRESETS = {
+    tip20: [1.0, 0.0, 0.0, 0.0],
+    erc20: [0.0, 1.0, 0.0, 0.0],
+    swap: [0.0, 0.0, 1.0, 0.0],
+    order: [0.0, 0.0, 0.0, 1.0],
+    "tempo-mix": [0.8, 0, 0.19, 0.01]
+}
+
 # Start the observability stack (Grafana + Prometheus)
 def "main stack up" [] {
     print "Starting observability stack..."
@@ -42,6 +51,11 @@ def "main kill" [] {
             kill $pid
         }
     }
+    # Remove stale IPC socket
+    if ("/tmp/reth.ipc" | path exists) {
+        rm /tmp/reth.ipc
+        print "Removed /tmp/reth.ipc"
+    }
     print "Done."
 }
 
@@ -54,27 +68,30 @@ def "main node" [
     --reset                     # Wipe and regenerate localnet data
     --profile: string = $DEFAULT_PROFILE # Cargo build profile
     --features: string = $DEFAULT_FEATURES # Cargo features
-    --logs: string = ""         # Tail logs: "all" or comma-separated node indices (e.g., "0,1,2")
-    --silent                    # Suppress WARN/ERROR log output
+    --loud                      # Show all node logs (WARN/ERROR shown by default)
     --node-args: string = ""    # Additional node arguments (space-separated)
+    --skip-build                # Skip building (assumes binary is already built)
+    --force                     # Kill dangling processes without prompting
 ] {
     # Check for dangling processes
-    check-dangling-processes
+    check-dangling-processes $force
 
     # Parse custom node args
     let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
 
-    # Build first
-    let build_cmd = ["cargo" "build" "--bin" "tempo" "--profile" $profile "--features" $features]
-    print $"Building tempo: `($build_cmd | str join ' ')`..."
-    with-env { RUSTFLAGS: $RUSTFLAGS } {
-        run-external ($build_cmd | first) ...($build_cmd | skip 1)
+    # Build first (unless skipped)
+    if not $skip_build {
+        let build_cmd = ["cargo" "build" "--bin" "tempo" "--profile" $profile "--features" $features]
+        print $"Building tempo: `($build_cmd | str join ' ')`..."
+        with-env { RUSTFLAGS: $RUSTFLAGS } {
+            run-external ($build_cmd | first) ...($build_cmd | skip 1)
+        }
     }
 
     if $mode == "dev" {
         run-dev-node $accounts $samply $reset $profile $extra_args
     } else if $mode == "consensus" {
-        run-consensus-nodes $nodes $accounts $samply $reset $profile $logs $silent $extra_args
+        run-consensus-nodes $nodes $accounts $samply $reset $profile $loud $extra_args
     } else {
         print $"Unknown mode: ($mode). Use 'dev' or 'consensus'."
         exit 1
@@ -113,7 +130,7 @@ def run-dev-node [accounts: int, samply: bool, reset: bool, profile: string, ext
     run-external ($cmd | first) ...($cmd | skip 1)
 }
 
-def run-consensus-nodes [nodes: int, accounts: int, samply: bool, reset: bool, profile: string, logs: string, silent: bool, extra_args: list<string>] {
+def run-consensus-nodes [nodes: int, accounts: int, samply: bool, reset: bool, profile: string, loud: bool, extra_args: list<string>] {
     # Check if we need to generate localnet
     let needs_generation = $reset or (not ($LOCALNET_DIR | path exists)) or (
         (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' } | length) == 0
@@ -149,15 +166,6 @@ def run-consensus-nodes [nodes: int, accounts: int, samply: bool, reset: bool, p
 
     print $"Found ($validator_dirs | length) validator configs"
 
-    # Parse --logs option: "" = none, "all" = all nodes, "0,1,2" = specific indices
-    let log_indices = if $logs == "all" {
-        0..<($validator_dirs | length) | each { |i| $i }
-    } else if $logs != "" {
-        $logs | split row "," | each { |s| $s | str trim | into int }
-    } else {
-        []
-    }
-
     let tempo_bin = $"./target/($profile)/tempo"
 
     # Start background nodes first (all except node 0)
@@ -169,23 +177,24 @@ def run-consensus-nodes [nodes: int, accounts: int, samply: bool, reset: bool, p
     let background_nodes = $validator_dirs | skip 1
 
     for node in ($background_nodes | enumerate) {
-        let actual_index = $node.index + 1
-        let tail_logs = ($actual_index in $log_indices)
-        let show_errors = not $silent
-        start-node-job $node.item $genesis_path $trusted_peers $tempo_bin $tail_logs false $show_errors $extra_args
+        start-node-job $node.item $genesis_path $trusted_peers $tempo_bin $loud false $extra_args
     }
 
-    # Run node 0 in foreground (show logs by default unless --silent)
-    let tail_logs = not $silent
-    run-node-foreground $foreground_node $genesis_path $trusted_peers $tempo_bin $tail_logs $samply $extra_args
+    # Run node 0 in foreground (show logs only if --loud)
+    run-node-foreground $foreground_node $genesis_path $trusted_peers $tempo_bin $loud $samply $extra_args
 }
 
-def check-dangling-processes [] {
+def check-dangling-processes [force: bool] {
     let pids = (ps | where name =~ "tempo" | where name !~ "tempo-bench" | get pid)
     if ($pids | length) > 0 {
         print $"Found ($pids | length) running tempo process\(es\)."
-        let answer = (input "Kill them? [Y/n] " | str trim | str downcase)
-        if $answer == "" or $answer == "y" or $answer == "yes" {
+        let should_kill = if $force {
+            true
+        } else {
+            let answer = (input "Kill them? [Y/n] " | str trim | str downcase)
+            $answer == "" or $answer == "y" or $answer == "yes"
+        }
+        if $should_kill {
             for pid in $pids {
                 kill $pid
             }
@@ -197,7 +206,7 @@ def check-dangling-processes [] {
     }
 }
 
-def start-node-job [node_dir: string, genesis_path: string, trusted_peers: string, tempo_bin: string, tail_logs: bool, samply: bool, show_errors: bool, extra_args: list<string>] {
+def start-node-job [node_dir: string, genesis_path: string, trusted_peers: string, tempo_bin: string, loud: bool, samply: bool, extra_args: list<string>] {
     let addr = ($node_dir | path basename)
     let port = ($addr | split row ":" | get 1 | into int)
     let node_index = (($port - 8000) / 100 | into int)
@@ -206,11 +215,9 @@ def start-node-job [node_dir: string, genesis_path: string, trusted_peers: strin
     let log_dir = $"($LOGS_DIR)/($addr)"
     mkdir $log_dir
 
-    # Build args with appropriate log filter
+    # Build args with appropriate log filter (WARN by default, all if --loud)
     let args = (build-node-args $node_dir $genesis_path $trusted_peers $port $log_dir) | append (
-        if $tail_logs { [] }
-        else if $show_errors { ["--log.stdout.filter" "WARN"] }
-        else { ["--log.stdout.filter" "off"] }
+        if $loud { [] } else { ["--log.stdout.filter" "warn"] }
     ) | append $extra_args
 
     # Build command (with or without samply)
@@ -220,17 +227,13 @@ def start-node-job [node_dir: string, genesis_path: string, trusted_peers: strin
         [$tempo_bin] | append $args
     }
 
-    if $tail_logs {
-        print $"  Node ($addr) -> http://localhost:($http_port) \(logs to stdout\)"
-        job spawn { sh -c $"($cmd | str join ' ') 2>&1" | lines | each { |line| print $"[($addr)] ($line)" } }
-    } else {
-        print $"  Node ($addr) -> http://localhost:($http_port)"
-        job spawn { run-external ($cmd | first) ...($cmd | skip 1) }
-    }
+    print $"  Node ($addr) -> http://localhost:($http_port)"
+    # Always prefix output with node address
+    job spawn { sh -c $"($cmd | str join ' ') 2>&1" | lines | each { |line| print $"[($addr)] ($line)" } }
 }
 
 # Run a node in the foreground (receives Ctrl+C directly)
-def run-node-foreground [node_dir: string, genesis_path: string, trusted_peers: string, tempo_bin: string, tail_logs: bool, samply: bool, extra_args: list<string>] {
+def run-node-foreground [node_dir: string, genesis_path: string, trusted_peers: string, tempo_bin: string, loud: bool, samply: bool, extra_args: list<string>] {
     let addr = ($node_dir | path basename)
     let port = ($addr | split row ":" | get 1 | into int)
     let node_index = (($port - 8000) / 100 | into int)
@@ -239,9 +242,9 @@ def run-node-foreground [node_dir: string, genesis_path: string, trusted_peers: 
     let log_dir = $"($LOGS_DIR)/($addr)"
     mkdir $log_dir
 
-    # Build args with appropriate log filter
+    # Build args with appropriate log filter (WARN by default, all if --loud)
     let args = (build-node-args $node_dir $genesis_path $trusted_peers $port $log_dir) | append (
-        if $tail_logs { [] } else { ["--log.stdout.filter" "off"] }
+        if $loud { [] } else { ["--log.stdout.filter" "warn"] }
     ) | append $extra_args
 
     # Build command (with or without samply)
@@ -251,7 +254,7 @@ def run-node-foreground [node_dir: string, genesis_path: string, trusted_peers: 
         [$tempo_bin] | append $args
     }
 
-    if $tail_logs {
+    if $loud {
         print $"  Node ($addr) -> http://localhost:($http_port) \(foreground, logs to stdout\)"
     } else {
         print $"  Node ($addr) -> http://localhost:($http_port) \(foreground\)"
@@ -327,33 +330,193 @@ def build-node-args [node_dir: string, genesis_path: string, trusted_peers: stri
     $base | append $consensus
 }
 
+# Run a full benchmark: start stack, nodes, and tempo-bench
+def "main bench" [
+    --preset: string = ""                           # Preset: tip20, erc20, swap, order, tempo-mix
+    --tps: int = 10000                              # Target TPS
+    --duration: int = 30                            # Duration in seconds
+    --accounts: int = 1000                          # Number of accounts
+    --nodes: int = 3                                # Number of consensus nodes
+    --samply                                        # Profile nodes with samply
+    --reset                                         # Reset localnet before starting
+    --loud                                          # Show node logs (silent by default)
+    --profile: string = $DEFAULT_PROFILE            # Cargo build profile
+    --features: string = $DEFAULT_FEATURES          # Cargo features
+    --node-args: string = ""                        # Additional node arguments (space-separated)
+    --bench-args: string = ""                       # Additional tempo-bench arguments (space-separated)
+] {
+    # Validate: either preset or bench-args must be provided
+    if $preset == "" and $bench_args == "" {
+        print "Error: either --preset or --bench-args must be provided"
+        print $"  Available presets: ($PRESETS | columns | str join ', ')"
+        exit 1
+    }
+
+    # Validate preset if provided
+    if $preset != "" and not ($preset in $PRESETS) {
+        print $"Unknown preset: ($preset). Available: ($PRESETS | columns | str join ', ')"
+        exit 1
+    }
+
+    let weights = if $preset != "" { $PRESETS | get $preset } else { [0.0, 0.0, 0.0, 0.0] }
+
+    # Start observability stack
+    print "Starting observability stack..."
+    docker compose -f $"($BENCH_DIR)/docker-compose.yml" up -d
+
+    # Build both binaries first
+    print "Building tempo and tempo-bench..."
+    let build_cmd = ["cargo" "build" "--bin" "tempo" "--bin" "tempo-bench" "--profile" $profile "--features" $features]
+    with-env { RUSTFLAGS: $RUSTFLAGS } {
+        run-external ($build_cmd | first) ...($build_cmd | skip 1)
+    }
+
+    # Start consensus nodes in background (skip build since we already compiled)
+    print $"Starting ($nodes) consensus nodes..."
+    # Ensure at least as many accounts as validators for genesis generation (+1 for admin account)
+    let genesis_accounts = ([$accounts $nodes] | math max) + 1
+    let node_cmd = [
+        "nu" "bench.nu" "node"
+        "--mode" "consensus"
+        "--nodes" $"($nodes)"
+        "--accounts" $"($genesis_accounts)"
+        "--skip-build"
+        "--force"
+        "--profile" $profile
+        "--features" $features
+    ]
+    | append (if $reset { ["--reset"] } else { [] })
+    | append (if $samply { ["--samply"] } else { [] })
+    | append (if $loud { ["--loud"] } else { [] })
+    | append (if $node_args != "" { ["--node-args" $node_args] } else { [] })
+
+    # Spawn nodes as a background job (pipe output to show logs)
+    let node_cmd_str = ($node_cmd | str join " ")
+    print $"  Command: ($node_cmd_str)"
+    job spawn { nu -c $node_cmd_str o+e>| lines | each { |line| print $line } }
+
+    # Wait for nodes to be ready (give them a moment to start)
+    sleep 2sec
+    print "Waiting for nodes to be ready..."
+    let rpc_urls = (0..<$nodes | each { |i| $"http://localhost:(8545 + $i)" })
+    for url in $rpc_urls {
+        wait-for-rpc $url
+    }
+    print "All nodes ready!"
+
+    # Build target URLs
+    let target_urls = ($rpc_urls | str join ",")
+
+    # Run tempo-bench
+    let tempo_bench_bin = $"./target/($profile)/tempo-bench"
+    let bench_cmd = [
+        $tempo_bench_bin
+        "run-max-tps"
+        "--tps" $"($tps)"
+        "--duration" $"($duration)"
+        "--accounts" $"($accounts)"
+        "--target-urls" $target_urls
+        "--faucet"
+        "--clear-txpool"
+    ] | append (if $preset != "" {
+        [
+            "--tip20-weight" $"($weights | get 0)"
+            "--erc20-weight" $"($weights | get 1)"
+            "--swap-weight" $"($weights | get 2)"
+            "--place-order-weight" $"($weights | get 3)"
+        ]
+    } else { [] }) | append (if $bench_args != "" { $bench_args | split row " " } else { [] })
+
+    print $"Running benchmark: ($bench_cmd | str join ' ')"
+    try {
+        # Set file descriptor limit and run benchmark
+        sh -c $"ulimit -Sn unlimited && ($bench_cmd | str join ' ')"
+    } catch {
+        print "Benchmark interrupted or failed."
+    }
+
+    # Cleanup
+    print "Cleaning up..."
+    main kill
+    print "Done."
+}
+
+# Wait for an RPC endpoint to be ready and chain advancing
+def wait-for-rpc [url: string, max_attempts: int = 120] {
+    mut attempt = 0
+    mut start_block: int = -1
+
+    loop {
+        $attempt = $attempt + 1
+        if $attempt > $max_attempts {
+            print $"  Timeout waiting for ($url)"
+            exit 1
+        }
+        let result = (do { cast block-number --rpc-url $url } | complete)
+        if $result.exit_code == 0 {
+            let block = ($result.stdout | str trim | into int)
+            if $start_block == -1 {
+                $start_block = $block
+                print $"  ($url) connected \(block ($block)\), waiting for chain to advance..."
+            } else if $block > $start_block {
+                print $"  ($url) ready \(block ($start_block) -> ($block)\)"
+                break
+            } else {
+                if ($attempt mod 10) == 0 {
+                    print $"  ($url) still at block ($block)... \(($attempt)s\)"
+                }
+            }
+        } else {
+            if ($attempt mod 10) == 0 {
+                print $"  Still waiting for ($url)... \(($attempt)s\)"
+            }
+        }
+        sleep 1sec
+    }
+}
+
 # Show help
 def main [] {
     print "Tempo local benchmarking utilities"
     print ""
     print "Usage:"
-    print "  nu bench.nu stack up              Start Grafana + Prometheus"
-    print "  nu bench.nu stack down            Stop the observability stack"
-    print "  nu bench.nu kill                  Kill any running tempo processes"
-    print "  nu bench.nu node [flags]          Run Tempo node(s)"
+    print "  nu bench.nu bench [flags]           Run full benchmark (stack + nodes + bench)"
+    print "  nu bench.nu stack up                Start Grafana + Prometheus"
+    print "  nu bench.nu stack down              Stop the observability stack"
+    print "  nu bench.nu kill                    Kill any running tempo processes"
+    print "  nu bench.nu node [flags]            Run Tempo node(s)"
+    print ""
+    print "Bench flags (either --preset or --bench-args required):"
+    print "  --preset <P>             Preset: tip20, erc20, swap, order, tempo-mix"
+    print "  --tps <N>                Target TPS (default: 10000)"
+    print "  --duration <N>           Duration in seconds (default: 30)"
+    print "  --accounts <N>           Number of accounts (default: 1000)"
+    print "  --nodes <N>              Number of consensus nodes (default: 3)"
+    print "  --samply                 Profile nodes with samply"
+    print "  --reset                  Reset localnet before starting"
+    print "  --loud                   Show all node logs (WARN/ERROR shown by default)"
+    print $"  --profile <P>            Cargo profile \(default: ($DEFAULT_PROFILE)\)"
+    print $"  --features <F>           Cargo features \(default: ($DEFAULT_FEATURES)\)"
+    print "  --node-args <ARGS>       Additional node arguments (space-separated)"
+    print "  --bench-args <ARGS>      Additional tempo-bench arguments (space-separated)"
     print ""
     print "Node flags:"
     print "  --mode <dev|consensus>   Mode (default: dev)"
     print "  --nodes <N>              Number of validators for consensus (default: 3)"
     print "  --accounts <N>           Genesis accounts (default: 1000)"
     print "  --samply                 Enable samply profiling (foreground node only)"
-    print "  --logs <spec>            Tail logs: 'all' or comma-separated indices (e.g., '1,2')"
-    print "  --silent                 Suppress WARN/ERROR log output"
+    print "  --loud                   Show all node logs (WARN/ERROR shown by default)"
     print "  --reset                  Wipe and regenerate localnet"
     print $"  --profile <P>            Cargo profile \(default: ($DEFAULT_PROFILE)\)"
     print $"  --features <F>           Cargo features \(default: ($DEFAULT_FEATURES)\)"
     print "  --node-args <ARGS>       Additional node arguments (space-separated)"
     print ""
     print "Examples:"
+    print "  nu bench.nu bench --preset tip20 --tps 20000 --duration 60"
+    print "  nu bench.nu bench --preset tempo-mix --tps 5000 --samply --reset"
     print "  nu bench.nu stack up"
     print "  nu bench.nu node --mode dev --samply --accounts 50000 --reset"
     print "  nu bench.nu node --mode consensus --nodes 3"
-    print "  nu bench.nu node --mode consensus --nodes 3 --samply"
     print ""
     print "Port assignments (consensus mode, per node N=0,1,2...):"
     print "  Consensus:     8000 + N*100"
