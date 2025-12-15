@@ -93,11 +93,14 @@ where
                 );
             }
 
+            // For genesis (epoch 0), we don't have an expected block hash as this is
+            // the initial state. The genesis block is immutable and cannot be reorged.
             let initial_validators = validators::read_from_contract(
                 0,
                 &self.config.execution_node,
                 0,
                 self.config.epoch_length,
+                None, // Genesis block cannot be reorged
             )
             .await
             .wrap_err("validator config could not be read from genesis block validator config smart contract")?;
@@ -212,7 +215,9 @@ where
         //
         // So for E = 100, the boundary heights would be 99, 199, 299, ...
         if utils::is_last_block_in_epoch(self.config.epoch_length, block.height()).is_some() {
-            self.update_and_register_current_epoch_state().await;
+            // Pass the finalized block hash to ensure we read validators from the
+            // correct canonical block and not an uncle block.
+            self.update_and_register_current_epoch_state(block.block_hash()).await;
 
             maybe_ceremony.replace(self.start_post_allegretto_ceremony(ceremony_mux).await);
             // Early return: start driving the ceremony on the first height of
@@ -336,11 +341,15 @@ where
             .cloned()
             .expect("it is enforced at startup that the validator state for epoch-1 is written");
 
+        // During the transition from pre-allegretto, we don't have the expected
+        // block hash available from a finalized block, so we pass None.
+        // This is a one-time transition that happens at the hardfork boundary.
         let on_chain_validators = super::read_validator_config_with_retry(
             &self.context,
             &self.config.execution_node,
             pre_allegretto_epoch_state.epoch(),
             self.config.epoch_length,
+            None,
         )
         .await;
 
@@ -457,8 +466,17 @@ where
         ceremony
     }
 
-    #[instrument(skip_all)]
-    async fn update_and_register_current_epoch_state(&mut self) {
+    /// Updates the current epoch state with the DKG outcome and registers it.
+    ///
+    /// `boundary_block_hash` is the hash of the finalized boundary block (last block
+    /// of the epoch). This is used to ensure we read validators from the correct
+    /// canonical block and not from an uncle block that may have been temporarily
+    /// canonical during a reorg.
+    #[instrument(skip_all, fields(?boundary_block_hash))]
+    async fn update_and_register_current_epoch_state(
+        &mut self,
+        boundary_block_hash: alloy_primitives::B256,
+    ) {
         let old_epoch_state = self
             .post_allegretto_metadatas
             .epoch_metadata
@@ -482,11 +500,14 @@ where
             "sanity check: old outcome must be new outcome - 1"
         );
 
+        // Pass the boundary block hash to ensure we read from the correct canonical
+        // block. This prevents reading from uncle blocks in case of a reorg.
         let syncing_players = super::read_validator_config_with_retry(
             &self.context,
             &self.config.execution_node,
             dkg_outcome.epoch,
             self.config.epoch_length,
+            Some(boundary_block_hash),
         )
         .await;
 

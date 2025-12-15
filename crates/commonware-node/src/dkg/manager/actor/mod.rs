@@ -672,17 +672,21 @@ struct Metrics {
 }
 
 /// Attempts to read the validator config from the smart contract until it becomes available.
+///
+/// If `expected_block_hash` is provided, it will be passed to `read_from_contract` to ensure
+/// we read from the correct canonical block and not an uncle block.
 async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
     context: &C,
     node: &TempoFullNode,
     epoch: Epoch,
     epoch_length: u64,
+    expected_block_hash: Option<alloy_primitives::B256>,
 ) -> OrderedAssociated<PublicKey, DecodedValidator> {
     let mut attempts = 1;
     let retry_after = Duration::from_secs(1);
     loop {
         if let Ok(validators) =
-            validators::read_from_contract(attempts, node, epoch, epoch_length).await
+            validators::read_from_contract(attempts, node, epoch, epoch_length, expected_block_hash).await
         {
             break validators;
         }
