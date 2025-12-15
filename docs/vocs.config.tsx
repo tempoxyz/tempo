@@ -144,8 +144,8 @@ export default defineConfig({
                 link: '/guide/payments/sponsor-user-fees',
               },
               {
-                text: 'Send parallel payments',
-                link: '/guide/payments/using-nonces',
+                text: 'Send parallel transactions',
+                link: '/guide/payments/send-parallel-transactions',
               },
               // {
               //   text: 'Start a subscription 🚧',
