@@ -152,3 +152,8 @@ Licensed under either of [Apache License](./LICENSE-APACHE), Version
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in these crates by you, as defined in the Apache-2.0 license,
 shall be dual licensed as above, without any additional terms or conditions.
+
+## Versioning
+
+Tempo follows semantic versioning for releases. Breaking changes are documented in release notes, and users are encouraged to review them before upgrading.
+
