@@ -8,6 +8,7 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
     sol_types::SolValue,
 };
+use tempo_contracts::precompiles::IFeeManager;
 use tempo_precompiles_macros::Storable;
 
 /// Constants from the Solidity reference implementation
@@ -659,6 +660,7 @@ impl TipFeeManager {
         user_token: Address,
         validator_token: Address,
         amount_in: U256,
+        beneficiary: Address,
     ) -> Result<U256> {
         let pool_id = self.pool_id(user_token, validator_token);
         let mut pool = self.pools.at(pool_id).read()?;
@@ -679,14 +681,38 @@ impl TipFeeManager {
             .map_err(|_| TIPFeeAMMError::invalid_amount())?;
 
         self.pools.at(pool_id).write(pool)?;
-        self.pending_fee_swap_in.at(pool_id).delete()?;
-
         self.emit_event(TIPFeeAMMEvent::FeeSwap(ITIPFeeAMM::FeeSwap {
             userToken: user_token,
             validatorToken: validator_token,
             amountIn: amount_in,
             amountOut: amount_out,
         }))?;
+
+        // Transfer fee to the validator
+        let mut validator_token = TIP20Token::from_address(validator_token)?;
+        // If FeeManager or validator are blacklisted, do not transfer fees
+        if validator_token.is_transfer_authorized(self.address, beneficiary)? {
+            // Bound fee transfer to contract balance
+            let balance = validator_token.balance_of(ITIP20::balanceOfCall {
+                account: self.address,
+            })?;
+
+            if !balance.is_zero() {
+                validator_token
+                    .transfer(
+                        self.address,
+                        ITIP20::transferCall {
+                            to: beneficiary,
+                            amount: amount_out.min(balance),
+                        },
+                    )
+                    .map_err(|_| {
+                        IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
+                            IFeeManager::InsufficientFeeTokenBalance {},
+                        )
+                    })?;
+            }
+        }
 
         Ok(amount_out)
     }

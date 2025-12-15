@@ -246,7 +246,7 @@ impl TipFeeManager {
 
         if fee_token != validator_token {
             if self.storage.spec().is_allegro_moderato() {
-                self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
+                self.execute_fee_swap(fee_token, validator_token, actual_spending, beneficiary)?;
             } else {
                 // Release Fee AMM liquidity
                 self.release_liquidity(fee_token, validator_token, refund_amount)?;
