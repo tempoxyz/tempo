@@ -7217,6 +7217,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rapidhash"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9813f789f95ee4fe6b4d01834404d7cccacbc3f6c029343af910b3c2835eb9f1"
+
+[[package]]
 name = "ratatui"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11528,7 +11534,6 @@ dependencies = [
  "alloy-rpc-types-engine",
  "async-lock",
  "axum",
- "blake3",
  "bytes",
  "clap",
  "commonware-broadcast",
@@ -11549,6 +11554,7 @@ dependencies = [
  "prometheus-client",
  "rand 0.8.5",
  "rand_core 0.6.4",
+ "rapidhash",
  "reth-consensus-common",
  "reth-ethereum",
  "reth-evm",

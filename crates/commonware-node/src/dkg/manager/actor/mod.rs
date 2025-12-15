@@ -381,14 +381,15 @@ where
         // If we already processed this block height, skip it. May happen if we shutdown after the commit but before the ack was processed.
         let block_height = block.height();
         if let Ok(Some(last_height)) = tx.get_last_processed_height().await
-            && block_height == last_height {
-                info!(
-                    block_height,
-                    last_height, "skipping already-processed block"
-                );
-                acknowledgment.acknowledge();
-                return;
-            }
+            && block_height == last_height
+        {
+            info!(
+                block_height,
+                last_height, "skipping already-processed block"
+            );
+            acknowledgment.acknowledge();
+            return;
+        }
 
         if self.is_running_post_allegretto(&block, &tx).await {
             self.handle_finalized_post_allegretto(
