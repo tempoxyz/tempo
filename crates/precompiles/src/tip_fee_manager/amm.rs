@@ -653,6 +653,44 @@ impl TipFeeManager {
         Ok(pending_out)
     }
 
+    /// TODO: docs
+    pub fn execute_fee_swap(
+        &mut self,
+        user_token: Address,
+        validator_token: Address,
+        amount_in: U256,
+    ) -> Result<U256> {
+        let pool_id = self.pool_id(user_token, validator_token);
+        let mut pool = self.pools.at(pool_id).read()?;
+
+        let amount_out = compute_amount_out(amount_in)?;
+        let new_user_reserve = U256::from(pool.reserve_user_token)
+            .checked_add(amount_in)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_validator_reserve = U256::from(pool.reserve_validator_token)
+            .checked_sub(amount_out)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+
+        pool.reserve_user_token = new_user_reserve
+            .try_into()
+            .map_err(|_| TIPFeeAMMError::invalid_amount())?;
+        pool.reserve_validator_token = new_validator_reserve
+            .try_into()
+            .map_err(|_| TIPFeeAMMError::invalid_amount())?;
+
+        self.pools.at(pool_id).write(pool)?;
+        self.pending_fee_swap_in.at(pool_id).delete()?;
+
+        self.emit_event(TIPFeeAMMEvent::FeeSwap(ITIPFeeAMM::FeeSwap {
+            userToken: user_token,
+            validatorToken: validator_token,
+            amountIn: amount_in,
+            amountOut: amount_out,
+        }))?;
+
+        Ok(amount_out)
+    }
+
     /// Get total supply of LP tokens for a pool
     pub fn get_total_supply(&self, pool_id: B256) -> Result<U256> {
         self.total_supply.at(pool_id).read()

@@ -245,19 +245,23 @@ impl TipFeeManager {
         let validator_token = self.get_validator_token(beneficiary)?;
 
         if fee_token != validator_token {
-            // Release Fee AMM liquidity
-            self.release_liquidity(fee_token, validator_token, refund_amount)?;
+            if self.storage.spec().is_allegro_moderato() {
+                self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
+            } else {
+                // Release Fee AMM liquidity
+                self.release_liquidity(fee_token, validator_token, refund_amount)?;
 
-            // Record the pool if there was a non-zero swap
-            if !actual_spending.is_zero() {
-                if !self.storage.spec().is_allegretto() {
-                    // Pre-Allegretto: track in buggy token_in_fees_array
-                    if !self.token_in_fees_array.at(fee_token).read()? {
-                        self.tokens_with_fees.push(fee_token)?;
-                        self.token_in_fees_array.at(fee_token).write(true)?;
+                // Record the pool if there was a non-zero swap
+                if !actual_spending.is_zero() {
+                    if !self.storage.spec().is_allegretto() {
+                        // Pre-Allegretto: track in buggy token_in_fees_array
+                        if !self.token_in_fees_array.at(fee_token).read()? {
+                            self.tokens_with_fees.push(fee_token)?;
+                            self.token_in_fees_array.at(fee_token).write(true)?;
+                        }
+                    } else {
+                        self.add_pair_to_fees_array(fee_token, validator_token)?;
                     }
-                } else {
-                    self.add_pair_to_fees_array(fee_token, validator_token)?;
                 }
             }
         }
