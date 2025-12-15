@@ -7,7 +7,7 @@ use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use tempo_primitives::{
     AASigned, SignatureType, TempoTransaction, TempoTxEnvelope, TxFeeToken,
-    transaction::{Call, TempoSignedAuthorization, TempoTypedTransaction},
+    transaction::{Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction},
 };
 
 use crate::TempoNetwork;
@@ -53,8 +53,8 @@ pub struct TempoTransactionRequest {
     pub key_data: Option<Bytes>,
 
     /// Whether the signature is a Keychain wrapper (adds 3,000 gas overhead for key validation).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub is_keychain: Option<bool>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_keychain: bool,
 
     /// Optional authorization list for Tempo transactions (supports multiple signature types)
     #[serde(
@@ -64,14 +64,10 @@ pub struct TempoTransactionRequest {
     )]
     pub tempo_authorization_list: Vec<TempoSignedAuthorization>,
 
-    /// Key authorization signature type for gas estimation.
-    /// Required when transaction provisions an access key.
+    /// Key authorization for provisioning an access key (for gas estimation).
+    /// Provide a signed KeyAuthorization when the transaction provisions an access key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key_auth_signature_type: Option<SignatureType>,
-
-    /// Number of spending limits in key authorization (for gas estimation).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key_auth_num_limits: Option<u64>,
+    pub key_authorization: Option<SignedKeyAuthorization>,
 }
 
 impl TempoTransactionRequest {
@@ -320,10 +316,9 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             tempo_authorization_list: tx.tempo_authorization_list,
             key_type: None,
             key_data: None,
-            is_keychain: None,
+            is_keychain: false,
             nonce_key: Some(tx.nonce_key),
-            key_auth_signature_type: None,
-            key_auth_num_limits: None,
+            key_authorization: tx.key_authorization,
         }
     }
 }

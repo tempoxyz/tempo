@@ -668,10 +668,8 @@ where
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
 
         // If the transaction includes a KeyAuthorization, validate and authorize the key
-        // Skip validation during gas estimation (signature_hash is zero for mock signatures)
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(key_auth) = &tempo_tx_env.key_authorization
-            && tempo_tx_env.signature_hash != alloy_primitives::B256::ZERO
         {
             // Check if this TX is using a Keychain signature (access key)
             // Access keys cannot authorize new keys UNLESS it's the same key being authorized (same-tx auth+use)

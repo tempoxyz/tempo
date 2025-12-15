@@ -48,8 +48,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     key_data,
                     is_keychain,
                     tempo_authorization_list,
-                    key_auth_signature_type,
-                    key_auth_num_limits,
+                    key_authorization,
                 } = self;
                 let envelope = match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(
                     inner.clone(),
@@ -65,8 +64,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_data,
                             is_keychain,
                             tempo_authorization_list,
-                            key_auth_signature_type,
-                            key_auth_num_limits,
+                            key_authorization,
                         }));
                     }
                 };
@@ -82,8 +80,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_data,
                             is_keychain,
                             tempo_authorization_list,
-                            key_auth_signature_type,
-                            key_auth_num_limits,
+                            key_authorization,
                         })
                     },
                 )?)
@@ -108,8 +105,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             is_keychain,
             tempo_authorization_list,
             nonce_key,
-            key_auth_signature_type,
-            key_auth_num_limits,
+            key_authorization,
         } = self;
         Ok(TempoTxEnv {
             fee_token,
@@ -118,10 +114,10 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             tempo_tx_env: if !calls.is_empty()
                 || !tempo_authorization_list.is_empty()
                 || nonce_key.is_some()
+                || key_authorization.is_some()
             {
                 // Create mock signature for gas estimation
                 // If key_type is not provided, default to secp256k1
-                let is_keychain = is_keychain.unwrap_or(false);
                 // For Keychain signatures, use the caller's address as the root key address
                 let caller_addr = inner.from.unwrap_or_default();
                 let mock_signature = key_type
@@ -158,9 +154,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                         .map(RecoveredTempoAuthorization::new)
                         .collect(),
                     nonce_key: nonce_key.unwrap_or_default(),
-                    key_authorization: key_auth_signature_type.map(|sig_type| {
-                        create_mock_key_authorization(sig_type, key_auth_num_limits.unwrap_or(0))
-                    }),
+                    key_authorization,
                     signature_hash: B256::ZERO,
                     valid_before: None,
                     valid_after: None,
@@ -279,39 +273,6 @@ fn create_mock_primitive_signature(
                 pub_key_y: alloy_primitives::B256::ZERO,
             })
         }
-    }
-}
-
-/// Creates a mock KeyAuthorization for gas estimation
-fn create_mock_key_authorization(
-    sig_type: SignatureType,
-    num_limits: u64,
-) -> tempo_primitives::transaction::SignedKeyAuthorization {
-    use alloy_primitives::{Address, U256};
-    use tempo_primitives::transaction::{KeyAuthorization, SignedKeyAuthorization, TokenLimit};
-
-    let limits = if num_limits > 0 {
-        Some(
-            (0..num_limits)
-                .map(|_| TokenLimit {
-                    token: Address::ZERO,
-                    limit: U256::ZERO,
-                })
-                .collect(),
-        )
-    } else {
-        None
-    };
-
-    SignedKeyAuthorization {
-        authorization: KeyAuthorization {
-            chain_id: 0, // 0 = valid on any chain
-            key_type: sig_type,
-            key_id: Address::ZERO,
-            expiry: None,
-            limits,
-        },
-        signature: create_mock_primitive_signature(&sig_type, None),
     }
 }
 
