@@ -149,6 +149,13 @@ See [`SECURITY.md`](https://github.com/tempoxyz/tempo?tab=security-ov-file). Not
 Licensed under either of [Apache License](./LICENSE-APACHE), Version
 2.0 or [MIT License](./LICENSE-MIT) at your option.
 
+## Support
+
+For questions, troubleshooting, and non-security issue reports across the Tempo ecosystem, please use the support repository:
+
+- https://github.com/tempoxyz/tempo-support
+
+
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in these crates by you, as defined in the Apache-2.0 license,
 shall be dual licensed as above, without any additional terms or conditions.
