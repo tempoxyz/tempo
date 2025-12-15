@@ -3,10 +3,11 @@ use crate::{TempoTransaction, subblock::PartialValidatorKey};
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
     TxLegacy, TxType, TypedTransaction,
+    crypto::RecoveryError,
     error::{UnsupportedTransactionType, ValueError},
     transaction::Either,
 };
-use alloy_primitives::{Address, B256, Bytes, Signature, SignatureError, TxKind, U256, hex};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, hex};
 use core::fmt;
 use reth_primitives_traits::InMemorySize;
 
@@ -107,24 +108,10 @@ impl TempoTxEnvelope {
     }
 
     /// Resolves fee payer for the transaction.
-    pub fn fee_payer(&self, sender: Address) -> Result<Address, SignatureError> {
+    pub fn fee_payer(&self, sender: Address) -> Result<Address, RecoveryError> {
         match self {
-            Self::FeeToken(tx) => {
-                if let Some(fee_payer_signature) = tx.tx().fee_payer_signature {
-                    fee_payer_signature
-                        .recover_address_from_prehash(&tx.tx().fee_payer_signature_hash(sender))
-                } else {
-                    Ok(sender)
-                }
-            }
-            Self::AA(tx) => {
-                if let Some(fee_payer_signature) = tx.tx().fee_payer_signature {
-                    fee_payer_signature
-                        .recover_address_from_prehash(&tx.tx().fee_payer_signature_hash(sender))
-                } else {
-                    Ok(sender)
-                }
-            }
+            Self::FeeToken(tx) => tx.tx().recover_fee_payer(sender),
+            Self::AA(tx) => tx.tx().recover_fee_payer(sender),
             _ => Ok(sender),
         }
     }

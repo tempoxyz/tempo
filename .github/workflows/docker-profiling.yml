@@ -1,0 +1,60 @@
+name: Docker Build (Profiling)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag for the profiling image (e.g., profiling-latest)"
+        type: string
+        default: "profiling"
+
+env:
+  REGISTRY: ghcr.io/tempoxyz
+
+jobs:
+  build-and-push:
+    name: Build and Push Profiling Docker Images
+    runs-on: depot-ubuntu-latest-16
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - uses: depot/setup-action@v1
+
+      - name: Docker metadata for tempo-profiling
+        id: meta-tempo
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/tempo
+          bake-target: tempo
+          tags: |
+            type=raw,value=${{ github.event.inputs.tag }}
+            type=sha,prefix=${{ github.event.inputs.tag }}-sha-
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: shortsha
+        run: echo "shortsha=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker images
+        uses: depot/bake-action@v1
+        with:
+          files: |
+            docker-bake.hcl
+            docker-bake-profiling.hcl
+            ${{ steps.meta-tempo.outputs.bake-file }}
+          targets: tempo
+          project: 0c6tg19qsp
+          push: true
+        env:
+          VERGEN_GIT_SHA: ${{ github.sha }}
+          VERGEN_GIT_SHA_SHORT: ${{ steps.shortsha.outputs.shortsha }}

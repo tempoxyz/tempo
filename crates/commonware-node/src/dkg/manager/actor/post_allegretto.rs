@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use alloy_consensus::BlockHeader as _;
 use commonware_codec::{DecodeExt as _, EncodeSize, Read, Write};
 use commonware_consensus::{
     Block as _, Reporter as _, simplex::signing_scheme::bls12381_threshold::Scheme, types::Epoch,
@@ -209,7 +210,12 @@ where
         //
         // So for E = 100, the boundary heights would be 99, 199, 299, ...
         if utils::is_last_block_in_epoch(self.config.epoch_length, block.height()).is_some() {
-            self.update_and_register_current_epoch_state(tx).await;
+            let block_outcome = PublicOutcome::decode(block.header().extra_data().as_ref()).expect(
+                "the last block of an epoch must always contain the outcome of the DKG ceremony",
+            );
+
+            self.update_and_register_current_epoch_state(tx, block_outcome)
+                .await;
 
             maybe_ceremony.replace(self.start_post_allegretto_ceremony(tx, ceremony_mux).await);
             // Early return: start driving the ceremony on the first height of
@@ -449,6 +455,7 @@ where
     async fn update_and_register_current_epoch_state(
         &mut self,
         tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
+        canonical_dkg_outcome: PublicOutcome,
     ) {
         let old_epoch_state: EpochState = tx
             .get_epoch()
@@ -456,7 +463,7 @@ where
             .expect("must be able to read epoch")
             .expect("there must always exist an epoch state");
 
-        let dkg_outcome = tx
+        let our_dkg_outcome = tx
             .get_dkg_outcome()
             .await
             .expect("must be able to read dkg outcome")
@@ -467,27 +474,58 @@ where
 
         assert_eq!(
             old_epoch_state.epoch() + 1,
-            dkg_outcome.epoch,
+            our_dkg_outcome.epoch,
             "sanity check: old outcome must be new outcome - 1"
         );
 
         let syncing_players = super::read_validator_config_with_retry(
             &self.context,
             &self.config.execution_node,
-            dkg_outcome.epoch,
+            our_dkg_outcome.epoch,
             self.config.epoch_length,
         )
         .await;
-
         let mut new_validator_state = old_epoch_state.validator_state.clone();
-        if dkg_outcome.dkg_successful {
-            new_validator_state.push_on_success(syncing_players);
-        } else {
-            new_validator_state.push_on_failure(syncing_players);
+
+        let dkg_mismatch = canonical_dkg_outcome.public != our_dkg_outcome.public;
+        if dkg_mismatch {
+            warn!(
+                "the DKG outcome committed to chain does not match our own; \
+                will take the on-chain outcome instead and delete our share"
+            );
+            our_dkg_outcome.public = canonical_dkg_outcome.public;
+            our_dkg_outcome.participants = canonical_dkg_outcome.participants;
+            our_dkg_outcome.share.take();
+        }
+
+        match (our_dkg_outcome.dkg_successful, dkg_mismatch) {
+            // No DKG mismatches
+            (true, false) => {
+                new_validator_state.push_on_success(syncing_players);
+            }
+            (false, false) => {
+                new_validator_state.push_on_failure(syncing_players);
+            }
+
+            (false, true) => {
+                new_validator_state.push_on_success(syncing_players);
+            }
+
+            // TODO(janis): publish the IP addresses and pubkeys to chain. Then
+            // we can recover from this.
+            (true, true) => {
+                unreachable!(
+                    "a local DKG success with an on-chain mismatch means that \
+                    the node successfully read all necessary dealings from \
+                    chain while a quorum of validators came to a different \
+                    conclusion based off the same data; this is not something \
+                    to recover from"
+                );
+            }
         }
 
         let new_epoch_state = EpochState {
-            dkg_outcome,
+            dkg_outcome: our_dkg_outcome,
             validator_state: new_validator_state.clone(),
         };
 

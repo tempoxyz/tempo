@@ -821,7 +821,7 @@ where
                     error = %eyre::Report::new(error),
                     ?disqualified,
                     "failed to finalize arbiter; aborting ceremony and \
-                    returning previous dealers and commitment",
+                    returning previous participants and polynomial",
                 );
                 return Err(PrivateOutcome {
                     participants: self.config.dealers,
@@ -830,7 +830,8 @@ where
             }
         };
 
-        let new_role = if let Some(player_me) = self.player_me {
+        let mut my_share = None;
+        if let Some(player_me) = self.player_me {
             let my_index = self
                 .players_indexed
                 .get_index_of(&self.config.me.public_key())
@@ -846,43 +847,37 @@ where
                 })
                 .collect::<BTreeMap<_, _>>();
 
-            let n_commitments = commitments.len();
             let n_reveals = reveals.len();
 
-            let output = match player_me.finalize(commitments, reveals) {
-                Ok(output) => output,
+            match player_me.finalize(commitments, reveals) {
+                Ok(output) => {
+                    info!(n_reveals, "obtained a share from the DKG ceremomy");
+                    my_share.replace(output.share);
+                }
                 Err(error) => {
-                    error!(
+                    warn!(
+                        n_reveals,
                         error = %eyre::Report::new(error),
-                        "failed to finalize player; aborting ceremony and \
-                        returning previous dealers and commitment"
+                        "failed to finalize our share even though the overall \
+                        DKG ceremony was a success; will participate as a \
+                        verifier since we failed to participate as a player"
                     );
-                    return Err(PrivateOutcome {
-                        participants: self.config.dealers,
-                        role: self.previous_role,
-                    });
                 }
             };
+        }
 
-            info!(
-                ?disqualified,
-                n_commitments,
-                n_reveals,
-                "successfully finalized DKG ceremony; returning new \
-                    players and commitment"
-            );
-
-            Role::Signer {
-                public: output.public,
-                share: output.share,
-            }
-        } else {
-            Role::Verifier { public }
+        let my_role = match my_share {
+            Some(share) => Role::Signer { public, share },
+            None => Role::Verifier { public },
         };
+        info!(
+            ?disqualified,
+            "successfully finalized DKG ceremony; returning new participants polynomial"
+        );
 
         Ok(PrivateOutcome {
             participants: self.config.players,
-            role: new_role,
+            role: my_role,
         })
     }
 
