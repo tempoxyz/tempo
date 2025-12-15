@@ -328,6 +328,35 @@ const receipt = await client.token.transferSync({
   </Tabs.Tab>
 </Tabs>
 
+# Recipes
+
+## Set user fee token 
+
+You can also set a persistent default fee token for an account, so users don't need to specify `feeToken` on every transaction. Learn more about fee token preferences [here](/protocol/fees/spec-fee#fee-token-preferences).
+
+<Tabs className="-mt-2">
+<Tabs.Tab value="Wagmi">
+
+<div className="h-6" />
+
+```tsx twoslash
+// @noErrors
+// [!include ~/snippets/unformatted/fee.setUserToken.ts:wagmi-hooks]
+```
+
+</Tabs.Tab>
+<Tabs.Tab value="Viem">
+
+<div className="h-6" />
+
+```ts twoslash
+// @noErrors
+// [!include ~/snippets/unformatted/fee.setUserToken.ts:viem]
+```
+
+</Tabs.Tab>
+</Tabs>
+
 ## Learning Resources
 
 <Card.Container>
