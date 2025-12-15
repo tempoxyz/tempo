@@ -70,7 +70,7 @@ contract StablecoinExchange is IStablecoinExchange {
         internal balances;
 
     /// Next order ID to be assigned
-    uint128 public nextOrderId;
+    uint128 public nextOrderId = 1;
 
     /*//////////////////////////////////////////////////////////////
                               Functions
