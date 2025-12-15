@@ -295,8 +295,7 @@ impl FromRecoveredTx<TxFeeToken> for TempoTxEnv {
             fee_token: *fee_token,
             is_system_tx: false,
             fee_payer: fee_payer_signature.map(|sig| {
-                sig.recover_address_from_prehash(&tx.fee_payer_signature_hash(caller))
-                    .ok()
+                secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
             }),
             tempo_tx_env: None, // Non-AA transaction
         }
@@ -373,8 +372,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             fee_token: *fee_token,
             is_system_tx: false,
             fee_payer: fee_payer_signature.map(|sig| {
-                sig.recover_address_from_prehash(&tx.fee_payer_signature_hash(caller))
-                    .ok()
+                secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
             }),
             // Bundle AA-specific fields into TempoBatchCallEnv
             tempo_tx_env: Some(Box::new(TempoBatchCallEnv {

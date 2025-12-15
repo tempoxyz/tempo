@@ -76,7 +76,7 @@ pub(crate) struct GenesisArgs {
     base_fee_per_gas: u128,
 
     /// Genesis block gas limit
-    #[arg(long, default_value_t = 17000000000000)]
+    #[arg(long, default_value_t = 500_000_000)]
     gas_limit: u64,
 
     /// Adagio hardfork activation timestamp (defaults to 0 = active at genesis)

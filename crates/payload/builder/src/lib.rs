@@ -16,7 +16,8 @@ use reth_basic_payload_builder::{
 };
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
-use reth_errors::ConsensusError;
+use reth_engine_tree::tree::instrumented_state::InstrumentedStateProvider;
+use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
     block::{BlockExecutionError, BlockValidationError},
@@ -25,8 +26,12 @@ use reth_evm::{
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::PayloadBuilderAttributes;
 use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
-use reth_revm::{State, context::Block, database::StateProviderDatabase};
-use reth_storage_api::StateProviderFactory;
+use reth_revm::{
+    State,
+    context::{Block, BlockEnv},
+    database::StateProviderDatabase,
+};
+use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
@@ -77,6 +82,10 @@ pub struct TempoPayloadBuilder<Provider> {
     /// last height at which we've seen an invalid subblock, and not including any subblocks
     /// at this height for any payloads.
     highest_invalid_subblock: Arc<AtomicU64>,
+    /// Whether to enable state provider metrics.
+    state_provider_metrics: bool,
+    /// Whether to disable state cache.
+    disable_state_cache: bool,
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
@@ -84,6 +93,8 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         pool: TempoTransactionPool<Provider>,
         provider: Provider,
         evm_config: TempoEvmConfig,
+        state_provider_metrics: bool,
+        disable_state_cache: bool,
     ) -> Self {
         Self {
             pool,
@@ -91,6 +102,8 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
             highest_invalid_subblock: Default::default(),
+            state_provider_metrics,
+            disable_state_cache,
         }
     }
 }
@@ -326,9 +339,21 @@ where
         self.metrics.block_time_millis_last.set(block_time_millis);
 
         let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        let state_provider: Box<dyn StateProvider> = if self.state_provider_metrics {
+            Box::new(InstrumentedStateProvider::from_state_provider(
+                state_provider,
+                "builder",
+            ))
+        } else {
+            state_provider
+        };
         let state = StateProviderDatabase::new(&state_provider);
         let mut db = State::builder()
-            .with_database(cached_reads.as_db_mut(state))
+            .with_database(if self.disable_state_cache {
+                Box::new(state) as Box<dyn Database<Error = ProviderError>>
+            } else {
+                Box::new(cached_reads.as_db_mut(state))
+            })
             .with_bundle_update()
             .build();
 
@@ -583,6 +608,7 @@ where
         {
             // Release db
             drop(builder);
+            drop(db);
             // can skip building the block
             return Ok(BuildOutcome::Aborted {
                 fees: total_fees,
@@ -712,6 +738,7 @@ where
         let payload =
             EthBuiltPayload::new(attributes.payload_id(), sealed_block, total_fees, requests);
 
+        drop(db);
         Ok(BuildOutcome::Better {
             payload,
             cached_reads,
