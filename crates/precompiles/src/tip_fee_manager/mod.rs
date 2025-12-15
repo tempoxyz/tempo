@@ -191,16 +191,17 @@ impl TipFeeManager {
         tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
-        // Post-AllegroModerato: immediate swap and fee accumulation
-        // Pre-AllegroModerato: reserve liquidity (fees handled in collect_fee_post_tx)
         if user_token != validator_token {
             if self.storage.spec().is_allegro_moderato() {
-                // TODO: check sufficient liquidity
+                // Post-AllegroModerato: ensure there is enough liqudity to swap `max_amount`
+                self.check_sufficient_liquidity(user_token, validator_token, max_amount)?;
             } else {
                 // Pre-AllegroModerato: reserve liquidity for later swap in execute_block
                 self.reserve_liquidity(user_token, validator_token, max_amount)?;
             }
         } else if self.storage.spec().is_allegro_moderato() {
+            // TODO: Fix this, no need for token in fees array
+
             // Same token, no swap needed - just accumulate fees
             self.increment_collected_fees(beneficiary, max_amount)?;
         }

@@ -122,6 +122,23 @@ impl TipFeeManager {
         Ok(())
     }
 
+    /// Ensures that pool has enough liquidity for a fee swap
+    pub fn check_sufficient_liquidity(
+        &mut self,
+        user_token: Address,
+        validator_token: Address,
+        max_amount: U256,
+    ) -> Result<()> {
+        let pool_id = PoolKey::new(user_token, validator_token).get_id();
+        let amount_out_needed = compute_amount_out(max_amount)?;
+        let pool = self.pools.at(pool_id).read()?;
+        if amount_out_needed > U256::from(pool.reserve_validator_token) {
+            return Err(TIPFeeAMMError::insufficient_liquidity().into());
+        }
+
+        Ok(())
+    }
+
     /// Calculate validator token reserve minus pending swaps
     fn get_effective_validator_reserve(&self, pool_id: B256) -> Result<U256> {
         let pool = self.pools.at(pool_id).read()?;
