@@ -26,6 +26,7 @@ export default defineConfig({
         <meta content="image/png" property="og:image:type" />
         <meta content="1200" property="og:image:width" />
         <meta content="630" property="og:image:height" />
+        <link rel="icon" href="/favicon.ico" sizes="32x32" />
         <link rel="icon" type="image/svg+xml" href="/favicon-light.svg" media="(prefers-color-scheme: light)" />
         <link rel="icon" type="image/svg+xml" href="/favicon-dark.svg" media="(prefers-color-scheme: dark)" />
         <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32-light.png" media="(prefers-color-scheme: dark)" />
