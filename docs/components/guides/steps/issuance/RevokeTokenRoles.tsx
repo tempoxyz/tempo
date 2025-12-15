@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
+import type { TokenRole } from 'ox/tempo'
 import * as React from 'react'
-import type { TokenRole } from 'tempo.ts/ox'
 import { Hooks } from 'tempo.ts/wagmi'
 import { useConnection, useConnectionEffect } from 'wagmi'
 import { useDemoContext } from '../../../DemoContext'
