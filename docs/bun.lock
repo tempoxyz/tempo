@@ -1,6 +1,5 @@
 {
   "lockfileVersion": 1,
-  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "docs",
@@ -24,7 +23,7 @@
         "sql-formatter": "^15.6.10",
         "tailwind-merge": "^3.3.1",
         "tailwindcss": "^4.1.14",
-        "tempo.ts": "^0.10.5",
+        "tempo.ts": "^0.11.1",
         "viem": "^2.41.2",
         "vocs": "^1.3.1",
         "wagmi": "^3.0.1",
@@ -1851,7 +1850,7 @@
 
     "tar": ["tar@7.2.0", "", { "dependencies": { "@isaacs/fs-minipass": "^4.0.0", "chownr": "^3.0.0", "minipass": "^7.1.0", "minizlib": "^3.0.1", "mkdirp": "^3.0.1", "yallist": "^5.0.0" } }, "sha512-hctwP0Nb4AB60bj8WQgRYaMOuJYRAPMGiQUAotms5igN8ppfQM+IvjQ5HcKu1MaZh2Wy2KWVTe563Yj8dfc14w=="],
 
-    "tempo.ts": ["tempo.ts@0.10.5", "", { "dependencies": { "@remix-run/fetch-router": "~0.12.0", "idb-keyval": "^6.2.2", "ox": "~0.9.17" }, "peerDependencies": { "@tanstack/query-core": ">=5.0.0", "@tanstack/react-query": ">=5.0.0", "@wagmi/core": ">=2.18", "prool": "^0", "viem": ">=2.41.2", "wagmi": ">=2.19" }, "optionalPeers": ["@tanstack/query-core", "@tanstack/react-query", "@wagmi/core", "prool", "viem", "wagmi"] }, "sha512-pG4m82cEocuPuLAhJ3s992Nx+POvAyP+CUAaXtdcnp+e9/X8lbbbMAHFkxSfrx7xwifYxRS6DxloLpc4CeFOlg=="],
+    "tempo.ts": ["tempo.ts@0.11.1", "", { "dependencies": { "@remix-run/fetch-router": "~0.12.0", "idb-keyval": "^6.2.2", "ox": "~0.10.2" }, "peerDependencies": { "@tanstack/query-core": ">=5.0.0", "@tanstack/react-query": ">=5.0.0", "@wagmi/core": ">=2.18", "prool": "^0", "viem": ">=2.41.2", "wagmi": ">=2.19" }, "optionalPeers": ["@tanstack/query-core", "@tanstack/react-query", "@wagmi/core", "prool", "viem", "wagmi"] }, "sha512-5thj7BzLkizzUVw4tq81Pn+3MOA/y7JYZKTXieNeJgeIl1hnD2idkqBm6YdtklSJjIhKjdiGWYiN9oT5wZTwmg=="],
 
     "time-span": ["time-span@4.0.0", "", { "dependencies": { "convert-hrtime": "^3.0.0" } }, "sha512-MyqZCTGLDZ77u4k+jqg4UlrzPTPZ49NDlaekU6uuFaJLzPIN1woaRXCbGeqOfxwc3Y37ZROGAJ614Rdv7Olt+g=="],
 
@@ -2205,7 +2204,7 @@
 
     "strip-literal/js-tokens": ["js-tokens@9.0.1", "", {}, "sha512-mxa9E9ITFOt0ban3j6L5MpjwegGz6lBQmM1IJkWeBZGcMxto50+eWdjC/52xDbS2vy0k7vIMK0Fe2wfL9OQSpQ=="],
 
-    "tempo.ts/ox": ["ox@0.9.17", "", { "dependencies": { "@adraffy/ens-normalize": "^1.11.0", "@noble/ciphers": "^1.3.0", "@noble/curves": "1.9.1", "@noble/hashes": "^1.8.0", "@scure/bip32": "^1.7.0", "@scure/bip39": "^1.6.0", "abitype": "^1.0.9", "eventemitter3": "5.0.1" }, "peerDependencies": { "typescript": ">=5.4.0" }, "optionalPeers": ["typescript"] }, "sha512-rKAnhzhRU3Xh3hiko+i1ZxywZ55eWQzeS/Q4HRKLx2PqfHOolisZHErSsJVipGlmQKHW5qwOED/GighEw9dbLg=="],
+    "tempo.ts/ox": ["ox@0.10.2", "", { "dependencies": { "@adraffy/ens-normalize": "^1.11.0", "@noble/ciphers": "^1.3.0", "@noble/curves": "1.9.1", "@noble/hashes": "^1.8.0", "@scure/bip32": "^1.7.0", "@scure/bip39": "^1.6.0", "abitype": "^1.0.9", "eventemitter3": "5.0.1" }, "peerDependencies": { "typescript": ">=5.4.0" }, "optionalPeers": ["typescript"] }, "sha512-fsUKAW7Jr64vEwppzKeOHR7mElxTIPgmcf1vgw0mhpWsCbYnPe7G8bM3c5R55lwhV2k67gFANeoSXrk8cAEPuQ=="],
 
     "update-browserslist-db/picocolors": ["picocolors@1.1.1", "", {}, "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA=="],
 
