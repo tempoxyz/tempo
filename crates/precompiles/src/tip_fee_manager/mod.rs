@@ -200,8 +200,6 @@ impl TipFeeManager {
                 self.reserve_liquidity(user_token, validator_token, max_amount)?;
             }
         } else if self.storage.spec().is_allegro_moderato() {
-            // TODO: Fix this, no need for token in fees array
-
             // Same token, no swap needed - just accumulate fees
             self.increment_collected_fees(beneficiary, max_amount)?;
         }
@@ -429,13 +427,11 @@ impl TipFeeManager {
         if amount.is_zero() {
             return Ok(());
         }
-
-        let validator_token = self.get_validator_token(validator)?;
-
-        // Clear collected fees first
         self.collected_fees.at(validator).write(U256::ZERO)?;
 
         // Transfer fees to validator
+        let validator_token = self.get_validator_token(validator)?;
+
         let mut token = TIP20Token::from_address(validator_token)?;
         token.transfer(
             self.address,
