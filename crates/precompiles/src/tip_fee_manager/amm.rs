@@ -660,7 +660,6 @@ impl TipFeeManager {
         user_token: Address,
         validator_token: Address,
         amount_in: U256,
-        beneficiary: Address,
     ) -> Result<U256> {
         let pool_id = self.pool_id(user_token, validator_token);
         let mut pool = self.pools.at(pool_id).read()?;
@@ -687,32 +686,6 @@ impl TipFeeManager {
             amountIn: amount_in,
             amountOut: amount_out,
         }))?;
-
-        // Transfer fee to the validator
-        let mut validator_token = TIP20Token::from_address(validator_token)?;
-        // If FeeManager or validator are blacklisted, do not transfer fees
-        if validator_token.is_transfer_authorized(self.address, beneficiary)? {
-            // Bound fee transfer to contract balance
-            let balance = validator_token.balance_of(ITIP20::balanceOfCall {
-                account: self.address,
-            })?;
-
-            if !balance.is_zero() {
-                validator_token
-                    .transfer(
-                        self.address,
-                        ITIP20::transferCall {
-                            to: beneficiary,
-                            amount: amount_out.min(balance),
-                        },
-                    )
-                    .map_err(|_| {
-                        IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
-                            IFeeManager::InsufficientFeeTokenBalance {},
-                        )
-                    })?;
-            }
-        }
 
         Ok(amount_out)
     }

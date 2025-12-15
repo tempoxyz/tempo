@@ -100,6 +100,12 @@ impl TipFeeManager {
             if !TIP20Factory::new().is_tip20(call.token)? {
                 return Err(FeeManagerError::invalid_token().into());
             }
+
+            // Post Allegro Moderato, if the validator has pending fees, they must claim them
+            // before updating their validator token
+            if !self.collected_fees.at(sender).read()?.is_zero() {
+                return Err(FeeManagerError::cannot_change_with_pending_fees().into());
+            }
         } else if !is_tip20_prefix(call.token) {
             // Pre-AllegroModerato: only check prefix
             return Err(FeeManagerError::invalid_token().into());
@@ -246,7 +252,9 @@ impl TipFeeManager {
 
         if fee_token != validator_token {
             if self.storage.spec().is_allegro_moderato() {
-                self.execute_fee_swap(fee_token, validator_token, actual_spending, beneficiary)?;
+                let amount_out =
+                    self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
+                self.increment_collected_fees(beneficiary, amount_out)?;
             } else {
                 // Release Fee AMM liquidity
                 self.release_liquidity(fee_token, validator_token, refund_amount)?;
@@ -424,10 +432,55 @@ impl TipFeeManager {
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
-        // If this is the first fee for the validator, record it in validators with fees
-        if collected_fees.is_zero() {
-            self.validator_in_fees_array.at(validator).write(true)?;
-            self.validators_with_fees.push(validator)?;
+        // Pre Allegro moderato, record validators with fees to be processed
+        // at the end of the block
+        if !self.storage.spec().is_allegro_moderato() {
+            // If this is the first fee for the validator, record it in validators with fees
+            if collected_fees.is_zero() {
+                self.validator_in_fees_array.at(validator).write(true)?;
+                self.validators_with_fees.push(validator)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    // NOTE: need to decide how to proceed if either the fee manager or the validator is
+    // blacklisted as this would cause the transfer to fail and the validator can not set another
+    // fee token until fees are cleared
+    pub fn claim_fees(&mut self, validator: Address) -> Result<()> {
+        let collected_fees = self.collected_fees.at(validator).read()?;
+
+        if !collected_fees.is_zero() {
+            let validator_token = self.get_validator_token(validator)?;
+            let mut token = TIP20Token::from_address(validator_token)?;
+
+            // If FeeManager or validator are blacklisted, we are not transferring any fees
+            if token.is_transfer_authorized(self.address, validator)? {
+                // Bound fee transfer to contract balance
+                let balance = token.balance_of(ITIP20::balanceOfCall {
+                    account: self.address,
+                })?;
+
+                if !balance.is_zero() {
+                    token
+                        .transfer(
+                            self.address,
+                            ITIP20::transferCall {
+                                to: validator,
+                                amount: collected_fees.min(balance),
+                            },
+                        )
+                        .map_err(|_| {
+                            IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
+                                IFeeManager::InsufficientFeeTokenBalance {},
+                            )
+                        })?;
+                }
+            }
+
+            // Clear collected fees for the validator
+            self.collected_fees.at(validator).delete()?;
         }
 
         Ok(())
