@@ -1467,6 +1467,7 @@ mod tests {
         primitives::hardfork::SpecId,
         state::Account,
     };
+    use std::convert::Infallible;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS};
 
