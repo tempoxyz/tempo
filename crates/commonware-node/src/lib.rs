@@ -99,6 +99,8 @@ pub async fn run_consensus_stack(
         partition_prefix: "engine".into(),
         signer: signing_key.into_inner(),
         share,
+        delete_signing_share: config.delete_signing_share,
+
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
 

@@ -16,6 +16,7 @@ use reth_basic_payload_builder::{
 };
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
+use reth_engine_tree::tree::instrumented_state::InstrumentedStateProvider;
 use reth_errors::ConsensusError;
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
@@ -30,7 +31,7 @@ use reth_revm::{
     context::{Block, BlockEnv},
     database::StateProviderDatabase,
 };
-use reth_storage_api::StateProviderFactory;
+use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
@@ -81,6 +82,8 @@ pub struct TempoPayloadBuilder<Provider> {
     /// last height at which we've seen an invalid subblock, and not including any subblocks
     /// at this height for any payloads.
     highest_invalid_subblock: Arc<AtomicU64>,
+    /// Whether to enable state provider metrics.
+    state_provider_metrics: bool,
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
@@ -88,6 +91,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         pool: TempoTransactionPool<Provider>,
         provider: Provider,
         evm_config: TempoEvmConfig,
+        state_provider_metrics: bool,
     ) -> Self {
         Self {
             pool,
@@ -95,6 +99,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
             highest_invalid_subblock: Default::default(),
+            state_provider_metrics,
         }
     }
 }
@@ -320,6 +325,14 @@ where
         self.metrics.block_time_millis_last.set(block_time_millis);
 
         let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        let state_provider: Box<dyn StateProvider> = if self.state_provider_metrics {
+            Box::new(InstrumentedStateProvider::from_state_provider(
+                state_provider,
+                "builder",
+            ))
+        } else {
+            state_provider
+        };
         let state = StateProviderDatabase::new(&state_provider);
         let mut db = State::builder()
             .with_database(cached_reads.as_db_mut(state))

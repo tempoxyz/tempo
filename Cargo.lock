@@ -11784,6 +11784,7 @@ dependencies = [
  "reth-basic-payload-builder",
  "reth-chainspec",
  "reth-consensus-common",
+ "reth-engine-tree",
  "reth-errors",
  "reth-evm",
  "reth-metrics",
