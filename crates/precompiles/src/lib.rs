@@ -345,6 +345,7 @@ mod tests {
         context::ContextTr,
         database::{CacheDB, EmptyDB},
     };
+    use tempo_contracts::precompiles::ITIP20;
 
     #[test]
     fn test_precompile_delegatecall() {
@@ -365,6 +366,7 @@ mod tests {
             internals: evm_internals,
             gas: 0,
             value: U256::ZERO,
+            is_static: false,
             target_address,
             bytecode_address,
             is_static: false,
@@ -379,6 +381,47 @@ mod tests {
                 assert!(matches!(decoded, DelegateCallNotAllowed {}));
             }
             Err(_) => panic!("expected reverted output"),
+        }
+    }
+
+    #[test]
+    fn test_precompile_static_call() {
+        let (chain_id, spec) = (1, TempoHardfork::default());
+        let precompile =
+            tempo_precompile!("TIP20Token", chain_id, spec, |input| { TIP20Token::new(1) });
+
+        let db = CacheDB::new(EmptyDB::new());
+        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+        let block = evm.block.clone();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+
+        let target_address = Address::random();
+        let transfer_calldata = ITIP20::transferCall {
+            to: Address::random(),
+            amount: U256::from(100),
+        }
+        .abi_encode();
+        let calldata = Bytes::from(transfer_calldata);
+        let input = PrecompileInput {
+            data: &calldata,
+            caller: Address::ZERO,
+            internals: evm_internals,
+            gas: 100_000,
+            is_static: true,
+            value: U256::ZERO,
+            target_address,
+            bytecode_address: target_address,
+        };
+
+        let result = AlloyEvmPrecompile::call(&precompile, input);
+
+        match result {
+            Ok(output) => {
+                assert!(output.reverted);
+                let decoded = StaticCallNotAllowed::abi_decode(&output.bytes).unwrap();
+                assert!(matches!(decoded, StaticCallNotAllowed {}));
+            }
+            Err(e) => panic!("expected reverted output, got error: {e:?}"),
         }
     }
 }
