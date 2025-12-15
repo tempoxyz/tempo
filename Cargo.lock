@@ -436,8 +436,7 @@ dependencies = [
 [[package]]
 name = "alloy-primitives"
 version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "355bf68a433e0fd7f7d33d5a9fc2583fde70bf5c530f63b80845f8da5505cf28"
+source = "git+https://github.com/alloy-rs/core#6c62543591a563d2038f8e9b59c1a94268ffa86d"
 dependencies = [
  "alloy-rlp",
  "arbitrary",
