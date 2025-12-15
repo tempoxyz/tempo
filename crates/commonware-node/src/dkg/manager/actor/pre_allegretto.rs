@@ -90,6 +90,15 @@ where
                 ValidatorState::with_unknown_contract_state(validators.clone()),
             );
         }
+
+        if self.config.delete_signing_share
+            && let Some(mut epoch_state) = tx.get_epoch::<EpochState>().await?
+        {
+            warn!("delete-signing-share set; deleting signing share");
+            epoch_state.share.take();
+            tx.set_epoch(epoch_state);
+        }
+
         Ok(())
     }
 

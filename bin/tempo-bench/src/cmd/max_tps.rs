@@ -98,8 +98,8 @@ pub struct MaxTpsArgs {
     #[arg(long, default_value_t = DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)]
     fee_token: Address,
 
-    /// Target URLs for network connections
-    #[arg(long, default_values_t = vec!["http://localhost:8545".parse::<Url>().unwrap()])]
+    /// Target URLs for network connections (comma-separated or multiple --target-urls)
+    #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append, default_values_t = vec!["http://localhost:8545".parse::<Url>().unwrap()])]
     target_urls: Vec<Url>,
 
     /// A limit of the maximum number of concurrent requests, prevents issues with too many

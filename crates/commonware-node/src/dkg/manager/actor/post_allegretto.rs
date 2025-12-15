@@ -130,6 +130,15 @@ where
                 validator_state: initial_validator_state,
             });
         }
+
+        if self.config.delete_signing_share
+            && let Some(mut epoch_state) = tx.get_epoch::<EpochState>().await?
+        {
+            warn!("delete-signing-share set; deleting signing share");
+            epoch_state.dkg_outcome.share.take();
+            tx.set_epoch(epoch_state);
+        }
+
         Ok(())
     }
 
