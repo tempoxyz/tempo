@@ -113,6 +113,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
 
 sol! {
     error DelegateCallNotAllowed();
+    error StaticCallNotAllowed();
 }
 
 macro_rules! tempo_precompile {
@@ -129,6 +130,7 @@ macro_rules! tempo_precompile {
                 $input.gas,
                 $chain_id,
                 $spec,
+                $input.is_static,
             );
             crate::storage::StorageCtx::enter(&mut storage, || {
                 $impl.call($input.data, $input.caller)
@@ -255,6 +257,12 @@ pub fn mutate<T: SolCall>(
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
+    if StorageCtx.is_static() {
+        return Ok(PrecompileOutput::new_reverted(
+            0,
+            StaticCallNotAllowed {}.abi_encode().into(),
+        ));
+    }
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };
@@ -267,6 +275,12 @@ fn mutate_void<T: SolCall>(
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<()>,
 ) -> PrecompileResult {
+    if StorageCtx.is_static() {
+        return Ok(PrecompileOutput::new_reverted(
+            0,
+            StaticCallNotAllowed {}.abi_encode().into(),
+        ));
+    }
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };

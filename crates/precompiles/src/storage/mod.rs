@@ -77,6 +77,9 @@ pub trait PrecompileStorageProvider {
 
     /// Returns the currently active hardfork.
     fn spec(&self) -> TempoHardfork;
+
+    /// Returns whether the current call context is static (read-only).
+    fn is_static(&self) -> bool;
 }
 
 /// Storage operations for a given (contract) address.
