@@ -152,7 +152,7 @@ export function ConnectWallet(props: DemoStepProps) {
       title="Connect your browser wallet."
       actions={!stackConnectors && actions}
     >
-      { stackConnectors && actions }
+      {stackConnectors && actions}
     </Step>
   )
 }
