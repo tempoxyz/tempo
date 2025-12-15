@@ -24,7 +24,7 @@
     "monaco-editor": "^0.55.1",
     "nuqs": "^2.8.2",
     "ox": "~0.9.14",
-    "prool": "^0.0.25",
+    "prool": "^0.2.1",
     "react": "latest",
     "react-dom": "latest",
     "react-router": "7.9.4",

@@ -15,7 +15,7 @@
         "monaco-editor": "^0.55.1",
         "nuqs": "^2.8.2",
         "ox": "~0.9.14",
-        "prool": "^0.0.25",
+        "prool": "^0.2.1",
         "react": "latest",
         "react-dom": "latest",
         "react-router": "7.9.4",
@@ -1654,7 +1654,7 @@
 
     "process-nextick-args": ["process-nextick-args@2.0.1", "", {}, "sha512-3ouUOpQhtgrbOa17J7+uxOTpITYWaGP7/AhoR3+A+/1e9skrzelGi/dXzEYyvbxubEF6Wn2ypscTKiKJFFn1ag=="],
 
-    "prool": ["prool@0.0.25", "", { "dependencies": { "change-case": "5.4.4", "eventemitter3": "^5.0.1", "execa": "^9.1.0", "get-port": "^7.1.0", "http-proxy": "^1.18.1", "tar": "7.2.0" }, "peerDependencies": { "@pimlico/alto": "*" }, "optionalPeers": ["@pimlico/alto"] }, "sha512-RKqgb4iEkKJAQC1U0frPs6DWuC2VRfrn3sRRz09lYVr8GkBjrSH7uQLeA5N0odCRD4x75DfRwOedQTxjMkrYuQ=="],
+    "prool": ["prool@0.2.1", "", { "dependencies": { "change-case": "5.4.4", "eventemitter3": "^5.0.1", "execa": "^9.1.0", "get-port": "^7.1.0", "http-proxy": "^1.18.1", "tar": "7.2.0" }, "peerDependencies": { "@pimlico/alto": "*", "testcontainers": ">=11.10.0" }, "optionalPeers": ["@pimlico/alto", "testcontainers"] }, "sha512-K9mVhCIf80ANLp3F4KO3n6z3zGTgUXTi4uxjGxHtW4VSRsg8cEUZYcDxcCOFhXzzR3Mv7GzlIKo9vekEL2fDxg=="],
 
     "property-information": ["property-information@6.5.0", "", {}, "sha512-PgTgs/BlvHxOu8QuEN7wi5A0OmXaBcHpmCSTehcs6Uuu9IkDIEo13Hy7n898RHfrQ49vKCoGeWZSaAK01nwVig=="],
 
