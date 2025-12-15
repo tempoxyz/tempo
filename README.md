@@ -152,3 +152,8 @@ Licensed under either of [Apache License](./LICENSE-APACHE), Version
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in these crates by you, as defined in the Apache-2.0 license,
 shall be dual licensed as above, without any additional terms or conditions.
+
+## Project Direction
+
+High-level roadmap items and future improvements are discussed in issues and pull requests. Community feedback is welcome and helps shape future development.
+
