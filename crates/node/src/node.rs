@@ -7,9 +7,7 @@ use crate::{
         TempoPolicyApiServer, TempoToken, TempoTokenApiServer,
     },
 };
-use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use alloy_primitives::B256;
-use reth_chainspec::EthChainSpec;
 use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_evm::revm::primitives::Address;
 use reth_node_api::{
@@ -36,8 +34,8 @@ use reth_rpc_eth_api::{
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
 use reth_tracing::tracing::{debug, info};
-use reth_transaction_pool::TransactionValidationTaskExecutor;
-use std::{default::Default, sync::Arc, time::SystemTime};
+use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore};
+use std::{default::Default, sync::Arc};
 use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_consensus::TempoConsensus;
 use tempo_evm::{TempoEvmConfig, evm::TempoEvmFactory};
@@ -389,31 +387,11 @@ where
         pool_config.minimal_protocol_basefee = TEMPO_BASE_FEE;
         pool_config.max_inflight_delegated_slot_limit = pool_config.max_account_slots;
 
-        let blob_cache_size = if let Some(blob_cache_size) = pool_config.blob_cache_size {
-            Some(blob_cache_size)
-        } else {
-            // get the current blob params for the current timestamp, fallback to default Cancun
-            // params
-            let current_timestamp = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)?
-                .as_secs();
-            let blob_params = ctx
-                .chain_spec()
-                .blob_params_at_timestamp(current_timestamp)
-                .unwrap_or_else(BlobParams::cancun);
-
-            // Derive the blob cache size from the target blob count, to auto scale it by
-            // multiplying it with the slot count for 2 epochs: 384 for pectra
-            Some((blob_params.target_blob_count * EPOCH_SLOTS * 2) as u32)
-        };
-
-        let blob_store =
-            reth_node_builder::components::create_blob_store_with_cache(ctx, blob_cache_size)?;
-
+        // this store is effectively a noop
+        let blob_store = InMemoryBlobStore::default();
         let validator = TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone())
             .with_head_timestamp(ctx.head().timestamp)
             .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
-            .kzg_settings(ctx.kzg_settings()?)
             .with_local_transactions_config(pool_config.local_transactions_config.clone())
             .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
             .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
@@ -422,18 +400,8 @@ where
             .with_additional_tasks(ctx.config().txpool.additional_validation_tasks)
             .with_custom_tx_type(TempoTxType::AA as u8)
             .with_custom_tx_type(TempoTxType::FeeToken as u8)
+            .no_eip4844()
             .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
-
-        if validator.validator().eip4844() {
-            // initializing the KZG settings can be expensive, this should be done upfront so that
-            // it doesn't impact the first block or the first gossiped blob transaction, so we
-            // initialize this in the background
-            let kzg_settings = validator.validator().kzg_settings().clone();
-            ctx.task_executor().spawn_blocking(async move {
-                let _ = kzg_settings.get();
-                debug!(target: "reth::cli", "Initialized KZG settings");
-            });
-        }
 
         let aa_2d_config = AA2dPoolConfig {
             price_bump_config: pool_config.price_bumps,
