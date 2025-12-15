@@ -14,7 +14,7 @@ use tempo_node::TempoFullNode;
 pub mod actor;
 mod ingress;
 mod migrate;
-pub(super) mod tx;
+pub(super) mod read_write_transaction;
 pub mod validators;
 
 pub(crate) use actor::Actor;

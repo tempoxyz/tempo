@@ -2,7 +2,7 @@ use eyre::WrapErr;
 use std::{any::Any, collections::HashMap, hash::BuildHasher, sync::Arc};
 use tracing::debug;
 
-use alloy_primitives::map::foldhash;
+use alloy_primitives::map::FxBuildHasher;
 use async_lock::RwLock;
 use bytes::Bytes;
 use commonware_codec::{EncodeSize, Read, Write};
@@ -289,9 +289,9 @@ where
     }
 }
 
-/// Convert key to U64 using foldhash.
+/// Convert key to U64 using fxhash.
 fn key_to_u64(key: &[u8]) -> U64 {
-    U64::new(foldhash::fast::FixedState::default().hash_one(key))
+    U64::new(FxBuildHasher::default().hash_one(key))
 }
 
 /// Trait for values that can be cached in the transaction buffer.

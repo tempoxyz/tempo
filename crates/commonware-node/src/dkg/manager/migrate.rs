@@ -10,7 +10,7 @@ use crate::dkg::{
     manager::{
         DkgOutcome,
         actor::{post_allegretto, pre_allegretto},
-        tx::DkgReadWriteTransaction,
+        read_write_transaction::DkgReadWriteTransaction,
         validators::ValidatorState,
     },
 };

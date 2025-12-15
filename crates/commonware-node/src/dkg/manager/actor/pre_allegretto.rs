@@ -22,7 +22,7 @@ use crate::{
     dkg::{
         HardforkRegime, RegimeEpochState,
         ceremony::{self, Ceremony},
-        manager::{tx::DkgReadWriteTransaction, validators::ValidatorState},
+        manager::{read_write_transaction::DkgReadWriteTransaction, validators::ValidatorState},
     },
     epoch,
 };

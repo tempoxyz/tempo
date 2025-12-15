@@ -30,7 +30,7 @@ use tempo_dkg_onchain_artifacts::{Ack, IntermediateOutcome};
 
 use crate::{
     consensus::block::Block,
-    dkg::{HardforkRegime, manager::tx::DkgReadWriteTransaction},
+    dkg::{HardforkRegime, manager::read_write_transaction::DkgReadWriteTransaction},
 };
 
 mod payload;

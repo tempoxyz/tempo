@@ -26,7 +26,7 @@ use crate::{
         ceremony::{self, Ceremony},
         manager::{
             actor::{DkgOutcome, pre_allegretto},
-            tx::DkgReadWriteTransaction,
+            read_write_transaction::DkgReadWriteTransaction,
             validators::{self, ValidatorState},
         },
     },

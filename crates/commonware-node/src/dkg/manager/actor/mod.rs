@@ -38,7 +38,7 @@ use crate::{
         ceremony::{self, Ceremony, OUTCOME_NAMESPACE},
         manager::{
             ingress::{Finalize, GetIntermediateDealing, GetOutcome},
-            tx::DkgReadWriteTransaction,
+            read_write_transaction::DkgReadWriteTransaction,
             validators::{self, DecodedValidator, ValidatorState},
         },
     },
