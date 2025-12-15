@@ -342,7 +342,7 @@ where
             .with_database(if self.disable_state_cache {
                 Box::new(state) as Box<dyn Database<Error = ProviderError>>
             } else {
-                Box::new(cached_reads.as_db_mut(state)) as Box<dyn Database<Error = ProviderError>>
+                Box::new(cached_reads.as_db_mut(state))
             })
             .with_bundle_update()
             .build();
