@@ -857,10 +857,7 @@ where
         }
 
         let my_role = match my_share {
-            Some(share) => Role::Signer {
-                public: public,
-                share: share,
-            },
+            Some(share) => Role::Signer { public, share },
             None => Role::Verifier { public },
         };
         info!(
