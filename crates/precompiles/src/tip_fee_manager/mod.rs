@@ -195,9 +195,7 @@ impl TipFeeManager {
         // Pre-AllegroModerato: reserve liquidity (fees handled in collect_fee_post_tx)
         if user_token != validator_token {
             if self.storage.spec().is_allegro_moderato() {
-                // Execute fee swap immediately and accumulate fees
-                let amount_out = self.execute_fee_swap(user_token, validator_token, max_amount)?;
-                self.increment_collected_fees(beneficiary, amount_out)?;
+                // TODO: check sufficient liquidity
             } else {
                 // Pre-AllegroModerato: reserve liquidity for later swap in execute_block
                 self.reserve_liquidity(user_token, validator_token, max_amount)?;
@@ -236,7 +234,12 @@ impl TipFeeManager {
 
             // Record the pool if there was a non-zero swap
             if !actual_spending.is_zero() {
-                if !self.storage.spec().is_allegretto() {
+                if self.storage.spec().is_allegro_moderato() {
+                    // Execute fee swap immediately and accumulate fees
+                    let amount_out =
+                        self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
+                    self.increment_collected_fees(beneficiary, amount_out)?;
+                } else if !self.storage.spec().is_allegretto() {
                     // Pre-Allegretto: track in buggy token_in_fees_array
                     if !self.token_in_fees_array.at(fee_token).read()? {
                         self.tokens_with_fees.push(fee_token)?;
