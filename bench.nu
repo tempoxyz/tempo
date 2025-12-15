@@ -432,9 +432,9 @@ def "main bench" [
     | append (if $mode == "consensus" { ["--nodes" $"($nodes)"] } else { [] })
     | append (if $reset { ["--reset"] } else { [] })
     | append (if $samply { ["--samply"] } else { [] })
-    | append (if $samply_args != "" { ["--samply-args" $samply_args] } else { [] })
+    | append (if $samply_args != "" { [$"--samply-args=\"($samply_args)\""] } else { [] })
     | append (if $loud { ["--loud"] } else { [] })
-    | append (if $node_args != "" { ["--node-args" $node_args] } else { [] })
+    | append (if $node_args != "" { [$"--node-args=\"($node_args)\""] } else { [] })
 
     # Spawn nodes as a background job (pipe output to show logs)
     let node_cmd_str = ($node_cmd | str join " ")
