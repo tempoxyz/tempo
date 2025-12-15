@@ -143,6 +143,10 @@ export default defineConfig({
                 text: 'Sponsor user fees',
                 link: '/guide/payments/sponsor-user-fees',
               },
+              {
+                text: 'Send parallel transactions',
+                link: '/guide/payments/send-parallel-transactions',
+              },
               // {
               //   text: 'Start a subscription 🚧',
               //   disabled: true,
