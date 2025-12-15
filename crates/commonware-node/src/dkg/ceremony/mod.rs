@@ -849,8 +849,8 @@ where
                         n_reveals,
                         error = %eyre::Report::new(error),
                         "failed to finalize our share even though the overall \
-                        the overall DKG ceremony was a success; we will \
-                        participate as a verifier since we do not have a share"
+                        DKG ceremony was a success; will participate as a \
+                        verifier since we failed to participate as a player"
                     );
                 }
             };

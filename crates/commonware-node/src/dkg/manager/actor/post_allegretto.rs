@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use alloy_consensus::BlockHeader;
+use alloy_consensus::BlockHeader as _;
 use commonware_codec::{DecodeExt as _, EncodeSize, Read, Write};
 use commonware_consensus::{
     Block as _, Reporter as _, simplex::signing_scheme::bls12381_threshold::Scheme, types::Epoch,
