@@ -288,9 +288,14 @@ where
     }
 }
 
-/// Convert key to U64 using rapidhash.
+/// Convert key to U64 using blake3.
 fn key_to_u64(key: &[u8]) -> U64 {
-    U64::new(rapidhash::rapidhash(key))
+    let hash = blake3::hash(key);
+    U64::new(u64::from_le_bytes(
+        hash.as_bytes()[..8]
+            .try_into()
+            .expect("blake3 hash is 32 bytes"),
+    ))
 }
 
 /// Trait for values that can be cached in the transaction buffer.

@@ -200,6 +200,7 @@ async-trait = "0.1"
 auto_impl = "1"
 axum = "0.8.4"
 base64 = "0.22"
+blake3 = "1.8"
 rapidhash = "1.4"
 bytes = "1.8"
 clap = { version = "4.5.45", features = ["derive"] }
