@@ -369,6 +369,7 @@ mod tests {
             is_static: false,
             target_address,
             bytecode_address,
+            is_static: false,
         };
 
         let result = AlloyEvmPrecompile::call(&precompile, input);
