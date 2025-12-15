@@ -1,7 +1,7 @@
 use super::tempo_transaction::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType,
 };
-use alloy_primitives::{Address, B256, Bytes, Signature, keccak256};
+use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::{
     EncodedPoint,
@@ -9,6 +9,21 @@ use p256::{
 };
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
+
+/// Half of the P256 curve order (n/2).
+///
+/// The P256 curve order is:
+/// n = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+///
+/// For signatures to be valid, the s value must be less than or equal to n/2
+/// (low-s requirement). This prevents signature malleability where (r, s) and
+/// (r, n-s) are both valid signatures for the same message.
+///
+/// n/2 = 0x7FFFFFFF800000007FFFFFFFFFFFFFFFDE737D56D38BCF4279DCE5617E3192A8
+pub const P256N_HALF: U256 = U256::from_be_bytes([
+    0x7F, 0xFF, 0xFF, 0xFF, 0x80, 0x00, 0x00, 0x00, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xDE, 0x73, 0x7D, 0x56, 0xD3, 0x8B, 0xCF, 0x42, 0x79, 0xDC, 0xE5, 0x61, 0x7E, 0x31, 0x92, 0xA8,
+]);
 
 /// Signature type identifiers
 /// Note: Secp256k1 has no identifier - detected by length (65 bytes)
@@ -657,6 +672,11 @@ pub fn derive_p256_address(pub_key_x: &B256, pub_key_y: &B256) -> Address {
 /// This performs actual cryptographic verification of the P256 signature
 /// according to the spec. Called during `recover_signer()` to ensure only
 /// valid signatures enter the mempool.
+///
+/// Includes a high-s value check to prevent signature malleability. For any
+/// ECDSA signature (r, s), a second valid signature (r, n-s) exists. By
+/// requiring s <= n/2 (the "low-s" requirement), we ensure only one canonical
+/// form is accepted, preventing transaction hash malleability attacks.
 fn verify_p256_signature_internal(
     r: &[u8],
     s: &[u8],
@@ -664,6 +684,12 @@ fn verify_p256_signature_internal(
     pub_key_y: &[u8],
     message_hash: &B256,
 ) -> Result<(), &'static str> {
+    // High-s value check: reject signatures where s > n/2 to prevent malleability
+    let s_value = U256::from_be_slice(s);
+    if s_value > P256N_HALF {
+        return Err("P256 signature has high s value");
+    }
+
     // Parse public key from affine coordinates
     let encoded_point = EncodedPoint::from_affine_coordinates(
         pub_key_x.into(),
@@ -858,6 +884,82 @@ mod tests {
             result.is_ok(),
             "Valid P256 signature should verify successfully"
         );
+    }
+
+    #[test]
+    fn test_p256_signature_high_s_value_rejected() {
+        use p256::{
+            ecdsa::{SigningKey, signature::hazmat::PrehashSigner},
+            elliptic_curve::rand_core::OsRng,
+        };
+        use sha2::{Digest, Sha256};
+
+        // Generate a valid key pair
+        let signing_key = SigningKey::random(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+
+        // Create a message and sign it
+        let message = b"test message for high s";
+        let message_hash = B256::from_slice(&Sha256::digest(message));
+
+        // Sign the message
+        let signature: p256::ecdsa::Signature =
+            signing_key.sign_prehash(message_hash.as_slice()).unwrap();
+        let sig_bytes = signature.to_bytes();
+        let r = &sig_bytes[0..32];
+        let original_s = &sig_bytes[32..64];
+
+        // Extract public key coordinates
+        let encoded_point = verifying_key.to_encoded_point(false);
+        let pub_key_x = encoded_point.x().unwrap();
+        let pub_key_y = encoded_point.y().unwrap();
+
+        // P256 curve order n
+        let n = alloy_primitives::U256::from_be_bytes([
+            0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            0xFF, 0xFF, 0xBC, 0xE6, 0xFA, 0xAD, 0xA7, 0x17, 0x9E, 0x84, 0xF3, 0xB9, 0xCA, 0xC2,
+            0xFC, 0x63, 0x25, 0x51,
+        ]);
+
+        // Convert s to U256 and compute n - s (the high-s equivalent)
+        let s_value = alloy_primitives::U256::from_be_slice(original_s);
+        let high_s = n - s_value;
+        let high_s_bytes: [u8; 32] = high_s.to_be_bytes();
+
+        // The high-s signature should be rejected
+        let result = verify_p256_signature_internal(
+            r,
+            &high_s_bytes,
+            pub_key_x.as_slice(),
+            pub_key_y.as_slice(),
+            &message_hash,
+        );
+
+        // Depending on which s was originally produced, either original or high-s
+        // should be rejected
+        let s_is_low = s_value <= P256N_HALF;
+        if s_is_low {
+            // Original s is low, so high-s version should be rejected
+            assert!(
+                result.is_err(),
+                "High-s signature should be rejected for signature malleability prevention"
+            );
+            assert_eq!(result.unwrap_err(), "P256 signature has high s value");
+        } else {
+            // Original s was already high, so the computed "high_s" is actually low
+            // This means the original should fail
+            let original_result = verify_p256_signature_internal(
+                r,
+                original_s,
+                pub_key_x.as_slice(),
+                pub_key_y.as_slice(),
+                &message_hash,
+            );
+            assert!(
+                original_result.is_err(),
+                "Original high-s signature should be rejected"
+            );
+        }
     }
 
     #[test]
