@@ -21,7 +21,7 @@ pub(super) async fn setup(
         .ok_or_eyre("No signer providers found")?;
     let caller = signer.address();
 
-    info!("Creating tokens");
+    info!(user_tokens, "Creating TIP-20 tokens");
     let progress = ProgressBar::new(user_tokens as u64 + 1);
     // Create quote token
     let quote_token = setup_test_token(provider.clone(), caller, PATH_USD_ADDRESS).await?;
@@ -70,7 +70,7 @@ pub(super) async fn setup(
 
     // Mint user tokens to each signer
     let mint_amount = U128_MAX / U256::from(signer_providers.len());
-    info!(%mint_amount, "Minting tokens");
+    info!(%mint_amount, "Minting TIP-20 tokens");
     join_all(
         signer_providers
             .iter()
@@ -89,7 +89,7 @@ pub(super) async fn setup(
         max_concurrent_transactions,
     )
     .await
-    .context("Failed to mint tokens")?;
+    .context("Failed to mint TIP-20 tokens")?;
 
     // Approve for each signer quote token and each user token to spend by exchange
     info!("Approving tokens");
@@ -110,7 +110,7 @@ pub(super) async fn setup(
         max_concurrent_transactions,
     )
     .await
-    .context("Failed to approve tokens")?;
+    .context("Failed to approve TIP-20 tokens")?;
 
     // Place flip orders of `order_amount` with tick `tick_over` and flip tick `tick_under` for each signer and each token
     let order_amount = 1000000000000u128;
@@ -169,7 +169,7 @@ where
         .ok_or_eyre("Token creation event not found")?;
     assert_receipt(receipt)
         .await
-        .context("Failed to create token")?;
+        .context("Failed to create TIP-20 token")?;
 
     let token_addr = token_id_to_address(event.tokenId.to());
     let token = ITIP20::new(token_addr, provider.clone());

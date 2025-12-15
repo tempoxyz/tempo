@@ -36,7 +36,6 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
                 TempoBlockExecutionCtx {
                     inner,
                     general_gas_limit,
-                    extra_data,
                     shared_gas_limit,
                     validator_set: _,
                     subblock_fee_recipients: _,
@@ -54,12 +53,8 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
 
         let timestamp_millis_part = evm_env.block_env.timestamp_millis_part;
 
-        // Set extra_data on the inner assembler before building
-        let mut assembler = self.inner.clone();
-        assembler.extra_data = extra_data;
-
         // Delegate block building to the inner assembler
-        let block = assembler.assemble_block(BlockAssemblerInput::<
+        let block = self.inner.assemble_block(BlockAssemblerInput::<
             EthBlockExecutorFactory<TempoReceiptBuilder, TempoChainSpec, TempoEvmFactory>,
         >::new(
             evm_env,
