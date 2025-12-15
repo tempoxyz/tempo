@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { Instance } from 'tempo.ts/prool'
+import { Instance } from 'prool'
 import { ModuleResolutionKind } from 'typescript'
 import autoImport from 'unplugin-auto-import/vite'
 import iconsResolver from 'unplugin-icons/resolver'
