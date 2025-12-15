@@ -12,7 +12,7 @@ use alloy::{
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
     transports::http::reqwest::Url,
 };
-use alloy_evm::{EvmFactory as _, EvmInternals, revm::inspector::JournalExt as _};
+use alloy_evm::{EvmFactory as _, revm::inspector::JournalExt as _};
 use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256};
 use commonware_codec::Encode;
@@ -58,7 +58,7 @@ use tempo_node::{
 };
 use tempo_precompiles::{
     VALIDATOR_CONFIG_ADDRESS,
-    storage::evm::EvmPrecompileStorageProvider,
+    storage::StorageCtx,
     validator_config::{IValidatorConfig, ValidatorConfig},
 };
 
@@ -181,32 +181,35 @@ impl Builder {
                 let mut evm = setup_tempo_evm();
 
                 {
-                    let ctx = evm.ctx_mut();
-                    let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-                    let mut provider =
-                        EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
-
-                    // TODO(janis): figure out the owner of the test-genesis.json
-                    let mut validator_config = ValidatorConfig::new(&mut provider);
-                    validator_config
-                        .initialize(admin())
-                        .wrap_err("Failed to initialize validator config")
-                        .unwrap();
-
-                    for (i, (peer, addr)) in validators.into_inner().iter_pairs().enumerate() {
+                    let cx = evm.ctx_mut();
+                    StorageCtx::enter_evm(&mut cx.journaled_state, &cx.block, &cx.cfg, || {
+                        // TODO(janis): figure out the owner of the test-genesis.json
+                        let mut validator_config = ValidatorConfig::new();
                         validator_config
-                            .add_validator(
-                                admin(),
-                                IValidatorConfig::addValidatorCall {
-                                    newValidatorAddress: validator(i as u32),
-                                    publicKey: peer.encode().freeze().as_ref().try_into().unwrap(),
-                                    active: true,
-                                    inboundAddress: addr.to_string(),
-                                    outboundAddress: addr.to_string(),
-                                },
-                            )
+                            .initialize(admin())
+                            .wrap_err("Failed to initialize validator config")
                             .unwrap();
-                    }
+
+                        for (i, (peer, addr)) in validators.into_inner().iter_pairs().enumerate() {
+                            validator_config
+                                .add_validator(
+                                    admin(),
+                                    IValidatorConfig::addValidatorCall {
+                                        newValidatorAddress: validator(i as u32),
+                                        publicKey: peer
+                                            .encode()
+                                            .freeze()
+                                            .as_ref()
+                                            .try_into()
+                                            .unwrap(),
+                                        active: true,
+                                        inboundAddress: addr.to_string(),
+                                        outboundAddress: addr.to_string(),
+                                    },
+                                )
+                                .unwrap();
+                        }
+                    })
                 }
 
                 let evm_state = evm.ctx_mut().journaled_state.evm_state();

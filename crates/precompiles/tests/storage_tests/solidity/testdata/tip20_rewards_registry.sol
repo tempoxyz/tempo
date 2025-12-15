@@ -11,9 +11,9 @@ contract TIP20RewardsRegistry {
 
     /// Mapping of timestamp to dynamic array of token addresses
     /// Tracks which tokens have reward streams ending at a given timestamp
-    mapping(uint128 => address[]) public streamsEndingAt;
+    mapping(uint128 => address[]) public endingStreams; // in the spec named `streamsEndingAt`
 
-    /// Mapping of (timestamp, token_address) hash to index in streams_ending_at array
+    /// Mapping of (timestamp, token_address) hash to index in `endingStreams` array
     /// Used for efficient removal from the array
     mapping(bytes32 => uint256) public streamIndex;
 }

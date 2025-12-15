@@ -83,8 +83,14 @@ Use Glob to check which files exist before reading them.
 
 **Read Actions** (`actionType: "read"`):
 - Should NOT have `*Sync` variant in examples
-- Should use `<ReadParameters />` snippet
+- Should use `<ReadParameters />` snippet OR `<ReadAccountParameters />` snippet (see below)
 - Return type is usually a simple value (e.g., `bigint`)
+
+**ReadParameters vs ReadAccountParameters:**
+- `<ReadParameters />` includes an optional `account` parameter at the top
+- `<ReadAccountParameters />` does NOT include account (only blockNumber, blockOverrides, blockTag, stateOverride)
+- **IMPORTANT:** If the action has a **required** `account` parameter documented explicitly, use `<ReadAccountParameters />` to avoid duplicate account parameters
+- If the action does NOT have a required `account` parameter, use `<ReadParameters />`
 
 **Write Actions** (`actionType: "write"`):
 - Should have `*Sync` variant (preferred in examples)
@@ -252,7 +258,12 @@ When comparing JSON types to documentation types:
 
 ### Read Action Template
 
+**Note:** If the action has a required `account` parameter, use `ReadAccountParameters` instead of `ReadParameters` to avoid duplicate account documentation.
+
 ```mdx
+// Use ReadAccountParameters if action has required 'account' param:
+import ReadAccountParameters from '../../../../snippets/read-account-parameters.mdx'
+// Otherwise use ReadParameters:
 import ReadParameters from '../../../../snippets/read-parameters.mdx'
 
 # `{module}.{function}`
@@ -293,6 +304,9 @@ type ReturnType = {returnType.type}
 
 {description}
 
+// If action has required 'account' param:
+<ReadAccountParameters />
+// Otherwise:
 <ReadParameters />
 ```
 
@@ -501,7 +515,12 @@ type ReturnType = {
 
 ### Wagmi Read Action Template
 
+**Note:** If the action has a required `account` parameter, use `ReadAccountParameters` instead of `ReadParameters` to avoid duplicate account documentation.
+
 ```mdx
+// Use ReadAccountParameters if action has required 'account' param:
+import ReadAccountParameters from '../../../../../snippets/read-account-parameters.mdx'
+// Otherwise use ReadParameters:
 import ReadParameters from '../../../../../snippets/read-parameters.mdx'
 
 # `{module}.{function}`
@@ -544,6 +563,9 @@ type ReturnType = {returnType.type}
 
 {description}
 
+// If action has required 'account' param:
+<ReadAccountParameters wagmi />
+// Otherwise:
 <ReadParameters wagmi />
 ```
 

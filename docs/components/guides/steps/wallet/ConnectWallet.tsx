@@ -49,7 +49,7 @@ export function ConnectWallet(props: DemoStepProps) {
 
     if (!hasNonWebAuthnWallet) {
       return (
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2 justify-center">
           {injectedConnectors.map((conn) => (
             <Button
               variant="default"
@@ -142,13 +142,17 @@ export function ConnectWallet(props: DemoStepProps) {
     chains,
   ])
 
+  const stackConnectors = injectedConnectors.length > 2
+
   return (
     <Step
       active={active}
       completed={completed}
-      actions={actions}
       number={stepNumber}
       title="Connect your browser wallet."
-    />
+      actions={!stackConnectors && actions}
+    >
+      { stackConnectors && actions }
+    </Step>
   )
 }

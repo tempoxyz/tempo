@@ -33,6 +33,8 @@ eyre.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
+pyroscope = { workspace = true, optional = true }
+pyroscope_pprofrs = { workspace = true, optional = true }
 
 [[bin]]
 name = "tempo"
@@ -51,6 +53,8 @@ otlp = [
 	"reth-ethereum/otlp",
 	"tempo-node/otlp"
 ]
+
+pyroscope = ["dep:pyroscope", "dep:pyroscope_pprofrs"]
 js-tracer = [
 	"reth-node-builder/js-tracer",
 	"reth-ethereum/js-tracer",

@@ -327,10 +327,10 @@ contract TIP20Test is BaseTest {
             emit Transfer(address(0), recipient, amount);
 
             vm.expectEmit(true, true, true, true);
-            emit Mint(recipient, amount);
+            emit TransferWithMemo(address(0), recipient, amount, TEST_MEMO);
 
             vm.expectEmit(true, true, true, true);
-            emit TransferWithMemo(address(0), recipient, amount, TEST_MEMO);
+            emit Mint(recipient, amount);
         }
 
         token.mintWithMemo(recipient, amount, TEST_MEMO);
@@ -356,10 +356,10 @@ contract TIP20Test is BaseTest {
             emit Transfer(admin, address(0), amount);
 
             vm.expectEmit(true, true, true, true);
-            emit Burn(admin, amount);
+            emit TransferWithMemo(admin, address(0), amount, TEST_MEMO);
 
             vm.expectEmit(true, true, true, true);
-            emit TransferWithMemo(admin, address(0), amount, TEST_MEMO);
+            emit Burn(admin, amount);
         }
 
         token.burnWithMemo(amount, TEST_MEMO);
