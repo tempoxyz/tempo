@@ -14,7 +14,7 @@ use commonware_utils::{
     sequence::U64,
     set::{Ordered, OrderedAssociated},
 };
-use eyre::WrapErr as _;
+use eyre::{OptionExt as _, WrapErr as _};
 use rand_core::CryptoRngCore;
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_dkg_onchain_artifacts::PublicOutcome;
@@ -49,37 +49,81 @@ where
     ///
     /// If neither pre- nor post-allegretto artifacts are found, this method
     /// assumes that the node is starting from genesis.
-    pub(super) async fn pre_allegretto_init(&mut self) {
-        if !self.post_allegretto_metadatas.exists()
-            && self
+    #[instrument(skip_all, err)]
+    pub(super) async fn pre_allegretto_init(&mut self) -> eyre::Result<()> {
+        if !self.post_allegretto_metadatas.exists() {
+            let spec = self.config.execution_node.chain_spec();
+            let public_polynomial = spec
+                .info
+                .public_polynomial()
+                .clone()
+                .ok_or_eyre("chainspec did not contain publicPolynomial; cannot go on without it")?
+                .into_inner();
+
+            let validators = spec
+                .info
+                .validators()
+                .clone()
+                .ok_or_eyre("chainspec did not contain validators; cannot go on without them")?
+                .into_inner();
+
+            if self
                 .pre_allegretto_metadatas
                 .epoch_metadata
                 .get(&CURRENT_EPOCH_KEY)
                 .is_none()
-        {
-            self.pre_allegretto_metadatas
+            {
+                self.pre_allegretto_metadatas
+                    .epoch_metadata
+                    .put_sync(
+                        CURRENT_EPOCH_KEY,
+                        EpochState {
+                            epoch: 0,
+                            participants: validators.keys().clone(),
+                            public: public_polynomial,
+                            share: self.config.initial_share.clone(),
+                        },
+                    )
+                    .await
+                    .expect("must always be able to persists state");
+            }
+
+            // Safeguard when updating from older binaries that might not yet have written
+            // the validators metadata.
+            //
+            // Note that pre-allegretto the validator set never changes.
+            let current_epoch = self
+                .pre_allegretto_metadatas
                 .epoch_metadata
-                .put_sync(
-                    CURRENT_EPOCH_KEY,
-                    EpochState {
-                        epoch: 0,
-                        participants: self.config.initial_validators.keys().clone(),
-                        public: self.config.initial_public_polynomial.clone(),
-                        share: self.config.initial_share.clone(),
-                    },
-                )
-                .await
-                .expect("must always be able to persists state");
-            self.validators_metadata
-                .put_sync(
-                    0.into(),
-                    ValidatorState::with_unknown_contract_state(
-                        self.config.initial_validators.clone(),
-                    ),
-                )
-                .await
-                .expect("must always be able to write state");
+                .get(&CURRENT_EPOCH_KEY)
+                .expect("we ensured above that the epoch state is initialized")
+                .epoch();
+            self.validators_metadata.put(
+                // Write the validators for the *previous* epoch. This assumes
+                // that after this state is written, self.register_current_epoch_state
+                // is called that will set the validators for the *current*
+                // epoch.
+                current_epoch.saturating_sub(1).into(),
+                ValidatorState::with_unknown_contract_state(validators.clone()),
+            );
         }
+
+        if self.config.delete_signing_share
+            && let Some(epoch_state) = self
+                .pre_allegretto_metadatas
+                .epoch_metadata
+                .get_mut(&CURRENT_EPOCH_KEY)
+        {
+            warn!("delete-signing-share set; deleting signing share");
+            epoch_state.share.take();
+        }
+
+        self.pre_allegretto_metadatas
+            .epoch_metadata
+            .sync()
+            .await
+            .expect("persisting epoch state must always work");
+        Ok(())
     }
 
     /// Handles a finalized block.
@@ -167,19 +211,6 @@ where
                     }
                 }
 
-                self.config
-                    .epoch_manager
-                    .report(
-                        epoch::Enter {
-                            epoch: epoch_state.epoch(),
-                            public: epoch_state.public_polynomial().clone(),
-                            share: epoch_state.private_share().clone(),
-                            participants: epoch_state.participants().clone(),
-                        }
-                        .into(),
-                    )
-                    .await;
-
                 // NOTE: This acts as restart protection: on pre-allegretto,
                 // CURRENT_EPOCH_KEY is updated on the block *last height - 1*.
                 // If a node restarts, it immediately starts a ceremony for
@@ -194,16 +225,7 @@ where
                 {
                     maybe_ceremony.replace(self.start_pre_allegretto_ceremony(ceremony_mux).await);
                 }
-
-                self.validators_metadata
-                    .put_sync(
-                        epoch_state.epoch().into(),
-                        ValidatorState::with_unknown_contract_state(
-                            self.config.initial_validators.clone(),
-                        ),
-                    )
-                    .await
-                    .expect("must always be able to write state");
+                self.register_current_epoch_state().await;
             } else {
                 warn!(
                     "block was a boundary block, but not the last block of the \
@@ -398,10 +420,8 @@ where
                 post-allegretto dynamic validator sets the pre-allegretto epoch \
                 state must exist",
             );
-        let validator_state =
-            ValidatorState::with_unknown_contract_state(self.config.initial_validators.clone());
 
-        self.transition_from_static_validator_sets(epoch_state, validator_state, mux)
+        self.transition_from_static_validator_sets(epoch_state, mux)
             .await
             .wrap_err("hand-over to post-allegretto dynamic validator set logic failed")
     }

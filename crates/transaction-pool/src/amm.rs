@@ -13,10 +13,9 @@ use reth_provider::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS,
-    storage::mapping_slot,
     tip_fee_manager::{
+        TipFeeManager,
         amm::{Pool, PoolKey, compute_amount_out},
-        slots,
     },
     tip20::{address_to_token_id_unchecked, token_id_to_address},
 };
@@ -98,11 +97,11 @@ impl AmmLiquidityCache {
             // This might race other fetches but we're OK with it.
             let pool_key =
                 PoolKey::new(token_id_to_address(user_id), token_id_to_address(token)).get_id();
-            let slot = mapping_slot(pool_key, slots::POOLS);
+            let slot = TipFeeManager::new().pools.at(pool_key).base_slot();
             let pool = state_provider
                 .storage(TIP_FEE_MANAGER_ADDRESS, slot.into())?
                 .unwrap_or_default();
-            let reserve = U256::from(Pool::from_slot(pool).reserve_validator_token);
+            let reserve = U256::from(Pool::decode_from_slot(pool).reserve_validator_token);
 
             let mut inner = self.inner.write();
             inner.cache.insert((user_id, token), reserve);
@@ -134,7 +133,7 @@ impl AmmLiquidityCache {
             if let Some(pool) = inner.slot_to_pool.get(slot).copied() {
                 // Update AMM pools
                 let validator_reserve =
-                    U256::from(Pool::from_slot(value.present_value).reserve_validator_token);
+                    U256::from(Pool::decode_from_slot(value.present_value).reserve_validator_token);
                 inner.cache.insert(pool, validator_reserve);
             } else if let Some(validator) = inner.slot_to_validator.get(slot).copied() {
                 // Update validator fee token preferences
@@ -155,6 +154,7 @@ impl AmmLiquidityCache {
         P: StateProviderFactory + ChainSpecProvider<ChainSpec: TempoHardforks>,
     {
         let beneficiary = header.beneficiary();
+        let validator_token_slot = TipFeeManager::new().validator_tokens.at(beneficiary).slot();
 
         let cached_preference = self
             .inner
@@ -169,10 +169,7 @@ impl AmmLiquidityCache {
             // If no cached preference, load from state
             state
                 .state_by_block_hash(header.hash())?
-                .storage(
-                    TIP_FEE_MANAGER_ADDRESS,
-                    mapping_slot(beneficiary, slots::VALIDATOR_TOKENS).into(),
-                )?
+                .storage(TIP_FEE_MANAGER_ADDRESS, validator_token_slot.into())?
                 .unwrap_or_default()
                 .into_address()
         };
@@ -194,10 +191,9 @@ impl AmmLiquidityCache {
         // Track the new fee token preference, if any
         if cached_preference.is_none() {
             inner.validator_preferences.insert(beneficiary, preference);
-            inner.slot_to_validator.insert(
-                mapping_slot(beneficiary, slots::VALIDATOR_TOKENS),
-                beneficiary,
-            );
+            inner
+                .slot_to_validator
+                .insert(validator_token_slot, beneficiary);
         }
 
         // Track the new observed fee token

@@ -26,9 +26,8 @@ use tempo_node::primitives::{
     transaction::{Call, calc_gas_balance_spending},
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, NONCE_PRECOMPILE_ADDRESS, nonce,
-    storage::{StorageKey, double_mapping_slot, mapping_slot},
-    tip20::slots,
+    DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager,
+    tip20::TIP20Token,
 };
 
 use crate::{Setup, TestingNode, setup_validators};
@@ -183,7 +182,11 @@ fn subblocks_are_included_post_allegretto() {
 
                 // Assert that all validators were paid for their subblock transactions
                 for fee_recipient in &fee_recipients {
-                    let balance_slot = mapping_slot(fee_recipient, slots::BALANCES);
+                    let balance_slot = TIP20Token::from_address(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO)
+                        .unwrap()
+                        .balances
+                        .at(*fee_recipient)
+                        .slot();
                     let slot = fee_token_storage.get(&balance_slot).unwrap();
 
                     assert!(slot.present_value > slot.original_value());
@@ -322,8 +325,7 @@ fn subblocks_are_included_post_allegretto_with_failing_txs() {
 
                 let sender = tx.signer();
                 let nonce_key = tx.as_aa().unwrap().tx().nonce_key;
-                let nonce_slot =
-                    double_mapping_slot(sender, nonce_key.as_storage_bytes(), nonce::slots::NONCES);
+                let nonce_slot = NonceManager::new().nonces.at(sender).at(nonce_key).slot();
 
                 let slot = block
                     .execution_outcome()
@@ -349,7 +351,11 @@ fn subblocks_are_included_post_allegretto_with_failing_txs() {
                     .storage;
 
                 // Assert that all validators were paid for their subblock transactions
-                let balance_slot = mapping_slot(fee_recipient, slots::BALANCES);
+                let balance_slot = TIP20Token::from_address(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO)
+                    .unwrap()
+                    .balances
+                    .at(*fee_recipient)
+                    .slot();
                 let slot = fee_token_storage.get(&balance_slot).unwrap();
 
                 assert_eq!(slot.present_value, slot.original_value() + expected_fee);

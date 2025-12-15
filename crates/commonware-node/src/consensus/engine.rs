@@ -74,6 +74,8 @@ pub struct Builder<TBlocker, TContext, TPeerManager> {
     pub partition_prefix: String,
     pub signer: PrivateKey,
     pub share: Option<Share>,
+    pub delete_signing_share: bool,
+
     pub mailbox_size: usize,
     pub deque_size: usize,
 
@@ -121,29 +123,6 @@ where
             .info
             .epoch_length()
             .ok_or_eyre("chainspec did not contain epochLength; cannot go on without it")?;
-
-        let public_polynomial = execution_node
-            .chain_spec()
-            .info
-            .public_polynomial()
-            .clone()
-            .ok_or_eyre("chainspec did not contain publicPolynomial; cannot go on without it")?
-            .into_inner();
-
-        let validators = execution_node
-            .chain_spec()
-            .info
-            .validators()
-            .clone()
-            .ok_or_eyre("chainspec did not contain validators; cannot go on without them")?
-            .into_inner();
-
-        info!(
-            epoch_length,
-            ?validators,
-            ?public_polynomial,
-            "using values found in chainspec"
-        );
 
         info!(
             identity = %self.signer.public_key(),
@@ -266,9 +245,8 @@ where
                 epoch_manager: epoch_manager_mailbox,
                 epoch_length,
                 execution_node,
-                initial_public_polynomial: public_polynomial,
                 initial_share: self.share.clone(),
-                initial_validators: validators,
+                delete_signing_share: self.delete_signing_share,
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox,
                 namespace: crate::config::NAMESPACE.to_vec(),

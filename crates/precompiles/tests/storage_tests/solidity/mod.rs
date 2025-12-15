@@ -11,7 +11,7 @@ use super::*;
 use tempo_precompiles_macros::Storable;
 
 // Helper struct for struct test (defined at module level, used in primitives.rs)
-#[derive(Debug, Clone, PartialEq, Eq, Storable)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
 pub(crate) struct TestBlockInner {
     pub field1: U256,
     pub field2: U256,

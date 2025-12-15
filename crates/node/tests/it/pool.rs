@@ -26,7 +26,7 @@ use reth_transaction_pool::{
 use std::sync::Arc;
 use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_node::node::TempoNode;
-use tempo_precompiles::{DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, storage::slots, tip_fee_manager};
+use tempo_precompiles::{DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, tip_fee_manager::TipFeeManager};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope, TxFeeToken,
     transaction::{
@@ -67,7 +67,7 @@ async fn submit_pending_tx() -> eyre::Result<()> {
 
     let tx = TempoTxEnvelope::decode_2718_exact(&raw[..])?.try_into_recovered()?;
     let signer = tx.signer();
-    let slot = slots::mapping_slot(signer, tip_fee_manager::slots::USER_TOKENS);
+    let slot = TipFeeManager::new().user_tokens.at(signer).slot();
     println!("Submitting tx from {signer} with fee manager token slot 0x{slot:x}");
 
     let res = node

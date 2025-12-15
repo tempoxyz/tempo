@@ -20,9 +20,9 @@ use tempo_precompiles::{
 };
 
 use tempo_primitives::{
-    TempoTransaction, TempoTxEnvelope,
+    SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        KeyAuthorization, SignedKeyAuthorization,
+        KeyAuthorization, SignedKeyAuthorization, TokenLimit,
         tempo_transaction::Call,
         tt_signature::{
             P256SignatureWithPreHash, PrimitiveSignature, TempoSignature, WebAuthnSignature,
@@ -32,6 +32,7 @@ use tempo_primitives::{
 };
 
 use crate::utils::{SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
+use tempo_primitives::transaction::tt_signature::normalize_p256_s;
 
 /// Helper function to fund an address with fee tokens
 async fn fund_address_with_fee_tokens(
@@ -237,6 +238,45 @@ async fn setup_test_with_funded_account() -> eyre::Result<(
     Ok((setup, provider, signer, signer_addr))
 }
 
+/// Helper function to create a signed KeyAuthorization for gas estimation tests
+fn create_signed_key_authorization(
+    signer: &impl SignerSync,
+    key_type: SignatureType,
+    num_limits: usize,
+) -> SignedKeyAuthorization {
+    let limits = if num_limits == 0 {
+        None
+    } else {
+        Some(
+            (0..num_limits)
+                .map(|_| TokenLimit {
+                    token: Address::ZERO,
+                    limit: U256::ZERO,
+                })
+                .collect(),
+        )
+    };
+
+    let authorization = KeyAuthorization {
+        chain_id: 0, // Wildcard - valid on any chain
+        key_type,
+        key_id: Address::random(), // Random key being authorized
+        expiry: None,              // Never expires
+        limits,
+    };
+
+    // Sign the key authorization
+    let sig_hash = authorization.signature_hash();
+    let signature = signer
+        .sign_hash_sync(&sig_hash)
+        .expect("signing should succeed");
+
+    SignedKeyAuthorization {
+        authorization,
+        signature: PrimitiveSignature::Secp256k1(signature),
+    }
+}
+
 /// Helper function to compute authorization signature hash (EIP-7702)
 fn compute_authorization_signature_hash(auth: &alloy_eips::eip7702::Authorization) -> B256 {
     use alloy_rlp::Encodable as _;
@@ -323,7 +363,7 @@ fn create_p256_authorization(
 
     let aa_sig = TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
         r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
-        s: alloy::primitives::B256::from_slice(&sig_bytes[32..64]),
+        s: normalize_p256_s(&sig_bytes[32..64]),
         pub_key_x,
         pub_key_y,
         pre_hash: true,
@@ -401,7 +441,7 @@ fn create_webauthn_authorization(
     let aa_sig = TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
         webauthn_data: Bytes::from(webauthn_data),
         r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
-        s: alloy::primitives::B256::from_slice(&sig_bytes[32..64]),
+        s: normalize_p256_s(&sig_bytes[32..64]),
         pub_key_x,
         pub_key_y,
     }));
@@ -595,7 +635,7 @@ fn sign_aa_tx_with_p256_access_key(
 
     let inner_signature = PrimitiveSignature::P256(P256SignatureWithPreHash {
         r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
-        s: alloy::primitives::B256::from_slice(&sig_bytes[32..64]),
+        s: normalize_p256_s(&sig_bytes[32..64]),
         pub_key_x: *access_pub_key_x,
         pub_key_y: *access_pub_key_y,
         pre_hash: true,
@@ -717,7 +757,7 @@ fn sign_aa_tx_p256(
     Ok(TempoSignature::Primitive(PrimitiveSignature::P256(
         P256SignatureWithPreHash {
             r: B256::from_slice(&sig_bytes[0..32]),
-            s: B256::from_slice(&sig_bytes[32..64]),
+            s: normalize_p256_s(&sig_bytes[32..64]),
             pub_key_x,
             pub_key_y,
             pre_hash: true,
@@ -777,7 +817,7 @@ fn sign_aa_tx_webauthn(
         WebAuthnSignature {
             webauthn_data: Bytes::from(webauthn_data),
             r: B256::from_slice(&sig_bytes[0..32]),
-            s: B256::from_slice(&sig_bytes[32..64]),
+            s: normalize_p256_s(&sig_bytes[32..64]),
             pub_key_x,
             pub_key_y,
         },
@@ -2665,11 +2705,11 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
 async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let (_setup, provider, _signer, signer_addr) = setup_test_with_funded_account().await?;
+    let (_setup, provider, signer, signer_addr) = setup_test_with_funded_account().await?;
     // Keep setup alive for the duration of the test
     let _ = &_setup;
 
-    println!("\n=== Testing eth_estimateGas with isKeychain and keyAuthSignatureType ===\n");
+    println!("\n=== Testing eth_estimateGas with isKeychain and keyAuthorization ===\n");
     println!("Test address: {signer_addr}");
 
     let recipient = Address::random();
@@ -2742,10 +2782,11 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
 
     // Test 4: KeyAuthorization with secp256k1 (no limits)
     println!("\nTest 4: KeyAuthorization (secp256k1, no limits)");
+    let key_auth_secp = create_signed_key_authorization(&signer, SignatureType::Secp256k1, 0);
     let mut tx_key_auth = tx_request.clone();
     tx_key_auth.as_object_mut().unwrap().insert(
-        "keyAuthSignatureType".to_string(),
-        serde_json::json!("secp256k1"),
+        "keyAuthorization".to_string(),
+        serde_json::to_value(&key_auth_secp)?,
     );
 
     let key_auth_gas: String = provider
@@ -2754,7 +2795,7 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     let key_auth_gas_u64 = u64::from_str_radix(key_auth_gas.trim_start_matches("0x"), 16)?;
     println!("  KeyAuth gas: {key_auth_gas_u64}");
 
-    // KeyAuth secp256k1 adds ~30,000 gas (27,000 base + 3,000 ecrecover) + some calldata gas
+    // KeyAuth secp256k1 adds ~30,000 gas (27,000 base + 3,000 ecrecover)
     let key_auth_diff = key_auth_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
         (29_500..=31_000).contains(&key_auth_diff.unsigned_abs()),
@@ -2762,12 +2803,16 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     );
     println!("  ✓ KeyAuth secp256k1 adds {key_auth_diff} gas (expected ~30,000)");
 
-    // Test 5: KeyAuthorization with P256 (no limits)
-    println!("\nTest 5: KeyAuthorization (P256, no limits)");
+    // Test 5: KeyAuthorization with P256 key type (no limits)
+    // Note: The key authorization signature is secp256k1 (signed by root key).
+    // The key_type field specifies what type of key is being authorized (P256),
+    // but the gas cost depends on the signature type, not the key being authorized.
+    println!("\nTest 5: KeyAuthorization (P256 key type, no limits)");
+    let key_auth_p256 = create_signed_key_authorization(&signer, SignatureType::P256, 0);
     let mut tx_key_auth_p256 = tx_request.clone();
     tx_key_auth_p256.as_object_mut().unwrap().insert(
-        "keyAuthSignatureType".to_string(),
-        serde_json::json!("p256"),
+        "keyAuthorization".to_string(),
+        serde_json::to_value(&key_auth_p256)?,
     );
 
     let key_auth_p256_gas: String = provider
@@ -2775,27 +2820,27 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
         .await?;
     let key_auth_p256_gas_u64 =
         u64::from_str_radix(key_auth_p256_gas.trim_start_matches("0x"), 16)?;
-    println!("  KeyAuth P256 gas: {key_auth_p256_gas_u64}");
+    println!("  KeyAuth P256 key type gas: {key_auth_p256_gas_u64}");
 
-    // KeyAuth P256 adds ~35,000 gas (27,000 base + 3,000 ecrecover + 5,000 P256) + calldata gas
+    // KeyAuth with P256 key type has same gas as secp256k1 (~30,000) because
+    // the authorization signature itself is always secp256k1 from the root key
     let key_auth_p256_diff = key_auth_p256_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
-        (34_500..=36_500).contains(&key_auth_p256_diff.unsigned_abs()),
-        "KeyAuth P256 should add ~35,000 gas: actual diff {key_auth_p256_diff} (expected 35,000 ±1,500)"
+        (29_500..=31_000).contains(&key_auth_p256_diff.unsigned_abs()),
+        "KeyAuth P256 key type should add ~30,000 gas (same as secp256k1): actual diff {key_auth_p256_diff}"
     );
-    println!("  ✓ KeyAuth P256 adds {key_auth_p256_diff} gas (expected ~35,000)");
+    println!(
+        "  ✓ KeyAuth P256 key type adds {key_auth_p256_diff} gas (same as secp256k1, ~30,000)"
+    );
 
     // Test 6: KeyAuthorization with spending limits
     println!("\nTest 6: KeyAuthorization (secp256k1, 3 spending limits)");
+    let key_auth_limits = create_signed_key_authorization(&signer, SignatureType::Secp256k1, 3);
     let mut tx_key_auth_limits = tx_request.clone();
     tx_key_auth_limits.as_object_mut().unwrap().insert(
-        "keyAuthSignatureType".to_string(),
-        serde_json::json!("secp256k1"),
+        "keyAuthorization".to_string(),
+        serde_json::to_value(&key_auth_limits)?,
     );
-    tx_key_auth_limits
-        .as_object_mut()
-        .unwrap()
-        .insert("keyAuthNumLimits".to_string(), serde_json::json!(3));
 
     let key_auth_limits_gas: String = provider
         .raw_request("eth_estimateGas".into(), [tx_key_auth_limits])
@@ -2804,7 +2849,7 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
         u64::from_str_radix(key_auth_limits_gas.trim_start_matches("0x"), 16)?;
     println!("  KeyAuth with 3 limits gas: {key_auth_limits_gas_u64}");
 
-    // KeyAuth secp256k1 with 3 limits adds ~96,000 gas (30,000 + 3*22,000) + calldata gas
+    // KeyAuth secp256k1 with 3 limits adds ~96,000 gas (30,000 + 3*22,000)
     let key_auth_limits_diff = key_auth_limits_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
         (95_500..=97_500).contains(&key_auth_limits_diff.unsigned_abs()),
@@ -3277,7 +3322,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     // Create P256 primitive signature for the inner signature
     let inner_signature = PrimitiveSignature::P256(P256SignatureWithPreHash {
         r: alloy::primitives::B256::from_slice(&sig_bytes[0..32]),
-        s: alloy::primitives::B256::from_slice(&sig_bytes[32..64]),
+        s: normalize_p256_s(&sig_bytes[32..64]),
         pub_key_x: access_pub_key_x,
         pub_key_y: access_pub_key_y,
         pre_hash: true,
@@ -5080,7 +5125,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
     }
     .into_signed(PrimitiveSignature::P256(P256SignatureWithPreHash {
         r: B256::from_slice(&wrong_sig_bytes[0..32]),
-        s: B256::from_slice(&wrong_sig_bytes[32..64]),
+        s: normalize_p256_s(&wrong_sig_bytes[32..64]),
         pub_key_x: unauthorized_pub_key_x, // pub key of wrong signer
         pub_key_y: unauthorized_pub_key_y,
         pre_hash: true,

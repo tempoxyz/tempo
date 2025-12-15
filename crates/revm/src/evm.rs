@@ -202,7 +202,8 @@ mod tests {
     use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
     use tempo_evm::TempoEvmFactory;
     use tempo_precompiles::{
-        PATH_USD_ADDRESS, storage::evm::EvmPrecompileStorageProvider, tip20::TIP20Token,
+        storage::{StorageCtx, evm::EvmPrecompileStorageProvider},
+        test_util::TIP20Setup,
     };
 
     #[test]
@@ -216,26 +217,11 @@ mod tests {
             EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
             &ctx.cfg,
         );
-        TIP20Token::new(0, &mut storage)
-            .initialize(
-                "USD",
-                "USD",
-                "USD",
-                Address::ZERO,
-                Address::ZERO,
-                Address::ZERO,
-            )
-            .unwrap();
-        TIP20Token::new(1, &mut storage)
-            .initialize(
-                "USD",
-                "USD",
-                "USD",
-                PATH_USD_ADDRESS,
-                Address::ZERO,
-                Address::ZERO,
-            )
-            .unwrap();
+        StorageCtx::enter(&mut storage, || {
+            TIP20Setup::create("USD", "USD", Address::ZERO)
+                .apply()
+                .unwrap();
+        });
         drop(storage);
 
         let caller_0 = Address::random();
@@ -267,26 +253,11 @@ mod tests {
             EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
             &ctx.cfg,
         );
-        TIP20Token::new(0, &mut storage)
-            .initialize(
-                "USD",
-                "USD",
-                "USD",
-                Address::ZERO,
-                Address::ZERO,
-                Address::ZERO,
-            )
-            .unwrap();
-        TIP20Token::new(1, &mut storage)
-            .initialize(
-                "USD",
-                "USD",
-                "USD",
-                PATH_USD_ADDRESS,
-                Address::ZERO,
-                Address::ZERO,
-            )
-            .unwrap();
+        StorageCtx::enter(&mut storage, || {
+            TIP20Setup::create("USD", "USD", Address::ZERO)
+                .apply()
+                .unwrap();
+        });
         drop(storage);
 
         let contract = Address::random();

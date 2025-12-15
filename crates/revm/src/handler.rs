@@ -2,7 +2,6 @@
 
 use std::{cmp::Ordering, fmt::Debug};
 
-use alloy_evm::EvmInternals;
 use alloy_primitives::{Address, B256, U256, b256};
 use reth_evm::EvmError;
 use revm::{
@@ -38,9 +37,9 @@ use tempo_precompiles::{
     account_keychain::{AccountKeychain, TokenLimit, authorizeKeyCall},
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
-    storage::{evm::EvmPrecompileStorageProvider, slots::mapping_slot},
+    storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
-    tip20::{self, ITIP20::InsufficientBalance, TIP20Error},
+    tip20::{self, ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
 };
 use tempo_primitives::transaction::{
     PrimitiveSignature, RecoveredTempoAuthorization, SignatureType, TempoSignature,
@@ -156,10 +155,7 @@ fn calculate_key_authorization_gas(
 /// - New user key (nonce == 0): 22,100 gas (cold SLOAD + SSTORE set)
 #[inline]
 fn calculate_2d_nonce_gas(
-    nonce_manager: &mut NonceManager<
-        '_,
-        impl tempo_precompiles::storage::PrecompileStorageProvider,
-    >,
+    nonce_manager: &NonceManager,
     caller: Address,
     nonce_key: U256,
 ) -> Result<u64, TempoPrecompileError> {
@@ -647,65 +643,72 @@ where
         // modify account nonce and touch the account.
         caller_account.touch();
 
-        let mut nonce_2d_gas = 0u64;
+        let nonce_2d_gas;
 
         if !nonce_key.is_zero() {
-            let internals = EvmInternals::new(journal, block);
-            let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
-            let mut nonce_manager = NonceManager::new(&mut storage_provider);
+            nonce_2d_gas = StorageCtx::enter_evm(journal, block, cfg, || {
+                let mut nonce_manager = NonceManager::new();
 
-            // Calculate 2D nonce gas
-            if cfg.spec.is_allegro_moderato() {
-                nonce_2d_gas = calculate_2d_nonce_gas(&mut nonce_manager, tx.caller(), nonce_key)
-                    .map_err(|err| match err {
-                    TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                    err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
-                })?;
-            }
+                // Calculate 2D nonce gas (only post-AllegroModerato)
+                let gas = if cfg.spec.is_allegro_moderato() {
+                    calculate_2d_nonce_gas(&mut nonce_manager, tx.caller(), nonce_key)
+                        .map_err(|err| match err {
+                            TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                            err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
+                        })?
+                } else {
+                    0
+                };
 
-            if !cfg.is_nonce_check_disabled() {
-                let tx_nonce = tx.nonce();
-                let state = nonce_manager
-                    .get_nonce(getNonceCall {
-                        account: tx.caller(),
-                        nonceKey: nonce_key,
-                    })
+                if !cfg.is_nonce_check_disabled() {
+                    let tx_nonce = tx.nonce();
+                    let state = nonce_manager
+                        .get_nonce(getNonceCall {
+                            account: tx.caller(),
+                            nonceKey: nonce_key,
+                        })
+                        .map_err(|err| match err {
+                            TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                            err => {
+                                TempoInvalidTransaction::NonceManagerError(err.to_string()).into()
+                            }
+                        })?;
+
+                    match tx_nonce.cmp(&state) {
+                        Ordering::Greater => {
+                            return Err(TempoInvalidTransaction::EthInvalidTransaction(
+                                InvalidTransaction::NonceTooHigh {
+                                    tx: tx_nonce,
+                                    state,
+                                },
+                            )
+                            .into());
+                        }
+                        Ordering::Less => {
+                            return Err(TempoInvalidTransaction::EthInvalidTransaction(
+                                InvalidTransaction::NonceTooLow {
+                                    tx: tx_nonce,
+                                    state,
+                                },
+                            )
+                            .into());
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Always increment nonce for AA transactions with non-zero nonce keys.
+                nonce_manager
+                    .increment_nonce(tx.caller(), nonce_key)
                     .map_err(|err| match err {
                         TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                         err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
                     })?;
 
-                match tx_nonce.cmp(&state) {
-                    Ordering::Greater => {
-                        return Err(TempoInvalidTransaction::EthInvalidTransaction(
-                            InvalidTransaction::NonceTooHigh {
-                                tx: tx_nonce,
-                                state,
-                            },
-                        )
-                        .into());
-                    }
-                    Ordering::Less => {
-                        return Err(TempoInvalidTransaction::EthInvalidTransaction(
-                            InvalidTransaction::NonceTooLow {
-                                tx: tx_nonce,
-                                state,
-                            },
-                        )
-                        .into());
-                    }
-                    _ => {}
-                }
-            }
-
-            // Always increment nonce for AA transactions with non-zero nonce keys.
-            nonce_manager
-                .increment_nonce(tx.caller(), nonce_key)
-                .map_err(|err| match err {
-                    TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                    err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
-                })?;
+                Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(gas)
+            })?;
         } else {
+            nonce_2d_gas = 0;
             // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
             //
             // Always bump nonce for AA transactions.
@@ -724,10 +727,8 @@ where
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
 
         // If the transaction includes a KeyAuthorization, validate and authorize the key
-        // Skip validation during gas estimation (signature_hash is zero for mock signatures)
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(key_auth) = &tempo_tx_env.key_authorization
-            && tempo_tx_env.signature_hash != alloy_primitives::B256::ZERO
         {
             // Check if this TX is using a Keychain signature (access key)
             // Access keys cannot authorize new keys UNLESS it's the same key being authorized (same-tx auth+use)
@@ -790,73 +791,70 @@ where
             }
 
             // Now authorize the key in the precompile
-            let internals = EvmInternals::new(journal, block);
-            let mut storage_provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
+            StorageCtx::enter_precompile(journal, block, cfg, |mut keychain: AccountKeychain| {
+                let access_key_addr = key_auth.key_id;
 
-            let mut keychain = AccountKeychain::new(&mut storage_provider);
+                // Convert signature type to precompile SignatureType enum
+                // Use the key_type field which specifies the type of key being authorized
+                let signature_type = match key_auth.key_type {
+                    SignatureType::Secp256k1 => PrecompileSignatureType::Secp256k1,
+                    SignatureType::P256 => PrecompileSignatureType::P256,
+                    SignatureType::WebAuthn => PrecompileSignatureType::WebAuthn,
+                };
 
-            let access_key_addr = key_auth.key_id;
+                // Handle expiry: None means never expires (store as u64::MAX)
+                let expiry = key_auth.expiry.unwrap_or(u64::MAX);
 
-            // Convert signature type to precompile SignatureType enum
-            // Use the key_type field which specifies the type of key being authorized
-            let signature_type = match key_auth.key_type {
-                SignatureType::Secp256k1 => PrecompileSignatureType::Secp256k1,
-                SignatureType::P256 => PrecompileSignatureType::P256,
-                SignatureType::WebAuthn => PrecompileSignatureType::WebAuthn,
-            };
+                // Validate expiry is not in the past
+                let current_timestamp = block.timestamp().saturating_to::<u64>();
+                if expiry <= current_timestamp {
+                    return Err(EVMError::Transaction(
+                        TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                            reason: format!(
+                                "Key expiry {expiry} is in the past (current timestamp: {current_timestamp})"
+                            ),
+                        },
+                    ));
+                }
 
-            // Handle expiry: None means never expires (store as u64::MAX)
-            let expiry = key_auth.expiry.unwrap_or(u64::MAX);
+                // Handle limits: None means unlimited spending (enforce_limits=false)
+                // Some([]) means no spending allowed (enforce_limits=true)
+                // Some([...]) means specific limits (enforce_limits=true)
+                let enforce_limits = key_auth.limits.is_some();
+                let precompile_limits: Vec<TokenLimit> = key_auth
+                    .limits
+                    .as_ref()
+                    .map(|limits| {
+                        limits
+                            .iter()
+                            .map(|limit| TokenLimit {
+                                token: limit.token,
+                                amount: limit.limit,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
 
-            // Validate expiry is not in the past
-            let current_timestamp = block.timestamp().saturating_to::<u64>();
-            if expiry <= current_timestamp {
-                return Err(EVMError::Transaction(
-                    TempoInvalidTransaction::AccessKeyAuthorizationFailed {
-                        reason: format!(
-                            "Key expiry {expiry} is in the past (current timestamp: {current_timestamp})"
-                        ),
-                    },
-                ));
-            }
+                // Create the authorize key call
+                let authorize_call = authorizeKeyCall {
+                    keyId: access_key_addr,
+                    signatureType: signature_type,
+                    expiry,
+                    enforceLimits: enforce_limits,
+                    limits: precompile_limits,
+                };
 
-            // Handle limits: None means unlimited spending (enforce_limits=false)
-            // Some([]) means no spending allowed (enforce_limits=true)
-            // Some([...]) means specific limits (enforce_limits=true)
-            let enforce_limits = key_auth.limits.is_some();
-            let precompile_limits: Vec<TokenLimit> = key_auth
-                .limits
-                .as_ref()
-                .map(|limits| {
-                    limits
-                        .iter()
-                        .map(|limit| TokenLimit {
-                            token: limit.token,
-                            amount: limit.limit,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            // Create the authorize key call
-            let authorize_call = authorizeKeyCall {
-                keyId: access_key_addr,
-                signatureType: signature_type,
-                expiry,
-                enforceLimits: enforce_limits,
-                limits: precompile_limits,
-            };
-
-            // Call precompile to authorize the key (same phase as nonce increment)
-            keychain
-                .authorize_key(*root_account, authorize_call)
-                .map_err(|err| match err {
-                    TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                    err => TempoInvalidTransaction::AccessKeyAuthorizationFailed {
-                        reason: err.to_string(),
-                    }
-                    .into(),
-                })?;
+                // Call precompile to authorize the key (same phase as nonce increment)
+                keychain
+                    .authorize_key(*root_account, authorize_call)
+                    .map_err(|err| match err {
+                        TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                        err => TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                            reason: err.to_string(),
+                        }
+                        .into(),
+                    })
+            })?;
         }
 
         // For Keychain signatures, validate that the keychain is authorized in the precompile
@@ -904,34 +902,32 @@ where
                 .unwrap_or(false);
 
             // Always need to set the transaction key for Keychain signatures
-            let mut storage_provider =
-                EvmPrecompileStorageProvider::new_max_gas(EvmInternals::new(journal, &block), cfg);
-            let mut keychain = AccountKeychain::new(&mut storage_provider);
-
-            if !is_authorizing_this_key {
-                // Not authorizing this key in the same transaction, so validate it exists now
-                // Validate that user_address has authorized this access key in the keychain
-                keychain
-                    .validate_keychain_authorization(
-                        *user_address,
-                        access_key_addr,
-                        block.timestamp().to::<u64>(),
-                    )
-                    .map_err(|e| {
-                        EVMError::Transaction(
-                            TempoInvalidTransaction::AccessKeyAuthorizationFailed {
-                                reason: format!("Keychain validation failed: {e:?}"),
-                            },
+            StorageCtx::enter_precompile(journal, block, cfg, |mut keychain: AccountKeychain| {
+                if !is_authorizing_this_key {
+                    // Not authorizing this key in the same transaction, so validate it exists now
+                    // Validate that user_address has authorized this access key in the keychain
+                    keychain
+                        .validate_keychain_authorization(
+                            *user_address,
+                            access_key_addr,
+                            block.timestamp().to::<u64>(),
                         )
-                    })?;
-            }
+                        .map_err(|e| {
+                            EVMError::Transaction(
+                                TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                                    reason: format!("Keychain validation failed: {e:?}"),
+                                },
+                            )
+                        })?;
+                }
 
-            // Set the transaction key in the keychain precompile
-            // This marks that the current transaction is using an access key
-            // The TIP20 precompile will read this during execution to enforce spending limits
-            keychain
-                .set_transaction_key(access_key_addr)
-                .map_err(|e| EVMError::Custom(e.to_string()))?;
+                // Set the transaction key in the keychain precompile
+                // This marks that the current transaction is using an access key
+                // The TIP20 precompile will read this during execution to enforce spending limits
+                keychain
+                    .set_transaction_key(access_key_addr)
+                    .map_err(|e| EVMError::Custom(e.to_string()))
+            })?;
         }
 
         if gas_balance_spending.is_zero() {
@@ -940,16 +936,14 @@ where
 
         let checkpoint = journal.checkpoint();
 
-        let result = {
-            let mut storage_provider =
-                EvmPrecompileStorageProvider::new_max_gas(EvmInternals::new(journal, &block), cfg);
-            TipFeeManager::new(&mut storage_provider).collect_fee_pre_tx(
+        let result = StorageCtx::enter_evm(journal, &block, cfg, || {
+            TipFeeManager::new().collect_fee_pre_tx(
                 self.fee_payer,
                 self.fee_token,
                 gas_balance_spending,
                 block.beneficiary(),
             )
-        };
+        });
 
         if let Err(err) = result {
             // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
@@ -1023,26 +1017,26 @@ where
 
         // Create storage provider and fee manager
         let (journal, block) = (&mut context.journaled_state, &context.block);
-        let internals = EvmInternals::new(&mut *journal, block);
-        let beneficiary = internals.block_env().beneficiary();
-        let mut storage_provider =
-            EvmPrecompileStorageProvider::new_max_gas(internals, &context.cfg);
-        let mut fee_manager = TipFeeManager::new(&mut storage_provider);
+        let beneficiary = block.beneficiary();
 
-        if !actual_spending.is_zero() || !refund_amount.is_zero() {
-            // Call collectFeePostTx (handles both refund and fee queuing)
-            fee_manager
-                .collect_fee_post_tx(
-                    self.fee_payer,
-                    actual_spending,
-                    refund_amount,
-                    self.fee_token,
-                    beneficiary,
-                )
-                .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
-        }
+        StorageCtx::enter_evm(&mut *journal, block, &context.cfg, || {
+            let mut fee_manager = TipFeeManager::new();
 
-        Ok(())
+            if !actual_spending.is_zero() || !refund_amount.is_zero() {
+                // Call collectFeePostTx (handles both refund and fee queuing)
+                fee_manager
+                    .collect_fee_post_tx(
+                        self.fee_payer,
+                        actual_spending,
+                        refund_amount,
+                        self.fee_token,
+                        beneficiary,
+                    )
+                    .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
+            }
+
+            Ok(())
+        })
     }
 
     #[inline]
@@ -1353,6 +1347,7 @@ where
     Ok(batch_gas)
 }
 
+/// IMPORTANT: the caller must ensure `token` is a valid TIP20Token address.
 pub fn get_token_balance<JOURNAL>(
     journal: &mut JOURNAL,
     token: Address,
@@ -1361,8 +1356,11 @@ pub fn get_token_balance<JOURNAL>(
 where
     JOURNAL: JournalTr,
 {
+    // Address has already been validated
+    let token_id = tip20::address_to_token_id_unchecked(token);
+
     journal.load_account(token)?;
-    let balance_slot = mapping_slot(sender, tip20::slots::BALANCES);
+    let balance_slot = TIP20Token::new(token_id).balances.at(sender).slot();
     let balance = journal.sload(token, balance_slot)?.data;
 
     Ok(balance)
@@ -1467,9 +1465,7 @@ mod tests {
         state::Account,
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_precompiles::{
-        DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager,
-    };
+    use tempo_precompiles::{DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS};
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
         let db = CacheDB::new(EmptyDB::default());
@@ -1484,13 +1480,14 @@ mod tests {
         let expected_balance = U256::random();
 
         // Set up initial balance
-        let balance_slot = mapping_slot(account, tip20::slots::BALANCES);
+        let token_id = tip20::address_to_token_id_unchecked(token);
+        let balance_slot = TIP20Token::new(token_id).balances.at(account).slot();
         journal.load_account(token)?;
         journal
             .sstore(token, balance_slot, expected_balance)
             .unwrap();
 
-        let balance = get_token_balance(&mut journal, token, account).unwrap();
+        let balance = get_token_balance(&mut journal, token, account)?;
         assert_eq!(balance, expected_balance);
 
         Ok(())
@@ -1514,7 +1511,7 @@ mod tests {
         let tx_fee_token = Address::random();
 
         // Set validator token
-        let validator_slot = mapping_slot(validator, tip_fee_manager::slots::VALIDATOR_TOKENS);
+        let validator_slot = TipFeeManager::new().validator_tokens.at(validator).slot();
         ctx.journaled_state.load_account(TIP_FEE_MANAGER_ADDRESS)?;
         ctx.journaled_state
             .sstore(
@@ -1533,7 +1530,7 @@ mod tests {
         assert_eq!(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, fee_token);
 
         // Set user token
-        let user_slot = mapping_slot(user, tip_fee_manager::slots::USER_TOKENS);
+        let user_slot = TipFeeManager::new().user_tokens.at(user).slot();
         ctx.journaled_state
             .sstore(
                 TIP_FEE_MANAGER_ADDRESS,
@@ -2197,29 +2194,43 @@ mod tests {
         let cfg = CfgEnv::<TempoHardfork>::default();
         let caller = Address::random();
 
-        let calc_gas = |journal: &mut Journal<CacheDB<EmptyDB>>, key: u64| {
-            let internals = reth_evm::EvmInternals::new(journal, &block);
-            let mut storage = EvmPrecompileStorageProvider::new_max_gas(internals, &cfg);
-            let mut nm = NonceManager::new(&mut storage);
-            calculate_2d_nonce_gas(&mut nm, caller, U256::from(key)).unwrap()
-        };
-
         // Protocol nonce (key 0): always 0 gas
-        assert_eq!(calc_gas(&mut journal, 0), 0);
+        let gas = StorageCtx::enter_evm(&mut journal, &block, &cfg, || {
+            let mut nm = NonceManager::new();
+            Ok::<_, EVMError<Infallible, TempoInvalidTransaction>>(
+                calculate_2d_nonce_gas(&mut nm, caller, U256::from(0)).unwrap(),
+            )
+        })
+        .unwrap();
+        assert_eq!(gas, 0);
 
         // New key (nonce == 0): 22,100 gas (cold SLOAD + SSTORE set)
-        assert_eq!(calc_gas(&mut journal, 1), NEW_NONCE_KEY_GAS);
+        let gas = StorageCtx::enter_evm(&mut journal, &block, &cfg, || {
+            let mut nm = NonceManager::new();
+            Ok::<_, EVMError<Infallible, TempoInvalidTransaction>>(
+                calculate_2d_nonce_gas(&mut nm, caller, U256::from(1)).unwrap(),
+            )
+        })
+        .unwrap();
+        assert_eq!(gas, NEW_NONCE_KEY_GAS);
 
         // Increment the nonce to make it an existing key
-        {
-            let internals = reth_evm::EvmInternals::new(&mut journal, &block);
-            let mut storage = EvmPrecompileStorageProvider::new_max_gas(internals, &cfg);
-            NonceManager::new(&mut storage)
+        StorageCtx::enter_evm(&mut journal, &block, &cfg, || {
+            NonceManager::new()
                 .increment_nonce(caller, U256::from(1))
                 .unwrap();
-        }
+            Ok::<_, EVMError<Infallible, TempoInvalidTransaction>>(())
+        })
+        .unwrap();
 
         // Existing key (nonce > 0): 5,000 gas (cold SLOAD + warm SSTORE reset)
-        assert_eq!(calc_gas(&mut journal, 1), EXISTING_NONCE_KEY_GAS);
+        let gas = StorageCtx::enter_evm(&mut journal, &block, &cfg, || {
+            let mut nm = NonceManager::new();
+            Ok::<_, EVMError<Infallible, TempoInvalidTransaction>>(
+                calculate_2d_nonce_gas(&mut nm, caller, U256::from(1)).unwrap(),
+            )
+        })
+        .unwrap();
+        assert_eq!(gas, EXISTING_NONCE_KEY_GAS);
     }
 }
