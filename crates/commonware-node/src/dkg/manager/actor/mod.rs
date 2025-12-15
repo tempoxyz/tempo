@@ -18,7 +18,7 @@ use commonware_runtime::{Clock, ContextCell, Handle, Metrics as _, Spawner, Stor
 use commonware_storage::metadata::{self, Metadata};
 use commonware_utils::{
     Acknowledgement, quorum,
-    sequence::FixedBytes,
+    sequence::U64,
     set::{Ordered, OrderedAssociated},
     union,
 };
@@ -86,7 +86,7 @@ where
         let context = ContextCell::new(context);
 
         // Initialize the unified metadata database
-        let metadata: Metadata<ContextCell<TContext>, FixedBytes<32>, Bytes> = Metadata::init(
+        let metadata: Metadata<ContextCell<TContext>, U64, Bytes> = Metadata::init(
             context.with_label("database"),
             metadata::Config {
                 partition: format!("{}_database", config.partition_prefix),

@@ -1,16 +1,14 @@
 use eyre::WrapErr;
-use std::{any::Any, collections::HashMap, sync::Arc};
+use std::{any::Any, collections::HashMap, hash::BuildHasher, sync::Arc};
 use tracing::debug;
 
-use alloy_primitives::keccak256;
+use alloy_primitives::map::foldhash;
 use async_lock::RwLock;
 use bytes::Bytes;
 use commonware_codec::{EncodeSize, Read, Write};
 use commonware_runtime::{Clock, Metrics, Storage};
 use commonware_storage::metadata::Metadata;
-use commonware_utils::sequence::FixedBytes;
-
-type B256 = FixedBytes<32>;
+use commonware_utils::sequence::U64;
 
 /// Key used to store the node version that last wrote to the database.
 const NODE_VERSION_KEY: &str = "_node_version";
@@ -21,12 +19,12 @@ where
     TContext: Clock + Metrics + Storage,
 {
     /// The underlying metadata store.
-    store: Metadata<TContext, B256, Bytes>,
+    store: Metadata<TContext, U64, Bytes>,
     /// Cache to avoid repeated deserialization.
-    cache: HashMap<B256, Box<dyn CachedValue>>,
+    cache: HashMap<U64, Box<dyn CachedValue>>,
 }
 
-/// A database wrapper around `Metadata<B256, Bytes>` that provides transactional operations.
+/// A database wrapper around `Metadata<U64, Bytes>` that provides transactional operations.
 ///
 /// The underlying [`Metadata`] storage always keeps all data in memory and persists
 /// it to disk during commit/sync operations.
@@ -40,7 +38,7 @@ where
     TContext: Clock + Metrics + Storage,
 {
     /// Create a new database wrapping the given metadata store.
-    pub fn new(store: Metadata<TContext, B256, Bytes>) -> Self {
+    pub fn new(store: Metadata<TContext, U64, Bytes>) -> Self {
         Self(Arc::new(RwLock::new(MetadataDatabaseInner {
             store,
             cache: HashMap::new(),
@@ -56,7 +54,7 @@ where
         K: AsRef<[u8]>,
         V: Read<Cfg = ()> + Write + EncodeSize + Clone + Send + Sync + 'static,
     {
-        let key_hash = key_to_b256(key.as_ref());
+        let key_hash = key_to_u64(key.as_ref());
 
         // Try read lock first for cache hit
         let inner = self.0.read().await;
@@ -92,7 +90,7 @@ where
     where
         K: AsRef<[u8]>,
     {
-        let key_hash = key_to_b256(key.as_ref());
+        let key_hash = key_to_u64(key.as_ref());
         let inner = self.0.read().await;
         inner.store.get(&key_hash).cloned()
     }
@@ -103,7 +101,7 @@ where
     }
 }
 
-/// A read-write transaction that buffers writes to a `Metadata<B256, Bytes>` store.
+/// A read-write transaction that buffers writes to a `Metadata<U64, Bytes>` store.
 ///
 /// This transaction provides ACID-like semantics by buffering all operations in memory
 /// and applying them atomically when `commit()` is called.
@@ -130,14 +128,14 @@ where
     db: MetadataDatabase<TContext>,
 
     /// In-memory write buffer that accumulates all operations before commit.
-    /// - Key: `B256`
+    /// - Key: `U64`
     /// - Value: `Some(Bytes)` for insert/update, `None` for delete
     ///
     /// This map provides both write buffering and serves as a read cache,
     /// ensuring that reads within a transaction see uncommitted writes.
     ///
     /// On commit, these are serialized to storage and merged into the shared cache.
-    writes: HashMap<B256, Option<Box<dyn CachedValue>>>,
+    writes: HashMap<U64, Option<Box<dyn CachedValue>>>,
 }
 
 impl<TContext> ReadWriteTransaction<TContext>
@@ -164,7 +162,7 @@ where
         K: AsRef<[u8]>,
         V: Read<Cfg = ()> + Write + EncodeSize + Clone + Send + Sync + 'static,
     {
-        let key_hash = key_to_b256(key.as_ref());
+        let key_hash = key_to_u64(key.as_ref());
 
         // Check pending writes first
         if let Some(value_opt) = self.writes.get(&key_hash) {
@@ -191,7 +189,7 @@ where
         K: AsRef<[u8]>,
         V: Write + EncodeSize + Send + Sync + 'static,
     {
-        let key_hash = key_to_b256(key.as_ref());
+        let key_hash = key_to_u64(key.as_ref());
         self.writes
             .insert(key_hash, Some(Box::new(value) as Box<dyn CachedValue>));
     }
@@ -203,7 +201,7 @@ where
     where
         K: AsRef<[u8]>,
     {
-        let key_hash = key_to_b256(key.as_ref());
+        let key_hash = key_to_u64(key.as_ref());
         self.writes.insert(key_hash, None);
     }
 
@@ -214,7 +212,7 @@ where
     where
         K: AsRef<[u8]>,
     {
-        let key_hash = key_to_b256(key.as_ref());
+        let key_hash = key_to_u64(key.as_ref());
 
         if let Some(value_opt) = self.writes.get(&key_hash) {
             return value_opt.is_some();
@@ -227,14 +225,14 @@ where
     ///
     /// Returns None if no version has been written yet (new database).
     pub async fn get_node_version(&self) -> Result<Option<String>, eyre::Error> {
-        let key_hash = key_to_b256(NODE_VERSION_KEY.as_bytes());
+        let key_hash = key_to_u64(NODE_VERSION_KEY.as_bytes());
 
         // Check pending writes first
         if let Some(value_opt) = self.writes.get(&key_hash) {
             return match value_opt {
                 Some(cached) => Ok(Some(
                     String::from_utf8(cached.serialize()?.to_vec())
-                        .map_err(|e| eyre::eyre!("invalid utf8: {}", e))?,
+                        .wrap_err("node version was invalid utf8")?,
                 )),
                 None => Ok(None),
             };
@@ -291,19 +289,9 @@ where
     }
 }
 
-/// Convert key to B256.
-///
-/// Zero-pads if key is <= 32 bytes, hashes with [`keccak256`] if > 32 bytes.
-fn key_to_b256(key: &[u8]) -> B256 {
-    if key.len() <= 32 {
-        let mut bytes = [0u8; 32];
-        bytes[..key.len()].copy_from_slice(key);
-        B256::from(bytes)
-    } else {
-        let hash = keccak256(key);
-        let hash_bytes: &[u8; 32] = hash.as_ref();
-        B256::from(*hash_bytes)
-    }
+/// Convert key to U64 using foldhash.
+fn key_to_u64(key: &[u8]) -> U64 {
+    U64::new(foldhash::fast::FixedState::default().hash_one(key))
 }
 
 /// Trait for values that can be cached in the transaction buffer.
@@ -367,7 +355,7 @@ mod tests {
             .start(|context: Context| async move {
                 let context = ContextCell::new(context);
 
-                let metadata: Metadata<ContextCell<Context>, B256, Bytes> = Metadata::init(
+                let metadata: Metadata<ContextCell<Context>, U64, Bytes> = Metadata::init(
                     context.with_label("test"),
                     commonware_storage::metadata::Config {
                         partition: "test_ops".into(),
@@ -378,8 +366,8 @@ mod tests {
                 .unwrap();
 
                 let db = MetadataDatabase::new(metadata);
-                let key1_hash = key_to_b256("key1".as_bytes());
-                let key2_hash = key_to_b256("key2".as_bytes());
+                let key1_hash = key_to_u64("key1".as_bytes());
+                let key2_hash = key_to_u64("key2".as_bytes());
 
                 // Insert and verify pending writes before commit
                 let mut tx = db.read_write();
