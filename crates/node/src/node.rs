@@ -52,11 +52,18 @@ pub const DEFAULT_AA_VALID_AFTER_MAX_SECS: u64 = 3600;
 
 /// Tempo node CLI arguments.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::Args)]
-#[command(next_help_heading = "TxPool")]
 pub struct TempoNodeArgs {
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
     pub aa_valid_after_max_secs: u64,
+
+    /// Enable state provider metrics for the payload builder.
+    #[arg(long = "builder.state-provider-metrics", default_value_t = false)]
+    pub builder_state_provider_metrics: bool,
+
+    /// Disable state cache for the payload builder.
+    #[arg(long = "builder.disable-state-cache", default_value_t = false)]
+    pub builder_disable_state_cache: bool,
 }
 
 impl TempoNodeArgs {
@@ -64,6 +71,14 @@ impl TempoNodeArgs {
     pub fn pool_builder(&self) -> TempoPoolBuilder {
         TempoPoolBuilder {
             aa_valid_after_max_secs: self.aa_valid_after_max_secs,
+        }
+    }
+
+    /// Returns a [`TempoPayloadBuilderBuilder`] configured from these args.
+    pub fn payload_builder_builder(&self) -> TempoPayloadBuilderBuilder {
+        TempoPayloadBuilderBuilder {
+            state_provider_metrics: self.builder_state_provider_metrics,
+            disable_state_cache: self.builder_disable_state_cache,
         }
     }
 }
@@ -74,6 +89,8 @@ impl TempoNodeArgs {
 pub struct TempoNode {
     /// Transaction pool builder.
     pool_builder: TempoPoolBuilder,
+    /// Payload builder builder.
+    payload_builder_builder: TempoPayloadBuilderBuilder,
     /// Validator public key for `admin_validatorKey` RPC method.
     validator_key: Option<B256>,
 }
@@ -83,6 +100,7 @@ impl TempoNode {
     pub fn new(args: &TempoNodeArgs, validator_key: Option<B256>) -> Self {
         Self {
             pool_builder: args.pool_builder(),
+            payload_builder_builder: args.payload_builder_builder(),
             validator_key,
         }
     }
@@ -90,6 +108,7 @@ impl TempoNode {
     /// Returns a [`ComponentsBuilder`] configured for a regular Tempo node.
     pub fn components<Node>(
         pool_builder: TempoPoolBuilder,
+        payload_builder_builder: TempoPayloadBuilderBuilder,
     ) -> ComponentsBuilder<
         Node,
         TempoPoolBuilder,
@@ -105,7 +124,7 @@ impl TempoNode {
             .node_types::<Node>()
             .pool(pool_builder)
             .executor(TempoExecutorBuilder::default())
-            .payload(BasicPayloadServiceBuilder::default())
+            .payload(BasicPayloadServiceBuilder::new(payload_builder_builder))
             .network(EthereumNetworkBuilder::default())
             .consensus(TempoConsensusBuilder::default())
     }
@@ -237,7 +256,7 @@ where
     type AddOns = TempoAddOns<NodeAdapter<N>>;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
-        Self::components(self.pool_builder)
+        Self::components(self.pool_builder, self.payload_builder_builder)
     }
 
     fn add_ons(&self) -> Self::AddOns {
@@ -454,9 +473,14 @@ where
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
-pub struct TempoPayloadBuilderBuilder;
+pub struct TempoPayloadBuilderBuilder {
+    /// Enable state provider metrics for the payload builder.
+    pub state_provider_metrics: bool,
+    /// Disable state cache for the payload builder.
+    pub disable_state_cache: bool,
+}
 
 impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, TempoEvmConfig>
     for TempoPayloadBuilderBuilder
@@ -475,6 +499,8 @@ where
             pool,
             ctx.provider().clone(),
             evm_config,
+            self.state_provider_metrics,
+            self.disable_state_cache,
         ))
     }
 }

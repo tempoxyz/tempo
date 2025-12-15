@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use alloy_consensus::BlockHeader as _;
 use commonware_codec::{DecodeExt as _, EncodeSize, Read, Write};
 use commonware_consensus::{
     Block as _, Reporter as _, simplex::signing_scheme::bls12381_threshold::Scheme, types::Epoch,
@@ -122,24 +123,36 @@ where
                 initial_validators = ?peers_as_per_contract,
                 "using public polynomial and validators read from contract",);
 
-            self.post_allegretto_metadatas
-                .epoch_metadata
-                .put_sync(
-                    CURRENT_EPOCH_KEY,
-                    EpochState {
-                        dkg_outcome: DkgOutcome {
-                            dkg_successful: true,
-                            epoch: 0,
-                            participants: initial_dkg_outcome.participants,
-                            public: initial_dkg_outcome.public,
-                            share: self.config.initial_share.clone(),
-                        },
-                        validator_state: initial_validator_state.clone(),
+            self.post_allegretto_metadatas.epoch_metadata.put(
+                CURRENT_EPOCH_KEY,
+                EpochState {
+                    dkg_outcome: DkgOutcome {
+                        dkg_successful: true,
+                        epoch: 0,
+                        participants: initial_dkg_outcome.participants,
+                        public: initial_dkg_outcome.public,
+                        share: self.config.initial_share.clone(),
                     },
-                )
-                .await
-                .expect("persisting epoch state must always work");
+                    validator_state: initial_validator_state,
+                },
+            );
         }
+
+        if self.config.delete_signing_share
+            && let Some(epoch_state) = self
+                .post_allegretto_metadatas
+                .epoch_metadata
+                .get_mut(&CURRENT_EPOCH_KEY)
+        {
+            warn!("delete-signing-share set; deleting signing share");
+            epoch_state.dkg_outcome.share.take();
+        }
+
+        self.post_allegretto_metadatas
+            .epoch_metadata
+            .sync()
+            .await
+            .expect("persisting epoch state must always work");
         Ok(())
     }
 
@@ -212,7 +225,12 @@ where
         //
         // So for E = 100, the boundary heights would be 99, 199, 299, ...
         if utils::is_last_block_in_epoch(self.config.epoch_length, block.height()).is_some() {
-            self.update_and_register_current_epoch_state().await;
+            let block_outcome = PublicOutcome::decode(block.header().extra_data().as_ref()).expect(
+                "the last block of an epoch must always contain the outcome of the DKG ceremony",
+            );
+
+            self.update_and_register_current_epoch_state(block_outcome)
+                .await;
 
             maybe_ceremony.replace(self.start_post_allegretto_ceremony(ceremony_mux).await);
             // Early return: start driving the ceremony on the first height of
@@ -458,7 +476,10 @@ where
     }
 
     #[instrument(skip_all)]
-    async fn update_and_register_current_epoch_state(&mut self) {
+    async fn update_and_register_current_epoch_state(
+        &mut self,
+        canonical_dkg_outcome: PublicOutcome,
+    ) {
         let old_epoch_state = self
             .post_allegretto_metadatas
             .epoch_metadata
@@ -466,7 +487,7 @@ where
             .expect("there must always exist an epoch state");
 
         // Remove it?
-        let dkg_outcome = self
+        let mut our_dkg_outcome = self
             .post_allegretto_metadatas
             .dkg_outcome_metadata
             .get(&DKG_OUTCOME_KEY)
@@ -478,29 +499,60 @@ where
 
         assert_eq!(
             old_epoch_state.epoch() + 1,
-            dkg_outcome.epoch,
+            our_dkg_outcome.epoch,
             "sanity check: old outcome must be new outcome - 1"
         );
 
         let syncing_players = super::read_validator_config_with_retry(
             &self.context,
             &self.config.execution_node,
-            dkg_outcome.epoch,
+            our_dkg_outcome.epoch,
             self.config.epoch_length,
         )
         .await;
-
         let mut new_validator_state = old_epoch_state.validator_state.clone();
-        if dkg_outcome.dkg_successful {
-            new_validator_state.push_on_success(syncing_players);
-        } else {
-            new_validator_state.push_on_failure(syncing_players);
+
+        let dkg_mismatch = canonical_dkg_outcome.public != our_dkg_outcome.public;
+        if dkg_mismatch {
+            warn!(
+                "the DKG outcome committed to chain does not match our own; \
+                will take the on-chain outcome instead and delete our share"
+            );
+            our_dkg_outcome.public = canonical_dkg_outcome.public;
+            our_dkg_outcome.participants = canonical_dkg_outcome.participants;
+            our_dkg_outcome.share.take();
+        }
+
+        match (our_dkg_outcome.dkg_successful, dkg_mismatch) {
+            // No DKG mismatches
+            (true, false) => {
+                new_validator_state.push_on_success(syncing_players);
+            }
+            (false, false) => {
+                new_validator_state.push_on_failure(syncing_players);
+            }
+
+            (false, true) => {
+                new_validator_state.push_on_success(syncing_players);
+            }
+
+            // TODO(janis): publish the IP addresses and pubkeys to chain. Then
+            // we can recover from this.
+            (true, true) => {
+                unreachable!(
+                    "a local DKG success with an on-chain mismatch means that \
+                    the node successfully read all necessary dealings from \
+                    chain while a quorum of validators came to a different \
+                    conclusion based off the same data; this is not something \
+                    to recover from"
+                );
+            }
         }
 
         self.post_allegretto_metadatas.epoch_metadata.put(
             CURRENT_EPOCH_KEY,
             EpochState {
-                dkg_outcome,
+                dkg_outcome: our_dkg_outcome,
                 validator_state: new_validator_state.clone(),
             },
         );
