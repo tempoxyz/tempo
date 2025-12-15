@@ -10,10 +10,15 @@ use p256::{
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 
-/// Half of the P256 curve order (n/2).
+/// The P256 (secp256r1/prime256v1) curve order n.
 ///
-/// The P256 curve order is:
 /// n = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+pub const P256_ORDER: U256 = U256::from_be_bytes([
+    0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xBC, 0xE6, 0xFA, 0xAD, 0xA7, 0x17, 0x9E, 0x84, 0xF3, 0xB9, 0xCA, 0xC2, 0xFC, 0x63, 0x25, 0x51,
+]);
+
+/// Half of the P256 curve order (n/2).
 ///
 /// For signatures to be valid, the s value must be less than or equal to n/2
 /// (low-s requirement). This prevents signature malleability where (r, s) and
@@ -24,6 +29,20 @@ pub const P256N_HALF: U256 = U256::from_be_bytes([
     0x7F, 0xFF, 0xFF, 0xFF, 0x80, 0x00, 0x00, 0x00, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
     0xDE, 0x73, 0x7D, 0x56, 0xD3, 0x8B, 0xCF, 0x42, 0x79, 0xDC, 0xE5, 0x61, 0x7E, 0x31, 0x92, 0xA8,
 ]);
+
+/// Normalize P256 signature s value to low-s form.
+///
+/// For any ECDSA signature (r, s), both (r, s) and (r, n-s) are valid.
+/// To prevent signature malleability, we require s <= n/2.
+/// If s > n/2, we replace it with n - s.
+///
+/// This function should be called by all P256 signing code before creating
+/// a signature, as the p256 crate does not guarantee low-s signatures.
+pub fn normalize_p256_s(s_bytes: &[u8]) -> B256 {
+    let s = U256::from_be_slice(s_bytes);
+    let normalized_s = if s > P256N_HALF { P256_ORDER - s } else { s };
+    B256::from(normalized_s.to_be_bytes::<32>())
+}
 
 /// Signature type identifiers
 /// Note: Secp256k1 has no identifier - detected by length (65 bytes)
@@ -865,7 +884,9 @@ mod tests {
             signing_key.sign_prehash(message_hash.as_slice()).unwrap();
         let sig_bytes = signature.to_bytes();
         let r = &sig_bytes[0..32];
-        let s = &sig_bytes[32..64];
+
+        // Normalize s to low-s form (p256 crate doesn't guarantee low-s)
+        let s_normalized = normalize_p256_s(&sig_bytes[32..64]);
 
         // Extract public key coordinates
         let encoded_point = verifying_key.to_encoded_point(false);
@@ -875,7 +896,7 @@ mod tests {
         // Verify the signature
         let result = verify_p256_signature_internal(
             r,
-            s,
+            s_normalized.as_slice(),
             pub_key_x.as_slice(),
             pub_key_y.as_slice(),
             &message_hash,
@@ -914,16 +935,9 @@ mod tests {
         let pub_key_x = encoded_point.x().unwrap();
         let pub_key_y = encoded_point.y().unwrap();
 
-        // P256 curve order n
-        let n = alloy_primitives::U256::from_be_bytes([
-            0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-            0xFF, 0xFF, 0xBC, 0xE6, 0xFA, 0xAD, 0xA7, 0x17, 0x9E, 0x84, 0xF3, 0xB9, 0xCA, 0xC2,
-            0xFC, 0x63, 0x25, 0x51,
-        ]);
-
         // Convert s to U256 and compute n - s (the high-s equivalent)
         let s_value = alloy_primitives::U256::from_be_slice(original_s);
-        let high_s = n - s_value;
+        let high_s = P256_ORDER - s_value;
         let high_s_bytes: [u8; 32] = high_s.to_be_bytes();
 
         // The high-s signature should be rejected
