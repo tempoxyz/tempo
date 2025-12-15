@@ -389,38 +389,63 @@ mod tests {
         let precompile =
             tempo_precompile!("TIP20Token", chain_id, spec, |input| { TIP20Token::new(1) });
 
-        let db = CacheDB::new(EmptyDB::new());
-        let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
-        let block = evm.block.clone();
-        let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
-
         let target_address = Address::random();
-        let transfer_calldata = ITIP20::transferCall {
-            to: Address::random(),
-            amount: U256::from(100),
-        }
-        .abi_encode();
-        let calldata = Bytes::from(transfer_calldata);
-        let input = PrecompileInput {
-            data: &calldata,
-            caller: Address::ZERO,
-            internals: evm_internals,
-            gas: 100_000,
-            is_static: true,
-            value: U256::ZERO,
-            target_address,
-            bytecode_address: target_address,
+
+        let call_static = |calldata: Bytes| {
+            let db = CacheDB::new(EmptyDB::new());
+            let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+            let block = evm.block.clone();
+            let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+
+            let input = PrecompileInput {
+                data: &calldata,
+                caller: Address::ZERO,
+                internals: evm_internals,
+                gas: 100_000,
+                is_static: true,
+                value: U256::ZERO,
+                target_address,
+                bytecode_address: target_address,
+            };
+
+            AlloyEvmPrecompile::call(&precompile, input)
         };
 
-        let result = AlloyEvmPrecompile::call(&precompile, input);
-
-        match result {
-            Ok(output) => {
-                assert!(output.reverted);
-                let decoded = StaticCallNotAllowed::abi_decode(&output.bytes).unwrap();
-                assert!(matches!(decoded, StaticCallNotAllowed {}));
+        // Static calls into mutating functions should fail
+        let result = call_static(Bytes::from(
+            ITIP20::transferCall {
+                to: Address::random(),
+                amount: U256::from(100),
             }
-            Err(e) => panic!("expected reverted output, got error: {e:?}"),
-        }
+            .abi_encode(),
+        ));
+        let output = result.expect("expected Ok");
+        assert!(output.reverted);
+        assert!(StaticCallNotAllowed::abi_decode(&output.bytes).is_ok());
+
+        // Static calls into mutate void functions should fail
+        let result = call_static(Bytes::from(
+            ITIP20::approveCall {
+                spender: Address::random(),
+                amount: U256::from(100),
+            }
+            .abi_encode(),
+        ));
+        let output = result.expect("expected Ok");
+        assert!(output.reverted);
+        assert!(StaticCallNotAllowed::abi_decode(&output.bytes).is_ok());
+
+        // Static calls into view functions should succeed
+        let result = call_static(Bytes::from(
+            ITIP20::balanceOfCall {
+                account: Address::random(),
+            }
+            .abi_encode(),
+        ));
+        let output = result.expect("expected Ok");
+        assert!(
+            !output.reverted,
+            "view function should not revert in static context"
+        );
     }
 }
