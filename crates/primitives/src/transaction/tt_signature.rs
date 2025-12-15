@@ -1,7 +1,7 @@
 use super::tempo_transaction::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType,
 };
-use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256};
+use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::{
     EncodedPoint,
@@ -11,24 +11,16 @@ use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 
 /// The P256 (secp256r1/prime256v1) curve order n.
-///
-/// n = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
-pub const P256_ORDER: U256 = U256::from_be_bytes([
-    0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xBC, 0xE6, 0xFA, 0xAD, 0xA7, 0x17, 0x9E, 0x84, 0xF3, 0xB9, 0xCA, 0xC2, 0xFC, 0x63, 0x25, 0x51,
-]);
+pub const P256_ORDER: U256 =
+    uint!(0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551_U256);
 
 /// Half of the P256 curve order (n/2).
 ///
 /// For signatures to be valid, the s value must be less than or equal to n/2
 /// (low-s requirement). This prevents signature malleability where (r, s) and
 /// (r, n-s) are both valid signatures for the same message.
-///
-/// n/2 = 0x7FFFFFFF800000007FFFFFFFFFFFFFFFDE737D56D38BCF4279DCE5617E3192A8
-pub const P256N_HALF: U256 = U256::from_be_bytes([
-    0x7F, 0xFF, 0xFF, 0xFF, 0x80, 0x00, 0x00, 0x00, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xDE, 0x73, 0x7D, 0x56, 0xD3, 0x8B, 0xCF, 0x42, 0x79, 0xDC, 0xE5, 0x61, 0x7E, 0x31, 0x92, 0xA8,
-]);
+pub const P256N_HALF: U256 =
+    uint!(0x7FFFFFFF800000007FFFFFFFFFFFFFFFDE737D56D38BCF4279DCE5617E3192A8_U256);
 
 /// Normalize P256 signature s value to low-s form.
 ///
