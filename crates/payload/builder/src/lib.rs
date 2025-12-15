@@ -152,23 +152,26 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
         let block_env = evm.block();
         let spec = &evm.ctx().cfg.spec;
 
+        let mut txs = Vec::with_capacity(3);
+
         // Build fee manager system transaction (pre-AllegroModerato only)
         // Post-AllegroModerato: fees are collected and swapped immediately in collectFeePreTx.
         // Validators call distributeFees() to claim their accumulated fees.
-        let fee_manager_tx = if !spec.is_allegro_moderato() {
+        if !spec.is_allegro_moderato() {
             let fee_manager_input = IFeeManager::executeBlockCall
                 .abi_encode()
                 .into_iter()
                 .chain(block_env.number.to_be_bytes_vec())
                 .collect();
 
-            Some(Recovered::new_unchecked(
+            let fee_manager_tx = Recovered::new_unchecked(
                 TempoTxEnvelope::Legacy(Signed::new_unhashed(
                     TxLegacy {
                         chain_id,
                         nonce: 0,
                         gas_price: 0,
                         gas_limit: 0,
+
                         to: TIP_FEE_MANAGER_ADDRESS.into(),
                         value: U256::ZERO,
                         input: fee_manager_input,
@@ -176,10 +179,10 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
                     TEMPO_SYSTEM_TX_SIGNATURE,
                 )),
                 TEMPO_SYSTEM_TX_SENDER,
-            ))
-        } else {
-            None
-        };
+            );
+
+            txs.push(fee_manager_tx);
+        }
 
         // Build stablecoin exchange system transaction
         let stablecoin_exchange_input = IStablecoinExchange::executeBlockCall {}
@@ -203,6 +206,8 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
             )),
             TEMPO_SYSTEM_TX_SENDER,
         );
+
+        txs.push(stablecoin_exchange_tx);
 
         // Build subblocks signatures system transaction
         let subblocks_metadata = subblocks
@@ -229,13 +234,8 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
             )),
             TEMPO_SYSTEM_TX_SENDER,
         );
-
-        let mut txs = Vec::with_capacity(3);
-        if let Some(tx) = fee_manager_tx {
-            txs.push(tx);
-        }
-        txs.push(stablecoin_exchange_tx);
         txs.push(subblocks_signatures_tx);
+
         txs
     }
 }

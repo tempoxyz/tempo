@@ -906,13 +906,6 @@ where
             return Ok(());
         }
 
-        // Post-AllegroModerato: fees are collected and swapped immediately in collect_fee_pre_tx.
-        // No refund mechanism - users pay maxAmount upfront. Skip collect_fee_post_tx entirely.
-        if context.cfg.spec.is_allegro_moderato() {
-            return Ok(());
-        }
-
-        // Pre-AllegroModerato: use the old behavior with refunds
         // Create storage provider and fee manager
         let (journal, block) = (&mut context.journaled_state, &context.block);
         let beneficiary = block.beneficiary();
