@@ -42,7 +42,7 @@ use std::{
     },
     time::Instant,
 };
-use tempo_chainspec::TempoChainSpec;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::{TEMPO_GENERAL_GAS_DIVISOR, TEMPO_SHARED_GAS_DIVISOR};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, evm::TempoEvm};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
@@ -153,11 +153,8 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
         subblocks: &[RecoveredSubBlock],
         timestamp: u64,
     ) -> Vec<Recovered<TempoTxEnvelope>> {
-        use tempo_chainspec::hardfork::TempoHardforks;
-
         let chain_spec = self.provider.chain_spec();
         let chain_id = Some(chain_spec.chain().id());
-
         let mut txs = Vec::with_capacity(3);
 
         // Build fee manager system transaction
