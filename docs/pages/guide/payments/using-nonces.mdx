@@ -1,5 +1,6 @@
 import * as Demo from '../../../components/guides/Demo.tsx'
 import * as Step from '../../../components/guides/steps'
+import * as Token from '../../../components/guides/tokens'
 import * as Card from '../../../components/Card.tsx'
 import LucideCode from '~icons/lucide/code'
 import LucideSend from '~icons/lucide/send'
@@ -7,27 +8,37 @@ import LucideGitBranch from '~icons/lucide/git-branch'
 
 # Using Nonces
 
-Submit multiple transactions in parallel using Tempo's 2D nonce system. Nonce keys allow you to send concurrent transactions without waiting for each one to confirm sequentially.
+Submit multiple transactions in parallel using Tempo's [2D nonces](/protocol/transactions/spec-tempo-transaction). The `nonceKey` property allow you to send concurrent transactions without waiting for each one to confirm sequentially.
+
+### Understanding Nonce Keys
+
+Tempo uses a **2D nonce system** that enables parallel transaction execution:
+
+- **Protocol nonce (key 0)**: The default sequential nonce. Transactions must be processed in order.
+- **User nonces (keys 1+)**: Independent nonce sequences that allow concurrent transaction submission.
+
+When you send a transaction without specifying a `nonceKey`, it uses the protocol nonce and behaves like a standard sequential transaction. By specifying different nonce keys, you can submit multiple transactions simultaneously without waiting for confirmations.
+
+### Key management strategies
+
+There are two ways to speicify a `nonceKey` for a transaction:
+
+#### Explicit keys
+
+Explicit keys (1n, 2n, etc.) are best when you want to reuse keys. For high-throughput applications, these keys can be used to load-balance transaction submission to the network in a gas-efficient way. You can track the most recent call on each key in your application, and, once that transaction confirms, the same key can be used for new transactions. This approach is more gas efficient, as provisioning a new `nonceKey` [costs gas](/protocol/transactions/spec-tempo-transaction#gas-schedule).
+
+#### `'random'` keys
+For simple cases where you don't need to track keys. This approach is recommended when handling bursts of high activity, in which you need to submit transfers to the network and don't care about the added gas costs for provisioning multiple keys.
 
 ## Demo
 
 By the end of this guide you will understand how to send parallel payments using nonce keys.
 
-<Demo.Container name="Send Parallel Payments" footerVariant="balances" tokens={[Demo.alphaUsd]}>
+<Demo.Container name="Send Parallel Payments" footerVariant="balances" tokens={[Token.alphaUsd]}>
   <Step.Connect stepNumber={1} />
   <Step.AddFunds stepNumber={2} />
   <Step.SendParallelPayments stepNumber={3} />
-  <Step.SendParallelPaymentsRandomNonce stepNumber={4} last />
 </Demo.Container>
-
-## Understanding Nonce Keys
-
-Tempo uses a **2D nonce system** that enables parallel transaction execution:
-
-- **Protocol nonce (key 0)**: The default sequential nonce, similar to traditional blockchains. Transactions must be processed in order.
-- **User nonces (keys 1+)**: Independent nonce sequences that allow concurrent transaction submission.
-
-When you send a transaction without specifying a `nonceKey`, it uses the protocol nonce (key 0) and behaves like a standard sequential transaction. By specifying different nonce keys, you can submit multiple transactions simultaneously without waiting for confirmations.
 
 ## Steps
 
@@ -40,36 +51,39 @@ Ensure that you have set up your project with Wagmi and integrated accounts by f
 - [Embed Passkey accounts](/guide/use-accounts/embed-passkeys)
 - [Connect to wallets](/guide/use-accounts/connect-to-wallets)
 
-### Send a standard transfer
+### Fetch current nonces
 
-Without specifying a `nonceKey`, transactions use the default protocol nonce and execute sequentially:
+In order to send a transfer on a custom `nonceKey`, you need to know the current nonce value for the keys you will send on. 
 
 :::code-group
 
-```tsx twoslash [SendPayment.tsx]
-import { Hooks } from 'tempo.ts/wagmi'
+```ts twoslash [example.ts]
+import { Actions } from 'tempo.ts/wagmi'
 import { parseUnits } from 'viem'
+import { config } from './wagmi.config'
 
 // @noErrors
-function SendPayment() {
-  const sendPayment = Hooks.token.useTransferSync()
 
-  return (
-    <button onClick={() => sendPayment.mutate({
-      amount: parseUnits('100', 6),
-      to: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
-      token: '0x20c0000000000000000000000000000000000001', // AlphaUSD
-    })}>
-      Send Payment
-    </button>
-  )
-}
+// Fetch nonces for each key in parallel
+const [nonce1, nonce2] = await Promise.all([
+  Actions.nonce.getNonce(config, { account, nonceKey: 1n }), // [!code hl]
+  Actions.nonce.getNonce(config, { account, nonceKey: 2n }), // [!code hl]
+])
+
+console.log('Current nonce for nonceKey 1:', nonce1)
+console.log('Current nonce for nonceKey 2:', nonce2)
 ```
 
 ```tsx twoslash [wagmi.config.ts] filename="wagmi.config.ts"
 // @noErrors
 // [!include ~/snippets/wagmi.config.ts:setup]
 ```
+
+:::
+
+:::warning
+
+This nonce-fetching behavior is temporary: a forthcoming update will let the network automatically determine the nonce for a user `nonceKey`.
 
 :::
 
@@ -79,73 +93,40 @@ To send multiple transactions in parallel, specify different `nonceKey` values. 
 
 :::code-group
 
-```tsx twoslash [SendParallelPayments.tsx]
-import { Hooks } from 'tempo.ts/wagmi'
+```ts twoslash [example.ts]
+import { Actions } from 'tempo.ts/wagmi'
 import { parseUnits } from 'viem'
+import { config } from './wagmi.config'
 
 // @noErrors
-function SendParallelPayments() {
-  const sendPayment1 = Hooks.token.useTransfer()
-  const sendPayment2 = Hooks.token.useTransfer()
+const account = '0x...' // your sender account
+const alphaUsd = '0x20c0000000000000000000000000000000000001'
 
-  const sendBothPayments = async () => {
-    // These transactions are submitted in parallel using different nonce keys
-    await Promise.all([
-      sendPayment1.mutateAsync({
-        amount: parseUnits('100', 6),
-        to: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
-        token: '0x20c0000000000000000000000000000000000001',
-        nonceKey: 1n, // [!code hl]
-      }),
-      sendPayment2.mutateAsync({
-        amount: parseUnits('50', 6),
-        to: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
-        token: '0x20c0000000000000000000000000000000000001',
-        nonceKey: 2n, // [!code hl]
-      }),
-    ])
-  }
+const [nonce1, nonce2] = await Promise.all([
+  Actions.nonce.getNonce(config, { account, nonceKey: 1n }),
+  Actions.nonce.getNonce(config, { account, nonceKey: 2n }),
+])
 
-  return (
-    <button onClick={sendBothPayments}>
-      Send Both Payments
-    </button>
-  )
-}
-```
+// Send both transfers in parallel using different nonce keys
+const [hash1, hash2] = await Promise.all([
+  Actions.token.transfer(config, {
+    amount: parseUnits('100', 6),
+    to: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
+    token: alphaUsd,
+    nonceKey: 1n, // [!code hl]
+    nonce: Number(nonce1), // [!code hl]
+  }),
+  Actions.token.transfer(config, {
+    amount: parseUnits('50', 6),
+    to: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',
+    token: alphaUsd,
+    nonceKey: 2n, // [!code hl]
+    nonce: Number(nonce2), // [!code hl]
+  }),
+])
 
-```tsx twoslash [wagmi.config.ts] filename="wagmi.config.ts"
-// @noErrors
-// [!include ~/snippets/wagmi.config.ts:setup]
-```
-
-:::
-
-### Use random nonce keys
-
-For simple cases where you don't need to manage specific keys, use `'random'` to automatically generate a unique nonce key:
-
-:::code-group
-
-```tsx twoslash [SendWithRandomNonce.tsx]
-import { Hooks } from 'tempo.ts/wagmi'
-import { parseUnits } from 'viem'
-
-// @noErrors
-function SendWithRandomNonce() {
-  const sendPayment = Hooks.token.useTransferSync()
-
-  return (
-    <button onClick={() => sendPayment.mutate({
-      amount: parseUnits('100', 6),
-      to: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
-      token: '0x20c0000000000000000000000000000000000001',
-      nonceKey: 'random', // [!code hl]
-    })}>
-      Send Payment
-    </button>
-  )
-}
+console.log('Transaction 1:', hash1)
+console.log('Transaction 2:', hash2)
 ```
 
 ```tsx twoslash [wagmi.config.ts] filename="wagmi.config.ts"
@@ -159,76 +140,32 @@ function SendWithRandomNonce() {
 
 ## Recipes
 
-### Concurrent transfers with Viem
+### Use random nonce keys
 
-Send multiple independent transfers in parallel using the Viem client:
-
-:::code-group
-
-```ts [example.ts]
-import { parseUnits } from 'viem'
-import { client } from './viem.config'
-
-const recipient1 = '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb'
-const recipient2 = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8'
-const alphaUsd = '0x20c0000000000000000000000000000000000001'
-
-// Send two transfers in parallel using different nonce keys
-const [hash1, hash2] = await Promise.all([
-  client.token.transfer({
-    amount: parseUnits('100', 6),
-    to: recipient1,
-    token: alphaUsd,
-    nonceKey: 1n, // [!code hl]
-  }),
-  client.token.transfer({
-    amount: parseUnits('50', 6),
-    to: recipient2,
-    token: alphaUsd,
-    nonceKey: 2n, // [!code hl]
-  }),
-])
-
-console.log('Transaction 1:', hash1)
-console.log('Transaction 2:', hash2)
-```
-
-```ts [viem.config.ts] filename="viem.config.ts"
-// [!include ~/snippets/viem.config.ts:setup]
-```
-
-:::
-
-### Multiple transactions on the same nonce key
-
-You can send multiple transactions on the same nonce key, but they will execute sequentially within that key:
+For simple cases where you don't need to manage specific keys, use `'random'` to automatically generate a unique nonce key:
 
 :::code-group
 
-```ts [example.ts]
+```ts twoslash [example.ts]
+import { Actions } from 'tempo.ts/wagmi'
 import { parseUnits } from 'viem'
-import { client } from './viem.config'
+import { config } from './wagmi.config'
 
-const alphaUsd = '0x20c0000000000000000000000000000000000001'
-
-// These execute sequentially (same nonce key)
-const { receipt: receipt1 } = await client.token.transferSync({
+// @noErrors
+// Using 'random' automatically generates a unique nonce key
+const hash = await Actions.token.transfer(config, {
   amount: parseUnits('100', 6),
   to: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
-  token: alphaUsd,
-  nonceKey: 1n,
+  token: '0x20c0000000000000000000000000000000000001',
+  nonceKey: 'random', // [!code hl]
 })
 
-const { receipt: receipt2 } = await client.token.transferSync({
-  amount: parseUnits('50', 6),
-  to: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
-  token: alphaUsd,
-  nonceKey: 1n, // Same key - waits for first tx to confirm
-})
+console.log('Transaction hash:', hash)
 ```
 
-```ts [viem.config.ts] filename="viem.config.ts"
-// [!include ~/snippets/viem.config.ts:setup]
+```tsx twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::
@@ -248,14 +185,6 @@ const count = await client.nonce.getNonceKeyCount({
 })
 
 console.log('Active nonce keys:', count)
-
-// Get the current nonce for a specific key
-const nonce = await client.nonce.getNonce({
-  account: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
-  nonceKey: 1n,
-})
-
-console.log('Nonce for key 1:', nonce)
 ```
 
 ```ts [viem.config.ts] filename="viem.config.ts"
@@ -276,57 +205,26 @@ Use nonce keys when you need to:
 ### When to use batch transactions instead
 
 Use [batch transactions](/guide/use-accounts/batch-transactions) instead of nonce keys when:
-- Operations need to be atomic (all-or-nothing)
+- Operations need to be atomic
 - Calls have sequential dependencies
 - You want a single transaction fee for multiple operations
 
-### Key management strategies
+Batch transactions are not as appropriate for the payments to multiple recipients use case, because if a single payment fails, all the calls in the batch transaction roll back.
 
-- **Use `'random'`** for simple cases where you don't need to track keys
-- **Use explicit keys** (1n, 2n, etc.) when you need predictable behavior or want to reuse keys
-- **Reuse keys after confirmation** - once a transaction confirms, the same key can be used for new transactions
-
-### Error handling
-
-Each nonce key stream operates independently:
-- A failed transaction on key 1 doesn't affect transactions on key 2
-- Monitor each transaction separately when using parallel submission
-- Use `Promise.allSettled` if you need to handle partial failures gracefully
-
-```ts
-const results = await Promise.allSettled([
-  client.token.transfer({ ...params, nonceKey: 1n }),
-  client.token.transfer({ ...params, nonceKey: 2n }),
-])
-
-results.forEach((result, i) => {
-  if (result.status === 'fulfilled') {
-    console.log(`Transaction ${i + 1} succeeded:`, result.value)
-  } else {
-    console.error(`Transaction ${i + 1} failed:`, result.reason)
-  }
-})
-```
 
 ## Learning Resources
 
 <Card.Container>
   <Card.Link
-    description="Learn more about the TypeScript SDK"
-    href="/sdk/typescript"
+    description="View nonce actions in the TypeScript SDK"
+    href="/sdk/typescript/wagmi/actions/nonce.getNonce"
     icon={LucideCode}
-    title="TypeScript SDK"
+    title="Nonce SDK Documentation"
   />
   <Card.Link
     description="Learn more about transactions on Tempo"
     href="/protocol/transactions"
     icon={LucideSend}
     title="Transactions"
-  />
-  <Card.Link
-    description="Combine multiple operations in a single atomic transaction"
-    href="/guide/use-accounts/batch-transactions"
-    icon={LucideGitBranch}
-    title="Batch Transactions"
   />
 </Card.Container>

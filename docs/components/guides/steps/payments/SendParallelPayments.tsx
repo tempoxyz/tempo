@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import * as React from 'react'
 import { Actions, Hooks } from 'tempo.ts/wagmi'
-import { isAddress, parseUnits } from 'viem'
+import { parseUnits } from 'viem'
 import {
   useConfig,
   useConnection,
