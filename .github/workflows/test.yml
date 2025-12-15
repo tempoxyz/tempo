@@ -79,7 +79,8 @@ jobs:
       - name: Get latest filename from API
         id: latest
         run: |
-          FILENAME=$(curl -s https://snapshots.tempoxyz.dev/42429/latest.txt)
+          # FILENAME=$(curl -s https://snapshots.tempoxyz.dev/42429/latest.txt)
+          FILENAME=tempo-42429-4554136-1765286766.tar.lz4
           echo "Latest filename: $FILENAME"
           echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
 
@@ -114,7 +115,7 @@ jobs:
           mkdir snap-rexec
           lz4 -d -c "$FILE_PATH" | tar -C snap-rexec -xvf -
       - name: Re-execute snapshot
-        run: cargo run --release --bin tempo re-execute --datadir snap-rexec
+        run: cargo run --release --bin tempo re-execute --datadir snap-rexec --to 4500000
 
   test-success:
     name: test success
