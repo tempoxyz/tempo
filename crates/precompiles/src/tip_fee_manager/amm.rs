@@ -631,7 +631,7 @@ impl TipFeeManager {
     }
 
     /// Executes a fee swap immediately, converting userToken to validatorToken at the fixed rate m = 0.9970.
-    /// Called by FeeManager.collectFeePreTx during pre-transaction fee collection.
+    /// Called by FeeManager.collectFeePostTx during post-transaction fee collection.
     pub fn execute_fee_swap(
         &mut self,
         user_token: Address,
@@ -649,7 +649,7 @@ impl TipFeeManager {
             return Err(TIPFeeAMMError::insufficient_liquidity().into());
         }
 
-        // Update reserves immediately
+        // Update reserves
         let amount_in_u128: u128 = amount_in
             .try_into()
             .map_err(|_| TempoPrecompileError::under_overflow())?;
