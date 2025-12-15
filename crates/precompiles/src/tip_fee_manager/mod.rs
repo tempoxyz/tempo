@@ -168,10 +168,30 @@ impl TipFeeManager {
         }))
     }
 
+    /// Checks if the pool has sufficient liquidity for a fee swap.
+    ///
+    /// Returns an error if the pool doesn't have enough validator tokens to execute the swap.
+    fn check_sufficient_liquidity(
+        &self,
+        user_token: Address,
+        validator_token: Address,
+        amount_in: U256,
+    ) -> Result<()> {
+        let pool_id = self.pool_id(user_token, validator_token);
+        let pool = self.pools.at(pool_id).read()?;
+        let amount_out = amm::compute_amount_out(amount_in)?;
+
+        if amount_out > U256::from(pool.reserve_validator_token) {
+            return Err(TIPFeeAMMError::insufficient_liquidity().into());
+        }
+
+        Ok(())
+    }
+
     /// Collects fees from user before transaction execution.
     ///
-    /// Determines fee token, verifies pool liquidity for swaps if needed, reserves liquidity
-    /// for the max fee amount and transfers it to the fee manager.
+    /// Determines fee token, verifies pool liquidity for swaps if needed, and transfers
+    /// the max fee amount to the fee manager.
     /// Unused gas is later returned via collect_fee_post_tx
     pub fn collect_fee_pre_tx(
         &mut self,
@@ -185,7 +205,14 @@ impl TipFeeManager {
 
         // Verify pool liquidity if user token differs from validator token
         if user_token != validator_token {
-            self.reserve_liquidity(user_token, validator_token, max_amount)?;
+            if self.storage.spec().is_allegro_moderato() {
+                // Post-AllegroModerato, fees are swapped after each tx, so liquidity only needs to
+                // be checked for the max amount
+                self.check_sufficient_liquidity(user_token, validator_token, max_amount)?;
+            } else {
+                // Pre-AllegroModerato: Reserve liquidity (fees batched and swapped in executeBlock)
+                self.reserve_liquidity(user_token, validator_token, max_amount)?;
+            }
         }
 
         let mut tip20_token = TIP20Token::from_address(user_token)?;
