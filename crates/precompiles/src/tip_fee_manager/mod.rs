@@ -419,9 +419,7 @@ impl TipFeeManager {
         Ok(())
     }
 
-    /// Allows anyone to trigger the transfer of accumulated fees to a validator.
-    /// Transfers the validator's fee balance (in their preferred token) to their address.
-    /// This is a new function available post-AllegroModerato hardfork.
+    /// Transfers the validator's fee balance to their address.
     pub fn distribute_fees(&mut self, validator: Address) -> Result<()> {
         let amount = self.collected_fees.at(validator).read()?;
         if amount.is_zero() {
