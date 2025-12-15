@@ -253,7 +253,7 @@ contract StablecoinExchange is IStablecoinExchange {
         });
 
         // Immediately link order into the active orderbook
-        _linkOrderToBook(orderId, key, tick, isBid, amount);
+        _commitOrderToBook(orderId, key, tick, isBid, amount);
 
         emit OrderPlaced(orderId, maker, base, amount, isBid, tick);
         return orderId;
@@ -265,7 +265,7 @@ contract StablecoinExchange is IStablecoinExchange {
     /// @param tick The tick level
     /// @param isBid Whether this is a bid order
     /// @param amount The order amount (for liquidity tracking)
-    function _linkOrderToBook(
+    function _commitOrderToBook(
         uint128 orderId,
         bytes32 bookKey,
         int16 tick,
