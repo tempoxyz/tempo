@@ -12,7 +12,7 @@ Users maintain internal balances per token on the exchange. Order placement escr
 
 Tempo aims to provide high‑quality execution for cross‑stablecoin payments while avoiding unnecessary chain load and minimizing mid‑block MEV surfaces.
 
-A simple, on‑chain, price‑time‑priority orderbook tailored to stable pairs encourages passive liquidity to rest on chain and allows takers to execute deterministically at the best available ticks. Deferring new order placement to the end of the block reduces backrunning and JIT strategies.
+A simple, on‑chain, price‑time‑priority orderbook tailored to stable pairs encourages passive liquidity to rest on chain and allows takers to execute deterministically at the best available ticks.
 
 Another design goal is to avoid fragmentation of liquidity across many different pairs. By enforcing that each stablecoin only trades against a single quote token, the system guarantees that there is only one path between any two tokens.
 
