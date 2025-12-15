@@ -166,6 +166,10 @@ impl StorageCtx {
     pub fn spec(&self) -> TempoHardfork {
         Self::with_storage(|s| s.spec())
     }
+
+    pub fn is_static(&self) -> bool {
+        Self::with_storage(|s| s.is_static())
+    }
 }
 
 impl<'evm> StorageCtx {
