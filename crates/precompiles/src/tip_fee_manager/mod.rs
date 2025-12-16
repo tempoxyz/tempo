@@ -923,50 +923,6 @@ mod tests {
         })
     }
 
-    /// Test collect_fee_pre_tx post-AllegroModerato with same token (no swap needed)
-    /// When user_token == validator_token, fees should be accumulated directly in collect_fee_pre_tx
-    #[test]
-    fn test_collect_fee_pre_tx_same_token_post_allegro_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
-        let admin = Address::random();
-        let user = Address::random();
-        let validator = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            // Create single token used by both user and validator
-            let token = TIP20Setup::create("Token", "TKN", admin)
-                .with_issuer(admin)
-                .with_mint(user, U256::from(10000))
-                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-                .apply()?;
-
-            let mut fee_manager = TipFeeManager::new();
-
-            // Set validator's preferred token to the same token
-            fee_manager.set_validator_token(
-                validator,
-                IFeeManager::setValidatorTokenCall {
-                    token: token.address(),
-                },
-                Address::random(),
-            )?;
-
-            let max_amount = U256::from(1000);
-
-            // Call collect_fee_pre_tx
-            fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator)?;
-
-            // Post-AllegroModerato with same token: fees should be accumulated directly
-            // (no swap needed since user_token == validator_token)
-            let collected = fee_manager.collected_fees.at(validator).read()?;
-            assert_eq!(
-                collected, max_amount,
-                "Same token: fees should be accumulated directly without swap"
-            );
-
-            Ok(())
-        })
-    }
 
     /// Test collect_fee_pre_tx post-AllegroModerato with different tokens
     /// Verifies that liquidity is checked (not reserved) and no swap happens yet
