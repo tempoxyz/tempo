@@ -135,6 +135,13 @@ Start a `localnet`:
 ```bash
 just localnet
 ```
+#### Testing notes
+
+Tempo uses automated tests to validate core logic and integrations.
+
+* Some tests may require additional system resources
+* Running the full test suite can take several minutes
+* Failures are often easier to diagnose by running smaller test groups
 
 ## Contributing
 
