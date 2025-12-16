@@ -175,6 +175,11 @@ where
         self.spec
     }
 
+    fn is_static(&self) -> bool {
+        // read-only operations should always be static
+        true
+    }
+
     fn sload(&mut self, address: Address, key: U256) -> TempoResult<U256> {
         self.state
             .sload(address, key)
