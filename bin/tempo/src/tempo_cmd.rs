@@ -28,6 +28,7 @@ struct ConsensusCommand {
 enum ConsensusSubcommand {
     /// Generates an ed25519 signing key pair to be used in consensus.
     GenerateSigningKey(GenerateSigningKey),
+    CalculatePublicKey(CalculatePublicKey),
 }
 
 #[derive(Debug, clap::Args)]
@@ -47,9 +48,31 @@ impl GenerateSigningKey {
             .write_to_file(&output)
             .wrap_err_with(|| format!("failed writing signing key to `{}`", output.display()))?;
         println!(
-            "wrote signing key to: {}\nvalidating/public key: {validating_key}",
+            "wrote signing key to: {}\npublic key: {validating_key}",
             output.display()
         );
+        Ok(())
+    }
+}
+
+#[derive(Debug, clap::Args)]
+struct CalculatePublicKey {
+    /// Signing key to calculate the public key from.
+    #[arg(long, short, value_name = "FILE")]
+    signing_key: PathBuf,
+}
+
+impl CalculatePublicKey {
+    fn run(self) -> eyre::Result<()> {
+        let Self { signing_key } = self;
+        let signing_key = SigningKey::read_from_file(&signing_key).wrap_err_with(|| {
+            format!(
+                "failed reading signing key from `{}`",
+                signing_key.display()
+            )
+        })?;
+        let validating_key = signing_key.public_key();
+        println!("public key: {validating_key}");
         Ok(())
     }
 }
@@ -59,6 +82,7 @@ pub(crate) fn try_run_tempo_subcommand() -> Option<eyre::Result<()>> {
         Ok(cli) => match cli.command {
             TempoCommand::Consensus(cmd) => match cmd.command {
                 ConsensusSubcommand::GenerateSigningKey(args) => Some(args.run()),
+                ConsensusSubcommand::CalculatePublicKey(args) => Some(args.run()),
             },
         },
         Err(e) => match e.kind() {
