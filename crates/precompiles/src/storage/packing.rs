@@ -133,8 +133,7 @@ pub fn insert_packed_value<T: Packable>(
 
     // Calculate shift and mask
     let shift_bits = offset * 8;
-
-    let mask =  create_element_mask(bytes);
+    let mask = create_element_mask(bytes);
 
     // Clear the bits for this field in the current slot value
     let clear_mask = !(mask << shift_bits);
@@ -161,7 +160,7 @@ pub fn zero_packed_value(current: U256, offset: usize, bytes: usize) -> Result<U
         )));
     }
 
-    let mask =  create_element_mask(bytes);
+    let mask = create_element_mask(bytes);
     let shifted_mask = mask << (offset * 8);
     Ok(current & !shifted_mask)
 }
@@ -181,19 +180,15 @@ pub const fn calc_element_offset(idx: usize, elem_bytes: usize) -> usize {
 /// Calculate the byte offset within a slot for an array element at index `idx` and which slot an array element at index `idx` starts in .
 #[inline]
 pub const fn calc_element_offset_and_slot(idx: usize, elem_bytes: usize) -> (usize, usize) {
-   let total =  idx * elem_bytes;
-   ((total / 32), (total % 32))
+    let total = idx * elem_bytes;
+    ((total / 32), (total % 32))
 }
 
 /// Calculate the element location within a slot for an array element at index `idx`.
 #[inline]
 pub const fn calc_element_loc(idx: usize, elem_bytes: usize) -> FieldLocation {
     let (slots, offset) = calc_element_offset_and_slot(idx, elem_bytes);
-    FieldLocation::new(
-        slots,
-        offset,
-        elem_bytes,
-    )
+    FieldLocation::new(slots, offset, elem_bytes)
 }
 
 /// Calculate the total number of slots needed for an array.

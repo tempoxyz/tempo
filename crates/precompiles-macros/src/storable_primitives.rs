@@ -588,7 +588,7 @@ pub(crate) fn gen_nested_arrays() -> TokenStream {
         let max_outer = 32 / inner_slots.max(1);
 
         for outer in 1..=max_outer.min(32) {
-            all_impls.extend(gen_arrays_for_type( 
+            all_impls.extend(gen_arrays_for_type(
                 quote! { [u8; #inner] },
                 inner_slots * 32, // BYTE_COUNT for [u8; inner]
                 &[outer],
