@@ -193,7 +193,7 @@ impl TipFeeManager {
 
         if user_token != validator_token {
             if self.storage.spec().is_allegro_moderato() {
-                // Post-AllegroModerato: ensure there is enough liqudity to swap `max_amount`
+                // Post-AllegroModerato: ensure there is enough liquidity to swap `max_amount`
                 self.check_sufficient_liquidity(user_token, validator_token, max_amount)?;
             } else {
                 // Pre-AllegroModerato: reserve liquidity for later swap in execute_block
