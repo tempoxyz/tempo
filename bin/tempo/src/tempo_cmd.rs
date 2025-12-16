@@ -27,29 +27,29 @@ struct ConsensusCommand {
 #[derive(Debug, Subcommand)]
 enum ConsensusSubcommand {
     /// Generates an ed25519 signing key pair to be used in consensus.
-    GenerateSigningKey(GenerateSigningKey),
+    GeneratePrivateKey(GeneratePrivateKey),
     /// Calculates the public key from an ed25519 signing key.
     CalculatePublicKey(CalculatePublicKey),
 }
 
 #[derive(Debug, clap::Args)]
-struct GenerateSigningKey {
+struct GeneratePrivateKey {
     /// Destination of the generated signing key.
     #[arg(long, short, value_name = "FILE")]
     output: PathBuf,
 }
 
-impl GenerateSigningKey {
+impl GeneratePrivateKey {
     fn run(self) -> eyre::Result<()> {
         let Self { output } = self;
         let signing_key = PrivateKey::from_rng(&mut rand::thread_rng());
-        let validating_key = signing_key.public_key();
+        let public_key = signing_key.public_key();
         let signing_key = SigningKey::from(signing_key);
         signing_key
             .write_to_file(&output)
-            .wrap_err_with(|| format!("failed writing signing key to `{}`", output.display()))?;
+            .wrap_err_with(|| format!("failed writing private key to `{}`", output.display()))?;
         println!(
-            "wrote signing key to: {}\npublic key: {validating_key}",
+            "wrote private key to: {}\npublic key: {public_key}",
             output.display()
         );
         Ok(())
@@ -58,21 +58,21 @@ impl GenerateSigningKey {
 
 #[derive(Debug, clap::Args)]
 struct CalculatePublicKey {
-    /// Signing key to calculate the public key from.
+    /// Private key to calculate the public key from.
     #[arg(long, short, value_name = "FILE")]
-    signing_key: PathBuf,
+    private_key: PathBuf,
 }
 
 impl CalculatePublicKey {
     fn run(self) -> eyre::Result<()> {
-        let Self { signing_key } = self;
-        let signing_key = SigningKey::read_from_file(&signing_key).wrap_err_with(|| {
+        let Self { private_key } = self;
+        let private_key = SigningKey::read_from_file(&private_key).wrap_err_with(|| {
             format!(
-                "failed reading signing key from `{}`",
-                signing_key.display()
+                "failed reading private key from `{}`",
+                private_key.display()
             )
         })?;
-        let validating_key = signing_key.public_key();
+        let validating_key = private_key.public_key();
         println!("public key: {validating_key}");
         Ok(())
     }
@@ -82,7 +82,7 @@ pub(crate) fn try_run_tempo_subcommand() -> Option<eyre::Result<()>> {
     match TempoCli::try_parse() {
         Ok(cli) => match cli.command {
             TempoCommand::Consensus(cmd) => match cmd.command {
-                ConsensusSubcommand::GenerateSigningKey(args) => Some(args.run()),
+                ConsensusSubcommand::GeneratePrivateKey(args) => Some(args.run()),
                 ConsensusSubcommand::CalculatePublicKey(args) => Some(args.run()),
             },
         },
