@@ -257,7 +257,74 @@ contract FeeManagerTest is BaseTest {
         }
     }
 
-    function test_defaultValidatorTokenIsPathUsd() public {
+    function test_distributeFees() public {
+        if (isTempo) return;
+
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(validatorToken));
+
+        vm.startPrank(user);
+        userToken.approve(address(amm), type(uint256).max);
+        vm.stopPrank();
+
+        uint256 maxAmount = 100e18;
+        uint256 actualUsed = 80e18;
+
+        vm.startPrank(address(0));
+        vm.coinbase(validator);
+
+        amm.collectFeePreTx(user, address(userToken), maxAmount);
+        amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
+        vm.stopPrank();
+
+        uint256 expectedFees = (actualUsed * 9970) / 10_000;
+        assertEq(amm.collectedFeesByValidator(validator), expectedFees);
+
+        uint256 validatorBalanceBefore = validatorToken.balanceOf(validator);
+
+        vm.expectEmit(true, true, true, true);
+        emit IFeeManager.FeesDistributed(validator, address(validatorToken), expectedFees);
+
+        amm.distributeFees(validator);
+
+        assertEq(validatorToken.balanceOf(validator), validatorBalanceBefore + expectedFees);
+        assertEq(amm.collectedFeesByValidator(validator), 0);
+    }
+
+    function test_distributeFees_ZeroBalance() public {
+        if (isTempo) return;
+
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(validatorToken));
+
+        uint256 validatorBalanceBefore = validatorToken.balanceOf(validator);
+
+        amm.distributeFees(validator);
+
+        assertEq(validatorToken.balanceOf(validator), validatorBalanceBefore);
+        assertEq(amm.collectedFeesByValidator(validator), 0);
+    }
+
+    function test_collectedFeesByValidator() public {
+        if (isTempo) return;
+
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(userToken));
+
+        assertEq(amm.collectedFeesByValidator(validator), 0);
+
+        uint256 maxAmount = 100e18;
+
+        vm.startPrank(address(0));
+        vm.coinbase(validator);
+        amm.collectFeePreTx(user, address(userToken), maxAmount);
+        amm.collectFeePostTx(user, maxAmount, maxAmount, address(userToken));
+        vm.stopPrank();
+
+        assertEq(amm.collectedFeesByValidator(validator), maxAmount);
+    }
+
+    function test_defaultValidatorTokenIsPathUSD() public {
         vm.startPrank(user);
         userToken.approve(address(amm), type(uint256).max);
         vm.stopPrank();
@@ -282,6 +349,116 @@ contract FeeManagerTest is BaseTest {
             bytes4 errorSelector = bytes4(err);
             assertTrue(errorSelector == 0xaa4bc69a);
         }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                            FUZZ TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function testFuzz_FeeSwap(uint256 actualUsed) public {
+        if (isTempo) return;
+
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(validatorToken));
+
+        bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
+        (uint128 reserveUBefore, uint128 reserveVBefore) = amm.pools(poolId);
+
+        actualUsed = bound(actualUsed, 1e15, 1000e18);
+
+        vm.startPrank(address(0));
+        vm.coinbase(validator);
+        amm.collectFeePreTx(user, address(userToken), actualUsed);
+        amm.collectFeePostTx(user, actualUsed, actualUsed, address(userToken));
+        vm.stopPrank();
+
+        uint256 amountOut = (actualUsed * 9970) / 10_000;
+
+        // Rate invariant
+        assertEq(amm.collectedFeesByValidator(validator), amountOut);
+
+        // Reserve conservation
+        (uint128 reserveUAfter, uint128 reserveVAfter) = amm.pools(poolId);
+        assertEq(uint256(reserveUAfter), uint256(reserveUBefore) + actualUsed);
+        assertEq(uint256(reserveVAfter), uint256(reserveVBefore) - amountOut);
+    }
+
+    function testFuzz_SameToken_NoSwap(uint256 actualUsed) public {
+        if (isTempo) return;
+
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(userToken));
+
+        bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
+        (uint128 reserveUBefore, uint128 reserveVBefore) = amm.pools(poolId);
+
+        actualUsed = bound(actualUsed, 1e15, 1000e18);
+
+        vm.startPrank(address(0));
+        vm.coinbase(validator);
+        amm.collectFeePreTx(user, address(userToken), actualUsed);
+        amm.collectFeePostTx(user, actualUsed, actualUsed, address(userToken));
+        vm.stopPrank();
+
+        (uint128 reserveUAfter, uint128 reserveVAfter) = amm.pools(poolId);
+
+        assertEq(reserveUAfter, reserveUBefore);
+        assertEq(reserveVAfter, reserveVBefore);
+
+        assertEq(amm.collectedFeesByValidator(validator), actualUsed);
+    }
+
+    function testFuzz_DistributeFees_ClearsBalance(uint256 actualUsed) public {
+        if (isTempo) return;
+
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(validatorToken));
+
+        actualUsed = bound(actualUsed, 1e15, 1000e18);
+
+        vm.startPrank(address(0));
+        vm.coinbase(validator);
+        amm.collectFeePreTx(user, address(userToken), actualUsed);
+        amm.collectFeePostTx(user, actualUsed, actualUsed, address(userToken));
+        vm.stopPrank();
+
+        uint256 collectedBefore = amm.collectedFeesByValidator(validator);
+        assertGt(collectedBefore, 0);
+
+        uint256 validatorBalanceBefore = validatorToken.balanceOf(validator);
+
+        amm.distributeFees(validator);
+
+        assertEq(amm.collectedFeesByValidator(validator), 0);
+
+        assertEq(validatorToken.balanceOf(validator), validatorBalanceBefore + collectedBefore);
+    }
+
+    function testFuzz_Refund_Calculation(uint256 maxAmount, uint256 actualUsed) public {
+        if (isTempo) return;
+
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(validatorToken));
+
+        maxAmount = bound(maxAmount, 1e15, 1000e18);
+        actualUsed = bound(actualUsed, 0, maxAmount);
+
+        uint256 userBalanceBefore = userToken.balanceOf(user);
+
+        vm.startPrank(address(0));
+        vm.coinbase(validator);
+        amm.collectFeePreTx(user, address(userToken), maxAmount);
+
+        uint256 userBalanceAfterPre = userToken.balanceOf(user);
+        assertEq(userBalanceAfterPre, userBalanceBefore - maxAmount);
+
+        amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
+        vm.stopPrank();
+
+        uint256 userBalanceAfterPost = userToken.balanceOf(user);
+        uint256 refund = maxAmount - actualUsed;
+
+        assertEq(userBalanceAfterPost, userBalanceAfterPre + refund);
     }
 
 }
