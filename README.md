@@ -136,6 +136,11 @@ Start a `localnet`:
 just localnet
 ```
 
+#### Project structure
+
+The repository is organized into multiple crates and components, each responsible for a specific part of the Tempo system.
+
+Developers are encouraged to explore individual directories to understand ownership boundaries and responsibilities before making changes.
 ## Contributing
 
 Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.com/tempoxyz/tempo?tab=contributing-ov-file).
