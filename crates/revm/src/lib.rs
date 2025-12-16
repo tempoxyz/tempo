@@ -9,7 +9,11 @@ mod block;
 use tracing as _;
 
 mod common;
-pub use common::{TempoStateAccess, TempoTx};
+pub use common::{
+    DatabaseMarker, JournalMarker, ReadOnlyStorageProvider, TempoStateAccess, TempoTx,
+};
+#[cfg(feature = "reth")]
+pub use common::StateProviderMarker;
 pub mod error;
 pub mod evm;
 pub mod exec;

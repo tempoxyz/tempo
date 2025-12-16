@@ -20,7 +20,7 @@ use reth_transaction_pool::PoolPooledTx;
 use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
-use tempo_evm::TempoStateAccess;
+use tempo_evm::ReadOnlyStorageProvider;
 use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
 pub use token::{TempoToken, TempoTokenApiServer};
 
@@ -258,12 +258,14 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
         let fee_payer = tx_env
             .fee_payer()
             .map_err(EVMError::<ProviderError, _>::from)?;
-        let fee_token = db
-            .get_fee_token(tx_env, Address::ZERO, fee_payer, TempoHardfork::default())
-            .map_err(Into::into)?;
-        let fee_token_balance = db
+
+        let mut provider = ReadOnlyStorageProvider::from_db(&mut db, TempoHardfork::default());
+        let fee_token = provider
+            .get_fee_token(tx_env, Address::ZERO, fee_payer)
+            .map_err(ProviderError::other)?;
+        let fee_token_balance = provider
             .get_token_balance(fee_token, fee_payer)
-            .map_err(Into::into)?;
+            .map_err(ProviderError::other)?;
 
         Ok(fee_token_balance
             // multiply by the scaling factor

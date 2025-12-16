@@ -46,8 +46,7 @@ use tempo_primitives::transaction::{
 };
 
 use crate::{
-    TempoEvm, TempoInvalidTransaction,
-    common::TempoStateAccess,
+    ReadOnlyStorageProvider, TempoEvm, TempoInvalidTransaction,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
 };
@@ -123,20 +122,21 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
         let ctx = evm.ctx_mut();
+        let spec = ctx.cfg.spec;
+        let beneficiary = ctx.block.beneficiary;
 
         self.fee_payer = ctx.tx.fee_payer()?;
-        self.fee_token = ctx.journaled_state.get_fee_token(
-            &ctx.tx,
-            ctx.block.beneficiary,
-            self.fee_payer,
-            ctx.cfg.spec,
-        )?;
+
+        let mut provider = ReadOnlyStorageProvider::from_journal(&mut ctx.journaled_state, spec);
+        self.fee_token = provider
+            .get_fee_token(&ctx.tx, beneficiary, self.fee_payer)
+            .map_err(|e| FeePaymentError::Other(e.to_string()))?;
 
         // Skip fee token validity check for cases when the transaction is free and is not a part of a subblock.
         if (!ctx.tx.max_balance_spending()?.is_zero() || ctx.tx.is_subblock_transaction())
-            && !ctx
-                .journaled_state
-                .is_valid_fee_token(self.fee_token, ctx.cfg.spec)?
+            && !provider
+                .is_valid_fee_token(self.fee_token)
+                .map_err(|e| FeePaymentError::Other(e.to_string()))?
         {
             return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
         }
@@ -1335,7 +1335,6 @@ mod tests {
         primitives::hardfork::SpecId,
         state::Account,
     };
-    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS};
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
@@ -1392,13 +1391,12 @@ mod tests {
             )
             .unwrap();
 
-        let fee_token = ctx.journaled_state.get_fee_token(
-            &ctx.tx,
-            validator,
-            user,
-            TempoHardfork::default(),
-        )?;
-        assert_eq!(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, fee_token);
+        {
+            let mut provider =
+                ReadOnlyStorageProvider::from_journal(&mut ctx.journaled_state, ctx.cfg.spec);
+            let fee_token = provider.get_fee_token(&ctx.tx, validator, user)?;
+            assert_eq!(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, fee_token);
+        }
 
         // Set user token
         let user_slot = TipFeeManager::new().user_tokens.at(user).slot();
@@ -1410,22 +1408,18 @@ mod tests {
             )
             .unwrap();
 
-        let fee_token = ctx.journaled_state.get_fee_token(
-            &ctx.tx,
-            validator,
-            user,
-            TempoHardfork::default(),
-        )?;
-        assert_eq!(user_fee_token, fee_token);
+        {
+            let mut provider =
+                ReadOnlyStorageProvider::from_journal(&mut ctx.journaled_state, ctx.cfg.spec);
+            let fee_token = provider.get_fee_token(&ctx.tx, validator, user)?;
+            assert_eq!(user_fee_token, fee_token);
+        }
 
         // Set tx fee token
         ctx.tx.fee_token = Some(tx_fee_token);
-        let fee_token = ctx.journaled_state.get_fee_token(
-            &ctx.tx,
-            validator,
-            user,
-            TempoHardfork::default(),
-        )?;
+        let mut provider =
+            ReadOnlyStorageProvider::from_journal(&mut ctx.journaled_state, ctx.cfg.spec);
+        let fee_token = provider.get_fee_token(&ctx.tx, validator, user)?;
         assert_eq!(tx_fee_token, fee_token);
 
         Ok(())
