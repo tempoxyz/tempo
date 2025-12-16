@@ -72,7 +72,7 @@ impl<
                 .as_ref()
                 .is_none_or(|f| f.is_bid.unwrap_or(false));
 
-            let cursor = params
+            let mut cursor = params
                 .cursor
                 .map(|cursor| parse_order_cursor(&cursor))
                 .transpose()?;
@@ -94,8 +94,16 @@ impl<
                     continue;
                 }
 
+                // If the cursor exists and the starting order is not in the book, skip this book
+                if let Some(cursor) = cursor
+                    && exchange.get_order(cursor).is_err()
+                {
+                    continue;
+                }
+
                 let starting_order = if all_orders.is_empty() {
-                    cursor // Use cursor only for the first book
+                    // If the cursor is in this book then use it
+                    cursor.take()
                 } else {
                     None
                 };
