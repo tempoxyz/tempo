@@ -1,0 +1,94 @@
+import { Callout } from 'vocs/components'
+
+# Running a validator node
+
+Validator nodes are responsible for securing the network by validating blocks and the transactions within them. Tempo uses [Threshold Simplex](https://docs.rs/commonware-consensus/0.0.61/commonware_consensus/threshold_simplex/index.html) to achieve consensus between validators.
+
+## Cryptographic key hierarchy
+
+All validators have two kinds of keys:
+* validator wallet - the recipient of transaction fees in your validators' proposed blocks
+* signing key - this is an ED25519 keypair used to identify your validator amongst others
+* signing share - this is a share of a BLS12-381 keypair used to sign block notarizations and finalizations
+
+The signing key is static and can only be rotated by removing and re-creating a validator on-chain. The signing share is dynamic and is updated periodically on each DKG ceremony. Currently, the DKG ceremony is scheduled to run on-chain every ~48 hours.
+
+## Generating a signing key
+
+You can generate an ED25519 keypair using the following command:
+
+```bash
+tempo consensus generate-private-key --output <path>
+```
+
+Once the private key is generated, you can calculate/verify the public key by running:
+
+```bash
+tempo consensus calculate-public-key --private-key <path>
+```
+
+The public key should match the output of the `generate-private-key` command.
+
+## Running the validator
+
+<Callout type="info">
+The management of the active validator set is currently permissioned by the Tempo team. If you are interested in becoming a validator, please [get in touch](mailto:partners@tempo.xyz) with the Tempo team.
+</Callout>
+
+The process for running a validator node is very similar to [running a full node](/guide/node/rpc). 
+
+You should start by downloading the latest snapshot using `tempo download` and then running the validator node as such:
+
+```bash
+tempo node --datadir <datadir> \
+    --port 30303 \
+    --discovery.addr 0.0.0.0 \
+    --discovery.port 30303 \
+    --consensus.signing-key <path> \
+    --consensus.fee-recipient <validator_wallet_address> \
+```
+
+The notable difference between RPC nodes and validator nodes is the emission of the `--follow` argument and the addition of the `--consensus.signing-key` and `--consensus.fee-recipient` arguments.
+
+Once your node is up, it may not start syncing immediately. This is because your node might not be part of the active set. In most cases, your validator will enter the active set in 48-72 hours after the on-chain addition of the validator identity.
+
+## FAQ
+
+### What happens if we lose our validator's signing share?
+
+Your validator won't be able to propose / sign blocks until it receives a new signing share (~48-72 hours, depending on the stage in the current epoch).
+
+### What happens if we run a validator with the same identity on two different instances?
+
+Only the whitelisted IP address will be able to connect to other validators, meaning that the validator on the second instance will be ignored.
+
+### What happens if we lose our node's data, e.g. the consensus database?
+
+You will be able to resync from the latest known block height, as long as you have the execution database (e.g. by downloading a snapshots by running `tempo download`).
+
+## Troubleshooting
+
+### Checking if your node is proposing blocks
+
+Once your node is proposing blocks, it will start emitting logs like these:
+
+```
+INFO handle_propose{epoch=18 view=387213 parent.view=387212 parent.digest=0x43885416b4a7ae7550c615ad4dc702045cd26540b78fa2bd75abdcbfbef02d9d}: tempo_commonware_node::consensus::application::actor: constructed proposal proposal.digest=0x6baa8fa813beea491cf598024d8b31cb2927e7ba1b92a29899a795dbafd682c6 proposal.height=5733680
+```
+
+If you do not see logs like these, please check that your node is synced up to the [latest block height](https://explorer.tempo.xyz/). Additionally, please check that your outgoing IP address matches the one whitelisted on the validator smart contract:
+
+```bash
+cast call 0xCccCcCCC00000000000000000000000000000000 "getValidators()((bytes32, bool, uint64, address, string, string)[])" --json 
+```
+
+### Checking that your node has successfully participated in a DKG ceremony
+
+A successful DKG ceremony is necessary for your validator to receive a signing share. You can check that you've participated in a successful DKG ceremony by looking at 
+
+```
+curl localhost:8002/metrics | grep consensus_engine_dkg_manager_ceremony_successes_total
+consensus_engine_dkg_manager_ceremony_successes_total 1
+```
+
+The `consensus_engine_dkg_manager_ceremony_successes_total` metric should be greater than 0.
