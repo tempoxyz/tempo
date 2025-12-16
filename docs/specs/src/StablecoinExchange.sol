@@ -2,12 +2,15 @@
 pragma solidity ^0.8.13;
 
 import { TIP20Factory } from "./TIP20Factory.sol";
+import { TIP403Registry } from "./TIP403Registry.sol";
 import { IStablecoinExchange } from "./interfaces/IStablecoinExchange.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
 
 contract StablecoinExchange is IStablecoinExchange {
 
     address internal constant FACTORY = 0x20Fc000000000000000000000000000000000000;
+    TIP403Registry internal constant TIP403_REGISTRY =
+        TIP403Registry(0x403c000000000000000000000000000000000000);
 
     /// @notice Minimum allowed tick
     int16 public constant MIN_TICK = -2000;
@@ -218,6 +221,15 @@ contract StablecoinExchange is IStablecoinExchange {
                 // For asks, escrow base tokens
                 escrowToken = base;
                 escrowAmount = amount;
+            }
+
+            // Check if maker is authorized by the token's transfer policy before operating on internal balance
+            uint64 policyId = ITIP20(escrowToken).transferPolicyId();
+            if (
+                !TIP403_REGISTRY.isAuthorized(policyId, maker)
+                    || !TIP403_REGISTRY.isAuthorized(policyId, address(this))
+            ) {
+                revert ITIP20.PolicyForbids();
             }
 
             // Check if the user has a balance, transfer the rest
@@ -566,6 +578,15 @@ contract StablecoinExchange is IStablecoinExchange {
     /// @param token The token to transfer
     /// @param amount The amount to transfer
     function _decrementBalanceOrTransferFrom(address user, address token, uint128 amount) internal {
+        // Check if user is authorized by the token's transfer policy before using internal balance
+        uint64 policyId = ITIP20(token).transferPolicyId();
+        if (
+            !TIP403_REGISTRY.isAuthorized(policyId, user)
+                || !TIP403_REGISTRY.isAuthorized(policyId, address(this))
+        ) {
+            revert ITIP20.PolicyForbids();
+        }
+
         uint128 userBalance = balances[user][token];
         if (userBalance >= amount) {
             balances[user][token] -= amount;
