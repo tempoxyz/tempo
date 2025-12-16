@@ -238,9 +238,7 @@ impl TipFeeManager {
             if !actual_spending.is_zero() {
                 if self.storage.spec().is_allegro_moderato() {
                     // Execute fee swap immediately and accumulate fees
-                    let amount_out =
-                        self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
-                    self.increment_collected_fees(beneficiary, amount_out)?;
+                    self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
                 } else if !self.storage.spec().is_allegretto() {
                     // Pre-Allegretto: track in buggy token_in_fees_array
                     if !self.token_in_fees_array.at(fee_token).read()? {
@@ -253,14 +251,14 @@ impl TipFeeManager {
             }
         }
 
-        if self.storage.spec().is_allegro_moderato() || !self.storage.spec().is_allegretto() {
+        if !self.storage.spec().is_allegretto() {
             // Pre-Allegretto: increment collected fees if no AMM swap
             // Post-AllegroModerato: pending fees are removed, increment collected fees withou
             if fee_token == validator_token {
                 self.increment_collected_fees(beneficiary, actual_spending)?;
             }
         } else {
-            // Allegretto: calculate the actual fee amount and save it in per-validator collected fees
+            // Post allegreto: calculate the actual fee amount and save it in per-validator collected fees
             let amount = if fee_token == validator_token {
                 actual_spending
             } else {
