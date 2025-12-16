@@ -1,5 +1,5 @@
 pub use ITIP20Factory::ITIP20FactoryEvents as TIP20FactoryEvent;
-use alloy::sol;
+use alloy_sol_types::sol;
 
 sol! {
   #[derive(Debug, PartialEq, Eq)]

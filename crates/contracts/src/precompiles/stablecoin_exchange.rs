@@ -3,7 +3,7 @@ pub use IStablecoinExchange::{
     IStablecoinExchangeEvents as StablecoinExchangeEvents,
 };
 
-use alloy::sol;
+use alloy_sol_types::sol;
 
 sol! {
     /// StablecoinExchange interface for managing orderbook based trading of stablecoins.

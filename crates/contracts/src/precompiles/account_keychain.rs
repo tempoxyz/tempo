@@ -2,7 +2,7 @@ pub use IAccountKeychain::{
     IAccountKeychainErrors as AccountKeychainError, IAccountKeychainEvents as AccountKeychainEvent,
 };
 
-use alloy::sol;
+use alloy_sol_types::sol;
 
 sol! {
     /// Account Keychain interface for managing authorized keys

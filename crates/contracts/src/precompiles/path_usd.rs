@@ -1,4 +1,4 @@
-use alloy::sol;
+use alloy_sol_types::sol;
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]

@@ -1,4 +1,4 @@
-use alloy::sol;
+use alloy_sol_types::sol;
 
 pub use ITIP403Registry::{
     ITIP403RegistryErrors as TIP403RegistryError, ITIP403RegistryEvents as TIP403RegistryEvent,

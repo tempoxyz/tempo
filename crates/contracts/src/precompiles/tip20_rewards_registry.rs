@@ -1,5 +1,5 @@
 pub use ITIP20RewardsRegistry::ITIP20RewardsRegistryErrors as TIP20RewardsRegistryError;
-use alloy::sol;
+use alloy_sol_types::sol;
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]

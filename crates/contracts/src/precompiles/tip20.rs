@@ -1,13 +1,11 @@
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
-use alloy::{
-    primitives::{Address, U256},
-    sol,
-};
+use alloy_primitives::{Address, U256};
+use alloy_sol_types::sol;
 
 sol! {
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi, rpc)]
     interface IRolesAuth {
         function hasRole(address account, bytes32 role) external view returns (bool);
         function getRoleAdmin(bytes32 role) external view returns (bytes32);
@@ -33,7 +31,7 @@ sol! {
     /// The interface supports both standard token operations and administrative functions
     /// for managing token behavior and compliance requirements.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi, rpc)]
     #[allow(clippy::too_many_arguments)]
     interface ITIP20 {
         // Standard token functions

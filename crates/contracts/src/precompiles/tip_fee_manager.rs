@@ -1,7 +1,7 @@
 pub use IFeeManager::{IFeeManagerErrors as FeeManagerError, IFeeManagerEvents as FeeManagerEvent};
 pub use ITIPFeeAMM::{ITIPFeeAMMErrors as TIPFeeAMMError, ITIPFeeAMMEvents as TIPFeeAMMEvent};
 
-use alloy::sol;
+use alloy_sol_types::sol;
 
 sol! {
     /// FeeManager interface for managing gas fee collection and distribution.

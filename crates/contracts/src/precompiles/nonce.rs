@@ -1,6 +1,6 @@
 pub use INonce::{INonceErrors as NonceError, INonceEvents as NonceEvent};
 
-use alloy::sol;
+use alloy_sol_types::sol;
 
 sol! {
     /// Nonce interface for managing 2D nonces as per the Account Abstraction spec.
