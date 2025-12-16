@@ -262,7 +262,8 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         use rayon::prelude::*;
         let block = payload.block.clone();
         let transactions = (0..payload.block.body().transactions.len())
-            .into_par_iter().map(move |i| (block.clone(), i));
+            .into_par_iter()
+            .map(move |i| (block.clone(), i));
 
         Ok((transactions, RecoveredInBlock::new))
     }
