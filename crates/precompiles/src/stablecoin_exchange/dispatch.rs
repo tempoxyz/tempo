@@ -767,7 +767,8 @@ mod tests {
             );
 
             // In pre-AllegroModerato, nextOrderId should be unsupported
-            let expected_unsupported: Vec<&str> = unsupported.iter().map(|(_, name)| *name).collect();
+            let expected_unsupported: Vec<&str> =
+                unsupported.iter().map(|(_, name)| *name).collect();
             assert_eq!(expected_unsupported, vec!["nextOrderId"]);
 
             Ok(())
@@ -788,9 +789,13 @@ mod tests {
             );
 
             // In post-AllegroModerato, activeOrderId and pendingOrderId should be unsupported
-            let mut expected_unsupported: Vec<&str> = unsupported.iter().map(|(_, name)| *name).collect();
+            let mut expected_unsupported: Vec<&str> =
+                unsupported.iter().map(|(_, name)| *name).collect();
             expected_unsupported.sort();
-            assert_eq!(expected_unsupported, vec!["activeOrderId", "pendingOrderId"]);
+            assert_eq!(
+                expected_unsupported,
+                vec!["activeOrderId", "pendingOrderId"]
+            );
 
             Ok(())
         })
