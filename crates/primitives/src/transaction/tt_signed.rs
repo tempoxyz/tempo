@@ -14,10 +14,14 @@ use alloy_rlp::{BufMut, Decodable, Encodable};
 use core::{
     fmt::Debug,
     hash::{Hash, Hasher},
-    mem,
 };
-use reth_primitives_traits::InMemorySize;
 use std::sync::OnceLock;
+
+#[cfg(feature = "reth-compat")]
+use core::mem;
+
+#[cfg(feature = "reth-compat")]
+use reth_primitives_traits::InMemorySize;
 
 /// A transaction with an AA signature and hash seal.
 ///
@@ -304,6 +308,7 @@ impl PartialEq for AASigned {
 
 impl Eq for AASigned {}
 
+#[cfg(feature = "reth-compat")]
 impl InMemorySize for AASigned {
     fn size(&self) -> usize {
         mem::size_of::<Self>()

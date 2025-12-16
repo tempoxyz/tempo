@@ -9,6 +9,8 @@ use alloy_consensus::{
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, hex};
 use core::fmt;
+
+#[cfg(feature = "reth-compat")]
 use reth_primitives_traits::InMemorySize;
 
 /// TIP20 payment address prefix (14 bytes for payment classification)
@@ -284,15 +286,16 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
     }
 }
 
-impl reth_primitives_traits::InMemorySize for TempoTxEnvelope {
+#[cfg(feature = "reth-compat")]
+impl InMemorySize for TempoTxEnvelope {
     fn size(&self) -> usize {
         match self {
-            Self::Legacy(tx) => reth_primitives_traits::InMemorySize::size(tx),
-            Self::Eip2930(tx) => reth_primitives_traits::InMemorySize::size(tx),
-            Self::Eip1559(tx) => reth_primitives_traits::InMemorySize::size(tx),
-            Self::Eip7702(tx) => reth_primitives_traits::InMemorySize::size(tx),
-            Self::AA(tx) => reth_primitives_traits::InMemorySize::size(tx),
-            Self::FeeToken(tx) => reth_primitives_traits::InMemorySize::size(tx),
+            Self::Legacy(tx) => InMemorySize::size(tx),
+            Self::Eip2930(tx) => InMemorySize::size(tx),
+            Self::Eip1559(tx) => InMemorySize::size(tx),
+            Self::Eip7702(tx) => InMemorySize::size(tx),
+            Self::AA(tx) => InMemorySize::size(tx),
+            Self::FeeToken(tx) => InMemorySize::size(tx),
         }
     }
 }
@@ -310,8 +313,10 @@ impl alloy_consensus::transaction::TxHashRef for TempoTxEnvelope {
     }
 }
 
+#[cfg(feature = "reth-compat")]
 impl reth_primitives_traits::SignedTransaction for TempoTxEnvelope {}
 
+#[cfg(feature = "reth-compat")]
 impl InMemorySize for TempoTxType {
     fn size(&self) -> usize {
         core::mem::size_of::<Self>()
@@ -479,7 +484,7 @@ impl reth_rpc_convert::TryIntoSimTx<TempoTxEnvelope> for alloy_rpc_types_eth::Tr
     }
 }
 
-#[cfg(feature = "serde-bincode-compat")]
+#[cfg(all(feature = "serde-bincode-compat", feature = "reth-compat"))]
 impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoTxEnvelope {}
 
 #[cfg(feature = "reth-codec")]

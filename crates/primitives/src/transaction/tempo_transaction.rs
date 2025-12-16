@@ -2,16 +2,22 @@ use alloy_consensus::{SignableTransaction, Transaction, crypto::RecoveryError};
 use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
 use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256, keccak256};
 use alloy_rlp::{Buf, BufMut, Decodable, EMPTY_STRING_CODE, Encodable};
+
+#[cfg(feature = "reth-compat")]
 use core::mem;
+
+#[cfg(feature = "reth-compat")]
 use reth_primitives_traits::InMemorySize;
 
-use crate::{
-    subblock::{PartialValidatorKey, has_sub_block_nonce_key_prefix},
-    transaction::{
-        AASigned, KeyAuthorization, TempoSignature, TempoSignedAuthorization,
-        key_authorization::SignedKeyAuthorization,
-    },
+use crate::transaction::{
+    AASigned, TempoSignature, TempoSignedAuthorization, key_authorization::SignedKeyAuthorization,
 };
+
+#[cfg(feature = "reth-compat")]
+use crate::transaction::KeyAuthorization;
+
+#[cfg(feature = "reth-compat")]
+use crate::subblock::{PartialValidatorKey, has_sub_block_nonce_key_prefix};
 
 /// Tempo transaction type byte (0x76)
 pub const TEMPO_TX_TYPE_ID: u8 = 0x76;
@@ -261,6 +267,7 @@ impl TempoTransaction {
 
     /// Calculates a heuristic for the in-memory size of the transaction
     #[inline]
+    #[cfg(feature = "reth-compat")]
     pub fn size(&self) -> usize {
         mem::size_of::<ChainId>() + // chain_id
         mem::size_of::<Option<Address>>() + // fee_token
@@ -560,11 +567,13 @@ impl TempoTransaction {
     }
 
     /// Returns true if the nonce key of this transaction has the [`TEMPO_SUBBLOCK_NONCE_KEY_PREFIX`](crate::subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX).
+    #[cfg(feature = "reth-compat")]
     pub fn has_sub_block_nonce_key_prefix(&self) -> bool {
         has_sub_block_nonce_key_prefix(&self.nonce_key)
     }
 
     /// Returns the proposer of the subblock if this is a subblock transaction.
+    #[cfg(feature = "reth-compat")]
     pub fn subblock_proposer(&self) -> Option<PartialValidatorKey> {
         if self.has_sub_block_nonce_key_prefix() {
             Some(PartialValidatorKey::from_slice(
@@ -755,6 +764,7 @@ impl Decodable for TempoTransaction {
     }
 }
 
+#[cfg(feature = "reth-compat")]
 impl reth_primitives_traits::InMemorySize for TempoTransaction {
     fn size(&self) -> usize {
         Self::size(self)

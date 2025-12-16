@@ -4,40 +4,55 @@
 #![cfg_attr(docsrs, feature(doc_cfg), allow(unexpected_cfgs))]
 
 pub use alloy_consensus::Header;
-use alloy_primitives::Log;
-use reth_ethereum_primitives::EthereumReceipt;
-use reth_primitives_traits::NodePrimitives;
 
 pub mod transaction;
 pub use transaction::{
     AASigned, FEE_TOKEN_TX_TYPE_ID, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH,
     SECP256K1_SIGNATURE_LENGTH, SignatureType, TEMPO_GAS_PRICE_SCALING_FACTOR, TEMPO_TX_TYPE_ID,
-    TempoSignature, TempoTransaction, TempoTxEnvelope, TempoTxType, TxFeeToken,
-    derive_p256_address,
+    TempoSignature, TempoTransaction, TxFeeToken, derive_p256_address,
 };
 
+#[cfg(feature = "reth-compat")]
+pub use transaction::{TempoTxEnvelope, TempoTxType};
+
+#[cfg(feature = "reth-compat")]
 mod header;
+#[cfg(feature = "reth-compat")]
 pub use header::TempoHeader;
 
+#[cfg(feature = "reth-compat")]
 pub mod subblock;
+#[cfg(feature = "reth-compat")]
 pub use subblock::{
     RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockMetadata, SubBlockVersion,
 };
 
+#[cfg(feature = "reth-compat")]
+use alloy_primitives::Log;
+#[cfg(feature = "reth-compat")]
+use reth_ethereum_primitives::EthereumReceipt;
+#[cfg(feature = "reth-compat")]
+use reth_primitives_traits::NodePrimitives;
+
 /// Tempo block.
+#[cfg(feature = "reth-compat")]
 pub type Block = alloy_consensus::Block<TempoTxEnvelope, TempoHeader>;
 
 /// Tempo block body.
+#[cfg(feature = "reth-compat")]
 pub type BlockBody = alloy_consensus::BlockBody<TempoTxEnvelope, TempoHeader>;
 
 /// Tempo receipt.
+#[cfg(feature = "reth-compat")]
 pub type TempoReceipt<L = Log> = EthereumReceipt<TempoTxType, L>;
 
 /// A [`NodePrimitives`] implementation for Tempo.
+#[cfg(feature = "reth-compat")]
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct TempoPrimitives;
 
+#[cfg(feature = "reth-compat")]
 impl NodePrimitives for TempoPrimitives {
     type Block = Block;
     type BlockHeader = TempoHeader;

@@ -6,7 +6,12 @@ use alloy_consensus::{
 use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
 use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256, keccak256};
 use alloy_rlp::{Buf, BufMut, Decodable, EMPTY_STRING_CODE, Encodable};
+
+#[cfg(feature = "reth-compat")]
 use core::mem;
+
+#[cfg(feature = "reth-compat")]
+use reth_primitives_traits::InMemorySize;
 
 /// Fee token transaction type byte (0x77)
 pub const FEE_TOKEN_TX_TYPE_ID: u8 = 0x77;
@@ -111,6 +116,7 @@ impl TxFeeToken {
 
     /// Calculates a heuristic for the in-memory size of the transaction
     #[inline]
+    #[cfg(feature = "reth-compat")]
     pub fn size(&self) -> usize {
         mem::size_of::<ChainId>() + // chain_id
         mem::size_of::<u64>() + // nonce
@@ -457,7 +463,8 @@ impl Decodable for TxFeeToken {
     }
 }
 
-impl reth_primitives_traits::InMemorySize for TxFeeToken {
+#[cfg(feature = "reth-compat")]
+impl InMemorySize for TxFeeToken {
     fn size(&self) -> usize {
         Self::size(self)
     }

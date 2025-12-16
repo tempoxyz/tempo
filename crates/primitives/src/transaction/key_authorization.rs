@@ -3,7 +3,11 @@ use crate::transaction::PrimitiveSignature;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::Encodable;
+
+#[cfg(feature = "reth-compat")]
 use core::mem;
+
+#[cfg(feature = "reth-compat")]
 use reth_primitives_traits::InMemorySize;
 
 /// Token spending limit for access keys
@@ -87,6 +91,7 @@ impl KeyAuthorization {
     }
 }
 
+#[cfg(feature = "reth-compat")]
 impl InMemorySize for KeyAuthorization {
     fn size(&self) -> usize {
         mem::size_of::<u64>() + // chain_id
@@ -153,6 +158,7 @@ impl reth_codecs::Compact for SignedKeyAuthorization {
     }
 }
 
+#[cfg(feature = "reth-compat")]
 impl reth_primitives_traits::InMemorySize for SignedKeyAuthorization {
     fn size(&self) -> usize {
         self.authorization.size() + self.signature.size()
