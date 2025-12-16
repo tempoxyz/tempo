@@ -298,7 +298,23 @@ impl IntoTxEnv<Self> for TempoTxEnv {
 
 impl FromRecoveredTx<EthereumTxEnvelope<TxEip4844>> for TempoTxEnv {
     fn from_recovered_tx(tx: &EthereumTxEnvelope<TxEip4844>, sender: Address) -> Self {
-        TxEnv::from_recovered_tx(tx, sender).into()
+        let tx_env = TxEnv::from_recovered_tx(tx, sender);
+        let (tip20_from_balances, tip20_to_balances) =
+            extract_tip20_balance_slots_single(&tx_env.kind, &tx_env.data, sender);
+        let storage_slots = Some(StorageSlots {
+            nonce_key: None,
+            fee_token_balance: None,
+            tip20_from_balances,
+            tip20_to_balances,
+        });
+        Self {
+            inner: tx_env,
+            fee_token: None,
+            is_system_tx: false,
+            fee_payer: None,
+            tempo_tx_env: None,
+            storage_slots,
+        }
     }
 }
 
@@ -318,6 +334,30 @@ impl FromRecoveredTx<TxFeeToken> for TempoTxEnv {
             fee_token,
             fee_payer_signature,
         } = tx;
+
+        // Compute storage slots
+        let storage_slots = {
+            // Compute fee token balance slot if present
+            let fee_token_balance_slot = fee_token.map(|fee_token_address| {
+                TIP20Token::from_address(fee_token_address)
+                    .unwrap()
+                    .balances
+                    .at(caller)
+                    .slot()
+            });
+
+            // Check if this is also a TIP-20 transfer
+            let (tip20_from_balances, tip20_to_balances) =
+                extract_tip20_balance_slots_single(to, input, caller);
+
+            Some(StorageSlots {
+                nonce_key: None,
+                fee_token_balance: fee_token_balance_slot,
+                tip20_from_balances,
+                tip20_to_balances,
+            })
+        };
+
         Self {
             inner: TxEnv {
                 tx_type: tx.ty(),
@@ -355,7 +395,7 @@ impl FromRecoveredTx<TxFeeToken> for TempoTxEnv {
                     .ok()
             }),
             tempo_tx_env: None, // Non-AA transaction
-            storage_slots: None,
+            storage_slots,
         }
     }
 }
@@ -479,17 +519,86 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
 impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
     fn from_recovered_tx(tx: &TempoTxEnvelope, sender: Address) -> Self {
         match tx {
-            tx @ TempoTxEnvelope::Legacy(inner) => Self {
-                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
-                fee_token: None,
-                is_system_tx: tx.is_system_tx(),
-                fee_payer: None,
-                tempo_tx_env: None, // Non-AA transaction
-                storage_slots: None,
-            },
-            TempoTxEnvelope::Eip2930(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
-            TempoTxEnvelope::Eip1559(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
-            TempoTxEnvelope::Eip7702(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
+            tx @ TempoTxEnvelope::Legacy(inner) => {
+                let inner_tx = inner.tx();
+                let tx_env = TxEnv::from_recovered_tx(inner_tx, sender);
+                let (tip20_from_balances, tip20_to_balances) =
+                    extract_tip20_balance_slots_single(&tx_env.kind, &tx_env.data, sender);
+                let storage_slots = Some(StorageSlots {
+                    nonce_key: None,
+                    fee_token_balance: None,
+                    tip20_from_balances,
+                    tip20_to_balances,
+                });
+                Self {
+                    inner: tx_env,
+                    fee_token: None,
+                    is_system_tx: tx.is_system_tx(),
+                    fee_payer: None,
+                    tempo_tx_env: None,
+                    storage_slots,
+                }
+            }
+            TempoTxEnvelope::Eip2930(tx) => {
+                let inner_tx = tx.tx();
+                let tx_env = TxEnv::from_recovered_tx(inner_tx, sender);
+                let (tip20_from_balances, tip20_to_balances) =
+                    extract_tip20_balance_slots_single(&tx_env.kind, &tx_env.data, sender);
+                let storage_slots = Some(StorageSlots {
+                    nonce_key: None,
+                    fee_token_balance: None,
+                    tip20_from_balances,
+                    tip20_to_balances,
+                });
+                Self {
+                    inner: tx_env,
+                    fee_token: None,
+                    is_system_tx: false,
+                    fee_payer: None,
+                    tempo_tx_env: None,
+                    storage_slots,
+                }
+            }
+            TempoTxEnvelope::Eip1559(tx) => {
+                let inner_tx = tx.tx();
+                let tx_env = TxEnv::from_recovered_tx(inner_tx, sender);
+                let (tip20_from_balances, tip20_to_balances) =
+                    extract_tip20_balance_slots_single(&tx_env.kind, &tx_env.data, sender);
+                let storage_slots = Some(StorageSlots {
+                    nonce_key: None,
+                    fee_token_balance: None,
+                    tip20_from_balances,
+                    tip20_to_balances,
+                });
+                Self {
+                    inner: tx_env,
+                    fee_token: None,
+                    is_system_tx: false,
+                    fee_payer: None,
+                    tempo_tx_env: None,
+                    storage_slots,
+                }
+            }
+            TempoTxEnvelope::Eip7702(tx) => {
+                let inner_tx = tx.tx();
+                let tx_env = TxEnv::from_recovered_tx(inner_tx, sender);
+                let (tip20_from_balances, tip20_to_balances) =
+                    extract_tip20_balance_slots_single(&tx_env.kind, &tx_env.data, sender);
+                let storage_slots = Some(StorageSlots {
+                    nonce_key: None,
+                    fee_token_balance: None,
+                    tip20_from_balances,
+                    tip20_to_balances,
+                });
+                Self {
+                    inner: tx_env,
+                    fee_token: None,
+                    is_system_tx: false,
+                    fee_payer: None,
+                    tempo_tx_env: None,
+                    storage_slots,
+                }
+            }
             TempoTxEnvelope::AA(tx) => Self::from_recovered_tx(tx, sender),
             TempoTxEnvelope::FeeToken(tx) => Self::from_recovered_tx(tx.tx(), sender),
         }
@@ -524,6 +633,30 @@ impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
     }
 }
 
+/// Extracts TIP-20 balance slots from a single transaction call.
+///
+/// Returns `(from_balance_slots, to_balance_slots)` if the transaction is a TIP-20 transfer,
+/// empty vecs otherwise.
+fn extract_tip20_balance_slots_single(
+    to: &TxKind,
+    input: &Bytes,
+    sender: Address,
+) -> (Vec<U256>, Vec<U256>) {
+    if let Some(to_addr) = to.to() {
+        if to_addr.starts_with(&TIP20_PAYMENT_PREFIX) {
+            if let Some((from_addr, to_addr_transfer)) = decode_transfer_addresses(input, sender) {
+                if let Ok(token) = TIP20Token::from_address(*to_addr) {
+                    return (
+                        vec![token.balances.at(from_addr).slot()],
+                        vec![token.balances.at(to_addr_transfer).slot()],
+                    );
+                }
+            }
+        }
+    }
+    (vec![], vec![])
+}
+
 /// Extracts TIP-20 balance slots from all calls in an AA transaction.
 ///
 /// Iterates through each call, identifies TIP-20 transfers, and computes the storage slots
@@ -535,21 +668,10 @@ fn extract_tip20_balance_slots(calls: &[Call], sender: Address) -> (Vec<U256>, V
     let mut tip20_to_balances = Vec::new();
 
     for call in calls {
-        // Check if this call is to a TIP-20 token
-        if let Some(to_addr) = call.to.to() {
-            if to_addr.starts_with(&TIP20_PAYMENT_PREFIX) {
-                // Try to decode transfer addresses from this call
-                if let Some((from_addr, to_addr_transfer)) =
-                    decode_transfer_addresses(&call.input, sender)
-                {
-                    // Cache the balance slots for this transfer
-                    if let Ok(token) = TIP20Token::from_address(*to_addr) {
-                        tip20_from_balances.push(token.balances.at(from_addr).slot());
-                        tip20_to_balances.push(token.balances.at(to_addr_transfer).slot());
-                    }
-                }
-            }
-        }
+        let (from_slots, to_slots) =
+            extract_tip20_balance_slots_single(&call.to, &call.input, sender);
+        tip20_from_balances.extend(from_slots);
+        tip20_to_balances.extend(to_slots);
     }
 
     (tip20_from_balances, tip20_to_balances)
