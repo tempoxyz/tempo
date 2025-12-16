@@ -143,14 +143,15 @@ pub trait TempoStateAccess<T> {
         if !stored_user_token.is_zero() {
             return Ok(stored_user_token);
         }
-
-        // If tx.to() is a TIP-20 token AND the call would transfer fees, use that token as the fee token.
-        // For AA transactions, only apply if fee_payer == tx.origin (caller).
+        // If tx.to() is a TIP-20 token, use that token as the fee token.
+        // Post-AllegroModerato: restricted to transfer/transferWithMemo/startReward,
+        // and for AA txs only when fee_payer == tx.origin.
         if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied())
-            && tx
-                .calls()
-                .all(|(kind, input)| kind.to() == Some(&to) && is_tip20_fee_inference_call(input))
-            && (!tx.is_aa() || fee_payer == tx.caller())
+            && !(spec.is_allegro_moderato() && tx.is_aa() && fee_payer != tx.caller())
+            && tx.calls().all(|(kind, input)| {
+                kind.to() == Some(&to)
+                    && (!spec.is_allegro_moderato() || is_tip20_fee_inference_call(input))
+            })
             && self.is_valid_fee_token(to, spec)?
         {
             return Ok(to);
