@@ -97,19 +97,31 @@ impl Precompile for TipFeeManager {
                 })
             }
             IFeeManager::executeBlockCall::SELECTOR => {
-                mutate_void::<IFeeManager::executeBlockCall>(calldata, msg_sender, |s, _call| {
-                    self.execute_block(s, self.storage.beneficiary())
-                })
+                if self.storage.spec().is_allegro_moderato() {
+                    unknown_selector(selector, self.storage.gas_used(), self.storage.spec())
+                } else {
+                    mutate_void::<IFeeManager::executeBlockCall>(calldata, msg_sender, |s, _call| {
+                        self.execute_block(s, self.storage.beneficiary())
+                    })
+                }
             }
             IFeeManager::distributeFeesCall::SELECTOR => {
-                mutate_void::<IFeeManager::distributeFeesCall>(calldata, msg_sender, |_s, call| {
-                    self.distribute_fees(call.validator)
-                })
+                if self.storage.spec().is_allegro_moderato() {
+                    mutate_void::<IFeeManager::distributeFeesCall>(calldata, msg_sender, |_s, call| {
+                        self.distribute_fees(call.validator)
+                    })
+                } else {
+                    unknown_selector(selector, self.storage.gas_used(), self.storage.spec())
+                }
             }
             IFeeManager::collectedFeesByValidatorCall::SELECTOR => {
-                view::<IFeeManager::collectedFeesByValidatorCall>(calldata, |call| {
-                    self.collected_fees.at(call.validator).read()
-                })
+                if self.storage.spec().is_allegro_moderato() {
+                    view::<IFeeManager::collectedFeesByValidatorCall>(calldata, |call| {
+                        self.collected_fees.at(call.validator).read()
+                    })
+                } else {
+                    unknown_selector(selector, self.storage.gas_used(), self.storage.spec())
+                }
             }
             ITIPFeeAMM::mintCall::SELECTOR => {
                 mutate::<ITIPFeeAMM::mintCall>(calldata, msg_sender, |s, call| {
