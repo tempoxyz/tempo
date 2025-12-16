@@ -85,8 +85,6 @@ async fn test_set_user_token() -> eyre::Result<()> {
     let receipt = pending_tx.get_receipt().await?;
     assert!(receipt.status());
 
-    // Post-AllegroModerato: fees are collected based on max_fee (gas_limit * gas_price), not gas_used.
-    // No refunds are issued - users pay for the full gas_limit upfront.
     let tx = provider.get_transaction_by_hash(tx_hash).await?.unwrap();
     let gas_limit = tx.inner.gas_limit();
     let expected_max_fee = calc_gas_balance_spending(gas_limit, receipt.effective_gas_price);
