@@ -10,9 +10,9 @@ import {
 } from 'wagmi'
 import LucideCheck from '~icons/lucide/check'
 import LucideWalletCards from '~icons/lucide/wallet-cards'
+import { filterSupportedInjectedConnectors } from '../../../lib/wallets'
 import { Button, Step, StringFormatter, useCopyToClipboard } from '../../Demo'
 import type { DemoStepProps } from '../types'
-import { filterSupportedInjectedConnectors } from '../../../lib/wallets'
 
 export function ConnectWallet(props: DemoStepProps) {
   const { stepNumber = 1 } = props
