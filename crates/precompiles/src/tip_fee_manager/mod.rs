@@ -253,7 +253,7 @@ impl TipFeeManager {
 
         if !self.storage.spec().is_allegretto() {
             // Pre-Allegretto: increment collected fees if no AMM swap
-            // Post-AllegroModerato: pending fees are removed, increment collected fees withou
+            // Post-AllegroModerato: pending fees are removed, increment collected fees without
             if fee_token == validator_token {
                 self.increment_collected_fees(beneficiary, actual_spending)?;
             }
