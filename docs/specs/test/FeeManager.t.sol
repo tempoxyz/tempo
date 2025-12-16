@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-import {FeeManager} from "../src/FeeManager.sol";
-import {TIP20} from "../src/TIP20.sol";
-import {IFeeManager} from "../src/interfaces/IFeeManager.sol";
-import {ITIP20} from "../src/interfaces/ITIP20.sol";
-import {BaseTest} from "./BaseTest.t.sol";
+import { FeeManager } from "../src/FeeManager.sol";
+import { TIP20 } from "../src/TIP20.sol";
+import { IFeeManager } from "../src/interfaces/IFeeManager.sol";
+import { ITIP20 } from "../src/interfaces/ITIP20.sol";
+import { BaseTest } from "./BaseTest.t.sol";
 
 contract FeeManagerTest is BaseTest {
+
     TIP20 userToken;
     TIP20 validatorToken;
     TIP20 altToken;
@@ -18,15 +19,9 @@ contract FeeManagerTest is BaseTest {
     function setUp() public override {
         super.setUp();
 
-        userToken = TIP20(
-            factory.createToken("UserToken", "USR", "USD", pathUSD, admin)
-        );
-        validatorToken = TIP20(
-            factory.createToken("ValidatorToken", "VAL", "USD", pathUSD, admin)
-        );
-        altToken = TIP20(
-            factory.createToken("AltToken", "ALT", "USD", pathUSD, admin)
-        );
+        userToken = TIP20(factory.createToken("UserToken", "USR", "USD", pathUSD, admin));
+        validatorToken = TIP20(factory.createToken("ValidatorToken", "VAL", "USD", pathUSD, admin));
+        altToken = TIP20(factory.createToken("AltToken", "ALT", "USD", pathUSD, admin));
 
         vm.startPrank(admin);
         userToken.grantRole(_ISSUER_ROLE, admin);
@@ -52,24 +47,9 @@ contract FeeManagerTest is BaseTest {
         userToken.approve(address(amm), type(uint256).max);
         validatorToken.approve(address(amm), type(uint256).max);
 
-        amm.mintWithValidatorToken(
-            address(userToken),
-            address(validatorToken),
-            20_000e18,
-            admin
-        );
-        amm.mintWithValidatorToken(
-            address(userToken),
-            address(pathUSD),
-            20_000e18,
-            admin
-        );
-        amm.mintWithValidatorToken(
-            address(validatorToken),
-            address(pathUSD),
-            20_000e18,
-            admin
-        );
+        amm.mintWithValidatorToken(address(userToken), address(validatorToken), 20_000e18, admin);
+        amm.mintWithValidatorToken(address(userToken), address(pathUSD), 20_000e18, admin);
+        amm.mintWithValidatorToken(address(validatorToken), address(pathUSD), 20_000e18, admin);
         vm.stopPrank();
     }
 
@@ -78,10 +58,7 @@ contract FeeManagerTest is BaseTest {
 
         if (!isTempo) {
             vm.expectEmit(true, true, true, true);
-            emit IFeeManager.ValidatorTokenSet(
-                validator,
-                address(validatorToken)
-            );
+            emit IFeeManager.ValidatorTokenSet(validator, address(validatorToken));
         }
 
         amm.setValidatorToken(address(validatorToken));
@@ -127,9 +104,7 @@ contract FeeManagerTest is BaseTest {
         vm.prank(validator);
         vm.coinbase(validator);
 
-        TIP20 eurToken = TIP20(
-            factory.createToken("EuroToken", "EUR", "EUR", pathUSD, admin)
-        );
+        TIP20 eurToken = TIP20(factory.createToken("EuroToken", "EUR", "EUR", pathUSD, admin));
 
         if (!isTempo) {
             vm.expectRevert("INVALID_TOKEN");
@@ -191,13 +166,9 @@ contract FeeManagerTest is BaseTest {
         assertEq(userToken.balanceOf(user), userBalanceBefore - maxAmount);
     }
 
-    function test_collectFeePreTx_SameTokenAccumulatesFees() public {
+    function test_collectFeePreTx_SameToken_DoesNotAccumulate() public {
         vm.prank(validator, validator);
         amm.setValidatorToken(address(userToken));
-
-        vm.startPrank(user);
-        userToken.approve(address(amm), type(uint256).max);
-        vm.stopPrank();
 
         uint256 maxAmount = 100e18;
 
@@ -205,7 +176,7 @@ contract FeeManagerTest is BaseTest {
         vm.coinbase(validator);
 
         amm.collectFeePreTx(user, address(userToken), maxAmount);
-        assertEq(amm.collectedFeesByValidator(validator), maxAmount);
+        assertEq(amm.collectedFeesByValidator(validator), 0);
     }
 
     function test_collectFeePreTx_RevertsIf_NotProtocol() public {
@@ -269,10 +240,7 @@ contract FeeManagerTest is BaseTest {
         vm.coinbase(validator);
         amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
 
-        assertEq(
-            userToken.balanceOf(user),
-            userBalanceAfterPre + (maxAmount - actualUsed)
-        );
+        assertEq(userToken.balanceOf(user), userBalanceAfterPre + (maxAmount - actualUsed));
 
         uint256 expectedFees = (actualUsed * 9970) / 10_000;
         assertEq(amm.collectedFeesByValidator(validator), expectedFees);
@@ -298,10 +266,7 @@ contract FeeManagerTest is BaseTest {
         vm.coinbase(validator);
         amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
 
-        assertEq(
-            amm.collectedFeesByValidator(validator),
-            maxAmount + actualUsed
-        );
+        assertEq(amm.collectedFeesByValidator(validator), actualUsed);
     }
 
     function test_collectFeePostTx_RevertsIf_NotProtocol() public {
@@ -345,19 +310,12 @@ contract FeeManagerTest is BaseTest {
 
         if (!isTempo) {
             vm.expectEmit(true, true, true, true);
-            emit IFeeManager.FeesDistributed(
-                validator,
-                address(validatorToken),
-                expectedFees
-            );
+            emit IFeeManager.FeesDistributed(validator, address(validatorToken), expectedFees);
         }
 
         amm.distributeFees(validator);
 
-        assertEq(
-            validatorToken.balanceOf(validator),
-            validatorBalanceBefore + expectedFees
-        );
+        assertEq(validatorToken.balanceOf(validator), validatorBalanceBefore + expectedFees);
         assertEq(amm.collectedFeesByValidator(validator), 0);
     }
 
@@ -377,18 +335,16 @@ contract FeeManagerTest is BaseTest {
         vm.prank(validator, validator);
         amm.setValidatorToken(address(userToken));
 
-        vm.startPrank(user);
-        userToken.approve(address(amm), type(uint256).max);
-        vm.stopPrank();
-
         assertEq(amm.collectedFeesByValidator(validator), 0);
 
         uint256 maxAmount = 100e18;
 
-        vm.prank(address(0));
+        vm.startPrank(address(0));
         vm.coinbase(validator);
-
         amm.collectFeePreTx(user, address(userToken), maxAmount);
+        amm.collectFeePostTx(user, maxAmount, maxAmount, address(userToken));
+        vm.stopPrank();
+
         assertEq(amm.collectedFeesByValidator(validator), maxAmount);
     }
 
@@ -412,4 +368,111 @@ contract FeeManagerTest is BaseTest {
 
         assertGt(pathUSD.balanceOf(validator), pathUSDBalanceBefore);
     }
+
+    /*//////////////////////////////////////////////////////////////
+                            FUZZ TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function testFuzz_FeeSwap(uint256 actualUsed) public {
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(validatorToken));
+
+        bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
+        (uint128 reserveUBefore, uint128 reserveVBefore) = amm.pools(poolId);
+
+        actualUsed = bound(actualUsed, 1e15, 1000e18);
+
+        vm.startPrank(address(0));
+        vm.coinbase(validator);
+        amm.collectFeePreTx(user, address(userToken), actualUsed);
+        amm.collectFeePostTx(user, actualUsed, actualUsed, address(userToken));
+        vm.stopPrank();
+
+        uint256 amountOut = (actualUsed * 9970) / 10_000;
+
+        // Rate invariant
+        assertEq(amm.collectedFeesByValidator(validator), amountOut);
+
+        // Reserve conservation
+        (uint128 reserveUAfter, uint128 reserveVAfter) = amm.pools(poolId);
+        assertEq(uint256(reserveUAfter), uint256(reserveUBefore) + actualUsed);
+        assertEq(uint256(reserveVAfter), uint256(reserveVBefore) - amountOut);
+    }
+
+    function testFuzz_SameToken_NoSwap(uint256 actualUsed) public {
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(userToken));
+
+        bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
+        (uint128 reserveUBefore, uint128 reserveVBefore) = amm.pools(poolId);
+
+        actualUsed = bound(actualUsed, 1e15, 1000e18);
+
+        vm.startPrank(address(0));
+        vm.coinbase(validator);
+        amm.collectFeePreTx(user, address(userToken), actualUsed);
+        amm.collectFeePostTx(user, actualUsed, actualUsed, address(userToken));
+        vm.stopPrank();
+
+        (uint128 reserveUAfter, uint128 reserveVAfter) = amm.pools(poolId);
+
+        // No swap: reserves unchanged
+        assertEq(reserveUAfter, reserveUBefore);
+        assertEq(reserveVAfter, reserveVBefore);
+
+        // Full amount accumulated (no 0.30% fee)
+        assertEq(amm.collectedFeesByValidator(validator), actualUsed);
+    }
+
+    function testFuzz_DistributeFees_ClearsBalance(uint256 actualUsed) public {
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(validatorToken));
+
+        actualUsed = bound(actualUsed, 1e15, 1000e18);
+
+        vm.startPrank(address(0));
+        vm.coinbase(validator);
+        amm.collectFeePreTx(user, address(userToken), actualUsed);
+        amm.collectFeePostTx(user, actualUsed, actualUsed, address(userToken));
+        vm.stopPrank();
+
+        uint256 collectedBefore = amm.collectedFeesByValidator(validator);
+        assertGt(collectedBefore, 0);
+
+        uint256 validatorBalanceBefore = validatorToken.balanceOf(validator);
+
+        amm.distributeFees(validator);
+
+        // Balance cleared
+        assertEq(amm.collectedFeesByValidator(validator), 0);
+
+        // Validator received the fees
+        assertEq(validatorToken.balanceOf(validator), validatorBalanceBefore + collectedBefore);
+    }
+
+    function testFuzz_Refund_Calculation(uint256 maxAmount, uint256 actualUsed) public {
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(validatorToken));
+
+        maxAmount = bound(maxAmount, 1e15, 1000e18);
+        actualUsed = bound(actualUsed, 0, maxAmount);
+
+        uint256 userBalanceBefore = userToken.balanceOf(user);
+
+        vm.startPrank(address(0));
+        vm.coinbase(validator);
+        amm.collectFeePreTx(user, address(userToken), maxAmount);
+
+        uint256 userBalanceAfterPre = userToken.balanceOf(user);
+        assertEq(userBalanceAfterPre, userBalanceBefore - maxAmount);
+
+        amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
+        vm.stopPrank();
+
+        uint256 userBalanceAfterPost = userToken.balanceOf(user);
+        uint256 refund = maxAmount - actualUsed;
+
+        assertEq(userBalanceAfterPost, userBalanceAfterPre + refund);
+    }
+
 }
