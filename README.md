@@ -136,6 +136,22 @@ Start a `localnet`:
 just localnet
 ```
 
+ 
+#### Requirements
+
+Before contributing, make sure you have:
+
+* **Rust toolchain** (via `rustup`) and `cargo`
+* **just** (used as the main task runner in this repo)
+* **cargo-nextest** (used to run the test suite)
+* Optional: **Docker** (if you prefer running via container workflows)
+
+If you're missing a dependency, see the linked docs above (Build from Source / Docker) for the recommended setup path.
+
+ Tempo has several SDKs to help you get started building on Tempo:
+ 
+   * TypeScript
+
 ## Contributing
 
 Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.com/tempoxyz/tempo?tab=contributing-ov-file).
