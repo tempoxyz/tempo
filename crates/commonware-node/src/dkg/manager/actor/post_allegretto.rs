@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use alloy_consensus::BlockHeader as _;
 use commonware_codec::{DecodeExt as _, EncodeSize, Read, Write};
 use commonware_consensus::{
     Block as _, Reporter as _, simplex::signing_scheme::bls12381_threshold::Scheme, types::Epoch,
@@ -10,12 +11,8 @@ use commonware_cryptography::{
     ed25519::PublicKey,
 };
 use commonware_p2p::{Receiver, Sender, utils::mux::MuxHandle};
-use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, Storage};
-use commonware_storage::metadata::Metadata;
-use commonware_utils::{
-    sequence::U64,
-    set::{Ordered, OrderedAssociated},
-};
+use commonware_runtime::{Clock, ContextCell, Spawner, Storage};
+use commonware_utils::set::{Ordered, OrderedAssociated};
 use eyre::{WrapErr as _, ensure};
 use rand_core::CryptoRngCore;
 use reth_ethereum::chainspec::EthChainSpec as _;
@@ -26,20 +23,16 @@ use tracing::{Span, info, instrument, warn};
 use crate::{
     consensus::block::Block,
     dkg::{
-        HardforkRegime,
+        HardforkRegime, RegimeEpochState,
         ceremony::{self, Ceremony},
         manager::{
             actor::{DkgOutcome, pre_allegretto},
+            read_write_transaction::DkgReadWriteTransaction,
             validators::{self, ValidatorState},
         },
     },
     epoch::{self, is_first_block_in_epoch},
 };
-
-const CURRENT_EPOCH_KEY: U64 = U64::new(0);
-const PREVIOUS_EPOCH_KEY: U64 = U64::new(1);
-
-const DKG_OUTCOME_KEY: U64 = U64::new(0);
 
 impl<TContext, TPeerManager> super::Actor<TContext, TPeerManager>
 where
@@ -47,12 +40,15 @@ where
     TPeerManager: commonware_p2p::Manager<
             PublicKey = PublicKey,
             Peers = OrderedAssociated<PublicKey, SocketAddr>,
-        >,
+        > + Sync,
 {
     #[instrument(skip_all, err)]
-    pub(super) async fn post_allegretto_init(&mut self) -> eyre::Result<()> {
+    pub(super) async fn post_allegretto_init(
+        &mut self,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
+    ) -> eyre::Result<()> {
         let spec = self.config.execution_node.chain_spec();
-        if !self.post_allegretto_metadatas.exists() && spec.is_allegretto_active_at_timestamp(0) {
+        if !tx.has_post_allegretto_state().await && spec.is_allegretto_active_at_timestamp(0) {
             info!(
                 "allegretto hardfork is active at timestamp 0, reading initial validators and public polynomial from genesis block"
             );
@@ -120,26 +116,29 @@ where
             info!(
                 initial_public_polynomial = ?initial_dkg_outcome.public,
                 initial_validators = ?peers_as_per_contract,
-                "using public polynomial and validators read from contract",);
+                "using public polynomial and validators read from contract",
+            );
 
-            self.post_allegretto_metadatas
-                .epoch_metadata
-                .put_sync(
-                    CURRENT_EPOCH_KEY,
-                    EpochState {
-                        dkg_outcome: DkgOutcome {
-                            dkg_successful: true,
-                            epoch: 0,
-                            participants: initial_dkg_outcome.participants,
-                            public: initial_dkg_outcome.public,
-                            share: self.config.initial_share.clone(),
-                        },
-                        validator_state: initial_validator_state.clone(),
-                    },
-                )
-                .await
-                .expect("persisting epoch state must always work");
+            tx.set_epoch(EpochState {
+                dkg_outcome: DkgOutcome {
+                    dkg_successful: true,
+                    epoch: 0,
+                    participants: initial_dkg_outcome.participants,
+                    public: initial_dkg_outcome.public,
+                    share: self.config.initial_share.clone(),
+                },
+                validator_state: initial_validator_state,
+            });
         }
+
+        if self.config.delete_signing_share
+            && let Some(mut epoch_state) = tx.get_epoch::<EpochState>().await?
+        {
+            warn!("delete-signing-share set; deleting signing share");
+            epoch_state.dkg_outcome.share.take();
+            tx.set_epoch(epoch_state);
+        }
+
         Ok(())
     }
 
@@ -181,13 +180,21 @@ where
         &mut self,
         cause: Span,
         block: Block,
-        maybe_ceremony: &mut Option<Ceremony<ContextCell<TContext>, TReceiver, TSender>>,
+        maybe_ceremony: &mut Option<Ceremony<TReceiver, TSender>>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
     ) where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
         let block_epoch = utils::epoch(self.config.epoch_length, block.height());
+
+        let current_epoch_state: EpochState = tx
+            .get_epoch()
+            .await
+            .expect("must be able to read epoch")
+            .expect("post-allegretto epoch state must exist");
+
         // Replay protection: if the node shuts down right after the last block
         // of the outgoing epoch was processed, but before the first block of
         // the incoming epoch was processed, then we do not want to update the
@@ -195,10 +202,10 @@ where
         //
         // This relies on the fact that the actor updates its tracked epoch
         // state on the last block of the epoch.
-        if block_epoch != self.current_epoch_state().epoch() {
+        if block_epoch != current_epoch_state.epoch() {
             info!(
                 block_epoch,
-                actor_epoch = self.current_epoch_state().epoch(),
+                actor_epoch = current_epoch_state.epoch(),
                 "block was for an epoch other than what the actor is currently tracking; ignoring",
             );
             return;
@@ -212,9 +219,14 @@ where
         //
         // So for E = 100, the boundary heights would be 99, 199, 299, ...
         if utils::is_last_block_in_epoch(self.config.epoch_length, block.height()).is_some() {
-            self.update_and_register_current_epoch_state().await;
+            let block_outcome = PublicOutcome::decode(block.header().extra_data().as_ref()).expect(
+                "the last block of an epoch must always contain the outcome of the DKG ceremony",
+            );
 
-            maybe_ceremony.replace(self.start_post_allegretto_ceremony(ceremony_mux).await);
+            self.update_and_register_current_epoch_state(tx, block_outcome)
+                .await;
+
+            maybe_ceremony.replace(self.start_post_allegretto_ceremony(tx, ceremony_mux).await);
             // Early return: start driving the ceremony on the first height of
             // the next epoch.
             return;
@@ -224,16 +236,12 @@ where
         //
         // So for E = 100, the first heights are 0, 100, 200, ...
         if is_first_block_in_epoch(self.config.epoch_length, block.height()).is_some() {
-            self.enter_current_epoch_and_remove_old_state().await;
+            self.enter_current_epoch_and_remove_old_state(tx).await;
 
             // Similar for the validators: we only need to track the current
             // and last two epochs.
-            if let Some(epoch) = self.current_epoch_state().epoch().checked_sub(3) {
-                self.validators_metadata.remove(&epoch.into());
-                self.validators_metadata
-                    .sync()
-                    .await
-                    .expect("metadata must always be writable");
+            if let Some(epoch) = current_epoch_state.epoch().checked_sub(3) {
+                tx.remove_validators(epoch);
             }
         }
 
@@ -246,18 +254,18 @@ where
 
         match epoch::relative_position(block.height(), self.config.epoch_length) {
             epoch::RelativePosition::FirstHalf => {
-                let _ = ceremony.distribute_shares().await;
-                let _ = ceremony.process_messages().await;
+                let _ = ceremony.distribute_shares(tx).await;
+                let _ = ceremony.process_messages(tx).await;
             }
             epoch::RelativePosition::Middle => {
-                let _ = ceremony.process_messages().await;
+                let _ = ceremony.process_messages(tx).await;
                 let _ = ceremony
-                    .construct_intermediate_outcome(HardforkRegime::PostAllegretto)
+                    .construct_intermediate_outcome(tx, HardforkRegime::PostAllegretto)
                     .await;
             }
             epoch::RelativePosition::SecondHalf => {
                 let _ = ceremony
-                    .process_dealings_in_block(&block, HardforkRegime::PostAllegretto)
+                    .process_dealings_in_block(tx, &block, HardforkRegime::PostAllegretto)
                     .await;
             }
         }
@@ -297,43 +305,35 @@ where
         };
         let (public, share) = ceremony_outcome.role.into_key_pair();
 
-        self.post_allegretto_metadatas
-            .dkg_outcome_metadata
-            .put_sync(
-                DKG_OUTCOME_KEY,
-                DkgOutcome {
-                    dkg_successful,
-                    epoch: current_epoch + 1,
-                    participants: ceremony_outcome.participants,
-                    public,
-                    share,
-                },
-            )
-            .await
-            .expect("must always be able to persist the DKG outcome");
+        tx.set_dkg_outcome(DkgOutcome {
+            dkg_successful,
+            epoch: current_epoch + 1,
+            participants: ceremony_outcome.participants,
+            public,
+            share,
+        });
 
         // Prune older ceremony.
         if let Some(epoch) = current_epoch.checked_sub(1) {
-            let mut ceremony_metadata = self.ceremony_metadata.lock().await;
-            ceremony_metadata.remove(&epoch.into());
-            ceremony_metadata.sync().await.expect("metadata must sync");
+            tx.remove_ceremony(epoch);
         }
     }
 
     #[instrument(skip_all)]
     pub(super) async fn transition_from_static_validator_sets<TReceiver, TSender>(
         &mut self,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
         pre_allegretto_epoch_state: pre_allegretto::EpochState,
         mux: &mut MuxHandle<TSender, TReceiver>,
-    ) -> eyre::Result<Ceremony<ContextCell<TContext>, TReceiver, TSender>>
+    ) -> eyre::Result<Ceremony<TReceiver, TSender>>
     where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let pre_allegretto_validator_state = self
-            .validators_metadata
-            .get(&pre_allegretto_epoch_state.epoch().saturating_sub(1).into())
-            .cloned()
+        let pre_allegretto_validator_state = tx
+            .get_validators(pre_allegretto_epoch_state.epoch().saturating_sub(1))
+            .await
+            .expect("must be able to read validators")
             .expect("it is enforced at startup that the validator state for epoch-1 is written");
 
         let on_chain_validators = super::read_validator_config_with_retry(
@@ -350,7 +350,7 @@ where
             those of the last pre-allegretto static DKG ceremony; \
             DKG participants = {:?}; \
             contract = {:?}",
-            self.current_epoch_state().participants(),
+            pre_allegretto_epoch_state.participants(),
             on_chain_validators.keys(),
         );
 
@@ -382,40 +382,43 @@ where
         new_validator_state.push_on_failure(on_chain_validators.clone());
         new_validator_state.push_on_failure(on_chain_validators);
 
-        self.post_allegretto_metadatas
-            .epoch_metadata
-            .put_sync(
-                CURRENT_EPOCH_KEY,
-                EpochState {
-                    dkg_outcome: DkgOutcome {
-                        dkg_successful: true,
-                        epoch: pre_allegretto_epoch_state.epoch(),
-                        participants: pre_allegretto_epoch_state.participants().clone(),
-                        public: pre_allegretto_epoch_state.public_polynomial().clone(),
-                        share: pre_allegretto_epoch_state.private_share().clone(),
-                    },
-                    validator_state: new_validator_state.clone(),
-                },
-            )
-            .await
-            .expect("syncing state must always work");
-        self.register_current_epoch_state().await;
+        let new_epoch_state = EpochState {
+            dkg_outcome: DkgOutcome {
+                dkg_successful: true,
+                epoch: pre_allegretto_epoch_state.epoch(),
+                participants: pre_allegretto_epoch_state.participants().clone(),
+                public: pre_allegretto_epoch_state.public_polynomial().clone(),
+                share: pre_allegretto_epoch_state.private_share().clone(),
+            },
+            validator_state: new_validator_state.clone(),
+        };
 
-        Ok(self.start_post_allegretto_ceremony(mux).await)
+        tx.set_epoch(new_epoch_state);
+
+        self.register_current_epoch_state(tx).await;
+
+        Ok(self.start_post_allegretto_ceremony(tx, mux).await)
     }
 
-    #[instrument(skip_all, fields(epoch = self.post_allegretto_metadatas.current_epoch_state().unwrap().epoch()))]
+    #[instrument(skip_all, fields(epoch = tracing::field::Empty))]
     pub(super) async fn start_post_allegretto_ceremony<TReceiver, TSender>(
         &mut self,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
         mux: &mut MuxHandle<TSender, TReceiver>,
-    ) -> Ceremony<ContextCell<TContext>, TReceiver, TSender>
+    ) -> Ceremony<TReceiver, TSender>
     where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let epoch_state = self.post_allegretto_metadatas.current_epoch_state().expect(
-            "the post-allegretto epoch state must exist in order to start a ceremony for it",
-        );
+        let epoch_state: EpochState = tx
+            .get_epoch()
+            .await
+            .expect("must be able to read epoch")
+            .expect(
+                "the post-allegretto epoch state must exist in order to start a ceremony for it",
+            );
+        Span::current().record("epoch", epoch_state.epoch());
+
         let config = ceremony::Config {
             namespace: self.config.namespace.clone(),
             me: self.config.me.clone(),
@@ -428,7 +431,7 @@ where
         let ceremony = ceremony::Ceremony::init(
             &mut self.context,
             mux,
-            self.ceremony_metadata.clone(),
+            tx,
             config,
             self.metrics.ceremony.clone(),
         )
@@ -458,19 +461,21 @@ where
     }
 
     #[instrument(skip_all)]
-    async fn update_and_register_current_epoch_state(&mut self) {
-        let old_epoch_state = self
-            .post_allegretto_metadatas
-            .epoch_metadata
-            .remove(&CURRENT_EPOCH_KEY)
+    async fn update_and_register_current_epoch_state(
+        &mut self,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
+        canonical_dkg_outcome: PublicOutcome,
+    ) {
+        let old_epoch_state: EpochState = tx
+            .get_epoch()
+            .await
+            .expect("must be able to read epoch")
             .expect("there must always exist an epoch state");
 
-        // Remove it?
-        let dkg_outcome = self
-            .post_allegretto_metadatas
-            .dkg_outcome_metadata
-            .get(&DKG_OUTCOME_KEY)
-            .cloned()
+        let mut our_dkg_outcome = tx
+            .get_dkg_outcome()
+            .await
+            .expect("must be able to read dkg outcome")
             .expect(
                 "when updating the current epoch state, there must be a DKG \
                 outcome of some ceremony",
@@ -478,64 +483,85 @@ where
 
         assert_eq!(
             old_epoch_state.epoch() + 1,
-            dkg_outcome.epoch,
+            our_dkg_outcome.epoch,
             "sanity check: old outcome must be new outcome - 1"
         );
 
         let syncing_players = super::read_validator_config_with_retry(
             &self.context,
             &self.config.execution_node,
-            dkg_outcome.epoch,
+            our_dkg_outcome.epoch,
             self.config.epoch_length,
         )
         .await;
-
         let mut new_validator_state = old_epoch_state.validator_state.clone();
-        if dkg_outcome.dkg_successful {
-            new_validator_state.push_on_success(syncing_players);
-        } else {
-            new_validator_state.push_on_failure(syncing_players);
+
+        let dkg_mismatch = canonical_dkg_outcome.public != our_dkg_outcome.public;
+        if dkg_mismatch {
+            warn!(
+                "the DKG outcome committed to chain does not match our own; \
+                will take the on-chain outcome instead and delete our share"
+            );
+            our_dkg_outcome.public = canonical_dkg_outcome.public;
+            our_dkg_outcome.participants = canonical_dkg_outcome.participants;
+            our_dkg_outcome.share.take();
         }
 
-        self.post_allegretto_metadatas.epoch_metadata.put(
-            CURRENT_EPOCH_KEY,
-            EpochState {
-                dkg_outcome,
-                validator_state: new_validator_state.clone(),
-            },
-        );
-        self.post_allegretto_metadatas
-            .epoch_metadata
-            .put(PREVIOUS_EPOCH_KEY, old_epoch_state);
+        match (our_dkg_outcome.dkg_successful, dkg_mismatch) {
+            // No DKG mismatches
+            (true, false) => {
+                new_validator_state.push_on_success(syncing_players);
+            }
+            (false, false) => {
+                new_validator_state.push_on_failure(syncing_players);
+            }
 
-        self.post_allegretto_metadatas
-            .epoch_metadata
-            .sync()
-            .await
-            .expect("must always be able to persists epoch state");
+            (false, true) => {
+                new_validator_state.push_on_success(syncing_players);
+            }
 
-        self.register_current_epoch_state().await;
+            // TODO(janis): publish the IP addresses and pubkeys to chain. Then
+            // we can recover from this.
+            (true, true) => {
+                unreachable!(
+                    "a local DKG success with an on-chain mismatch means that \
+                    the node successfully read all necessary dealings from \
+                    chain while a quorum of validators came to a different \
+                    conclusion based off the same data; this is not something \
+                    to recover from"
+                );
+            }
+        }
+
+        let new_epoch_state = EpochState {
+            dkg_outcome: our_dkg_outcome,
+            validator_state: new_validator_state.clone(),
+        };
+
+        tx.set_previous_epoch(old_epoch_state);
+
+        tx.set_epoch(new_epoch_state.clone());
+
+        self.register_current_epoch_state(tx).await;
     }
 
     /// Reports that a new epoch was fully entered, that the previous epoch can be ended.
-    async fn enter_current_epoch_and_remove_old_state(&mut self) {
-        let epoch_to_shutdown = if let Some(old_epoch_state) = self
-            .post_allegretto_metadatas
-            .epoch_metadata
-            .remove(&PREVIOUS_EPOCH_KEY)
-        {
-            self.post_allegretto_metadatas
-                .epoch_metadata
-                .sync()
-                .await
-                .expect("must always be able to persist state");
-            Some(old_epoch_state.epoch())
-        } else {
-            self.pre_allegretto_metadatas
-                .delete_previous_epoch_state()
-                .await
-                .map(|old_state| old_state.epoch())
-        };
+    async fn enter_current_epoch_and_remove_old_state(
+        &mut self,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
+    ) {
+        let epoch_to_shutdown =
+            if let Ok(Some(old_epoch_state)) = tx.get_previous_epoch::<EpochState>().await {
+                tx.remove_previous_epoch(HardforkRegime::PostAllegretto);
+                Some(old_epoch_state.epoch())
+            } else if let Ok(Some(old_state)) =
+                tx.get_previous_epoch::<pre_allegretto::EpochState>().await
+            {
+                tx.remove_previous_epoch(HardforkRegime::PreAllegretto);
+                Some(old_state.epoch())
+            } else {
+                None
+            };
 
         if let Some(epoch) = epoch_to_shutdown {
             self.config
@@ -545,90 +571,8 @@ where
         }
 
         if let Some(epoch) = epoch_to_shutdown.and_then(|epoch| epoch.checked_sub(2)) {
-            self.validators_metadata.remove(&epoch.into());
-            self.validators_metadata
-                .sync()
-                .await
-                .expect("must always be able to persist data");
+            tx.remove_validators(epoch);
         }
-    }
-}
-
-pub(super) struct Metadatas<TContext>
-where
-    TContext: Clock + Metrics + Storage,
-{
-    /// Persisted information on the current epoch for DKG ceremonies that were
-    /// started after the allegretto hardfork.
-    epoch_metadata: Metadata<TContext, U64, EpochState>,
-
-    /// The persisted DKG outcome. This is the result of latest DKG ceremony,
-    /// constructed one height before the boundary height b (on b-1).
-    dkg_outcome_metadata: Metadata<TContext, U64, DkgOutcome>,
-}
-
-impl<TContext> Metadatas<TContext>
-where
-    TContext: Clock + Metrics + Storage,
-{
-    pub(super) async fn init(context: &TContext, partition_prefix: &str) -> Self
-    where
-        TContext: Metrics,
-    {
-        let epoch_metadata = Metadata::init(
-            context.with_label("post_allegretto_epoch_metadata"),
-            commonware_storage::metadata::Config {
-                partition: format!("{partition_prefix}_post_allegretto_current_epoch"),
-                codec_config: (),
-            },
-        )
-        .await
-        .expect("must be able to initialize metadata on disk to function");
-
-        let dkg_outcome_metadata = Metadata::init(
-            context.with_label("dkg_outcome_metadata"),
-            commonware_storage::metadata::Config {
-                partition: format!("{partition_prefix}_next_dkg_outcome"),
-                codec_config: (),
-            },
-        )
-        .await
-        .expect("must be able to initialize metadata on disk to function");
-
-        Self {
-            epoch_metadata,
-            dkg_outcome_metadata,
-        }
-    }
-
-    pub(super) fn current_epoch_state(&self) -> Option<&EpochState> {
-        self.epoch_metadata.get(&CURRENT_EPOCH_KEY)
-    }
-
-    pub(super) fn previous_epoch_state(&self) -> Option<&EpochState> {
-        self.epoch_metadata.get(&PREVIOUS_EPOCH_KEY)
-    }
-
-    pub(super) fn dkg_outcome(&self) -> Option<PublicOutcome> {
-        if let Some(dkg_outcome) = self.dkg_outcome_metadata.get(&DKG_OUTCOME_KEY) {
-            Some(PublicOutcome {
-                epoch: dkg_outcome.epoch,
-                participants: dkg_outcome.participants.clone(),
-                public: dkg_outcome.public.clone(),
-            })
-        } else {
-            self.epoch_metadata
-                .get(&CURRENT_EPOCH_KEY)
-                .map(|epoch_state| PublicOutcome {
-                    epoch: epoch_state.dkg_outcome.epoch,
-                    participants: epoch_state.dkg_outcome.participants.clone(),
-                    public: epoch_state.dkg_outcome.public.clone(),
-                })
-        }
-    }
-
-    pub(super) fn exists(&self) -> bool {
-        self.current_epoch_state().is_some()
     }
 }
 
@@ -640,33 +584,33 @@ where
 ///   the participants in the DKG outcome), the players of the next ceremony,
 ///   and the syncing players, who will be players in the ceremony thereafter.
 #[derive(Clone, Debug)]
-pub(super) struct EpochState {
-    pub(super) dkg_outcome: DkgOutcome,
-    pub(super) validator_state: ValidatorState,
+pub(crate) struct EpochState {
+    pub(crate) dkg_outcome: DkgOutcome,
+    pub(crate) validator_state: ValidatorState,
 }
 
 impl EpochState {
-    pub(super) fn epoch(&self) -> Epoch {
+    pub(crate) fn epoch(&self) -> Epoch {
         self.dkg_outcome.epoch
     }
 
-    pub(super) fn participants(&self) -> &Ordered<PublicKey> {
+    pub(crate) fn participants(&self) -> &Ordered<PublicKey> {
         &self.dkg_outcome.participants
     }
 
-    pub(super) fn public_polynomial(&self) -> &Public<MinSig> {
+    pub(crate) fn public_polynomial(&self) -> &Public<MinSig> {
         &self.dkg_outcome.public
     }
 
-    pub(super) fn private_share(&self) -> &Option<Share> {
+    pub(crate) fn private_share(&self) -> &Option<Share> {
         &self.dkg_outcome.share
     }
 
-    pub(super) fn dealer_pubkeys(&self) -> Ordered<PublicKey> {
+    pub(crate) fn dealer_pubkeys(&self) -> Ordered<PublicKey> {
         self.validator_state.dealer_pubkeys()
     }
 
-    pub(super) fn player_pubkeys(&self) -> Ordered<PublicKey> {
+    pub(crate) fn player_pubkeys(&self) -> Ordered<PublicKey> {
         self.validator_state.player_pubkeys()
     }
 }
@@ -698,4 +642,8 @@ impl Read for EpochState {
             validator_state,
         })
     }
+}
+
+impl RegimeEpochState for EpochState {
+    const REGIME: HardforkRegime = HardforkRegime::PostAllegretto;
 }

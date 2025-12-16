@@ -84,21 +84,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: tempoxyz/tempo-foundry
-          token: ${{ secrets.TEMPO_GITHUB_PAT }}
           path: tempo-foundry
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Configure Git for private repos
-        env:
-          TOKEN: ${{ secrets.TEMPO_GITHUB_PAT }}
-        run: |
-          authenticated_url="https://${GITHUB_ACTOR}:${TOKEN}@github.com/"
-          # Rewrite SSH URLs to authenticated HTTPS
-          git config --global url."$authenticated_url".insteadOf "ssh://git@github.com/"
-          # Also rewrite plain HTTPS URLs to authenticated HTTPS
-          git config --global url."$authenticated_url".insteadOf "https://github.com/"
 
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
@@ -115,7 +104,7 @@ jobs:
           # Update all tempo dependencies to point to the current commit
           # Using # as delimiter since URLs contain /
           sed -i -E \
-            "s#(tempo-[a-z]+) = \{ git = \"ssh://git@github.com/tempoxyz/tempo\", (rev|branch) = \"[^\"]+\" \}#\1 = { git = \"https://github.com/tempoxyz/tempo\", rev = \"$COMMIT_SHA\" }#g" \
+            "s#(tempo-[a-z-]+) = \{ git = \"https://github.com/tempoxyz/tempo\", rev = \"[^\"]+\" \}#\1 = { git = \"https://github.com/tempoxyz/tempo\", rev = \"$COMMIT_SHA\" }#g" \
             Cargo.toml
 
           echo "Updated Cargo.toml:"
