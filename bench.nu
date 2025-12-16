@@ -200,7 +200,11 @@ def run-dev-node [accounts: int, samply: bool, samply_args: list<string>, reset:
         cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $LOCALNET_DIR -a $accounts
     }
 
-    let tempo_bin = $"./target/($profile)/tempo"
+    let tempo_bin = if $profile == "dev" {
+        "./target/debug/tempo"
+    } else {
+        $"./target/($profile)/tempo"
+    }
     let datadir = $"($LOCALNET_DIR)/reth"
     let log_dir = $"($LOCALNET_DIR)/logs"
 
@@ -284,7 +288,11 @@ def run-consensus-nodes [nodes: int, accounts: int, samply: bool, samply_args: l
 
     print $"Found ($validator_dirs | length) validator configs"
 
-    let tempo_bin = $"./target/($profile)/tempo"
+    let tempo_bin = if $profile == "dev" {
+        "./target/debug/tempo"
+    } else {
+        $"./target/($profile)/tempo"
+    }
 
     # Start background nodes first (all except node 0)
     print $"Starting ($validator_dirs | length) nodes..."
@@ -461,7 +469,11 @@ def "main bench" [
     print "All nodes ready!"
 
     # Run tempo-bench
-    let tempo_bench_bin = $"./target/($profile)/tempo-bench"
+    let tempo_bench_bin = if $profile == "dev" {
+        "./target/debug/tempo-bench"
+    } else {
+        $"./target/($profile)/tempo-bench"
+    }
     let bench_cmd = [
         $tempo_bench_bin
         "run-max-tps"
