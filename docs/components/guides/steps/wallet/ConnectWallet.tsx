@@ -12,7 +12,7 @@ import LucideCheck from '~icons/lucide/check'
 import LucideWalletCards from '~icons/lucide/wallet-cards'
 import { Button, Step, StringFormatter, useCopyToClipboard } from '../../Demo'
 import type { DemoStepProps } from '../types'
-import { filterSupportedInjectedConnectors } from '../../../wallets'
+import { filterSupportedInjectedConnectors } from '../../../lib/wallets'
 
 export function ConnectWallet(props: DemoStepProps) {
   const { stepNumber = 1 } = props

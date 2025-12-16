@@ -7,7 +7,7 @@ import {
   useSwitchChain,
 } from 'wagmi'
 import { Button, Logout } from './guides/Demo'
-import { filterSupportedInjectedConnectors } from './wallets'
+import { filterSupportedInjectedConnectors } from './lib/wallets'
 
 export function ConnectWallet({
   showAddChain = true,

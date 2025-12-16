@@ -1,7 +1,11 @@
 import type { Connector } from 'wagmi'
 
-const UNSUPPORTED_WALLET_IDS = new Set(['io.phantom'])
-const UNSUPPORTED_WALLET_NAMES = new Set(['Phantom'])
+const UNSUPPORTED_WALLET_IDS = new Set([
+    'app.phantom'
+])
+const UNSUPPORTED_WALLET_NAMES = new Set([
+    'Phantom'
+])
 
 export function filterSupportedInjectedConnectors(connectors: Connector[]) {
   return connectors.filter(
@@ -11,3 +15,4 @@ export function filterSupportedInjectedConnectors(connectors: Connector[]) {
       !UNSUPPORTED_WALLET_NAMES.has(connector.name),
   )
 }
+
