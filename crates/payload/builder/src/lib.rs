@@ -28,7 +28,7 @@ use reth_payload_primitives::PayloadBuilderAttributes;
 use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
 use reth_revm::{
     State,
-    context::{Block, BlockEnv},
+    context::Block,
     database::StateProviderDatabase,
 };
 use reth_storage_api::{StateProvider, StateProviderFactory};
