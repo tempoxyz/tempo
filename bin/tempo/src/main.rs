@@ -110,7 +110,7 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    if let Some(result) = consensus_cmd::try_run_consensus_command() {
+    if let Some(result) = consensus_cmd::try_run_tempo_subcommand() {
         return result;
     }
 

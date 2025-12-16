@@ -1,8 +1,6 @@
-//! Custom `consensus` subcommand for the tempo CLI.
-
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, error::ErrorKind};
 use commonware_cryptography::{PrivateKeyExt as _, Signer, ed25519::PrivateKey};
 use eyre::Context;
 use rand::SeedableRng as _;
@@ -38,18 +36,12 @@ struct GenerateSigningKey {
     /// Destination of the generated signing key.
     #[arg(long, short, value_name = "FILE")]
     output: PathBuf,
-    /// AVOID IN PRODUCTION.
-    /// Optional seed for the random generator used when generating the key.
-    /// Use this only in environments that require reproducible keys.
-    #[arg(long, value_name = "NUMBER")]
-    seed: Option<u64>,
 }
 
 impl GenerateSigningKey {
     fn run(self) -> eyre::Result<()> {
-        let Self { output, seed } = self;
-        let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
-        let signing_key = PrivateKey::from_rng(&mut rng);
+        let Self { output } = self;
+        let signing_key = PrivateKey::from_rng(&mut rand::thread_rng());
         let validating_key = signing_key.public_key();
         let signing_key = SigningKey::from(signing_key);
         signing_key
@@ -63,20 +55,19 @@ impl GenerateSigningKey {
     }
 }
 
-pub(crate) fn try_run_consensus_command() -> Option<eyre::Result<()>> {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 && args[1] == "consensus" {
-        Some(run_consensus_command())
-    } else {
-        None
-    }
-}
-
-fn run_consensus_command() -> eyre::Result<()> {
-    let cli = TempoCli::parse();
-    match cli.command {
-        TempoCommand::Consensus(cmd) => match cmd.command {
-            ConsensusSubcommand::GenerateSigningKey(args) => args.run(),
+pub(crate) fn try_run_tempo_subcommand() -> Option<eyre::Result<()>> {
+    match TempoCli::try_parse() {
+        Ok(cli) => match cli.command {
+            TempoCommand::Consensus(cmd) => match cmd.command {
+                ConsensusSubcommand::GenerateSigningKey(args) => Some(args.run()),
+            },
+        },
+        Err(e) => match e.kind() {
+            ErrorKind::InvalidSubcommand => None,
+            _ => {
+                e.print().expect("failed to print error");
+                Some(Ok(()))
+            }
         },
     }
 }
