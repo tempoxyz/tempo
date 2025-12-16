@@ -100,16 +100,20 @@ impl Precompile for TipFeeManager {
                 if self.storage.spec().is_allegro_moderato() {
                     unknown_selector(selector, self.storage.gas_used(), self.storage.spec())
                 } else {
-                    mutate_void::<IFeeManager::executeBlockCall>(calldata, msg_sender, |s, _call| {
-                        self.execute_block(s, self.storage.beneficiary())
-                    })
+                    mutate_void::<IFeeManager::executeBlockCall>(
+                        calldata,
+                        msg_sender,
+                        |s, _call| self.execute_block(s, self.storage.beneficiary()),
+                    )
                 }
             }
             IFeeManager::distributeFeesCall::SELECTOR => {
                 if self.storage.spec().is_allegro_moderato() {
-                    mutate_void::<IFeeManager::distributeFeesCall>(calldata, msg_sender, |_s, call| {
-                        self.distribute_fees(call.validator)
-                    })
+                    mutate_void::<IFeeManager::distributeFeesCall>(
+                        calldata,
+                        msg_sender,
+                        |_s, call| self.distribute_fees(call.validator),
+                    )
                 } else {
                     unknown_selector(selector, self.storage.gas_used(), self.storage.spec())
                 }
