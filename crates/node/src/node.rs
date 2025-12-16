@@ -7,9 +7,7 @@ use crate::{
         TempoPolicyApiServer, TempoToken, TempoTokenApiServer,
     },
 };
-use alloy_eips::{eip7840::BlobParams, merge::EPOCH_SLOTS};
 use alloy_primitives::B256;
-use reth_chainspec::EthChainSpec;
 use reth_engine_local::LocalPayloadAttributesBuilder;
 use reth_evm::revm::primitives::Address;
 use reth_node_api::{
@@ -36,8 +34,8 @@ use reth_rpc_eth_api::{
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
 use reth_tracing::tracing::{debug, info};
-use reth_transaction_pool::TransactionValidationTaskExecutor;
-use std::{default::Default, sync::Arc, time::SystemTime};
+use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore};
+use std::{default::Default, sync::Arc};
 use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_consensus::TempoConsensus;
 use tempo_evm::{TempoEvmConfig, evm::TempoEvmFactory};
@@ -54,11 +52,18 @@ pub const DEFAULT_AA_VALID_AFTER_MAX_SECS: u64 = 3600;
 
 /// Tempo node CLI arguments.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::Args)]
-#[command(next_help_heading = "TxPool")]
 pub struct TempoNodeArgs {
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
     pub aa_valid_after_max_secs: u64,
+
+    /// Enable state provider metrics for the payload builder.
+    #[arg(long = "builder.state-provider-metrics", default_value_t = false)]
+    pub builder_state_provider_metrics: bool,
+
+    /// Disable state cache for the payload builder.
+    #[arg(long = "builder.disable-state-cache", default_value_t = false)]
+    pub builder_disable_state_cache: bool,
 }
 
 impl TempoNodeArgs {
@@ -66,6 +71,14 @@ impl TempoNodeArgs {
     pub fn pool_builder(&self) -> TempoPoolBuilder {
         TempoPoolBuilder {
             aa_valid_after_max_secs: self.aa_valid_after_max_secs,
+        }
+    }
+
+    /// Returns a [`TempoPayloadBuilderBuilder`] configured from these args.
+    pub fn payload_builder_builder(&self) -> TempoPayloadBuilderBuilder {
+        TempoPayloadBuilderBuilder {
+            state_provider_metrics: self.builder_state_provider_metrics,
+            disable_state_cache: self.builder_disable_state_cache,
         }
     }
 }
@@ -76,6 +89,8 @@ impl TempoNodeArgs {
 pub struct TempoNode {
     /// Transaction pool builder.
     pool_builder: TempoPoolBuilder,
+    /// Payload builder builder.
+    payload_builder_builder: TempoPayloadBuilderBuilder,
     /// Validator public key for `admin_validatorKey` RPC method.
     validator_key: Option<B256>,
 }
@@ -85,6 +100,7 @@ impl TempoNode {
     pub fn new(args: &TempoNodeArgs, validator_key: Option<B256>) -> Self {
         Self {
             pool_builder: args.pool_builder(),
+            payload_builder_builder: args.payload_builder_builder(),
             validator_key,
         }
     }
@@ -92,6 +108,7 @@ impl TempoNode {
     /// Returns a [`ComponentsBuilder`] configured for a regular Tempo node.
     pub fn components<Node>(
         pool_builder: TempoPoolBuilder,
+        payload_builder_builder: TempoPayloadBuilderBuilder,
     ) -> ComponentsBuilder<
         Node,
         TempoPoolBuilder,
@@ -107,7 +124,7 @@ impl TempoNode {
             .node_types::<Node>()
             .pool(pool_builder)
             .executor(TempoExecutorBuilder::default())
-            .payload(BasicPayloadServiceBuilder::default())
+            .payload(BasicPayloadServiceBuilder::new(payload_builder_builder))
             .network(EthereumNetworkBuilder::default())
             .consensus(TempoConsensusBuilder::default())
     }
@@ -239,7 +256,7 @@ where
     type AddOns = TempoAddOns<NodeAdapter<N>>;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
-        Self::components(self.pool_builder)
+        Self::components(self.pool_builder, self.payload_builder_builder)
     }
 
     fn add_ons(&self) -> Self::AddOns {
@@ -389,31 +406,11 @@ where
         pool_config.minimal_protocol_basefee = TEMPO_BASE_FEE;
         pool_config.max_inflight_delegated_slot_limit = pool_config.max_account_slots;
 
-        let blob_cache_size = if let Some(blob_cache_size) = pool_config.blob_cache_size {
-            Some(blob_cache_size)
-        } else {
-            // get the current blob params for the current timestamp, fallback to default Cancun
-            // params
-            let current_timestamp = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)?
-                .as_secs();
-            let blob_params = ctx
-                .chain_spec()
-                .blob_params_at_timestamp(current_timestamp)
-                .unwrap_or_else(BlobParams::cancun);
-
-            // Derive the blob cache size from the target blob count, to auto scale it by
-            // multiplying it with the slot count for 2 epochs: 384 for pectra
-            Some((blob_params.target_blob_count * EPOCH_SLOTS * 2) as u32)
-        };
-
-        let blob_store =
-            reth_node_builder::components::create_blob_store_with_cache(ctx, blob_cache_size)?;
-
+        // this store is effectively a noop
+        let blob_store = InMemoryBlobStore::default();
         let validator = TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone())
             .with_head_timestamp(ctx.head().timestamp)
             .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
-            .kzg_settings(ctx.kzg_settings()?)
             .with_local_transactions_config(pool_config.local_transactions_config.clone())
             .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
             .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
@@ -422,18 +419,8 @@ where
             .with_additional_tasks(ctx.config().txpool.additional_validation_tasks)
             .with_custom_tx_type(TempoTxType::AA as u8)
             .with_custom_tx_type(TempoTxType::FeeToken as u8)
+            .no_eip4844()
             .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
-
-        if validator.validator().eip4844() {
-            // initializing the KZG settings can be expensive, this should be done upfront so that
-            // it doesn't impact the first block or the first gossiped blob transaction, so we
-            // initialize this in the background
-            let kzg_settings = validator.validator().kzg_settings().clone();
-            ctx.task_executor().spawn_blocking(async move {
-                let _ = kzg_settings.get();
-                debug!(target: "reth::cli", "Initialized KZG settings");
-            });
-        }
 
         let aa_2d_config = AA2dPoolConfig {
             price_bump_config: pool_config.price_bumps,
@@ -486,9 +473,14 @@ where
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
-pub struct TempoPayloadBuilderBuilder;
+pub struct TempoPayloadBuilderBuilder {
+    /// Enable state provider metrics for the payload builder.
+    pub state_provider_metrics: bool,
+    /// Disable state cache for the payload builder.
+    pub disable_state_cache: bool,
+}
 
 impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, TempoEvmConfig>
     for TempoPayloadBuilderBuilder
@@ -507,6 +499,8 @@ where
             pool,
             ctx.provider().clone(),
             evm_config,
+            self.state_provider_metrics,
+            self.disable_state_cache,
         ))
     }
 }

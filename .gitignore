@@ -3,6 +3,11 @@ target
 scripts/logs
 scripts/data
 
+# Benchmarking artifacts
+contrib/bench/logs/
+report.json
+profile.json.gz
+
 .DS_Store
 .idea
 **/.env
@@ -23,3 +28,5 @@ docs/.vercel
 docs/_
 docs/tmp
 docs/.sonda
+
+_

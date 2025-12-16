@@ -98,18 +98,31 @@ where
                 .get(&CURRENT_EPOCH_KEY)
                 .expect("we ensured above that the epoch state is initialized")
                 .epoch();
-            self.validators_metadata
-                .put_sync(
-                    // Write the validators for the *previous* epoch. This assumes
-                    // that after this state is written, self.register_current_epoch_state
-                    // is called that will set the validators for the *current*
-                    // epoch.
-                    current_epoch.saturating_sub(1).into(),
-                    ValidatorState::with_unknown_contract_state(validators.clone()),
-                )
-                .await
-                .expect("must always be able to write state");
+            self.validators_metadata.put(
+                // Write the validators for the *previous* epoch. This assumes
+                // that after this state is written, self.register_current_epoch_state
+                // is called that will set the validators for the *current*
+                // epoch.
+                current_epoch.saturating_sub(1).into(),
+                ValidatorState::with_unknown_contract_state(validators.clone()),
+            );
         }
+
+        if self.config.delete_signing_share
+            && let Some(epoch_state) = self
+                .pre_allegretto_metadatas
+                .epoch_metadata
+                .get_mut(&CURRENT_EPOCH_KEY)
+        {
+            warn!("delete-signing-share set; deleting signing share");
+            epoch_state.share.take();
+        }
+
+        self.pre_allegretto_metadatas
+            .epoch_metadata
+            .sync()
+            .await
+            .expect("persisting epoch state must always work");
         Ok(())
     }
 
